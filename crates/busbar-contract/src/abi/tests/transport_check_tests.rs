@@ -344,6 +344,35 @@ fn a_continued_piece_outside_a_field_block_is_fault() {
     assert_eq!(check_framer(Ready, &o, &[p], 8, 8, 8), Ok(()));
 }
 
+/// PIECE_TEXT is a fact about a message's bytes (C19-TAIL U5): on a payload piece it passes; on an
+/// empty piece (a stream's end), a field block or a failed stream's reason it is FAULT.
+#[test]
+fn text_rides_a_message_piece_only() {
+    let mut o: FramerOut = z();
+    o.yielded.frame_len = 4;
+    o.yielded.pieces_len = 1;
+    let mut message = piece(0, 4);
+    message.flags = PIECE_TEXT;
+    assert_eq!(check_framer(Ready, &o, &[message], 8, 8, 8), Ok(()));
+    message.flags = PIECE_TEXT | PIECE_END_OF_FRAME;
+    assert_eq!(check_framer(Ready, &o, &[message], 8, 8, 8), Ok(()));
+    for (p, flags) in [
+        (piece(4, 0), PIECE_TEXT | PIECE_END_OF_FRAME),
+        (piece(0, 4), PIECE_TEXT | PIECE_FIELDS | PIECE_END_OF_FRAME),
+        (
+            piece(0, 4),
+            PIECE_TEXT | PIECE_STREAM_FAILED | PIECE_END_OF_FRAME,
+        ),
+    ] {
+        let p = FramePiece { flags, ..p };
+        assert_eq!(
+            check_framer(Ready, &o, &[p], 8, 8, 8),
+            f(Rule::Contradiction, "framer.piece.text_not_message"),
+            "{flags:#x}"
+        );
+    }
+}
+
 /// A stream's head slots: within the capacity, one per stream, every slot inside the frame bytes
 /// written; a method and a target together (an accepted head) or both absent (a dialled answer's
 /// reason alone).

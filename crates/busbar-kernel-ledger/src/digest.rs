@@ -10,11 +10,25 @@
 //! `Checkpoint::body_digest` over `Checkpoint::signed_body` — one encoder call, one digest call
 //! (pinned by `the_seal_and_the_verify_share_one_preimage_and_one_digest`, item 438).
 
-use sha2::{Digest as _, Sha256};
+use ring::digest::{digest, Context, SHA256};
 
-/// The digest of `bytes`.
+/// The digest of `bytes` (SHA-256 on ring, the one crypto backend).
 pub fn sha256(bytes: &[u8]) -> [u8; 32] {
-    Sha256::digest(bytes).into()
+    let mut out = [0u8; 32];
+    out.copy_from_slice(digest(&SHA256, bytes).as_ref());
+    out
+}
+
+/// The digest of `parts` fed in order, as if concatenated (no framing is added: a caller that needs
+/// unambiguous boundaries puts them in its own parts).
+pub fn sha256_of(parts: &[&[u8]]) -> [u8; 32] {
+    let mut ctx = Context::new(&SHA256);
+    for part in parts {
+        ctx.update(part);
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(ctx.finish().as_ref());
+    out
 }
 
 /// The digest as lowercase hexadecimal, for anything that has to print one.

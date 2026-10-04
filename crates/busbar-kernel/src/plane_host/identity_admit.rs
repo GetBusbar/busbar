@@ -132,6 +132,8 @@ pub(crate) extern "C-unwind" fn identity_admit(
             &app.auth,
             &app.credential_cache,
             candidate,
+            // The identity query carries the caller's credential and no request head.
+            crate::auth::ChainHead::default(),
             app.governance.clone(),
             expected_aud,
         ));

@@ -1534,6 +1534,7 @@ fn foreign_stop_reason_maps_to_other_not_verbatim() {
 
             request_echo: None,
             stop_detail: None,
+            ..Default::default()
         };
         let wire = writer.write_response(&ir);
         assert_eq!(
@@ -1596,6 +1597,7 @@ fn test_response_identity_cross_protocol_emits_foreign_id() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let wire = writer.write_response(&ir);
     assert_eq!(
@@ -1637,6 +1639,7 @@ fn test_response_identity_none_id_is_omitted_not_fabricated() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let wire = writer.write_response(&ir);
     assert!(
@@ -2357,6 +2360,7 @@ fn test_response_identity_cross_protocol_synthesizes_id_when_created_set() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let wire = writer.write_response(&ir);
     let synth = wire
@@ -3209,6 +3213,7 @@ fn test_write_response_includes_total_token_count_cross_protocol() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let wire = writer.write_response(&ir);
     assert_eq!(
@@ -3259,6 +3264,7 @@ fn test_write_response_omits_total_token_count_same_protocol() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let wire = writer.write_response(&ir);
     assert!(
@@ -3291,6 +3297,7 @@ fn test_write_response_total_token_count_saturates() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let wire = writer.write_response(&ir);
     assert_eq!(
@@ -3338,6 +3345,7 @@ fn test_write_response_includes_total_token_count_when_only_model_present() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let wire = writer.write_response(&ir);
     assert_eq!(
@@ -3380,6 +3388,7 @@ fn test_write_response_model_only_total_token_count_saturates() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let wire = writer.write_response(&ir);
     assert_eq!(
@@ -3478,6 +3487,7 @@ fn test_write_response_tool_use_maps_to_stop() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let wire = writer.write_response(&ir);
     assert_eq!(
@@ -3855,7 +3865,7 @@ fn test_stream_open_tools_growth_is_capped() {
 }
 
 /// Past `MAX_GEMINI_TOOL_FRAMES` the drop must be OBSERVABLE, not silent: the first frame that
-/// hits the cap latches `state.gemini_tool_frame_cap_warned` (which also gates a `tracing::warn!`
+/// hits the cap latches `state.tool_frame_cap_warned` (which also gates a `tracing::warn!`
 /// with the cap value). Under the cap the latch must stay false — this is a genuine drop signal,
 /// not noise on every ordinary stream.
 #[test]
@@ -3879,7 +3889,7 @@ fn test_stream_tool_frame_cap_drop_is_observable() {
         );
     }
     assert!(
-        !state.gemini_tool_frame_cap_warned,
+        !state.tool_frame_cap_warned,
         "cap-drop latch must not fire while under MAX_GEMINI_TOOL_FRAMES"
     );
 
@@ -3899,7 +3909,7 @@ fn test_stream_tool_frame_cap_drop_is_observable() {
         );
     }
     assert!(
-        state.gemini_tool_frame_cap_warned,
+        state.tool_frame_cap_warned,
         "dropping functionCall frames past MAX_GEMINI_TOOL_FRAMES must be observable via the latch"
     );
 }
@@ -4751,6 +4761,7 @@ fn test_tool_use_array_input_coerced_to_object_args() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let rwire = writer.write_response(&resp);
     let rargs = rwire
@@ -4798,6 +4809,7 @@ fn test_tool_use_object_input_passes_through_unchanged() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let rwire = writer.write_response(&resp);
     let rargs = rwire
@@ -6440,6 +6452,7 @@ fn stream_anthropic_citation_projects_to_gemini_citation_metadata() {
             "title": "Doc Title",
             "encrypted_index": "enc-xyz"
         })),
+        ..Default::default()
     };
     let ev = IrStreamEvent::BlockDelta {
         index: 0,
@@ -6614,6 +6627,7 @@ fn write_response_reconstructs_prompt_token_count_with_cached() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = {
         let w = GeminiWriter;
@@ -7122,6 +7136,7 @@ fn test_write_response_emits_real_signature_never_sentinel() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let wire = writer.write_response(&with_sig);
     assert_eq!(

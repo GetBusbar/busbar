@@ -38,9 +38,15 @@ fn listed_names(manifest: &str) -> Vec<String> {
         names.push(module);
     }
     for (_, path) in metadata_map(manifest, "package.metadata.busbar.linked-entry") {
-        // `crate::root::<module>` — the module is the name.
-        if let Some(module) = path.rsplit("::").next() {
-            names.push(module.to_string());
+        // `crate::root::<module>` — the module is the name. Any other entry path starts at its
+        // crate, and the crate is the name (`busbar_secret_env::door` is reached as
+        // `busbar_secret_env`, never as a bare `door`).
+        let name = match path.strip_prefix("crate::") {
+            Some(local) => local.rsplit("::").next(),
+            None => path.split("::").next(),
+        };
+        if let Some(name) = name {
+            names.push(name.to_string());
         }
     }
     names.sort();
@@ -310,5 +316,106 @@ host = "unit"
     ] {
         let refused = std::panic::catch_unwind(|| linked_source(&broken, &|f: &str| f == "host"));
         assert!(refused.is_err(), "must be refused:\n{broken}");
+    }
+}
+
+/// THE PLANE DOOR AXIS (#2, THE DESIGN §11.4): a `plane-door` row fills `plane_doors` with its
+/// entry's `door`, the table the root hands the loader beside every dropped-in plane door; with its
+/// feature off the table is empty.
+#[test]
+fn the_generator_folds_the_plane_door_axis() {
+    let manifest = r#"
+[dependencies]
+busbar-plane-door = { path = "../busbar-plane-door", optional = true }
+
+[features]
+door = ["dep:busbar-plane-door"]
+
+[package.metadata.busbar.linked]
+door = "busbar-plane-door"
+
+[package.metadata.busbar.linked-axes]
+door = "plane-door"
+
+[package.metadata.busbar.linked-entry]
+door = "busbar_plane_door::plane_door"
+
+[package.metadata.busbar.root-units]
+door = "unit"
+"#;
+    let (on, _) = linked_source(manifest, &|f: &str| f == "door");
+    assert!(
+        on.contains("plane_doors: &[busbar_plane_door::plane_door::door, ],"),
+        "{on}"
+    );
+    let (off, _) = linked_source(manifest, &|_: &str| false);
+    assert!(off.contains("plane_doors: &[],"), "{off}");
+}
+
+/// A PLANE IS SERVED THROUGH ITS DOOR (#2, #30; BUSBAR-1.6.0.md Part 3 §12 "The switch"): this
+/// manifest has a build that links a plane's memory-ABI door on the `plane-door` axis, so the
+/// compiled-in plane is bound through the loader's one load, the same table its dropped-in build is.
+#[test]
+fn the_manifest_links_a_plane_through_its_door() {
+    let manifest = read("Cargo.toml");
+    let (all, _) = linked_source(&manifest, &|_: &str| true);
+    let doors = all
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("plane_doors: &["))
+        .unwrap_or_else(|| panic!("no plane_doors table generated:\n{all}"));
+    assert!(
+        doors.contains("::door, "),
+        "no build of this manifest links a plane door: plane_doors = [{doors}"
+    );
+}
+
+/// A FOLD'S SWITCH (BUSBAR-1.6.0.md Part 3 §12 "The switch"): every development-only
+/// `<plane>-on-driver` feature links its plane's memory-ABI door on the `plane-door` axis, and the
+/// default build links none of those doors, so the shipped binary serves the plane as it did until
+/// the flip. The switches are read off the manifest, so this names no plane.
+#[test]
+fn every_on_driver_switch_links_its_door_and_the_default_build_does_not() {
+    let manifest = read("Cargo.toml");
+    let default: Vec<String> = manifest
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("default = ["))
+        .expect("the manifest states a default feature set")
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect();
+    let switches: Vec<String> = manifest
+        .lines()
+        .filter_map(|l| l.trim().split_once(" = ["))
+        .map(|(name, _)| name.trim().to_string())
+        .filter(|name| name.ends_with("-on-driver"))
+        .collect();
+    assert!(
+        !switches.is_empty(),
+        "the manifest states no development-only `-on-driver` switch"
+    );
+    let doors_of = |on: &dyn Fn(&str) -> bool| {
+        let (src, _) = linked_source(&manifest, on);
+        src.lines()
+            .find_map(|l| l.trim().strip_prefix("plane_doors: &[").map(str::to_string))
+            .unwrap_or_else(|| panic!("no plane_doors table generated:\n{src}"))
+    };
+    let shipped = doors_of(&|f: &str| default.iter().any(|d| d == f));
+    for switch in &switches {
+        assert!(
+            !default.iter().any(|f| f == switch),
+            "the development-only switch `{switch}` is in `default`: {default:?}"
+        );
+        let switched = doors_of(&|f: &str| f == switch || default.iter().any(|d| d == f));
+        let added: Vec<&str> = switched
+            .split(", ")
+            .filter(|d| d.ends_with("::plane_door::door") && !shipped.contains(*d))
+            .collect();
+        assert!(
+            !added.is_empty(),
+            "`{switch}` links no door the default build does not: switched = [{switched}, \
+             shipped = [{shipped}"
+        );
     }
 }

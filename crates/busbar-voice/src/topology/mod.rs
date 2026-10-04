@@ -388,7 +388,7 @@ where
 
     let handle = rt.bind_session(owner.clone(), call_id.clone());
     // A durable open that fails leaves a session that never opened: its counted session fee is
-    // given back (Q17-6) before the refusal.
+    // given back (TODO 17(b), ARCHITECT R4) before the refusal.
     if let Err(e) = handle.open(now) {
         if let Some(metering) = metering {
             metering.refund_open();

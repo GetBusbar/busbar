@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A PROVIDER DIAL THE DIAL TABLE REFUSES fails over exactly as a refused connection does.
+//! A PROVIDER DIAL THE DESTINATION GUARD REFUSES fails over exactly as a refused connection does
+//! (OWNER ruling DESTINATION GUARD; C19-REFUSAL parity).
 //!
 //! The lane's name resolves, the address it answered with is refused before any socket opens, and
 //! the attempt is a transient upstream failure classified `connect` (not `timeout`): the lane cools
@@ -9,35 +10,54 @@
 //! pool whose every upstream refused the connection gets.
 //!
 //! The runtime's client is built inside [`with_scoped_dial`], so it resolves through this test's
-//! names and judges by this test's table; no other test's dial is touched. The refused address is
-//! an OPERATOR-BLOCKED loopback address rather than a metadata one, so that a dial the table failed
-//! to refuse would reach a live mock and be seen there.
+//! names and judges by this test's guard (its test double); no other test's dial is touched. The
+//! refused address is the LOOPBACK address a live mock listens on, refused by default, so that a
+//! dial the guard failed to refuse would reach the mock and be seen there.
 
 use crate::engine::attempt::EgressSendError;
 use crate::engine::{forward_with_pool, WeightedLane};
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_kernel::egress::engine::{with_scoped_dial, DialTable};
-use busbar_kernel::egress::fixtures::RebindingResolver;
-use busbar_kernel::net_guard::DialDenylist;
+use busbar_kernel::egress::engine::with_scoped_dial;
+use busbar_kernel::egress::fixtures::{private_refusing, RebindingResolver};
+use busbar_kernel::host_services::DestJudge;
 use busbar_kernel::store::now;
 use reqwest::StatusCode;
 use serde_json::json;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
-/// The table every test here dials under: loopback `127.0.0.1` is operator-blocked.
-fn blocking_loopback() -> DialTable {
-    DialTable::new(DialDenylist::new(
-        &["127.0.0.1".to_string()],
-        &[],
-        false,
-        std::iter::empty(),
-    ))
+/// The guard every test here dials under: the default, loopback refused, nothing allowed.
+fn blocking_loopback() -> Arc<dyn DestJudge> {
+    private_refusing(&[])
 }
 
 /// Names that answer `addr`, counting how often they were asked.
 fn names_answering(addr: SocketAddr) -> Arc<RebindingResolver> {
     Arc::new(RebindingResolver::counting(addr))
+}
+
+/// A mock upstream answering one streamed reply of `events`, and its state.
+async fn streaming_mock(events: &[&str]) -> (Arc<MockServerState>, MockServer) {
+    let state = Arc::new(MockServerState::new());
+    state.push(MockResponse::Sse {
+        events: events.iter().map(|e| (*e).to_string()).collect(),
+        abort_at_index: None,
+    });
+    let mock = MockServer::new(state.clone()).await;
+    (state, mock)
+}
+
+/// The mock's own address, off its base URL.
+fn address_of(mock: &MockServer) -> SocketAddr {
+    mock.base_url()
+        .trim_start_matches("http://")
+        .parse()
+        .expect("the mock's address")
+}
+
+/// The primary lane's URL on `port`: a NAME the test's resolver answers.
+fn named_primary(port: u16) -> String {
+    format!("http://primary.localhost:{port}")
 }
 
 fn lanes(n: usize) -> Vec<WeightedLane> {
@@ -113,26 +133,12 @@ async fn a_refused_dial_is_a_connect_failure_not_a_timeout() {
 #[tokio::test]
 async fn a_refused_primary_fails_over_to_the_next_lane() {
     crate::testkit::install_test_seams();
-    let primary_state = Arc::new(MockServerState::new());
-    primary_state.push(MockResponse::Sse {
-        events: vec!["never".to_string()],
-        abort_at_index: None,
-    });
-    let primary = MockServer::new(primary_state.clone()).await;
-    let next_state = Arc::new(MockServerState::new());
-    next_state.push(MockResponse::Sse {
-        events: vec!["event-0".to_string(), "event-1".to_string()],
-        abort_at_index: None,
-    });
-    let next = MockServer::new(next_state.clone()).await;
+    let (primary_state, primary) = streaming_mock(&["never"]).await;
+    let (next_state, next) = streaming_mock(&["event-0", "event-1"]).await;
 
-    let primary_addr: SocketAddr = primary
-        .base_url()
-        .trim_start_matches("http://")
-        .parse()
-        .expect("the mock's address");
+    let primary_addr = address_of(&primary);
     let names = names_answering(primary_addr);
-    let primary_url = format!("http://primary.localhost:{}", primary_addr.port());
+    let primary_url = named_primary(primary_addr.port());
     let app = with_scoped_dial(blocking_loopback(), names.clone(), || {
         let app = TestApp::new()
             .lane(LaneSpec::new(
@@ -166,6 +172,41 @@ async fn a_refused_primary_fails_over_to_the_next_lane() {
 
     primary.shutdown().await;
     next.shutdown().await;
+}
+
+/// GREEN (the destination guard's allowlist): the same primary, its name allowlisted, is dialled
+/// and answers; the walk never moves on.
+#[tokio::test]
+async fn an_allowlisted_primary_dials_and_answers() {
+    crate::testkit::install_test_seams();
+    let (primary_state, primary) = streaming_mock(&["event-0", "event-1"]).await;
+    let primary_addr = address_of(&primary);
+    let names = names_answering(primary_addr);
+    let primary_url = named_primary(primary_addr.port());
+    let app = with_scoped_dial(
+        private_refusing(&["primary.localhost"]),
+        names.clone(),
+        || {
+            let app = TestApp::new()
+                .lane(LaneSpec::new(
+                    "lane0",
+                    crate::proto_codec::PROTO_ANTHROPIC,
+                    &primary_url,
+                ))
+                .pool("default", &[(0, 1)])
+                .build();
+            let _ = crate::engine::test_host_rt(&app);
+            app
+        },
+    );
+    let response = forward(&app, 1).await;
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "the allowlisted primary answered"
+    );
+    assert!(primary_state.get_last_request_path().is_some());
+    primary.shutdown().await;
 }
 
 /// THE ALL-DOWN BYTES: a pool whose every lane's dial is refused answers the client exactly as a

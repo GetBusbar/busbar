@@ -52,7 +52,7 @@ fn priced(c: &ClassCounts) -> u128 {
     nanos_of_exact(tally.exact().expect("in range")).expect("in range")
 }
 
-/// The node's boot, as `compose_boot_book` and `open_boot_book` run it: build over the data
+/// The node's boot, as `root::boot::compose_book` and `root::boot::book` run it: build over the data
 /// directory, rebuild the node amendment journal, share the book, bind it.
 fn boot(dir: &std::path::Path) -> Arc<Mutex<Durability>> {
     let mut durability = build_for_node(
@@ -162,6 +162,7 @@ fn restart_phase() {
         // sealed and `/verify` reports nothing; the held run is then edited in place, and `/verify`
         // names the amendment chain. A process of its own, because the node journal is the
         // process's one journal.
+        #[cfg(feature = "root-admin")]
         "tamper" => {
             correct_counts(
                 busbar_contract::authz::Scope::Full,
@@ -222,6 +223,7 @@ fn run_phase(phase: &str, dir: &std::path::Path) {
 }
 
 /// U15: `GET /admin/verify` VERIFIES THE HELD AMENDMENT RUN ON DEMAND. See the `tamper` phase.
+#[cfg(feature = "root-admin")]
 #[test]
 fn verify_reports_an_edit_to_the_held_amendment_run() {
     let dir = std::env::temp_dir().join(format!(

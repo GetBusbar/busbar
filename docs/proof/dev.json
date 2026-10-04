@@ -583,6 +583,6 @@
   ],
   "provenance": {
     "content_digest": "sha256:ed5308ff61430ad5157af60f334a486fac71ebe168b238e933bff79be1a74ebb",
-    "collator": "scripts/proof-manifest.py"
+    "collator": "cargo xtask proof-manifest"
   }
 }

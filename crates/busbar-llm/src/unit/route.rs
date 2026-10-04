@@ -73,8 +73,8 @@ use busbar_kernel::proxy::proxy_vocab::fire_stage_taps;
 use busbar_kernel::proxy::{APPLICATION_JSON, KIND_NOT_FOUND};
 
 use crate::engine::{
-    capture_stage_shape, forwardable_client_header_names, EngineTables, GateRejected, LazyBody,
-    NativeRuntime, TapCell, UsageSink, WeightedLane,
+    capture_stage_shape, EngineTables, GateRejected, LazyBody, NativeRuntime, TapCell, UsageSink,
+    WeightedLane,
 };
 use crate::native_ingress::affinity_header_for;
 
@@ -93,6 +93,8 @@ pub(crate) struct RouteInput<'a> {
     /// The admitted destination — post-downgrade, never the requested one.
     pub(crate) destination: &'a str,
     pub(crate) headers: &'a HeaderMap,
+    /// The request URL's query, as it arrived.
+    pub(crate) query: Option<&'a str>,
     pub(crate) body: Bytes,
     /// The body the Arrival step validated, carried as the lazy head projection. `None` for an
     /// opaque (multipart/binary) body, which relays at the byte level.
@@ -273,6 +275,7 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
         op,
         destination,
         headers,
+        query,
         body,
         mut parsed,
         caller_token,
@@ -319,15 +322,20 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
     let req_content_type = if ct.is_empty() { APPLICATION_JSON } else { ct };
     // Sticky routing is an engine capability, so the affinity header is read for every operation,
     // not just for chat.
+    let affinity_header = affinity_header_for(rt, destination);
     let affinity_key: Option<String> = headers
-        .get(affinity_header_for(rt, destination))
+        .get(affinity_header)
         .and_then(|h| h.to_str().ok())
         .map(str::to_string);
-    // Opt-in client beta/version headers, collected against this plane's forwardable set. Empty ⇒
-    // byte-identical egress.
-    let client_fwd =
-        busbar_kernel::proxy::collect_client_headers(headers, &forwardable_client_header_names());
-
+    // Every client header but the per-connection mechanics, the ones the dialects govern and
+    // busbar's own (the pool's affinity header), for a same-dialect egress to forward unchanged
+    // (busbar is invisible to upstreams).
+    let client_fwd = crate::engine::ClientFwd {
+        headers: busbar_kernel::proxy::collect_client_headers(headers, |n| {
+            crate::engine::governed(n) || n.eq_ignore_ascii_case(affinity_header)
+        }),
+        query: query.map(str::to_string),
+    };
     // THE PLAN, named before the walk runs it: one leg per candidate the destination resolved to,
     // in the order the walk was handed them. The lane and the dial target are the deployment's own
     // runtime strings, interned once through the node's registration.

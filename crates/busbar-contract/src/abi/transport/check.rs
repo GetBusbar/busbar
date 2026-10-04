@@ -17,9 +17,9 @@ use super::{
     ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail, CANCEL_COMPLETED,
     CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH, FRAMING_DATAGRAM,
     FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
-    PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG,
-    SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED,
-    YIELD_HAS_DEADLINE, YIELD_MORE,
+    PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, ROLE_CARRIER, ROLE_FRAMER,
+    SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS, UNIT0_HANDSHAKE,
+    YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
@@ -223,10 +223,18 @@ pub fn check_framer(
                     | PIECE_HAS_RETRY_AFTER
                     | PIECE_STREAM_FAILED
                     | PIECE_FIELDS
-                    | PIECE_CONTINUED,
+                    | PIECE_CONTINUED
+                    | PIECE_TEXT,
             ),
             "framer.piece.flags",
         )?;
+        // Text is a fact about a message's bytes: an empty piece, a field block and a failed
+        // stream's reason carry none.
+        if p.flags & PIECE_TEXT != 0
+            && (p.len == 0 || p.flags & (PIECE_FIELDS | PIECE_STREAM_FAILED) != 0)
+        {
+            return Err(fault(Rule::Contradiction, "framer.piece.text_not_message"));
+        }
         if p.flags & PIECE_CONTINUED != 0 && p.flags & PIECE_FIELDS == 0 {
             return Err(fault(
                 Rule::Contradiction,

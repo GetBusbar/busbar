@@ -23,8 +23,8 @@ use busbar_kernel::store::LaneRuntime;
 //
 // `set_data_workers`, `set_worker_id` and `UpstreamClients` are no longer re-exported: the
 // composition root's boot publish now targets `busbar_kernel::topology::…` directly, which left
-// the three `busbar_kernel::state::…` spellings with no caller at all bar one `engine_facade`
-// re-export line, itself repointed here. Nothing outside core names them.
+// the three `busbar_kernel::state::…` spellings with no caller at all. Nothing outside core names
+// them.
 pub use busbar_kernel::topology::{worker_stripe, worker_stripes};
 
 /// Re-export the neutral companion-slot key DERIVER: a plane's ALWAYS-PRESENT per-generation runtime
@@ -196,8 +196,8 @@ pub struct App {
     // the map goes unread in that config alone.
     #[allow(dead_code)]
     pub plane_rewrites: PlaneRewriteMap,
-    /// The plugin-resolution environment for hooks: the validated plugin registry + the shared
-    /// projectors. Threaded to the admin control-plane reads/writes (configure/status/schema) and the
+    /// The plugin-resolution environment for hooks: the validated plugin registry + the root's hook
+    /// axis over it. Threaded to the admin control-plane reads/writes (configure/status/schema) and the
     /// Prometheus scrape so they open a hook's `kind: hook` plugin the same way the request path's
     /// resolved transports did. Cheap to clone (Arc-backed). Replaces the retired webhook client the
     /// out-of-process transport needed.
@@ -312,18 +312,17 @@ pub struct App {
     pub idempotency_cache: Arc<
         std::sync::Mutex<std::collections::HashMap<(String, String), (u64, serde_json::Value)>>,
     >,
-    /// Config VERSION HISTORY — every successful config-plane mutation records its snapshot here.
-    /// Arc-shared across apply snapshots (survives every swap); bounded ring (see
-    /// `admin::versions`).
-    pub versions: Arc<crate::admin::versions::VersionLog>,
+    /// The admin side's state (the config VERSION HISTORY, typed and filled by the admin service),
+    /// behind the admin seam's one slot. Arc-shared across apply snapshots (survives every swap).
+    pub admin: Arc<crate::admin::seam::AdminSlot>,
     /// The ADMIN auth chain (`admin_auth:` module names, default: the operator credential) — executed by
     /// the auth middleware for `/admin` paths. Empty = the explicit OPEN admin posture (dev).
     pub admin_chain: Vec<String>,
     /// The RESOLVED admin auth modules — every `admin_auth:` entry opened through the auth kind's
     /// registry (1.5.2 admin-plane OIDC). Keyed by the config module name (the same string
     /// `admin_chain` names and `role_bindings.<module>` binds); the operator credential is held apart
-    /// (`AdminAuthChain::operator`), opened over its token's digest. `has_plugin` gates the
-    /// off-reactor offload of the admin chain (a plugin can do blocking JWKS/introspection I/O).
+    /// (`AdminAuthChain::operator`), opened over its token's digest. Each external module's call
+    /// is offloaded off the reactor (a plugin can do blocking JWKS/introspection I/O).
     /// Rebuilt on boot AND reload (`build_app_from_config`), Arc-shared so `App::clone` is cheap.
     pub admin_modules: Arc<crate::auth::AdminAuthChain>,
     /// The RESOLVED hosted-login methods (`auth.methods:`, 1.5.2) — each opened as a login
@@ -343,10 +342,10 @@ pub struct App {
     /// allocated, no signing key exists, no sweeper runs and no route is mounted. See
     /// `crate::oauth_as`.
     ///
-    /// TYPE-ERASED (`Arc<dyn Any + Send + Sync>`, not `Arc<busbar_oauth2::plane::AsPlane>`): the
-    /// concrete plane object lives in the sibling `busbar-oauth2` crate, which depends on
-    /// busbar-core ONE-WAY — core naming `busbar_oauth2::plane::AsPlane` here would be the reverse
-    /// edge Cargo refuses as a cycle. The real type is built and downcast on the `busbar-oauth2`
+    /// TYPE-ERASED (`Arc<dyn Any + Send + Sync>`, not `Arc<busbar_core_oauth2::plane::AsPlane>`): the
+    /// concrete plane object lives in the sibling `busbar-core-oauth2` crate, which depends on
+    /// busbar-core ONE-WAY — core naming `busbar_core_oauth2::plane::AsPlane` here would be the reverse
+    /// edge Cargo refuses as a cycle. The real type is built and downcast on the `busbar-core-oauth2`
     /// side of the seam (`crate::oauth_as::seam`); core only carries the opaque handle and knows
     /// `Some`/`None`.
     pub oauth_as: Option<Arc<dyn std::any::Any + Send + Sync>>,
@@ -480,7 +479,7 @@ pub struct App {
     /// Lives on `App` (not a bare `static AtomicU64`) so it is Arc-shared like `store`/
     /// `probe_schedule`: a config apply's `(*current).clone()` and a REBUILD's carry-over from
     /// `prior` (`build_app_from_config`) both keep the SAME counter instance, so ids stay monotonic
-    /// across a config reload the way `versions`/`mutation_limiter` already do — and it is
+    /// across a config reload the way `admin`/`mutation_limiter` already do — and it is
     /// constructible per-test (no hidden global), matching this file's existing "no global mutable
     /// state" convention for live per-process counters (see `QueuedDepth`, `VersionLog`).
     pub request_id_counter: Arc<std::sync::atomic::AtomicU64>,
@@ -544,7 +543,7 @@ impl App {
     }
 
     /// THE AUTHORIZATION-SERVER PLANE OBJECT, type-erased — `pub` (not test-gated) because the
-    /// `busbar-oauth2` plane's OWN route handlers (`forward`/`consent_screen`/`consent_submit`,
+    /// `busbar-core-oauth2` plane's OWN route handlers (`forward`/`consent_screen`/`consent_submit`,
     /// reached through the `CurrentApp` extractor exactly like every other core route) need it on
     /// the real request path, not only in tests. Mirrors [`Self::engine_tables_view`]'s downcast
     /// seam: core hands back the opaque `&Arc<dyn Any + Send + Sync>` and the plane crate — the only

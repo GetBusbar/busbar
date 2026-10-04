@@ -148,7 +148,12 @@ group-wide budgets only, as it always did. `POST /api/v1/admin/ledger/amend-rate
 fleet's operator key to the dated rate-card history. Each corrected rate's `micro_per_unit` is a
 decimal in micro-units per unit, and it must be exact to one nano-unit (a multiple of `0.001`): the
 card holds integers, and a finer figure is refused `400 invalid_request` rather than rounded into a
-price the signature does not cover.
+price the signature does not cover. The correction changes only what it names: the card in force
+for the window keeps every other rate, every other plane's card and its `per_request_fee` unless the
+correction names a fee. A lane spelt `<plane>\u001f<lane>` corrects that plane's card. A window
+that two cards price (a config apply or an earlier correction lands inside it), or a cell on a plane
+with no card of its own, is refused `400 invalid_request` and nothing is recorded: split the
+window at the boundary and sign each part.
 
 The closed verb table also declares thirteen money-governance verbs whose effect this release does
 not bind (`verify`, `plane-facts`, `plane-record-write`, `operator-key`, `escrow`, `dual-control`,

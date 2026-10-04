@@ -83,9 +83,14 @@ impl RoutingPolicy for SeatProbe {
             tools: vec![],
         })
     }
-    async fn notify(&self, projection: &[u8], _budget: std::time::Duration) {
+    async fn notify(
+        &self,
+        tap: std::sync::Arc<busbar_contract::abi::host::hook::NotifyFrame>,
+        _budget: std::time::Duration,
+    ) {
+        let projection = serde_json::to_vec(&tap.projection_json()).expect("the tap's JSON");
         self.log.lock().unwrap().push(self.seat.to_string());
-        *self.last_payload.lock().unwrap() = Some(projection.to_vec());
+        *self.last_payload.lock().unwrap() = Some(projection);
     }
 }
 

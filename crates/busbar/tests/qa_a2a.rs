@@ -3,7 +3,7 @@
 
 //! THE `a2a` QA SEGMENT — the A2A plane's delegation path and its card-identity defence, proven live.
 //!
-//! `qa/segments.toml` names this target for the `a2a` segment (`cargo test -p busbar --test
+//! the removed `qa/segments.toml` names this target for the `a2a` segment (`cargo test -p busbar --test
 //! qa_a2a`, tier `live-mock`). Everything here runs the SHIPPED BINARY against a REAL A2A agent
 //! listening on a loopback socket — one that publishes a JWS-signed agent card at
 //! `/.well-known/agent-card.json` and answers `message/send` — and talks to both over the wire.

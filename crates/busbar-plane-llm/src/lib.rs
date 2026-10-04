@@ -35,6 +35,7 @@ pub mod dialect;
 pub mod exchange;
 pub mod meta;
 pub mod plane;
+pub mod plane_door;
 pub mod refusal;
 
 use busbar_contract::ids::LaneId;

@@ -174,7 +174,8 @@ fn admin_module_unresolved_diag_fires_and_falls_through_to_pass() {
     let mut app = crate::test_support::TestApp::new().build();
     let a = Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
     a.admin_chain = vec!["ghost-module".to_string()]; // never resolved into a_.admin_modules
-    let (verdict, buf) = capture(|| run_admin_chain(&app, Some("anything"), None).0);
+    let (verdict, buf) =
+        capture(|| super::tests::run_admin_chain_on(&app, Some("anything"), None).0);
     assert_eq!(
         verdict,
         ChainVerdict::Denied,
@@ -233,6 +234,37 @@ fn ready_credential_with_no_fields_emits_no_auth_header_through_public_resolve()
             "resolve() reaching a self-minting style outside its async boot path must emit ZERO \
              auth header bytes (upstream sees its own ordinary 401), never the raw key verbatim: \
              got {headers:?}"
+        );
+    }
+}
+
+/// THE ADMIN CREDENTIAL NEVER REACHES A LOG LINE (ARCHITECT ruling 2026-09-30, AUTH-DOOR: admin
+/// requests terminate locally and the verify answer's strips are not applied there, so nothing the
+/// chain writes may carry the credential). Every answer the operator's door can give — an identity,
+/// a bad credential, a pass, an overloaded verifier, an outage — is walked with both carriers
+/// presented, under a DEBUG capture, and neither value appears.
+#[test]
+fn the_admin_credential_never_reaches_a_log_line() {
+    use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+    const BEARER: &str = "secret-bearer-value-7f3a";
+    const HEADER: &str = "secret-header-value-91cc";
+    for verified in [
+        Verified::Identity(VerifiedIdentity {
+            subject: "admin".into(),
+            ..VerifiedIdentity::default()
+        }),
+        Verified::Reject,
+        Verified::Pass,
+        Verified::Overloaded,
+        Verified::Failed,
+    ] {
+        let app = super::tests::operator_app(verified);
+        let (_, buf) =
+            capture(|| super::tests::run_admin_chain_on(&app, Some(BEARER), Some(HEADER)));
+        let text = buf.text();
+        assert!(
+            !text.contains(BEARER) && !text.contains(HEADER),
+            "a credential reached a log line: {text}"
         );
     }
 }

@@ -22,7 +22,7 @@ use crate::state::App;
 // (`busbar_kernel::ingress::arrival::set_test_body_ingress(|| busbar_llm::BODY_INGRESS)`, idempotent,
 // first-wins) from an integration-test target, exactly the posture an external `test-support`
 // consumer already used — so this neutral source names no dialect crate under any build surface.
-pub(crate) use busbar_kernel::ingress::arrival::body_ingress_for;
+pub(crate) use busbar_kernel::ingress::arrival::{body_ingress_for, path_ingress_for};
 
 /// enforce a virtual key's allowed-pools list against the resolved target pool. No-op
 /// when governance is off (`gov.key` is None) or the key allows all pools. Returns a 403 response
@@ -110,9 +110,9 @@ fn pool_scope_suffix(pool: &Option<String>) -> String {
 /// generic limit engine. `Ok(Some(grant))` = admitted AND charged (the flat per-request fee + one
 /// request landed on every chain bucket; a non-2xx must refund, and the grant holds the
 /// `concurrent` in-flight gauges until the response completes). `Ok(None)` = admitted WITHOUT a
-/// charge (governance off / no key) - a non-2xx must NOT refund, because `refund_request` is a
-/// blind decrement that would erode ANOTHER request's spend/count in the same window (see
-/// `finish_rejected`). `Err(resp)` = rejected with the protocol-native error NAMING the exact
+/// charge (governance off / no key) - a non-2xx must NOT refund: there is no
+/// [`FeeCharge`](crate::governance::FeeCharge) to return, and a refund without one would erode
+/// ANOTHER request's spend/count in the same window (see `finish_rejected`). `Err(resp)` = rejected with the protocol-native error NAMING the exact
 /// blocking bucket (group + metric + window).
 ///
 /// The admission window is keyed off `charged_at` (the pinned header-arrival epoch), NOT a fresh
@@ -406,7 +406,7 @@ pub fn destination_guard(
             proto,
             StatusCode::BAD_REQUEST,
             crate::proxy::KIND_INVALID_REQUEST,
-            &format!("no configured rate for model '{pool}'"),
+            &crate::door::VerifyRefusal::NoRate { name: pool.into() }.message(),
         );
         return Err(Box::new(finish_rejected(
             app, gov, proto, label, started, charged_at, resp,
@@ -475,36 +475,29 @@ pub fn pool_label<'a>(app: &Arc<App>, model: &'a str) -> &'a str {
 /// charge bills every admitted request up front. Token fees are charged post-response only on success
 /// (via `UsageSink`), so this keeps both fee policies "successful requests only".
 ///
-/// Test-only now: every production admission threads the `charged` flag through
-/// [`finish_admitted`] (a store-error fail-open admit must not refund); this unconditional-refund
-/// form survives only for the in-module tests that always charge.
+/// Test-only now: every production admission threads its charge through [`finish_admitted`] (a
+/// store-error fail-open admit must not refund); this always-refunding form survives only for the
+/// tests that always charge, and refunds the `charge` they admitted with.
 #[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::too_many_arguments)]
 pub fn finish(
     app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
+    _gov: &crate::governance::GovCtx,
     ingress_protocol: &str,
     pool: &str,
     started: Instant,
-    charged_at: u64,
+    _charged_at: u64,
     resp: Response,
+    charge: &crate::governance::FeeCharge,
 ) -> Response {
-    finish_inner(
-        app,
-        gov,
-        ingress_protocol,
-        pool,
-        started,
-        charged_at,
-        resp,
-        true,
-        crate::proxy::reqlog::Terminal::Admitted,
-    )
+    finish_inner(app, ingress_protocol, pool, started, resp, Some(charge))
 }
 
 /// Post-admission finish whose non-2xx refund is CONDITIONAL on whether the flat fee actually landed
-/// at admission (`charged`, from `governance_guard`). Admitting a request WITHOUT charging (store-
-/// error fail-open, or governance off) and then refunding on a non-2xx would blind-decrement OTHER
-/// requests' spend/count in the same window — so those requests must finish with `charged = false`.
+/// at admission (`charged`: the admission's own [`FeeCharge`](crate::governance::FeeCharge), from
+/// its grant). Admitting a request WITHOUT charging (store-error fail-open, or governance off) and
+/// then refunding on a non-2xx would decrement OTHER requests' spend/count in the same window — so
+/// those requests finish with `charged = None`.
 // `pub` (was module-private): the charged-admission finish/audit terminal a mounted plane's engine's
 // native drive path ends on — surfaced through `crate::engine_facade` (Phase-0 visibility lift; pure
 // visibility). Its `gov: &crate::governance::GovCtx` arg names a still-crate-private carrier, so a
@@ -513,71 +506,49 @@ pub fn finish(
 #[allow(clippy::too_many_arguments)]
 pub fn finish_admitted(
     app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
+    _gov: &crate::governance::GovCtx,
     ingress_protocol: &str,
     pool: &str,
     started: Instant,
-    charged_at: u64,
+    _charged_at: u64,
     resp: Response,
-    charged: bool,
+    charged: Option<&crate::governance::FeeCharge>,
 ) -> Response {
-    finish_inner(
-        app,
-        gov,
-        ingress_protocol,
-        pool,
-        started,
-        charged_at,
-        resp,
-        charged,
-        crate::proxy::reqlog::Terminal::Admitted,
-    )
+    finish_inner(app, ingress_protocol, pool, started, resp, charged)
 }
 
 /// NOT-CHARGED finish: the request was turned away BEFORE the admission charge ever ran — either a
 /// governance guard rejected it (pool / rate / over-budget / store-error-deny) OR it failed
 /// pre-routing (malformed body, missing/unresolved model, unsupported path/action) before reaching
 /// `governance_guard`. In every case the flat fee was NEVER charged, so this emits metrics + the
-/// webhook with NO refund. Using `finish` (refund-on-non-2xx) on a pre-charge path would issue a
-/// SPURIOUS refund — `refund_request` is a blind `UPDATE` that decrements the spend/requests of
-/// OTHER, legitimately-charged requests in the same window, eroding the budget cap. So every
-/// pre-charge exit MUST use this, never `finish`.
+/// webhook with NO refund: a pre-charge path holds no admission charge, and a refund on it would
+/// decrement the spend of OTHER, legitimately-charged requests in the same window, eroding the
+/// budget cap. So every pre-charge exit MUST use this.
 // `pub` (was module-private): the pre-charge turn-away finish terminal, surfaced through
 // `crate::engine_facade` (Phase-0). Same `GovCtx` leak allow as `finish_admitted`.
 #[allow(private_interfaces)]
 pub fn finish_rejected(
     app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
+    _gov: &crate::governance::GovCtx,
     ingress_protocol: &str,
     pool: &str,
     started: Instant,
-    charged_at: u64,
+    _charged_at: u64,
     resp: Response,
 ) -> Response {
-    finish_inner(
-        app,
-        gov,
-        ingress_protocol,
-        pool,
-        started,
-        charged_at,
-        resp,
-        false,
-        crate::proxy::reqlog::Terminal::Rejected,
-    )
+    finish_inner(app, ingress_protocol, pool, started, resp, None)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The one finish. It takes no key and no instant: a refund reads only the admission's own
+/// [`FeeCharge`](crate::governance::FeeCharge), never a cell resolved again from the key and
+/// `charged_at` (the three entries above still accept both for their callers).
 fn finish_inner(
     app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
     ingress_protocol: &str,
     pool: &str,
     started: Instant,
-    charged_at: u64,
     resp: Response,
-    refund_on_non_2xx: bool,
-    terminal: crate::proxy::reqlog::Terminal,
+    refund_on_non_2xx: Option<&crate::governance::FeeCharge>,
 ) -> Response {
     // FINISH stage: metrics record + request-log gate + non-2xx refund check (zero cost unprofiled).
     let _fin = crate::profile::start(crate::profile::Stage::Finish);
@@ -614,17 +585,12 @@ fn finish_inner(
     // same "the read runs ONLY when declared, never call-then-discard" discipline
     // `requested_signals` applies to hook signals. Nobody subscribed ⇒ nothing is generated. Each
     // sink then receives a payload built to ITS OWN projection (`crate::export::deliver_request_log`).
-    // ONE finish-time wall-clock read shared by the (gated) export log record and the always-on
-    // audit reqlog record below — the same instant, observed once. In 1.5.5 the only finish-time
-    // read was the gated export one; the 1.6.0 audit record's ungated second read is what this
-    // collapses away.
-    let finished_ts = busbar_kernel::store::now();
     if app
         .export_projections
         .wants_stream(busbar_contract::abi::export::ExportStream::Logs)
     {
         crate::export::deliver_request_log(&crate::export::RequestLogFacts {
-            ts: finished_ts,
+            ts: busbar_kernel::store::now(),
             ingress_protocol,
             pool,
             outcome,
@@ -632,46 +598,22 @@ fn finish_inner(
         });
     }
 
-    // THE PLANE'S EVIDENCE, on the ONE chain in `crate::audit` — the same mechanism `calllog`
-    // and `provenance` append to, with a record type of its own and nothing else of its own
-    // (`crate::proxy::reqlog`). Here, at the plane's single terminal, for the same reason the metric
-    // emit is here: every model request passes through this function exactly once, admitted or
-    // refused, so a record written here cannot be skipped by a path that forgot to write one — and
-    // the refusals are the half a log that only records successes cannot provide.
-    //
-    // The PRINCIPAL is the presenting key; an ungoverned request chains under the fixed sentinel
-    // rather than being dropped, because a chain that silently omits every anonymous request is a
-    // chain with a hole an attacker can choose. The POOL is the bounded label, never the raw
-    // caller-supplied model string.
     let status = resp.status().as_u16();
-    let (audit_outcome, audit_reason) = crate::proxy::reqlog::outcome_of(terminal, status);
-    crate::proxy::reqlog::REQUESTS.record(
-        gov.key
-            .as_ref()
-            .map(|k| k.id.as_str())
-            .unwrap_or(crate::proxy::reqlog::PRINCIPAL_UNGOVERNED),
-        crate::proxy::reqlog::RequestInput {
-            ts: finished_ts,
-            ingress_protocol: ingress_protocol.to_string(),
-            pool: pool.to_string(),
-            outcome: audit_outcome,
-            reason: audit_reason,
-            status,
-        },
-    );
 
     // The flat per-request fee was charged ATOMICALLY at admission. REFUND it for a request
     // that produced no usable upstream result (non-2xx: router 503 exhaustion, upstream 5xx, 4xx
     // upstream errors, post-admission 404) so a key is never billed the flat fee for a failure
     // outside its control — preserving the prior "bill 2xx only" policy. (Token fees are likewise
     // only charged on successful streams via UsageSink, so both fee policies stay consistent.) The
-    // refund bills against the SAME window the admission charge used (`charged_at`, the header-arrival
-    // epoch), so a window-straddling request refunds where it charged (#29). `refund_on_non_2xx` is
-    // false for governance-rejection finishes (those were never charged — nothing to refund).
+    // refund returns the fee from exactly the cells the admission's charge reached (its
+    // `FeeCharge`), so a window-straddling request refunds where it charged (#29, M-1) and a charge
+    // whose window has since rolled is taken back from that window, never the newer one.
+    // `refund_on_non_2xx` is `None` for governance-rejection finishes (those were never charged —
+    // nothing to refund).
     let is_success = matches!(status, 200..=299);
-    if refund_on_non_2xx && !is_success {
-        if let (Some(g), Some(key)) = (&app.governance, &gov.key) {
-            g.refund_request(&app.cost, key, pool, charged_at);
+    if let (Some(charge), false) = (refund_on_non_2xx, is_success) {
+        if let Some(g) = &app.governance {
+            g.refund_charge(charge);
         }
     }
     resp
@@ -698,6 +640,10 @@ pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str)
 // names for the ingress concern: "one plane-neutral admission in ingress/, with the plane supplying
 // its wire reader". This is the envelope half of that.
 pub mod jsonrpc;
+
+#[cfg(test)]
+#[path = "tests/terminal_tests.rs"]
+mod terminal_tests;
 
 /// THE NEUTRAL PATH-MODEL ARRIVAL SEAM — the `ArrivalHost` ABI a URL-model dialect calls to reach the
 /// core request pipeline, and the protocol-name-keyed side-table the composition root registers those
@@ -728,14 +674,6 @@ pub(crate) use dispatch::protocol_dispatch;
 /// seam a path-model dialect crate (one that parses its model out of the URL, living outside core)
 /// calls back through. Core owns the resolution/forward/error-shaping; the dialect owns its URL parsing.
 pub mod arrival_host;
-/// THE PATH-MODEL ARRIVAL SIDE-REGISTRATION — the protocol-name-keyed table the composition root
-/// installs a URL-model dialect's arrival through. RELOCATED to the neutral `busbar-substrate`
-/// (`busbar_kernel::ingress::arrival`) so the dialect crate names the registration-pair type
-/// without reaching into `busbar-core`; this module is a thin core-test seeding veneer + re-exports.
-pub mod path_ingress;
-// The registration-pair fn-pointer type, re-exported at `busbar_kernel::ingress::PathIngress` so the
-// composition root names it without the `path_ingress::` qualifier.
-pub use path_ingress::PathIngress;
 
 /// Build the human-readable message for a model/pool-miss 404. `model_not_found_message` is a
 /// dialect's PRE-SHAPED body in its own native vocabulary — built by the arrival that owns the request

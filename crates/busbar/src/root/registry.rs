@@ -418,13 +418,13 @@ pub fn seal(
 /// Run from `run()` once the deployment's limits are resolved and before any listener binds, in
 /// every build: the transports it composes carry the operator's `limits.request_body_max_bytes`,
 /// so it reads the configuration the served door reads. The rows are the linked wires and the ones
-/// dropped into the configured `plugins.dir` (`crate::root::linked::dropped_transports`). A
+/// dropped into the configured `plugins.dir` (`crate::root::boot::dropped_transports`). A
 /// composition that does not seal is a node that must not bind a listener, so the refusal goes to
 /// standard error and the process exits 2 — not a warning and not a log line, because a node that
 /// refused to boot has no boot to log. Nothing is written on the success path; the sealed registry
 /// is handed back for the listeners to serve from.
 pub fn seal_or_exit(linked: &Linked, settings: TransportSettings) -> BootRegistry {
-    let dropped = crate::root::linked::dropped_transports();
+    let dropped = crate::root::boot::dropped_transports();
     seal(linked, dropped, settings).unwrap_or_else(|refusal| {
         eprintln!("busbar: the composition root did not seal: {refusal}");
         std::process::exit(2);

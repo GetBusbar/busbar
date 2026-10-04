@@ -105,8 +105,10 @@ pub const ORACLE_PROSE_CITATION_ALLOW: &[(&str, &str)] = &[
 /// and `the_walk_floors_guard_most_of_their_populations` caught it. The floor sits at 132 — the
 /// re-measured population (158 on 2026-10-01, after `wire_lock/` arrived) less one sixth for files a
 /// split or a fold removes in the normal course — so a walk that lost a SUBTREE fails and a walk
-/// that lost a file does not.
-const SRC_FLOOR: usize = 132;
+/// that lost a file does not. Re-measured 2026-10-03 at 180 files (the xtask ports of the retired
+/// scripts: proof manifest, plugin fleet gates, method inventory, documented claims, deferral
+/// words): the floor is 150, the same one-sixth below the population.
+const SRC_FLOOR: usize = 150;
 
 /// Manifests are found by walking the WHOLE tree; this is the floor under that walk.
 ///
@@ -117,7 +119,10 @@ const SRC_FLOOR: usize = 132;
 /// RE-MEASURED after the codec fold (owner ruling R7, 2026-09-27, #39): `busbar-llm-codec` and
 /// `busbar-voice-codec` dissolved into their plane crates, taking two manifests with them — 63
 /// tracked `Cargo.toml` files. The floor moves with it, same one-fifth margin: 50.
-const MANIFEST_FLOOR: usize = 50;
+///
+/// RE-MEASURED after AUTH-SPLIT (owner ruling Q99): busbar-auth-header, -sigv4, -oauth and
+/// -webhook-signature arrive as four crates — 67 tracked `Cargo.toml` files. Same one-fifth margin: 53.
+const MANIFEST_FLOOR: usize = 53;
 
 pub struct SegregationGate;
 

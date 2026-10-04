@@ -63,16 +63,13 @@ pub struct RoutingRequest<'a> {
 /// Structurally text-less blocks (images) contribute no text, but their message entries remain —
 /// with empty text — so a screening hook never sees fewer turns than the provider does.
 ///
-/// # ALIGNMENT: entries index against the NORMALIZED turns, not against the wire array
+/// # ALIGNMENT: entries are the wire turns, as 1.5.5 showed them
 ///
-/// This projection is built from the same normalized request the provider's bytes are built from,
-/// and normalization moves the system prompt to one place on every protocol. A body that sends its
-/// system prompt as an in-band turn therefore contributes to `system` here and NOT to a turn — and
-/// `message_count` is one lower than the wire array's length for such a body.
-///
-/// That is deliberate and is the reason this projection exists in this form: it is what makes a hook
-/// behave the same way whichever dialect the client happens to speak. A hook that looked for the
-/// system prompt in `messages[0]` finds it in `system`, on every protocol.
+/// The projection is built from the normalized request, but each in-band system turn that
+/// normalization folded into the system slot is put back at its wire position, under the role it was
+/// written in. So `message_count` equals the wire array's length, and `system` is only the dialect's
+/// own system field. A `prompt: rw` hook's reply replaces the whole turn array, so a view that moved
+/// an in-band system turn into `system` would delete the operator's system prompt upstream.
 ///
 /// `Cow`: a single-block turn borrows straight from the normalized request (the common case, zero
 /// copies); only a multi-block turn allocates a joined string.
@@ -388,11 +385,16 @@ pub trait RoutingPolicy: Send + Sync + 'static {
         None
     }
 
-    /// TAP (fire-and-forget): WRITE the pre-serialized request projection (JSON bytes, no trailing
-    /// newline — the transport frames it) to the hook and return. A tap is write-only in steady
-    /// state, so NO reply is read. Best-effort and bounded by `budget`; ANY error is swallowed,
-    /// because a tap can NEVER delay or fail the served request (the caller SPAWNS this off the
-    /// request path, which is why it takes owned bytes, not a borrowed projection). DEFAULT no-op:
-    /// in-process policies are not taps; only the out-of-process socket/webhook transports override it.
-    async fn notify(&self, _projection: &[u8], _budget: std::time::Duration) {}
+    /// TAP (fire-and-forget): hand the hook the tap's fixed view (`tap`, built once per firing by
+    /// [`NotifyFrame::build`](crate::abi::host::hook::NotifyFrame::build) and shared by every tap it
+    /// fires) and return. A tap is write-only in steady state, so NO reply is read. Best-effort and
+    /// bounded by `budget`; ANY error is swallowed, because a tap can NEVER delay or fail the served
+    /// request (the caller SPAWNS this off the request path, which is why it takes an owned frame,
+    /// not a borrowed projection). DEFAULT no-op: in-process ranking policies are not taps.
+    async fn notify(
+        &self,
+        _tap: std::sync::Arc<crate::abi::host::hook::NotifyFrame>,
+        _budget: std::time::Duration,
+    ) {
+    }
 }

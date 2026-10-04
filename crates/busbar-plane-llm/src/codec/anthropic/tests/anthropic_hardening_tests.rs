@@ -465,6 +465,7 @@ fn cross_protocol_write_synthesizes_valid_unique_id() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out1 = anthropic_writer().write_response(&make());
     let out2 = anthropic_writer().write_response(&make());
@@ -513,6 +514,7 @@ fn write_response_synthesizes_id_when_neither_id_nor_created() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     let id = out
@@ -1229,12 +1231,12 @@ fn read_block_base64_image_source_unchanged() {
 }
 
 /// A valid native Anthropic content-block type the IR does not model must NOT hard-error the whole
-/// request with a ClientError 400 — it degrades to an empty Text block, preserving the turn's shape.
+/// request with a ClientError 400 — and nothing is put in its place (design F3 "Drops": never a
+/// substitution). It is left out of the IR; a same-dialect write splices it back, a translate
+/// attempt drops it, named.
 ///
-/// `document` is NO LONGER such a block: it is modelled as [`crate::codec::ir::IrBlock::Media`], because
-/// degrading a PDF to an empty text block destroyed the caller's attachment on every cross-protocol
-/// hop with no warn. What still degrades is a document with NO `source` (nothing to carry) and any
-/// genuinely unmodeled type — asserted here so the graceful-degradation arm keeps its coverage.
+/// `document` is modelled as [`crate::codec::ir::IrBlock::Media`]. What is left out is a document
+/// with NO `source` (nothing to carry) and any genuinely unmodeled type.
 #[test]
 fn read_block_unmodeled_document_type_degrades_not_400() {
     let with_source = serde_json::json!({
@@ -1257,25 +1259,26 @@ fn read_block_unmodeled_document_type_degrades_not_400() {
         other => panic!("a document must reach the IR as a Media block, got {other:?}"),
     }
 
-    // The degrade arm itself, on the two shapes that still take it: a sourceless document and a
-    // future/unknown block type. Neither may 400, and neither may invent content.
+    // The two shapes the IR does not read: a sourceless document and a future/unknown block type.
+    // Neither may 400, and nothing may stand in for either.
     for degenerate in [
         serde_json::json!({"type": "document", "title": "x"}),
         serde_json::json!({"type": "some_future_block", "whatever": 1}),
     ] {
-        match read_block(&degenerate).expect("an unmodeled block must degrade, not 400") {
-            crate::codec::ir::IrBlock::Text {
-                text,
-                cache_control,
-                citations,
-                refusal: _,
-            } => {
-                assert_eq!(text, "", "unmodeled block degrades to an empty text block");
-                assert!(cache_control.is_none());
-                assert!(citations.is_empty());
-            }
-            other => panic!("expected graceful IrBlock::Text degradation, got {other:?}"),
-        }
+        let arr = vec![
+            degenerate,
+            serde_json::json!({"type": "text", "text": "kept"}),
+        ];
+        let ir = read_blocks(&arr).expect("an unmodeled block must not 400");
+        assert_eq!(
+            ir.len(),
+            1,
+            "nothing stands in for an unmodeled block (no empty text): {ir:?}"
+        );
+        assert!(
+            matches!(&ir[0], crate::codec::ir::IrBlock::Text { text, .. } if text == "kept"),
+            "{ir:?}"
+        );
     }
 
     // A `redacted_thinking` block (a valid native type the IR does not model directly)
@@ -1713,6 +1716,7 @@ fn write_response_keeps_unsigned_thinking_block() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     let content = out
@@ -1886,6 +1890,7 @@ fn write_response_emits_empty_model_when_none() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(
@@ -1919,6 +1924,7 @@ fn write_response_preserves_present_model() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(
@@ -2043,6 +2049,7 @@ fn write_response_emits_null_stop_sequence_when_absent() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     let ss = out
@@ -2081,6 +2088,7 @@ fn write_response_emits_matched_stop_sequence_string() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(
@@ -2806,6 +2814,7 @@ fn test_anthropic_safety_stop_reason_maps_to_refusal() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(
@@ -3305,6 +3314,7 @@ fn thinking_block_with_signature_survives_response_egress() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     let content = out
@@ -3619,6 +3629,7 @@ fn anthropic_writes_web_search_citation_from_neutral_fields() {
             end_index: Some(42),
             encrypted_index: None,
             raw: None,
+            ..Default::default()
         }],
         refusal: false,
     };
@@ -4074,4 +4085,53 @@ fn status_word_golden() {
         };
         assert_eq!(stream_error_type(&err), word, "class={class:?}");
     }
+}
+
+/// DESIGN F3 "Drops" (DF-WIRE card item 5): the reader puts NO empty text block in place of a block
+/// it does not model, in a turn or in `system`, and a same-dialect write still carries the original
+/// block at its own position. RED before: the IR held `{"type":"text","text":""}` at index 1.
+#[test]
+fn unmodelled_block_is_left_out_of_the_ir_and_spliced_back_same_dialect() {
+    let future = serde_json::json!({"type": "container_upload", "file_id": "file_1"});
+    let body = serde_json::json!({
+        "model": "claude-sonnet-4-5",
+        "max_tokens": 16,
+        "system": [{"type": "text", "text": "sys"}, {"type": "some_future_block"}],
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": "a"},
+                future.clone(),
+                {"type": "text", "text": "b"},
+                {"type": "document", "title": "no source"}
+            ]},
+            {"role": "assistant", "content": [{"type": "some_future_block"}]}
+        ]
+    });
+    let ir = AnthropicReader.read_request(&body).expect("reads");
+    let empty = |b: &crate::codec::ir::IrBlock| matches!(b, crate::codec::ir::IrBlock::Text { text, citations, .. } if text.is_empty() && citations.is_empty());
+    assert_eq!(
+        ir.messages[0].content.len(),
+        2,
+        "{:?}",
+        ir.messages[0].content
+    );
+    assert!(!ir.messages[0].content.iter().any(empty));
+    assert!(
+        ir.messages[1].content.is_empty(),
+        "{:?}",
+        ir.messages[1].content
+    );
+    assert_eq!(ir.system.len(), 1, "{:?}", ir.system);
+
+    // Same dialect through the IR: every turn block comes back, in its own place.
+    let writer = AnthropicWriter;
+    let out = writer.write_request(&ir);
+    assert_eq!(
+        out["messages"][0]["content"], body["messages"][0]["content"],
+        "{out}"
+    );
+    assert_eq!(
+        out["messages"][1]["content"], body["messages"][1]["content"],
+        "{out}"
+    );
 }

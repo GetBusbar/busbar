@@ -48,6 +48,10 @@ use busbar_contract::abi::store::{
 use crate::dispatch::validate::MAX_ERROR_LEN;
 use crate::dispatch::{lifecycle_name, Answer, InFrame, Kind, OutFrame};
 
+/// The store tail's last frozen size: it has not grown, so it is this host's (THE KIND TAIL
+/// GROWTH RULE, `abi::mechanism::door::tail_read_len`).
+const STORE_TAIL_FROZEN: usize = std::mem::size_of::<store::StoreTail>();
+
 /// The store kind.
 #[derive(Debug, Clone, Copy)]
 pub struct Store;
@@ -288,20 +292,10 @@ pub struct StoreFacts {
 /// The store's tail, read from the Statement: a whole [`store::StoreTail`] whose flags are `0` or
 /// `1`. A store states one: the flags are what the host reads instead of a load-time guess.
 fn store_facts(st: &Statement) -> Result<StoreFacts, String> {
-    let p = st.kind_tail;
-    if p.is_null() {
-        return Err("a store states no kind tail".into());
-    }
-    // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`; the
-    // whole tail is read only once its size covers this host's `StoreTail`.
-    let size = unsafe { (*p).size };
-    if (size as usize) < std::mem::size_of::<store::StoreTail>() {
-        return Err(format!(
-            "the store tail is {size} bytes, smaller than this host's"
-        ));
-    }
-    // SAFETY: as above.
-    let t = unsafe { p.cast::<store::StoreTail>().read_unaligned() };
+    // SAFETY: `StoreTail` is a `#[repr(C)]` kind tail of integers (all-zero valid); a non-NULL kind
+    // tail is `'static` plugin data of its stated size.
+    let t: store::StoreTail =
+        unsafe { crate::dispatch::plugin::kind_tail(st, "a store", STORE_TAIL_FROZEN) }?;
     let flag = |v: u8, name: &str| match v {
         0 => Ok(false),
         1 => Ok(true),

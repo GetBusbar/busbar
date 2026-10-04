@@ -47,6 +47,7 @@ async fn billed_tokens_for(body: &str) -> u64 {
         key: Arc::new(key.clone()),
         pool: Arc::from(""),
         charged_at,
+        request_id: 0,
         admit: None,
     });
     let app = crate::test_support::TestApp::new()
@@ -182,6 +183,7 @@ async fn stream_refused_usage_bills_the_floor_not_zero() {
         key: Arc::new(key.clone()),
         pool: Arc::from("p"),
         charged_at,
+        request_id: 0,
         admit: None,
     };
     let body = serde_json::json!({"model": "p", "stream": true,

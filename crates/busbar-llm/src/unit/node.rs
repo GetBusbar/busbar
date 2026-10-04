@@ -103,9 +103,9 @@ use std::time::Instant;
 use axum::http::StatusCode;
 
 use busbar_contract::caps::{
-    Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Consumption, Decode,
-    Dial, Encode, Grant, Meter, OpClassId, OriginKind, Outcome, Pass, PrincipalId, ReasonCode,
-    Refusal, Route, SeatVerdict, VerifiedDestination, Verify,
+    Abort, Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Consumption,
+    Decode, Dial, Encode, Grant, Meter, OpClassId, OriginKind, Outcome, Pass, PrincipalId,
+    ReasonCode, Refusal, Route, SeatVerdict, VerifiedDestination, Verify,
 };
 use busbar_contract::slice::GroupLeaseSlip;
 use busbar_contract::LaneId;
@@ -648,11 +648,22 @@ impl Units for LlmUnit {
         self.walk.meter(token, usage)
     }
 
-    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, _outcome: &Outcome) -> SeatVerdict<Audit> {
+    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
         // THE CHARGED TERMINAL. A unit that passed the door leaves here, whatever it ended on: a
         // delivered answer, a relayed upstream failure, or a destination that resolved to nothing
         // after the caller was already charged. All three are the same door.
         let destination = self.destination();
+        // A CALLER THAT WENT AWAY mid-dispatch was given no answer, so there is no response to
+        // finish: no 503 it never saw is counted, and the fee stays charged rather than refunded
+        // as a non-2xx would be (spec §7 F13).
+        if let Outcome::Aborted(Abort::Kernel {
+            reason: ReasonCode::ClientGone,
+        }) = outcome
+        {
+            return self
+                .walk
+                .audit_abandoned(token, &self.audit_ctx(&destination));
+        }
         self.walk.audit(token, &self.audit_ctx(&destination), || {
             self.nothing_rendered()
         })
@@ -830,6 +841,7 @@ async fn body_arrival(proto: &'static str, a: ArrivalRequest) -> PlaneAnswer {
         operation,
         caller_token: payload.caller_token.clone(),
         headers,
+        query: uri.query().map(str::to_string),
         body,
         // A body-model arrival: the model rides the body, so there is no URL fact to carry and the
         // dialect's miss copy, where it has one, is not this surface's.
@@ -878,6 +890,7 @@ async fn path_arrival(
     parsed: PathArrivalFacts,
     ctx: ArrivalCtx,
     headers: axum::http::HeaderMap,
+    query: Option<String>,
     body: axum::body::Bytes,
 ) -> PlaneAnswer {
     // The URL's facts, the operation they resolved to, and the routing hint a body-model shape
@@ -914,6 +927,7 @@ async fn path_arrival(
         operation,
         caller_token: payload.caller_token.clone(),
         headers,
+        query,
         body,
         // THE URL'S FACTS, handed to the unit's own carry rather than pinned to a thread. They are
         // read by three steps — the parse-and-splice at step 0, the handler lookup at step 1 and the
@@ -958,6 +972,7 @@ pub(crate) fn gemini_path_arrival(
             other,
             a.ctx,
             a.headers,
+            a.uri.query().map(str::to_string),
             a.body,
         )),
     }
@@ -995,6 +1010,7 @@ pub(crate) fn bedrock_path_arrival(
             other,
             a.ctx,
             a.headers,
+            a.uri.query().map(str::to_string),
             a.body,
         )),
     }

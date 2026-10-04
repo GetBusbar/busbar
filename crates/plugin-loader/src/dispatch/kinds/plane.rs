@@ -32,10 +32,12 @@
 //! SHORT ANSWERS: `arrive`, `on_piece`, `refusal`, `serve`, `project` and `drive` have the short
 //! path; a FAILED answer of one of them with any `*_needed` non-zero is short.
 
-use busbar_contract::abi::mechanism::call::Outcome;
+use std::sync::Arc;
+
+use busbar_contract::abi::mechanism::call::{AbiStr, Outcome};
 use busbar_contract::abi::mechanism::call::{InHead, OutHead};
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
-use busbar_contract::abi::mechanism::door::Statement;
+use busbar_contract::abi::mechanism::door::{Statement, SECTION_DECLARING};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, CancelOut, DriveIn, OpenIn, RefreshIn,
 };
@@ -51,11 +53,17 @@ use busbar_contract::abi::plane::{
     PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
     ProjectOut, RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut, TrustKey,
 };
+use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
+use busbar_contract::plane_calls::InstanceDecl;
 
 use crate::dispatch::{
     in_head, lifecycle_name, out_head, stamp_drive, Answer, Context, DriveFrame, Frame, InFrame,
     Kind, OutFrame,
 };
+
+/// The plane tail's last frozen size: it has not grown, so it is this host's (THE KIND TAIL
+/// GROWTH RULE, `abi::mechanism::door::tail_read_len`).
+const PLANE_TAIL_FROZEN: usize = std::mem::size_of::<PlaneTail>();
 
 /// The plane kind.
 #[derive(Debug, Clone, Copy)]
@@ -89,6 +97,52 @@ pub struct PlaneFacts {
     pub bounds: Bounds,
     /// The tail's refusal statuses, each judged by `check_refusal_statuses` at bind.
     pub refusal_statuses: Vec<RefusalStatus>,
+    /// What the tail declares for the instance's admission (its label is the bind's).
+    pub declared: InstanceDecl,
+    /// What the composition root serves the instance by.
+    pub served: ServedFacts,
+}
+
+/// WHAT THE COMPOSITION ROOT SERVES A PLANE INSTANCE BY, kept from its Statement at bind: the
+/// section it declares (the configuration it opens with), its operation classes in tail order (what
+/// `arrive`'s `op_class` indexes) and the `audit_kind` its admin rows are written under.
+#[derive(Debug, Clone, Default)]
+pub struct ServedFacts {
+    /// The key of the one section the Statement declares.
+    pub section: &'static str,
+    /// The tail's operation classes, in order.
+    pub op_classes: Vec<&'static str>,
+    /// The tail's `audit_kind`.
+    pub audit_kind: &'static str,
+    /// The tail's billable classes, in order: a unit count's `class` indexes them (the money
+    /// steps ledger each count under its class name, THE DESIGN §7).
+    pub billable_classes: Vec<&'static str>,
+    /// The tail's fee units, each also one of [`Self::billable_classes`]: the plane's report of
+    /// whether a unit incurred its fee (THE DESIGN §7, "the plane reports ... whether a fee unit was
+    /// incurred").
+    pub fee_units: Vec<&'static str>,
+    /// Each need's response-head rule, in Statement need order (`Need::keep_mode`, its kept and
+    /// denied names): what of a far end's head the host hands the plane on that need.
+    pub keeps: Vec<NeedKeep>,
+    /// Each need's direction and auth element, in Statement need order (`Need::direction`,
+    /// `Need::auth`): what a member's resolved style is matched against at config load.
+    pub need_auths: Vec<(u32, &'static str)>,
+    /// The tail's dialects, in order.
+    pub dialects: Vec<&'static str>,
+    /// The tail's `dialect_auth`: each dialect's default outbound style, by its dialect index
+    /// (THE DESIGN §6 step 2: a provider entry's `auth:`, else this).
+    pub dialect_auth: Vec<(u32, &'static str)>,
+}
+
+/// ONE NEED'S RESPONSE-HEAD RULE, as its Statement declares it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NeedKeep {
+    /// `KEEP_NAMED` or `KEEP_ALL_EXCEPT_DENIED`.
+    pub mode: u32,
+    /// `keep_response_headers`.
+    pub kept: Vec<&'static str>,
+    /// `deny_response_headers`.
+    pub denied: Vec<&'static str>,
 }
 
 /// The instance's tail bounds; an answer judged without them is FAULT (a plane instance always
@@ -103,21 +157,10 @@ fn bounds<'a>(a: &Answer<'a>) -> Result<&'a Bounds, Fault> {
 /// Statement's sections, exactly one of them declaring (`check_sections`), and refusal statuses
 /// that pass `check_refusal_statuses`.
 fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
-    let p = st.kind_tail;
-    if p.is_null() {
-        return Err("a plane states no kind tail".into());
-    }
-    // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`, whose
-    // size the loader checked covers the head; the whole tail is read only once its size covers
-    // this host's `PlaneTail`.
-    let size = unsafe { (*p).size };
-    if (size as usize) < std::mem::size_of::<PlaneTail>() {
-        return Err(format!(
-            "the plane tail is {size} bytes, smaller than this host's"
-        ));
-    }
-    // SAFETY: as above.
-    let tail = unsafe { p.cast::<PlaneTail>().read_unaligned() };
+    // SAFETY: `PlaneTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid); a
+    // non-NULL kind tail is `'static` plugin data of its stated size.
+    let tail: PlaneTail =
+        unsafe { crate::dispatch::plugin::kind_tail(st, "a plane", PLANE_TAIL_FROZEN) }?;
     check_tail(&tail).map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     check_tail_trust_keys(&tail)
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
@@ -143,10 +186,136 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
     Ok(PlaneFacts {
         bounds: Bounds::of(&tail),
         refusal_statuses,
+        declared: declared(&tail),
+        served: ServedFacts {
+            section: sections
+                .iter()
+                .find(|s| s.flags & SECTION_DECLARING != 0)
+                .map_or("", |s| kept(s.name)),
+            op_classes: listed(tail.op_classes, tail.op_classes_len)
+                .into_iter()
+                .map(|c| kept(c.op))
+                .collect(),
+            audit_kind: kept(tail.audit_kind),
+            billable_classes: listed(tail.billable_classes, tail.billable_classes_len)
+                .into_iter()
+                .map(|c| kept(c.class))
+                .collect(),
+            fee_units: listed(tail.fee_units, tail.fee_units_len)
+                .into_iter()
+                .map(kept)
+                .collect(),
+            keeps: listed(st.needs, st.needs_len)
+                .into_iter()
+                .map(|n| NeedKeep {
+                    mode: n.keep_mode,
+                    kept: listed(n.keep_response_headers, n.keep_response_headers_len)
+                        .into_iter()
+                        .map(kept)
+                        .collect(),
+                    denied: listed(n.deny_response_headers, n.deny_response_headers_len)
+                        .into_iter()
+                        .map(kept)
+                        .collect(),
+                })
+                .collect(),
+            need_auths: listed(st.needs, st.needs_len)
+                .into_iter()
+                .map(|n| (n.direction, kept(n.auth)))
+                .collect(),
+            dialects: listed(tail.dialects, tail.dialects_len)
+                .into_iter()
+                .map(kept)
+                .collect(),
+            dialect_auth: listed(tail.dialect_auth, tail.dialect_auth_len)
+                .into_iter()
+                .map(|d| (d.dialect, kept(d.style)))
+                .collect(),
+        },
     })
 }
 
+/// A tail string, kept for the process (`""` when absent).
+fn kept(s: AbiStr) -> &'static str {
+    if s.ptr.is_null() || s.len == 0 {
+        return "";
+    }
+    // SAFETY: `check_tail` judged every tail string: a non-NULL span of `len` bytes of `'static`
+    // plugin data, read here while the plugin is loaded and copied.
+    let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+    String::from_utf8_lossy(bytes).into_owned().leak()
+}
+
+/// A tail list of `n` `T`s at `p`, copied.
+fn listed<T: Copy>(p: *const T, n: usize) -> Vec<T> {
+    if p.is_null() || n == 0 {
+        return Vec::new();
+    }
+    // SAFETY: `check_tail` refused a NULL list counted non-zero; the list is `'static` plugin data
+    // of `n` entries.
+    unsafe { std::slice::from_raw_parts(p, n) }.to_vec()
+}
+
+/// What the tail declares for the instance's admission: record kinds, signing, scope kinds and the
+/// trust keys (each judged at bind by `check_tail_trust_keys`).
+fn declared(t: &PlaneTail) -> InstanceDecl {
+    let words = |p: *const AbiStr, n: usize| -> Vec<&'static str> {
+        listed(p, n).into_iter().map(kept).collect()
+    };
+    let (domain, prefix) = (kept(t.signing_domain), kept(t.signing_kid_prefix));
+    let trust_keys = listed(t.trust_keys, t.trust_keys_len)
+        .into_iter()
+        .map(|k| TrustKeyDecl {
+            key: kept(k.key),
+            role: match k.role {
+                plane::TRUST_PIN => TrustRole::Pin,
+                plane::TRUST_REVERIFY_TTL => TrustRole::ReverifyTtl,
+                _ => TrustRole::RecoveryBackoff,
+            },
+            fingerprint: k.flags & plane::PIN_FINGERPRINT != 0,
+            default: Some(kept(k.default)).filter(|d| !d.is_empty()),
+            mechanisms: listed(k.mechanisms, k.mechanisms_len)
+                .into_iter()
+                .map(|m| PinMechanismDecl {
+                    token: kept(m.token),
+                    root: m.flags & plane::MECHANISM_ROOT != 0,
+                })
+                .collect::<Vec<_>>()
+                .leak(),
+        })
+        .collect();
+    InstanceDecl {
+        label: Arc::from(""),
+        record_kinds: words(t.record_kinds, t.record_kinds_len),
+        signing: (!domain.is_empty() && !prefix.is_empty()).then_some((domain, prefix)),
+        scope_kinds: words(t.scope_kinds, t.scope_kinds_len),
+        trust_keys,
+        record_chains: listed(t.record_chains, t.record_chains_len),
+    }
+}
+
 impl crate::dispatch::Plugin<Plane> {
+    /// What the instance declares for its admission: its bind label and its tail's facts.
+    pub fn declared(&self) -> InstanceDecl {
+        let mut d = self
+            .inner
+            .context::<PlaneFacts>()
+            .map(|f| f.declared.clone())
+            .unwrap_or_default();
+        if let Some(c) = self.inner.wake.caller.get() {
+            d.label = Arc::clone(&c.instance);
+        }
+        d
+    }
+
+    /// What the composition root serves the instance by (empty with no tail facts).
+    pub fn served(&self) -> ServedFacts {
+        self.inner
+            .context::<PlaneFacts>()
+            .map(|f| f.served.clone())
+            .unwrap_or_default()
+    }
+
     /// The refusal statuses the plane's tail states, as judged at bind.
     pub fn refusal_statuses(&self) -> &[RefusalStatus] {
         self.inner
@@ -359,6 +528,11 @@ impl DriveFrame for PlaneDrive {
         input.sessions_cap = self.sessions.len();
         self.frame.heads()
     }
+
+    fn named(&self) -> &[u64] {
+        let n = self.frame.out.sessions_written as usize;
+        &self.sessions[..n.min(self.sessions.len())]
+    }
 }
 
 /// `arrive`: the expected units over the host's `units_buf`, `units_cap` from `ArriveIn`.
@@ -473,6 +647,9 @@ pub struct OwnedClaim {
     pub carrier: String,
     /// `CLAIM_OPEN` | `CLAIM_EXACT` | `CLAIM_PATTERN`.
     pub flags: u32,
+    /// The dialect a refusal on this route wears before `arrive` has read the arrival (an index
+    /// into the tail's dialects, opaque to the host): the guest-list line's dialect.
+    pub refusal_dialect: u16,
 }
 
 /// One admin route of a snapshot, owned by the host.
@@ -584,6 +761,7 @@ fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot
                     target: text(c.target)?,
                     carrier: text(c.carrier)?,
                     flags: c.flags,
+                    refusal_dialect: c.refusal_dialect,
                 })
             })
             .collect::<Option<_>>()?,

@@ -70,33 +70,6 @@ unsafe fn secret_call_impl(
 unsafe fn secret_close_impl(handle: *mut c_void) {
     close_boundary::<SecretHandle>(handle)
 }
-unsafe fn hook_open_impl(
-    cfg: *const u8,
-    cfg_len: usize,
-    out_handle: *mut *mut c_void,
-    out_err: *mut *mut u8,
-    out_err_len: *mut usize,
-    ctor: fn(&str) -> Result<BoxedHook, String>,
-) -> i32 {
-    open_boundary::<HookHandle>(cfg, cfg_len, out_handle, out_err, out_err_len, |s| {
-        ctor(s).map_err(BoundaryOutcome::Error)
-    })
-}
-unsafe fn hook_call_impl(
-    handle: *mut c_void,
-    req: *const u8,
-    req_len: usize,
-    out: *mut *mut u8,
-    out_len: *mut usize,
-) -> i32 {
-    call_boundary(handle, req, req_len, out, out_len, |h, b| {
-        hook_dispatch(h, b)
-    })
-}
-unsafe fn hook_close_impl(handle: *mut c_void) {
-    close_boundary::<HookHandle>(handle)
-}
-
 /// A test secret module: settings.name in, "resolved:<name>" bytes out; missing name errors.
 struct EchoSecret;
 impl crate::secret::SecretModule for EchoSecret {
@@ -269,112 +242,6 @@ fn secret_ffi_roundtrip_open_call_close() {
         }
 
         secret_close_impl(handle);
-    }
-}
-
-/// A trivial test hook handler: decide prefers `[0]`, configure acks only the pushed version.
-struct TestHook;
-impl HookHandler for TestHook {
-    fn decide(&self, _payload: &serde_json::Value) -> serde_json::Value {
-        serde_json::json!({"order": [0]})
-    }
-    fn status(&self) -> serde_json::Value {
-        serde_json::json!({"status": {"metrics": []}})
-    }
-}
-
-/// HOOK glue: `dispatch_hook` maps each op envelope to the trait — decide returns the reply
-/// object, notify returns None, configure ACKs the exact version, describe/status pass through.
-#[test]
-fn hook_dispatch_maps_ops() {
-    use crate::abi::cold::hook::{ConfigureBody, HookReply, HookRequest};
-    match dispatch_hook(
-        &TestHook,
-        HookRequest::Decide {
-            payload: serde_json::json!({}),
-        },
-    ) {
-        HookReply::Reply(v) => assert_eq!(v, serde_json::json!({"order": [0]})),
-        other => panic!("expected Reply, got {other:?}"),
-    }
-    // notify is fire-and-forget → None.
-    assert!(matches!(
-        dispatch_hook(
-            &TestHook,
-            HookRequest::Notify {
-                payload: serde_json::json!({})
-            }
-        ),
-        HookReply::None
-    ));
-    // configure with the default handler (acks) echoes the pushed version.
-    match dispatch_hook(
-        &TestHook,
-        HookRequest::Configure(ConfigureBody {
-            hook: "h".into(),
-            settings: serde_json::Map::new(),
-            settings_version: 42,
-            busbar_version: "1.5.0".into(),
-        }),
-    ) {
-        HookReply::ConfigureAck { settings_version } => assert_eq!(settings_version, 42),
-        other => panic!("expected ConfigureAck(42), got {other:?}"),
-    }
-}
-
-/// HOOK glue: the FFI path (open → call → close) round-trips a decide and a status, and a
-/// malformed request is a PROTOCOL error, never a crash.
-#[test]
-fn hook_ffi_roundtrip_open_call_close() {
-    fn hook_ctor(_cfg: &str) -> Result<BoxedHook, String> {
-        Ok(Box::new(TestHook))
-    }
-    unsafe {
-        let mut handle: *mut c_void = ptr::null_mut();
-        let mut err: *mut u8 = ptr::null_mut();
-        let mut err_len: usize = 0;
-        let st = hook_open_impl(
-            b"{}".as_ptr(),
-            2,
-            &mut handle,
-            &mut err,
-            &mut err_len,
-            hook_ctor,
-        );
-        assert_eq!(st, STATUS_OK);
-        assert!(!handle.is_null());
-
-        let req = serde_json::to_vec(&crate::abi::cold::hook::HookRequest::Decide {
-            payload: serde_json::json!({}),
-        })
-        .unwrap();
-        let mut out: *mut u8 = ptr::null_mut();
-        let mut out_len: usize = 0;
-        let st = hook_call_impl(handle, req.as_ptr(), req.len(), &mut out, &mut out_len);
-        assert_eq!(st, STATUS_OK);
-        // Hook payload schema v2: the reply rides the observability envelope, bare (a hook reports
-        // its metrics in its `status` reply, never on the back-channel).
-        let envelope: Envelope<crate::abi::cold::hook::HookReply> =
-            serde_json::from_slice(std::slice::from_raw_parts(out, out_len)).unwrap();
-        free_impl(out, out_len);
-        assert!(envelope.is_bare(), "{envelope:?}");
-        match envelope.result {
-            crate::abi::cold::hook::HookReply::Reply(v) => {
-                assert_eq!(v, serde_json::json!({"order": [0]}))
-            }
-            other => panic!("expected Reply, got {other:?}"),
-        }
-
-        // Malformed/undecodable request → UNSUPPORTED (an old-SDK "I can't decode this variant"
-        // signal), with a message, never a crash. Distinct from a caller-protocol violation.
-        let junk = b"not json";
-        let mut out: *mut u8 = ptr::null_mut();
-        let mut out_len: usize = 0;
-        let st = hook_call_impl(handle, junk.as_ptr(), junk.len(), &mut out, &mut out_len);
-        assert_eq!(st, STATUS_UNSUPPORTED);
-        free_impl(out, out_len);
-
-        hook_close_impl(handle);
     }
 }
 
@@ -1110,7 +977,7 @@ fn ffi_ctor_error_surfaces() {
 }
 
 /// `auth_abi_version()` reads `crate::abi::cold::AUTH_ABI_VERSION` rather than a bare literal,
-/// mirroring `secret_abi_version()`/`hook_abi_version()`. The property that buys: a future bump
+/// mirroring `secret_abi_version()`. The property that buys: a future bump
 /// of `AUTH_ABI_VERSION` propagates here automatically instead of silently drifting.
 #[test]
 fn auth_abi_version_reads_the_shared_const() {
@@ -1235,16 +1102,6 @@ fn login_plugin_handle_preserves_login_capability() {
             AuthResponse::AuthorizeUrl(_)
         ),
         "export_login_plugin! must NOT mask login: BeginLogin should reach the real LoginModule"
-    );
-    // Contrast: `export_auth_plugin!` routes through the verify-only adapter, which takes the
-    // fail-closed LoginModule default — so the SAME module exported that way is masked to Reject.
-    let adapted: AuthHandle = adapt_auth_handle(Box::new(LoginMod));
-    assert!(
-        matches!(
-            dispatch_auth(adapted.as_ref(), begin_req()),
-            AuthResponse::Reject
-        ),
-        "verify-only adapter must mask login (this is why export_login_plugin! bypasses it)"
     );
 }
 

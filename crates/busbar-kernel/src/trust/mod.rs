@@ -410,6 +410,9 @@ pub mod section;
 /// THE KERNEL'S TRUST STATE per instance and counterparty, behind `trust.sight` and `trust.due`.
 pub mod book;
 
+/// A DOCUMENT'S DETACHED SIGNATURES judged against a declared root key, behind `trust.verify`.
+pub mod signed;
+
 // THE ORDERED REQUEST VALIDATOR — *"is this still what the operator approved?"* Relocated in
 // Phase-B B1. The `GovState`-facing standing-permission half (`Standing`/`Snapshot`/`Lapsed`) stays
 // in core and re-exports these; see `busbar-core`'s `trust::validate`.

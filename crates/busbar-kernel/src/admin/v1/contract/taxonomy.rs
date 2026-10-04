@@ -763,9 +763,7 @@ pub fn declared_responses(method: MethodTag, rel: &str) -> Vec<(String, String)>
 ///   here and the class test asserts each declared entry was seen at least once.
 #[cfg(any(test, feature = "test-support"))]
 pub mod observed {
-    use super::{Cond, ErrKind, MethodTag};
-    #[cfg(any(test, feature = "test-support"))]
-    use std::collections::BTreeSet;
+    use super::{Cond, ErrKind};
 
     /// The tag `err_json` stamps onto an error response so the recording layer (which knows the
     /// matched route, which `err_json` does not) can attribute it to an operation. `cond` is set at
@@ -774,43 +772,5 @@ pub mod observed {
     pub struct Tag {
         pub kind: ErrKind,
         pub cond: Option<Cond>,
-    }
-
-    /// One witnessed emission as NEUTRAL strings: `(rel, method, kind, cond)`. Neutral because the
-    /// ledger backing it lives in `busbar-substrate` (see below), so this dimension is compared on the
-    /// stable string forms of the taxonomy enums rather than the enums themselves. Only the
-    /// crate-under-test build reads it back (through [`snapshot`]); the plane crates' `test-support`
-    /// dependency copy only ever WRITES, through `record`.
-    #[cfg(any(test, feature = "test-support"))]
-    pub type Emission = (String, String, String, Option<String>);
-
-    /// The stable string form of an [`ErrKind`] — its `Debug` name, which is frozen alongside the enum.
-    fn kind_str(kind: ErrKind) -> String {
-        format!("{kind:?}")
-    }
-
-    /// The stable string form of a [`Cond`] — its `Debug` name.
-    fn cond_str(cond: Cond) -> String {
-        format!("{cond:?}")
-    }
-
-    /// Every emission the process has witnessed so far, read from the process-wide substrate ledger so
-    /// BOTH copies of `busbar-core` in the test binary (the crate-under-test and the plane crates'
-    /// dependency copy) contribute. Its only caller is the admin surface's taxonomy-drift audit.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn snapshot() -> BTreeSet<Emission> {
-        busbar_kernel::admin_witness::snapshot()
-    }
-
-    /// Record one observed emission (called by the router's recording layer) into the process-wide
-    /// substrate ledger, so a witness produced through EITHER copy of `busbar-core` is visible to the
-    /// audit that reads [`snapshot`].
-    pub fn record(rel: &str, method: MethodTag, tag: Tag) {
-        busbar_kernel::admin_witness::record(
-            rel,
-            method.as_str(),
-            &kind_str(tag.kind),
-            tag.cond.map(cond_str).as_deref(),
-        );
     }
 }

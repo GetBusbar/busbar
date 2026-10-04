@@ -11,7 +11,7 @@ use crate::posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
 use crate::rate::CONFIG_CLASS_RULES;
 use crate::verb::{KernelVerb, VerbScope};
 use crate::verbs::{MintOutcome, MintedKeyOutcome, NonceSource, Verbs};
-use busbar_contract::caps::{AdminVerb, Grant, KernelSeal, UnitKey};
+use busbar_contract::caps::{AdminVerb, Grant, UnitKey};
 use busbar_contract::verb_store::{Store, StoreError};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
@@ -244,7 +244,7 @@ impl Store for FakeStore {
 }
 
 fn admin() -> Grant<AdminVerb> {
-    Grant::<AdminVerb>::mint(&KernelSeal::acquire_for_kernel())
+    busbar_kernel::test_support::tokens::grant::<AdminVerb>()
 }
 
 #[test]

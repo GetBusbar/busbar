@@ -27,7 +27,6 @@
 #[allow(dead_code)]
 mod plane;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -37,7 +36,7 @@ use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, PlaneOpenIn, PlaneOpenOut, UnitCount,
 };
 use busbar_contract::services::HostServices;
-use busbar_kernel::host_services::{KernelServices, SystemResolver};
+use busbar_kernel::host_services::KernelServices;
 
 use busbar_plugin_loader::dispatch::{
     in_head, kinds::plane::Plane, load_dropped, load_linked, out_head, rendering_of, Bind,
@@ -166,6 +165,12 @@ fn arrive(plugin: &Plugin<Plane>, target: &[u8]) -> (AbiOutcome, Vec<u64>) {
             _reserved: 0,
             correlation: 0,
             cancels: 0,
+            pool: AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            route: 0,
+            _route_reserved: [0; 7],
         },
     );
     let outcome = plugin.call(slot::ARRIVE, &mut frame).outcome;
@@ -186,10 +191,7 @@ fn wall_ns() -> u64 {
 
 #[test]
 fn a_door_plane_reads_the_kernels_own_clock_both_ways() {
-    let services = Arc::new(KernelServices::new(
-        HashMap::new(),
-        Arc::new(SystemResolver),
-    ));
+    let services = Arc::new(KernelServices::new());
     let dispatcher = Dispatcher::with_services(
         DispatchConfig::default(),
         Arc::clone(&services) as Arc<dyn HostServices>,

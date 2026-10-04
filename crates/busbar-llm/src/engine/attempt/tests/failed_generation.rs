@@ -63,6 +63,7 @@ async fn drive_from(
         key: Arc::new(key.clone()),
         pool: Arc::from("p"),
         charged_at,
+        request_id: 0,
         admit: None,
     };
     let body = serde_json::json!({"model": "p", "stream": stream,

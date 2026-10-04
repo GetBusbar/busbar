@@ -61,7 +61,15 @@ pub mod dest;
 // `busbar-substrate-values::diagnostics` beside the rest; the catalog stays kernel-side.
 pub mod diagnostic;
 pub mod duration;
+pub mod export_calls;
 pub mod grammar;
+pub mod header;
+pub mod hook_calls;
+// The 1.5.5 wire, moved here verbatim from the kernel so it lives beside the ABI it serves: its
+// field docs are the wire's own module text, and its structs deliberately derive no `Debug` (they
+// borrow prompt text).
+#[allow(missing_docs, missing_debug_implementations)]
+pub mod hook_wire;
 #[allow(missing_docs)]
 pub mod hooks;
 pub mod ids;

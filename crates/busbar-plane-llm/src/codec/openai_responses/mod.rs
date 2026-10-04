@@ -44,7 +44,6 @@ mod writer;
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
 /// resolution: `ResponsesWriter` carries per-STREAM mutable state (`sequence`, `response_id`).
-/// Mirrors `super::anthropic::protocol`.
 pub fn protocol() -> Protocol {
     Protocol::new(VENDOR_NAME, ResponsesReader, ResponsesWriter)
 }
@@ -127,6 +126,18 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     static_headers: &[],
 };
 
+/// This dialect's registration (its one line is in `crate::codec::DIALECTS`).
+pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::DialectEntry {
+    decl: &DECL,
+    protocol,
+    with_writer: |f| {
+        let w = ResponsesWriter;
+        f(&w)
+    },
+    with_reader: |f| f(&ResponsesReader),
+    leaf: &crate::codec::leaf_codec::LeafCodecs::NONE,
+};
+
 /// Largest wire `output_index` we accept in a streaming Responses event before clamping. The
 /// Responses API, like Chat Completions, documents at most 128 parallel output items, so any larger
 /// index is malformed; clamp it to this value (the highest valid 0-based index, 127) before the
@@ -139,14 +150,14 @@ const MAX_OUTPUT_INDEX: usize = 127;
 /// omits `model` fails a strict Pydantic/Zod decoder — and a real `/v1/responses` endpoint never
 /// omits it, making the omission a distinguishability tell. On any cross-protocol path
 /// (Anthropic→Responses, Bedrock→Responses) the IR `model` is `None`; emit this fallback rather
-/// than dropping the key. Mirrors `openai_chat::OPENAI_FAMILY_DEFAULT_MODEL`.
-const DEFAULT_MODEL: &str = super::openai_chat::OPENAI_FAMILY_DEFAULT_MODEL;
+/// than dropping the key. One value with the Chat writer's (`dialect::FALLBACK_MODEL`).
+const DEFAULT_MODEL: &str = crate::codec::dialect::FALLBACK_MODEL;
 
 /// Hard cap on the number of DISTINCT output indices tracked per stream in `StreamDecodeState`
 /// (`open_tools`) and in the writer's open-item sets. Bounds per-request memory against a
 /// pathological backend that emits a unique `output_index` per event (a per-connection amplification
-/// DoS). Matches `openai_chat::OPENAI_FAMILY_MAX_OPEN_TOOLS` (OpenAI's documented parallel-tool-call limit, 128).
-const MAX_OPEN_TOOLS: usize = super::openai_chat::OPENAI_FAMILY_MAX_OPEN_TOOLS;
+/// DoS). The shared `dialect::MAX_OPEN_TOOL_CALLS` (OpenAI's documented parallel-tool-call limit, 128).
+const MAX_OPEN_TOOLS: usize = crate::codec::dialect::MAX_OPEN_TOOL_CALLS;
 
 /// The BYTE ceiling any ONE of the writer's per-item accumulators may reach over the life of a
 /// stream. `MAX_OPEN_TOOLS` bounds how MANY items accumulate; this bounds how large one of them
@@ -344,6 +355,8 @@ const STATUS_INCOMPLETE: &str = "incomplete";
 // gap recurs.
 pub const ITEM_TYPE_FUNCTION_CALL: &str = "function_call";
 const ITEM_TYPE_MESSAGE: &str = keys::MESSAGE;
+/// A provider-run web search's output item.
+const ITEM_TYPE_WEB_SEARCH_CALL: &str = "web_search_call";
 pub const ITEM_TYPE_REASONING: &str = keys::REASONING;
 
 /// Content part `type` values on the `/v1/responses` wire.
@@ -359,6 +372,8 @@ const INCOMPLETE_REASON_OTHER: &str = "other";
 /// Top-level `object` field value and vendor tag for the Responses protocol.
 const OBJ_RESPONSE: &str = keys::RESPONSE;
 const VENDOR_NAME: &str = "responses";
+/// The label this dialect's usage counts are logged under (the dialect's module name).
+const COUNT_LABEL: &str = "openai_responses";
 
 /// Synthesized id prefixes (bare prefix without trailing underscore for item ids).
 const RESPONSE_ID_PREFIX: &str = "resp_";
@@ -599,13 +614,13 @@ fn fill_required_response_members(
 
 /// Neutral IR logprobs in the Responses `LogProb` shape carried on an `output_text` content part
 /// (`token`, `logprob`, `bytes`, `top_logprobs[{token, logprob, bytes}]`). This is the same
-/// per-token entry the Chat Completions writer emits, so the Chat encoder builds it and the
-/// `content` array is lifted out. Empty input yields `[]`, the spec-required present-but-empty form.
+/// per-token entry the shared logprob wire object carries (`crate::codec::logprob_wire`), so that
+/// encoder builds it and the `content` array is lifted out. Empty input yields `[]`, the spec-required present-but-empty form.
 fn write_responses_part_logprobs(lps: &[crate::codec::ir::IrTokenLogprob]) -> serde_json::Value {
     if lps.is_empty() {
         return serde_json::json!([]);
     }
-    super::openai_chat::write_openai_logprobs(lps)
+    crate::codec::logprob_wire::write_token_logprobs(lps)
         .get_mut(keys::CONTENT)
         .map(serde_json::Value::take)
         .unwrap_or_else(|| serde_json::json!([]))
@@ -635,13 +650,13 @@ fn write_responses_event_logprobs(lps: &[crate::codec::ir::IrTokenLogprob]) -> s
 
 /// A Responses `logprobs` ARRAY — the `LogProb` entries on an `output_text` part, or the
 /// `ResponseLogProb` entries on an `output_text.delta` (the same entry minus `bytes`) — into the
-/// neutral IR entries. The entry is the Chat Completions entry, so the Chat decoder reads it; this
-/// only supplies the `{content: [...]}` envelope Chat wraps the array in. Absent, `null` or not an
+/// neutral IR entries. The entry is the shared logprob wire entry, so `crate::codec::logprob_wire`
+/// reads it; this only supplies the `{content: [...]}` envelope that object wraps the array in. Absent, `null` or not an
 /// array yields no entries (the caller asked for none).
 fn read_responses_logprobs(v: Option<&serde_json::Value>) -> Vec<crate::codec::ir::IrTokenLogprob> {
     match v {
         Some(arr @ serde_json::Value::Array(entries)) if !entries.is_empty() => {
-            super::openai_chat::read_openai_logprobs(Some(
+            crate::codec::logprob_wire::read_token_logprobs(Some(
                 &serde_json::json!({ (keys::CONTENT): arr }),
             ))
         }
@@ -787,8 +802,10 @@ fn read_responses_tool_choice_directive(
                 // choice have no IR carrier (`allowed_tools` does — IR-10, read above); the
                 // directive is not carried and the target applies its default. Say so rather than
                 // drop it silently.
-                tracing::warn!(
-                    tool_choice_type = o.get(keys::TYPE).and_then(|t| t.as_str()).unwrap_or(""),
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::wire(keys::TOOL_CHOICE),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [tool_choice_type = o.get(keys::TYPE).and_then(|t| t.as_str()).unwrap_or(""),],
                     "dropping Responses tool_choice on ir parse: this tool_choice form has no IR \
                      carrier; the backend's default tool choice applies"
                 );
@@ -905,7 +922,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
             // carries annotations, so this only fires for `output_text`.
             let citations = obj
                 .get(keys::ANNOTATIONS)
-                .map(super::openai_annotations::read_url_annotations)
+                .map(super::url_citation_wire::read_url_annotations)
                 .unwrap_or_default();
             Ok(crate::codec::ir::IrBlock::Text {
                 text,
@@ -1010,29 +1027,964 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
                 context: None,
             })
         }
-        // Forward-compatibility: a valid native Responses content-block type the IR does not model
-        // (a future type OpenAI adds after this build). The prior bare `Err`
-        // here was swallowed with ZERO log by every caller's `filter_map(..ok())`
-        // (`message_content_blocks` above, and the `function_call_output` content-array reader) —
-        // not just `input_file` but EVERY unknown future Responses content type vanished silently.
-        // Mirror the Anthropic reader's unmodeled-block handling: degrade to an empty Text block
-        // (preserving the turn's position in its parent array) with a WARN naming the type, rather
-        // than disappearing without a trace.
-        other => {
-            tracing::warn!(
-                block_type = other,
-                "skipping unmodeled Responses content-block type during ir parse; degrading to an \
-                 empty text block rather than silently dropping it"
-            );
-            Ok(crate::codec::ir::IrBlock::Text {
-                text: String::new(),
-                cache_control: None,
-                citations: Vec::new(),
-                refusal: false,
-            })
-        }
+        // A content kind this reader does not model: not read, and nothing put in its place. Every
+        // caller drops an `Err` (`filter_map(..ok())`), and a translate attempt names the dropped
+        // kind (`REQUEST_BLOCKS`), so nothing vanishes unsaid where something is dropped.
+        _ => Err(ir_parse_error()),
     }
 }
+
+/// The Responses request content grammar (`codec::drops`): a message item's `content[]` and a tool
+/// output item's `output[]`. A block of any other kind does not cross a translate attempt, which
+/// names it.
+const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[
+    crate::codec::drops::Blocks {
+        at: &["input[]", "content[]"],
+        tag: Some(keys::TYPE),
+        modelled: INPUT_KINDS,
+        companions: &[],
+    },
+    crate::codec::drops::Blocks {
+        at: &["input[]", "output[]"],
+        tag: Some(keys::TYPE),
+        modelled: INPUT_KINDS,
+        companions: &[],
+    },
+];
+
+/// The content kinds `responses_block` reads.
+const INPUT_KINDS: &[&str] = &[
+    CONTENT_TYPE_INPUT_TEXT,
+    CONTENT_TYPE_OUTPUT_TEXT,
+    INPUT_IMAGE,
+    INPUT_FILE,
+    keys::REFUSAL,
+    keys::INPUT_AUDIO,
+];
+
+/// The Responses answer content grammar: a message item's `content[]`.
+/// How this dialect spells each IR content-block kind (a dropped block's warn names it so).
+const IR_BLOCK_KINDS: &[(&str, &str)] = &[
+    (crate::codec::drops::kind::TEXT, "type=input_text"),
+    (crate::codec::drops::kind::IMAGE, "type=input_image"),
+    (crate::codec::drops::kind::DOCUMENT, "type=input_file"),
+    (crate::codec::drops::kind::THINKING, "type=reasoning"),
+    (crate::codec::drops::kind::TOOL_USE, "type=function_call"),
+    (
+        crate::codec::drops::kind::TOOL_RESULT,
+        "type=function_call_output",
+    ),
+];
+
+/// The IR request members the reader carries by code from a path no map-file row names (how a drop
+/// of one is named by the caller's wire path).
+const REQUEST_CODE_NAMES: &[(&str, &str)] = &[
+    (crate::codec::drops::name::RESPONSE_FORMAT, "text.format"),
+    (crate::codec::drops::name::TOP_LOGPROBS, keys::TOP_LOGPROBS),
+];
+
+/// The IR request members the reader never sets.
+// No candidate count, cache marks, stop sequences, `top_k` or output modalities.
+const UNREAD: &[&str] = &[
+    crate::codec::drops::name::N,
+    crate::codec::drops::name::CACHE_CONTROL,
+    crate::codec::drops::name::STOP,
+    crate::codec::drops::name::TOP_K,
+    crate::codec::drops::name::OUTPUT_MODALITIES,
+];
+
+const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["output[]", "content[]"],
+    tag: Some(keys::TYPE),
+    modelled: &[CONTENT_TYPE_OUTPUT_TEXT, keys::REFUSAL],
+    companions: &[],
+}];
+
+/// What the Responses reader parks in `extra` beside the members its map file does not model.
+const PARKED: &[crate::codec::drops::Parked] = &[
+    // The model is the route's (it rides the lane).
+    crate::codec::drops::Parked {
+        key: keys::MODEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    // `text` minus its `format` (which crosses as the response format): each member the map file
+    // does not map is dropped.
+    crate::codec::drops::Parked {
+        key: keys::TEXT,
+        holds: crate::codec::drops::Holds::Members(&[]),
+    },
+    // The reasoning ask's effort crosses; its other members are dropped.
+    crate::codec::drops::Parked {
+        key: keys::REASONING,
+        holds: crate::codec::drops::Holds::Members(&[keys::EFFORT]),
+    },
+];
+
+/// What this dialect's answers carry beyond its map file's rows (the drop walk, design F3 "Drops").
+// The terminal error and the lifecycle `queued` event are carried by code; the `.done` / part events
+// repeat what the deltas already carried; annotations are read into citations.
+const RESPONSE_CODE: &[&str] = &[];
+const STREAM_CODE: &[&str] = &[
+    "type=error",
+    "type=response.queued",
+    "type=response.function_call_arguments.done",
+    "type=response.reasoning_text.done",
+    "type=response.reasoning_summary_text.done",
+    "type=response.reasoning_summary_part.added",
+    "type=response.reasoning_summary_part.done",
+    "type=response.output_text.annotation.added",
+];
+
+/// The answer paths INSIDE a subtree this dialect carries that its code does not carry, named by the
+/// drop walk (DF-MAP-IR-GAPS section E: its A, B and C paths that a coarse map row covers).
+const RESPONSE_DROPS: &[&str] = &[
+    "error.misalignment",
+    "instructions[].type=additional_tools",
+    "instructions[].type=apply_patch_call",
+    "instructions[].type=apply_patch_call_output",
+    "instructions[].type=code_interpreter_call",
+    "instructions[].type=compaction",
+    "instructions[].type=compaction_trigger",
+    "instructions[].type=computer_call",
+    "instructions[].type=computer_call_output",
+    "instructions[].type=configuration_update",
+    "instructions[].type=custom_tool_call",
+    "instructions[].type=custom_tool_call_output",
+    "instructions[].type=file_search_call",
+    "instructions[].type=function_call.async",
+    "instructions[].type=function_call.caller",
+    "instructions[].type=function_call.namespace",
+    "instructions[].type=function_call_output.caller",
+    "instructions[].type=function_call_output.namespace",
+    "instructions[].type=function_call_output.output[].type=input_file.prompt_cache_breakpoint",
+    "instructions[].type=function_call_output.output[].type=input_image.prompt_cache_breakpoint",
+    "instructions[].type=function_call_output.output[].type=input_text.prompt_cache_breakpoint",
+    "instructions[].type=image_generation_call",
+    "instructions[].type=local_shell_call",
+    "instructions[].type=local_shell_call_output",
+    "instructions[].type=mcp_approval_request",
+    "instructions[].type=mcp_approval_response",
+    "instructions[].type=mcp_call",
+    "instructions[].type=mcp_list_tools",
+    "instructions[].type=message.content[].type=input_file.prompt_cache_breakpoint",
+    "instructions[].type=message.content[].type=input_image.prompt_cache_breakpoint",
+    "instructions[].type=message.content[].type=input_text.prompt_cache_breakpoint",
+    "instructions[].type=message.content[].type=output_text.annotations[].type=container_file_citation",
+    "instructions[].type=message.content[].type=output_text.annotations[].type=file_citation",
+    "instructions[].type=message.content[].type=output_text.annotations[].type=file_path",
+    "instructions[].type=message.phase",
+    "instructions[].type=program",
+    "instructions[].type=program_output",
+    "instructions[].type=shell_call",
+    "instructions[].type=shell_call_output",
+    "instructions[].type=tool_search_call",
+    "instructions[].type=tool_search_output",
+    "instructions[].type=web_search_call",
+    "output[].type=additional_tools",
+    "output[].type=apply_patch_call",
+    "output[].type=apply_patch_call_output",
+    "output[].type=code_interpreter_call",
+    "output[].type=compaction",
+    "output[].type=computer_call",
+    "output[].type=computer_call_output",
+    "output[].type=custom_tool_call",
+    "output[].type=custom_tool_call_output",
+    "output[].type=file_search_call",
+    "output[].type=function_call.async",
+    "output[].type=function_call.caller",
+    "output[].type=function_call.namespace",
+    "output[].type=function_call_output.caller",
+    "output[].type=function_call_output.created_by",
+    "output[].type=function_call_output.namespace",
+    "output[].type=function_call_output.output[].type=input_file.prompt_cache_breakpoint",
+    "output[].type=function_call_output.output[].type=input_image.prompt_cache_breakpoint",
+    "output[].type=function_call_output.output[].type=input_text.prompt_cache_breakpoint",
+    "output[].type=image_generation_call",
+    "output[].type=local_shell_call",
+    "output[].type=local_shell_call_output",
+    "output[].type=mcp_approval_request",
+    "output[].type=mcp_approval_response",
+    "output[].type=mcp_call",
+    "output[].type=mcp_list_tools",
+    "output[].type=message.content[].type=output_text.annotations[].type=container_file_citation.container_id",
+    "output[].type=message.phase",
+    "output[].type=program",
+    "output[].type=program_output",
+    "output[].type=shell_call",
+    "output[].type=shell_call_output",
+    "output[].type=tool_search_call",
+    "output[].type=tool_search_output",
+    "output[].type=web_search_call.action.type=find_in_page",
+    "output[].type=web_search_call.action.type=open_page",
+    "output[].type=web_search_call.action.type=search.queries",
+];
+// The events themselves are carried (the map's stream rows, `STREAM_CODE`); these are the members
+// inside them that no code carries (DF-MAP-IR-GAPS section E).
+const STREAM_DROPS: &[&str] = &[
+    "type=response.content_part.added.part.type=output_text.annotations[].type=container_file_citation",
+    "type=response.content_part.added.part.type=output_text.annotations[].type=container_file_citation.container_id",
+    "type=response.content_part.added.part.type=output_text.annotations[].type=file_citation",
+    "type=response.content_part.added.part.type=output_text.annotations[].type=file_path",
+    "type=response.content_part.done.part.type=output_text.annotations[].type=container_file_citation",
+    "type=response.content_part.done.part.type=output_text.annotations[].type=container_file_citation.container_id",
+    "type=response.content_part.done.part.type=output_text.annotations[].type=file_citation",
+    "type=response.content_part.done.part.type=output_text.annotations[].type=file_path",
+    "type=response.output_item.added.item.type=additional_tools",
+    "type=response.output_item.added.item.type=additional_tools.tools[].external_web_access",
+    "type=response.output_item.added.item.type=additional_tools.tools[].search_content_types",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=apply_patch",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=apply_patch.allowed_callers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=code_interpreter.allowed_callers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=code_interpreter.container.file_ids",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=code_interpreter.container.memory_limit",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=code_interpreter.container.network_policy",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=code_interpreter.container.network_policy.type=allowlist",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=code_interpreter.container.network_policy.type=allowlist.domain_secrets",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=code_interpreter.container.network_policy.type=allowlist.domain_secrets[].value",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=computer",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=computer_use_preview.display_height",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=computer_use_preview.display_width",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=computer_use_preview.environment",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=custom.allowed_callers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=custom.async",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=custom.defer_loading",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=custom.format.type=grammar.definition",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=custom.format.type=grammar.syntax",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.filters.filters[].value",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.filters.value",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.max_num_results",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.ranking_options",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.ranking_options.hybrid_search",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.ranking_options.hybrid_search.embedding_weight",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.ranking_options.hybrid_search.text_weight",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.ranking_options.ranker",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.ranking_options.score_threshold",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=file_search.vector_store_ids",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=function.allowed_callers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=function.async",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=function.defer_loading",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=function.output_schema",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=image_generation",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=image_generation.action",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=image_generation.background",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=image_generation.input_fidelity",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=image_generation.input_image_mask",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=image_generation.output_compression",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=image_generation.partial_images",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=image_generation.size",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=local_shell",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.allowed_callers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.allowed_tools.read_only",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.allowed_tools.tool_names",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.connector_id",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.defer_loading",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.headers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.require_approval",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.require_approval.always",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.require_approval.always.read_only",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.require_approval.always.tool_names",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.require_approval.never",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.require_approval.never.read_only",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.require_approval.never.tool_names",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.server_description",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.server_label",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.server_url",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=mcp.tunnel_id",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.allowed_callers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.async",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.defer_loading",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.format.type=grammar.definition",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.format.type=grammar.syntax",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=function.allowed_callers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=function.async",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=function.defer_loading",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=namespace.tools[].type=function.output_schema",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=programmatic_tool_calling",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.allowed_callers",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.file_ids",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.memory_limit",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.network_policy",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist.domain_secrets",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist.domain_secrets[].value",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills[].type=inline",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference.skill_id",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference.version",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_reference",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=container_reference.container_id",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=local",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=local.skills",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=shell.environment.type=local.skills[].path",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=tool_search",
+    "type=response.output_item.added.item.type=additional_tools.tools[].type=tool_search.execution",
+    "type=response.output_item.added.item.type=apply_patch_call",
+    "type=response.output_item.added.item.type=apply_patch_call.caller",
+    "type=response.output_item.added.item.type=apply_patch_call.caller.type=direct",
+    "type=response.output_item.added.item.type=apply_patch_call.caller.type=program",
+    "type=response.output_item.added.item.type=apply_patch_call.caller.type=program.caller_id",
+    "type=response.output_item.added.item.type=apply_patch_call.created_by",
+    "type=response.output_item.added.item.type=apply_patch_call.operation",
+    "type=response.output_item.added.item.type=apply_patch_call.operation.type=create_file",
+    "type=response.output_item.added.item.type=apply_patch_call.operation.type=create_file.diff",
+    "type=response.output_item.added.item.type=apply_patch_call.operation.type=create_file.path",
+    "type=response.output_item.added.item.type=apply_patch_call.operation.type=delete_file",
+    "type=response.output_item.added.item.type=apply_patch_call.operation.type=delete_file.path",
+    "type=response.output_item.added.item.type=apply_patch_call.operation.type=update_file",
+    "type=response.output_item.added.item.type=apply_patch_call.operation.type=update_file.diff",
+    "type=response.output_item.added.item.type=apply_patch_call.operation.type=update_file.path",
+    "type=response.output_item.added.item.type=apply_patch_call_output",
+    "type=response.output_item.added.item.type=apply_patch_call_output.caller",
+    "type=response.output_item.added.item.type=apply_patch_call_output.caller.type=direct",
+    "type=response.output_item.added.item.type=apply_patch_call_output.caller.type=program",
+    "type=response.output_item.added.item.type=apply_patch_call_output.caller.type=program.caller_id",
+    "type=response.output_item.added.item.type=apply_patch_call_output.created_by",
+    "type=response.output_item.added.item.type=code_interpreter_call",
+    "type=response.output_item.added.item.type=code_interpreter_call.container_id",
+    "type=response.output_item.added.item.type=code_interpreter_call.outputs",
+    "type=response.output_item.added.item.type=code_interpreter_call.outputs[].type=logs",
+    "type=response.output_item.added.item.type=code_interpreter_call.outputs[].type=logs.logs",
+    "type=response.output_item.added.item.type=compaction",
+    "type=response.output_item.added.item.type=compaction.created_by",
+    "type=response.output_item.added.item.type=computer_call",
+    "type=response.output_item.added.item.type=computer_call.action",
+    "type=response.output_item.added.item.type=computer_call.action.type=click",
+    "type=response.output_item.added.item.type=computer_call.action.type=click.button",
+    "type=response.output_item.added.item.type=computer_call.action.type=click.keys",
+    "type=response.output_item.added.item.type=computer_call.action.type=click.y",
+    "type=response.output_item.added.item.type=computer_call.action.type=double_click",
+    "type=response.output_item.added.item.type=computer_call.action.type=double_click.keys",
+    "type=response.output_item.added.item.type=computer_call.action.type=double_click.y",
+    "type=response.output_item.added.item.type=computer_call.action.type=drag",
+    "type=response.output_item.added.item.type=computer_call.action.type=drag.keys",
+    "type=response.output_item.added.item.type=computer_call.action.type=drag.path",
+    "type=response.output_item.added.item.type=computer_call.action.type=drag.path[].y",
+    "type=response.output_item.added.item.type=computer_call.action.type=keypress",
+    "type=response.output_item.added.item.type=computer_call.action.type=keypress.keys",
+    "type=response.output_item.added.item.type=computer_call.action.type=move",
+    "type=response.output_item.added.item.type=computer_call.action.type=move.keys",
+    "type=response.output_item.added.item.type=computer_call.action.type=move.y",
+    "type=response.output_item.added.item.type=computer_call.action.type=screenshot",
+    "type=response.output_item.added.item.type=computer_call.action.type=scroll",
+    "type=response.output_item.added.item.type=computer_call.action.type=scroll.keys",
+    "type=response.output_item.added.item.type=computer_call.action.type=scroll.scroll_x",
+    "type=response.output_item.added.item.type=computer_call.action.type=scroll.scroll_y",
+    "type=response.output_item.added.item.type=computer_call.action.type=scroll.y",
+    "type=response.output_item.added.item.type=computer_call.action.type=wait",
+    "type=response.output_item.added.item.type=computer_call.actions",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=click",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=click.button",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=click.keys",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=click.y",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=double_click",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=double_click.keys",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=double_click.y",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=drag",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=drag.keys",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=drag.path",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=drag.path[].y",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=keypress",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=keypress.keys",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=move",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=move.keys",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=move.y",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=screenshot",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=scroll",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=scroll.keys",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=scroll.scroll_x",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=scroll.scroll_y",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=scroll.y",
+    "type=response.output_item.added.item.type=computer_call.actions[].type=wait",
+    "type=response.output_item.added.item.type=computer_call.pending_safety_checks",
+    "type=response.output_item.added.item.type=computer_call_output",
+    "type=response.output_item.added.item.type=computer_call_output.acknowledged_safety_checks",
+    "type=response.output_item.added.item.type=computer_call_output.created_by",
+    "type=response.output_item.added.item.type=custom_tool_call",
+    "type=response.output_item.added.item.type=custom_tool_call.async",
+    "type=response.output_item.added.item.type=custom_tool_call.caller",
+    "type=response.output_item.added.item.type=custom_tool_call.caller.type=direct",
+    "type=response.output_item.added.item.type=custom_tool_call.caller.type=program",
+    "type=response.output_item.added.item.type=custom_tool_call.caller.type=program.caller_id",
+    "type=response.output_item.added.item.type=custom_tool_call.namespace",
+    "type=response.output_item.added.item.type=custom_tool_call_output",
+    "type=response.output_item.added.item.type=custom_tool_call_output.caller",
+    "type=response.output_item.added.item.type=custom_tool_call_output.caller.type=direct",
+    "type=response.output_item.added.item.type=custom_tool_call_output.caller.type=program",
+    "type=response.output_item.added.item.type=custom_tool_call_output.caller.type=program.caller_id",
+    "type=response.output_item.added.item.type=custom_tool_call_output.created_by",
+    "type=response.output_item.added.item.type=custom_tool_call_output.output[].type=input_file.prompt_cache_breakpoint",
+    "type=response.output_item.added.item.type=custom_tool_call_output.output[].type=input_image.prompt_cache_breakpoint",
+    "type=response.output_item.added.item.type=custom_tool_call_output.output[].type=input_text.prompt_cache_breakpoint",
+    "type=response.output_item.added.item.type=file_search_call",
+    "type=response.output_item.added.item.type=file_search_call.queries",
+    "type=response.output_item.added.item.type=file_search_call.results[].attributes",
+    "type=response.output_item.added.item.type=file_search_call.results[].score",
+    "type=response.output_item.added.item.type=function_call.async",
+    "type=response.output_item.added.item.type=function_call.caller",
+    "type=response.output_item.added.item.type=function_call.caller.type=direct",
+    "type=response.output_item.added.item.type=function_call.caller.type=program",
+    "type=response.output_item.added.item.type=function_call.caller.type=program.caller_id",
+    "type=response.output_item.added.item.type=function_call.namespace",
+    "type=response.output_item.added.item.type=function_call_output.caller",
+    "type=response.output_item.added.item.type=function_call_output.caller.type=direct",
+    "type=response.output_item.added.item.type=function_call_output.caller.type=program",
+    "type=response.output_item.added.item.type=function_call_output.caller.type=program.caller_id",
+    "type=response.output_item.added.item.type=function_call_output.created_by",
+    "type=response.output_item.added.item.type=function_call_output.namespace",
+    "type=response.output_item.added.item.type=function_call_output.output[].type=input_file.prompt_cache_breakpoint",
+    "type=response.output_item.added.item.type=function_call_output.output[].type=input_image.prompt_cache_breakpoint",
+    "type=response.output_item.added.item.type=function_call_output.output[].type=input_text.prompt_cache_breakpoint",
+    "type=response.output_item.added.item.type=image_generation_call",
+    "type=response.output_item.added.item.type=image_generation_call.result",
+    "type=response.output_item.added.item.type=local_shell_call",
+    "type=response.output_item.added.item.type=local_shell_call.action",
+    "type=response.output_item.added.item.type=local_shell_call.action.command",
+    "type=response.output_item.added.item.type=local_shell_call.action.env",
+    "type=response.output_item.added.item.type=local_shell_call.action.timeout_ms",
+    "type=response.output_item.added.item.type=local_shell_call.action.working_directory",
+    "type=response.output_item.added.item.type=local_shell_call_output",
+    "type=response.output_item.added.item.type=mcp_approval_request",
+    "type=response.output_item.added.item.type=mcp_approval_request.server_label",
+    "type=response.output_item.added.item.type=mcp_approval_response",
+    "type=response.output_item.added.item.type=mcp_approval_response.approval_request_id",
+    "type=response.output_item.added.item.type=mcp_approval_response.approve",
+    "type=response.output_item.added.item.type=mcp_call",
+    "type=response.output_item.added.item.type=mcp_call.approval_request_id",
+    "type=response.output_item.added.item.type=mcp_call.error.type=http_error",
+    "type=response.output_item.added.item.type=mcp_call.error.type=mcp_protocol_error",
+    "type=response.output_item.added.item.type=mcp_call.error.type=mcp_tool_execution_error",
+    "type=response.output_item.added.item.type=mcp_call.server_label",
+    "type=response.output_item.added.item.type=mcp_list_tools",
+    "type=response.output_item.added.item.type=mcp_list_tools.server_label",
+    "type=response.output_item.added.item.type=message.content[].type=output_text.annotations[].type=container_file_citation",
+    "type=response.output_item.added.item.type=message.content[].type=output_text.annotations[].type=container_file_citation.container_id",
+    "type=response.output_item.added.item.type=message.content[].type=output_text.annotations[].type=file_citation",
+    "type=response.output_item.added.item.type=message.content[].type=output_text.annotations[].type=file_path",
+    "type=response.output_item.added.item.type=message.phase",
+    "type=response.output_item.added.item.type=program",
+    "type=response.output_item.added.item.type=program.fingerprint",
+    "type=response.output_item.added.item.type=program_output",
+    "type=response.output_item.added.item.type=program_output.result",
+    "type=response.output_item.added.item.type=shell_call",
+    "type=response.output_item.added.item.type=shell_call.action",
+    "type=response.output_item.added.item.type=shell_call.action.commands",
+    "type=response.output_item.added.item.type=shell_call.action.max_output_length",
+    "type=response.output_item.added.item.type=shell_call.action.timeout_ms",
+    "type=response.output_item.added.item.type=shell_call.caller",
+    "type=response.output_item.added.item.type=shell_call.caller.type=direct",
+    "type=response.output_item.added.item.type=shell_call.caller.type=program",
+    "type=response.output_item.added.item.type=shell_call.caller.type=program.caller_id",
+    "type=response.output_item.added.item.type=shell_call.created_by",
+    "type=response.output_item.added.item.type=shell_call.environment",
+    "type=response.output_item.added.item.type=shell_call.environment.type=container_reference",
+    "type=response.output_item.added.item.type=shell_call.environment.type=container_reference.container_id",
+    "type=response.output_item.added.item.type=shell_call.environment.type=local",
+    "type=response.output_item.added.item.type=shell_call_output",
+    "type=response.output_item.added.item.type=shell_call_output.caller",
+    "type=response.output_item.added.item.type=shell_call_output.caller.type=direct",
+    "type=response.output_item.added.item.type=shell_call_output.caller.type=program",
+    "type=response.output_item.added.item.type=shell_call_output.caller.type=program.caller_id",
+    "type=response.output_item.added.item.type=shell_call_output.created_by",
+    "type=response.output_item.added.item.type=shell_call_output.max_output_length",
+    "type=response.output_item.added.item.type=shell_call_output.output[].created_by",
+    "type=response.output_item.added.item.type=shell_call_output.output[].outcome",
+    "type=response.output_item.added.item.type=shell_call_output.output[].outcome.type=exit",
+    "type=response.output_item.added.item.type=shell_call_output.output[].outcome.type=exit.exit_code",
+    "type=response.output_item.added.item.type=shell_call_output.output[].stderr",
+    "type=response.output_item.added.item.type=shell_call_output.output[].stdout",
+    "type=response.output_item.added.item.type=tool_search_call",
+    "type=response.output_item.added.item.type=tool_search_call.created_by",
+    "type=response.output_item.added.item.type=tool_search_call.execution",
+    "type=response.output_item.added.item.type=tool_search_output",
+    "type=response.output_item.added.item.type=tool_search_output.created_by",
+    "type=response.output_item.added.item.type=tool_search_output.execution",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].external_web_access",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].search_content_types",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=apply_patch",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=apply_patch.allowed_callers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=code_interpreter.allowed_callers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=code_interpreter.container.file_ids",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=code_interpreter.container.memory_limit",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=code_interpreter.container.network_policy",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=code_interpreter.container.network_policy.type=allowlist",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=code_interpreter.container.network_policy.type=allowlist.domain_secrets",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=code_interpreter.container.network_policy.type=allowlist.domain_secrets[].value",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=computer",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=computer_use_preview.display_height",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=computer_use_preview.display_width",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=computer_use_preview.environment",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=custom.allowed_callers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=custom.async",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=custom.defer_loading",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=custom.format.type=grammar.definition",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=custom.format.type=grammar.syntax",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.filters.filters[].value",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.filters.value",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.max_num_results",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.ranking_options",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.ranking_options.hybrid_search",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.ranking_options.hybrid_search.embedding_weight",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.ranking_options.hybrid_search.text_weight",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.ranking_options.ranker",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.ranking_options.score_threshold",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=file_search.vector_store_ids",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=function.allowed_callers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=function.async",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=function.defer_loading",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=function.output_schema",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=image_generation",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=image_generation.action",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=image_generation.background",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=image_generation.input_fidelity",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=image_generation.input_image_mask",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=image_generation.output_compression",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=image_generation.partial_images",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=image_generation.size",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=local_shell",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.allowed_callers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.allowed_tools.read_only",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.allowed_tools.tool_names",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.connector_id",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.defer_loading",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.headers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.require_approval",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.require_approval.always",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.require_approval.always.read_only",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.require_approval.always.tool_names",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.require_approval.never",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.require_approval.never.read_only",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.require_approval.never.tool_names",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.server_description",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.server_label",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.server_url",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=mcp.tunnel_id",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.allowed_callers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.async",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.defer_loading",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.format.type=grammar.definition",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.format.type=grammar.syntax",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=function.allowed_callers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=function.async",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=function.defer_loading",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=namespace.tools[].type=function.output_schema",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=programmatic_tool_calling",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.allowed_callers",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.file_ids",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.memory_limit",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.network_policy",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist.domain_secrets",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist.domain_secrets[].value",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills[].type=inline",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference.skill_id",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference.version",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_reference",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=container_reference.container_id",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=local",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=local.skills",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=shell.environment.type=local.skills[].path",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=tool_search",
+    "type=response.output_item.added.item.type=tool_search_output.tools[].type=tool_search.execution",
+    "type=response.output_item.added.item.type=web_search_call",
+    "type=response.output_item.added.item.type=web_search_call.action",
+    "type=response.output_item.added.item.type=web_search_call.action.type=find_in_page",
+    "type=response.output_item.added.item.type=web_search_call.action.type=find_in_page.pattern",
+    "type=response.output_item.added.item.type=web_search_call.action.type=open_page",
+    "type=response.output_item.added.item.type=web_search_call.action.type=search",
+    "type=response.output_item.added.item.type=web_search_call.action.type=search.queries",
+    "type=response.output_item.added.item.type=web_search_call.action.type=search.sources",
+    "type=response.output_item.done.item.type=additional_tools",
+    "type=response.output_item.done.item.type=additional_tools.tools[].external_web_access",
+    "type=response.output_item.done.item.type=additional_tools.tools[].search_content_types",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=apply_patch",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=apply_patch.allowed_callers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=code_interpreter.allowed_callers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=code_interpreter.container.file_ids",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=code_interpreter.container.memory_limit",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=code_interpreter.container.network_policy",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=code_interpreter.container.network_policy.type=allowlist",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=code_interpreter.container.network_policy.type=allowlist.domain_secrets",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=code_interpreter.container.network_policy.type=allowlist.domain_secrets[].value",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=computer",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=computer_use_preview.display_height",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=computer_use_preview.display_width",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=computer_use_preview.environment",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=custom.allowed_callers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=custom.async",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=custom.defer_loading",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=custom.format.type=grammar.definition",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=custom.format.type=grammar.syntax",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.filters.filters[].value",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.filters.value",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.max_num_results",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.ranking_options",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.ranking_options.hybrid_search",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.ranking_options.hybrid_search.embedding_weight",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.ranking_options.hybrid_search.text_weight",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.ranking_options.ranker",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.ranking_options.score_threshold",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=file_search.vector_store_ids",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=function.allowed_callers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=function.async",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=function.defer_loading",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=function.output_schema",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=image_generation",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=image_generation.action",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=image_generation.background",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=image_generation.input_fidelity",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=image_generation.input_image_mask",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=image_generation.output_compression",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=image_generation.partial_images",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=image_generation.size",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=local_shell",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.allowed_callers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.allowed_tools.read_only",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.allowed_tools.tool_names",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.connector_id",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.defer_loading",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.headers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.require_approval",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.require_approval.always",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.require_approval.always.read_only",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.require_approval.always.tool_names",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.require_approval.never",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.require_approval.never.read_only",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.require_approval.never.tool_names",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.server_description",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.server_label",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.server_url",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=mcp.tunnel_id",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.allowed_callers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.async",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.defer_loading",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.format.type=grammar.definition",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=custom.format.type=grammar.syntax",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=function.allowed_callers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=function.async",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=function.defer_loading",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=namespace.tools[].type=function.output_schema",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=programmatic_tool_calling",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.allowed_callers",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.file_ids",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.memory_limit",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.network_policy",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist.domain_secrets",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist.domain_secrets[].value",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills[].type=inline",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference.skill_id",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference.version",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_reference",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=container_reference.container_id",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=local",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=local.skills",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=shell.environment.type=local.skills[].path",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=tool_search",
+    "type=response.output_item.done.item.type=additional_tools.tools[].type=tool_search.execution",
+    "type=response.output_item.done.item.type=apply_patch_call",
+    "type=response.output_item.done.item.type=apply_patch_call.caller",
+    "type=response.output_item.done.item.type=apply_patch_call.caller.type=direct",
+    "type=response.output_item.done.item.type=apply_patch_call.caller.type=program",
+    "type=response.output_item.done.item.type=apply_patch_call.caller.type=program.caller_id",
+    "type=response.output_item.done.item.type=apply_patch_call.created_by",
+    "type=response.output_item.done.item.type=apply_patch_call.operation",
+    "type=response.output_item.done.item.type=apply_patch_call.operation.type=create_file",
+    "type=response.output_item.done.item.type=apply_patch_call.operation.type=create_file.diff",
+    "type=response.output_item.done.item.type=apply_patch_call.operation.type=create_file.path",
+    "type=response.output_item.done.item.type=apply_patch_call.operation.type=delete_file",
+    "type=response.output_item.done.item.type=apply_patch_call.operation.type=delete_file.path",
+    "type=response.output_item.done.item.type=apply_patch_call.operation.type=update_file",
+    "type=response.output_item.done.item.type=apply_patch_call.operation.type=update_file.diff",
+    "type=response.output_item.done.item.type=apply_patch_call.operation.type=update_file.path",
+    "type=response.output_item.done.item.type=apply_patch_call_output",
+    "type=response.output_item.done.item.type=apply_patch_call_output.caller",
+    "type=response.output_item.done.item.type=apply_patch_call_output.caller.type=direct",
+    "type=response.output_item.done.item.type=apply_patch_call_output.caller.type=program",
+    "type=response.output_item.done.item.type=apply_patch_call_output.caller.type=program.caller_id",
+    "type=response.output_item.done.item.type=apply_patch_call_output.created_by",
+    "type=response.output_item.done.item.type=code_interpreter_call",
+    "type=response.output_item.done.item.type=code_interpreter_call.container_id",
+    "type=response.output_item.done.item.type=code_interpreter_call.outputs",
+    "type=response.output_item.done.item.type=code_interpreter_call.outputs[].type=logs",
+    "type=response.output_item.done.item.type=code_interpreter_call.outputs[].type=logs.logs",
+    "type=response.output_item.done.item.type=compaction",
+    "type=response.output_item.done.item.type=compaction.created_by",
+    "type=response.output_item.done.item.type=computer_call",
+    "type=response.output_item.done.item.type=computer_call.action",
+    "type=response.output_item.done.item.type=computer_call.action.type=click",
+    "type=response.output_item.done.item.type=computer_call.action.type=click.button",
+    "type=response.output_item.done.item.type=computer_call.action.type=click.keys",
+    "type=response.output_item.done.item.type=computer_call.action.type=click.y",
+    "type=response.output_item.done.item.type=computer_call.action.type=double_click",
+    "type=response.output_item.done.item.type=computer_call.action.type=double_click.keys",
+    "type=response.output_item.done.item.type=computer_call.action.type=double_click.y",
+    "type=response.output_item.done.item.type=computer_call.action.type=drag",
+    "type=response.output_item.done.item.type=computer_call.action.type=drag.keys",
+    "type=response.output_item.done.item.type=computer_call.action.type=drag.path",
+    "type=response.output_item.done.item.type=computer_call.action.type=drag.path[].y",
+    "type=response.output_item.done.item.type=computer_call.action.type=keypress",
+    "type=response.output_item.done.item.type=computer_call.action.type=keypress.keys",
+    "type=response.output_item.done.item.type=computer_call.action.type=move",
+    "type=response.output_item.done.item.type=computer_call.action.type=move.keys",
+    "type=response.output_item.done.item.type=computer_call.action.type=move.y",
+    "type=response.output_item.done.item.type=computer_call.action.type=screenshot",
+    "type=response.output_item.done.item.type=computer_call.action.type=scroll",
+    "type=response.output_item.done.item.type=computer_call.action.type=scroll.keys",
+    "type=response.output_item.done.item.type=computer_call.action.type=scroll.scroll_x",
+    "type=response.output_item.done.item.type=computer_call.action.type=scroll.scroll_y",
+    "type=response.output_item.done.item.type=computer_call.action.type=scroll.y",
+    "type=response.output_item.done.item.type=computer_call.action.type=wait",
+    "type=response.output_item.done.item.type=computer_call.actions",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=click",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=click.button",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=click.keys",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=click.y",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=double_click",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=double_click.keys",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=double_click.y",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=drag",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=drag.keys",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=drag.path",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=drag.path[].y",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=keypress",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=keypress.keys",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=move",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=move.keys",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=move.y",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=screenshot",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=scroll",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=scroll.keys",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=scroll.scroll_x",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=scroll.scroll_y",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=scroll.y",
+    "type=response.output_item.done.item.type=computer_call.actions[].type=wait",
+    "type=response.output_item.done.item.type=computer_call.pending_safety_checks",
+    "type=response.output_item.done.item.type=computer_call_output",
+    "type=response.output_item.done.item.type=computer_call_output.acknowledged_safety_checks",
+    "type=response.output_item.done.item.type=computer_call_output.created_by",
+    "type=response.output_item.done.item.type=custom_tool_call",
+    "type=response.output_item.done.item.type=custom_tool_call.async",
+    "type=response.output_item.done.item.type=custom_tool_call.caller",
+    "type=response.output_item.done.item.type=custom_tool_call.caller.type=direct",
+    "type=response.output_item.done.item.type=custom_tool_call.caller.type=program",
+    "type=response.output_item.done.item.type=custom_tool_call.caller.type=program.caller_id",
+    "type=response.output_item.done.item.type=custom_tool_call.namespace",
+    "type=response.output_item.done.item.type=custom_tool_call_output",
+    "type=response.output_item.done.item.type=custom_tool_call_output.caller",
+    "type=response.output_item.done.item.type=custom_tool_call_output.caller.type=direct",
+    "type=response.output_item.done.item.type=custom_tool_call_output.caller.type=program",
+    "type=response.output_item.done.item.type=custom_tool_call_output.caller.type=program.caller_id",
+    "type=response.output_item.done.item.type=custom_tool_call_output.created_by",
+    "type=response.output_item.done.item.type=custom_tool_call_output.output[].type=input_file.prompt_cache_breakpoint",
+    "type=response.output_item.done.item.type=custom_tool_call_output.output[].type=input_image.prompt_cache_breakpoint",
+    "type=response.output_item.done.item.type=custom_tool_call_output.output[].type=input_text.prompt_cache_breakpoint",
+    "type=response.output_item.done.item.type=file_search_call",
+    "type=response.output_item.done.item.type=file_search_call.queries",
+    "type=response.output_item.done.item.type=file_search_call.results[].attributes",
+    "type=response.output_item.done.item.type=file_search_call.results[].score",
+    "type=response.output_item.done.item.type=function_call.async",
+    "type=response.output_item.done.item.type=function_call.caller",
+    "type=response.output_item.done.item.type=function_call.caller.type=direct",
+    "type=response.output_item.done.item.type=function_call.caller.type=program",
+    "type=response.output_item.done.item.type=function_call.caller.type=program.caller_id",
+    "type=response.output_item.done.item.type=function_call.namespace",
+    "type=response.output_item.done.item.type=function_call_output.caller",
+    "type=response.output_item.done.item.type=function_call_output.caller.type=direct",
+    "type=response.output_item.done.item.type=function_call_output.caller.type=program",
+    "type=response.output_item.done.item.type=function_call_output.caller.type=program.caller_id",
+    "type=response.output_item.done.item.type=function_call_output.created_by",
+    "type=response.output_item.done.item.type=function_call_output.namespace",
+    "type=response.output_item.done.item.type=function_call_output.output[].type=input_file.prompt_cache_breakpoint",
+    "type=response.output_item.done.item.type=function_call_output.output[].type=input_image.prompt_cache_breakpoint",
+    "type=response.output_item.done.item.type=function_call_output.output[].type=input_text.prompt_cache_breakpoint",
+    "type=response.output_item.done.item.type=image_generation_call",
+    "type=response.output_item.done.item.type=image_generation_call.result",
+    "type=response.output_item.done.item.type=local_shell_call",
+    "type=response.output_item.done.item.type=local_shell_call.action",
+    "type=response.output_item.done.item.type=local_shell_call.action.command",
+    "type=response.output_item.done.item.type=local_shell_call.action.env",
+    "type=response.output_item.done.item.type=local_shell_call.action.timeout_ms",
+    "type=response.output_item.done.item.type=local_shell_call.action.working_directory",
+    "type=response.output_item.done.item.type=local_shell_call_output",
+    "type=response.output_item.done.item.type=mcp_approval_request",
+    "type=response.output_item.done.item.type=mcp_approval_request.server_label",
+    "type=response.output_item.done.item.type=mcp_approval_response",
+    "type=response.output_item.done.item.type=mcp_approval_response.approval_request_id",
+    "type=response.output_item.done.item.type=mcp_approval_response.approve",
+    "type=response.output_item.done.item.type=mcp_call",
+    "type=response.output_item.done.item.type=mcp_call.approval_request_id",
+    "type=response.output_item.done.item.type=mcp_call.error.type=http_error",
+    "type=response.output_item.done.item.type=mcp_call.error.type=mcp_protocol_error",
+    "type=response.output_item.done.item.type=mcp_call.error.type=mcp_tool_execution_error",
+    "type=response.output_item.done.item.type=mcp_call.server_label",
+    "type=response.output_item.done.item.type=mcp_list_tools",
+    "type=response.output_item.done.item.type=mcp_list_tools.server_label",
+    "type=response.output_item.done.item.type=message.content[].type=output_text.annotations[].type=container_file_citation",
+    "type=response.output_item.done.item.type=message.content[].type=output_text.annotations[].type=container_file_citation.container_id",
+    "type=response.output_item.done.item.type=message.content[].type=output_text.annotations[].type=file_citation",
+    "type=response.output_item.done.item.type=message.content[].type=output_text.annotations[].type=file_path",
+    "type=response.output_item.done.item.type=message.phase",
+    "type=response.output_item.done.item.type=program",
+    "type=response.output_item.done.item.type=program.fingerprint",
+    "type=response.output_item.done.item.type=program_output",
+    "type=response.output_item.done.item.type=program_output.result",
+    "type=response.output_item.done.item.type=shell_call",
+    "type=response.output_item.done.item.type=shell_call.action",
+    "type=response.output_item.done.item.type=shell_call.action.commands",
+    "type=response.output_item.done.item.type=shell_call.action.max_output_length",
+    "type=response.output_item.done.item.type=shell_call.action.timeout_ms",
+    "type=response.output_item.done.item.type=shell_call.caller",
+    "type=response.output_item.done.item.type=shell_call.caller.type=direct",
+    "type=response.output_item.done.item.type=shell_call.caller.type=program",
+    "type=response.output_item.done.item.type=shell_call.caller.type=program.caller_id",
+    "type=response.output_item.done.item.type=shell_call.created_by",
+    "type=response.output_item.done.item.type=shell_call.environment",
+    "type=response.output_item.done.item.type=shell_call.environment.type=container_reference",
+    "type=response.output_item.done.item.type=shell_call.environment.type=container_reference.container_id",
+    "type=response.output_item.done.item.type=shell_call.environment.type=local",
+    "type=response.output_item.done.item.type=shell_call_output",
+    "type=response.output_item.done.item.type=shell_call_output.caller",
+    "type=response.output_item.done.item.type=shell_call_output.caller.type=direct",
+    "type=response.output_item.done.item.type=shell_call_output.caller.type=program",
+    "type=response.output_item.done.item.type=shell_call_output.caller.type=program.caller_id",
+    "type=response.output_item.done.item.type=shell_call_output.created_by",
+    "type=response.output_item.done.item.type=shell_call_output.max_output_length",
+    "type=response.output_item.done.item.type=shell_call_output.output[].created_by",
+    "type=response.output_item.done.item.type=shell_call_output.output[].outcome",
+    "type=response.output_item.done.item.type=shell_call_output.output[].outcome.type=exit",
+    "type=response.output_item.done.item.type=shell_call_output.output[].outcome.type=exit.exit_code",
+    "type=response.output_item.done.item.type=shell_call_output.output[].stderr",
+    "type=response.output_item.done.item.type=shell_call_output.output[].stdout",
+    "type=response.output_item.done.item.type=tool_search_call",
+    "type=response.output_item.done.item.type=tool_search_call.created_by",
+    "type=response.output_item.done.item.type=tool_search_call.execution",
+    "type=response.output_item.done.item.type=tool_search_output",
+    "type=response.output_item.done.item.type=tool_search_output.created_by",
+    "type=response.output_item.done.item.type=tool_search_output.execution",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].external_web_access",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].search_content_types",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=apply_patch",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=apply_patch.allowed_callers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=code_interpreter.allowed_callers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=code_interpreter.container.file_ids",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=code_interpreter.container.memory_limit",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=code_interpreter.container.network_policy",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=code_interpreter.container.network_policy.type=allowlist",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=code_interpreter.container.network_policy.type=allowlist.domain_secrets",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=code_interpreter.container.network_policy.type=allowlist.domain_secrets[].value",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=computer",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=computer_use_preview.display_height",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=computer_use_preview.display_width",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=computer_use_preview.environment",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=custom.allowed_callers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=custom.async",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=custom.defer_loading",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=custom.format.type=grammar.definition",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=custom.format.type=grammar.syntax",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.filters.filters[].value",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.filters.value",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.max_num_results",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.ranking_options",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.ranking_options.hybrid_search",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.ranking_options.hybrid_search.embedding_weight",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.ranking_options.hybrid_search.text_weight",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.ranking_options.ranker",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.ranking_options.score_threshold",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=file_search.vector_store_ids",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=function.allowed_callers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=function.async",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=function.defer_loading",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=function.output_schema",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=image_generation",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=image_generation.action",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=image_generation.background",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=image_generation.input_fidelity",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=image_generation.input_image_mask",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=image_generation.output_compression",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=image_generation.partial_images",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=image_generation.size",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=local_shell",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.allowed_callers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.allowed_tools.read_only",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.allowed_tools.tool_names",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.connector_id",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.defer_loading",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.headers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.require_approval",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.require_approval.always",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.require_approval.always.read_only",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.require_approval.always.tool_names",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.require_approval.never",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.require_approval.never.read_only",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.require_approval.never.tool_names",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.server_description",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.server_label",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.server_url",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=mcp.tunnel_id",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.allowed_callers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.async",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.defer_loading",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.format.type=grammar.definition",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=custom.format.type=grammar.syntax",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=function.allowed_callers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=function.async",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=function.defer_loading",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=namespace.tools[].type=function.output_schema",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=programmatic_tool_calling",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.allowed_callers",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.file_ids",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.memory_limit",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.network_policy",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist.domain_secrets",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.network_policy.type=allowlist.domain_secrets[].value",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills[].type=inline",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference.skill_id",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_auto.skills[].type=skill_reference.version",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_reference",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=container_reference.container_id",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=local",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=local.skills",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=shell.environment.type=local.skills[].path",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=tool_search",
+    "type=response.output_item.done.item.type=tool_search_output.tools[].type=tool_search.execution",
+    "type=response.output_item.done.item.type=web_search_call",
+    "type=response.output_item.done.item.type=web_search_call.action",
+    "type=response.output_item.done.item.type=web_search_call.action.type=find_in_page",
+    "type=response.output_item.done.item.type=web_search_call.action.type=find_in_page.pattern",
+    "type=response.output_item.done.item.type=web_search_call.action.type=open_page",
+    "type=response.output_item.done.item.type=web_search_call.action.type=search",
+    "type=response.output_item.done.item.type=web_search_call.action.type=search.queries",
+    "type=response.output_item.done.item.type=web_search_call.action.type=search.sources",
+    "type=response.output_text.annotation.added.annotation.type=container_file_citation",
+    "type=response.output_text.annotation.added.annotation.type=container_file_citation.container_id",
+    "type=response.output_text.annotation.added.annotation.type=file_citation",
+    "type=response.output_text.annotation.added.annotation.type=file_path",
+    "type=response.output_text.annotation.added.annotation_index",
+];
 
 /// Build an IR `Image` block from a Responses `input_image` content object. Prefers an inline
 /// `image_url` (parsed via the shared `parse_image_url` into a `Base64`/`Url` source). Otherwise, an
@@ -1288,18 +2240,35 @@ const USAGE: &[UsageCount] = &[
     ),
 ];
 
+/// Stable identifier of the identity [`read_responses_usage`] checks `usage.total_tokens` against,
+/// carried on [`crate::codec::ir::UsageIdentityNote::identity`].
+const RESPONSES_USAGE_IDENTITY: &str = "openai_responses.usage";
+
 /// A Responses `usage` object (`None` when absent) → the IR usage, through [`USAGE`]; the tier that
 /// served the response (RSP-17) is a word on `response`, not a count.
+///
+/// EVERY COUNT THE PINNED WIRE LOCK (`testing/llm-conformance/wire/responses.wire.json`) DECLARES
+/// UNDER `usage` IS EITHER LEDGERED OR A SLICE OF A LEDGERED TOTAL: `input_tokens` (input, less its
+/// cached and cache-write slices), `cached_tokens` (cache read), `cache_write_tokens` (cache
+/// write), `output_tokens` (output); `output_tokens_details.reasoning_tokens` is a slice of
+/// `output_tokens`. `total_tokens` is OpenAI's sum, never a unit: it is cross-checked against the
+/// ledgered classes and a gap is WARN-logged and carried as the usage identity note, never ledgered.
 fn read_responses_usage(
     usage: Option<&serde_json::Value>,
     response: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
-    let mut usage = crate::codec::usage_count::read_usage("openai_responses", usage, USAGE)?;
-    usage.detail.service_tier = crate::codec::carry::read_word(
-        crate::codec::openai_chat::map::WORDS_OPENAI_SERVED_TIER,
+    let mut ir = crate::codec::usage_count::read_usage(COUNT_LABEL, usage, USAGE)?;
+    ir.detail.usage_identity_note = crate::codec::usage_count::stated_total_note(
+        COUNT_LABEL,
+        RESPONSES_USAGE_IDENTITY,
+        usage.and_then(|u| u.get(keys::TOTAL_TOKENS)),
+        &ir,
+    );
+    ir.detail.service_tier = crate::codec::carry::read_word(
+        map::WORDS_SERVED_TIER,
         response.and_then(|r| r.get(keys::SERVICE_TIER)),
     );
-    Ok(usage)
+    Ok(ir)
 }
 
 /// OpenAI Responses streaming writer.
@@ -2228,8 +3197,7 @@ mod tests;
 #[path = "tests/input_hardening_tests.rs"]
 mod input_hardening_tests;
 
-// The field-coverage carry instruments (qa/field-coverage.status → `carried <fn>`). Each named
-// test FAILS if its field stops surviving the read→IR→write hop, per the gate's rigor contract.
+// The field carry instruments: each test FAILS if its field stops surviving the read→IR→write hop.
 #[cfg(test)]
 #[path = "tests/field_carry_tests.rs"]
 mod field_carry_tests;
@@ -2258,3 +3226,150 @@ mod ir_slot_wiring_tests;
 #[cfg(test)]
 #[path = "tests/ir_round3_tests.rs"]
 mod ir_round3_tests;
+
+#[cfg(test)]
+#[path = "tests/usage_census_tests.rs"]
+mod usage_census_tests;
+
+#[cfg(test)]
+#[path = "tests/df_map_audit_tests.rs"]
+mod df_map_audit_tests;
+
+// ── DF-MAP answer slots (ARCHITECT rulings 2026-10-02, items 2 and 5) ──────────────────────────────
+
+const ACTION: &str = "action";
+const SOURCES: &str = "sources";
+const SEARCH: &str = "search";
+const FILE_CITATION: &str = "file_citation";
+const CONTAINER_FILE_CITATION: &str = "container_file_citation";
+const FILE_PATH: &str = "file_path";
+const FILE_ID: &str = "file_id";
+const FILENAME: &str = "filename";
+const INDEX: &str = "index";
+
+/// A `web_search_call` output item -> [`crate::codec::ir::IrBlock::HostedToolRecord`]: its `id`, its
+/// `status`, and its search action's `sources[].url` as results (the query has no IR member).
+fn read_web_search_call(item: &serde_json::Value) -> crate::codec::ir::IrBlock {
+    let text = |k: &str| item.get(k).and_then(|v| v.as_str()).map(String::from);
+    let results = item
+        .get(ACTION)
+        .and_then(|a| a.get(SOURCES))
+        .and_then(|s| s.as_array())
+        .map(|sources| {
+            sources
+                .iter()
+                .filter_map(|src| {
+                    Some(crate::codec::ir::IrSearchResult {
+                        url: src.get(keys::URL)?.as_str()?.to_string(),
+                        title: None,
+                        snippet: None,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    crate::codec::ir::IrBlock::HostedToolRecord {
+        kind: crate::codec::ir::IrHostedToolKind::WebSearch,
+        call_id: text(keys::ID),
+        status: text(keys::STATUS),
+        results,
+    }
+}
+
+/// A hosted web-search record -> a `web_search_call` output item (`id` synthesized when the record
+/// carries none, `status` `completed` when it names none, its results as the search action's
+/// `sources`).
+fn write_web_search_call(
+    call_id: Option<&str>,
+    status: Option<&str>,
+    results: &[crate::codec::ir::IrSearchResult],
+) -> serde_json::Value {
+    let sources: Vec<serde_json::Value> = results
+        .iter()
+        .map(|r| serde_json::json!({ (keys::TYPE): keys::URL, (keys::URL): r.url }))
+        .collect();
+    serde_json::json!({
+        (keys::TYPE): ITEM_TYPE_WEB_SEARCH_CALL,
+        (keys::ID): call_id.map_or_else(|| synthesize_item_id(ITEM_ID_PREFIX_WEB_SEARCH), String::from),
+        (keys::STATUS): status.unwrap_or(STATUS_COMPLETED),
+        (ACTION): { (keys::TYPE): SEARCH, (SOURCES): sources },
+    })
+}
+
+/// The id prefix of a synthesized web-search item.
+const ITEM_ID_PREFIX_WEB_SEARCH: &str = "ws";
+
+/// The file annotations of an `output_text` part (`file_citation`, `container_file_citation`,
+/// `file_path`) -> IR citations carrying [`crate::codec::ir::IrFileLocation`]; url citations are
+/// read by `url_citation_wire`.
+fn read_file_annotations(
+    annotations: Option<&serde_json::Value>,
+) -> Vec<crate::codec::ir::IrCitation> {
+    let Some(items) = annotations.and_then(|a| a.as_array()) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|a| {
+            let kind = a.get(keys::TYPE)?.as_str()?;
+            if ![FILE_CITATION, CONTAINER_FILE_CITATION, FILE_PATH].contains(&kind) {
+                return None;
+            }
+            let text = |k: &str| a.get(k).and_then(|v| v.as_str()).map(String::from);
+            Some(crate::codec::ir::IrCitation {
+                kind: Some(kind.to_string()),
+                file: Some(crate::codec::ir::IrFileLocation {
+                    file_id: text(FILE_ID),
+                    filename: text(FILENAME),
+                    index: a.get(INDEX).and_then(|v| v.as_i64()),
+                }),
+                raw: Some(a.clone()),
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
+/// The IR file citations of a text block as Responses `file_citation` annotations (a citation that
+/// arrived as a container or path annotation keeps its own kind, from `raw`).
+fn file_annotations(citations: &[crate::codec::ir::IrCitation]) -> Vec<serde_json::Value> {
+    citations
+        .iter()
+        .filter_map(|c| {
+            let f = c.file.as_ref()?;
+            if let Some(raw) = &c.raw {
+                return Some(raw.clone());
+            }
+            let mut a = serde_json::Map::new();
+            a.insert(keys::TYPE.to_string(), serde_json::json!(FILE_CITATION));
+            if let Some(id) = &f.file_id {
+                a.insert(FILE_ID.to_string(), serde_json::json!(id));
+            }
+            if let Some(name) = &f.filename {
+                a.insert(FILENAME.to_string(), serde_json::json!(name));
+            }
+            a.insert(INDEX.to_string(), serde_json::json!(f.index.unwrap_or(0)));
+            Some(serde_json::Value::Object(a))
+        })
+        .collect()
+}
+
+const MODERATION: &str = "moderation";
+const MODERATION_INPUT: &str = "input";
+const MODERATION_OUTPUT: &str = "output";
+const MODERATION_CATEGORIES: &str = "categories";
+
+/// A response's `moderation.{input,output}` (each a `moderation_result`) -> the IR's safety verdicts
+/// (DF-MAP item 1): one flagged verdict per category set `true`; scores do not cross.
+fn read_moderation(body: &serde_json::Value) -> Vec<crate::codec::ir::IrSafetyVerdict> {
+    [MODERATION_INPUT, MODERATION_OUTPUT]
+        .into_iter()
+        .flat_map(|side| {
+            crate::codec::ir::IrSafetyVerdict::flagged_categories(
+                body.get(MODERATION)
+                    .and_then(|m| m.get(side))
+                    .and_then(|r| r.get(MODERATION_CATEGORIES)),
+            )
+        })
+        .collect()
+}

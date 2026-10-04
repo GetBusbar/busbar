@@ -17,7 +17,7 @@
 #   therefore busbar-kernel and busbar-contract today — see NEUTRAL_PKGS below, the one place that
 #   pair is named.
 #
-#   ci.yml already runs the WEAK form of this (the `deletion-test-matrix` job): build the neutral
+#   the removed ci.yml already runs the WEAK form of this (the `deletion-test-matrix` job): build the neutral
 #   crates with a plane's cargo FEATURE off. That proves the neutral crates do not *reference* the
 #   plane behind its feature, but it does NOT prove the crate can be *removed* — a `#[path]` witness
 #   dual-compile, a dev-dependency back-edge, or a stray `../busbar-<P>/src` include all survive a
@@ -73,7 +73,7 @@
 #                     plane-purity-lint.sh --baseline.
 #   <plane>           BLOCKING (fail-closed). Run the strong form for one plane in $PLANES; exit 0 =
 #                     PASS (neutral crates + bin compile without the crate), exit 1 = FAIL (still
-#                     coupled). This is the permanent per-plane gate the ci.yml matrix leg calls once
+#                     coupled). This is the permanent per-plane gate the the removed ci.yml matrix leg calls once
 #                     the extraction is done.
 #   --all             BLOCKING for every plane in $PLANES at once (exit 1 if ANY plane still couples),
 #                     plus the same roster-coverage line --baseline prints — a PASS here is a pass for
@@ -177,7 +177,7 @@ report_coverage() {
 # off busbar-substrate) was deleted too, its values to busbar-contract and busbar-kernel (#83a SD-8). A name here that stops
 # existing hits the same cargo refusal `run_check` already surfaces as a FAIL (cargo errors fast on an
 # unknown `-p` package spec) — loud, not a silent narrowing of what got checked. busbar-api retired
-# into busbar-contract (fold F4), so the other neutral crate is the contract, the same pair ci.yml's
+# into busbar-contract (fold F4), so the other neutral crate is the contract, the same pair the removed ci.yml's
 # deletion-test matrix builds.
 NEUTRAL_PKGS="busbar-kernel busbar-contract"
 neutral_pkg_args() {   # echo "-p busbar-kernel -p busbar-contract"

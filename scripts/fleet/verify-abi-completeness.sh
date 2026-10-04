@@ -74,7 +74,7 @@ if [ -n "$missing" ]; then
        "route these RecordStore methods that this plugin implements:${missing}." \
        "Packing a cdylib against this ABI would ship a plugin whose calls to those methods take" \
        "RecordStore's DEFAULT bodies at runtime — succeeding silently while dropping the data." \
-       "Do not release. Advance the fleet pin (plugins.yaml fleet.busbar_ref, then cargo xtask fleet sync) to a busbar commit whose" \
+       "Do not release. Advance the fleet pin (plugins.yaml fleet.busbar_ref, then busbar-release plugin sync) to a busbar commit whose" \
        "busbar-contract store_dispatch carries these methods." >&2
   exit 1
 fi

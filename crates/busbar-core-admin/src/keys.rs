@@ -31,6 +31,7 @@ where
     Option::<T>::deserialize(de).map(Some)
 }
 
+use crate::admin_state::AppAdmin as _;
 use busbar_kernel::admin::v1::contract::taxonomy::Cond;
 use busbar_kernel::admin::v1::contract::AdminError;
 use busbar_kernel::audit_ring as audit;
@@ -946,13 +947,7 @@ pub(crate) async fn create_key(
                     audit::OUTCOME_APPLIED,
                     &actor,
                 );
-                installed.versions.record(
-                    installed.config_version,
-                    &actor,
-                    &format!("group.provision group:{group} (auto, parent {parent})"),
-                    &installed.hook_registry,
-                    &installed.global_hooks,
-                );
+                installed.record_version(&actor, &format!("group.provision group:{group} (auto, parent {parent})"));
             }
             let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
             let minted = (|| -> busbar_kernel::governance::RecordStoreResult<MintOutcome> {

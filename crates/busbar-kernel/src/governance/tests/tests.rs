@@ -326,7 +326,7 @@ async fn test_concurrent_govstate_admission_respects_cap() {
 }
 
 /// The charge -> refund -> re-admit money cycle through `GovState`. Charge a key's GROUP to
-/// its cap so the next request is rejected; `refund_request` reverses one charge; a new request is
+/// its cap so the next request is rejected; `refund_charge` reverses one charge; a new request is
 /// admitted again. Proves a refunded fee genuinely frees budget on the live admission path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_charge_refund_readmit_cycle() {
@@ -347,10 +347,8 @@ async fn test_charge_refund_readmit_cycle() {
         .unwrap();
     let at = 1_700_000_000u64;
     // Charge to the cap.
-    assert!(
-        gov.try_admit(&cost, &key, "", at).is_ok(),
-        "1st (1c) admitted, spends the whole 1c group cap"
-    );
+    let first = (gov.try_admit(&cost, &key, "", at))
+        .expect("1st (1c) admitted, spends the whole 1c group cap");
     // At cap - next request rejected, NAMING the group's budget bucket.
     match gov.try_admit(&cost, &key, "", at).unwrap_err() {
         LimitBlocked::Limit {
@@ -361,7 +359,7 @@ async fn test_charge_refund_readmit_cycle() {
         other => panic!("expected the group budget to block, got {other:?}"),
     }
     // Refund reverses the in-memory charge synchronously (the fee derives from the request count).
-    gov.refund_request(&cost, &key, "", at);
+    gov.refund_charge(first.charge());
     assert_eq!(
         gov.usage_for(&cost, &key.id, at)
             .unwrap()
@@ -1014,13 +1012,13 @@ fn test_additive_flush_carries_refund_deltas() {
 
     // Charge 2 requests, flush (durable requests=2, billable=2), then refund one and flush again.
     assert!(gov.try_admit(&cost, &k, "", 1_700_000_000).is_ok());
-    assert!(gov.try_admit(&cost, &k, "", 1_700_000_000).is_ok());
+    let second = gov.try_admit(&cost, &k, "", 1_700_000_000).expect("admits");
     gov.flush_budgets();
     let u = store.get_usage("k_refund", 0).unwrap();
     assert_eq!(u.requests, 2);
     assert_eq!(u.billable_requests, 2);
 
-    gov.refund_request(&cost, &k, "", 1_700_000_000);
+    gov.refund_charge(second.charge());
     gov.flush_budgets();
     let u = store.get_usage("k_refund", 0).unwrap();
     assert_eq!(
@@ -1712,6 +1710,7 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
         flushed_billable_requests: 0,
         models: Vec::new(),
         fee_eras: Default::default(),
+        rolled: Vec::new(),
         dirty,
         last_touch: now,
     };
@@ -1789,6 +1788,7 @@ fn test_budget_sweep_staleness_boundary_is_exact() {
         flushed_billable_requests: 0,
         models: Vec::new(),
         fee_eras: Default::default(),
+        rolled: Vec::new(),
         dirty: false,
         last_touch,
     };
@@ -1867,6 +1867,7 @@ fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
         flushed_billable_requests: 0,
         models: Vec::new(),
         fee_eras: Default::default(),
+        rolled: Vec::new(),
         dirty: false,
         last_touch: now,
     };
@@ -3472,6 +3473,7 @@ fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
         flushed_billable_requests: requests,
         models: Vec::new(),
         fee_eras: Default::default(),
+        rolled: Vec::new(),
         dirty,
         last_touch,
     };
@@ -4414,6 +4416,7 @@ fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
         flushed_billable_requests: 7,
         models: Vec::new(),
         fee_eras: Default::default(),
+        rolled: Vec::new(),
         dirty: false,
         last_touch: now - max_window - 1,
     };
@@ -4477,6 +4480,7 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
         flushed_billable_requests: 1,
         models: Vec::new(),
         fee_eras: Default::default(),
+        rolled: Vec::new(),
         dirty: false,
         last_touch: now,
     };
@@ -4647,6 +4651,7 @@ fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
         flushed_billable_requests: 7,
         models: Vec::new(),
         fee_eras: Default::default(),
+        rolled: Vec::new(),
         dirty: false,
         last_touch: now - max_window - 1,
     };
@@ -4695,6 +4700,7 @@ fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix(
         flushed_billable_requests: 1,
         models: Vec::new(),
         fee_eras: Default::default(),
+        rolled: Vec::new(),
         dirty: false,
         last_touch: now,
     };
@@ -5643,12 +5649,14 @@ fn a_planes_refund_returns_its_own_fee_unit_never_the_flat_base() {
     let (store, gov, k) = team_gov();
     let cost = plane_fee_cost(1_000);
     let tp = plane_pool("tp", "srv_read");
+    let mut charged = Vec::new();
     for _ in 0..2 {
-        assert!(gov.try_admit(&cost, &k, "", AT).is_ok(), "a pools request");
-        assert!(gov.try_admit(&cost, &k, &tp, AT).is_ok(), "a `tp` request");
+        let pools = gov.try_admit(&cost, &k, "", AT).expect("a pools request");
+        let tp = gov.try_admit(&cost, &k, &tp, AT).expect("a `tp` request");
+        charged.push((pools, tp));
     }
     assert_eq!(spend(&gov, &cost), 16, "2 × 5 + 2 × 3");
-    gov.refund_request(&cost, &k, &tp, AT);
+    gov.refund_charge(charged[0].1.charge());
     assert_eq!(
         spend(&gov, &cost),
         13,
@@ -5673,7 +5681,7 @@ fn a_planes_refund_returns_its_own_fee_unit_never_the_flat_base() {
         "a refund never gives back a request slot"
     );
     // The pools plane's refund is 1.5.5's arm, unchanged.
-    gov.refund_request(&cost, &k, "", AT);
+    gov.refund_charge(charged[0].0.charge());
     assert_eq!(spend(&gov, &cost), 8);
 }
 
@@ -5967,4 +5975,79 @@ fn a_registry_key_standing_is_unchanged_by_the_bindings_resolver() {
 /// read from the kernel's frozen-text fixture (F-T) rather than spelled here.
 fn signed_kind() -> String {
     crate::tests::frozen_str("signed_credential_kind")
+}
+
+/// THE CREDENTIAL READ (`records.secret`, AUTH-DOOR Q2): a live credential reads its own secret,
+/// live; an unknown id reads the fixed dummy secret, not live; a revoked key's credential reads not
+/// live. RED: an unknown id that answered no secret, or a revoked key read live, fails here.
+#[test]
+fn the_credential_read_answers_a_secret_for_any_id_and_live_only_for_a_live_credential() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new(store, None).unwrap();
+    let now = busbar_kernel::store::now();
+    let (key, _bearer, akid, secret) = gov
+        .create_key_with_aws(
+            NewKeySpec {
+                name: "read".to_string(),
+                ..Default::default()
+            },
+            now,
+        )
+        .unwrap();
+    let (got, live) = gov.credential_secret(&signed_kind(), &akid, now);
+    assert_eq!(
+        (got.expose_secret().as_str(), live),
+        (secret.as_str(), true)
+    );
+    let (got, live) = gov.credential_secret(&signed_kind(), "AKIAdoesnotexist0000", now);
+    assert_eq!(
+        (got.expose_secret().as_str(), live),
+        (crate::auth::DUMMY_SECRET, false)
+    );
+    gov.revoke(&key.id, "test").unwrap();
+    assert!(
+        !gov.credential_secret(&signed_kind(), &akid, now).1,
+        "a revoked key is not live"
+    );
+}
+
+/// THE CREDENTIAL READ'S COST does not say whether the id exists: over many interleaved runs, the
+/// median time of a known id's read and an unknown id's read stay within a factor of each other. A
+/// short-circuit on the unknown id (no copy, no revocation check) moves the medians apart well
+/// beyond run-to-run jitter, which the median over many runs absorbs.
+#[test]
+fn the_credential_read_costs_the_same_for_a_known_and_an_unknown_id() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new(store, None).unwrap();
+    let now = busbar_kernel::store::now();
+    let (_key, _bearer, akid, _secret) = gov
+        .create_key_with_aws(
+            NewKeySpec {
+                name: "timing".to_string(),
+                ..Default::default()
+            },
+            now,
+        )
+        .unwrap();
+    let kind = signed_kind();
+    let time = |id: &str| {
+        let t = std::time::Instant::now();
+        for _ in 0..64 {
+            std::hint::black_box(gov.credential_secret(&kind, std::hint::black_box(id), now));
+        }
+        t.elapsed().as_nanos()
+    };
+    let (mut known, mut unknown) = (Vec::new(), Vec::new());
+    for _ in 0..401 {
+        known.push(time(&akid));
+        unknown.push(time("AKIAdoesnotexist0000"));
+    }
+    known.sort_unstable();
+    unknown.sort_unstable();
+    let (k, u) = (known[200] as f64, unknown[200] as f64);
+    assert!(
+        (0.5..=2.0).contains(&(u / k)),
+        "median known {k} ns vs unknown {u} ns per 64 reads: the unknown id's read takes a \
+         different path"
+    );
 }

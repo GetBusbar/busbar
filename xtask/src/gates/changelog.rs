@@ -1156,7 +1156,7 @@ fn today_utc() -> String {
 
 /// Days since the epoch to a civil date, by the standard shift-the-era algorithm — no date crate,
 /// for the same reason there is no `cargo_metadata` crate here.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
+pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 }.div_euclid(146_097);
     let doe = (z - era * 146_097) as u64;

@@ -1,22 +1,19 @@
 {
   "_generated": "by `cargo xtask gate conformance-sync --write`; DO NOT EDIT — the drift gate is fatal",
-  "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
+  "commit": "",
   "generated_at": "2026-09-28T19:37:44Z",
   "release": "1.6.0",
   "schema": "busbar.conformance.manifest/1",
   "suites": [
     {
-      "claim": "Conformant — passes official a2aproject/a2a-tck + a2a-harness + a2a-go reference peer",
-      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
-      "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1201",
+      "claim": null,
       "plan": "official a2aproject/a2a-tck + a2a-harness + a2a-go reference peer",
       "public": true,
-      "spec_version": "0.2.1",
+      "reason": "no verdict artifact for this commit",
       "standard": "Agent2Agent (A2A) Protocol",
-      "status": "pass",
+      "status": "not-run",
       "suite": "a2a",
-      "tier": "conformant",
-      "verified_at": "2026-09-19T14:05:00Z"
+      "tier": "conformant"
     },
     {
       "claim": null,
@@ -49,95 +46,74 @@
       "tier": "spec-conformant"
     },
     {
-      "claim": "Spec-conformant — Anthropic Messages API",
-      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
-      "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1202",
+      "claim": null,
       "plan": "spec battery vs pinned vendor OpenAPI",
       "public": true,
-      "spec_version": "2023-06-01",
+      "reason": "no verdict artifact for this commit",
       "standard": "Anthropic Messages API",
-      "status": "pass",
+      "status": "not-run",
       "suite": "llm-anthropic",
-      "tier": "spec-conformant",
-      "verified_at": "2026-09-19T14:05:00Z"
+      "tier": "spec-conformant"
     },
     {
-      "claim": "Spec-conformant — Amazon Bedrock Runtime API",
-      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
-      "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1203",
+      "claim": null,
       "plan": "spec battery vs pinned botocore models",
       "public": true,
-      "spec_version": "2023-09-30",
+      "reason": "no verdict artifact for this commit",
       "standard": "Amazon Bedrock Runtime API",
-      "status": "pass",
+      "status": "not-run",
       "suite": "llm-bedrock",
-      "tier": "spec-conformant",
-      "verified_at": "2026-09-19T14:05:00Z"
+      "tier": "spec-conformant"
     },
     {
-      "claim": "Spec-conformant — Cohere Chat API",
-      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
-      "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1204",
+      "claim": null,
       "plan": "spec battery vs pinned vendor OpenAPI",
       "public": true,
-      "spec_version": "2024-05-23",
+      "reason": "no verdict artifact for this commit",
       "standard": "Cohere Chat API",
-      "status": "pass",
+      "status": "not-run",
       "suite": "llm-cohere",
-      "tier": "spec-conformant",
-      "verified_at": "2026-09-19T14:05:00Z"
+      "tier": "spec-conformant"
     },
     {
-      "claim": "Spec-conformant — Google Gemini API",
-      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
-      "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1205",
+      "claim": null,
       "plan": "spec battery vs pinned discovery document",
       "public": true,
-      "spec_version": "v1beta",
+      "reason": "no verdict artifact for this commit",
       "standard": "Google Gemini API",
-      "status": "pass",
+      "status": "not-run",
       "suite": "llm-gemini",
-      "tier": "spec-conformant",
-      "verified_at": "2026-09-19T14:05:00Z"
+      "tier": "spec-conformant"
     },
     {
-      "claim": "Spec-conformant — OpenAI Chat Completions API",
-      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
-      "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1206",
+      "claim": null,
       "plan": "spec battery vs pinned vendor OpenAPI",
       "public": true,
-      "spec_version": "2024-10-01",
+      "reason": "no verdict artifact for this commit",
       "standard": "OpenAI Chat Completions API",
-      "status": "pass",
+      "status": "not-run",
       "suite": "llm-openai",
-      "tier": "spec-conformant",
-      "verified_at": "2026-09-19T14:05:00Z"
+      "tier": "spec-conformant"
     },
     {
-      "claim": "Spec-conformant — OpenAI Responses API",
-      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
-      "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1207",
+      "claim": null,
       "plan": "spec battery vs pinned vendor OpenAPI",
       "public": true,
-      "spec_version": "2025-03-11",
+      "reason": "no verdict artifact for this commit",
       "standard": "OpenAI Responses API",
-      "status": "pass",
+      "status": "not-run",
       "suite": "llm-responses",
-      "tier": "spec-conformant",
-      "verified_at": "2026-09-19T14:05:00Z"
+      "tier": "spec-conformant"
     },
     {
-      "claim": "Conformant — passes official modelcontextprotocol TCK + in-house battery",
-      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
-      "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1208",
+      "claim": null,
       "plan": "official modelcontextprotocol TCK + in-house battery",
       "public": true,
-      "spec_version": "2025-06-18",
+      "reason": "no verdict artifact for this commit",
       "standard": "Model Context Protocol",
-      "status": "pass",
+      "status": "not-run",
       "suite": "mcp",
-      "tier": "conformant",
-      "verified_at": "2026-09-19T14:05:00Z"
+      "tier": "conformant"
     },
     {
       "claim": null,
@@ -170,30 +146,24 @@
       "tier": "conformant"
     },
     {
-      "claim": "Spec-conformant — Google Gemini Live API",
-      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
-      "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1209",
+      "claim": null,
       "plan": "spec battery + replay",
       "public": true,
-      "spec_version": "v1beta",
+      "reason": "no verdict artifact for this commit",
       "standard": "Google Gemini Live API",
-      "status": "pass",
+      "status": "not-run",
       "suite": "voice-gemini-live",
-      "tier": "spec-conformant",
-      "verified_at": "2026-09-19T14:05:00Z"
+      "tier": "spec-conformant"
     },
     {
-      "claim": "Spec-conformant — OpenAI Realtime API",
-      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
-      "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1210",
+      "claim": null,
       "plan": "spec battery + replay",
       "public": true,
-      "spec_version": "2024-12-17",
+      "reason": "no verdict artifact for this commit",
       "standard": "OpenAI Realtime API",
-      "status": "pass",
+      "status": "not-run",
       "suite": "voice-openai-realtime",
-      "tier": "spec-conformant",
-      "verified_at": "2026-09-19T14:05:00Z"
+      "tier": "spec-conformant"
     },
     {
       "claim": null,

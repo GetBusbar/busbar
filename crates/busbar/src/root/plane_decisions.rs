@@ -214,6 +214,7 @@ pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUn
     on_config: None,
     opens_book: false,
     on_book: None,
+    end_post: None,
 };
 
 /// THE DECISIONS PLANE, READ BACK OUT OF THE AXIS IT WAS JUST INSTALLED INTO. Every other plane is

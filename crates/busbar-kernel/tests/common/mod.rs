@@ -348,6 +348,9 @@ macro_rules! step {
     }};
 }
 
+/// The plane driver's kernel steps: told nothing beyond the loop's own seats.
+impl busbar_kernel::plane_driver::DriverSteps for TestUnits {}
+
 impl Units for TestUnits {
     fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         step!(self, token, Arrival, StepName::Arrival, arrival_record())

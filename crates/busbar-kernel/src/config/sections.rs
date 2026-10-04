@@ -198,6 +198,77 @@ pub struct AdvancedCfg {
     /// `proxy::wire::maybe_attach_route_policy` — neither is rebuilt by a config apply.
     #[serde(default)]
     pub response_headers: ResponseHeadersCfg,
+    /// THE DESTINATION GUARD (OWNER ruling DESTINATION GUARD; THE DESIGN §5, ARCHITECT ruling
+    /// CRATES-14): refuse a provider dial, and an outbound connection whose target came from
+    /// request data or the network, when it is, or resolves to, a private, loopback, link-local,
+    /// CGNAT or unique-local address, unless `allow_destinations` names it; judged after resolution
+    /// and dialled at the judged address. Operator infrastructure (a database, secret service or
+    /// directory a plugin's config names) is allowed private and loopback (§5 egress-class table).
+    /// Default `true`. Cloud metadata is refused for every target, and stays refused when `false`,
+    /// unless an IP/CIDR entry of `allow_destinations` names it. BOOT-TIME (the connector is built
+    /// once).
+    #[serde(default = "default_block_private_addresses")]
+    pub block_private_addresses: bool,
+    /// Destinations always allowed, checked before any refusal: an exact host, a `*.domain`
+    /// wildcard (names under it, never the apex), an IP, or a CIDR. Default empty. BOOT-TIME.
+    #[serde(default)]
+    pub allow_destinations: Vec<String>,
+}
+
+/// `advanced.block_private_addresses`'s default (owner-signed: on).
+pub const DEFAULT_BLOCK_PRIVATE_ADDRESSES: bool = true;
+
+/// Serde's default for [`AdvancedCfg::block_private_addresses`].
+pub fn default_block_private_addresses() -> bool {
+    DEFAULT_BLOCK_PRIVATE_ADDRESSES
+}
+
+/// THE DESTINATION GUARD'S INPUTS, as one deployment states them (`RootCfg::destinations`): the
+/// connector builds its one guard from these. `Default` blocks nothing: state the owner default
+/// (`block_private_addresses: true`) where it is meant.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Destinations {
+    /// `advanced.block_private_addresses`.
+    pub block_private_addresses: bool,
+    /// `advanced.allow_destinations`, as written (each entry validated by the guard at boot).
+    pub allow: Vec<String>,
+    /// `security.allow_metadata_hosts`: the 1.5.5 carve-outs for every provider dial (read in the
+    /// provider class only, as 1.5.5 read them for provider URLs only).
+    pub legacy_allow: Vec<String>,
+    /// Each URL a provider names (its `base_url`, and its `token_url`), with that provider's own
+    /// `allow_metadata_hosts` (by provider name): carve-outs for a provider dial of the host the URL
+    /// names, and no other.
+    pub url_allow: Vec<(String, Vec<String>)>,
+    /// `security.blocked_metadata_hosts`: extra refusals inside the one guard.
+    pub blocked: Vec<String>,
+    /// `security.allow_all_metadata`: every cloud-metadata name and address admitted for a
+    /// provider dial, as 1.5.5.
+    pub allow_all_metadata: bool,
+}
+
+impl super::RootCfg {
+    /// The destination guard's inputs ([`Destinations`]).
+    #[must_use]
+    pub fn destinations(&self) -> Destinations {
+        let mut providers: Vec<_> = self.providers.iter().collect();
+        providers.sort_by(|a, b| a.0.cmp(b.0));
+        let url_allow = providers
+            .into_iter()
+            .filter(|(_, p)| !p.allow_metadata_hosts.is_empty())
+            .flat_map(|(_, p)| {
+                std::iter::once(&p.base_url)
+                    .chain(&p.token_url)
+                    .map(|url| (url.clone(), p.allow_metadata_hosts.clone()))
+            })
+            .collect();
+        Destinations {
+            legacy_allow: self.allow_metadata_hosts.clone(),
+            url_allow,
+            blocked: self.blocked_metadata_hosts.clone(),
+            allow_all_metadata: self.allow_all_metadata,
+            ..self.guard.clone()
+        }
+    }
 }
 
 impl Default for AdvancedCfg {
@@ -209,6 +280,8 @@ impl Default for AdvancedCfg {
             upstream_http1_only: false,
             upstream_h2_prior_knowledge: false,
             response_headers: ResponseHeadersCfg::default(),
+            block_private_addresses: DEFAULT_BLOCK_PRIVATE_ADDRESSES,
+            allow_destinations: Vec::new(),
         }
     }
 }

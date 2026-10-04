@@ -7,7 +7,8 @@
 //! ordered **preference** of members — not a single pick. The ordered list feeds the failover loop
 //! Busbar already has (`proxy::pick_among`): if the policy's #1 is tripped / excluded / at
 //! capacity, Busbar walks to #2 using the existing breaker machinery. One transport-agnostic trait
-//! (`RoutingPolicy`); a `kind: hook` dlopen PLUGIN (loaded over the hybrid ABI as a `DlopenPolicy`)
+//! (`RoutingPolicy`); a `kind: hook` PLUGIN (opened through the root's hook axis on the one
+//! dispatcher, called as a [`plugin::HookPolicy`])
 //! is the general out-of-core implementation, and the built-in ranking hooks (the `hooks/ranking/`
 //! workspace crate) are the compiled-in ones. (1.5.0 retired the out-of-process socket/webhook
 //! transports — a hook is now a signed, trusted, in-process plugin.)
@@ -122,14 +123,16 @@ pub fn any_content_hook(hooks: &std::collections::HashMap<String, crate::config:
 }
 
 /// The plugin-resolution environment threaded through every hook-transport builder: the validated
-/// plugin registry (the ONLY resolution surface — a hook's `plugin:` ref opens a `DlopenPolicy`
-/// through it) and the shared [`HookProjectors`] every `DlopenPolicy` uses to project the request and
-/// parse the reply through the engine's own fail-closed `wire` normalizers. Cheap to clone (both are
-/// `Arc`-backed); replaces the old `&reqwest::Client` the retired webhook transport needed.
+/// plugin registry and the root's hook axis over it (a hook's `plugin:` ref opens through the axis,
+/// called as a [`plugin::HookPolicy`], whose replies run through the kernel's own fail-closed `wire`
+/// normalizers). Cheap to clone (`Arc`-backed).
 #[derive(Clone)]
 pub struct HookEnv {
     pub registry: std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
-    pub projectors: std::sync::Arc<busbar_plugin_loader::hook::HookProjectors>,
+    /// THE HOOK AXIS over `registry`, as the composition root built it (`RootInstall::hook_axis`):
+    /// every `kind: hook` row, compiled in or dropped in, opened on the hook kind's ABI over the
+    /// process's one dispatcher. `None` = this build installs no axis: no hook opens.
+    axis: Option<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>>,
     /// The secret resolver used to turn any SecretRef-typed hook setting (e.g. a `licenseKey`) into
     /// its raw value BEFORE the settings cross the ABI at open/configure (ADR-0010). Shared with the
     /// store/auth open paths; the same fail-closed resolver. Held behind the NEUTRAL
@@ -151,20 +154,53 @@ pub struct HookEnv {
 }
 
 impl HookEnv {
-    /// Bundle a registry + the shared projectors + the secret resolver into the resolution
-    /// environment.
+    /// Bundle a registry, the hook axis the root builds over it and the secret resolver into the
+    /// resolution environment.
+    ///
+    /// # Errors
+    /// The root's axis refuses the registry (a hook row that will not state itself — a 1.5.5 JSON
+    /// hook plugin is refused here, naming the rebuild).
     pub fn new(
         registry: std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
         secret_resolver: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
-    ) -> Self {
-        HookEnv {
+    ) -> Result<Self, String> {
+        let axis = match crate::preflight::root_rows().hook_axis {
+            Some(build) => Some(build(&registry)?),
+            None => None,
+        };
+        Ok(HookEnv {
             registry,
-            projectors: plugin::projectors(),
+            axis,
             secret_resolver,
             banner_seen: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
             )),
-        }
+        })
+    }
+
+    /// Whether a `kind: hook` row answers to `module` here (the axis names it, or the registry
+    /// resolves it): a module neither knows is GENUINELY ABSENT.
+    fn knows(&self, module: &str) -> bool {
+        self.registry.resolve(module).is_some()
+            || self.axis.as_ref().is_some_and(|a| a.linked(module))
+    }
+
+    /// OPEN the hook `name` over the `kind: hook` row `module` with its resolved `settings`, through
+    /// the root's axis, as the routing seam calls it; every call bounded by `timeout_ms`.
+    fn open(
+        &self,
+        module: &str,
+        settings: &ResolvedSettings,
+        name: &str,
+        timeout_ms: u64,
+    ) -> Result<Arc<dyn RoutingPolicy>, String> {
+        let axis = self
+            .axis
+            .as_ref()
+            .ok_or_else(|| format!("no `kind: hook` plugin answers to '{module}'"))?;
+        let settings = serde_json::Value::Object(settings.clone());
+        let calls = axis.open(module, name, &settings, policy_timeout(timeout_ms))?;
+        Ok(plugin::HookPolicy::policy(calls, name))
     }
 
     /// Resolve a hook's opaque `settings:` map — substituting any SecretRef-typed value (e.g. a
@@ -236,7 +272,7 @@ impl HookEnv {
             // a plugin that actually resolves — `plugins_preflight` already loudly flags a
             // referenced-but-unloadable plugin, and a truly missing plugin degrades to "gate absent"
             // exactly as before. This is the DISTINCTION between absent (ok) and open()-failed (abort).
-            if self.registry.resolve(&hook.plugin).is_none() {
+            if !self.knows(&hook.plugin) {
                 continue;
             }
             // The plugin IS present: resolve its (already-secret-substituted) settings and OPEN it.
@@ -245,9 +281,7 @@ impl HookEnv {
             let resolved = self
                 .resolve_hook_settings(&hook.settings)
                 .map_err(|e| format!("hook '{name}' settings: {e}"))?;
-            let cfg_json = serde_json::Value::Object(resolved).to_string();
-            self.registry
-                .open_hook(&hook.plugin, &cfg_json, name, self.projectors.clone())
+            self.open(&hook.plugin, &resolved, name, hook.timeout_ms)
                 .map_err(|e| {
                     format!(
                         "gate hook '{name}' (plugin '{}') failed to open; refusing to boot/reload \
@@ -283,15 +317,15 @@ pub fn resolve_policy(cfg: &crate::config::PoolCfg) -> Option<ResolvedPolicy> {
     // 1.2.1's `route: weighted` — so `native_name()` returns `None` here and we take the `?`
     // short-circuit BELOW regardless of the ranking feature.
     let name = cfg.policy.native_name()?;
-    // The non-weighted ranking strategies are aliases of the linked `hooks-ranking` row on the hook
-    // axis. Compiled OUT, no row answers (a config_validate BOOT ERROR, so unreachable in a running
-    // server); degrade to None (SWRR) as belt-and-suspenders.
-    let policy = crate::preflight::builtin_ranking(name)?;
+    // The non-weighted ranking strategies are hook words of the linked `hooks-ranking` door on the
+    // hook axis. Compiled OUT, no door claims them (a config_validate BOOT ERROR, so unreachable in a
+    // running server); degrade to None (SWRR) as belt-and-suspenders.
+    let (policy, timeout) = crate::preflight::builtin_ranking(name)?;
     Some(ResolvedPolicy::Policy {
         policy,
         on_error: crate::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
-        timeout: policy_timeout(crate::config::DEFAULT_POLICY_TIMEOUT_MS),
+        timeout,
         // Native policies rank on live signals and have no reader for prompt/identity.
         send_prompt: false,
         send_user: false,
@@ -530,8 +564,12 @@ impl RoutingPolicy for RewriteOnError {
         self.inner.status(budget).await
     }
 
-    async fn notify(&self, projection: &[u8], budget: std::time::Duration) {
-        self.inner.notify(projection, budget).await;
+    async fn notify(
+        &self,
+        tap: Arc<busbar_contract::abi::host::hook::NotifyFrame>,
+        budget: std::time::Duration,
+    ) {
+        self.inner.notify(tap, budget).await;
     }
 }
 
@@ -719,9 +757,8 @@ fn admits_rewrite(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> b
     effective_access(name, hook, env).0.can_rewrite()
 }
 
-/// Open the `kind: hook` PLUGIN backing this hook as a [`busbar_plugin_loader::DlopenPolicy`] — the
-/// in-process replacement for the retired socket/webhook transports. The plugin's opaque `settings:`
-/// map is its `open` config (verbatim JSON). `name` + `settings_version` are carried for diagnostics
+/// Open the `kind: hook` PLUGIN backing this hook through the root's hook axis, as a
+/// [`plugin::HookPolicy`]. The plugin's opaque `settings:` map is its `open` config (verbatim JSON). `name` + `settings_version` are carried for diagnostics
 /// and the configure ack. `None` when the reference doesn't resolve to a loadable `kind: hook`
 /// plugin (the plugin pre-flight already fails boot on that, so a `None` here is a safety net that
 /// degrades to "gate absent", never a stranded request). A SecretRef in `settings` that fails to
@@ -786,11 +823,7 @@ fn gate_transport_uncached(
             return None;
         }
     };
-    let cfg_json = serde_json::Value::Object(resolved.clone()).to_string();
-    match env
-        .registry
-        .open_hook(&hook.plugin, &cfg_json, name, env.projectors.clone())
-    {
+    match env.open(&hook.plugin, &resolved, name, hook.timeout_ms) {
         Ok(policy) => Some((policy, resolved)),
         Err(e) => {
             tracing::warn!(
@@ -1388,8 +1421,8 @@ pub async fn fetch_schema(
 ) -> Option<serde_json::Value> {
     let (transport, _resolved) =
         gate_transport_offloaded(name, hook, env, settings_version).await?;
-    // `DlopenPolicy::describe` returns the schema member ALREADY EXTRACTED from the plugin's
-    // self-description envelope (via the `describe_schema` projector), so the /schema read serves a
+    // `HookPolicy::describe` returns the schema member ALREADY EXTRACTED from the plugin's
+    // self-description envelope, so the /schema read serves a
     // SINGLE nest (the endpoint adds its own {name, schema} wrapper). No schema member (incl. the
     // `{}` unsupported reply) = no schema (the endpoint reports null).
     transport
@@ -1418,10 +1451,10 @@ fn resolve_on_error_chain<'a>(
         }
         // A built-in ranking strategy: sync, no I/O, cannot fail — one link, then done. Compiled
         // out, the name falls through to the registry lookup below (and validation errored at boot).
-        if let Some(policy) = crate::preflight::builtin_ranking(current) {
+        if let Some((policy, timeout)) = crate::preflight::builtin_ranking(current) {
             chain.push(FallbackHook {
                 policy,
-                timeout: policy_timeout(crate::config::DEFAULT_POLICY_TIMEOUT_MS),
+                timeout,
                 send_prompt: false,
                 send_user: false,
                 on_empty: crate::config::PolicyOnError::Reject,

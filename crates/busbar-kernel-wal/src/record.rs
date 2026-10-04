@@ -14,7 +14,7 @@
 //! one of its parts has been read and verified — a body whose first three parts landed and whose
 //! fourth was torn away is not a shorter record, it is an absent one.
 
-use sha2::{Digest as _, Sha256};
+use ring::digest::{Context, SHA256};
 
 /// How long one frame is, header and payload together. The record cap the contract pins.
 pub const FRAME_BYTES: usize = 512;
@@ -167,8 +167,9 @@ pub enum FrameError {
     /// either the frame was half written, or it was edited; a version-2 frame reports this only once
     /// its header check has passed, so the frame was written whole and then altered.
     DigestMismatch,
-    /// A version-2 frame's header check does not match its header: the write stopped inside the
-    /// header, which is what a torn write looks like.
+    /// A version-2 frame's header check does not match its header. When nothing was written past
+    /// the check, the write stopped inside the header, which is what a torn write looks like; a
+    /// frame written past it was written whole and then altered (see [`written_whole`]).
     HeaderMismatch,
 }
 
@@ -263,7 +264,9 @@ pub(crate) fn encode_legacy(record: &Record) -> Vec<[u8; FRAME_BYTES]> {
 
 /// The header check a version-2 frame carries over its fixed header fields.
 fn header_check(frame: &[u8; FRAME_BYTES]) -> [u8; 4] {
-    let digest: [u8; 32] = Sha256::digest(&frame[0..HEADER_CHECKED_BYTES]).into();
+    let mut hasher = Context::new(&SHA256);
+    hasher.update(&frame[0..HEADER_CHECKED_BYTES]);
+    let digest = digest32(hasher);
     [digest[0], digest[1], digest[2], digest[3]]
 }
 
@@ -287,6 +290,49 @@ pub fn checked_header(frame: &[u8; FRAME_BYTES]) -> Option<(FrameHeader, &[u8])>
     let (header, payload_len) = read_header(frame).ok()?;
     let payload = &frame[FRAME_HEADER_BYTES..FRAME_HEADER_BYTES + usize::from(payload_len)];
     Some((header, payload))
+}
+
+/// Whether `frame` was WRITTEN WHOLE: it holds a byte past its header check.
+///
+/// A write that stops inside a frame's header leaves the rest of the frame as the zeros the segment
+/// claimed ahead of it, so it has nothing past the check; a frame that does was written in full
+/// (its digest alone is 32 bytes that are never all zero). So a frame whose header does not check
+/// — its magic gone, a header field changed — but which answers yes here was acknowledged and then
+/// altered, and is never a torn tail.
+///
+/// A version-1 frame keeps the rule it was written under: it has no header check to tell a tear in
+/// its header from an edit, so this is `false` for it whatever its bytes say.
+#[must_use]
+pub fn written_whole(frame: &[u8; FRAME_BYTES]) -> bool {
+    frame_version(frame) != FRAME_VERSION_LEGACY
+        && frame[HEADER_CHECK_OFFSET + 4..].iter().any(|&b| b != 0)
+}
+
+/// The header of a version-2 frame that was [`written_whole`] but whose header does not check, read
+/// as the bytes now stand; `None` for anything else.
+///
+/// The identity and payload are UNVERIFIED — the damaged byte may sit in them — so they are good
+/// for one thing only: naming, conservatively, what a quarantine set aside. The payload length is
+/// clamped to the payload area, because the damaged byte may be the length itself.
+#[must_use]
+pub fn unchecked_whole(frame: &[u8; FRAME_BYTES]) -> Option<(FrameHeader, &[u8])> {
+    if frame_version(frame) != FRAME_VERSION
+        || !written_whole(frame)
+        || checked_header(frame).is_some()
+    {
+        return None;
+    }
+    let payload_len = u16::from_le_bytes([frame[32], frame[33]]);
+    let header = FrameHeader {
+        node: u64::from_le_bytes(frame[8..16].try_into().unwrap_or([0; 8])),
+        node_seq: u64::from_le_bytes(frame[16..24].try_into().unwrap_or([0; 8])),
+        part_index: u32::from_le_bytes([frame[24], frame[25], frame[26], frame[27]]),
+        part_count: u32::from_le_bytes([frame[28], frame[29], frame[30], frame[31]]),
+        payload_len,
+        more_parts: frame[6] & FLAG_MORE_PARTS != 0,
+    };
+    let end = FRAME_HEADER_BYTES + usize::min(usize::from(payload_len), FRAME_PAYLOAD_BYTES);
+    Some((header, &frame[FRAME_HEADER_BYTES..end]))
 }
 
 /// The header fields, bounds-checked. Shared by the verifying and the header-only reads.
@@ -319,10 +365,17 @@ fn read_header(frame: &[u8; FRAME_BYTES]) -> Result<(FrameHeader, u16), FrameErr
 /// The digest a frame carries: over the header up to the digest field, then over the payload area.
 /// The digest field itself is skipped, which is what lets it be filled in afterwards.
 fn frame_digest(frame: &[u8; FRAME_BYTES]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
+    let mut hasher = Context::new(&SHA256);
     hasher.update(&frame[0..DIGEST_OFFSET]);
     hasher.update(&frame[FRAME_HEADER_BYTES..]);
-    hasher.finalize().into()
+    digest32(hasher)
+}
+
+/// A finished SHA-256 (ring, the one crypto backend) as the 32 bytes the frame and the journal store.
+pub(crate) fn digest32(hasher: Context) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out.copy_from_slice(hasher.finish().as_ref());
+    out
 }
 
 /// Read one frame back: its header, and the payload bytes it really carries.

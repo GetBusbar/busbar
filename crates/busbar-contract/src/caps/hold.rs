@@ -80,7 +80,7 @@
 //! and it is worth being exact about which does what. `#[must_use]` catches the accident above. The
 //! cell catches the double take. The canary catches the omission, after the fact, in arithmetic.
 //! The deliberate escape is caught by a source scan — the construction gate's `hold-escapes` rule
-//! — and the symbols it looks for are written down in the crate's `fixtures/lint_rules.rs` rather
+//! — and the symbols it looks for are written down in the crate's `fixtures/lint_rules.txt` rather
 //! than left to a reviewer to remember; a test in this crate holds the two tables to each other.
 
 use crate::caps::capability::{Admittance, DurableWrite, Exit, Recover, WriteMoney};
@@ -680,11 +680,10 @@ impl Posted {
         // flag. The hold's counter knows what the unit spent against a slice that would not grow;
         // the comparison knows what the unit's usage priced at against what was ever held back for
         // it. A settlement above the reservation is value delivered with nothing behind it whether
-        // or not the door noticed, and the ledger identity (`busbar-kernel-ledger`'s
-        // `identity::residual`) closes a posting only when the overdraft carried out is exactly
-        // that part: `settled - reserved`, the same comparison [`Posted::released`] floors the
-        // other way. Recording the counter there instead left the books out by the difference —
-        // by the whole excess when the counter was zero.
+        // or not the door noticed, and the ledger identity closes a posting only when the
+        // overdraft carried out is exactly that part: `settled - reserved`, the same comparison
+        // [`Posted::released`] floors the other way. Recording the counter there instead left the
+        // books out by the difference — by the whole excess when the counter was zero.
         let overdraft = if settled > reserved {
             settled - reserved
         } else {

@@ -6,7 +6,7 @@
 //! - no dangling-group bind — a bind's existence check and its store write share one lock hold;
 //! - no stale snapshot — a body reads the config the lock froze, never one captured before it;
 //! - no blocking under the async lock — a slow store cannot stall the reactor, asserted by a
-//!   liveness probe on a SINGLE-worker runtime (the compile fence is `scripts/txn-fence.sh`);
+//!   liveness probe on a SINGLE-worker runtime (the compile fence is `cargo xtask txn-fence`);
 //! - install/remove/reload/rollback share ONE mutation domain, so no plugin write can land
 //!   inside another plugin op's validate→rebuild window;
 //! - the swap lost-update invariant, modelled under loom in `tests/txn_loom.rs`.
@@ -684,6 +684,7 @@ fn parking_secret_hook_env(delay: Duration) -> busbar_kernel::hooks::HookEnv {
             }),
         )),
     )
+    .expect("the registry's hook axis")
 }
 
 /// Register one GLOBAL gate hook whose `licenseKey` is a `kind: secret` PLUGIN reference, through the

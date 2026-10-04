@@ -5,7 +5,8 @@
 //! audit keyset bound to the ledger's sign and verify seams, and each seal refusal in its own words.
 
 use super::*;
-use busbar_contract::caps::KernelSeal;
+// All but the signing key are used only by the `root-admin` test below.
+#[cfg_attr(not(feature = "root-admin"), allow(unused_imports))]
 use busbar_kernel_audit::{
     AuditInputs, AuditSigningKey, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage,
     What,
@@ -17,7 +18,7 @@ use busbar_kernel_ledger::{
 use busbar_kernel_wal::NullShipper;
 
 fn token() -> Grant<DurableWrite> {
-    Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel())
+    busbar_kernel::test_support::tokens::grant::<DurableWrite>()
 }
 
 fn node(cfg: &DurabilityConfig) -> Durability {
@@ -316,6 +317,7 @@ fn the_checkpoint_ring_holds_the_latest_1024_and_evicts_the_oldest_at_1025() {
 /// own state holds). `GET /admin/verify` compares the anchored head with the checkpoint it verifies
 /// against and reports that they differ. With the anchor passed as `None` (before U12) the rewound
 /// book verified clean against the older checkpoint.
+#[cfg(feature = "root-admin")]
 #[test]
 fn verify_reports_a_rewound_checkpoint_against_the_anchored_head() {
     use crate::root::units_admin::{LegacyRowsRead, NodeLedger};
@@ -396,6 +398,7 @@ fn the_anchor_is_seeded_from_the_chain_at_boot() {
 /// WHAT THE BOOT RECONCILIATION FOUND IS A `/verify` FINDING. A node that booted over a journal it
 /// could not wholly read serves on (a corrupt journal does not stop the boot) and logs the finding;
 /// `GET /admin/verify` names it too, and is not `ok`.
+#[cfg(feature = "root-admin")]
 #[test]
 fn verify_names_what_the_boot_reconciliation_found() {
     use crate::root::units_admin::{LegacyRowsRead, NodeLedger};
@@ -430,6 +433,7 @@ fn verify_names_what_the_boot_reconciliation_found() {
 
 /// A RETAINED AUDIT RECORD EDITED AFTER IT WAS SEALED IS A `GET /admin/verify` FINDING: the walk of
 /// the fixed audit chain the node holds runs on every verify, and the answer is `ok: false`.
+#[cfg(feature = "root-admin")]
 #[test]
 fn verify_names_a_tampered_retained_audit_record() {
     use crate::root::units_admin::{LegacyRowsRead, NodeLedger};
@@ -461,8 +465,7 @@ fn verify_names_a_tampered_retained_audit_record() {
                 },
                 wall: 1_700_000_000,
                 mono: unit,
-                origin: busbar_contract::caps::Origin::seal(
-                    &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+                origin: busbar_kernel::test_support::tokens::origin(
                     busbar_contract::caps::OriginKind::Client,
                 ),
                 outcome: OutcomeFacts {
@@ -483,9 +486,7 @@ fn verify_names_a_tampered_retained_audit_record() {
                 controls: Controls::default(),
                 correlation_label: None,
             };
-            let pass = busbar_contract::caps::Pass::mint(
-                &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
-            );
+            let pass = busbar_kernel::test_support::tokens::pass();
             durability.seal_unit(inputs, pass, &token).expect("sealed");
         }
     }

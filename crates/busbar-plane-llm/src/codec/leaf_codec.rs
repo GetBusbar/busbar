@@ -12,8 +12,11 @@
 //! a leaf-op handle cannot pattern-match its way back to `&EmbeddingsReq` to feed the egress writer.
 //!
 //! So — mirroring chat — each leaf op gets a writer selected by `(operation, egress-protocol)` KEY:
-//! the per-dialect write body moves to a `pub(crate)` free fn in that dialect's `handler` module, and
-//! the dispatchers below map the egress-protocol string to it. Today the dialect `OperationHandler`s
+//! the per-dialect write body is a free fn in that dialect's `handler` module, and the dialect
+//! DECLARES which ops it speaks as data — its [`LeafCodecs`] row, carried on its registration
+//! ([`crate::codec::proto_codec::DialectEntry::leaf`]). The dispatchers below find the egress
+//! dialect's row by name and call the fn it declared; no dispatcher names a dialect (design F3
+//! SELF-CONTAINED: central name-`match` registries become per-dialect registration). Today the dialect `OperationHandler`s
 //! route their own writes through these (byte-identical — same bytes out, same order); at A4b the
 //! leaf-op `IrHandle::write_egress_request` calls the SAME dispatcher keyed by the egress protocol, so
 //! the write no longer needs the concrete enum. Prep only: names no `IrReq`/`IrResp`, moves no bytes.
@@ -23,305 +26,269 @@ use crate::codec::ir::embeddings::{EmbeddingsReq, EmbeddingsResp};
 use crate::codec::ir::image::{ImageReq, ImageResp};
 use crate::codec::ir::moderation::{ModerationReq, ModerationResp};
 use crate::codec::ir::rerank::{RerankReq, RerankResp};
-use busbar_contract::codec::WireBody;
+use busbar_contract::codec::{CodecError, IngressReject, WireBody};
 use bytes::Bytes;
 
-/// Embeddings egress request bytes for `proto`. Unknown protocol => `unreachable!` — every caller
-/// (dialect handler today, leaf-op handle at A4b) passes a real egress protocol; a future protocol
-/// added without extending this match fails LOUDLY here rather than emitting a malformed empty body.
+/// ONE LEAF OPERATION'S FOUR CODEC FNS in one dialect: the egress request writer, the ingress
+/// response writer, and the two concrete reads (the reads the dialect's `OperationHandler` wraps in
+/// a leaf handle; the `(op, protocol)` read dispatch below reaches them in test builds).
+pub struct LeafCodec<Q: 'static, A: 'static> {
+    pub write_request: fn(&Q) -> Bytes,
+    pub write_response: fn(&A) -> WireBody,
+    pub read_request: fn(&[u8], &str) -> Result<Q, IngressReject>,
+    pub read_response: fn(&[u8]) -> Result<A, CodecError>,
+}
+
+/// A DIALECT'S ROW OF THE LEAF-OP SUPPORT MATRIX, as data: `Some` for each leaf op the dialect
+/// speaks, `None` for the rest. Declared once in the dialect's own `handler` module.
+pub struct LeafCodecs {
+    pub embeddings: Option<LeafCodec<EmbeddingsReq, EmbeddingsResp>>,
+    pub rerank: Option<LeafCodec<RerankReq, RerankResp>>,
+    pub image: Option<LeafCodec<ImageReq, ImageResp>>,
+    pub transcription: Option<LeafCodec<TranscriptionReq, TranscriptionResp>>,
+    pub speech: Option<LeafCodec<SpeechReq, SpeechResp>>,
+    pub moderation: Option<LeafCodec<ModerationReq, ModerationResp>>,
+}
+
+impl LeafCodecs {
+    /// The row of a dialect that speaks no leaf op (chat only).
+    pub const NONE: Self = Self {
+        embeddings: None,
+        rerank: None,
+        image: None,
+        transcription: None,
+        speech: None,
+        moderation: None,
+    };
+}
+
+/// The `(operation, protocol)` cell: the named dialect's declared codec for the op `pick` selects.
+/// `None` when no dialect has that name, or it declares no codec for the op.
+fn cell<Q, A>(
+    proto: &str,
+    pick: fn(&'static LeafCodecs) -> Option<&'static LeafCodec<Q, A>>,
+) -> Option<&'static LeafCodec<Q, A>> {
+    crate::codec::proto_codec::entry_of(proto).and_then(|d| pick(d.leaf))
+}
+
+/// The write cell for `proto`. Unknown protocol (or one that does not speak the op) =>
+/// `unreachable!` — every caller (dialect handler, leaf-op handle) passes a real egress protocol for
+/// an op it routed there; a protocol added without declaring the op fails LOUDLY here rather than
+/// emitting a malformed empty body.
+fn write_cell<Q, A>(
+    proto: &str,
+    pick: fn(&'static LeafCodecs) -> Option<&'static LeafCodec<Q, A>>,
+) -> &'static LeafCodec<Q, A> {
+    cell(proto, pick).unwrap_or_else(|| unreachable!("leaf write: unknown egress protocol {proto}"))
+}
+
+/// Embeddings egress request bytes for `proto` (see [`write_cell`] for an unknown protocol).
 pub fn embeddings_write_request(proto: &str, r: &EmbeddingsReq) -> Bytes {
-    match proto {
-        "cohere" => super::cohere::handler::write_embeddings_request(r),
-        "bedrock" => super::bedrock::handler::write_embeddings_request(r),
-        "gemini" => super::gemini::handler::write_embeddings_request(r),
-        "openai" => super::openai_chat::handler::write_embeddings_request(r),
-        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
-    }
+    (write_cell(proto, |l| l.embeddings.as_ref()).write_request)(r)
 }
 
-/// Embeddings ingress response wire for `proto`. Unknown protocol => `unreachable!` (see the request
-/// dispatcher): a missing arm fails loudly, never a malformed empty body.
+/// Embeddings ingress response wire for `proto` (see [`write_cell`] for an unknown protocol).
 pub fn embeddings_write_response(proto: &str, r: &EmbeddingsResp) -> WireBody {
-    match proto {
-        "cohere" => super::cohere::handler::write_embeddings_response(r),
-        "bedrock" => super::bedrock::handler::write_embeddings_response(r),
-        "gemini" => super::gemini::handler::write_embeddings_response(r),
-        "openai" => super::openai_chat::handler::write_embeddings_response(r),
-        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
-    }
+    (write_cell(proto, |l| l.embeddings.as_ref()).write_response)(r)
 }
 
-/// Rerank egress request bytes for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
+/// Rerank egress request bytes for `proto` (see [`write_cell`] for an unknown protocol).
 pub fn rerank_write_request(proto: &str, r: &RerankReq) -> Bytes {
-    match proto {
-        "cohere" => super::cohere::handler::write_rerank_request(r),
-        "bedrock" => super::bedrock::handler::write_rerank_request(r),
-        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
-    }
+    (write_cell(proto, |l| l.rerank.as_ref()).write_request)(r)
 }
 
-/// Rerank ingress response wire for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
+/// Rerank ingress response wire for `proto` (see [`write_cell`] for an unknown protocol).
 pub fn rerank_write_response(proto: &str, r: &RerankResp) -> WireBody {
-    match proto {
-        "cohere" => super::cohere::handler::write_rerank_response(r),
-        "bedrock" => super::bedrock::handler::write_rerank_response(r),
-        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
-    }
+    (write_cell(proto, |l| l.rerank.as_ref()).write_response)(r)
 }
 
-/// Image egress request bytes for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
+/// Image egress request bytes for `proto` (see [`write_cell`] for an unknown protocol).
 pub fn image_write_request(proto: &str, r: &ImageReq) -> Bytes {
-    match proto {
-        "bedrock" => super::bedrock::handler::write_image_request(r),
-        "gemini" => super::gemini::handler::write_image_request(r),
-        "openai" => super::openai_chat::handler::write_image_request(r),
-        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
-    }
+    (write_cell(proto, |l| l.image.as_ref()).write_request)(r)
 }
 
-/// Image ingress response wire for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
+/// Image ingress response wire for `proto` (see [`write_cell`] for an unknown protocol).
 pub fn image_write_response(proto: &str, r: &ImageResp) -> WireBody {
-    match proto {
-        "bedrock" => super::bedrock::handler::write_image_response(r),
-        "gemini" => super::gemini::handler::write_image_response(r),
-        "openai" => super::openai_chat::handler::write_image_response(r),
-        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
-    }
+    (write_cell(proto, |l| l.image.as_ref()).write_response)(r)
 }
 
-/// Transcription egress request bytes for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
+/// Transcription egress request bytes for `proto` (see [`write_cell`] for an unknown protocol).
 pub fn transcription_write_request(proto: &str, r: &TranscriptionReq) -> Bytes {
-    match proto {
-        "gemini" => super::gemini::handler::write_transcription_request(r),
-        "openai" => super::openai_chat::handler::write_transcription_request(r),
-        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
-    }
+    (write_cell(proto, |l| l.transcription.as_ref()).write_request)(r)
 }
 
-/// Transcription ingress response wire for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
+/// Transcription ingress response wire for `proto` (see [`write_cell`] for an unknown protocol).
 pub fn transcription_write_response(proto: &str, r: &TranscriptionResp) -> WireBody {
-    match proto {
-        "gemini" => super::gemini::handler::write_transcription_response(r),
-        "openai" => super::openai_chat::handler::write_transcription_response(r),
-        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
-    }
+    (write_cell(proto, |l| l.transcription.as_ref()).write_response)(r)
 }
 
-/// Speech (TTS) egress request bytes for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
+/// Speech (TTS) egress request bytes for `proto` (see [`write_cell`] for an unknown protocol).
 pub fn speech_write_request(proto: &str, r: &SpeechReq) -> Bytes {
-    match proto {
-        "gemini" => super::gemini::handler::write_speech_request(r),
-        "openai" => super::openai_chat::handler::write_speech_request(r),
-        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
-    }
+    (write_cell(proto, |l| l.speech.as_ref()).write_request)(r)
 }
 
-/// Speech (TTS) ingress response wire for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
+/// Speech (TTS) ingress response wire for `proto` (see [`write_cell`] for an unknown protocol).
 pub fn speech_write_response(proto: &str, r: &SpeechResp) -> WireBody {
-    match proto {
-        "gemini" => super::gemini::handler::write_speech_response(r),
-        "openai" => super::openai_chat::handler::write_speech_response(r),
-        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
-    }
+    (write_cell(proto, |l| l.speech.as_ref()).write_response)(r)
 }
 
-/// Moderation egress request bytes for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
-/// Only openai serves moderation today; the key is uniform with the other ops for the A4b handle.
+/// Moderation egress request bytes for `proto` (see [`write_cell`] for an unknown protocol).
 pub fn moderation_write_request(proto: &str, r: &ModerationReq) -> Bytes {
-    match proto {
-        "openai" => super::openai_chat::handler::write_moderation_request(r),
-        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
-    }
+    (write_cell(proto, |l| l.moderation.as_ref()).write_request)(r)
 }
 
-/// Moderation ingress response wire for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
+/// Moderation ingress response wire for `proto` (see [`write_cell`] for an unknown protocol).
 pub fn moderation_write_response(proto: &str, r: &ModerationResp) -> WireBody {
-    match proto {
-        "openai" => super::openai_chat::handler::write_moderation_response(r),
-        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
-    }
+    (write_cell(proto, |l| l.moderation.as_ref()).write_response)(r)
 }
 
 // ── G6 A4b, owner ruling (b): the (op, protocol) READ dispatch, TEST/`test-support` ONLY ─────────
 // Symmetric to the write dispatchers above. Production reads flow through the dialect vtable and the
 // `Box<dyn IrHandle>` seam; these expose the SAME concrete parse the trait `read_*` delegates to
-// (each dialect's `read_<op>_<dir>` free fn), so a leaf-op fidelity TEST can recover the concrete IR
-// keyed by `(op, protocol)` without a downcast (the handle stays sealed). Not compiled in production.
+// (each dialect's `read_<op>_<dir>` free fn, as its `LeafCodecs` row declares it), so a leaf-op
+// fidelity TEST can recover the concrete IR keyed by `(op, protocol)` without a downcast (the handle
+// stays sealed). Not compiled in production.
+
+/// The request read for `(op, proto)`; a protocol with no reader for the op is a `BadRequest`.
+#[cfg(any(test, feature = "test-support"))]
+fn read_request<Q, A>(
+    op: &str,
+    proto: &str,
+    pick: fn(&'static LeafCodecs) -> Option<&'static LeafCodec<Q, A>>,
+    body: &[u8],
+    content_type: &str,
+) -> Result<Q, IngressReject> {
+    match cell(proto, pick) {
+        Some(c) => (c.read_request)(body, content_type),
+        None => Err(IngressReject::BadRequest(format!(
+            "no {op} reader for protocol `{proto}`"
+        ))),
+    }
+}
+
+/// The response read for `(op, proto)`; a protocol with no reader for the op is `Malformed`.
+#[cfg(any(test, feature = "test-support"))]
+fn read_response<Q, A>(
+    op: &str,
+    proto: &str,
+    pick: fn(&'static LeafCodecs) -> Option<&'static LeafCodec<Q, A>>,
+    wire: &[u8],
+) -> Result<A, CodecError> {
+    match cell(proto, pick) {
+        Some(c) => (c.read_response)(wire),
+        None => Err(CodecError::Malformed(format!(
+            "no {op} response reader for protocol `{proto}`"
+        ))),
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)]
 pub fn embeddings_read_request(
     proto: &str,
     body: &[u8],
     content_type: &str,
-) -> Result<crate::codec::ir::embeddings::EmbeddingsReq, busbar_contract::codec::IngressReject> {
-    match proto {
-        "cohere" => super::cohere::handler::read_embeddings_request(body, content_type),
-        "bedrock" => super::bedrock::handler::read_embeddings_request(body, content_type),
-        "gemini" => super::gemini::handler::read_embeddings_request(body, content_type),
-        "openai" => super::openai_chat::handler::read_embeddings_request(body, content_type),
-        other => Err(busbar_contract::codec::IngressReject::BadRequest(format!(
-            "no embeddings reader for protocol `{other}`"
-        ))),
-    }
+) -> Result<EmbeddingsReq, IngressReject> {
+    read_request(
+        "embeddings",
+        proto,
+        |l| l.embeddings.as_ref(),
+        body,
+        content_type,
+    )
 }
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)]
-pub fn embeddings_read_response(
-    proto: &str,
-    wire: &[u8],
-) -> Result<crate::codec::ir::embeddings::EmbeddingsResp, busbar_contract::codec::CodecError> {
-    match proto {
-        "cohere" => super::cohere::handler::read_embeddings_response(wire),
-        "bedrock" => super::bedrock::handler::read_embeddings_response(wire),
-        "gemini" => super::gemini::handler::read_embeddings_response(wire),
-        "openai" => super::openai_chat::handler::read_embeddings_response(wire),
-        other => Err(busbar_contract::codec::CodecError::Malformed(format!(
-            "no embeddings response reader for protocol `{other}`"
-        ))),
-    }
+pub fn embeddings_read_response(proto: &str, wire: &[u8]) -> Result<EmbeddingsResp, CodecError> {
+    read_response("embeddings", proto, |l| l.embeddings.as_ref(), wire)
 }
+
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)]
 pub fn rerank_read_request(
     proto: &str,
     body: &[u8],
     content_type: &str,
-) -> Result<crate::codec::ir::rerank::RerankReq, busbar_contract::codec::IngressReject> {
-    match proto {
-        "cohere" => super::cohere::handler::read_rerank_request(body, content_type),
-        "bedrock" => super::bedrock::handler::read_rerank_request(body, content_type),
-        other => Err(busbar_contract::codec::IngressReject::BadRequest(format!(
-            "no rerank reader for protocol `{other}`"
-        ))),
-    }
+) -> Result<RerankReq, IngressReject> {
+    read_request("rerank", proto, |l| l.rerank.as_ref(), body, content_type)
 }
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)]
-pub fn rerank_read_response(
-    proto: &str,
-    wire: &[u8],
-) -> Result<crate::codec::ir::rerank::RerankResp, busbar_contract::codec::CodecError> {
-    match proto {
-        "cohere" => super::cohere::handler::read_rerank_response(wire),
-        "bedrock" => super::bedrock::handler::read_rerank_response(wire),
-        other => Err(busbar_contract::codec::CodecError::Malformed(format!(
-            "no rerank response reader for protocol `{other}`"
-        ))),
-    }
+pub fn rerank_read_response(proto: &str, wire: &[u8]) -> Result<RerankResp, CodecError> {
+    read_response("rerank", proto, |l| l.rerank.as_ref(), wire)
 }
+
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)]
 pub fn image_read_request(
     proto: &str,
     body: &[u8],
     content_type: &str,
-) -> Result<crate::codec::ir::image::ImageReq, busbar_contract::codec::IngressReject> {
-    match proto {
-        "bedrock" => super::bedrock::handler::read_image_request(body, content_type),
-        "gemini" => super::gemini::handler::read_image_request(body, content_type),
-        "openai" => super::openai_chat::handler::read_image_request(body, content_type),
-        other => Err(busbar_contract::codec::IngressReject::BadRequest(format!(
-            "no image reader for protocol `{other}`"
-        ))),
-    }
+) -> Result<ImageReq, IngressReject> {
+    read_request("image", proto, |l| l.image.as_ref(), body, content_type)
 }
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)]
-pub fn image_read_response(
-    proto: &str,
-    wire: &[u8],
-) -> Result<crate::codec::ir::image::ImageResp, busbar_contract::codec::CodecError> {
-    match proto {
-        "bedrock" => super::bedrock::handler::read_image_response(wire),
-        "gemini" => super::gemini::handler::read_image_response(wire),
-        "openai" => super::openai_chat::handler::read_image_response(wire),
-        other => Err(busbar_contract::codec::CodecError::Malformed(format!(
-            "no image response reader for protocol `{other}`"
-        ))),
-    }
+pub fn image_read_response(proto: &str, wire: &[u8]) -> Result<ImageResp, CodecError> {
+    read_response("image", proto, |l| l.image.as_ref(), wire)
 }
+
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)]
 pub fn transcription_read_request(
     proto: &str,
     body: &[u8],
     content_type: &str,
-) -> Result<crate::codec::ir::audio::TranscriptionReq, busbar_contract::codec::IngressReject> {
-    match proto {
-        "gemini" => super::gemini::handler::read_transcription_request(body, content_type),
-        "openai" => super::openai_chat::handler::read_transcription_request(body, content_type),
-        other => Err(busbar_contract::codec::IngressReject::BadRequest(format!(
-            "no transcription reader for protocol `{other}`"
-        ))),
-    }
+) -> Result<TranscriptionReq, IngressReject> {
+    read_request(
+        "transcription",
+        proto,
+        |l| l.transcription.as_ref(),
+        body,
+        content_type,
+    )
 }
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)]
 pub fn transcription_read_response(
     proto: &str,
     wire: &[u8],
-) -> Result<crate::codec::ir::audio::TranscriptionResp, busbar_contract::codec::CodecError> {
-    match proto {
-        "gemini" => super::gemini::handler::read_transcription_response(wire),
-        "openai" => super::openai_chat::handler::read_transcription_response(wire),
-        other => Err(busbar_contract::codec::CodecError::Malformed(format!(
-            "no transcription response reader for protocol `{other}`"
-        ))),
-    }
+) -> Result<TranscriptionResp, CodecError> {
+    read_response("transcription", proto, |l| l.transcription.as_ref(), wire)
 }
+
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)]
 pub fn speech_read_request(
     proto: &str,
     body: &[u8],
     content_type: &str,
-) -> Result<crate::codec::ir::audio::SpeechReq, busbar_contract::codec::IngressReject> {
-    match proto {
-        "gemini" => super::gemini::handler::read_speech_request(body, content_type),
-        "openai" => super::openai_chat::handler::read_speech_request(body, content_type),
-        other => Err(busbar_contract::codec::IngressReject::BadRequest(format!(
-            "no speech reader for protocol `{other}`"
-        ))),
-    }
+) -> Result<SpeechReq, IngressReject> {
+    read_request("speech", proto, |l| l.speech.as_ref(), body, content_type)
 }
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)]
-pub fn speech_read_response(
-    proto: &str,
-    wire: &[u8],
-) -> Result<crate::codec::ir::audio::SpeechResp, busbar_contract::codec::CodecError> {
-    match proto {
-        "gemini" => super::gemini::handler::read_speech_response(wire),
-        "openai" => super::openai_chat::handler::read_speech_response(wire),
-        other => Err(busbar_contract::codec::CodecError::Malformed(format!(
-            "no speech response reader for protocol `{other}`"
-        ))),
-    }
+pub fn speech_read_response(proto: &str, wire: &[u8]) -> Result<SpeechResp, CodecError> {
+    read_response("speech", proto, |l| l.speech.as_ref(), wire)
 }
+
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)]
 pub fn moderation_read_request(
     proto: &str,
     body: &[u8],
     content_type: &str,
-) -> Result<crate::codec::ir::moderation::ModerationReq, busbar_contract::codec::IngressReject> {
-    match proto {
-        "openai" => super::openai_chat::handler::read_moderation_request(body, content_type),
-        other => Err(busbar_contract::codec::IngressReject::BadRequest(format!(
-            "no moderation reader for protocol `{other}`"
-        ))),
-    }
+) -> Result<ModerationReq, IngressReject> {
+    read_request(
+        "moderation",
+        proto,
+        |l| l.moderation.as_ref(),
+        body,
+        content_type,
+    )
 }
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)]
-pub fn moderation_read_response(
-    proto: &str,
-    wire: &[u8],
-) -> Result<crate::codec::ir::moderation::ModerationResp, busbar_contract::codec::CodecError> {
-    match proto {
-        "openai" => super::openai_chat::handler::read_moderation_response(wire),
-        other => Err(busbar_contract::codec::CodecError::Malformed(format!(
-            "no moderation response reader for protocol `{other}`"
-        ))),
-    }
+pub fn moderation_read_response(proto: &str, wire: &[u8]) -> Result<ModerationResp, CodecError> {
+    read_response("moderation", proto, |l| l.moderation.as_ref(), wire)
 }

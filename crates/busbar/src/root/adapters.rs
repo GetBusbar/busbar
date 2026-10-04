@@ -341,6 +341,22 @@ impl Breaker for BreakerAdapter {
         )
     }
 
+    fn suppressing(&self, destination: DestinationId, now: u64) -> bool {
+        self.unit().suppressing(destination, now)
+    }
+
+    fn probed(&self, destination: DestinationId, outcome: Outcome, now: u64, token: &Pass<Route>) {
+        // Each cell under its own pool's ladder, and a pool nobody configured records nothing: the
+        // same rule `observe` applies to an organic answer.
+        self.unit().probed(
+            destination,
+            to_breaker_outcome(outcome),
+            &|pool| self.policy.for_pool(pool).cloned(),
+            now,
+            token,
+        );
+    }
+
     fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, now: u64) {
         self.unit().release_probe(pool, destination, epoch, now);
     }

@@ -115,11 +115,11 @@ fn the_second_boot_reads_nothing() {
 #[test]
 fn the_marker_is_sealed_on_the_journal() {
     use crate::root::durability::{build_for_node, DurabilityConfig};
-    use busbar_contract::caps::{DurableWrite, Grant, KernelSeal, StepName};
+    use busbar_contract::caps::{DurableWrite, StepName};
     use busbar_kernel_wal::{NullShipper, RecordClass};
 
     let rows = rows();
-    let token = Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel());
+    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
     let mut durability = build_for_node(
         &DurabilityConfig { data_dir: None },
         1,
@@ -176,11 +176,11 @@ fn a_deployment_with_nothing_behind_it_still_seals() {
 #[test]
 fn the_opening_is_signed_with_the_audit_chains_own_key() {
     use crate::root::durability::{build_for_node, keyset_of, DurabilityConfig, KeySetVerifier};
-    use busbar_contract::caps::{DurableWrite, Grant, KernelSeal, StepName};
+    use busbar_contract::caps::{DurableWrite, StepName};
     use busbar_kernel_ledger::checkpoint::CheckpointSecret;
     use busbar_kernel_wal::NullShipper;
 
-    let token = Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel());
+    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
     let open = |keyed: bool| {
         let mut durability = build_for_node(
             &DurabilityConfig { data_dir: None },

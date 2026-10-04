@@ -82,6 +82,27 @@ fn ports_still_compare_as_numbers() {
     assert!(!overlaps(&Selector::Port(443), &Selector::Port(8443)));
 }
 
+/// A claim on one transport cannot collide with a claim on another: the transport half of
+/// [`crate::registry::claims_overlap`], the one site that compares two claims (the contract keeps
+/// only the selector rule).
+#[test]
+fn claims_on_different_transports_never_collide() {
+    use busbar_contract::grammar::{Claim, Selector};
+    let a = Claim {
+        transport: "http",
+        selector: Selector::ExactPath("/v1/chat/completions"),
+        scheme: Some("token"),
+        scheme_alternatives: &[],
+        idempotency: None,
+    };
+    let b = Claim {
+        transport: "stdio",
+        ..a
+    };
+    assert!(crate::registry::claims_overlap(&a, &a));
+    assert!(!crate::registry::claims_overlap(&a, &b));
+}
+
 #[test]
 fn different_transport_forms_still_conservatively_coincide() {
     // Unrelated to the case-folding fix, but load-bearing for it: the `_ => true` fallback for

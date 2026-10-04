@@ -112,6 +112,11 @@ pub struct PluginLogConfig {
     pub rotate_bytes: Option<u64>,
     /// How many rotated archives to keep.
     pub keep: u32,
+    /// The operator NAMED the directory (`plugins.logs.dir`): each sink opens its file when it is
+    /// bound, so an unusable directory refuses the boot. Under the default directory a file is
+    /// created at its first line, so a deployment whose plugins log nothing persists nothing (a
+    /// configuration without a data directory writes no file, as 1.5.5 wrote none).
+    pub named_dir: bool,
 }
 
 /// `plugins.logs.dir` when unset.
@@ -146,6 +151,7 @@ impl PluginLogConfig {
         }
         Ok(Self {
             dir: PathBuf::from(dir.unwrap_or(DEFAULT_DIR)),
+            named_dir: dir.is_some(),
             level,
             levels,
             rotate_bytes: rotate_mb.map(|mb| mb.saturating_mul(1024 * 1024)),
@@ -180,9 +186,10 @@ impl PluginLogConfig {
     }
 
     /// OPEN the sink a plugin instance is bound with: its log records and declared diagnostics go
-    /// to its own file, its metrics (and every drop) go on to `metrics`. Creates the directory if
-    /// it is missing and opens the file; an unusable directory is refused as
-    /// `plugins.logs.dir <dir>: <error>`.
+    /// to its own file, its metrics (and every drop) go on to `metrics`. Under a named directory it
+    /// creates the directory if it is missing and opens the file, and an unusable directory is
+    /// refused as `plugins.logs.dir <dir>: <error>`; under the default one the file is created at
+    /// its first line ([`PluginLogConfig::named_dir`]).
     pub fn sink(
         &self,
         instance: &str,
@@ -200,8 +207,10 @@ impl PluginLogConfig {
             clock: wall_secs,
             file: Mutex::new(None),
         };
-        let opened = sink.open().map_err(|e| sink.refusal(&e))?;
-        *sink.file.lock().unwrap_or_else(|p| p.into_inner()) = Some(opened);
+        if self.named_dir {
+            let opened = sink.open().map_err(|e| sink.refusal(&e))?;
+            *sink.file.lock().unwrap_or_else(|p| p.into_inner()) = Some(opened);
+        }
         Ok(sink)
     }
 }

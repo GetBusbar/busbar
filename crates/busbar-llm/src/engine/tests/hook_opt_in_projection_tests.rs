@@ -19,18 +19,13 @@ fn facts(v: &Value, proto: &str) -> HookFacts {
     // These fixtures are chat JSON bodies: the object arm reads through the CHAT operation handler,
     // byte-identically to the pre-change seam (the `body`/`content_type` args are unused for an
     // object body).
-    match read_hook_facts(
+    read_hook_facts(
         v,
         &[],
         APPLICATION_JSON,
         proto,
         Some(busbar_contract::operation::OpVerb::CHAT),
-    ) {
-        Ok(f) => f,
-        Err(HookIrRejected) => {
-            panic!("the {proto} reader refused this fixture body; that is a finding, not a nit")
-        }
-    }
+    )
 }
 
 /// The projection flattens both Anthropic content shapes: bare-string content and `{type:"text"}`
@@ -140,16 +135,18 @@ fn prompt_projection_keeps_empty_entries_aligned() {
     );
     assert_eq!(f.shape().system_chars, 0, "no system FIELD on this body");
 
-    // A role no reader recognises is a 400, not a `role: ""` a guardrail is asked to screen.
-    let v: Value = serde_json::json!({"messages": [{"role": "wizard", "content": "hi"}]});
-    assert!(read_hook_facts(
-        &v,
-        &[],
-        APPLICATION_JSON,
-        "openai",
-        Some(busbar_contract::operation::OpVerb::CHAT)
-    )
-    .is_err());
+    // A role no reader recognises contributes nothing and refuses nothing (the 1.5.5 hook seam):
+    // the guardrail sees the turns busbar can read, never a `role: ""`, and the request goes on.
+    // RED arm: 1.6.0 before this answered the whole request with a 400.
+    let v: Value = serde_json::json!({"messages": [
+        {"role": "wizard", "content": "hi"},
+        {"role": "user", "content": "READABLE"}
+    ]});
+    let f = facts(&v, "openai");
+    let p = f.prompt();
+    assert_eq!(p.messages.len(), 1, "{:?}", p.messages);
+    assert_eq!(p.messages[0].0, "user");
+    assert_eq!(p.messages[0].1, "READABLE");
 }
 
 /// The SIZE signal and the content projection agree on a BLOCK-ARRAY system prompt: Anthropic

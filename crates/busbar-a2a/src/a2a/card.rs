@@ -30,7 +30,6 @@ use std::collections::BTreeMap;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use super::canonical::{canonicalize, CanonicalError};
 use super::pin::CardPin;
@@ -257,7 +256,8 @@ pub(crate) fn parse(card: &Value) -> Result<AgentCard, CardError> {
 /// against an audit row, and comparing either against what `openssl dgst -sha256 -binary | base64`
 /// printed, has to be comparing one spelling.
 pub(crate) fn sha256_tagged(bytes: &[u8]) -> String {
-    format!("sha256/{}", B64.encode(Sha256::digest(bytes)))
+    let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
+    format!("sha256/{}", B64.encode(digest.as_ref()))
 }
 
 #[cfg(all(test, feature = "test-support"))]

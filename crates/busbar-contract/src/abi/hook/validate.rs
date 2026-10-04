@@ -23,8 +23,9 @@
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{
-    ConfigureOut, DecideOut, DescribeOut, ServeOut, StatusOut, TransformOut, VERB_ABSTAIN,
-    VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
+    ConfigureOut, DecideOut, DescribeOut, NotifyIn, PromptView, ServeOut, StatusOut, TransformOut,
+    VERB_ABSTAIN, VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
+    VIEW_HAS_PROMPT,
 };
 use crate::abi::mechanism::call::{OutHead, Outcome};
 use crate::abi::mechanism::check::{blob, fault, lease, results, Dim, HARD_MAX_BYTES};
@@ -256,6 +257,55 @@ pub fn check_serve(out: &ServeOut) -> Result<(), Fault> {
         "serve.lease",
         "serve.lease_without_material",
     )
+}
+
+/// The most messages one [`PromptView`] may carry (a FAULT ceiling far above any real request).
+pub const HARD_MAX_MESSAGES: u64 = 65536;
+
+/// Validates a HOST-BUILT [`PromptView`] (`decide`/`transform`'s `in.prompt`) before a plugin
+/// reads it — the SDK's own reading of the view, since this half is the host's to get right:
+/// `messages` is non-NULL whenever `messages_len > 0`, `messages_len` is within
+/// [`HARD_MAX_MESSAGES`], `message_count` equals `messages_len` (the two state one length), and
+/// the body blob obeys the blob rules. An absent view (`VIEW_HAS_PROMPT` unset) is not judged.
+///
+/// # Errors
+/// The rule the view breaks.
+pub fn check_prompt_view(view: &PromptView) -> Result<(), Fault> {
+    if view.messages_len > 0 && view.messages.is_null() {
+        return Err(fault(Rule::NullWithCount, "prompt.messages"));
+    }
+    if view.messages_len as u64 > HARD_MAX_MESSAGES {
+        return Err(fault(Rule::OverMax, "prompt.messages_len"));
+    }
+    if view.message_count != view.messages_len as u64 {
+        return Err(fault(Rule::Contradiction, "prompt.message_count"));
+    }
+    blob(&view.body, "prompt.body", "prompt.body.len")
+}
+
+/// The most signal entries one view may carry (a FAULT ceiling: the catalog holds ten signals).
+pub const HARD_MAX_SIGNALS: u64 = 1024;
+
+/// Validates a HOST-BUILT [`NotifyIn`] (WIRE-HOOK Q5): the signal list's pointer/length pairing
+/// and bound, no presence bit beyond [`VIEW_HAS_PROMPT`], and — when that bit is set — the prompt
+/// view by [`check_prompt_view`].
+///
+/// # Errors
+/// The rule the `in` breaks.
+pub fn check_notify_in(input: &NotifyIn) -> Result<(), Fault> {
+    if input.signals_len > 0 && input.signals.is_null() {
+        return Err(fault(Rule::NullWithCount, "notify.signals"));
+    }
+    if input.signals_len as u64 > HARD_MAX_SIGNALS {
+        return Err(fault(Rule::OverMax, "notify.signals_len"));
+    }
+    if input.present & !VIEW_HAS_PROMPT != 0 {
+        return Err(fault(Rule::UnknownCode, "notify.present"));
+    }
+    if input.present & VIEW_HAS_PROMPT != 0 {
+        check_prompt_view(&input.prompt)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

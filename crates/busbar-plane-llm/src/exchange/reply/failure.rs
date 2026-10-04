@@ -115,24 +115,18 @@ pub fn normalize(
     signal(class, provider_signal)
 }
 
-/// The far end's error relayed as it arrived: its status, its content type, the head fields a
-/// native answer of the caller's dialect carries (the far end's `x-amzn-*` fields for a caller
-/// that relays them, else the request id), and its body.
+/// The far end's error relayed as it arrived (busbar is invisible on a same-dialect answer): its
+/// status, every head field but the ones busbar governs ([`wire::governed_response`]; the engine
+/// drops the per-connection ones as it writes the answer), and its body. Nothing is invented: a
+/// field the far end did not send is not on the relay.
 #[must_use]
 pub fn relay_verbatim(ingress: &str, far: &FarError<'_>) -> Rendered {
-    let mut fields = Vec::new();
-    if let Some(ct) = head_value(far.head, "content-type") {
-        fields.push(("content-type".to_string(), ct.to_vec()));
-    }
-    if wire::ingress_relays_amzn_headers(ingress) {
-        for name in wire::ingress_relayed_response_header_names(ingress) {
-            if let Some(v) = head_value(far.head, name) {
-                fields.extend(head_field(name, v));
-            }
-        }
-    } else {
-        fields.extend(request_id_field(ingress, far.head));
-    }
+    let fields: Vec<(String, Vec<u8>)> = far
+        .head
+        .iter()
+        .filter_map(|(n, v)| head_field(std::str::from_utf8(n).ok()?, v))
+        .filter(|(n, _)| !wire::governed_response(ingress, n))
+        .collect();
     Rendered {
         status: far.status,
         fields,

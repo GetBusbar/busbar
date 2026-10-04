@@ -12,11 +12,10 @@ use axum::response::Response;
 use crate::test_support::engine_kit::EngineTestKit as _;
 use crate::unit::verify::VerifyOutcome as _;
 use busbar_contract::caps::{
-    Approve, Audit, Authenticate, Consumption, Dial, Grant, KernelSeal, OpClassId, Outcome, Pass,
+    Approve, Audit, Authenticate, Consumption, Dial, KernelSeal, OpClassId, Outcome, Pass,
     PrincipalId, Route, VerifiedDestination, Verify,
 };
 use busbar_kernel::plane_host::EngineTablesView;
-use busbar_kernel::proxy::reqlog::REQUESTS;
 
 use crate::test_support::{frame, LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use crate::unit::{admit, approve, arrival, audit, authenticate, decode, meter, route, verify};
@@ -51,9 +50,11 @@ enum Fixture {
     /// An admitted streamed answer — the same loop with the accrual landing at stream end rather
     /// than at the buffered tap.
     StreamedOk,
-    /// A CLIENT THAT ASKED TO STREAM, ANSWERED BY AN UPSTREAM THAT DID NOT. The upstream ignored
-    /// `stream` and returned one JSON body, so the engine buffers it whole, translates it into the
-    /// client's own stream framing, and the BUFFERED tap fires before the response is handed back.
+    /// A CLIENT THAT ASKED TO STREAM, ANSWERED BY AN UPSTREAM OF ANOTHER DIALECT THAT DID NOT. The
+    /// upstream ignored `stream` and returned one JSON body, so the engine buffers it whole,
+    /// translates it into the client's own stream framing, and the BUFFERED tap fires before the
+    /// response is handed back. (Within one dialect the same body is relayed as the upstream sent
+    /// it — DIALECT FIDELITY — so the lane here speaks another dialect.)
     ///
     /// It is the one delivered end whose figures exist at step 6: every other admitted fixture here
     /// is a same-protocol relay whose tap fills while the CLIENT drains the body, which is after the
@@ -122,8 +123,25 @@ impl Fixture {
     }
 
     /// What the scripted upstream is told to answer.
+    /// The dialect the one lane speaks: the client's own, except where the fixture crosses.
+    fn lane_proto(self) -> &'static str {
+        match self {
+            Fixture::BufferedStreamOut => crate::proto_codec::PROTO_ANTHROPIC,
+            _ => PROTO,
+        }
+    }
+
     fn upstream(self) -> MockResponse {
         match self {
+            Fixture::BufferedStreamOut => MockResponse::Ok {
+                status: reqwest::StatusCode::OK,
+                body: serde_json::json!({
+                    "id": "msg_chain", "type": "message", "role": "assistant", "model": LANE,
+                    "content": [{"type": "text", "text": "hello"}],
+                    "stop_reason": "end_turn", "stop_sequence": null,
+                    "usage": {"input_tokens": INPUT, "output_tokens": OUTPUT}
+                }),
+            },
             Fixture::StreamedOk => MockResponse::Sse {
                 events: sse_events(),
                 abort_at_index: None,
@@ -329,7 +347,7 @@ async fn rig_inner(fixture: Fixture, billed: bool) -> Rig {
     gov.hydrate_budgets(cost.as_ref(), 0).expect("hydrate");
 
     let mut builder = TestApp::new()
-        .lane(LaneSpec::new(LANE, PROTO, &server.base_url()).provider("test"))
+        .lane(LaneSpec::new(LANE, fixture.lane_proto(), &server.base_url()).provider("test"))
         .pool(POOL, &[(0, 1)])
         .governance_kit(gov)
         .cost_kit(cost);
@@ -552,7 +570,7 @@ async fn leg_legacy(fixture: Fixture) -> Observed {
 /// in for one — in ONE place, so that "who may open a decision" is as readable here as it is in the
 /// loop, and so a step's harness cannot quietly mint a second one.
 fn kernel_seal() -> KernelSeal {
-    KernelSeal::acquire_for_kernel()
+    busbar_kernel::test_support::tokens::seal()
 }
 
 /// THE NODE'S ONE INTERNER, standing in for the composition root's.
@@ -568,14 +586,17 @@ static LANES: std::sync::LazyLock<std::sync::Mutex<busbar_contract::Registration
 
 /// The destination set the trust unit would have sealed, over the lane this deployment CONFIGURED —
 /// the name read back off the running routing tables, not a literal spelled here.
-fn sealed_destinations(seal: &KernelSeal, lane: &str) -> Vec<VerifiedDestination> {
+fn sealed_destinations(lane: &str) -> Vec<VerifiedDestination> {
     let _intern_guard = crate::test_support::intern_guard();
     let lane = LANES
         .lock()
         .expect("the rehearsal's interner is never poisoned")
         .lane(lane)
         .expect("the rehearsal's vocabulary is open and holds this fixture's lane");
-    vec![VerifiedDestination::seal(&Grant::<Dial>::mint(seal), lane)]
+    vec![VerifiedDestination::seal(
+        &busbar_kernel::test_support::tokens::grant::<Dial>(),
+        lane,
+    )]
 }
 
 /// The one operation class these fixtures are, as the Audit step's facts name it.
@@ -607,7 +628,6 @@ fn audit_ctx<'a>(
 /// answer before the model has been read. The record names the reserved unresolved label, which is
 /// what the live pre-routing arms name it too.
 fn refused_before_a_destination(
-    seal: &KernelSeal,
     host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     gov: &busbar_contract::records::PlaneRequestCtx,
     started: Instant,
@@ -615,7 +635,7 @@ fn refused_before_a_destination(
     resp: Response,
 ) -> Response {
     audit::audit_refused(
-        &Pass::mint(seal),
+        &busbar_kernel::test_support::tokens::pass(),
         &audit_ctx(
             host,
             gov,
@@ -759,7 +779,6 @@ async fn drive(
             // with a `RefusalOutcome` and the terminal is the one place that renders one.
             let outcome = refusal.outcome();
             return refused_before_a_destination(
-                seal,
                 host,
                 gov,
                 started,
@@ -784,7 +803,6 @@ async fn drive(
         Err(refusal) => {
             let outcome = refusal.outcome();
             return refused_before_a_destination(
-                seal,
                 host,
                 gov,
                 started,
@@ -800,7 +818,7 @@ async fn drive(
     // plane — so the principal is always established. It is still called, and its answer is still
     // opened, because the chain is about what each step ACTUALLY returns.
     let principal: PrincipalId = {
-        let token: Pass<Authenticate> = Pass::mint(seal);
+        let token: Pass<Authenticate> = busbar_kernel::test_support::tokens::pass();
         let decision = authenticate::authenticate(&token, gov);
         match decision.into_result(seal) {
             Ok(facts) => facts
@@ -820,10 +838,10 @@ async fn drive(
         .expect("the fixture configures one lane")
         .model
         .to_string();
-    let destinations = sealed_destinations(seal, &configured_lane);
+    let destinations = sealed_destinations(&configured_lane);
     let view = verify::HostPoolView::new(&**host, &**rt, gov.key.as_deref());
     let destinations = {
-        let token: Pass<Verify> = Pass::mint(seal);
+        let token: Pass<Verify> = busbar_kernel::test_support::tokens::pass();
         let answer = verify::verify(&token, &view, &model, &principal, destinations);
         // The step's own named refusal, carried back beside the decision — the guards are read once
         // and the wire triple is the step's, not the driver's.
@@ -840,7 +858,7 @@ async fn drive(
                 // from, so that is the pool the record names — the same bound the live
                 // pre-admission guard applies to the same string.
                 return audit::audit_refused(
-                    &Pass::mint(seal),
+                    &busbar_kernel::test_support::tokens::pass(),
                     &audit_ctx(host, gov, &model, started, charged_at),
                     audit::Served::of(audit::render_refusal(PROTO, &outcome)),
                 )
@@ -854,7 +872,7 @@ async fn drive(
     // No seat is installed on any deployment today, so the step is a no-op — and it is still
     // called, because "nothing is seated" is a fact about config, not a licence to skip a step.
     {
-        let token: Pass<Approve> = Pass::mint(seal);
+        let token: Pass<Approve> = busbar_kernel::test_support::tokens::pass();
         let decision = approve::approve(&token, &principal, &destinations, &[]);
         if decision.into_result(seal).is_err() {
             unreachable!("no veto seat is installed, so this step cannot refuse");
@@ -884,7 +902,7 @@ async fn drive(
     if let Some(resp) = admitted.refusal {
         let _ = admitted.verdict;
         return audit::audit_refused(
-            &Pass::mint(seal),
+            &busbar_kernel::test_support::tokens::pass(),
             &audit_ctx(host, gov, &model, started, charged_at),
             audit::Served::of(resp),
         )
@@ -905,7 +923,7 @@ async fn drive(
     // that fed the step a `None` the root does not feed it would be rehearsing a different unit.
     let meter_half = admitted.sink.clone();
     let routed = route::route(
-        &Pass::mint(seal),
+        &busbar_kernel::test_support::tokens::pass(),
         route::RouteInput {
             host,
             rt,
@@ -917,6 +935,7 @@ async fn drive(
             ),
             destination: &effective,
             headers,
+            query: None,
             body: body.clone(),
             parsed: arrived.parsed,
             caller_token: None,
@@ -950,8 +969,8 @@ async fn drive(
     // out no amount: it assembles what the unit consumed and hands it back on its report, and what
     // the money actually comes to is the composition root's, proven where the card is.
     let metered = meter::meter(
-        &Pass::mint(seal),
-        &Grant::<Consumption>::mint(seal),
+        &busbar_kernel::test_support::tokens::pass(),
+        &busbar_kernel::test_support::tokens::grant::<Consumption>(),
         &ctx,
         &Outcome::Completed,
     );
@@ -971,10 +990,10 @@ async fn drive(
     // own answer says which of the two ends this was; both end here.
     let _ = route_decision;
     let audited = audit::audit(
-        &Pass::mint(seal),
+        &busbar_kernel::test_support::tokens::pass(),
         &audit_ctx(host, gov, &effective, started, charged_at),
         audit::Served::of(response),
-        charged,
+        charged.as_ref(),
     );
     // The sealed end, read back at the moment the terminal really runs — which for a stream is
     // while the body is still flowing, so it is the client-facing status the terminal names and
@@ -1150,7 +1169,7 @@ async fn a_stream_audited_at_its_end_seals_the_class_the_tap_reported() {
         let seal = kernel_seal();
         let body = request_body(fixture);
         let routed = route::route(
-            &Pass::mint(&seal),
+            &busbar_kernel::test_support::tokens::pass(),
             route::RouteInput {
                 host: &host,
                 rt: &rt,
@@ -1158,6 +1177,7 @@ async fn a_stream_audited_at_its_end_seals_the_class_the_tap_reported() {
                 op: crate::test_support::CHAT,
                 destination: POOL,
                 headers: &headers,
+                query: None,
                 body: body.clone(),
                 parsed: crate::engine::LazyBody::parse(&body).ok(),
                 caller_token: None,
@@ -1184,10 +1204,10 @@ async fn a_stream_audited_at_its_end_seals_the_class_the_tap_reported() {
         let drained = Response::from_parts(parts, axum::body::Body::from(bytes));
 
         let audited = audit::audit(
-            &Pass::mint(&seal),
+            &busbar_kernel::test_support::tokens::pass(),
             &audit_ctx(&host, &gov, POOL, Instant::now(), rig.charged_at),
             audit::Served::of(drained),
-            true,
+            None,
         );
         let facts = audited
             .decision
@@ -1503,6 +1523,7 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
         operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: headers.clone(),
+        query: None,
         body: body.clone(),
         path: None,
     });
@@ -1510,7 +1531,7 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
 
     // Authenticated as the root does, though its answer is the kernel's to hold the unit's hold for.
     let _principal: PrincipalId = {
-        let token: Pass<Authenticate> = Pass::mint(&seal);
+        let token: Pass<Authenticate> = busbar_kernel::test_support::tokens::pass();
         authenticate::authenticate(&token, &gov)
             .into_result(&seal)
             .ok()
@@ -1522,7 +1543,7 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
         .expect("the fixture configures one lane")
         .model
         .to_string();
-    let destinations = sealed_destinations(&seal, &configured_lane);
+    let destinations = sealed_destinations(&configured_lane);
 
     // THE DOOR. Its answer's plane half — the meter half, the charge flag, the effective pool —
     // stays on the carry, exactly as the root's Admit step leaves it. The verdict is what the
@@ -1539,13 +1560,15 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
         &destinations,
     );
     assert!(
-        admitted.charged,
+        admitted.charged.is_some(),
         "the governed fixture is admitted with the charge landed, or this pins nothing"
     );
     let _admission = walk.take_admission(admitted);
 
     // STEP 5 and STEP 6, through the carry.
-    let routed = walk.route(&Pass::mint(&seal), &model).await;
+    let routed = walk
+        .route(&busbar_kernel::test_support::tokens::pass(), &model)
+        .await;
     assert!(
         routed.into_result(&seal).is_ok(),
         "the fixture's destination resolves and the walk dispatches"
@@ -1559,7 +1582,10 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
     // THE STEP BUILDS ITS REPORT, and the carry keeps it — the whole instrument here, because the
     // arm that builds it is the one that used to be unreachable: a step bound with no meter half
     // keeps nothing, and that None is what a dead arm and a live one both used to leave behind.
-    let decision = walk.meter(&Pass::mint(&seal), &Grant::<Consumption>::mint(&seal));
+    let decision = walk.meter(
+        &busbar_kernel::test_support::tokens::pass(),
+        &busbar_kernel::test_support::tokens::grant::<Consumption>(),
+    );
     assert!(decision.into_result(&seal).is_ok(), "the step proceeds");
 
     let report = walk
@@ -1615,7 +1641,7 @@ async fn the_verify_refusal_carries_the_wire_triple_the_guards_named() {
     let view = verify::HostPoolView::new(&*host, &*rt, gov.key.as_deref());
     let seal = kernel_seal();
     let answer = verify::verify(
-        &Pass::mint(&seal),
+        &busbar_kernel::test_support::tokens::pass(),
         &view,
         POOL,
         &PrincipalId::new(rig.key.id.clone()),
@@ -1729,12 +1755,11 @@ async fn a_configured_lanes_runtime_name_can_be_sealed() {
         .to_string();
     assert_eq!(configured, LANE);
 
-    let seal = kernel_seal();
-    let sealed = sealed_destinations(&seal, &configured);
+    let sealed = sealed_destinations(&configured);
     assert_eq!(sealed.len(), 1);
     assert_eq!(sealed[0].lane().as_str(), configured);
     // Idempotent: the second seal of the same name is the same id, so this is a fixed cost.
-    let again = sealed_destinations(&seal, &configured);
+    let again = sealed_destinations(&configured);
     assert_eq!(again[0].lane(), sealed[0].lane());
     assert!(std::ptr::eq(
         again[0].lane().as_str(),
@@ -1747,9 +1772,10 @@ async fn a_configured_lanes_runtime_name_can_be_sealed() {
 ///
 /// `admit::admit` reaches the door through `EngineHost::admission_check`, which is the door's own
 /// check-and-charge WITHOUT the `finish_rejected` `admission_door` wraps its refusing arm in. So
-/// `Admitted::refusal` is bytes rather than an already-posted record, the chain hands it to
-/// `audit::audit_refused`, and the over-budget path ends where every other path ends — with exactly
-/// one link on the unit's chain.
+/// `Admitted::refusal` is bytes rather than an already-posted refusal, the chain hands it to
+/// `audit::audit_refused`, and the over-budget path ends where every other path ends: at the one
+/// terminal, without reaching the Meter step. (One terminal per unit is counted at the kernel
+/// ingress, `ingress/tests/terminal_tests.rs`.)
 #[tokio::test]
 async fn the_admit_doors_refusal_is_posted_once_by_the_audit_step() {
     let rig = rig(Fixture::OverBudget).await;
@@ -1774,30 +1800,19 @@ async fn the_admit_doors_refusal_is_posted_once_by_the_audit_step() {
     assert_eq!(resp.status().as_u16(), 429, "the door's own refusal");
     let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
 
-    let records = REQUESTS.records_for(&rig.key.id);
-    assert_eq!(
-        records.len(),
-        1,
-        "one unit, one link — the door posted none of its own"
-    );
-    assert_eq!(
-        records[0].pool, POOL,
-        "and the one link names the pool the caller asked for"
-    );
     assert!(
         !metering.reached,
         "a unit refused at the door never reaches the Meter step"
     );
-    assert!(REQUESTS.verify_principal_chain(&rig.key.id).is_ok());
     rig.server.shutdown().await;
 }
 
 /// GAP 7, CLOSED — `audit_refused` labels a pre-door refusal with the pool it was raised against.
 ///
 /// The live pre-admission guard finishes through `finish_rejected` with `pool_label(app, pool)`, so
-/// a 403 against a CONFIGURED pool is recorded against that pool's name. `audit::audit_refused` now
-/// takes the destination and applies the SAME bound, so the two agree on the record as well as on
-/// the bytes — and a name no deployment configured still reads back as the reserved unresolved
+/// a 403 against a CONFIGURED pool is labelled with that pool's name. `audit::audit_refused` now
+/// takes the destination and applies the SAME bound, so the two agree on the label as well as on
+/// the status — and a name no deployment configured still reads back as the reserved unresolved
 /// label, so nothing was widened to close this.
 #[tokio::test]
 async fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
@@ -1819,12 +1834,6 @@ async fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
         )
         .expect_err("the key may not reach the pool it named");
     assert_eq!(live.status().as_u16(), 403);
-    let live_records = REQUESTS.records_for(&live_rig.key.id);
-    assert_eq!(live_records.len(), 1, "the live guard posts one link");
-    assert_eq!(
-        live_records[0].pool, POOL,
-        "and names the pool it turned the caller away from"
-    );
     live_rig.server.shutdown().await;
 
     // LEG 2 — the chain, through the step files, on its own deployment.
@@ -1850,24 +1859,6 @@ async fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
     assert_eq!(resp.status().as_u16(), 403);
     let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
 
-    let unit_records = REQUESTS.records_for(&unit_rig.key.id);
-    assert_eq!(unit_records.len(), 1, "one unit, one link");
-    assert_eq!(
-        unit_records[0].pool, live_records[0].pool,
-        "the step's record names the pool the live guard's record names"
-    );
-    assert_eq!(
-        (
-            unit_records[0].outcome.clone(),
-            unit_records[0].reason.clone(),
-            unit_records[0].status
-        ),
-        (
-            live_records[0].outcome.clone(),
-            live_records[0].reason.clone(),
-            live_records[0].status
-        )
-    );
     // The bound is unchanged for a name nothing configured, which is the half a fix could have
     // broken without any of the above noticing.
     assert_eq!(
@@ -1905,7 +1896,7 @@ async fn route_and_audit_are_on_the_token_seam() {
     // leg names the lane this deployment CONFIGURED — the runtime name off the tables, interned
     // once through the node's own registration, the same bridge the verified set crosses.
     let body = request_body(Fixture::BufferedOk);
-    let token: Pass<Route> = Pass::mint(&seal);
+    let token: Pass<Route> = busbar_kernel::test_support::tokens::pass();
     let routed = route::route(
         &token,
         route::RouteInput {
@@ -1915,6 +1906,7 @@ async fn route_and_audit_are_on_the_token_seam() {
             op: crate::test_support::CHAT,
             destination: POOL,
             headers: &headers,
+            query: None,
             body: body.clone(),
             parsed: crate::engine::LazyBody::parse(&body).ok(),
             caller_token: None,
@@ -1943,12 +1935,12 @@ async fn route_and_audit_are_on_the_token_seam() {
 
     // AUDIT, over those same bytes: a proceed carrying what the plane says the unit was and how it
     // says it ended.
-    let token: Pass<Audit> = Pass::mint(&seal);
+    let token: Pass<Audit> = busbar_kernel::test_support::tokens::pass();
     let audited = audit::audit(
         &token,
         &audit_ctx(&host, &gov, POOL, Instant::now(), rig.charged_at),
         audit::Served::of(response),
-        true,
+        None,
     );
     let status = audited.response.as_response().status().as_u16();
     let _ = axum::body::to_bytes(audited.response.into_response().into_body(), usize::MAX).await;
@@ -1972,7 +1964,7 @@ async fn route_and_audit_are_on_the_token_seam() {
     // ROUTE again, on a destination that resolves to nothing: a refusal stamped with its own step,
     // which is the half of the seam a proceed cannot show.
     let body = request_body(Fixture::UnknownModel);
-    let token: Pass<Route> = Pass::mint(&seal);
+    let token: Pass<Route> = busbar_kernel::test_support::tokens::pass();
     let missed = route::route(
         &token,
         route::RouteInput {
@@ -1982,6 +1974,7 @@ async fn route_and_audit_are_on_the_token_seam() {
             op: crate::test_support::CHAT,
             destination: "no-such-model",
             headers: &headers,
+            query: None,
             body: body.clone(),
             parsed: crate::engine::LazyBody::parse(&body).ok(),
             caller_token: None,

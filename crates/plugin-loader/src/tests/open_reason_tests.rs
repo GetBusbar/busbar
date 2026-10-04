@@ -57,12 +57,12 @@ fn store_text(settings: &[u8]) -> String {
     let door: DoorFn = witness::store::door;
     let row = LinkedRow::of(door).expect("the store door states its Statement");
     let linked = load_linked::<Store>(&row, bind(&d)).expect("the linked store door loads");
-    let text = LoadedStore::open(linked, d.clone(), settings, 1).expect_err("it never opens");
+    let text = LoadedStore::open(linked, d.clone(), settings, mint).expect_err("it never opens");
     if let Some(path) = dropped_path("open_reason_store_door") {
         let dropped = load_dropped::<Store>(&path, &row.statement, bind(&d))
             .expect("the dropped store door loads");
         let dropped_text =
-            LoadedStore::open(dropped, d.clone(), settings, 1).expect_err("it never opens");
+            LoadedStore::open(dropped, d.clone(), settings, mint).expect_err("it never opens");
         assert_eq!(dropped_text, text, "linked and dropped in read differently");
     }
     text
@@ -142,4 +142,13 @@ fn an_sdk_validate_and_open_say_their_own_owned_words_through_the_lent_buffers()
         c.open_failure(p.name()),
         "plugin 'open-reason-life' open failed: boom: x"
     );
+}
+
+/// This test's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
+fn mint() -> busbar_contract::abi::store::OpId {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    busbar_contract::abi::store::OpId::from_parts(
+        0x0e45,
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
+    )
 }

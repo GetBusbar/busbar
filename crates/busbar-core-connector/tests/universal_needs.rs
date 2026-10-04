@@ -179,29 +179,14 @@ impl busbar_core_connector::framer::FramerDoor for DroppedDoor {
     }
 }
 
-/// The transport door example `name` beside this test binary, admitted and opened through the one
-/// dispatcher. A missing artifact is a failure, never a skip.
-fn dropped_door(name: &str) -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
-    let exe = std::env::current_exe().expect("the test binary has a path");
-    let examples = exe
-        .parent()
-        .and_then(|d| d.parent())
-        .expect("target/<profile>")
-        .join("examples");
-    let file = busbar_plugin_loader::plugin_library_filename(name);
-    let path = [examples.join(&file), examples.join("deps").join(&file)]
-        .into_iter()
-        .find(|p| p.exists())
-        .unwrap_or_else(|| panic!("the {name} door ({file}) is not built beside the test binary"));
-    open_door(&path).expect("the door is admitted")
-}
-
-/// A door that frames the host's socket (an empty `composes_over`), found by KIND among the
-/// libraries beside this test binary (uplifted, under `deps/`, or an example `cdylib` such as the
-/// tcp crate's `tcp_door`): the first the one dispatcher admits as such a transport.
-fn socket_framer_door() -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
-    let exe = std::env::current_exe().ok()?;
-    let profile = exe.parent()?.parent()?.to_path_buf();
+/// The libraries beside this test binary: uplifted, under `deps/`, or an example `cdylib`.
+fn libraries_beside_the_test() -> Vec<std::path::PathBuf> {
+    let Some(profile) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.parent()?.to_path_buf()))
+    else {
+        return Vec::new();
+    };
     [
         profile.clone(),
         profile.join("deps"),
@@ -213,8 +198,29 @@ fn socket_framer_door() -> Option<std::sync::Arc<dyn busbar_core_connector::fram
             .into_iter()
             .map(move |f| dir.join(f))
     })
-    .filter_map(|p| open_door(&p))
-    .find(|d| d.facts().composes_over.is_empty())
+    .collect()
+}
+
+/// THE SOCKET FRAMER these tests drive alone: the neutral frame door (the plugin loader's
+/// `neutral_frame_door` example, an identity framer under a neutral claim that names no transport),
+/// beside this test binary.
+fn socket_framer_door() -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
+    let file = busbar_plugin_loader::plugin_library_filename("neutral_frame_door");
+    libraries_beside_the_test()
+        .into_iter()
+        .filter(|p| p.file_name().is_some_and(|n| n == file.as_str()))
+        .find_map(|p| open_door(&p))
+}
+
+/// The door a composing door is built over: of the libraries beside this test binary, one that
+/// frames the host's socket (an empty `composes_over`) and claims `layer`, found by kind and claim.
+fn layer_door(
+    layer: &'static str,
+) -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
+    libraries_beside_the_test()
+        .into_iter()
+        .filter_map(|p| open_door(&p))
+        .find(|d| d.facts().composes_over.is_empty() && d.facts().claims.contains(&layer))
 }
 
 /// `path` admitted and opened through the one dispatcher as a transport door; `None` when it is
@@ -329,8 +335,7 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
 
 /// THE CONNECTOR DRIVES A DROPPED-IN DOOR THAT FRAMES THE HOST'S SOCKET against a real far end: the
 /// opening message and a write go out through the door, the echo comes back as its frames, byte for
-/// byte. The door is found by kind, never named. Its linked arm is the root's door row, which every
-/// default build serves through the same connector.
+/// byte. The door is the neutral frame door, which names no transport.
 #[test]
 fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
     use busbar_core_connector::compose::{Connection, Dial};
@@ -339,7 +344,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
     let Some(door) = socket_framer_door() else {
         assert!(
             std::env::var_os("CI").is_none(),
-            "a socket-framing transport door is built beside the test binary under CI"
+            "the neutral frame door is built beside the test binary under CI"
         );
         return;
     };
@@ -375,6 +380,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
         c.write(
             &payload,
             true,
+            false,
             &mut std::task::Context::from_waker(std::task::Waker::noop()),
         )
         .expect("the write is taken");
@@ -412,20 +418,22 @@ fn head_through_the_table(response: &'static str) -> (Pieces, Option<Vec<u8>>) {
 
     let door = composing_door();
     let scheme = door.facts().claims[0];
+    let layer = layer_door(door.facts().composes_over[0])
+        .expect("the door the composing door is built over is beside the test");
     let response = respond(scheme, response);
     // An IP literal is its own address: the judge the test needs, and no more.
     let judge = |dest: &str, _: u32, _: Judged| {
         Some(dest.parse::<std::net::SocketAddr>().map_err(|_| 1_u64))
     };
     let c = Connector::serving(
-        // The door composes over the socket-framing door, so the view serves both.
+        // The door composes over its layer's door, so the view serves both.
         Transports::new(vec![
             Entry {
                 door,
                 alpn: Vec::new(),
             },
             Entry {
-                door: socket_framer_door().expect("a socket-framing door is built beside the test"),
+                door: layer,
                 alpn: Vec::new(),
             },
         ])
@@ -435,7 +443,8 @@ fn head_through_the_table(response: &'static str) -> (Pieces, Option<Vec<u8>>) {
         std::sync::Arc::new(|_| {}),
     );
     let owner = InstanceId(1);
-    c.declare_over(owner, NeedId(0), scheme);
+    c.declare_over(owner, NeedId(0), scheme)
+        .expect("a served scheme declares");
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -567,10 +576,18 @@ fn the_head_words_reach_the_framer_byte_for_byte() {
     );
 }
 
-/// The dropped-in door that composes over the socket framer: the request/response framer the head
-/// tests drive, by its example's name (the one place this file names it).
+/// The dropped-in door that composes over ONE socket framer: the request/response framer the head
+/// tests drive, found among the libraries beside this test binary by what it states (one layer in
+/// its `composes_over`), as [`layer_door`] finds its layer. It is a pinned plugin repo's cdylib,
+/// which is in no graph of this workspace: the hop's `build:dlopen-cdylibs` builds it (and the
+/// framer door it composes over) from the pinned checkout busbar's root resolves, into this target dir
+/// (spec P5). A missing door is a failure, never a skip.
 fn composing_door() -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
-    dropped_door("http_door")
+    libraries_beside_the_test()
+        .into_iter()
+        .filter_map(|p| open_door(&p))
+        .find(|d| d.facts().composes_over.len() == 1)
+        .expect("a door composing over one socket framer is built beside the test binary")
 }
 
 /// A response template with its version written as the door's own scheme, upper-cased (`{V}`), so
@@ -617,7 +634,8 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
 
     let door = composing_door();
     let scheme = door.facts().claims[0];
-    let plain = socket_framer_door().expect("a socket-framing door is built beside the test");
+    let plain = layer_door(door.facts().composes_over[0])
+        .expect("the door the composing door is built over is beside the test");
     let raw = plain.facts().claims[0];
     let judge = |dest: &str, _: u32, _: Judged| {
         Some(dest.parse::<std::net::SocketAddr>().map_err(|_| 1_u64))
@@ -639,7 +657,8 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
         std::sync::Arc::new(|_| {}),
     );
     let owner = InstanceId(1);
-    c.declare_over(owner, NeedId(1), raw);
+    c.declare_over(owner, NeedId(1), raw)
+        .expect("a served scheme declares");
     assert!(
         !c.framed(owner, NeedId(1)),
         "the socket framer is a raw stream"
@@ -652,7 +671,8 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
         let (far, mut seen) =
             serve_once(respond(scheme, "{V} 200 OK\r\ncontent-length: 0\r\n\r\n")).await;
         let declared = format!("{scheme}://{far}");
-        c.declare_need_to(owner, NeedId(0), scheme, 0, &declared);
+        c.declare_need_to(owner, NeedId(0), scheme, 0, &declared)
+            .expect("a served scheme declares");
         assert!(c.framed(owner, NeedId(0)), "the composing door is framed");
         let fields: [(&str, &[u8]); 1] = [("x-a", b"1")];
         let desc = OpenDesc {

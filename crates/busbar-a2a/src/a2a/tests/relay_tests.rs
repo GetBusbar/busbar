@@ -604,7 +604,7 @@ async fn a_registration_demoted_between_admission_and_the_socket_is_not_reached(
             _a: IpAddr,
             _h: &[(String, String)],
             _b: &[u8],
-        ) -> Result<HttpResponse, String> {
+        ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
             panic!("a demoted registration must never be reached");
         }
         fn post_stream(
@@ -869,7 +869,7 @@ fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
             _a: IpAddr,
             _h: &[(String, String)],
             _b: &[u8],
-        ) -> Result<HttpResponse, String> {
+        ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
             panic!("the transport must never be reached for a refused target");
         }
         fn post_stream(
@@ -1050,7 +1050,7 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
             _a: IpAddr,
             _h: &[(String, String)],
             _b: &[u8],
-        ) -> Result<HttpResponse, String> {
+        ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
             Ok(HttpResponse {
                 status: 200,
                 location: None,

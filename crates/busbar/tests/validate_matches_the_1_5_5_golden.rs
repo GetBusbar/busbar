@@ -3,7 +3,7 @@
 
 //! **`--validate` REFUSES AS THE PUBLISHED 1.5.5 BINARY DID** — every case of the golden captured
 //! from it (`tests/v1.5.5-validate/`: `cases.txt` the configurations, `refusals.txt` what 1.5.5's
-//! `--validate` printed for each, re-captured by `capture.sh` from the release binary).
+//! `--validate` printed for each, captured from the release binary by `capture.sh`, at ba24944479).
 //!
 //! Each case's `export:` block is validated by this build and its refusal's item lines (`  - …`) must
 //! equal 1.5.5's, byte for byte and in order; a case 1.5.5 accepted must validate clean. The header

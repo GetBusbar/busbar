@@ -360,6 +360,7 @@ fn bed09_refusal_writes_content_filtered() {
         logprobs: Vec::new(),
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = writer().write_response(&resp);
     assert_eq!(out["stopReason"], "content_filtered", "{out}");
@@ -463,6 +464,7 @@ fn bed14_web_citation_url_rides_the_web_location() {
         end_index: None,
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     };
     let c = write_bedrock_citation(&cit).expect("citation");
     assert_eq!(c["title"], "Why the sky is blue", "{c}");

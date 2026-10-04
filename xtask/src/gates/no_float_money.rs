@@ -7,19 +7,20 @@
 //! failure this bans — a float sums differently depending on order, rounds in ways nobody
 //! configured, cannot hold `27.1` at all, and turns "the bill equals the sum of the lines" from a
 //! proof into a hope. So the crate that owns the money arithmetic (`busbar-kernel-ledger`), the
-//! crate that owns the exact count type (`busbar-contract`'s count module), the crate that decides
-//! affordability (`busbar-kernel-budget`) and the kernel's and binary's dedicated money-unit files
-//! carry no float in production source.
+//! crate that owns the exact count type (`busbar-contract`'s count module), the kernel module that
+//! decides affordability (`busbar-kernel/src/governance`, less one named routing ratio) and the
+//! kernel's and binary's dedicated money-unit files carry no float in production source.
 //!
 //! # THE SCAN SET IS THE CHECK
 //!
 //! For most of this gate's life it scanned the ledger crate and six named files, and that was the
 //! whole of it. `crates/busbar-kernel/src/cost.rs` — which owns `RateNanos` and the conversion that
-//! builds it — and every file in `crates/busbar-kernel-budget/src` — which decides whether a request
-//! is affordable and prices the counters that answer — were in NEITHER set. No amount of float added
-//! to either could produce a RED, ever, for any reason. An instrument that cannot produce a NO is
-//! not a check, so both are in the set now: the budget crate whole (it is a money crate), the
-//! kernel's money files by name (the kernel is not).
+//! builds it — and the admission decision — which decides whether a request is affordable and
+//! prices the counters that answer — were in NEITHER set. No amount of float added to either could
+//! produce a RED, ever, for any reason. An instrument that cannot produce a NO is not a check, so
+//! both are in the set now: the live admission decision (`busbar-kernel/src/governance`) whole, with
+//! [`NOT_MONEY_RATIO`] its one named exemption, and the kernel's money files by name (the kernel is
+//! not a money crate).
 //!
 //! # THE MONEY-INTAKE BOUNDARIES (#44) — ALL OF THEM, NAMED IN [`MONEY_INTAKE`]
 //!
@@ -32,7 +33,7 @@
 //! THE SURFACE IS AUDITABLE BY READING [`MONEY_INTAKE`], which is the whole point of its existing.
 //! Every place money enters this system from configuration is a row in that table, with the file it
 //! lives in, the FUNCTION that is the boundary, and how much of the file that boundary covers.
-//! There are three today and the table says which is which:
+//! There are two today and the table says which is which:
 //!
 //! * `busbar-kernel-ledger/src/cost/rate.rs` :: `nano_rate` — the card-build arithmetic itself.
 //!   The WHOLE FILE is the conversion (#44), which is why it is excluded from the ledger walk.
@@ -45,13 +46,6 @@
 //!   float anywhere else in it (in the repricer, in the epoch read, in the units registry) could not
 //!   produce a RED for any amount of float. The file is scanned now, with `card_from_config`'s own
 //!   body the only span in it a float may appear in.
-//! * `busbar-kernel-budget/src/price.rs` :: `RateNanos::from_micros_per_token` — the door's copy of
-//!   the same intake, four configured micro-unit decimals in and four `u64` nano-rates out, each
-//!   through the ledger's `nano_rate`. The budget crate is scanned WHOLE, so this boundary had been
-//!   reading as four standing findings on `no-float-money:no-float` — a red that named a legitimate
-//!   conversion, which is the same instrument fault as a green that names nothing: the row was not
-//!   falsifiable, because it was already red, and EVERY red plant in this gate's self-test was
-//!   scored `PROOF IMPOSSIBLE` behind it.
 //!
 //! AND THE RULE THAT MAKES "AT THE BOUNDARY" MEAN SOMETHING: every boundary's declared RETURN TYPE
 //! is checked, and a float in it is a finding. Decimals go in, integers come out — a boundary that
@@ -166,8 +160,8 @@ pub enum IntakeExtent {
 ///
 /// A boundary this table does not name is a boundary the gate cannot reason about: either it is in
 /// no scan set (invisible, the `card_from_config` case) or it is scanned with no exemption at all
-/// (a standing red over a legitimate conversion, the `from_micros_per_token` case). Both silence
-/// the instrument, one by never saying no and one by never being able to say yes.
+/// (a standing red over a legitimate conversion). Both silence the instrument, one by never saying
+/// no and one by never being able to say yes.
 pub struct MoneyIntake {
     /// The repo-relative file the boundary lives in.
     pub file: &'static str,
@@ -195,12 +189,6 @@ pub const MONEY_INTAKE: &[MoneyIntake] = &[
         boundary: "card_from_config",
         extent: IntakeExtent::OnlyTheBoundaryFn,
         why: "THE SECOND INTAKE: the composition root relaying the deployment's configured rates               into the cost unit's card, on boot and on every live rate apply. Its call path —               `CardRepricer::rates_applied`, which appends the built card to the history, and               `RateEpoch::effective_from_at`, which dates a price against it — is the rest of this               file, and is scanned.",
-    },
-    MoneyIntake {
-        file: "crates/busbar-kernel-budget/src/price.rs",
-        boundary: "from_micros_per_token",
-        extent: IntakeExtent::OnlyTheBoundaryFn,
-        why: "The admission door's intake of the same configured figures: four micro-unit decimals               in, four integer nano-rates out, each one through the ledger's `nano_rate` so the               clamp and the rounding are the card's and not a second copy of them.",
     },
 ];
 
@@ -304,24 +292,49 @@ const CONTRACT_MONEY_FILES: &[&str] = &[
 /// The directory the contract money files live under.
 const CONTRACT_ROOT: &str = "crates/busbar-contract/src";
 
-/// THE BUDGET CRATE, scanned whole like the ledger, because it is a dedicated money crate and not a
-/// crate that happens to contain some money.
+/// THE ADMISSION DECISION, scanned whole like the ledger: the kernel's governance module, where
+/// `try_admit` decides whether a request is affordable, charges and refunds the budget cells, and
+/// reads the windows they roll over. Every production file under it is on the money path, so the ban
+/// applies to the DIRECTORY rather than to a hand-picked file list — a new file added beside
+/// `state.rs` is in the ban the moment it exists, which a named list could never promise.
 ///
-/// A budget decision is money arithmetic with a different verb: a hold, an estimate, a cell's
-/// counters, a rolling window and a pricer that turns those counters into cents. Every production
-/// file under it is on the money path, so the ban applies to the CRATE rather than to a hand-picked
-/// file list — a new file added beside `decide.rs` is in the ban the moment it exists, which a named
-/// list could never promise.
-///
-/// THIS ROOT WAS IN NO SCAN SET AT ALL. The ban's sets were the ledger crate and six named files,
-/// and `busbar-kernel-budget` was in neither — so no float added anywhere in the crate that decides
-/// whether a request is affordable could produce a RED, at any time, for any amount of float. That
-/// is not a narrower check than intended; it is not a check.
-const BUDGET_SRC: &str = "crates/busbar-kernel-budget/src";
+/// THIS ROOT USED TO BE `crates/busbar-kernel-budget/src`, a crate whose admission stack had no
+/// production caller while the live decision sat here, in no scan set at all. The crate is deleted
+/// (ARCHITECT ruling 2026-09-30, "busbar-kernel-budget is deleted whole") and the scan follows the
+/// decision that is live, not the name that used to be on it.
+const GOVERNANCE_SRC: &str = "crates/busbar-kernel/src/governance";
 
-/// The denominator floor for the budget scan. Seven production files when this was written; the
-/// floor sits under that so ordinary churn does not trip it and an emptied or relocated crate does.
-const BUDGET_FLOOR: usize = 5;
+/// The denominator floor for the governance scan: the MEASURED production file count at the move
+/// (`group_provision`, `mint_policy`, `mod`, `revocation`, `self_serve`, `signing`, `state`). One
+/// file fewer is a relocation the scan did not follow, and it is refused.
+const GOVERNANCE_FLOOR: usize = 7;
+
+/// THE ONE FLOAT IN THE GOVERNANCE SCOPE THAT IS NOT MONEY, named, and the only one there can be.
+///
+/// A single value, not a table: a second exemption in this scope is a second edit to this constant's
+/// type, in a reviewed diff, never a row appended beside the first.
+pub struct NotMoneyRatio {
+    /// The repo-relative file the function lives in. It must be inside [`GOVERNANCE_SRC`].
+    pub file: &'static str,
+    /// The FUNCTION whose body is exempt, found by name. Absent exempts NOTHING and is REFUSED.
+    pub function: &'static str,
+    /// Why this float is not money.
+    pub why: &'static str,
+}
+
+/// `state.rs` :: `rate_headroom` — WHY IT IS NOT MONEY. It answers "how close is this key to its
+/// request/token cap", as the fraction `[0.0, 1.0]` of the tightest windowed `requests`/`tokens`
+/// limit still unused, and the routing `usage` policy ranks lanes by it. Its inputs are COUNTS
+/// (requests and tokens, never a price or a cent), its answer is a ratio no ledger, cap comparison
+/// or bill ever reads, and `try_admit` — which is scanned, float-free — is what blocks. Converting it
+/// to an integer would change the routing order, so it is exempt by name instead; every other float
+/// in the governance scope is a finding.
+pub const NOT_MONEY_RATIO: NotMoneyRatio = NotMoneyRatio {
+    file: "crates/busbar-kernel/src/governance/state.rs",
+    function: "rate_headroom",
+    why: "an f64 routing headroom ratio over request/token COUNTS, not money: the routing `usage` \
+          policy ranks by it, no ledger, cap or bill reads it, and `try_admit` is what blocks",
+};
 
 /// ── TWO DEDICATED MONEY CRATES THAT WERE IN NO SCAN SET AT ALL (2026-09-23) ─────────────────────
 ///
@@ -490,11 +503,8 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
         floor: 150,
     },
     CountRoot {
-        area: "the money book and the budget",
-        homes: &[
-            "crates/busbar-kernel-ledger/src",
-            "crates/busbar-kernel-budget/src",
-        ],
+        area: "the money book",
+        homes: &["crates/busbar-kernel-ledger/src"],
         floor: 24,
     },
     CountRoot {
@@ -1441,23 +1451,47 @@ impl Gate for NoFloatMoneyGate {
         // fully resolve — a half-taken scan reads exactly like a clean one, and it is not one.
         let mut float_scan_problems: Vec<String> = Vec::new();
 
-        // THE BUDGET CRATE, held to its own floor, the same treatment the ledger gets. A dedicated
-        // money crate that reads as empty is REFUSED, never scanned as zero hits and printed green.
-        let budget_files = match cx.walk(
-            &WalkSpec::new([BUDGET_SRC])
+        // THE ADMISSION DECISION, held to its own floor, the same treatment the ledger gets. A
+        // money scope that reads as empty is REFUSED, never scanned as zero hits and printed green.
+        let governance_files = match cx.walk(
+            &WalkSpec::new([GOVERNANCE_SRC])
                 .ext("rs")
                 .exclude([EXCLUDE_TESTS_DIR, EXCLUDE_TESTS_FILE, EXCLUDE_TESTS_MOD])
-                .min_files(BUDGET_FLOOR),
+                .min_files(GOVERNANCE_FLOOR),
         ) {
             Ok(f) => f,
             Err(e) => {
                 float_scan_problems.push(format!(
-                    "{e} If the budget crate legitimately moved, point {BUDGET_SRC} at its new home \
-                     in a reviewed diff that says so — do not lower the floor."
+                    "{e} If the admission decision legitimately moved, point {GOVERNANCE_SRC} at \
+                     its new home in a reviewed diff that says so — do not lower the floor."
                 ));
                 Vec::new()
             }
         };
+
+        // ITS ONE NAMED NOT-MONEY EXEMPTION, found by name in a file the walk above read. Absent
+        // exempts NOTHING and is refused, the same rule every intake and egress boundary keeps.
+        let mut ratio_span: Option<(usize, usize)> = None;
+        match governance_files
+            .iter()
+            .find(|f| f.rel_str() == NOT_MONEY_RATIO.file)
+        {
+            None if !governance_files.is_empty() => float_scan_problems.push(format!(
+                "{}: the named not-money exemption's file is not in the {GOVERNANCE_SRC} scan — \
+                 move the exemption with the file, in the diff that moves it",
+                NOT_MONEY_RATIO.file
+            )),
+            None => {}
+            Some(f) => match find_boundary(&f.text, NOT_MONEY_RATIO.function) {
+                Some(b) => ratio_span = Some((b.first_line, b.last_line)),
+                None => float_scan_problems.push(format!(
+                    "{}: the named not-money exemption `fn {}` is not in that file — the \
+                     exemption names a function that is not there, so either it moved (move \
+                     `NOT_MONEY_RATIO` with it) or it is stale",
+                    NOT_MONEY_RATIO.file, NOT_MONEY_RATIO.function
+                )),
+            },
+        }
 
         // THE SEALED-FACTS AND DURABILITY CRATES (2026-09-23), each held to its own floor the way
         // the ledger and the budget are. Same treatment for the same reason: a dedicated money crate
@@ -1540,6 +1574,12 @@ impl Gate for NoFloatMoneyGate {
         // naming a span that is now something else.
         let mut offenders = Vec::new();
         let mut intake_spans: IntakeSpans = std::collections::BTreeMap::new();
+        if let Some(span) = ratio_span {
+            intake_spans
+                .entry(NOT_MONEY_RATIO.file.to_string())
+                .or_default()
+                .push(span);
+        }
         let mut intake_texts: Vec<(&'static str, String)> = Vec::new();
         for intake in MONEY_INTAKE {
             let text = match cx.read(intake.file) {
@@ -1575,12 +1615,12 @@ impl Gate for NoFloatMoneyGate {
             }
         }
 
-        // AN INTAKE FILE THE OTHER SETS DO NOT ALREADY CARRY IS SCANNED HERE. `price.rs` arrives
-        // through the budget crate's walk; `root/kernel.rs` is in no other set at all, which is the
-        // hole — the second intake and its whole call path were invisible to this ban.
+        // AN INTAKE FILE THE OTHER SETS DO NOT ALREADY CARRY IS SCANNED HERE. `root/kernel.rs` is in
+        // no other set at all, which is the hole — the second intake and its whole call path were
+        // invisible to this ban.
         let already: std::collections::BTreeSet<String> = ledger_files
             .iter()
-            .chain(budget_files.iter())
+            .chain(governance_files.iter())
             .chain(whole_crate_files.iter())
             .chain(named_files.iter())
             .map(|f| f.rel_str())
@@ -1614,7 +1654,7 @@ impl Gate for NoFloatMoneyGate {
             let Some(src) = named_files
                 .iter()
                 .chain(ledger_files.iter())
-                .chain(budget_files.iter())
+                .chain(governance_files.iter())
                 .chain(whole_crate_files.iter())
                 .find(|f| f.rel_str() == egress.file)
             else {
@@ -1647,7 +1687,7 @@ impl Gate for NoFloatMoneyGate {
         for f in &ledger_files {
             scan_file(&f.rel_str(), &f.text, &intake_spans, &mut offenders);
         }
-        for f in &budget_files {
+        for f in &governance_files {
             scan_file(&f.rel_str(), &f.text, &intake_spans, &mut offenders);
         }
         for f in &whole_crate_files {
@@ -1741,8 +1781,9 @@ impl Gate for NoFloatMoneyGate {
                 ROW_SCAN_FLOOR,
                 "every money scan set is present and above its floor",
                 format!(
-                    "the ledger, budget, sealed-facts and durability crates, {} named money file(s), \
-                     {} enumerated money area(s) and {} declared money-intake boundary(ies) all read",
+                    "the ledger, governance, sealed-facts and durability scopes, {} named money \
+                     file(s), {} enumerated money area(s) and {} declared money-intake \
+                     boundary(ies) all read",
                     BINARY_MONEY_FILES.len()
                         + CONTRACT_MONEY_FILES.len()
                         + KERNEL_MONEY_FILES.len(),
@@ -1860,6 +1901,76 @@ impl Gate for NoFloatMoneyGate {
             }),
             Err(e) => report.note_infra_failure(format!(
                 "no-float-money selftest: could not plant into the card-build boundary ({e})"
+            )),
+        }
+
+        // ── THE ADMISSION DECISION AND ITS ONE NOT-MONEY EXEMPTION (`rate_headroom`) ──────────
+        //
+        // The ruling that moved this scan (2026-09-30) grants ONE exemption in the governance scope,
+        // so these cases prove that it is one: any other float there, in another file or in the same
+        // file outside the named function, is still a finding.
+        let governance_mod = format!("{GOVERNANCE_SRC}/mod.rs");
+
+        // 1. A FLOAT IN ANOTHER GOVERNANCE FILE IS FLAGGED.
+        report.push(plant(
+            cx,
+            self,
+            "a float in a governance file other than the named ratio's is flagged",
+            &[ROW_NO_FLOAT],
+            &governance_mod,
+            Edit::Append(format!(
+                "\npub fn planted_budget_scale(cents: i64) -> {float_ty} {{ cents as {float_ty} }}\n"
+            )),
+            &[&float_ty, "governance/mod.rs"],
+        ));
+
+        // 2. A FLOAT IN THE RATIO'S OWN FILE, OUTSIDE THE NAMED FUNCTION, IS FLAGGED. The exemption
+        //    is a function, not a file.
+        report.push(plant(
+            cx,
+            self,
+            "a float in the named ratio's file, outside `rate_headroom`, is flagged",
+            &[ROW_NO_FLOAT],
+            NOT_MONEY_RATIO.file,
+            Edit::Append(format!(
+                "\npub fn planted_cap_ratio(cap: u64) -> {float_ty} {{ cap as {float_ty} * 0.5 }}\n"
+            )),
+            &[&float_ty, "governance/state.rs"],
+        ));
+
+        // 3. AND A FLOAT INSIDE THE NAMED FUNCTION STAYS GREEN: that body is the exemption.
+        match body_plant(
+            cx,
+            NOT_MONEY_RATIO.file,
+            NOT_MONEY_RATIO.function,
+            &format!("let _planted_ratio: {float_ty} = 0.5;"),
+        ) {
+            Ok(ov) => report.push(Case {
+                name: "a float INSIDE `rate_headroom` stays green (the one not-money exemption)"
+                    .to_string(),
+                covers: vec![ROW_NO_FLOAT.to_string()],
+                expected: crate::gates::Expect::Green,
+                got: verdict_expect(self, &cx.with_overlay(ov)),
+            }),
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not plant inside {} ({e})",
+                NOT_MONEY_RATIO.function
+            )),
+        }
+
+        // 4. THE NAMED FUNCTION RENAMED AWAY EXEMPTS NOTHING AND IS REFUSED.
+        match rename_fn(cx, NOT_MONEY_RATIO.file, NOT_MONEY_RATIO.function) {
+            Ok(ov) => report.push(prove_red(
+                cx,
+                self,
+                "the named not-money exemption no longer in its file is refused",
+                &[ROW_SCAN_FLOOR, ROW_NO_FLOAT],
+                ov,
+                &["not-money exemption"],
+            )),
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not rename {} ({e})",
+                NOT_MONEY_RATIO.function
             )),
         }
 
@@ -2465,6 +2576,29 @@ mod tests {
                 b.returns
             );
         }
+    }
+
+    /// THE ONE NOT-MONEY EXEMPTION IS WHERE IT SAYS IT IS: inside the governance scope, and a
+    /// function that is still in its file.
+    #[test]
+    fn the_one_not_money_exemption_is_found_inside_the_governance_scope() {
+        assert!(
+            NOT_MONEY_RATIO
+                .file
+                .starts_with(&format!("{GOVERNANCE_SRC}/")),
+            "{} is outside {GOVERNANCE_SRC}",
+            NOT_MONEY_RATIO.file
+        );
+        let text = cx()
+            .read(NOT_MONEY_RATIO.file)
+            .unwrap_or_else(|e| panic!("{}: {e}", NOT_MONEY_RATIO.file));
+        let b = find_boundary(&text, NOT_MONEY_RATIO.function).unwrap_or_else(|| {
+            panic!(
+                "{}: `fn {}` was not found",
+                NOT_MONEY_RATIO.file, NOT_MONEY_RATIO.function
+            )
+        });
+        assert!(b.last_line > b.first_line, "measured backwards");
     }
 
     /// THE EXEMPTION IS A FUNCTION, NOT A FILE. The second intake's file is 1 300 lines of

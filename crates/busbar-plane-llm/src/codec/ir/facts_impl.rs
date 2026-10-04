@@ -219,6 +219,10 @@ fn walk<'a>(
             // closed until it is decided on its own terms in its own diff — exactly the reasoning
             // the module header records for image provenance.
             IrBlock::Image { .. } | IrBlock::Media { .. } => {}
+            // A provider-run tool's record (DF-MAP item 2) is closed on the same terms: the search
+            // results it carries are not the conversation's text, and opening them to content hooks
+            // is a disclosure decision of its own.
+            IrBlock::HostedToolRecord { .. } => {}
             IrBlock::Json(v) => out.push(ContentItem::Data {
                 author,
                 slot,

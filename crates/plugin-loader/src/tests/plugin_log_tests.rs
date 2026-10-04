@@ -67,6 +67,7 @@ fn config(dir: &Path, level: LogLevel) -> PluginLogConfig {
         levels: Default::default(),
         rotate_bytes: None,
         keep: 5,
+        named_dir: true,
     }
 }
 

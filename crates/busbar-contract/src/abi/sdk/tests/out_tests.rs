@@ -274,3 +274,20 @@ fn a_full_envelope_reports_no_more() {
     assert!(!out.metric(0, METRIC_ADD, 1.0), "the envelope is bounded");
     assert_eq!(o.head.envelope.metrics_len, MAX_ENVELOPE_ENTRIES);
 }
+
+/// THE ROUTE SETTER (ARCHITECT Q-SW6/Q-FL3): the class and the entry's name, the name kept in the
+/// instance's memory past the call; with no instance the class is set and no name is.
+#[test]
+fn an_arrival_names_its_route_and_keeps_the_name() {
+    use crate::abi::plane::{ArriveOut, ROUTE_DIRECT};
+    let kept = Kept::default();
+    let reporting: Reporting = std::cell::Cell::new(None);
+    let mut o: ArriveOut = zeroed();
+    let name = String::from("entry");
+    Out::kept(&mut o, &kept, &reporting).route(ROUTE_DIRECT, &name);
+    drop(name);
+    assert_eq!((o.route, read(o.pool)), (ROUTE_DIRECT, b"entry".to_vec()));
+    let mut bare: ArriveOut = zeroed();
+    Out::new(&mut bare).route(ROUTE_DIRECT, "entry");
+    assert_eq!((bare.route, bare.pool.len), (ROUTE_DIRECT, 0));
+}

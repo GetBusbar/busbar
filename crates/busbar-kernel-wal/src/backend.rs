@@ -66,6 +66,17 @@ pub trait SegmentFactory: Send {
     /// cannot be recovered from, so it has to say so in code rather than inherit a wrong answer.
     fn highest_index(&self) -> io::Result<Option<u64>>;
 
+    /// The backing for segment `index` if this factory already has one, for READING; `None` when
+    /// it has none. Never creates one.
+    ///
+    /// This is how a reader of the whole log reaches the segments before the one being written. It
+    /// takes `&self` and creates nothing on purpose: reading history must not leave an empty
+    /// segment behind it, because an extra `<index>.wal` is exactly what moves
+    /// [`SegmentFactory::highest_index`] and with it where the next restart resumes. No default,
+    /// for the reason that one has none: a factory that answered `None` for segments it holds would
+    /// hand a restart a log with its history missing and nothing saying so.
+    fn existing(&self, index: u64) -> io::Result<Option<Box<dyn SegmentBackend>>>;
+
     /// Whether this factory can put anything on a disk. A memory factory says no, and the log
     /// reports it so an operator can see which mode a node is in without inspecting a directory.
     fn is_durable(&self) -> bool;
@@ -292,6 +303,18 @@ impl SegmentFactory for MemoryFactory {
             .max())
     }
 
+    /// The bytes of segment `index` while somebody still holds them. A segment a non-retaining
+    /// factory's log has rolled past is gone, and that is the honest answer for a node with no
+    /// disk: its history is in the store it shipped to.
+    fn existing(&self, index: u64) -> io::Result<Option<Box<dyn SegmentBackend>>> {
+        let held = self.segments.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(held
+            .slots
+            .get(&index)
+            .and_then(std::sync::Weak::upgrade)
+            .map(|bytes| Box::new(MemorySegment::over(bytes)) as Box<dyn SegmentBackend>))
+    }
+
     fn is_durable(&self) -> bool {
         false
     }
@@ -336,6 +359,15 @@ impl FileSegment {
             .truncate(false)
             .open(path)?;
         Ok(FileSegment { file })
+    }
+
+    /// Open the file at `path` for reading only, or `None` when there is no such file.
+    pub fn open_existing(path: &Path) -> io::Result<Option<Self>> {
+        match std::fs::File::open(path) {
+            Ok(file) => Ok(Some(FileSegment { file })),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -468,6 +500,11 @@ impl SegmentFactory for DirectoryFactory {
             highest = Some(highest.map_or(index, |h: u64| h.max(index)));
         }
         Ok(highest)
+    }
+
+    fn existing(&self, index: u64) -> io::Result<Option<Box<dyn SegmentBackend>>> {
+        Ok(FileSegment::open_existing(&self.segment_path(index))?
+            .map(|file| Box::new(file) as Box<dyn SegmentBackend>))
     }
 
     fn is_durable(&self) -> bool {

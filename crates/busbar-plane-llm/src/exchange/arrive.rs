@@ -94,7 +94,7 @@ pub struct Arrived {
     /// Its `Content-Type`, or empty.
     pub content_type: String,
     /// The bytes a unit forwards: the caller's, or (for a path-model body) the caller's object with
-    /// the model and the stream flag spliced in.
+    /// the model and the stream flag spliced in as byte-level members ([`splice_path_facts`]).
     pub body: Vec<u8>,
     /// The body as JSON, when it is JSON.
     pub parsed: Option<Value>,
@@ -288,9 +288,7 @@ pub fn arrive(
                             400,
                             proto,
                             KIND_INVALID_REQUEST,
-                            format!(
-                                "The model '{model}' does not exist or you do not have access to it."
-                            ),
+                            super::refuse::model_not_found(&model, None),
                         ));
                     }
                 }
@@ -564,6 +562,32 @@ fn bedrock_arrival(
     Err(no_resource(path))
 }
 
+/// THE PATH-MODEL CARRY: the URL's facts (the `model`, the `stream` flag and, when asked, the
+/// array-stream shim key) spliced into the caller's object as byte-level member edits. Every byte of
+/// the caller's own stays where it was, so the relay's governed removals of the same members give
+/// the far end the caller's bytes back (DIALECT FIDELITY). `None` when the body is not an object.
+#[must_use]
+pub fn splice_path_facts(
+    body: &[u8],
+    model: &str,
+    stream: bool,
+    shim_key: Option<&str>,
+) -> Option<Vec<u8>> {
+    use crate::codec::json_splice::{self, Edit};
+    use std::borrow::Cow;
+    let obj = json_splice::object_at(body, 0)?;
+    let model = serde_json::to_vec(model).ok()?;
+    let flag: &[u8] = if stream { b"true" } else { b"false" };
+    let mut edits = vec![
+        Edit::Set("model", Cow::Owned(model)),
+        Edit::Set("stream", Cow::Borrowed(flag)),
+    ];
+    if let Some(key) = shim_key {
+        edits.push(Edit::Set(key, Cow::Borrowed(b"true")));
+    }
+    Some(json_splice::apply(body, &obj, &edits).unwrap_or_else(|| body.to_vec()))
+}
+
 /// A path-model arrival's arrival step (the model and the stream flag spliced into the caller's
 /// object) and decode step (the handler, in the path surface's one sentence).
 #[allow(clippy::too_many_arguments)]
@@ -600,7 +624,11 @@ fn path_model_arrival(
         }
         None => return refuse(Decline::NotAnObject, "Request body must be a JSON object."),
     }
-    let Ok(spliced) = crate::codec::json::to_vec(&v) else {
+    let shim = facts
+        .json_array
+        .then(|| decl(proto).and_then(|d| d.array_stream_shim_key))
+        .flatten();
+    let Some(spliced) = splice_path_facts(body, &model, facts.stream, shim) else {
         return refuse(
             Decline::Reserialize,
             "The request body could not be processed.",

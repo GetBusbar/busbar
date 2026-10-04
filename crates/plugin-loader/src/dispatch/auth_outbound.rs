@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use busbar_contract::abi::auth::{
-    slot, FieldSpan, FieldsIn, FieldsOut, NamedValue, OpenOutboundIn, OpenOutboundOut,
+    slot, AuthPoint, FieldSpan, FieldsIn, FieldsOut, NamedValue, OpenOutboundIn, OpenOutboundOut,
     RequestFacts, FIELDS_BUF_BYTES, FIELDS_MAX, FIELD_SENSITIVE, MODE_OWN, MODE_PASSTHROUGH,
 };
 use busbar_contract::abi::mechanism::call::{
@@ -29,7 +29,7 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::redacted::Redacted;
 
-use super::kinds::auth::Auth;
+use super::kinds::auth::{Auth, AuthFacts, OutboundStyle};
 use super::{in_head, out_head, Dispatcher, Frame, Plugin};
 
 /// One open auth instance, the dispatcher that adopted it, and the worker a waiting `fields` is
@@ -41,6 +41,21 @@ pub struct OutboundInstance {
     worker: u32,
 }
 
+/// THE OUTBOUND STYLE `style` as `plugin`'s tail states it, if it serves it (THE DESIGN §6 step 3:
+/// the auth plugin that serves the style opens the binding). Named `serves_style`, not `serves`, so
+/// it is not a second spelling of the kernel's one trust-serve decision
+/// (`busbar-kernel/src/trust/mod.rs` `Approval::serves`, the dispatch gate) -- a different concept
+/// (auth-style serving, not trust dispatch); the neutrality census keeps `fn serves(` kernel-only.
+#[must_use]
+pub fn serves_style(plugin: &Plugin<Auth>, style: &str) -> Option<OutboundStyle> {
+    plugin
+        .context::<AuthFacts>()?
+        .styles
+        .iter()
+        .find(|s| s.name == style)
+        .cloned()
+}
+
 impl OutboundInstance {
     /// `plugin`, adopted by `dispatcher`, a waiting `fields` submitted on `worker`.
     pub fn new(plugin: Plugin<Auth>, dispatcher: Arc<Dispatcher>, worker: u32) -> Self {
@@ -49,6 +64,63 @@ impl OutboundInstance {
             dispatcher,
             worker,
         }
+    }
+
+    /// `plugin`'s instance OPENED for its outbound styles: validated and opened (generation 1) over
+    /// the empty settings document, as [`Self::new`] then serves it. An outbound style binds its
+    /// credential and settings per binding (`open_outbound`), never at the instance's open.
+    ///
+    /// # Errors
+    ///
+    /// `validate` or `open` did not answer READY, naming the plugin.
+    pub fn open(
+        plugin: Plugin<Auth>,
+        dispatcher: Arc<Dispatcher>,
+        worker: u32,
+    ) -> Result<Self, String> {
+        use busbar_contract::abi::mechanism::lifecycle::{slot as lc, OpenIn, OpenOut, ValidateIn};
+        const EMPTY: &[u8] = b"{}";
+        let named = |what: &str, outcome: Outcome| {
+            format!(
+                "`{}` did not {what} for its outbound styles: {outcome:?}",
+                plugin.name()
+            )
+        };
+        let mut v = Frame::new(
+            ValidateIn {
+                head: in_head(),
+                settings: blob(EMPTY, BLOB_JSON, 0),
+                err_buf: std::ptr::null_mut(),
+                err_cap: 0,
+            },
+            out_head(),
+        );
+        let called = plugin.call(lc::VALIDATE, &mut v);
+        if called.outcome != Outcome::Ready {
+            return Err(named("validate", called.outcome));
+        }
+        let mut f = Frame::new(
+            OpenIn {
+                head: in_head(),
+                host: std::ptr::null(),
+                settings: blob(EMPTY, BLOB_JSON, 0),
+                secrets: std::ptr::null(),
+                secrets_len: 0,
+                generation: 1,
+                err_buf: std::ptr::null_mut(),
+                err_cap: 0,
+            },
+            OpenOut {
+                head: out_head(),
+                instance: std::ptr::null_mut(),
+                err_len: 0,
+            },
+        );
+        let called = plugin.call(lc::OPEN, &mut f);
+        if called.outcome != Outcome::Ready {
+            return Err(named("open", called.outcome));
+        }
+        Ok(Self::new(plugin, dispatcher, worker))
     }
 }
 
@@ -134,7 +206,6 @@ impl Lend {
     /// The `in` naming this memory under `handle`.
     fn input(&mut self, handle: u64) -> FieldsIn {
         let r = &self.request;
-        let (hash, present) = r.body_hash.map_or(([0; 32], 0), |h| (h, 1));
         FieldsIn {
             head: in_head(),
             handle,
@@ -143,16 +214,13 @@ impl Lend {
             } else {
                 MODE_OWN
             },
-            _reserved: 0,
+            point: r.point.bit(),
             request: RequestFacts {
                 method: abi_str(&r.method),
                 authority: abi_str(r.authority.as_bytes()),
                 canonical_path: abi_str(&r.path),
                 query: r.query.as_deref().map_or(ABSENT_STR, abi_str),
                 timestamp: r.timestamp,
-                body_hash: hash,
-                body_hash_present: present,
-                _reserved: 0,
             },
             caller_credential: r.caller_credential.as_ref().map_or(NO_BLOB, |c| {
                 blob(c.expose_secret(), BLOB_OCTETS, BLOB_SECRET)
@@ -161,13 +229,21 @@ impl Lend {
             field_buf_cap: self.field_buf.len(),
             fields: self.fields.as_mut_ptr(),
             fields_cap: u32::try_from(self.fields.len()).unwrap_or(u32::MAX),
-            _reserved2: 0,
+            _reserved: 0,
             headers: if self.named.is_empty() {
                 std::ptr::null()
             } else {
                 self.named.as_ptr()
             },
             headers_len: self.named.len(),
+            conn: r.conn,
+            unit: r.unit,
+            // The body is lent only at `HeadBody`, never at another point; a signing style hashes
+            // it itself.
+            body: match (r.point, r.body.as_deref()) {
+                (AuthPoint::HeadBody, Some(b)) => blob(b, BLOB_OCTETS, 0),
+                _ => NO_BLOB,
+            },
         }
     }
 
@@ -199,12 +275,15 @@ impl Lend {
 /// zeroised when its crossing's memory is dropped).
 fn copy(r: &FieldsRequest) -> FieldsRequest {
     FieldsRequest {
+        point: r.point,
+        conn: r.conn,
+        unit: r.unit,
+        body: r.body.clone(),
         method: r.method.clone(),
         authority: r.authority.clone(),
         path: r.path.clone(),
         query: r.query.clone(),
         timestamp: r.timestamp,
-        body_hash: r.body_hash,
         headers: r.headers.clone(),
         caller_credential: r.caller_credential.clone(),
     }

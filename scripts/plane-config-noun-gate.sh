@@ -92,7 +92,7 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 #     bodies live in busbar-kernel. It never spells `"tools"`/`"agents"`/`"pools"`/`"streams"` on a
 #     parse-steering line of its own. It is the admin HTTP surface (`/api/v1/admin/*`), not the boot
 #     config parser — the property this meter measures never lived there.
-#   * `busbar-oauth2`, `busbar-core-connector` — compiled-in cleanliness crates by the repo's own
+#   * `busbar-core-oauth2`, `busbar-core-connector` — compiled-in cleanliness crates by the repo's own
 #     DECISIONS #4/#5/#40 taxonomy, but neither is config-section parsing: oauth2 is its own plane's
 #     AS surface, the connector is TLS/mTLS connection prep. Zero grep hits in either.
 #   Hook DISPATCH has no crate of its own to reject: it lives at `crates/busbar-kernel/src/hooks/`,

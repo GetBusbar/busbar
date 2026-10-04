@@ -166,6 +166,7 @@ impl Framer for Lines {
         _: StreamId,
         bytes: &[u8],
         end_of_frame: bool,
+        _text: bool,
         out: &mut dyn FramerOut,
     ) -> Result<(), TransportError> {
         out.send(bytes);
@@ -190,7 +191,7 @@ impl Framer for Lines {
         bytes: &[u8],
         out: &mut dyn FramerOut,
     ) -> Result<(), TransportError> {
-        self.emit(state, StreamId(0), bytes, true, out)
+        self.emit(state, StreamId(0), bytes, true, false, out)
     }
     fn close(&self, _: u64, _: CloseReason, _: &mut dyn FramerOut) {}
     fn detach(&self, _: u64, out: &mut dyn BytesOut) -> Result<(), TransportError> {
@@ -243,7 +244,7 @@ fn a_framer_is_driven_through_its_trait_object_and_hands_its_stream_on() {
     framer.ingest(state, b"one\ntw", false, &mut out).unwrap();
     assert_eq!(out.frames, vec![(b"one".to_vec(), true)]);
     framer
-        .emit(state, StreamId(0), b"hi", true, &mut out)
+        .emit(state, StreamId(0), b"hi", true, false, &mut out)
         .unwrap();
     assert_eq!(out.sent, b"hi\n");
     // The unconsumed half line moves with the stream, and the adopter frames it where it stopped.

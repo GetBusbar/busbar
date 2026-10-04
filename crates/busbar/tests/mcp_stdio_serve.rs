@@ -197,6 +197,8 @@ fn write_configs(dir: &Path, extra: &str) {
         format!(
             r#"listen: "127.0.0.1:0"
 admin_listen: "127.0.0.1:0"
+advanced:
+  allow_destinations: ["127.0.0.1"]
 {providers}{section}{extra}"#,
             section = include_str!("fixtures/stdio_plane_section.yaml")
                 .replace("{canonical}", canonical()),

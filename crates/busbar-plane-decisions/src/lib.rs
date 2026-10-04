@@ -47,6 +47,7 @@ pub mod facts;
 pub mod meta;
 pub mod ops;
 pub mod plane;
+pub mod plane_door;
 pub mod records;
 
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};

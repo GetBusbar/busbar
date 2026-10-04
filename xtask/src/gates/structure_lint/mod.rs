@@ -16,7 +16,7 @@
 //! | [`roots`] | where this lint looks | a protocol crate or a plane root nothing can locate |
 //! | [`corpus`] | the denominator | a scan set below its floor, and the three generic scanners |
 //! | [`hybrid`] | 1 | `foo.rs` beside `foo/` |
-//! | [`oversized`] | 2 | a monster impl file, with the grandfathered list as data |
+//! | (invariant 2, a file's size) | — | RETIRED: line count is not a CI check (OWNER 2026-10-02, SIZE); size is judged by hand at PERF |
 //! | [`inline_tests`] | 3 | an inline test body in an implementation file |
 //! | [`choke_points`] | 4 | a hand-rolled bypass of a hazard class's single owner |
 //! | [`fn_scoped`] | 5 and 8 | a store call on the request path; a routing decision reading free text |
@@ -53,7 +53,6 @@ pub mod corpus;
 pub mod fn_scoped;
 pub mod hybrid;
 pub mod inline_tests;
-pub mod oversized;
 pub mod plane_dups;
 pub mod plane_store;
 pub mod roots;
@@ -77,8 +76,6 @@ pub const OWED: &[&str] = &[
     roots::ROW_PLANE_ROOTS,
     corpus::ROW_CANDIDATE_FLOOR,
     hybrid::ROW_HYBRID,
-    oversized::ROW_OVERSIZED,
-    oversized::ROW_GRANDFATHERED,
     inline_tests::ROW_INLINE_TEST,
     inline_tests::ROW_ALLOW_REASON,
     choke_points::ROW_ROW_INTEGRITY,
@@ -138,8 +135,6 @@ pub struct Findings {
     pub plane_roots: Vec<String>,
     pub candidate_floor: Vec<String>,
     pub hybrid: Vec<String>,
-    pub oversized: Vec<String>,
-    pub grandfathered: Vec<String>,
     pub inline_tests: Vec<String>,
     pub allow_reason: Vec<String>,
     pub choke_row_integrity: Vec<String>,
@@ -185,8 +180,6 @@ impl Findings {
             &mut self.plane_roots,
             &mut self.candidate_floor,
             &mut self.hybrid,
-            &mut self.oversized,
-            &mut self.grandfathered,
             &mut self.inline_tests,
             &mut self.allow_reason,
             &mut self.choke_row_integrity,
@@ -231,7 +224,6 @@ impl Findings {
         rows.extend(roots::rows(self));
         rows.extend(corpus::rows(self));
         rows.extend(hybrid::rows(self));
-        rows.extend(oversized::rows(self));
         rows.extend(inline_tests::rows(self));
         rows.extend(choke_points::rows(self));
         rows.extend(fn_scoped::rows(self));
@@ -273,7 +265,6 @@ pub fn row(id: &'static str, clean_title: &str, fail_title: &str, offenders: &[S
 /// over a planted one.
 #[derive(Debug, Clone)]
 pub struct Tables {
-    pub grandfathered: Vec<String>,
     pub choke_points: Vec<choke_points::ChokeRow>,
     pub request_path: Vec<fn_scoped::FnRow>,
     pub decision_input: Vec<fn_scoped::FnRow>,
@@ -289,7 +280,6 @@ impl Tables {
     /// the addresses this tree actually answered with.
     pub fn real(a: &Addresses) -> Tables {
         Tables {
-            grandfathered: oversized::grandfathered(a),
             choke_points: choke_points::table(a),
             request_path: fn_scoped::request_path(a),
             decision_input: fn_scoped::decision_input(a),
@@ -337,7 +327,6 @@ impl StructureLintGate {
 
         match Corpus::build(cx) {
             Ok(corpus) => {
-                oversized::scan(cx, &tables, &mut f);
                 inline_tests::scan(&corpus, &mut f);
                 choke_points::scan(cx, &corpus, &tables, &mut f);
                 fn_scoped::scan(cx, &tables, &mut f);
@@ -351,7 +340,6 @@ impl StructureLintGate {
                 f.did_not_run = CORPUS_DEPENDENT.to_vec();
                 // The rules that read the tree DIRECTLY rather than through the corpus still run:
                 // an empty candidate list says nothing about whether a subject file exists.
-                oversized::scan(cx, &tables, &mut f);
                 fn_scoped::scan(cx, &tables, &mut f);
                 plane_dups::scan(cx, &addresses, None, &tables, &mut f);
                 choke_points::scan_class_tests(cx, &tables, &mut f);

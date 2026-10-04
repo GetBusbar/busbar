@@ -3,7 +3,6 @@
 # and added here; it goes red until somebody has looked at it.
 busbar-core-admin/src/governance.rs	reason
 busbar-core-admin/src/refusal.rs	reason
-busbar-kernel-budget/src/lib.rs	reason
 busbar-kernel-egress/src/trust/unit.rs	refusal.kind.reason()
 busbar-llm/src/unit/verify.rs	refusal.reason()
 busbar/src/root/units_admin/mod.rs	verbs_reason(refusal.reason)

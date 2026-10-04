@@ -14,7 +14,7 @@
 # Owner, 2026-08-08: "should just be 1 build pipeline that takes what its building: arm, windows,
 # mac, but it does the same thing for each no way for 1 to be different".
 #
-# So there is one build step in .github/workflows/build-artifact.yml and it runs this script. Every
+# So there is one build step in the removed build-artifact.yml and it runs this script. Every
 # target's difference is a FIELD in .github/release-targets.json read below -- never a different
 # step, never an `if:`, never a second action. The env block that carries the release public key is
 # written once and applies to all five targets because there is only one step for it to be on.

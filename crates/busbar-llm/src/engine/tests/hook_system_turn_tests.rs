@@ -230,8 +230,7 @@ fn responses_instructions_are_system_and_a_system_item_is_a_turn() {
         APPLICATION_JSON,
         "responses",
         Some(busbar_contract::operation::OpVerb::CHAT),
-    )
-    .unwrap_or_else(|_| panic!("the responses reader accepts this body"));
+    );
     let p = f.prompt();
     assert_eq!(p.system.as_deref(), Some("INSTR"));
     let got: Vec<(String, String)> = p

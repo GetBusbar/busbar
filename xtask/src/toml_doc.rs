@@ -614,11 +614,11 @@ forbidden = [
             vec!["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"]
         );
         assert_eq!(
-            doc.children("rules.loc-ceilings.kernel_files")
+            doc.children("rules.legacy-reach.prefixes")
                 .first()
                 .map(|(k, _)| k.as_str()),
-            Some("teller"),
-            "the kernel file split is read in the owner's order, not alphabetically"
+            Some("busbar_llm"),
+            "child tables are read in the owner's order, not alphabetically"
         );
     }
 }

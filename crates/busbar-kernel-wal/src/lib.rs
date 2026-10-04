@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! # busbar-unit-wal — the write-ahead log unit
+//! # busbar-kernel-wal — the write-ahead log unit
 //!
 //! A unit waits on this crate twice: once before it dials, and once before it ends. Everything here
 //! exists to make those two waits mean something, and to make the failure of one of them impossible
@@ -77,7 +77,7 @@ pub mod backend;
 // log: it frames nothing and sequences nothing, it replaces one file atomically. It lives beside the
 // log because both are the part of the system that makes bytes survive a power loss, and the loader
 // the kernel links must reach it, which the kernel crate itself cannot offer. Moved here verbatim
-// when `busbar-api` retired.
+// when the former api crate retired.
 pub mod durable;
 pub mod journal;
 pub mod record;

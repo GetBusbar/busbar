@@ -3,7 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_contract::caps::{KernelSeal, StepName};
+use busbar_contract::caps::StepName;
 
 /// A key row carrying only what this step reads. Every other field is what the store's own
 /// default row carries, so the fixture cannot drift from the shape the middleware resolves.
@@ -28,13 +28,16 @@ fn ungoverned() -> busbar_contract::records::PlaneRequestCtx {
 /// answers with the SAME id, on the same input.
 #[test]
 fn the_keys_arm_names_the_resolved_key_and_the_live_read_names_it_too() {
-    let seal = KernelSeal::acquire_for_kernel();
+    let seal = busbar_kernel::test_support::tokens::seal();
     let gov = governed("vk_live_key");
 
     let live = gov.key().map(|k| k.id.clone()).expect("governed");
-    let stepped = super::authenticate(&Pass::<Authenticate>::mint(&seal), &gov)
-        .into_result(&seal)
-        .expect("the plane's authenticate step never refuses");
+    let stepped = super::authenticate(
+        &busbar_kernel::test_support::tokens::pass::<Authenticate>(),
+        &gov,
+    )
+    .into_result(&seal)
+    .expect("the plane's authenticate step never refuses");
 
     let Authenticated::Principal(p) = stepped else {
         panic!("this plane opens no handshake unit, so the challenge arm is unreachable")
@@ -47,15 +50,18 @@ fn the_keys_arm_names_the_resolved_key_and_the_live_read_names_it_too() {
 /// the step answers with the same word, taken from the same accessor rather than retyped.
 #[test]
 fn the_open_arm_names_the_same_anonymous_actor_the_live_attribution_names() {
-    let seal = KernelSeal::acquire_for_kernel();
+    let seal = busbar_kernel::test_support::tokens::seal();
     let gov = ungoverned();
 
     let live = busbar_contract::auth::AuthPrincipal(None)
         .actor_id()
         .to_string();
-    let stepped = super::authenticate(&Pass::<Authenticate>::mint(&seal), &gov)
-        .into_result(&seal)
-        .expect("the plane's authenticate step never refuses");
+    let stepped = super::authenticate(
+        &busbar_kernel::test_support::tokens::pass::<Authenticate>(),
+        &gov,
+    )
+    .into_result(&seal)
+    .expect("the plane's authenticate step never refuses");
 
     let Authenticated::Principal(p) = stepped else {
         panic!("this plane opens no handshake unit, so the challenge arm is unreachable")
@@ -69,9 +75,12 @@ fn the_open_arm_names_the_same_anonymous_actor_the_live_attribution_names() {
 /// which is exactly the review the second 401 door deserves.
 #[test]
 fn no_input_the_middleware_can_leave_makes_this_step_refuse() {
-    let seal = KernelSeal::acquire_for_kernel();
+    let seal = busbar_kernel::test_support::tokens::seal();
     for gov in [ungoverned(), governed("vk_a"), governed("group:ops")] {
-        let d = super::authenticate(&Pass::<Authenticate>::mint(&seal), &gov);
+        let d = super::authenticate(
+            &busbar_kernel::test_support::tokens::pass::<Authenticate>(),
+            &gov,
+        );
         assert!(
             d.into_result(&seal).is_ok(),
             "the 401 is the middleware's; this step raises none"

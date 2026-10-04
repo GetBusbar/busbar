@@ -555,7 +555,11 @@ impl DuplexReader for GeminiLiveCodec {
             }];
         }
 
-        if let Some(sc) = v.get(wire::SERVER_CONTENT) {
+        // The message-type branches frame the content; `usageMetadata` is a TOP-LEVEL field that may ride
+        // on ANY downlink message (a `serverContent` or `toolCall` frame as well as a standalone one), so
+        // it is read once, after the branch, never only when the frame carries nothing else — usage
+        // riding on a content frame was otherwise billed as zero tokens (MONEY-AUDIT STR-4).
+        let mut out = if let Some(sc) = v.get(wire::SERVER_CONTENT) {
             let mut out = Vec::new();
             if let Some(parts) = sc
                 .get("modelTurn")
@@ -602,10 +606,8 @@ impl DuplexReader for GeminiLiveCodec {
                     item_id: String::new(),
                 });
             }
-            return out;
-        }
-
-        if let Some(tc) = v.get(wire::TOOL_CALL) {
+            out
+        } else if let Some(tc) = v.get(wire::TOOL_CALL) {
             let mut out = Vec::new();
             if let Some(calls) = tc.get("functionCalls").and_then(Value::as_array) {
                 for c in calls {
@@ -636,21 +638,22 @@ impl DuplexReader for GeminiLiveCodec {
                     }));
                 }
             }
-            return out;
-        }
+            out
+        } else {
+            // `toolCallCancellation`, `goAway`, `sessionResumptionUpdate` and any unknown frame have no
+            // shared IR home — degrade to empty (drop+warn).
+            let _ = wire::TOOL_CALL_CANCELLATION;
+            Vec::new()
+        };
 
         if let Some(um) = v.get(wire::USAGE_METADATA) {
             // A present-but-unreadable billed count REFUSES the turn (#42), never meters it at zero.
-            return match usage_from_metadata(um) {
-                Ok(usage) => vec![IrServerEvent::Usage(usage)],
-                Err(message) => vec![usage_refusal(message)],
-            };
+            out.push(match usage_from_metadata(um) {
+                Ok(usage) => IrServerEvent::Usage(usage),
+                Err(message) => usage_refusal(message),
+            });
         }
-
-        // `toolCallCancellation`, `goAway`, `sessionResumptionUpdate` and any unknown frame have no
-        // shared IR home — degrade to empty (drop+warn).
-        let _ = wire::TOOL_CALL_CANCELLATION;
-        Vec::new()
+        out
     }
 }
 

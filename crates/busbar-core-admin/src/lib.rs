@@ -14,8 +14,9 @@
 //!
 //! What STAYED in busbar-core: `admin::v1::contract` (the frozen `AdminError`/`PATH_*` surface),
 //! `admin::v1::json` (the `err_json`/`ok_json`/`err_json_cond` envelope primitives),
-//! `admin::planeverbs` (`CorePlaneAdminEnvelope`), and `admin::versions` (the `VersionLog` state).
+//! and `admin::planeverbs` (`CorePlaneAdminEnvelope`). The config version history (`versions`) lives here, on `App` behind the seam's slot.
 
+pub mod admin_state;
 pub mod keys;
 pub mod restart;
 pub mod transport;
@@ -52,9 +53,17 @@ pub mod mint;
 pub mod posture;
 pub mod rate;
 pub mod refusal;
+/// The verbs unit's test-only `SecretOnce` mint (ARCHITECT ruling B): `cfg(test)` or `test-support` only.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod verb;
 pub mod verbs;
+pub mod versions;
+// The test-build admin-error witness ledger (moved from the kernel's `admin_witness`).
+#[cfg(any(test, feature = "test-support"))]
+pub mod witness;
 
+pub use admin_state::{AdminState, AppAdmin};
 pub use governance::{Governance, GovernanceError, MintedKey, RotateOutcome};
 pub use idempotency::ReplayEncoder;
 pub use posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
@@ -78,8 +87,18 @@ pub use v1::service::mark_start;
 /// composition root; it is always mounted.
 pub fn install() {
     busbar_kernel::admin::seam::install_admin_mount_seam(
-        busbar_kernel::admin::seam::AdminMountSeam { mount: seam_mount },
+        busbar_kernel::admin::seam::AdminMountSeam {
+            mount: seam_mount,
+            record_boot: seam_record_boot,
+        },
     );
+}
+
+/// The boot-floor record the seam calls: this app's snapshot as version 0, so the history always has a
+/// rollback floor (the pre-any-mutation state).
+fn seam_record_boot(app: &busbar_kernel::state::App) {
+    use AppAdmin as _;
+    app.record_version_at(0, "system", "boot");
 }
 
 /// The mount the seam calls: nest the JSON v1 admin surface onto `router` at `/api/v1/admin`.
@@ -120,13 +139,13 @@ mod test_seams {
             // table, `root::auth_bindings::OPERATOR_AUTH_MODULE`; ARCHITECT 2026-09-30,
             // KERNEL-AUTH-ZERO Q2).
             for_each_operator_auth_row!(install_operator_row);
-            fn install_operator_row(entry: busbar_kernel::test_support::AuthBoundary) {
+            fn install_operator_row(door: busbar_kernel::test_support::AuthDoor) {
                 const ROOT_WORDS: busbar_kernel::test_support::OperatorWords =
                     busbar_kernel::test_support::OperatorWords {
                         provider: "admin-tokens",
                         principal_id: "admin",
                     };
-                busbar_kernel::test_support::install_operator_auth_row_as(ROOT_WORDS, entry);
+                busbar_kernel::test_support::install_operator_auth_row_as(ROOT_WORDS, door);
             }
             for entry in TEST_LINKED {
                 register_test_plane_seam(entry);
@@ -201,3 +220,9 @@ mod key_revoke_tombstone_tests;
 #[cfg(test)]
 #[path = "tests/core_moved_tests.rs"]
 mod core_moved_tests;
+
+// The one-time secret placeholder's read-back, moved here from busbar-contract: `SecretOnce::mint(`
+// is spelled only in this crate, the verbs unit's home (`token-sealed:secret-once-mint`).
+#[cfg(test)]
+#[path = "tests/secret_once_tests.rs"]
+mod secret_once_tests;

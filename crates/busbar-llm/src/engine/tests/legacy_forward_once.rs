@@ -74,10 +74,9 @@ pub(super) async fn forward_once(
     // degraded path has no `cands` in scope, so the caller passes the already-resolved override here
     // (mirrors the hot path's `effective_reasoning`).
     reasoning_override: Option<bool>,
-    // The allowlisted client beta/version headers the caller actually sent (from
-    // `RequestCtx::forwarded_client_headers`). Forwarded to the upstream SCOPED to this lane's egress
-    // dialect (no cross-dialect leak), mirroring the hot path. Empty ⇒ byte-identical egress here too.
-    client_fwd: &[(axum::http::HeaderName, axum::http::HeaderValue)],
+    // The collected client headers (from `RequestCtx::forwarded_client`), forwarded on a
+    // same-dialect hop only, mirroring the hot path.
+    client_fwd: &crate::engine::select::ClientFwd,
 ) -> Result<Response, ()> {
     // App-retype WEDGE 3: this degraded-path dispatch's upstream-failure/failover telemetry and every
     // other host reach drive through the threaded `host: &Arc<dyn EngineHost>` — no per-call mint.
@@ -291,17 +290,17 @@ pub(super) async fn forward_once(
         ACCEPT,
         axum::http::HeaderValue::from_static(op.egress_accept(egress_name, wants_stream)),
     );
-    // CLIENT-HEADER FIDELITY (mirrors the main forward path): forward the allowlisted client
-    // beta/version headers, scoped to THIS lane's egress dialect (no cross-dialect leak) via the
-    // plane's per-destination allowlist. No-op on an empty set, so this degraded route stays
-    // byte-identical when the caller sent none.
-    busbar_kernel::proxy::apply_client_headers(
-        &mut egress_headers,
-        client_fwd,
-        &crate::engine::client_header_names_for_egress(egress_name),
-    );
+    // Busbar is invisible to upstreams (mirrors the main forward path): a same-dialect hop forwards
+    // every collected client header; a translated hop none.
+    if ingress_protocol == egress_name {
+        busbar_kernel::proxy::apply_client_headers(&mut egress_headers, &client_fwd.headers);
+    }
     // The precomputed egress `http::Uri` (mirrors the main forward path): hand-assembled request,
     // no builder machinery, no per-request compose + WHATWG parse.
+    // The provider's tenant selectors (mirrors the main forward path).
+    for (name, value) in &EngineTables::new(rt).lanes()[i].tenant_headers {
+        egress_headers.insert(name.clone(), value.clone());
+    }
     let hreq = crate::engine::egress_request(target.uri.clone(), egress_headers, payload);
     // TIMEOUT RE-PROVISION (mirrors the main forward path EXACTLY — the re-audit caught this
     // path keeping the pre-fix shape, the F1 hole's second home): ONE deadline per attempt.
@@ -384,6 +383,15 @@ pub(super) async fn forward_once(
     match res {
         Ok(r) => {
             let status = r.status();
+            // A same-dialect answer relays the upstream head (mirrors the main forward path).
+            let upstream_head = r.headers().clone();
+            let relay = |resp: &mut Response| {
+                if ingress_protocol == egress_name {
+                    crate::engine::add_relayed_headers(resp.headers_mut(), &upstream_head, |n| {
+                        crate::engine::xchg::reply::wire::governed_response(ingress_protocol, n)
+                    });
+                }
+            };
             let ct = r.headers().get(CONTENT_TYPE).cloned();
             // Capture the upstream relayed request-id-class headers before `r` is consumed, keyed off
             // the ingress writer's `ingress_relayed_response_header_names` so this names no protocol
@@ -539,9 +547,11 @@ pub(super) async fn forward_once(
                 // On a fault, `record_transient_in` above transitioned the cell (cooldown-backoff
                 // preserved); the armed `probe_guard` releases the probe on drop (owner-checked no-op
                 // after). On a non-fault, the guard is the SOLE releaser.
-                return Ok(rb
+                let mut resp = rb
                     .body(Body::from(bytes))
-                    .unwrap_or_else(|_| status.into_response()));
+                    .unwrap_or_else(|_| status.into_response());
+                relay(&mut resp);
+                return Ok(resp);
             }
 
             // SUCCESS: the degraded path served a 2xx. Mirror the main forward loop
@@ -617,6 +627,7 @@ pub(super) async fn forward_once(
                     true, // degraded path: selects the "degraded"-labeled warn strings
                     None,
                     &TapCell::new(),
+                    "anonymous",
                 )
                 .await);
             }
@@ -698,9 +709,11 @@ pub(super) async fn forward_once(
                 ingress_protocol,
                 upstream_relay_id.as_deref(),
             );
-            Ok(rb
+            let mut resp = rb
                 .body(guarded_body.into_body())
-                .unwrap_or_else(|_| status.into_response()))
+                .unwrap_or_else(|_| status.into_response());
+            relay(&mut resp);
+            Ok(resp)
         }
         Err(e) => {
             // Pre-response transport error: record transient against the ROUTING POOL cell, drop the

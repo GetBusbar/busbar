@@ -93,6 +93,8 @@ pub struct ConnRecord {
     /// Whether the TLS handshake completed. `false` marks a connection the client refused
     /// (wrong-name certificate, missing identity against an mTLS peer).
     pub handshake_ok: bool,
+    /// The protocol the handshake agreed (ALPN); `None` for a hello with no ALPN extension.
+    pub alpn: Option<Vec<u8>>,
     /// How many HTTP requests rode this one connection — the pooled-reuse observation.
     pub requests: usize,
     /// Every request HEAD this TLS connection carried, verbatim to the blank line — what a
@@ -238,6 +240,7 @@ fn serve_tls_conn(
         let mut rec = record.lock().expect("record");
         rec.sni = conn.server_name().map(str::to_string);
         rec.handshake_ok = handshake.is_ok();
+        rec.alpn = conn.alpn_protocol().map(<[u8]>::to_vec);
         rec.client_cert = conn
             .peer_certificates()
             .and_then(|certs| certs.first())
@@ -555,9 +558,9 @@ impl crate::egress::engine::ResolveNames for RebindingResolver {
 /// The loopback IP as the address family every fixture binds.
 pub const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
-/// A test's scoped dial posture: its table and its names.
+/// A test's scoped dial posture: its destination judge and its names.
 type ScopedDial = (
-    crate::egress::engine::DialTable,
+    Arc<dyn crate::host_services::DestJudge>,
     Arc<dyn crate::egress::engine::ResolveNames>,
 );
 
@@ -566,17 +569,68 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// TEST SEAM: every pooled client built by `build` on this thread judges by `table` and resolves
+/// TEST SEAM: every pooled client built by `build` on this thread judges by `judge` and resolves
 /// through `names`.
 pub fn with_scoped_dial<R>(
-    table: crate::egress::engine::DialTable,
+    judge: Arc<dyn crate::host_services::DestJudge>,
     names: Arc<dyn crate::egress::engine::ResolveNames>,
     build: impl FnOnce() -> R,
 ) -> R {
-    let prior = SCOPED_DIAL.with(|s| s.replace(Some((table, names))));
+    let prior = SCOPED_DIAL.with(|s| s.replace(Some((judge, names))));
     let built = build();
     SCOPED_DIAL.with(|s| *s.borrow_mut() = prior);
     built
+}
+
+/// A TEST DOUBLE of a refusing destination guard (the guard itself is the connector's, which the
+/// kernel cannot name): an answer holding a private, loopback or cloud-metadata address is refused
+/// unless its host or that address is in the allowlist, whatever the class. What a test proves with
+/// it is the engine's side: every answer is asked of the guard, and a refusal is a connect failure.
+pub struct PrivateRefusing(pub Vec<String>);
+
+impl crate::host_services::DestJudge for PrivateRefusing {
+    fn judge_name(&self, _dest: &str, _class: u32) -> Result<(), u64> {
+        Ok(())
+    }
+    fn judge(
+        &self,
+        _dest: &str,
+        _class: u32,
+        _done: Box<dyn FnOnce(crate::host_services::Admitted) + Send>,
+    ) -> Option<crate::host_services::Admitted> {
+        Some(Err(busbar_contract::abi::host::service::DEST_NO_HOST))
+    }
+    fn judge_answer(
+        &self,
+        host: &str,
+        addrs: &[IpAddr],
+        _class: u32,
+    ) -> Result<(), crate::host_services::DestRefusal> {
+        use busbar_contract::abi::host::service::{DEST_INTERNAL, DEST_METADATA};
+        use busbar_contract::net::{ip_is_cloud_metadata, ip_is_internal};
+        let allowed = |a: &IpAddr| self.0.iter().any(|e| *e == host || *e == a.to_string());
+        for a in addrs.iter().filter(|a| !allowed(a)) {
+            let verdict = if ip_is_cloud_metadata(a) {
+                DEST_METADATA
+            } else if ip_is_internal(a) {
+                DEST_INTERNAL
+            } else {
+                continue;
+            };
+            return Err(crate::host_services::DestRefusal {
+                verdict,
+                reason: format!("host `{host}` resolves to the refused address {a}"),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// [`PrivateRefusing`] over `allow`.
+pub fn private_refusing(allow: &[&str]) -> Arc<dyn crate::host_services::DestJudge> {
+    Arc::new(PrivateRefusing(
+        allow.iter().map(|s| (*s).to_owned()).collect(),
+    ))
 }
 
 /// The posture [`with_scoped_dial`] set on this thread, if any: what a pooled client built here

@@ -92,20 +92,10 @@ pub(crate) enum HookFacts {
     /// The body carries no readable facts for this seam: a JSON body with no resolvable operation
     /// handler, an unregistered protocol, or the engine's absent-body sentinel with no bytes to read.
     /// Projects as the zeroed shape with no content, which is exactly what the seam projected for such
-    /// a body before the cutover. This is NOT the parse-failure case: a body the reader REFUSES is
-    /// [`HookIrRejected`].
+    /// a body before the cutover, and what a body none of whose content the reader can read projects
+    /// as (the request still goes through: 1.5.5's hook seam never refused one).
     Absent,
 }
-
-/// The ingress protocol's reader refused the body.
-///
-/// The old raw-body projection could not fail: it screened a malformed request as best it could and
-/// the request went upstream anyway. On the IR a read is a `Result`, and the ruling is that **the
-/// parse failure is the request's failure**. If a reader cannot read a body, busbar cannot claim to
-/// understand it, and forwarding it upstream while telling a guardrail it saw `role: ""` is the
-/// fail-OPEN shape. Callers turn this into a 400.
-#[derive(Debug)]
-pub(crate) struct HookIrRejected;
 
 /// Read the request facts the hook seam projects from — the ONE read, through the protocol's own
 /// reader.
@@ -129,12 +119,12 @@ pub(crate) fn read_hook_facts(
     content_type: &str,
     ingress_protocol: &str,
     operation: Option<busbar_contract::operation::OpVerb>,
-) -> Result<HookFacts, HookIrRejected> {
+) -> HookFacts {
     // The op-less pre-routing site (auth's completion-tap capture, `operation == None`) never
     // resolved an operation, so there is nothing to read and nothing to reject — the zeroed shape,
     // exactly as before.
     let Some(operation) = operation else {
-        return Ok(HookFacts::Absent);
+        return HookFacts::Absent;
     };
     // Resolve THIS operation's codec: the same reader the cross-protocol translate path and the
     // lazy-IR seam use, so the hook sees exactly the IR that will be built from these bytes. No
@@ -143,7 +133,7 @@ pub(crate) fn read_hook_facts(
     let Some(handler) =
         request_handler(ingress_protocol).and_then(|rh| rh.operation_handler(operation))
     else {
-        return Ok(HookFacts::Absent);
+        return HookFacts::Absent;
     };
     // A JSON OBJECT body projects through the value reader (chat overrides it to call its proto
     // reader directly — byte-identical to the pre-change seam). A non-object body is either a
@@ -156,19 +146,80 @@ pub(crate) fn read_hook_facts(
     // directly — no re-serialize); a non-object body is either the byte-reader path (multipart /
     // binary) or the absent-body sentinel.
     let facts = if v.is_object() {
-        handler.read_facts_value(v)
+        readable_facts(handler, v)
     } else if body.is_empty() {
-        // Genuinely bodyless / the `Value::Null` sentinel: nothing to read, nothing to reject.
-        return Ok(HookFacts::Absent);
+        // Genuinely bodyless / the `Value::Null` sentinel: nothing to read.
+        return HookFacts::Absent;
     } else {
-        handler.read_facts(body, content_type)
+        handler.read_facts(body, content_type).ok()
     };
-    match facts {
-        Ok(facts) => Ok(HookFacts::Facts(facts)),
-        // A body the operation's own reader REFUSES is the request's failure, per-operation — the
-        // same fail-closed ruling the chat seam already applied (parse-failure = request failure).
-        Err(_) => Err(HookIrRejected),
+    facts.map_or(HookFacts::Absent, HookFacts::Facts)
+}
+
+type Facts = Box<dyn busbar_contract::ir::facts::IrFacts + Send + Sync>;
+
+/// THE PROJECTION OF WHAT BUSBAR CAN READ. The hook seam is frozen at 1.5.5, whose projection was
+/// read straight off the request and never refused one: a turn or block it could not read
+/// contributed nothing, and the request went on. The reader is a tap here (DIALECT-FIDELITY-DESIGN
+/// F2): when it refuses the whole body, each top-level array's elements are tried one at a time
+/// (and, for an element it refuses, that element's own array members one at a time), the ones it
+/// cannot read are left out, and what remains is projected. A body none of whose content reads is
+/// `None`. Malformed JSON never reaches here: the arrival refused it, as 1.5.5 did.
+fn readable_facts(
+    handler: &dyn busbar_contract::codec::OperationHandler,
+    v: &Value,
+) -> Option<Facts> {
+    use busbar_plane_llm::codec::translate::TranslateCodec;
+    if let Ok(facts) = handler.read_facts_value(v) {
+        return Some(facts);
     }
+    let obj = v.as_object()?;
+    // Every array emptied: the frame each element is tried in alone.
+    let mut frame = obj.clone();
+    for value in frame.values_mut() {
+        if value.is_array() {
+            *value = Value::Array(Vec::new());
+        }
+    }
+    let reads_alone = |key: &str, item: &Value| {
+        let mut probe = frame.clone();
+        probe.insert(key.to_string(), Value::Array(vec![item.clone()]));
+        handler.read_facts_value(&Value::Object(probe)).is_ok()
+    };
+    let mut kept = obj.clone();
+    for (key, value) in obj {
+        let Some(items) = value.as_array() else {
+            continue;
+        };
+        let readable: Vec<Value> = items
+            .iter()
+            .filter_map(|item| {
+                if reads_alone(key, item) {
+                    return Some(item.clone());
+                }
+                let mut pruned = item.as_object()?.clone();
+                for (inner, inner_value) in item.as_object()? {
+                    let Some(parts) = inner_value.as_array() else {
+                        continue;
+                    };
+                    let parts: Vec<Value> = parts
+                        .iter()
+                        .filter(|part| {
+                            let mut one = item.as_object().cloned().unwrap_or_default();
+                            one.insert(inner.clone(), Value::Array(vec![(*part).clone()]));
+                            reads_alone(key, &Value::Object(one))
+                        })
+                        .cloned()
+                        .collect();
+                    pruned.insert(inner.clone(), Value::Array(parts));
+                }
+                let pruned = Value::Object(pruned);
+                reads_alone(key, &pruned).then_some(pruned)
+            })
+            .collect();
+        kept.insert(key.clone(), Value::Array(readable));
+    }
+    handler.read_facts_value(&Value::Object(kept)).ok()
 }
 
 impl HookFacts {
@@ -382,21 +433,17 @@ pub(crate) async fn apply_global_rewrites(
     let mut applied = false;
     for (timeout, hook) in rewrite_hooks {
         // Re-READ the IR from the current body so a later hook sees the earlier rewrite — a true
-        // transform chain. A body the reader refuses is the REQUEST's failure, not a best-effort
-        // projection: screening a request busbar cannot read, and forwarding it anyway, is the
-        // fail-open shape. A rewrite chain only runs on a materialized JSON-object body (the caller
+        // transform chain. Content the reader cannot read contributes nothing to the projection and
+        // never fails the request (the 1.5.5 hook seam; see `readable_facts`). A rewrite chain only runs on a materialized JSON-object body (the caller
         // gates on `v.as_mut()`), so the byte-reader arm of `read_hook_facts` is never taken here —
         // the operation's value reader projects the current (post-rewrite) tree directly.
-        let facts = match read_hook_facts(
+        let facts = read_hook_facts(
             v,
             &[],
             crate::engine::APPLICATION_JSON,
             ingress_protocol,
             Some(operation),
-        ) {
-            Ok(f) => f,
-            Err(HookIrRejected) => return Err((400, unreadable_body_message().to_string())),
-        };
+        );
         // `with_prompt = true` is sound by construction: `hooks::admits_rewrite` gates membership of
         // this slice on effective `rw`, which implies read.
         let req = build_rewrite_request(
@@ -440,12 +487,6 @@ pub(crate) async fn apply_global_rewrites(
         }
     }
     Ok(applied)
-}
-
-/// The client-facing message for a body the ingress protocol's reader refuses. Deliberately
-/// content-free: it names the failure, never the field or the value that caused it.
-pub(crate) fn unreadable_body_message() -> &'static str {
-    "request body could not be read as a valid request for this endpoint"
 }
 
 /// Map a hook-chosen reject status to the closest dialect error KIND, so an SDK caller catches the
@@ -599,19 +640,9 @@ pub(crate) async fn decide_policy_order(
     };
 
     // THE ONE READ. Everything this seam projects — counts, sizes, the caller's cap, the end-user
-    // id, and the content itself — comes from the IR the ingress protocol's own reader produced. A
-    // body that reader REFUSES is the request's failure, surfaced as the gate's own first-class
-    // rejection rather than screened as best-effort and forwarded upstream anyway.
-    let facts = match read_hook_facts(v, body, content_type, ingress_protocol, Some(operation)) {
-        Ok(f) => f,
-        Err(HookIrRejected) => {
-            return PolicyOutcome::RejectRequest {
-                status: 400,
-                message: unreadable_body_message().to_string(),
-                name: policy.name(),
-            }
-        }
-    };
+    // id, and the content itself — comes from the IR the ingress protocol's own reader produced, over
+    // the content it can read (`readable_facts`; the 1.5.5 seam never refused a request).
+    let facts = read_hook_facts(v, body, content_type, ingress_protocol, Some(operation));
     let shape = facts.shape();
 
     // `policy.send_user` opt-in (default off): project the caller identity — the virtual key's
@@ -1085,11 +1116,9 @@ pub(crate) fn capture_stage_shape<'a>(
     stream: bool,
     request_id: u64,
 ) -> StageShape<'a> {
-    // Read through the IR like every other hook projection. A body the reader REFUSES yields the
-    // zeroed shape rather than failing anything: a stage tap is fire-and-forget OBSERVATION and can
-    // never fail a request. The request itself is still rejected — by the gate/rewrite seams, which
-    // read the same IR and do surface the parse failure — so this is not a fail-open hole, it is an
-    // observation path declining to invent facts it does not have. `v == None` stands in as
+    // Read through the IR like every other hook projection, over the content the reader can read
+    // (`readable_facts`); a stage tap is fire-and-forget OBSERVATION and never fails a request.
+    // `v == None` stands in as
     // `Value::Null` (a non-object body): with an op + bytes the byte reader engages (multipart), and
     // with `operation == None` the seam short-circuits to the zeroed shape before any read.
     let null = Value::Null;
@@ -1100,8 +1129,7 @@ pub(crate) fn capture_stage_shape<'a>(
         ingress_protocol,
         operation,
     )
-    .map(|f| f.shape())
-    .unwrap_or(busbar_contract::ir::facts::Shape::EMPTY);
+    .shape();
     StageShape {
         request_id,
         pool,

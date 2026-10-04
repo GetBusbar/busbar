@@ -30,7 +30,6 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
@@ -52,51 +51,6 @@ fn free_port() -> u16 {
     common::boot::free_port()
 }
 
-/// Every request the collector received: its head (lowercased) and its body.
-type Received = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
-
-/// A loopback collector: every request's head and body kept, answered 200.
-fn collector() -> (u16, Received) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the collector");
-    let port = listener.local_addr().expect("an address").port();
-    let seen: Received = Arc::default();
-    let keep = seen.clone();
-    std::thread::spawn(move || {
-        for mut conn in listener.incoming().flatten() {
-            let keep = keep.clone();
-            std::thread::spawn(move || {
-                let mut raw = Vec::new();
-                let mut buf = [0u8; 8192];
-                loop {
-                    let Ok(n) = conn.read(&mut buf) else { return };
-                    if n == 0 {
-                        return;
-                    }
-                    raw.extend_from_slice(&buf[..n]);
-                    let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
-                        continue;
-                    };
-                    let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
-                    let length: usize = head
-                        .lines()
-                        .find_map(|l| l.strip_prefix("content-length:"))
-                        .and_then(|v| v.trim().parse().ok())
-                        .unwrap_or(0);
-                    if raw.len() < end + 4 + length {
-                        continue;
-                    }
-                    keep.lock()
-                        .unwrap()
-                        .push((head, raw[end + 4..end + 4 + length].to_vec()));
-                    let _ = conn.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n");
-                    return;
-                }
-            });
-        }
-    });
-    (port, seen)
-}
-
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16, collector: u16) {
     // The provider catalog row is test data (`fixtures/mock_provider.yaml`), not a literal here.
     std::fs::write(
@@ -112,6 +66,10 @@ admin_listen: "127.0.0.1:{admin_port}"
 admin_require_mtls: false
 auth:
   chain: []
+plugins:
+  enabled: true
+  dir: '{plugins}'
+  logs: {{ dir: '{logs}' }}
 export:
   trace: {{ module: otlp, settings: {{ url: "http://127.0.0.1:{collector}/v1/traces" }} }}
 providers:
@@ -120,10 +78,13 @@ providers:
 models:
   test-model:
     provider: mock
-"#
+"#,
+            plugins = dir.join("plugins").display(),
+            logs = dir.join("plugin-logs").display(),
         ),
     )
     .unwrap();
+    std::fs::create_dir_all(dir.join("plugins")).unwrap();
 }
 
 /// Kill the child when the test ends, however it ends.
@@ -178,7 +139,7 @@ fn the_shipped_binary_posts_its_spans_to_an_otlp_collector() {
     }
     let dir = fixture_dir();
     let (data_port, admin_port) = (free_port(), free_port());
-    let (collector_port, seen) = collector();
+    let (collector_port, seen) = common::otlp::collector();
     write_configs(&dir, data_port, admin_port, collector_port);
     if !otlp_linked(&dir) {
         return;
@@ -215,13 +176,14 @@ fn the_shipped_binary_posts_its_spans_to_an_otlp_collector() {
         }
     }
 
-    // Delivery is off the request path: wait for the collector to hear from the sink.
+    // Delivery is off the request path, batched: wait for the collector to hear the sink's spans.
     let deadline = Instant::now() + Duration::from_secs(30);
-    while seen.lock().unwrap().len() < 3 {
+    let heard = || common::otlp::spans(&common::otlp::requests(&seen, None)).len();
+    while heard() < 3 {
         assert!(
             Instant::now() < deadline,
-            "the collector received {} request(s) in 30 s:\n{}",
-            seen.lock().unwrap().len(),
+            "the collector received {} span(s) in 30 s:\n{}",
+            heard(),
             read_log()
         );
         std::thread::sleep(Duration::from_millis(50));
@@ -234,9 +196,15 @@ fn the_shipped_binary_posts_its_spans_to_an_otlp_collector() {
         std::thread::sleep(Duration::from_millis(50));
     }
     let log = read_log();
+    // The sink's own lines are in its own log file (THE DESIGN §11.2), named by its instance.
+    let sink_log = std::fs::read_to_string(dir.join("plugin-logs").join("export.trace.log"))
+        .unwrap_or_default();
     let _ = std::fs::remove_dir_all(&dir);
 
-    assert!(log.contains("OTLP tracing enabled"), "{log}");
+    assert!(
+        sink_log.contains("OTLP tracing enabled"),
+        "{sink_log}\n{log}"
+    );
     for failure in [
         "no reactor running",
         "OTLP tracer shutdown failed",

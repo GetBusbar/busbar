@@ -50,6 +50,14 @@ pub struct ProviderCfg {
     /// hardcoded base segment so the per-request `/{model}:verb` suffix is appended to it (Vertex AI).
     #[serde(default)]
     pub path_base: Option<String>,
+    /// The tenant the upstream bills this provider's traffic to (OpenAI family: `organization`
+    /// and `project`), set on every upstream request from this config and never from the caller.
+    /// Absent: none is sent.
+    #[serde(default)]
+    pub organization: Option<String>,
+    /// See `organization`.
+    #[serde(default)]
+    pub project: Option<String>,
     /// OAuth token endpoint for `auth: oauth-client-credentials` (see ProviderDef::token_url).
     #[serde(default)]
     pub token_url: Option<String>,
@@ -161,6 +169,14 @@ pub struct ProviderDef {
     /// /v1/projects/{project}/locations/{location}/publishers/google/models`.
     #[serde(default)]
     pub path_base: Option<String>,
+    /// The tenant the upstream bills this provider's traffic to (OpenAI family: `organization`
+    /// and `project`), set on every upstream request from this config and never from the caller.
+    /// Absent: none is sent.
+    #[serde(default)]
+    pub organization: Option<String>,
+    /// See `organization`.
+    #[serde(default)]
+    pub project: Option<String>,
     /// OAuth token endpoint for `auth: oauth-client-credentials` — the URL busbar POSTs the client
     /// credentials to for a bearer. Required for that auth style; ignored otherwise. E.g. Azure Entra:
     /// `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token`.
@@ -232,6 +248,14 @@ pub struct ProviderDeploy {
     /// hardcoded base segment so the per-request `/{model}:verb` suffix is appended to it (Vertex AI).
     #[serde(default)]
     pub path_base: Option<String>,
+    /// The tenant the upstream bills this provider's traffic to (OpenAI family: `organization`
+    /// and `project`), set on every upstream request from this config and never from the caller.
+    /// Absent: none is sent.
+    #[serde(default)]
+    pub organization: Option<String>,
+    /// See `organization`.
+    #[serde(default)]
+    pub project: Option<String>,
     /// OAuth token endpoint for `auth: oauth-client-credentials` (see ProviderDef::token_url).
     #[serde(default)]
     pub token_url: Option<String>,

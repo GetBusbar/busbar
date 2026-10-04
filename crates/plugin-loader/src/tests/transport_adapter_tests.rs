@@ -542,6 +542,7 @@ impl Framer for Lines {
         _: StreamId,
         bytes: &[u8],
         end_of_frame: bool,
+        _text: bool,
         out: &mut dyn FramerOut,
     ) -> Result<(), TransportError> {
         out.send(bytes);
@@ -567,7 +568,7 @@ impl Framer for Lines {
         bytes: &[u8],
         out: &mut dyn FramerOut,
     ) -> Result<(), TransportError> {
-        self.emit(state, StreamId(0), bytes, true, out)
+        self.emit(state, StreamId(0), bytes, true, false, out)
     }
     fn close(&self, state: u64, _: CloseReason, out: &mut dyn FramerOut) {
         if self.held.lock().unwrap().remove(&state).is_some() {

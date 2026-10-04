@@ -88,6 +88,7 @@ impl Framer for Ticking {
         _: StreamId,
         _: &[u8],
         _: bool,
+        _: bool,
         _: &mut dyn FramerOut,
     ) -> Result<(), TransportError> {
         Ok(())

@@ -59,6 +59,8 @@ pub struct WalkArrival {
     pub caller_token: Option<crate::engine::CallerCredential>,
     /// The request headers, as they arrived.
     pub headers: HeaderMap,
+    /// The request URL's query, as it arrived (`None` when the URL carried none).
+    pub query: Option<String>,
     /// The request body, as it arrived.
     pub body: Bytes,
     /// WHAT THE URL SAID, on the two surfaces whose model rides the path rather than the body.
@@ -84,8 +86,8 @@ struct Carry {
     arrived: Option<BodyArrival>,
     /// The admission's meter half, built at the door and carried to the walk.
     sink: Option<crate::engine::UsageSink>,
-    /// Whether the admission charge landed.
-    charged: bool,
+    /// The admission charge, when it landed.
+    charged: Option<busbar_kernel::plane_host::AdmitHandle>,
     /// The pool the charge landed on — post-downgrade, never the requested one.
     effective: Option<String>,
     /// Whether the verified set offered an upstream to route to.
@@ -168,6 +170,7 @@ pub struct Walk {
     operation: busbar_contract::operation::OpVerb,
     caller_token: Option<crate::engine::CallerCredential>,
     headers: HeaderMap,
+    query: Option<String>,
     body: Bytes,
     path: Option<crate::arrival::PathModelFacts>,
     carry: Mutex<Carry>,
@@ -198,6 +201,7 @@ impl Walk {
             operation,
             caller_token,
             headers,
+            query,
             body,
             path,
         } = arrival;
@@ -210,6 +214,7 @@ impl Walk {
             operation,
             caller_token,
             headers,
+            query,
             body,
             path,
             carry: Mutex::new(Carry::default()),
@@ -363,11 +368,11 @@ impl Walk {
         admitted.verdict
     }
 
-    /// Whether the admission charge landed — what the admitted terminal door is handed, and the one
-    /// input besides the client-facing status its refund of the fee base turns on.
+    /// The admission charge, when it landed — what the admitted terminal door is handed, and the
+    /// one input besides the client-facing status its refund of the fee base turns on.
     #[must_use]
-    pub fn charged(&self) -> bool {
-        self.lock().charged
+    pub fn charged(&self) -> Option<busbar_kernel::plane_host::AdmitHandle> {
+        self.lock().charged.clone()
     }
 
     /// The pool the charge landed on, or the requested one where nothing re-pooled it.
@@ -540,9 +545,21 @@ impl Walk {
         fallback: impl FnOnce() -> Served,
     ) -> SeatVerdict<busbar_contract::caps::step::Audit> {
         let bytes = self.take_bytes().unwrap_or_else(fallback);
-        let audited = crate::unit::audit::audit(token, ctx, bytes, self.charged());
+        let audited = crate::unit::audit::audit(token, ctx, bytes, self.charged().as_ref());
         self.seal_terminal(audited.response);
         audited.decision
+    }
+
+    /// THE CHARGED TERMINAL FOR A CALLER THAT WENT AWAY: the facts are sealed and nothing is
+    /// posted, so the fee the door charged stays charged. Whatever the carry holds is dropped with
+    /// the unit; there is nobody to give it to.
+    pub fn audit_abandoned(
+        &self,
+        token: &Pass<busbar_contract::caps::step::Audit>,
+        ctx: &crate::unit::audit::AuditCtx<'_>,
+    ) -> SeatVerdict<busbar_contract::caps::step::Audit> {
+        drop(self.take_bytes());
+        crate::unit::audit::audit_abandoned(token, ctx)
     }
 
     /// THE NOT-CHARGED TERMINAL. Nothing was charged, so nothing is refunded.
@@ -632,6 +649,7 @@ impl Walk {
             op,
             destination,
             headers: &self.headers,
+            query: self.query.as_deref(),
             body,
             parsed,
             caller_token: self.caller_token.as_ref(),

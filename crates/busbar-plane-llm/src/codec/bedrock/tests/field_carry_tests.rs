@@ -3,10 +3,8 @@
 
 //! FIELD-COVERAGE CARRY instruments for the AWS Bedrock Converse dialect (`bedrock/` field ids).
 //!
-//! Each test here is the named instrument a `qa/field-coverage.status` line points at, and each
-//! genuinely FAILS if its field stops surviving — that is the whole contract of the coverage gate
-//! (`crates/busbar-plane-llm/tests/field_coverage.rs`, evidence in `crates/busbar/tests/field_evidence.rs`): a `carried` claim is admissible only with a test that
-//! would miss the field being dropped. The tests are grouped by wire construct, but EVERY named
+//! Each test here watches fields of `dialects/bedrock.toml`, and each genuinely FAILS if its field
+//! stops surviving. The tests are grouped by wire construct, but EVERY named
 //! field carries its own field-level assertion.
 //!
 //! Two carry disciplines, matching the two field classes:

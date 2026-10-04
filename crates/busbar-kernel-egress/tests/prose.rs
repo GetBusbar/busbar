@@ -9,7 +9,7 @@
 //!
 //! The dependency list is the other half. This unit is allowed to name the contract and the
 //! capability crate and nothing else in the workspace: everything else it needs — the breaker, the
-//! egress-auth unit, the journal, the permit store — enters through a trait the integrator binds,
+//! journal, the permit store — enters through a trait the integrator binds,
 //! and a direct dependency on one of those crates would quietly turn a seam into a coupling.
 
 use std::path::{Path, PathBuf};
@@ -115,7 +115,6 @@ fn every_seam_the_integrator_binds_says_so() {
     for seam in [
         "pub trait Breaker",
         "pub trait Capacity",
-        "pub trait EgressAuth",
         "pub trait Journal",
         "pub trait Clock",
         "pub trait Telemetry",

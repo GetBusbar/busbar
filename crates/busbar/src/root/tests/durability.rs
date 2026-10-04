@@ -3,7 +3,6 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_contract::caps::KernelSeal;
 use busbar_kernel_audit::{Recipe, UsageLine};
 use busbar_kernel_ledger::legacy::RecordingRows;
 use busbar_kernel_wal::{decode_run, verify_journal, NullShipper, FRAME_BYTES};
@@ -85,7 +84,7 @@ fn rows() -> Box<dyn LegacyRows> {
 }
 
 fn token() -> Grant<DurableWrite> {
-    Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel())
+    busbar_kernel::test_support::tokens::grant::<DurableWrite>()
 }
 
 fn marker(seq: u64, sealed_at: u64) -> MigrationMarker {
@@ -249,7 +248,7 @@ fn posting() -> Posting {
 
 /// A sealed audit record for a unit that ran.
 fn audit_inputs(unit: u64) -> AuditInputs {
-    use busbar_contract::caps::{KernelSeal, Origin, OriginKind, Outcome, UnitKey};
+    use busbar_contract::caps::{OriginKind, Outcome, UnitKey};
     use busbar_kernel_audit::{
         AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage, What,
     };
@@ -266,7 +265,7 @@ fn audit_inputs(unit: u64) -> AuditInputs {
         },
         wall: 1_700_000_000 + unit,
         mono: unit * 1_000,
-        origin: Origin::seal(&KernelSeal::acquire_for_kernel(), OriginKind::Client),
+        origin: busbar_kernel::test_support::tokens::origin(OriginKind::Client),
         outcome: OutcomeFacts {
             unit_end: Outcome::Completed,
             step: None,
@@ -293,7 +292,7 @@ fn audit_inputs(unit: u64) -> AuditInputs {
 
 /// A pass the audit step was lent, as the loop hands it back with the unit's facts.
 fn audit_pass() -> busbar_contract::caps::Pass<busbar_contract::caps::Audit> {
-    busbar_contract::caps::Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel())
+    busbar_kernel::test_support::tokens::pass()
 }
 
 /// A UNIT'S RECORD GOES ON THE JOURNAL WHOLE (`audit.v4`): the record read back off the chain is the
@@ -422,6 +421,98 @@ fn a_tampered_retained_record_is_a_verify_finding() {
     assert!(
         findings.iter().any(|f| f.contains("DigestMismatch")),
         "{findings:?}"
+    );
+}
+
+/// Bind the deployment keyset over `dir`, as the boot does.
+fn bind_keyset(durability: &mut Durability, dir: &std::path::Path) {
+    crate::root::keyset::bind(
+        durability,
+        Some(dir),
+        &token(),
+        StepName::Meter,
+        1_700_000_000,
+    )
+    .expect("the keyset binds");
+}
+
+/// Strip a retained record's signature. The signature is not in the digest, so the chain stays
+/// whole: only the unsigned rule can see it.
+fn strip_signature(record: &mut AuditRecord) {
+    record.signature = None;
+    record.key_id = None;
+}
+
+/// AN UNSIGNED RECORD SEALED WHILE THE KEYSET WAS BOUND IS A `/verify` FINDING (MONEY-AUDIT E5):
+/// in the boot that sealed it, and after a restart, where the `Bootstrap` on the chain says the key
+/// was bound before it. RED arm: the walk skipped every record naming no key, so a record whose
+/// signature was stripped verified clean.
+#[test]
+fn an_unsigned_record_sealed_under_a_bound_keyset_is_a_verify_finding() {
+    let scratch = ScratchDir::new("audit-unsigned-under-key");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    {
+        let mut durability = boot(&cfg, 7).expect("the directory is writable");
+        bind_keyset(&mut durability, &scratch.path);
+        for unit in 1..=2 {
+            durability
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        assert!(durability.retained_audit_findings().is_empty());
+        strip_signature(&mut durability.audit_records[1]);
+        let findings = durability.retained_audit_findings();
+        assert_eq!(
+            findings,
+            vec!["record 2 is unsigned, sealed after the keyset was bound".to_string()]
+        );
+    }
+    let mut restarted = boot(&cfg, 7).expect("the journal reopens");
+    bind_keyset(&mut restarted, &scratch.path);
+    assert!(restarted.retained_audit_findings().is_empty());
+    strip_signature(&mut restarted.audit_records[0]);
+    assert_eq!(
+        restarted.retained_audit_findings(),
+        vec!["record 1 is unsigned, sealed after the keyset was bound".to_string()]
+    );
+}
+
+/// A RECORD SEALED BEFORE THE KEYSET WAS BOUND IS UNSIGNED, AND THAT IS NOT A FINDING: a chain a
+/// keyless boot began, continued by a boot that binds a key, verifies clean across both — before
+/// and after a restart.
+#[test]
+fn records_sealed_before_the_keyset_was_bound_are_not_findings() {
+    let scratch = ScratchDir::new("audit-unsigned-before-key");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    {
+        let mut keyless = boot(&cfg, 7).expect("the directory is writable");
+        for unit in 1..=2 {
+            keyless
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        assert!(keyless.retained_audit_findings().is_empty());
+    }
+    {
+        let mut keyed = boot(&cfg, 7).expect("the journal reopens");
+        bind_keyset(&mut keyed, &scratch.path);
+        let third = keyed
+            .seal_unit(audit_inputs(3), audit_pass(), &token())
+            .expect("sealed");
+        assert!(third.key_id.is_some(), "sealed under the bound key");
+        assert!(keyed.retained_audit_findings().is_empty());
+    }
+    let mut reread = boot(&cfg, 7).expect("the journal reopens");
+    bind_keyset(&mut reread, &scratch.path);
+    assert!(reread.retained_audit_findings().is_empty());
+    strip_signature(&mut reread.audit_records[2]);
+    assert_eq!(
+        reread.retained_audit_findings(),
+        vec!["record 3 is unsigned, sealed after the keyset was bound".to_string()]
     );
 }
 
@@ -773,21 +864,20 @@ fn settling<'a>(key: &'a TotalsKey, durability: &'a Grant<DurableWrite>) -> Sett
 #[test]
 fn settling_a_hold_moves_the_books_and_puts_the_posting_on_the_chain() {
     use busbar_contract::caps::{
-        Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, PrincipalId,
-        QuantitySource, Usage, UsageLine, WriteMoney,
+        Admittance, Consumption, Hold, MeterClassId, PrincipalId, QuantitySource, Usage, UsageLine,
+        WriteMoney,
     };
-    let seal = KernelSeal::acquire_for_kernel();
     let mut durability = memory_node();
     let key = totals_key("vk_settle");
     durability.ledger.record_hold_opened(&key, 86_400, 5_000);
 
     let hold = Hold::open(
-        &Grant::<Admittance>::mint(&seal),
+        &busbar_kernel::test_support::tokens::grant::<Admittance>(),
         PrincipalId::new("vk_settle"),
         5_000,
     );
     let usage = Usage::report(
-        &Grant::<Consumption>::mint(&seal),
+        &busbar_kernel::test_support::tokens::grant::<Consumption>(),
         vec![UsageLine {
             class: MeterClassId::new("nano_units"),
             quantity: 4_200,
@@ -804,7 +894,7 @@ fn settling_a_hold_moves_the_books_and_puts_the_posting_on_the_chain() {
             hold,
             4_200,
             &usage,
-            &Grant::<WriteMoney>::mint(&seal),
+            &busbar_kernel::test_support::tokens::grant::<WriteMoney>(),
         )
         .expect("the null shipper takes it");
 
@@ -831,16 +921,15 @@ fn settling_a_hold_moves_the_books_and_puts_the_posting_on_the_chain() {
 #[test]
 fn an_overdraft_is_its_own_record_beside_the_posting_it_came_out_of() {
     use busbar_contract::caps::{
-        Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, PrincipalId,
-        QuantitySource, Usage, UsageLine, WriteMoney,
+        Admittance, Consumption, Hold, MeterClassId, PrincipalId, QuantitySource, Usage, UsageLine,
+        WriteMoney,
     };
-    let seal = KernelSeal::acquire_for_kernel();
     let mut durability = memory_node();
     let key = totals_key("vk_over");
     durability.ledger.record_hold_opened(&key, 86_400, 1_000);
 
     let mut hold = Hold::open(
-        &Grant::<Admittance>::mint(&seal),
+        &busbar_kernel::test_support::tokens::grant::<Admittance>(),
         PrincipalId::new("vk_over"),
         1_000,
     );
@@ -848,7 +937,7 @@ fn an_overdraft_is_its_own_record_beside_the_posting_it_came_out_of() {
     let spend = hold.spend(4_000, 0);
     assert_eq!(spend.overdraft, 3_000);
     let usage = Usage::report(
-        &Grant::<Consumption>::mint(&seal),
+        &busbar_kernel::test_support::tokens::grant::<Consumption>(),
         vec![UsageLine {
             class: MeterClassId::new("nano_units"),
             quantity: 4_000,
@@ -865,7 +954,7 @@ fn an_overdraft_is_its_own_record_beside_the_posting_it_came_out_of() {
             hold,
             4_000,
             &usage,
-            &Grant::<WriteMoney>::mint(&seal),
+            &busbar_kernel::test_support::tokens::grant::<WriteMoney>(),
         )
         .expect("the null shipper takes it");
 
@@ -929,10 +1018,9 @@ impl busbar_kernel_wal::Shipper for CountingShipper {
 #[test]
 fn a_settlement_and_its_carry_reach_the_journal_in_one_batch() {
     use busbar_contract::caps::{
-        Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, PrincipalId,
-        QuantitySource, Usage, UsageLine, WriteMoney,
+        Admittance, Consumption, Hold, MeterClassId, PrincipalId, QuantitySource, Usage, UsageLine,
+        WriteMoney,
     };
-    let seal = KernelSeal::acquire_for_kernel();
     let batches = CountingShipper::default();
     let mut durability = build(
         &DurabilityConfig { data_dir: None },
@@ -944,13 +1032,13 @@ fn a_settlement_and_its_carry_reach_the_journal_in_one_batch() {
     let key = totals_key("vk_batch");
     durability.ledger.record_hold_opened(&key, 86_400, 1_000);
     let mut hold = Hold::open(
-        &Grant::<Admittance>::mint(&seal),
+        &busbar_kernel::test_support::tokens::grant::<Admittance>(),
         PrincipalId::new("vk_batch"),
         1_000,
     );
     assert_eq!(hold.spend(4_000, 0).overdraft, 3_000);
     let usage = Usage::report(
-        &Grant::<Consumption>::mint(&seal),
+        &busbar_kernel::test_support::tokens::grant::<Consumption>(),
         vec![UsageLine {
             class: MeterClassId::new("nano_units"),
             quantity: 4_000,
@@ -967,7 +1055,7 @@ fn a_settlement_and_its_carry_reach_the_journal_in_one_batch() {
             hold,
             4_000,
             &usage,
-            &Grant::<WriteMoney>::mint(&seal),
+            &busbar_kernel::test_support::tokens::grant::<WriteMoney>(),
         )
         .expect("the counting shipper takes it");
     assert!(settled.overdraft.is_some(), "the fixture overdrafts");
@@ -1006,15 +1094,14 @@ fn a_settlement_and_its_carry_reach_the_journal_in_one_batch() {
 #[test]
 fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
     use busbar_contract::caps::{
-        Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, Posted, PrincipalId,
-        QuantitySource, Usage, UsageLine, WriteMoney,
+        Admittance, Consumption, Hold, MeterClassId, Posted, PrincipalId, QuantitySource, Usage,
+        UsageLine, WriteMoney,
     };
-    let seal = KernelSeal::acquire_for_kernel();
-    let admit = Grant::<Admittance>::mint(&seal);
+    let admit = busbar_kernel::test_support::tokens::grant::<Admittance>();
     let key = totals_key("vk_both");
     let usage = |q: u64| {
         Usage::report(
-            &Grant::<Consumption>::mint(&seal),
+            &busbar_kernel::test_support::tokens::grant::<Consumption>(),
             vec![UsageLine {
                 class: MeterClassId::new("nano_units"),
                 quantity: q,
@@ -1036,7 +1123,7 @@ fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
             Hold::open(&admit, PrincipalId::new("vk_both"), 5_000),
             4_200,
             &usage(4_200),
-            &Grant::<WriteMoney>::mint(&seal),
+            &busbar_kernel::test_support::tokens::grant::<WriteMoney>(),
         )
         .expect("settles");
 
@@ -1048,7 +1135,7 @@ fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
         Hold::open(&admit, PrincipalId::new("vk_both"), 5_000),
         4_200,
         &usage(4_200),
-        &Grant::<WriteMoney>::mint(&seal),
+        &busbar_kernel::test_support::tokens::grant::<WriteMoney>(),
     );
     let b = through_posting.settle_posted(&at, posted).expect("settles");
 
@@ -1065,10 +1152,9 @@ fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
 /// [`one_nano_card`] the figures are the counts.
 fn settle_one(durability: &mut Durability, key: &TotalsKey, reserved: u64, used: u64, mono: u64) {
     use busbar_contract::caps::{
-        Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, Posted, PrincipalId,
-        QuantitySource, Usage, UsageLine, WriteMoney,
+        Admittance, Consumption, Hold, MeterClassId, Posted, PrincipalId, QuantitySource, Usage,
+        UsageLine, WriteMoney,
     };
-    let seal = KernelSeal::acquire_for_kernel();
     let principal = PrincipalId::new(key.bucket.as_str());
     let durability_token = token();
     let mut at = settling(key, &durability_token);
@@ -1076,9 +1162,13 @@ fn settle_one(durability: &mut Durability, key: &TotalsKey, reserved: u64, used:
     durability
         .open_hold(&at, &principal, &inputs(reserved), ARRIVED_MS)
         .expect("the journal takes the hold");
-    let hold = Hold::open(&Grant::<Admittance>::mint(&seal), principal, reserved);
+    let hold = Hold::open(
+        &busbar_kernel::test_support::tokens::grant::<Admittance>(),
+        principal,
+        reserved,
+    );
     let usage = Usage::report(
-        &Grant::<Consumption>::mint(&seal),
+        &busbar_kernel::test_support::tokens::grant::<Consumption>(),
         vec![UsageLine {
             class: MeterClassId::new("input"),
             quantity: used,
@@ -1091,7 +1181,7 @@ fn settle_one(durability: &mut Durability, key: &TotalsKey, reserved: u64, used:
         hold,
         u128::from(used),
         &usage,
-        &Grant::<WriteMoney>::mint(&seal),
+        &busbar_kernel::test_support::tokens::grant::<WriteMoney>(),
     );
     durability
         .settle_counted(&at, posted, &inputs(used), ARRIVED_MS)
@@ -1380,16 +1470,15 @@ fn a_posting_the_journal_lost_is_unreconciled_until_the_log_confirms_it() {
     );
 
     down.store(true, std::sync::atomic::Ordering::Release);
-    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let principal = busbar_contract::caps::PrincipalId::new("vk_flaky");
     let durability_token = token();
     let hold = busbar_contract::caps::Hold::open(
-        &busbar_contract::caps::Grant::<busbar_contract::caps::Admittance>::mint(&seal),
+        &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::Admittance>(),
         principal,
         0,
     );
     let usage = busbar_contract::caps::Usage::report(
-        &busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal),
+        &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::Consumption>(),
         Vec::new(),
     )
     .expect("empty");
@@ -1398,7 +1487,7 @@ fn a_posting_the_journal_lost_is_unreconciled_until_the_log_confirms_it() {
         hold,
         250,
         &usage,
-        &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal),
+        &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::WriteMoney>(),
     );
     assert!(lost.is_err(), "the store refused the batch");
     let figures = durability.ledger.book().get(&key, 86_400);
@@ -1718,9 +1807,8 @@ fn late_counted_at(
     counts: &UnitCounts,
     arrived_ms: u64,
 ) -> Posting {
-    use busbar_contract::caps::{Grant, HoldAccrual, KernelSeal, Posted, PrincipalId, WriteMoney};
-    let seal = KernelSeal::acquire_for_kernel();
-    let ledger = Grant::<WriteMoney>::mint(&seal);
+    use busbar_contract::caps::{HoldAccrual, Posted, PrincipalId, WriteMoney};
+    let ledger = busbar_kernel::test_support::tokens::grant::<WriteMoney>();
     let accrual =
         HoldAccrual::after_terminal(PrincipalId::new(key.bucket.as_str()), amount, &ledger);
     let posted = Posted::settle_late(accrual, &ledger);
@@ -2191,6 +2279,50 @@ fn a_settlement_altered_at_the_tail_is_quarantined_and_never_settles_at_zero() {
                 .iter()
                 .any(|f| f.contains("unit 9 is left OPEN-QUARANTINED")),
         "the findings name the quarantine and the unit: {findings:?}"
+    );
+}
+
+/// A SETTLEMENT WHOSE FRAME HEADER IS ALTERED AT THE TAIL IS A QUARANTINE, NEVER A TORN TAIL
+/// (MONEY-AUDIT E4). One byte of the final frame's header — its payload length — is changed while
+/// the node is down. The frame is whole (its digest and payload are all there), so the write that
+/// made it completed and the settlement was acknowledged. Read as a torn tail it was cut silently and
+/// the hold recovered at its checkpoint: a settled unit settled again, with no alarm.
+#[test]
+fn a_settlement_whose_header_is_altered_at_the_tail_is_quarantined_not_cut() {
+    let scratch = ScratchDir::new("altered-header-tail");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_header");
+    {
+        let mut durability = boot(&cfg, 24).expect("the directory is writable");
+        settle_one(&mut durability, &key, 5_000, 4_321, 13);
+    }
+    assert!(
+        edit_segment(&scratch.path, &4_321u64.to_le_bytes(), |bytes, _| {
+            let last = bytes
+                .iter()
+                .rposition(|&b| b != 0)
+                .expect("a written segment");
+            bytes[(last / FRAME_BYTES) * FRAME_BYTES + 33] ^= 0xFF;
+        }),
+        "the fixture found the settlement on disk"
+    );
+    let restarted = boot(&cfg, 24).expect("a corrupt journal does not stop the boot");
+    assert_eq!(
+        restarted.quarantined.len(),
+        1,
+        "the whole final frame whose header was altered is set aside"
+    );
+    assert_eq!(
+        restarted.recovered_holds, 0,
+        "nothing was recovered on a guess"
+    );
+    let figures = restarted.ledger.book().get(&key, 86_400);
+    assert_eq!(figures.settled, 0);
+    assert_eq!(
+        figures.open_holds, 5_000,
+        "the hold stays open, OPEN-QUARANTINED"
     );
 }
 

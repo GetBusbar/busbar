@@ -76,6 +76,10 @@ const DECISION: bool = cfg!(feature = "plane-decisions");
 
 /// Every transport and every plane goes into one registry, and both counts are what the design
 /// says they are. This is the half of the seal that does not depend on the claims.
+// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the http rows compose over the linked transport door
+// (tcp); a build that links none (`--no-default-features`) has no stack to fold or seal, so this
+// cell gates on the transport-door axis, read off the linked table.
+#[cfg(linked_axis_transport_door)]
 #[test]
 fn six_transports_and_five_planes_register() {
     let registry = linked_registry();
@@ -486,6 +490,10 @@ fn a_planes_own_claims_may_overlap() {
 /// The shipped stack composes: every layer the seven transports declare is registered, and the
 /// three that were actually built over a lower layer were built over one they declare. This is
 /// the composition half of the seal, and it passes today.
+// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the http rows compose over the linked transport door
+// (tcp); a build that links none (`--no-default-features`) has no stack to fold or seal, so this
+// cell gates on the transport-door axis, read off the linked table.
+#[cfg(linked_axis_transport_door)]
 #[test]
 fn the_shipped_transport_stack_composes() {
     let rows = linked_rows();
@@ -507,6 +515,10 @@ fn the_shipped_transport_stack_composes() {
 
 /// The other direction of the composition rule: a transport built over a layer it does not
 /// declare describes a node nobody is running, and the check says so.
+// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the http rows compose over the linked transport door
+// (tcp); a build that links none (`--no-default-features`) has no stack to fold or seal, so this
+// cell gates on the transport-door axis, read off the linked table.
+#[cfg(linked_axis_transport_door)]
 #[test]
 fn an_undeclared_composition_refuses_at_boot() {
     let mut rows = linked_rows();
@@ -622,6 +634,10 @@ fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
 /// and a transport's accumulation ceiling are the same number, so a wire built from a `Default`
 /// would take a body the door refused. The fold hands every row's build the ONE settings value it
 /// was given, and the capped composition still seals.
+// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the http rows compose over the linked transport door
+// (tcp); a build that links none (`--no-default-features`) has no stack to fold or seal, so this
+// cell gates on the transport-door axis, read off the linked table.
+#[cfg(linked_axis_transport_door)]
 #[test]
 fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
     const CAP: usize = 1024;
@@ -676,6 +692,10 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
 /// built over the first layer it declares: `sse`, `ws` and `grpc` over `http`, the four that open
 /// their own socket or streams over nothing. The same rows handed over in the reverse order build
 /// the same stack, because the order is the declarations' and not the table's.
+// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the http rows compose over the linked transport door
+// (tcp); a build that links none (`--no-default-features`) has no stack to fold or seal, so this
+// cell gates on the transport-door axis, read off the linked table.
+#[cfg(linked_axis_transport_door)]
 #[test]
 fn the_fold_builds_bottom_up_in_composes_over_order() {
     let rows = linked_rows();
@@ -813,34 +833,39 @@ fn the_boot_path_seals_the_composition_in_every_build() {
 
 // ── BOTH DOORS, ONE FOLD ────────────────────────────────────────────────────────────────────────
 
-/// The in-tree transport door `cdylib`s, found by KIND: of the libraries beside this test binary,
-/// every one the one dispatcher admits as a transport door, one per key, served over the host's
-/// sockets as the boot serves a dropped-in door, once for the process (the root names no transport).
-/// Under CI a missing artifact is a hard failure, never a silent skip.
+/// The dropped-in wire these proofs serve: the neutral frame door (the plugin loader's
+/// `neutral_frame_door` example, an identity framer under a neutral claim), served over the host's
+/// sockets as the boot serves a dropped-in door, once for the process. It names no transport, so the
+/// root names none and no transport leaving this repo takes the fixture with it. Under CI a missing
+/// artifact is a hard failure, never a silent skip.
 fn dropped_doors() -> &'static [DroppedDoor] {
     static DOORS: std::sync::OnceLock<Vec<DroppedDoor>> = std::sync::OnceLock::new();
     let doors = DOORS.get_or_init(|| {
-        crate::root::test_plugins::transport_doors()
-            .iter()
-            // Only a door that frames the host's socket is served over it; a door composing over a
-            // layer (the http door example, when built) is not a dropped-in wire for these proofs.
-            .filter(|(plugin, _)| {
-                plugin
-                    .context::<crate::root::loader::dispatch::kinds::transport::TransportFacts>()
-                    .is_some_and(|f| f.composes_over.is_empty())
-            })
+        crate::root::test_plugins::neutral_frame_door()
+            .into_iter()
             .map(|(plugin, key)| DroppedDoor {
                 key,
                 composes_over: Vec::new(),
-                wire: crate::root::doors::host_wire(plugin.clone()).expect("the door serves"),
+                wire: crate::root::doors::host_wire(plugin).expect("the door serves"),
             })
             .collect()
     });
     assert!(
         !doors.is_empty() || std::env::var_os("CI").is_none(),
-        "no in-tree transport door cdylib is built beside the test binary under CI"
+        "the neutral frame door cdylib is built beside the test binary under CI"
     );
     doors
+}
+
+/// The linked row the dropped-in wire stands in for: its key, composing over nothing, built in
+/// process as the same served wire. The build's own linked table holds no row for the neutral
+/// claim, so a proof that the dropped-in wire takes a linked row's place adds that row first.
+fn the_wires_linked_row(wire: &DroppedDoor) -> LinkedTransport {
+    LinkedTransport {
+        key: wire.key,
+        composes_over: &[],
+        build: |_, _| dropped_doors()[0].wire.clone(),
+    }
 }
 
 /// TWO LINKED DOOR ROWS ARE TWO INSTANCES: a linked transport door is bound under its own row name,
@@ -885,28 +910,26 @@ fn rows_of(
 /// DROPPED IN, seals to the SAME composition the build that links all of them seals to — the same
 /// rows, each built over the same layer — and the dropped-in wire is registered through the same
 /// registration, answers the registry by its key, and is the wire under the data door.
+// THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the http rows compose over the linked transport door
+// (tcp); a build that links none (`--no-default-features`) has no stack to fold or seal, so this
+// cell gates on the transport-door axis, read off the linked table.
+#[cfg(linked_axis_transport_door)]
 #[test]
 fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
     let Some(wire) = dropped_doors().first() else {
-        eprintln!("skip: no in-tree transport cdylib is built beside the test binary");
+        eprintln!("skip: the neutral frame door is not built beside the test binary");
         return;
     };
-    if !crate::LINKED.transports.iter().any(|r| r.key == wire.key) {
-        return;
-    }
     static ROWS: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
-    let rows = rows_of(&ROWS, || {
-        let rows = crate::LINKED.transports.iter();
-        rows.filter(|r| r.key != wire.key).copied().collect()
-    });
-    let without = crate::root::linked::Linked {
-        transports: rows,
+    let with = crate::root::linked::Linked {
+        transports: rows_of(&ROWS, || {
+            [crate::LINKED.transports, &[the_wires_linked_row(wire)]].concat()
+        }),
         ..crate::LINKED
     };
-    let sealed =
-        seal(&without, one_door(), TransportSettings::default()).expect("the composition seals");
-    let linked =
-        seal(&crate::LINKED, Dropped::NONE, TransportSettings::default()).expect("it seals linked");
+    let sealed = seal(&crate::LINKED, one_door(), TransportSettings::default())
+        .expect("the composition seals");
+    let linked = seal(&with, Dropped::NONE, TransportSettings::default()).expect("it seals linked");
 
     let by_key = |mut rows: Vec<Registered>| {
         rows.sort_by_key(|r| r.key);
@@ -930,18 +953,21 @@ fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
 #[test]
 fn a_dropped_in_wire_on_a_linked_key_is_refused_as_a_second_linked_row_is() {
     let Some(wire) = dropped_doors().first() else {
-        eprintln!("skip: no in-tree transport cdylib is built beside the test binary");
+        eprintln!("skip: the neutral frame door is not built beside the test binary");
         return;
     };
-    let Some(row) = crate::LINKED.transports.iter().find(|r| r.key == wire.key) else {
-        return;
+    let row = the_wires_linked_row(wire);
+    static ONCE: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
+    let with = crate::root::linked::Linked {
+        transports: rows_of(&ONCE, || [crate::LINKED.transports, &[row]].concat()),
+        ..crate::LINKED
     };
-    let dropped = seal(&crate::LINKED, one_door(), Default::default())
+    let dropped = seal(&with, one_door(), Default::default())
         .err()
         .expect("a dropped-in wire on a linked key is refused");
     static TWICE: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
     let twice = crate::root::linked::Linked {
-        transports: rows_of(&TWICE, || [crate::LINKED.transports, &[*row]].concat()),
+        transports: rows_of(&TWICE, || [crate::LINKED.transports, &[row, row]].concat()),
         ..crate::LINKED
     };
     let linked = seal(&twice, Dropped::NONE, Default::default())

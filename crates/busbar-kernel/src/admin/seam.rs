@@ -13,9 +13,10 @@
 //! that binary's `build_router` therefore produces a router WITHOUT the admin surface, which is why
 //! every busbar-core test that drove `/api/v1/admin/*` was moved to `busbar-admin` with the service.
 
+use std::any::Any;
 use std::sync::{Arc, OnceLock};
 
-use crate::state::AppHandle;
+use crate::state::{App, AppHandle};
 
 /// The one function core calls through this seam: nest the admin API's routes onto `router` at its
 /// computed `/api/v1/admin` prefix. Every type here is core-owned (`axum::Router`, `AppHandle`), so
@@ -24,6 +25,39 @@ pub struct AdminMountSeam {
     /// Mount the admin service's routes onto the router. `busbar-admin` supplies this; only it names
     /// its own `JsonV1` transport, so only it can build the nested router.
     pub mount: fn(axum::Router<Arc<AppHandle>>) -> axum::Router<Arc<AppHandle>>,
+    /// Record the boot snapshot of `app` as the admin state's rollback floor (version 0).
+    pub record_boot: fn(&App),
+}
+
+/// THE ONE FIELD `App` keeps for the admin side: an opaque, process-lifetime slot the admin service
+/// types and fills on first use. Arc-shared across every config-apply snapshot, so what lives in it
+/// (the config version history) survives each swap. The kernel names no admin type in it.
+#[derive(Default)]
+pub struct AdminSlot(OnceLock<Box<dyn Any + Send + Sync>>);
+
+impl AdminSlot {
+    /// The slot's value, made by `init` the first time. Every caller names the same `T` (the admin
+    /// service's own state type), so the downcast cannot fail.
+    pub fn get_or_init<T: Any + Send + Sync>(&self, init: impl FnOnce() -> T) -> &T {
+        self.0
+            .get_or_init(|| Box::new(init()))
+            .downcast_ref::<T>()
+            .expect("the admin slot holds one state type")
+    }
+}
+
+impl std::fmt::Debug for AdminSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AdminSlot")
+    }
+}
+
+/// Record `app`'s boot snapshot through the registered seam (a no-op in a binary that never linked
+/// the admin service). The composition root and the test app builder both call it once.
+pub fn record_boot(app: &App) {
+    if let Some(seam) = SEAM.get() {
+        (seam.record_boot)(app);
+    }
 }
 
 static SEAM: OnceLock<AdminMountSeam> = OnceLock::new();

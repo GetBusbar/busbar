@@ -177,6 +177,12 @@ struct BudgetCell {
     /// The fee base split by the card era each billable request was admitted under, so each fee
     /// prices at the card in force when that request was admitted.
     fee_eras: busbar_kernel_ledger::usage::FeeEras,
+    /// THE ROLLED WINDOWS' UNACKNOWLEDGED DELTAS, each under the window it was earned in. A roll to
+    /// a newer window moves what the old window held past its last acknowledged flush here
+    /// ([`BudgetCell::roll`]) instead of discarding it; `flush_budgets` drains them to the store
+    /// under their OWN window and parks a failed one back, so a store outage across a boundary
+    /// loses nothing. Empty in steady state.
+    rolled: Vec<(u64, UsageDelta)>,
     dirty: bool,
     /// Wall-clock of the last accrual or admission charge. The eviction sweep ages cells by
     /// `window_start`, but a key's own bucket and a synthesized SSO principal's bucket both live in
@@ -192,6 +198,63 @@ impl BudgetCell {
         Self {
             window_start,
             ..Self::default()
+        }
+    }
+
+    /// ROLL the cell to the newer `window`. The counts start over, but what the old window holds
+    /// past its last acknowledged flush is not the new window's to forget: it is parked under the
+    /// old window ([`BudgetCell::park`]) for the flusher to write there. The cell stays dirty while
+    /// anything is parked.
+    fn roll(&mut self, window: u64) {
+        let (old, unacked) = (self.window_start, self.unflushed());
+        let rolled = std::mem::take(&mut self.rolled);
+        *self = Self::fresh(window);
+        self.rolled = rolled;
+        self.park(old, unacked);
+        self.dirty = !self.rolled.is_empty();
+    }
+
+    /// Add `delta` to what is parked under `window` (signed: a negative delta takes back counts the
+    /// store already holds). An entry that nets to nothing is dropped.
+    fn park(&mut self, window: u64, delta: UsageDelta) {
+        if delta.is_zero() {
+            return;
+        }
+        let at = self.rolled.iter().position(|(w, _)| *w == window);
+        let Some(i) = at else {
+            self.rolled.push((window, delta));
+            return;
+        };
+        let into = &mut self.rolled[i].1;
+        into.requests = into.requests.saturating_add(delta.requests);
+        into.billable_requests = into
+            .billable_requests
+            .saturating_add(delta.billable_requests);
+        let both = (into.models.iter()).chain(delta.models.iter());
+        into.models = model_deltas(both.map(|m| (m.model.as_str(), m.usage_units.clone())));
+        if into.is_zero() {
+            self.rolled.remove(i);
+        }
+    }
+
+    /// The cell's counts past its last acknowledged flush (current - flushed baseline), per model:
+    /// the eras of one model are one delta on the wire (the durable row is per model and carries no
+    /// era — Q14's wire step), byte-identical to an undated cell's.
+    fn unflushed(&self) -> UsageDelta {
+        let deltas = self.models.iter().map(|m| {
+            // The UNION of unit keys in cur+flushed (freshly accrued, or refunded away).
+            let keys = m.cur.keys().chain(m.flushed.keys());
+            let at = |side: &std::collections::BTreeMap<String, u64>, k: &String| {
+                signed(side.get(k).copied().unwrap_or(0))
+            };
+            let d = keys.map(|k| (k.clone(), at(&m.cur, k) - at(&m.flushed, k)));
+            (&*m.model, d.collect())
+        });
+        UsageDelta {
+            requests: signed(self.requests) - signed(self.flushed_requests),
+            billable_requests: signed(self.billable_requests)
+                - signed(self.flushed_billable_requests),
+            models: model_deltas(deltas),
         }
     }
 
@@ -272,6 +335,26 @@ impl BudgetCell {
     }
 }
 
+/// Clamp a u64 counter into the signed delta domain.
+fn signed(v: u64) -> i64 {
+    i64::try_from(v).unwrap_or(i64::MAX)
+}
+
+/// Signed per-unit deltas folded to one entry per model (a model's eras summed), zero units and
+/// all-zero models dropped: the shape `Store::add_usage` takes.
+fn model_deltas<'r>(
+    segments: impl IntoIterator<Item = (&'r str, std::collections::BTreeMap<String, i64>)>,
+) -> Vec<busbar_contract::records::ModelTokensDelta> {
+    busbar_kernel_ledger::usage::by_lane(segments, i64::saturating_add)
+        .into_iter()
+        .map(|(model, mut usage_units)| {
+            usage_units.retain(|_, v| *v != 0);
+            busbar_contract::records::ModelTokensDelta { model, usage_units }
+        })
+        .filter(|d| !d.usage_units.is_empty())
+        .collect()
+}
+
 /// Whether `class` counts toward a `tokens:` cap: a reserved token tier, or a class an installed
 /// plane declares in the token family (a streaming plane's `audio_tokens_in` is as much a token as
 /// an LLM's `input`). The one predicate every token total in this module reads.
@@ -325,7 +408,21 @@ pub enum LimitBlocked {
     MissingGroup(String),
 }
 
-/// The in-flight HOLD an admission acquires on every `concurrent`-capped group in the key's chain.
+/// WHAT ONE ADMISSION'S FEE CHARGE REACHED, carried from the charge to its refund (the design's
+/// money section: a refund returns the bucket actually charged). Per bucket, the window of the cell
+/// the fee landed on — the request's own window, or the newer one a concurrent admission had
+/// already rolled the cell to — the fee lane it landed on (`None`: the flat fee base), and the card
+/// era it was charged under (`effective_from_at` of the admission instant). Read back only by
+/// [`GovState::refund_charge`]; a refund never re-derives any of it from a clock.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FeeCharge {
+    lane: Option<String>,
+    era: u64,
+    cells: Vec<(String, u64)>,
+}
+
+/// The in-flight HOLD an admission acquires on every `concurrent`-capped group in the key's chain,
+/// and the [`FeeCharge`] its fee reached.
 /// RAII: dropping the grant releases the gauges, so the in-flight count can never leak - the grant
 /// rides inside the request's `UsageSink` (dropped when the response stream completes / the request
 /// context unwinds on any error path). The Vec is EMPTY (no allocation) for the common chain with
@@ -333,9 +430,15 @@ pub enum LimitBlocked {
 #[derive(Default)]
 pub struct AdmitGrant {
     gauges: Vec<Arc<std::sync::atomic::AtomicI64>>,
+    charge: FeeCharge,
 }
 
 impl AdmitGrant {
+    /// What this admission's fee charge reached: the one input its refund reads.
+    pub fn charge(&self) -> &FeeCharge {
+        &self.charge
+    }
+
     /// TEST-ONLY: how many gauges this grant holds.
     #[cfg(test)]
     pub fn held(&self) -> usize {

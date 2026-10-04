@@ -1,5 +1,5 @@
 # plugin-release — build, sign, pack and publish ONE first-party plugin release, for every plugin
-# repo. The repo's `.github/workflows/release.yml` is a thin caller rendered by `cargo xtask fleet
+# repo. The repo's `.github/workflows/release.yml` is a thin caller rendered by `busbar-release plugin
 # render <repo>` from plugins.yaml: on a `v*` tag it runs plugin-ci.yml on the tagged commit, then this
 # file, then plugin-consumer-verify.yml, each taken at the busbar commit the repo pins.
 #
@@ -19,7 +19,14 @@
 #   verify-assets     a release with ZERO assets is a phantom: red, and it stays a draft. Only now is
 #                     it published and marked latest.
 #   notify-marketing  the site rebuild dispatch (RELEASE_DISPATCH_TOKEN), loud when unprovisioned.
-name: plugin-release
+#
+# A C plugin (`plugin_lang: c`, plugin-ci.yml's C path) is released the same way: its build step
+# compiles the `c_dir` sources against busbar_plugin.h at the pin with the target's C compiler into
+# the same library path a cargo build would leave, and the same packer signs it.
+#
+# A PRE-RELEASE tag (`vX.Y.Z-dev.N`, cut from a plugin repo's dev branch) runs the same build, sign and
+# pack, but its release is a GitHub pre-release: published, never marked latest, and no site dispatch.
+name: "Plugins: release"
 
 on:
   workflow_call:
@@ -65,6 +72,16 @@ on:
         default: ""
       declares_file:
         description: "Repo-relative path of the plugin's `declares` section (JSON). Empty = none."
+        required: false
+        type: string
+        default: ""
+      plugin_lang:
+        description: "rust | c. `c`: the library is the c_dir sources built from busbar_plugin.h alone."
+        required: false
+        type: string
+        default: "rust"
+      c_dir:
+        description: "plugin_lang c: the repo-relative directory of the plugin's .c sources."
         required: false
         type: string
         default: ""
@@ -127,8 +144,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TITLE: ${{ inputs.asset_prefix }}
         run: |
+          pre=(); case "${GITHUB_REF_NAME}" in *-*) pre=(--prerelease) ;; esac
           gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
-            --title "${TITLE} ${GITHUB_REF_NAME}" --draft --verify-tag --generate-notes \
+            --title "${TITLE} ${GITHUB_REF_NAME}" --draft --verify-tag --generate-notes "${pre[@]}" \
           || gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}"
 
   build:
@@ -165,6 +183,7 @@ jobs:
             plugin
             busbar
       - name: build the cdylib
+        if: inputs.plugin_lang != 'c'
         working-directory: plugin
         shell: bash
         env:
@@ -173,7 +192,30 @@ jobs:
         run: |
           set -euo pipefail
           lib_flag=""; [ "$LIB_ONLY" = true ] && lib_flag="--lib"
-          cargo build --release --locked $lib_flag --target "${{ matrix.target }}" -p "$CRATE"
+          # the door is behind the crate's `dropped-in` feature once the crate declares it (a linked rlib
+          # must not export busbar_plugin_door); pass it only then, so this works before and after.
+          feat=""
+          if cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; sys.exit(0 if any(p["name"]==sys.argv[1] and "dropped-in" in p["features"] for p in json.load(sys.stdin)["packages"]) else 1)' "$CRATE"; then feat="--features dropped-in"; fi
+          cargo build --release --locked $lib_flag $feat --target "${{ matrix.target }}" -p "$CRATE"
+      - name: "C: build the library from busbar_plugin.h alone"
+        if: inputs.plugin_lang == 'c'
+        shell: bash
+        env:
+          CRATE: ${{ inputs.plugin_crate }}
+          C_DIR: ${{ inputs.c_dir }}
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          out="plugin/target/${target}/release/${{ matrix.libprefix }}${CRATE//-/_}.${{ matrix.libext }}"
+          mkdir -p "$(dirname "$out")"
+          flags=(-std=c11 -Wall -Wextra -Werror -pedantic -O2 -shared -I busbar/crates/busbar-contract/include)
+          case "$target" in
+            x86_64-apple-darwin) cc "${flags[@]}" -fPIC -arch x86_64 -o "$out" "plugin/$C_DIR"/*.c ;;
+            aarch64-apple-darwin) cc "${flags[@]}" -fPIC -arch arm64 -o "$out" "plugin/$C_DIR"/*.c ;;
+            *-windows-msvc) clang "${flags[@]}" --target="$target" -o "$out" "plugin/$C_DIR"/*.c ;;
+            *) cc "${flags[@]}" -fPIC -o "$out" "plugin/$C_DIR"/*.c ;;
+          esac
+          ls -l "$out"
       - name: build busbar-plugin-pack (host build; the packer only reads the cdylib's bytes)
         working-directory: busbar
         shell: bash
@@ -247,12 +289,17 @@ jobs:
             echo "::error::PHANTOM RELEASE: ${GITHUB_REF_NAME} has 0 assets; it stays a draft. Fix the build, delete the tag and the draft, and re-cut." >&2
             exit 1
           fi
-          gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false --latest
+          case "${GITHUB_REF_NAME}" in
+            *-*) gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false --prerelease --latest=false ;;
+            *) gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false --latest ;;
+          esac
           echo "::notice::published ${GITHUB_REF_NAME} with ${count} asset(s)"
 
   notify-marketing:
     name: site rebuild dispatch
     needs: verify-assets
+    # A pre-release is not announced.
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -13,8 +13,8 @@ use crate::ctx::{Ctx, Overlay};
 use crate::gates::{prove_rows_green, prove_rows_red, Gate, Report};
 
 use super::render::{
-    parse_registry, BADGE_BEGIN, BADGE_END, MANIFEST_PATH, README_PATH, RELEASE_COMMIT_KEY,
-    VERDICT_DIR,
+    manifest_with_labels, parse_registry, render_manifest, render_readme_block, rewrite_readme,
+    BADGE_BEGIN, BADGE_END, MANIFEST_PATH, README_PATH, RELEASE_COMMIT_KEY, VERDICT_DIR,
 };
 use super::{
     ROW_COVERAGE, ROW_FRESHNESS, ROW_MANIFEST_DRIFT, ROW_NO_ORPHAN, ROW_README_DRIFT, ROW_REGISTRY,
@@ -74,6 +74,33 @@ fn freshness_base(cx: &Ctx) -> Overlay {
 /// than layers, so every plant proven on it carries the whole base plus its one mutation.
 fn on_fresh(cx: &Ctx) -> Ctx {
     cx.with_overlay(freshness_base(cx))
+}
+
+/// THE BADGED FIXTURE BASE: the anchor suite's verdict a full armed pass, the manifest the fresh
+/// render of that tree, and the README's marked span the fresh render of that manifest — so the
+/// README carries exactly one badge, the anchor's.
+///
+/// WHY A FIXTURE AND NOT THE REAL TREE. The readme-drift plants mutate a badge: recolour one, or
+/// drop the suite behind one from the manifest. The real tree carries no verdict files (a verdict
+/// is produced at judge time, d2b588d74e), so every suite is not-run, the manifest claims nothing
+/// and the README's marked span is empty: there is no badge to mutate, the recolour plant writes
+/// back the bytes the tree has, and dropping a not-run suite's claim changes nothing the README
+/// renders. Measured from this base, the unplanted row is honestly green (its control proves it)
+/// and each plant is the base with exactly one mutation.
+fn badged_base(cx: &Ctx) -> Overlay {
+    let mut ov = Overlay::new();
+    ov.set(
+        format!("{VERDICT_DIR}/{ANCHOR}.json"),
+        serde_json::to_string_pretty(&anchor_verdict(FIXTURE_RELEASE)).unwrap(),
+    );
+    let suites = parse_registry(cx).unwrap_or_default();
+    let manifest = render_manifest(&cx.with_overlay(ov.clone()), &suites).unwrap_or_default();
+    let block = render_readme_block(&manifest_with_labels(&manifest, &suites).unwrap_or_default());
+    let readme =
+        rewrite_readme(&cx.read(README_PATH).unwrap_or_default(), &block).unwrap_or_default();
+    ov.set(MANIFEST_PATH, manifest);
+    ov.set(README_PATH, readme);
+    ov
 }
 
 /// A registry fixture: one line of `[[suite]]` tables from `(id, tier, extra-omit)` triples. `omit`
@@ -237,15 +264,27 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     ));
 
     // ══ :readme-drift ════════════════════════════════════════════════════════════════════════════
-    let mut ov = Overlay::new();
+    // The badge plants are measured from the badged fixture (see [`badged_base`]); the plant IS the
+    // fixture base, plus its one mutation, as on the freshness fixture.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "control: the badged fixture (the anchor green, its badge rendered) is green",
+        &[ROW_MANIFEST_DRIFT, ROW_README_DRIFT],
+        badged_base(cx),
+    ));
+    let badged = cx.with_overlay(badged_base(cx));
+
+    let mut ov = badged_base(cx);
     ov.set(
         README_PATH,
-        cx.read(README_PATH)
+        badged
+            .read(README_PATH)
             .unwrap_or_default()
             .replacen("2ea44f", "ff0000", 1),
     );
     report.push(prove_rows_red(
-        cx,
+        &badged,
         gate,
         "readme-drift: a hand-edit inside the badge markers is STALE",
         &[ROW_README_DRIFT],
@@ -266,12 +305,14 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
 
     // REGENERATE THE MANIFEST WITHOUT A SUITE → its badge disappears from a fresh render, so a
     // README still showing it is STALE. This is "the render drops its badge" at the README layer.
+    let mut ov = badged_base(cx);
+    ov.set(MANIFEST_PATH, manifest_with_anchor_not_run(&badged));
     report.push(prove_rows_red(
-        cx,
+        &badged,
         gate,
         "readme-drift: a suite dropped from the manifest drops its badge (README STALE)",
         &[ROW_README_DRIFT],
-        manifest_with_anchor_not_run(cx),
+        ov,
         &["is STALE"],
     ));
 
@@ -403,7 +444,7 @@ fn manifest_without(cx: &Ctx, id: &str) -> Overlay {
 
 /// The committed manifest with the anchor suite forced to not-run (claim null) — as if it had been
 /// regenerated after the suite went red. Its badge must then disappear from the README render.
-fn manifest_with_anchor_not_run(cx: &Ctx) -> Overlay {
+fn manifest_with_anchor_not_run(cx: &Ctx) -> String {
     let mut v: Value =
         serde_json::from_str(&cx.read(MANIFEST_PATH).unwrap_or_default()).unwrap_or(json!({}));
     if let Some(arr) = v.get_mut("suites").and_then(Value::as_array_mut) {
@@ -416,9 +457,7 @@ fn manifest_with_anchor_not_run(cx: &Ctx) -> Overlay {
             }
         }
     }
-    let mut ov = Overlay::new();
-    ov.set(MANIFEST_PATH, serde_json::to_string_pretty(&v).unwrap());
-    ov
+    serde_json::to_string_pretty(&v).unwrap()
 }
 
 /// The committed README with the whole marked span excised — no markers at all.

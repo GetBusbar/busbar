@@ -3,7 +3,7 @@
 //! The kernel's single named home for the v1.5.5 `kind: hook` test corpus, ported as BLACK-BOX
 //! assertions against the CURRENT dispatch path (the real `test_env`/`resolve_one` harness above,
 //! which resolves a `plugin:` ref through the same loader `scan_and_validate` +
-//! `resolve_gate_transport` seam a live request uses — not a hand-rolled `DlopenPolicy::new`).
+//! `resolve_gate_transport` seam a live request uses — not a hand-rolled `HookPolicy::policy`).
 //!
 //! ## Reconciliation: 189 counted vs the signed brief's "178+4"
 //!
@@ -45,7 +45,7 @@
 //! This file adds the ONE test from the loader-origin group whose PINNED 1.5.5 behaviour
 //! (`MAX_INFLIGHT_HOOK_CALLS = 64` per loaded hook) had no equivalent anywhere in
 //! this crate's own `tests.rs` dlopen coverage — the concurrency-cap/backpressure guarantee — ported
-//! against the real `resolve_one` harness rather than a bare `DlopenPolicy`. Everything else in the
+//! against the real `resolve_one` harness rather than a bare `HookPolicy`. Everything else in the
 //! loader-origin 16 already has a same-behaviour sibling in `tests.rs` above, reached through
 //! the identical harness, and is not duplicated:
 //!
@@ -89,7 +89,7 @@ const MAX_INFLIGHT_HOOK_CALLS: usize = 64;
 /// Ported from the plugin loader's
 /// `hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline` (v1.5.5 `hook.rs` inline
 /// test), rebuilt against THIS crate's `resolve_one`/`test_env` harness (the real `plugin:`
-/// resolution path) instead of a bare `DlopenPolicy`.
+/// resolution path) instead of a bare `HookPolicy`.
 ///
 /// One hook is saturated with `MAX_INFLIGHT_HOOK_CALLS` calls that never return inside the test's
 /// budget (the fixture's `sleep_ms` knob). A further call must fail CLOSED on the caller's own

@@ -70,10 +70,9 @@ pub mod tls;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::egress::fixtures::with_scoped_dial;
-pub use crate::net_guard::DialTable;
 pub use deadline::ConnectDeadline;
 pub use observe::{peer_key_pin, KeyPinObserve, ObservedIo, PeerKeyPin};
-pub use resolve::{process_dial_table, EgressResolver, ResolveNames};
+pub use resolve::{EgressResolver, ResolveNames};
 pub use tls::{ClientIdentity, Trust};
 
 /// The connector stack, bottom-up: TCP through the pin-aware resolver (+ boot-detected CONNECT
@@ -103,15 +102,16 @@ pub struct EngineSpec {
     pub pool_idle_timeout_secs: u64,
     pub http1_only: bool,
     pub h2_prior_knowledge: bool,
-    /// Destination pinning. `None` = the pooled posture (destinations are operator config,
-    /// judged at apply and again at every dial by `dial`). `Some` makes DNS structural: the
-    /// resolver becomes the pin itself ([`EgressResolver::Pinned`]) and `dns` and `dial` below are
-    /// never consulted.
+    /// Destination pinning. `None` = the pooled posture (destinations are operator config, judged
+    /// at every dial by the destination guard, `judge`). `Some` makes DNS structural: the resolver
+    /// becomes the pin itself ([`EgressResolver::Pinned`]) and `dns` and `judge` below are never
+    /// consulted.
     pub pin: Option<PinnedDest>,
     /// DNS when unpinned.
     pub dns: Dns,
-    /// The table every address `dns` answers with is judged by when unpinned ([`DialTable`]).
-    pub dial: DialTable,
+    /// The destination guard every address `dns` answers with is judged by when unpinned: `None`
+    /// = the guard behind the root-installed egress-trust seam, read at each dial.
+    pub judge: Option<Arc<dyn crate::host_services::DestJudge>>,
     /// Peer-certificate observation for SPKI pinning ([`observe`]). Off on the pooled posture (no
     /// walk, no hash per connect); on for every pinned posture.
     pub observe_key_pin: bool,
@@ -168,7 +168,7 @@ pub enum Dns {
 }
 
 impl EngineSpec {
-    /// THE POOLED-WEBPKI EGRESS POSTURE (system trust + judged system DNS + boot-env tunnel + pooled reuse): webpki trust, system DNS judged by the process dial table, no pin, no observation, no
+    /// THE POOLED-WEBPKI EGRESS POSTURE (system trust + judged system DNS + boot-env tunnel + pooled reuse): webpki trust, system DNS judged by the destination guard, no pin, no observation, no
     /// client identity, boot-env proxy tunnel, h2 keep-alive 30s/10s + adaptive window, TCP
     /// keepalive 60s — the values the parity ledger above documents, parameterized only by the
     /// four inputs the plane's `ClientSettingsInput` snapshots (plus the per-shard idle division the
@@ -179,7 +179,7 @@ impl EngineSpec {
         http1_only: bool,
         h2_prior_knowledge: bool,
     ) -> Self {
-        let (dial, names) = resolve::pooled_dial();
+        let (judge, names) = resolve::pooled_dial();
         EngineSpec {
             idle_per_host,
             pool_idle_timeout_secs,
@@ -187,7 +187,7 @@ impl EngineSpec {
             h2_prior_knowledge,
             pin: None,
             dns: names.map_or(Dns::System, Dns::Custom),
-            dial,
+            judge,
             observe_key_pin: false,
             trust: Trust::Webpki,
             identity: None,
@@ -221,7 +221,7 @@ impl EngineSpec {
             h2_prior_knowledge: false,
             pin: Some(PinnedDest { host, addr }),
             dns: Dns::System,
-            dial: process_dial_table(),
+            judge: None,
             observe_key_pin: true,
             trust: Trust::WebpkiPlus(extra_roots),
             identity,
@@ -278,6 +278,10 @@ pub(crate) fn dial_bound_for(pin: Option<&PinnedDest>) -> usize {
     }
 }
 
+/// The ALPN offers of 1.5.5's client: `http/1.1` alone under `http1_only`, else `h2` then `http/1.1`.
+const OFFER_H1: &[&[u8]] = &[b"http/1.1"];
+const OFFER_H2_H1: &[&[u8]] = &[b"h2", b"http/1.1"];
+
 /// Build ONE engine client per the spec's posture. Fallible by SIGNATURE for the postures the
 /// migration adds (a private extra root or client identity that does not parse must fail the
 /// build loudly); the pooled posture has no failing arm, which is what lets core's infallible
@@ -285,7 +289,7 @@ pub(crate) fn dial_bound_for(pin: Option<&PinnedDest>) -> usize {
 pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     // THE RESOLVER IS THE PIN (see `resolve`): a pinned spec installs the one-name table and the
     // `dns` posture is structurally unreachable — not "unused", absent from the connector. An
-    // unpinned spec judges every answer through its dial table before the connector sees it.
+    // unpinned spec judges every answer through the destination guard before the connector sees it.
     let resolver = match (&spec.pin, &spec.dns) {
         (Some(pin), _) => EgressResolver::Pinned {
             host: Arc::clone(&pin.host),
@@ -296,7 +300,7 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
                 Dns::System => EgressResolver::system(),
                 Dns::Custom(names) => EgressResolver::Custom(Arc::clone(names)),
             }),
-            table: spec.dial.clone(),
+            judge: spec.judge.clone(),
         },
     };
     let mut http = hyper_util::client::legacy::connect::HttpConnector::new_with_resolver(resolver);
@@ -307,8 +311,8 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     http.set_nodelay(true);
 
     // rustls client config over the compiled-in webpki roots — the same trust anchors reqwest's
-    // rustls-tls used. ALPN is set by the connector builder below (`enable_http1` pins h1;
-    // `enable_all_versions` offers h2 then h1), which asserts the config arrives ALPN-empty.
+    // rustls-tls used. ALPN is set below: `http/1.1` under `http1_only`, else `h2` then
+    // `http/1.1`.
     // The tunnel wrapper sits BETWEEN TCP and TLS: with no proxy env (every known deployment) it
     // delegates to the plain connector untouched; with one, it CONNECTs through the proxy the
     // target's SCHEME selects and TLS then handshakes over the tunnel with the real target's SNI
@@ -324,16 +328,17 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     let dial_bound = dial_bound_for(spec.pin.as_ref());
     let http = tunnel::TunnelConnector::new(http, proxy, dial_bound);
 
-    let tls = rustls_client_config(spec)?;
-    let builder = hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls);
-    let https = if spec.http1_only {
-        builder.https_or_http().enable_http1().wrap_connector(http)
+    let mut tls = rustls_client_config(spec)?;
+    // 1.5.5's hello (reqwest) offered `http/1.1` under http1-only, `h2, http/1.1` otherwise. The
+    // builder's http1-only path leaves ALPN empty, so the offer is stated here and the connector
+    // is made from the config directly (`https_or_http`, the builder's own result).
+    let offer = if spec.http1_only {
+        OFFER_H1
     } else {
-        builder
-            .https_or_http()
-            .enable_all_versions()
-            .wrap_connector(http)
+        OFFER_H2_H1
     };
+    tls.alpn_protocols = offer.iter().map(|id| id.to_vec()).collect();
+    let https = hyper_rustls::HttpsConnector::from((http, tls));
     // One wall-clock bound over the WHOLE connect — TCP + tunnel + TLS handshake (see
     // `deadline`; reqwest's connect_timeout parity on the pinned postures, a strict tightening
     // of the latent black-hole-TLS gap on the pooled posture). Then the peer-identity observation,

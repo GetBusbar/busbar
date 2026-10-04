@@ -84,8 +84,9 @@ pub struct RerankResult {
     pub document: Option<String>,
 }
 
-/// The meter class a rerank's billed search units are ledgered and priced under — the key an
-/// operator writes under `rate_card.<model>.units` (the provider's own field name).
+/// The meter class billed searches are ledgered and priced under — a rerank's billed search units,
+/// and an Anthropic turn's server-side web searches (`IrUsage::to_token_usage`) — the key an operator
+/// writes under `rate_card.<model>.units` (Cohere's own field name).
 pub const SEARCH_UNITS_CLASS: &str = "search_units";
 
 /// Rerank response IR.

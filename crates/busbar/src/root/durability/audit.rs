@@ -16,12 +16,20 @@ impl Durability {
     /// REBUILD THE AUDIT CACHE FROM THE CHAIN and continue the audit chain from its tail: every
     /// `audit.v4` record is read back, the newest [`AUDIT_RING`] are kept, and the next record this
     /// boot seals links to the last one a predecessor sealed. A record that will not read back is a
-    /// finding, never silently skipped.
+    /// finding, never silently skipped. The first record journalled after a `Bootstrap` (the
+    /// keyset's seal) is where [`Durability::audit_signed_from`] starts.
     pub(super) fn resume_audit(&mut self, records: &[JournalRecord]) {
         let mut sealed = Vec::new();
+        let mut keyed = false;
         for record in records {
+            keyed |= record.class == RecordClass::Bootstrap;
             match decode_audit(record) {
-                Ok(Some(audit)) => sealed.push(audit),
+                Ok(Some(audit)) => {
+                    if keyed && self.audit_signed_from.is_none() {
+                        self.audit_signed_from = Some(audit.seq);
+                    }
+                    sealed.push(audit);
+                }
                 Ok(None) => {}
                 Err(why) => self.audit_findings.push(format!(
                     "node {} record {}: {why}",
@@ -58,6 +66,9 @@ impl Durability {
     ) -> Result<AuditRecord, DurabilityLost> {
         inputs.what.incarnation = self.incarnation;
         let record = self.record.seal(inputs, &pass);
+        if record.key_id.is_some() && self.audit_signed_from.is_none() {
+            self.audit_signed_from = Some(record.seq);
+        }
         let entry = audit_entry(&record);
         let appended = self.journal.append(token, StepName::Audit, &[entry]);
         self.audit_records.push(record.clone());
@@ -98,7 +109,9 @@ impl Durability {
 
     /// WHAT A WALK OF THE RETAINED AUDIT CHAIN FINDS, as `GET /admin/verify` reports it: a record
     /// whose digest, link or position does not hold, a signature that does not verify under the
-    /// key it names. (What the boot could not read back is a restart finding.) Empty is the only
+    /// key it names, and a record with no signature at all at or after
+    /// [`Durability::audit_signed_from`] — the signature is not in the digest, so stripping it
+    /// leaves the chain whole and only this rule sees it. (What the boot could not read back is a restart finding.) Empty is the only
     /// good answer.
     #[must_use]
     pub fn retained_audit_findings(&self) -> Vec<String> {
@@ -109,6 +122,15 @@ impl Durability {
         let keys = super::seal::keyset_of(&self.record);
         for record in &self.audit_records {
             let Some(key_id) = record.key_id.as_deref() else {
+                if self
+                    .audit_signed_from
+                    .is_some_and(|from| record.seq >= from)
+                {
+                    findings.push(format!(
+                        "record {} is unsigned, sealed after the keyset was bound",
+                        record.seq
+                    ));
+                }
                 continue;
             };
             let verified = keys

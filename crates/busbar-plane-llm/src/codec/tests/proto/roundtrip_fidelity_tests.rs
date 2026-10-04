@@ -798,6 +798,7 @@ fn streamed_citations_reach_openai_and_cohere_clients() {
         end_index: Some(6),
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     };
     let ev = crate::codec::ir::IrStreamEvent::BlockDelta {
         index: 0,
@@ -870,8 +871,14 @@ fn cohere_response_citations_reach_a_foreign_client() {
             }
         }))
         .expect("read");
-    let crate::codec::ir::IrBlock::Text { citations, .. } = &ir.content[0] else {
-        panic!("expected a Text block, got {:?}", ir.content[0]);
+    // A grounded answer leads with its hosted web-search record (DF-MAP item 2); the spans
+    // ride the text block's citations.
+    let Some(crate::codec::ir::IrBlock::Text { citations, .. }) = ir
+        .content
+        .iter()
+        .find(|b| matches!(b, crate::codec::ir::IrBlock::Text { .. }))
+    else {
+        panic!("expected a Text block, got {:?}", ir.content);
     };
     assert_eq!(citations.len(), 1, "the citation must reach the IR");
     assert_eq!(citations[0].start_index, Some(0));
@@ -1007,6 +1014,7 @@ fn streamed_citations_reach_a_bedrock_client() {
             end_index: Some(5),
             encrypted_index: None,
             raw: None,
+            ..Default::default()
         }]),
     };
     let bedrock = crate::codec::proto_codec::protocol_for("bedrock").expect("bedrock");
@@ -1044,6 +1052,7 @@ fn bedrock_citation_omits_a_location_it_cannot_honestly_fill() {
             end_index: Some(8),
             encrypted_index: None,
             raw: None,
+            ..Default::default()
         }]),
     };
     let bedrock = crate::codec::proto_codec::protocol_for("bedrock").expect("bedrock");
@@ -1083,8 +1092,14 @@ fn gemini_grounding_metadata_reaches_a_foreign_client() {
             "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 4, "totalTokenCount": 7}
         }))
         .expect("read");
-    let crate::codec::ir::IrBlock::Text { citations, .. } = &ir.content[0] else {
-        panic!("expected a Text block, got {:?}", ir.content[0]);
+    // A grounded answer leads with its hosted web-search record (DF-MAP item 2); the spans
+    // ride the text block's citations.
+    let Some(crate::codec::ir::IrBlock::Text { citations, .. }) = ir
+        .content
+        .iter()
+        .find(|b| matches!(b, crate::codec::ir::IrBlock::Text { .. }))
+    else {
+        panic!("expected a Text block, got {:?}", ir.content);
     };
     assert_eq!(citations.len(), 1, "the grounding source must reach the IR");
     assert_eq!(citations[0].url.as_deref(), Some("https://atlas"));
@@ -1102,7 +1117,7 @@ fn gemini_grounding_metadata_reaches_a_foreign_client() {
     );
     // And it must be READABLE back: what the Chat writer emits is what the Chat reader parses, so
     // the source survives a further hop instead of being dropped on the way back in.
-    let recovered = crate::codec::openai_annotations::read_url_annotations(
+    let recovered = crate::codec::url_citation_wire::read_url_annotations(
         &out["choices"][0]["message"]["annotations"],
     );
     assert_eq!(
@@ -1141,8 +1156,14 @@ fn gemini_grounding_chunks_cross_without_support_spans() {
             }]
         }))
         .expect("read");
-    let crate::codec::ir::IrBlock::Text { citations, .. } = &ir.content[0] else {
-        panic!("expected a Text block");
+    // A grounded answer leads with its hosted web-search record (DF-MAP item 2); the spans
+    // ride the text block's citations.
+    let Some(crate::codec::ir::IrBlock::Text { citations, .. }) = ir
+        .content
+        .iter()
+        .find(|b| matches!(b, crate::codec::ir::IrBlock::Text { .. }))
+    else {
+        panic!("expected a Text block, got {:?}", ir.content);
     };
     assert_eq!(citations.len(), 2, "both sources must cross: {citations:?}");
     assert_eq!(citations[1].url.as_deref(), Some("https://b"));
@@ -1476,6 +1497,7 @@ fn bedrock_uncited_text_keeps_the_plain_shape() {
 
             request_echo: None,
             stop_detail: None,
+            ..Default::default()
         });
     assert_eq!(
         out["output"]["message"]["content"][0]["text"], "plain",

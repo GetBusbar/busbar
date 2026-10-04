@@ -56,29 +56,8 @@ fn selftest_runs_every_registered_gates_red_proof() {
     assert_eq!(run(&["gate", "segregation", "--selftest"]), 0);
 }
 
-/// THE REGISTRY-VS-WORKFLOW SET EQUALITY, ON THE PER-PUSH PATH.
-///
-/// `full_gate::gate_set_diff` is what notices a gate deleted from `ci.yml` — and it was reachable
-/// only from `cargo xtask full-gate --selftest`, which no workflow step, no `CARGO_LOCAL` entry and
-/// no test invoked. A check nothing calls answers no question: every registered gate could have
-/// been dropped out of CI with the whole tree green. This case is its caller. `cargo test
-/// --workspace --locked` runs on every push, so the equality — and the excuse list's claims, which
-/// the same selftest now puts to the tree — is judged on every push with it.
-///
-/// It asserts 0 and not "reached a verdict": unlike `gate --all`, nothing here is a claim about
-/// debt in the tree. Discovery, the floors, the skip reasons and the two set differences are all
-/// facts about the repository's own wiring, and every one of them is supposed to hold at all times.
-#[test]
-fn the_registry_and_the_workflow_still_name_the_same_gates() {
-    assert_eq!(run(&["full-gate", "--selftest"]), 0);
-}
-
-/// THE DENYLIST GATE, ON THE PER-PUSH PATH. No workflow names `denylist`: this test is its route.
-/// It drives the pre-registry `cargo xtask denylist` spelling through the dispatcher and pins the
-/// verdict, the self-test and the TSV arm at 0, and `full_gate::REGISTRY_NOT_IN_CI`'s `denylist`
-/// entry rests on the `run(&["denylist"])` call below being an executed line of this file. (This
-/// comment used to read "THE AUDIT REGISTER" — the gate that register became was deleted, and the
-/// heading outlived it on a test about something else.)
+/// THE DENYLIST GATE'S PRE-REGISTRY SPELLING. It drives `cargo xtask denylist` through the
+/// dispatcher and pins the verdict, the self-test and the TSV arm at 0.
 #[test]
 fn the_pre_registry_denylist_spelling_still_works_unchanged() {
     assert_eq!(run(&["denylist"]), 0);

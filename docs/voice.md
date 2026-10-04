@@ -173,6 +173,42 @@ durable session row exists and before any provider is dialed, on both the one-sh
 WS accepts (`crates/busbar-voice/src/mount.rs`). An ungoverned deployment resolves no key and has no
 grant to consult, so it is unaffected.
 
+### Twilio request signatures and replay
+
+Twilio holds no Busbar key, so a request from Twilio (the Media Streams WebSocket upgrade, or a
+signed status or voice webhook) is authenticated by its `X-Twilio-Signature` header instead. The
+`busbar-auth-webhook-signature` auth plugin (variant `twilio`) checks it: an HMAC-SHA1, keyed by your
+Twilio auth token, over the URL Twilio requested (the configured `origin` plus the path and query as
+received), plus the sorted form parameters of a signed POST. A missing, wrong or re-targeted
+signature is refused before the request reaches the plane.
+
+**A Twilio signature carries no replay protection.** It covers the URL and parameters only. It has no
+timestamp and no one-time value, so the same signed request stays valid for as long as the auth token
+does. Anyone who captures one (the upgrade URL with its header, or a webhook body with its header)
+can send it again, and it verifies again. Busbar does not deduplicate Twilio requests: it does not
+refuse a second request with the same `CallSid` or `MessageSid`. The streaming plane does bind each
+Media Streams connection to the `streamSid` it opened with, so a replayed connection cannot inject
+audio into a different live session. It is a new session of its own, and it is admitted and billed as
+one.
+
+What an operator can do about it:
+
+- **Keep requests from being captured.** Serve the Twilio routes over TLS only (`wss://` and
+  `https://` in the TwiML and the console), and never log the signature header or full request URLs
+  where others can read them.
+- **Allow-list at the network edge.** Where Twilio publishes the egress ranges for the product you
+  use, admit only those sources on the Twilio routes, in your firewall or load balancer.
+- **Deduplicate on the call or message id.** If a replayed call or message would cost you money or
+  cause harm, reject a repeated `CallSid` / `MessageSid` in front of Busbar or in the application
+  Twilio calls. Busbar does not do this for you.
+- **Rotate the auth token** if you think a signed request was exposed. Every signature made with the
+  old token stops verifying.
+
+Senders that use the Standard Webhooks scheme (variant `standard-webhooks`) are different: each
+message carries a `webhook-id` and a `webhook-timestamp`, and both are signed. Busbar refuses a
+message whose timestamp is more than the tolerance (default five minutes) from now, so a captured
+message stops verifying once that window has passed.
+
 ---
 
 ## The topologies

@@ -65,6 +65,7 @@ where
         key: Arc::new(key.clone()),
         pool: Arc::from(""),
         charged_at: CHARGED_AT,
+        request_id: 0,
         admit: None,
     });
     let app = crate::test_support::TestApp::new()

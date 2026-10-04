@@ -7,7 +7,8 @@
 //! [`Life`]. A kind's SDK keeps only what is its own: its author trait, its `impl Life` (the
 //! per-kind values — the `cancel` disposition, the `drive` answer, what `validate` checks — stated
 //! there), its op slots and its door macro. [`plugin_door!`](crate::plugin_door) names the nine
-//! slots at once: `lifecycle: life(L)`.
+//! slots at once: `lifecycle: life(L)`; `lifecycle: life(L, ready)` names the door's optional
+//! `ready` too ([`Life::ready`], awaited at boot before any listener binds).
 //!
 //! What every kind shares, here once:
 //!
@@ -55,6 +56,7 @@ use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::task::Poll;
 
 use zeroize::Zeroizing;
 
@@ -62,9 +64,10 @@ use crate::abi::mechanism::call::{
     AbiStr, Blob, InHead, MetricEntry, OutHead, Outcome, BLOB_SECRET, METRIC_ADD,
 };
 use crate::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut,
-    ValidateIn,
+    CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, ReadyIn, RefreshIn, ReleaseIn, TickIn,
+    TickOut, ValidateIn,
 };
+use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::conn::Host;
 use crate::abi::sdk::lent::{Lent, LentList};
 use crate::abi::sdk::out::Out;
@@ -361,6 +364,22 @@ pub trait Life: Send + Sync + Sized + 'static {
         let _ = now_ns;
         0
     }
+
+    /// `ready` (`abi::mechanism::lifecycle`, READY): what the instance must do on the network
+    /// before it serves (a discovery exchange through its declared need), on `ticket` with the
+    /// instance's `host` tables — `host.connector(ticket)` reaches its needs. The host calls it
+    /// after `open`, before any listener binds, and boot awaits it: `Poll::Pending` after
+    /// registering interest (a pending connector service, or [`Host::wake`] on `ticket` later) is
+    /// re-entered with the same ticket after the wake; `Ready(Err)` refuses the boot with the
+    /// refusal's text. Called only when the door states it: `lifecycle: life(L, ready)` in
+    /// [`plugin_door!`](crate::plugin_door). The default answers at once.
+    ///
+    /// # Errors
+    /// Why the instance cannot serve.
+    fn ready(&self, host: &Host, ticket: Ticket) -> Poll<Result<(), Refusal>> {
+        let _ = (host, ticket);
+        Poll::Ready(Ok(()))
+    }
 }
 
 /// The metric entry a `refresh` reports, held by the instance until the host has copied the reply
@@ -500,6 +519,24 @@ life_slot!(
             }
             Ok(Refreshed { counted: None }) => Outcome::Ready,
             Err(r) => out.fail(r),
+        }
+    }
+);
+
+life_slot!(
+    /// `ready`: [`Life::ready`], over the host tables the call hands it (a door names it with
+    /// `lifecycle: life(L, ready)`).
+    Ready(ReadyIn => OutHead) |instance, input, out| {
+        let Some(h) = instance.get() else {
+            return Outcome::Fault;
+        };
+        let Some(host) = input.host().map(|t| Host::of(&t)) else {
+            return Outcome::Fault;
+        };
+        match h.life.ready(&host, instance.ticket()) {
+            Poll::Pending => Outcome::Pending,
+            Poll::Ready(Ok(())) => Outcome::Ready,
+            Poll::Ready(Err(r)) => out.fail(r),
         }
     }
 );

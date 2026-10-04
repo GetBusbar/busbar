@@ -55,11 +55,11 @@ cd "$(dirname "$0")/.." || exit 1
 
 # ── THE RELEASE KEY, BEFORE ANY PHASE COMPILES ANYTHING ─────────────────────────────────────────
 # This script is a producer of SHIPPED BYTES on two paths: scripts/release-build.sh drives it for
-# every PGO target, and .github/workflows/docker.yml drives it DIRECTLY for both image legs, with
+# every PGO target, and the removed docker.yml drives it DIRECTLY for both image legs, with
 # BUSBAR_RELEASE_PUBKEY on the step's own env: block. Both optimized builds bake the key in through
 # plugin-sign's `option_env!`, a compile-time read that is silently `None` when the variable is
 # absent - which is how images shipped that could not verify any first-party plugin (2026-08-02).
-# The direct docker.yml path had no input-side assertion at all, so it gets the same one the
+# The direct the removed docker.yml path had no input-side assertion at all, so it gets the same one the
 # release path uses, from the same file. No second copy: scripts/release-key-guard.sh is the
 # implementation for both. A local profiling run is not special-cased (an opt-out is how the
 # assertion stops being asserted); export a dummy 64-hex BUSBAR_RELEASE_PUBKEY for one:
@@ -580,7 +580,7 @@ MERGED_SIZE="$(wc -c < "$MERGED" | tr -d ' ')"
 # var always won and the stamp could only ever repeat this script's intention back to it. Dropping
 # the env var turns the stamp into an INDEPENDENT WITNESS: it now says pgo=true only when the flag
 # genuinely reached the compiler. Verified: a build with `-Cprofile-use` in RUSTFLAGS and BUSBAR_PGO
-# unset reports `pgo=true`; a plain build reports `pgo=false`, which ci.yml's build-provenance gate
+# unset reports `pgo=true`; a plain build reports `pgo=false`, which the removed ci.yml's build-provenance gate
 # already asserts. build.rs declares rerun-if-env-changed for both signals, so the stamp cannot go
 # stale across this switch.
 # $EMIT_RELOCS rides along on Linux targets only — the BOLT prerequisite documented at its

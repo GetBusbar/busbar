@@ -27,7 +27,6 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "at_capacity_reject_sheds_503_not_queued", "a saturated reject pool sheds 503 at once, never parks"),
         ("test", "queue_dispatches_when_permit_frees_before_deadline", "waiting only under on_exhausted queue, on the lane semaphore"),
         ("test", "queue_times_out_to_503_when_capacity_never_frees", "queue max_ms elapses to a 503"),
-        ("gate", "scripts/release-check.sh", "phase-0c-soak-reject: real binary at max_concurrent 1 sheds excess with a fast 503"),
     ]),
     ("PB-3", &[
         ("test", "ordered_walk_skips_tripped_preferred_to_next", "a tripped lane is excluded from the walk, not ordered last"),
@@ -49,7 +48,6 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "queue_won_permit_but_breaker_now_open_never_dispatches", "the queue winner re-checks the breaker"),
         ("test", "queue_two_waiters_one_freed_permit_wakes_exactly_one", "FIFO permit park wakes one"),
         ("test", "test_scrape_gauges_pool_queued_reads_live_depth", "the busbar_pool_queued gauge"),
-        ("gate", "scripts/release-check.sh", "reject SLO on the real binary: 503 + Retry-After >= 2; soak-queue phase sees busbar_pool_queued > 0"),
     ]),
     ("PB-5", &[
         ("test", "crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::sticky_affinity_never_selects_zero_weight_drained_member", "sticky fast path skipped on weight 0"),
@@ -123,8 +121,8 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
     ]),
     ("PB-20", &[
         ("test", "a_scheme_one_admin_audit_digest_is_unchanged_by_the_unification", "hash = SHA-256 hex over the canonical prev|seq|ts|action|resource|outcome|principal"),
-        ("test", "crates/busbar-kernel-audit/src/tests/legacy_ring_tests.rs::hash_chain_links_and_verifies", "genesis prev_hash is empty; tamper breaks verify"),
-        ("test", "crates/busbar-kernel-audit/src/tests/legacy_ring_tests.rs::export_load_roundtrip_resumes_chain", "restore resumes the sequence"),
+        ("test", "crates/busbar-kernel/src/tests/audit_ring_tests.rs::hash_chain_links_and_verifies", "genesis prev_hash is empty; tamper breaks verify"),
+        ("test", "crates/busbar-kernel/src/tests/audit_ring_tests.rs::export_load_roundtrip_resumes_chain", "restore resumes the sequence"),
         ("test", "admin_audit_chain_boot_verifies_from_frozen_bytes", "restore_from_store over frozen legacy bytes with zero chain breaks"),
         ("oracle-cell", "admin.ops|GetAudit|ok", "GET /audit diffed against the 1.5.5 binary"),
     ]),
@@ -210,7 +208,6 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "callback_state_mismatch_400", "?code dispatch with a state check"),
         ("test", "refresh_rotates_key_and_revokes_the_old_one", "?refresh"),
         ("test", "an_audience_bound_token_is_confined_to_its_door_plane", "/auth/token is in the unauthenticated exact-path bypass set"),
-        ("gate", "scripts/release-check-1.5.2.sh", "live-hermetic GET /auth/token?method= through the IdP callback to a key"),
     ]),
     ("PB-34", &[
         ("test", "admin_token_secret_ref_re_resolves_on_apply", "the admin token re-resolves on apply through the deferred rotation"),
@@ -361,12 +358,12 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "kind_restart_default_matches_binding_lifecycle", "kind_restart_default per plugin kind"),
     ]),
     ("PB-64", &[
-        ("test", "next_refresh_never_sleeps_past_a_live_token_expiry", "REFRESH_SKEW_SECS and MIN_SLEEP_SECS"),
+        ("test", "crates/busbar-kernel/src/egress_auth/tests/bearer_token_tests.rs::next_refresh_never_sleeps_past_a_live_token_expiry", "REFRESH_SKEW_SECS and MIN_SLEEP_SECS"),
         ("test", "headers_for_emits_nothing_before_first_mint", "no header before the first mint"),
         ("test", "is_ready_false_before_first_mint_true_after", "is_ready is false pre-mint so the prober skips the lane"),
         ("test", "cached_token_new_omits_header_for_bytes_invalid_in_a_header_value", "an unencodable credential omits the header"),
         ("test", "headers_for_reflects_prebuilt_header_after_a_refresh", "the header is built once at mint"),
-        ("test", "token_response_tolerates_expires_in_as_number_string_or_absent", "expires_in defaults to 3600"),
+        ("test", "crates/busbar-kernel/src/egress_auth/tests/oauth_client_credentials_tests.rs::token_response_tolerates_expires_in_as_number_string_or_absent", "expires_in defaults to 3600"),
     ]),
     ("PB-65", &[
         ("test", "test_auth_headers_valid_key_emits_x_goog_api_key", "the x-goog-api-key header name"),
@@ -383,7 +380,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "a_misconfigured_or_unsendable_signing_credential_signs_nothing", "a misconfigured key signs nothing"),
     ]),
     ("PB-66", &[
-        ("test", "non_allowlisted_client_header_is_not_forwarded", "a non-allowlisted client header never reaches the upstream"),
+        ("test", "same_dialect_anthropic_forwards_every_client_header", "every same-dialect client header reaches the upstream"),
         ("test", "test_egress_accept_matches_native_sdk", "the pinned accept group incl. the bedrock eventstream override"),
         ("test", "test_egress_ua_versions_are_pinned_and_present", "the pinned native-SDK user-agent"),
         ("test", "test_ingress_stream_content_type_by_protocol", "streaming_content_type per ingress writer"),
@@ -467,9 +464,9 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "test_escalating_cooldown_on_repeated_trips", "cooldown escalates with the streak"),
     ]),
     ("PB-81", &[
-        ("test", "hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline", "the MAX_INFLIGHT_HOOK_CALLS cap"),
-        ("test", "dlopen_slow_gate_hits_the_deadline", "call_bounded cuts a slow gate at its budget"),
-        ("test", "dlopen_plugin_panic_is_fail_closed_err", "a panicking plugin is a fail-closed error"),
+        ("test", "the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_resolve_one", "a saturated hook fails on the caller's deadline, never waits out the wedge, and serves again once its calls drain"),
+        ("test", "dlopen_slow_gate_hits_the_deadline", "the call budget cuts a slow gate off promptly, an error on_error decides (R1: one of the two 1.5.5 timeout tests)"),
+        ("test", "a_panicking_hook_is_broken_through_the_axis_never_a_verdict", "a panicking plugin is a fail-closed error"),
         ("lint", "xtask/src/gates/blocking_ffi.rs", "every plugin transport call is made from a blocking context"),
     ]),
     ("PB-82", &[
@@ -538,8 +535,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "strip_same_proto_usage_fires_without_object_field", "the same-proto usage hide-back"),
     ]),
     ("PB-97", &[
-        ("test", "head_pristine_matches_translate_output", "head_provably_pristine re-emits the retained bytes"),
-        ("test", "non_object_body_is_head_pristine", "a non-object body is pristine"),
+        ("test", "a_same_dialect_hop_is_the_callers_bytes_with_governed_splices", "a same-dialect hop is the caller's bytes with the governed splices only"),
         ("test", "pristine_same_proto_is_byte_identical_body_model", "an unmodified same-dialect request reaches upstream byte-identical"),
         ("test", "pristine_same_proto_is_byte_identical_url_model", "same, with the model on the path"),
         ("test", "claude_on_vertex_drops_model_and_injects_anthropic_version", "the Claude-on-Vertex shim literal"),
@@ -602,12 +598,12 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
 pub static NOTES: &[(&str, &str)] = &[
     ("PB-7", "Resolved 2026-09-05 in 1.5.5: the shed was restored; proven by crates/busbar/tests/inbound_concurrency_shed.rs, the admission layer test and the concurrency|inbound-shed|n8 cell."),
     ("PB-11", "CONTRADICTED in part by green tests: crates/plugin-loader/src/tests/registry_tests.rs store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4 and supported_abi_store_floor_admits_v2 pin a store window of v2..=v4, where the binding requires v2..=v2 and refuses ABI 3/4. The plugins.load cells prove the trust/skip half only."),
-    ("PB-84", "OWNER DECISION (1.6.0 rebuild, PR-0): the binding is AMENDED — an auth refusal on a hooked pool DOES fire the completion tap, with the synthetic outcome `rejected_by_auth` and the protocol-native status; hook_seam_tests.rs completion_tap_fires_synthetic_rejected_by_auth pins it and the oracle cell hooks|hooked-pool|unauth records 1.5.5 doing exactly that. Other pre-forward refusals (403/429/413/404) are unchanged."),
+    ("PB-84", "OWNER DECISION (1.6.0 rebuild, PR-0): the binding is AMENDED — an auth refusal on a hooked pool DOES fire the completion tap, with the synthetic outcome `rejected_by_auth` and the protocol-native status; hook_seam_tests.rs completion_tap_fires_synthetic_rejected_by_auth pins it and the oracle cell hooks|hooked-pool|unauth@hooks-webrequest records 1.5.5 doing exactly that. Other pre-forward refusals (403/429/413/404) are unchanged."),
     ("PB-13", "data_dir, DataDirNotWritable, KeysetMissing and wal_capacity do not exist in crates/ yet; the tripwire is armed anyway: no_data_dir_neutrality.rs boots a 1.5.5-shaped config and asserts no ledger/journal/hold/WAL series and no keyset/data-dir boot line, and the ops.scrape no-ledger-series cell records the same absence against 1.5.5."),
     ("PB-15", "No WAL or high-water concept exists in crates/ yet; the neutrality tripwire (no_data_dir_neutrality.rs + the ops.scrape no-ledger-series cell) turns red the day a WAL series or boot line appears on a config without data_dir."),
     ("PB-48", "Resolved 2026-09-06: max_unit_duration DOES exist -- it is the fourth parameter of `sweep()` at crates/busbar-kernel/src/tick.rs:141, and Sweep::AlarmOnly is the verdict it returns when the protocol declares no idle bound. The old note was wrong on the fact and the row was carried unproven on it. The sweep half is compared by crates/busbar-kernel/tests/recovery_and_ticks.rs::a_slow_unit_is_not_a_lost_one, which drives sweep() past max_unit_duration with idle_bound_applies false, gets AlarmOnly, and shows sweep_settle takes no hold and ends no unit on it; nothing in crates/ calls sweep() on a production path at all, so the alarm is the most that can happen. The stream half is compared on the SHIPPED proxy path by crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier: the same black-holed upstream is cut at 7 s under one configuration and at 23 s under another, so the timer that fires is the operator's total deadline and no idle timer exists to fire first. The binding's `main.rs:3179-3181` anchor was dead and is amended in Appendix B to busbar-substrate/src/config/limits.rs:22 and busbar-llm/src/engine/attempt/send.rs:63-76."),
     ("PB-8", "The mapped tests cover the deadline, context_max exclusion and attempt caps; route_deadline_tests.rs pins DETAIL_REQUEST_TIMEOUT on the pre-attempt check and the pick_among None path landing on on_exhausted (503 overloaded + Retry-After); max_unit_duration does not exist yet."),
-    ("PB-66", "CONTRADICTED in part by green tests: crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs client_anthropic_beta_reaches_matching_anthropic_upstream and client_openai_beta_reaches_matching_openai_upstream assert an allowlisted anthropic-beta / OpenAI-Beta client header DOES ride upstream, where the binding says NO client request header is forwarded. Owner decision needed."),
+    ("PB-66", "Resolved 2026-10-02: the owner's HARD RULE (BUSBAR IS INVISIBLE TO UPSTREAMS) replaced the allowlist; crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs pins every same-dialect client header forwarded, the governed and per-connection ones dropped, and none on a translated route."),
     ("PB-60", "oversized_request_413_is_reshaped_on_the_live_stack documents that the body cap fires before auth buffers the body on the admin leg; the binding says the cap is enforced inside the handler after auth. Worth an owner read; the http.crosscut 413 cells diff the real order against 1.5.5."),
     ("PB-58", "Resolved 2026-09-06: all three reason codes DO exist -- crates/busbar-caps/src/decision.rs declares OverBudget, OverdraftCeiling and StaleSlice, and OverBudget is constructed six times in production, once at crates/busbar-llm/src/unit/admit.rs:203 as a Decision::refuse at StepName::Admit. The row was carried unproven on a note that was wrong on the fact. Every clause of this binding is a claim that a SHAPE DOES NOT OCCUR, which no behavioural test can settle, so it is settled on the shipped VOCABULARY by crates/busbar/tests/money_never_ends_an_admitted_unit.rs: the set of reasons the tree constructs inside `Abort::Kernel` is exactly {ClientGone, Drain} and contains no money reason; the set it constructs inside `Refusal::new` contains OverBudget (the non-vacuity, and the binding's positive half -- money refuses at a door) and neither OverdraftCeiling nor StaleSlice; and `Overdraft::Ceiling` is named in one production file, the module defining the rule, so no shipped path branches on the ceiling and KernelVerb::SetOverdraftCeiling carries no payload -- flag-only. The behavioural half is where the behaviour is: admit.rs's over_budget_refuses_with_no_charge_and_nothing_to_refund and crates/busbar/src/root/tests/durability.rs's a_spend_past_the_reservation_is_carried_out_as_an_overdraft (the unit settles; the chain holds its counts and no figure; the rebuilt book derives the carry at read)."),
     ("PB-61", "Resolved 2026-09-06: MAX_NEEDMORE_FRAMES is crates/busbar-contract/src/bounded.rs:41 and the pump reads it at crates/busbar-kernel/src/pump.rs:128, where the run of consecutive \"not yet\" answers is kept ON THE SESSION SLOT -- so `Scheduler::ask_again(None)` is the `None => false` arm, and a transport with no session has no run to count. crates/busbar/tests/body_chunk_bounds.rs::the_frame_ceiling_is_unreachable_on_the_two_transports_that_carry_no_session reads SESSION off the SHIPPED HttpTransport and SseTransport (both false) and drives four times the ceiling of NeedMore frames through the pump with no session in hand, and ::a_body_is_refused_at_request_body_max_bytes_whatever_its_chunk_count spools the SAME byte cap twice -- once whole, once one byte per chunk, 256 times the frame ceiling in chunks -- and gets the same SpillBudget refusal on the same byte, never Stalled."),

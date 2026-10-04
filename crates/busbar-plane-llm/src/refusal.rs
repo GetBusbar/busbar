@@ -13,10 +13,14 @@
 //! | over budget | bedrock | 400 | `ServiceQuotaExceededException` |
 //! | destination unreachable | every dialect | 503 | the overloaded envelope |
 //! | group frozen | every dialect | 403 | `permission_error`, "... group 'X' is disabled" |
+//! | no rate | every dialect | 400 | `invalid_request_error`, "no configured rate for model 'X'" |
+//! | no destination | every dialect | 404 | `not_found_error`, the dialect's model-not-found sentence |
 //!
-//! The last row is pinned from 1.5.5's source (its limit refusal for a disabled group: 403, the
-//! permission kind) until the oracle records the cell (ARCHITECT ruling, 2026-09-30); the rest are
-//! proved against recorded cells.
+//! The group-frozen row is pinned from 1.5.5's source (its limit refusal for a disabled group: 403,
+//! the permission kind) until the oracle records the cell (ARCHITECT ruling, 2026-09-30). The
+//! no-destination row is pinned from 1.5.5's source (a model that names no pool and no configured
+//! model answers the dialect's not-found envelope, 404) until the oracle records its cell (ARCHITECT
+//! ruling Q-FL3, 2026-10-02). The rest are proved against recorded cells.
 //!
 //! A hook's veto is not stated here: the hook's own status rides the refusal.
 
@@ -62,6 +66,10 @@ pub mod reason {
     pub const DESTINATION_UNREACHABLE: u32 = 31;
     /// `group_frozen`: the caller's group is disabled.
     pub const GROUP_FROZEN: u32 = 21;
+    /// `no_rate`: a rate card is configured and the model it would bill names no rate.
+    pub const NO_RATE: u32 = 17;
+    /// `no_destination`: the arrival's model names no pool and no configured model.
+    pub const NO_DESTINATION: u32 = 19;
 }
 
 const fn row(dialect: u32, reason: u32, status: u32) -> RefusalStatus {
@@ -74,10 +82,12 @@ const fn row(dialect: u32, reason: u32, status: u32) -> RefusalStatus {
 }
 
 /// The plane's refusal statuses, in its statement's order.
-pub const REFUSAL_STATUSES: [RefusalStatus; 5] = [
+pub const REFUSAL_STATUSES: [RefusalStatus; 7] = [
     row(dialect_index("bedrock"), reason::UNAUTHENTICATED, 403),
     row(dialect_index("gemini"), reason::UNAUTHENTICATED, 400),
     row(dialect_index("bedrock"), reason::OVER_BUDGET, 400),
     row(REFUSAL_ANY_DIALECT, reason::DESTINATION_UNREACHABLE, 503),
     row(REFUSAL_ANY_DIALECT, reason::GROUP_FROZEN, 403),
+    row(REFUSAL_ANY_DIALECT, reason::NO_RATE, 400),
+    row(REFUSAL_ANY_DIALECT, reason::NO_DESTINATION, 404),
 ];

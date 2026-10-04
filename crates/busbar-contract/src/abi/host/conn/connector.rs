@@ -91,16 +91,65 @@ pub struct Need {
     pub trust_from: AbiStr,
     /// The need's details, validated only by the claiming transport.
     pub details: Blob,
-    /// The far end's RESPONSE head fields the plugin reads (lower-case names), for an outbound
-    /// need: the kernel copies ONLY these into the answer's head it hands the plugin; no other
-    /// response header ever crosses. Validated at boot: at most [`KEEP_RESPONSE_HEADERS_MAX`]
-    /// names, each a lower-case token, none hop-by-hop or credential-bearing ([`NEVER_KEPT`]).
+    /// Under [`KEEP_NAMED`]: the far end's RESPONSE head fields the plugin reads (lower-case
+    /// names), for an outbound need: the kernel copies ONLY these into the answer's head it hands
+    /// the plugin; no other response header ever crosses. Validated at boot: at most
+    /// [`KEEP_RESPONSE_HEADERS_MAX`] names, each a lower-case token, none hop-by-hop or
+    /// credential-bearing ([`NEVER_KEPT`]). Empty under [`KEEP_ALL_EXCEPT_DENIED`].
     pub keep_response_headers: *const AbiStr,
     /// How many.
     pub keep_response_headers_len: usize,
     /// How long establishing a stream, and each wait for a reply on it, may take, milliseconds;
     /// `0` = the host's default. The host clamps a larger value to the deadline class.
     pub timeout_ms: u64,
+    /// How the far end's response head reaches the plugin: [`KEEP_NAMED`] (`0`, the named list
+    /// above) or [`KEEP_ALL_EXCEPT_DENIED`] (every field but the kernel's [`ALWAYS_DENIED`] and
+    /// the plugin's own [`Need::deny_response_headers`]).
+    pub keep_mode: u32,
+    /// Alignment padding; `0`.
+    pub _reserved: u32,
+    /// Under [`KEEP_ALL_EXCEPT_DENIED`]: the response head fields the plugin never reads beyond
+    /// [`ALWAYS_DENIED`] (lower-case names, e.g. a far end's echo of the operator's tenant):
+    /// at most [`KEEP_RESPONSE_HEADERS_MAX`]. Empty under [`KEEP_NAMED`].
+    pub deny_response_headers: *const AbiStr,
+    /// How many.
+    pub deny_response_headers_len: usize,
+}
+
+/// [`Need::keep_mode`]: only the fields [`Need::keep_response_headers`] names cross.
+pub const KEEP_NAMED: u32 = 0;
+
+/// [`Need::keep_mode`]: every response head field crosses but the kernel's [`ALWAYS_DENIED`] and
+/// the plugin's [`Need::deny_response_headers`]. A same-dialect relay is the far end's head
+/// (OWNER ruling 2026-10-02, dialect fidelity F2: relay every upstream header except the governed
+/// set).
+pub const KEEP_ALL_EXCEPT_DENIED: u32 = 1;
+
+/// What [`KEEP_ALL_EXCEPT_DENIED`] always strips, the kernel's list: every hop-by-hop field
+/// ([`crate::abi::transport::fields::HOP_BY_HOP`], and every field a `connection` field names), and
+/// the framing the kernel re-derives: `content-length` and `content-encoding`.
+pub const ALWAYS_DENIED: &[&str] = &["content-length", "content-encoding"];
+
+/// Whether the response head field `name` (lower-case) crosses to the plugin under a need's
+/// `mode`, its `kept` names ([`KEEP_NAMED`]) or its `denied` names ([`KEEP_ALL_EXCEPT_DENIED`]);
+/// `nominated` are the answer's `connection` field values. An unknown mode keeps nothing.
+#[must_use]
+pub fn keeps_response_field<'a>(
+    mode: u32,
+    kept: &[&str],
+    denied: &[&str],
+    name: &str,
+    nominated: impl IntoIterator<Item = &'a [u8]>,
+) -> bool {
+    match mode {
+        KEEP_NAMED => kept.contains(&name) && !NEVER_KEPT.contains(&name),
+        KEEP_ALL_EXCEPT_DENIED => {
+            !(crate::abi::transport::fields::hop_by_hop(name, nominated)
+                || ALWAYS_DENIED.contains(&name)
+                || denied.contains(&name))
+        }
+        _ => false,
+    }
 }
 
 /// The most response head fields one need may keep.

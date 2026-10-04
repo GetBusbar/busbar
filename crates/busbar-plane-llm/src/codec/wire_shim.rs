@@ -27,17 +27,14 @@ use serde_json::Value;
 ///     ingress-gated strip would delete the writer-authored `"stream": true` on a gemini/bedrock-
 ///     ingress → body-model-egress streaming hop, so the backend would see no stream flag, answer
 ///     non-streaming, and the client would get a wrong (buffered / mis-framed) response.
-///   - `model` is stripped ONLY on the same-protocol branch (by the engine's
-///     `strip_same_protocol_model_shim`, after `rewrite_model`), never cross-protocol: a body-model
-///     egress REQUIRES `model` and `rewrite_model` installs the authoritative one.
+///   - `model` is never stripped here: a body-model egress REQUIRES `model` and `rewrite_model`
+///     installs the authoritative one. Within one dialect the relay removes the spliced `model`.
 ///
 /// The gemini array key is stripped for body-model ingress too (it is never native to any protocol).
 ///
-/// Returns whether the body actually CHANGED (a key was present and removed). This is invalidation
-/// set entries #1 (gemini JSON-array key) and #2 (`stream` for path-model egress) of the request
-/// short-circuit safety contract: a `true` here makes a same-protocol request NON-pristine. A
-/// same-proto request that carries NEITHER of these keys is left byte-for-byte untouched and can
-/// short-circuit to its retained original bytes.
+/// Returns whether the body actually CHANGED (a key was present and removed). It runs on a
+/// translated body only: within one dialect the relay removes the same members by byte splices
+/// (`exchange::attempt::relay_request`).
 pub fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
     let mut changed = false;
     if let Some(obj) = v.as_object_mut() {
@@ -94,12 +91,16 @@ pub const TRUNCATED_TAIL_BYTES_PER_TOKEN: u64 = 4;
 
 /// Project the IR's normalized usage into the neutral name-keyed [`busbar_contract::billing::Usage`]
 /// carrier: the four reserved units (`input`/`output`/`cache_read`/`cache_write`) as canonical map
-/// keys. Readers normalize `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so the
-/// mapping is direct: cache-creation is the `cache_write` unit. Zero tiers are omitted so the map
-/// stays sparse (no-zero-entry).
+/// keys, and every open class the reader counted beside them (`TokenUsage::open_units`, a turn's
+/// billed searches) under its declared class. Readers normalize `input_tokens` to UNCACHED and keep
+/// the cache fields ADDITIVE, so the mapping is direct: cache-creation is the `cache_write` unit.
+/// Zero counts are omitted so the map stays sparse (no-zero-entry).
 #[must_use]
 pub fn tier_usage(u: &busbar_contract::billing::TokenUsage) -> busbar_contract::billing::Usage {
-    let mut usage_units = std::collections::BTreeMap::new();
+    let mut usage_units: std::collections::BTreeMap<String, u64> = (u.open_units.iter())
+        .filter(|(_, n)| **n != 0)
+        .map(|(class, n)| (class.clone(), *n))
+        .collect();
     for (k, v) in [
         (busbar_contract::records::UNIT_INPUT, u.input),
         (busbar_contract::records::UNIT_OUTPUT, u.output),

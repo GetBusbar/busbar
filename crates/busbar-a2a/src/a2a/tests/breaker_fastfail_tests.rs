@@ -66,7 +66,7 @@ impl RelayTransport for CountingDenier {
         _a: IpAddr,
         _h: &[(String, String)],
         _b: &[u8],
-    ) -> Result<HttpResponse, String> {
+    ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
         self.hits.fetch_add(1, Ordering::SeqCst);
         Ok(HttpResponse {
             status: self.status,

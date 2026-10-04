@@ -241,7 +241,7 @@ pub struct AuditRecord {
 }
 
 /// Everything a caller supplies. The position and the two hashes are not here, for the same reason
-/// they are not on the previous release's record: the chain owns them.
+/// they are not on the retired admin record: the chain owns them.
 #[derive(Debug, Clone)]
 pub struct AuditInputs {
     /// WHO.
@@ -305,7 +305,7 @@ pub trait Audit: sealed::Sealed {
 
 /// The chain of fixed audit records.
 ///
-/// A separate chain from the previous release's, deliberately. They record different things at
+/// A separate chain from the retired admin chain, deliberately. They record different things at
 /// different rates, and pouring one into the other would make a busy hour of request-rate records
 /// evict the operator-rate ones — silently, because a pruned ring looks exactly like one that was
 /// never written to.
@@ -325,7 +325,7 @@ pub struct AuditChain {
     heads: crate::heads::HeadHistory,
 }
 
-/// HAND-WRITTEN for the reason the previous release's chain writes its own: a DERIVED default gives
+/// HAND-WRITTEN for the reason the retired admin chain writes its own: a DERIVED default gives
 /// a next position of zero, which is not a position a chain has, and the position is now DIGESTED
 /// into every record — so a silently zero-based chain would seal records that a verifier walking
 /// from the genesis rejects. It delegates to the one real constructor so the two cannot drift.
@@ -492,7 +492,7 @@ impl AuditChain {
     /// perfectly to itself — every remaining record still names the one before it — and the only
     /// thing that says records are missing is that the run does not begin where the chain does.
     ///
-    /// An EMPTY run verifies, deliberately and for the same reason the previous release's chain
+    /// An EMPTY run verifies, deliberately and for the same reason the retired admin chain
     /// says so: "this chain has no records" and "every record was deleted" are indistinguishable
     /// from the records alone, and claiming otherwise would claim a guarantee this cannot provide.
     pub fn verify_chain(records: &[AuditRecord]) -> Result<(), AuditBreak> {
@@ -620,7 +620,7 @@ impl Audit for AuditChain {
             correlation_hash: inputs
                 .correlation_label
                 .as_deref()
-                .map(|label| crate::legacy::sha256_hex(label.as_bytes())),
+                .map(|label| crate::digest::sha256_hex(label.as_bytes())),
             seq: self.next_seq,
             prev_hash: self.tail_hash.clone(),
             recipe: crate::recipe::Recipe::V4,

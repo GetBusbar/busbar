@@ -6,18 +6,22 @@
 //! math and hold no state. The dispatcher calls them after every READY or FAILED answer, and
 //! any `Err` makes the answer FAULT. No host re-implements them.
 
-use super::inbound::{BeginLoginOut, IdentifyOut, IdentityBuf};
+use super::inbound::{BeginLoginOut, IdentifyOut, IdentityBuf, StripName};
 use super::outbound::{FieldSpan, FieldsOut};
+use super::points::{AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 use super::{
-    BEGIN_AUTHORIZE, BEGIN_FORM, FIELD_SENSITIVE, IDENTITY_HAS_TTL, LOGIN_IDENTITY, LOGIN_OUTAGE,
-    SPAN_ABSENT, VERDICT_IDENTITY, VERDICT_PASS,
+    BEGIN_AUTHORIZE, BEGIN_FORM, CAP_INBOUND, DECISION_CONTINUE, DECISION_STOP, FIELD_QUERY,
+    FIELD_SENSITIVE, IDENTITY_HAS_TTL, LOGIN_IDENTITY, LOGIN_SECURITY_CHECK_FAILED, SPAN_ABSENT,
+    STRIP_FIELD, STRIP_QUERY, STYLE_CALLER_CREDENTIAL, STYLE_NEEDS_HEADERS, VERDICT_IDENTITY,
+    VERDICT_PASS,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome, Span, BLOB_OCTETS};
 use crate::abi::mechanism::check::{fault, results, Dim, Fault, Rule, MAX_BYTES};
 
 /// The hard maximum of `needed_groups`: no identity asserts more groups than this.
 pub const IDENTITY_GROUPS_HARD_MAX: u32 = 65_536;
-/// The hard maximum of `needed_fields`: no style writes more auth fields than this.
+/// The hard maximum of `needed_fields`: no style writes more auth fields than this. Also the
+/// hard maximum of `verify`'s `needed_strip`: no auth names more lines to strip than this.
 pub const FIELDS_HARD_MAX: u32 = 64;
 
 /// The fields one op's arms name, as `op.arm`: the shared [`Fault`] carries one of them.
@@ -46,6 +50,9 @@ struct Arms {
     null_with_count: &'static str,
     /// A part the answer requires is absent ([`Rule::Missing`]).
     missing: &'static str,
+    /// A part the answer must not carry is present ([`Rule::Contradiction`]): a `credential`
+    /// without an identity verdict, or a decision, strip names or a credential on a login.
+    unexpected: &'static str,
 }
 
 /// The [`Arms`] of op `$op`, its counted dimension `$count`.
@@ -64,6 +71,7 @@ macro_rules! arms {
             count_mismatch: concat!($op, ".count_mismatch"),
             null_with_count: concat!($op, ".null_with_count"),
             missing: concat!($op, ".missing"),
+            unexpected: concat!($op, ".unexpected"),
         }
     };
 }
@@ -72,6 +80,49 @@ const VERIFY: Arms = arms!("verify", "groups");
 const COMPLETE_LOGIN: Arms = arms!("complete_login", "groups");
 const FIELDS: Arms = arms!("fields", "fields");
 const BEGIN_LOGIN: Arms = arms!("begin_login", "form");
+
+/// `verify`'s strip-array dimension, as `op.field`.
+const VERIFY_STRIP: &str = "verify.strip";
+
+/// A point set read off the ABI: only [`POINT_PEER`] | [`POINT_HEAD`] | [`POINT_HEAD_BODY`] bits
+/// (an unknown bit is [`Rule::UnknownCode`]; [`POINT_FRAME`] is named, reserved and refused the
+/// same way), never `HEAD` and `HEAD_BODY` together ([`Rule::Contradiction`]: `HeadBody` includes
+/// the head), and, when `required`, not empty ([`Rule::Missing`]).
+///
+/// # Errors
+/// The set breaks one of the rules above.
+pub const fn check_points(bits: u32, required: bool) -> Result<AuthPoints, Fault> {
+    if bits & !(POINT_PEER | POINT_HEAD | POINT_HEAD_BODY | POINT_FRAME) != 0 {
+        return Err(fault(Rule::UnknownCode, "points.unknown_flags"));
+    }
+    if bits & POINT_FRAME != 0 {
+        return Err(fault(Rule::UnknownCode, "points.reserved_point"));
+    }
+    if bits & POINT_HEAD != 0 && bits & POINT_HEAD_BODY != 0 {
+        return Err(fault(Rule::Contradiction, "points.points_overlap"));
+    }
+    if required && bits == 0 {
+        return Err(fault(Rule::Missing, "points.missing"));
+    }
+    Ok(AuthPoints(bits))
+}
+
+/// An [`AuthTail`](super::AuthTail)'s `inbound_points` against its `caps`: with
+/// [`CAP_INBOUND`] a valid, non-empty set ([`check_points`]); without it `0`
+/// ([`Rule::Contradiction`] otherwise). Run by the loader when it reads the tail.
+///
+/// # Errors
+/// The set is invalid, empty for an inbound plugin, or stated by a plugin that serves no
+/// `verify`.
+pub const fn check_inbound_points(caps: u32, points: u32) -> Result<AuthPoints, Fault> {
+    if caps & CAP_INBOUND != 0 {
+        return check_points(points, true);
+    }
+    if points != 0 {
+        return Err(fault(Rule::Contradiction, "points.unexpected"));
+    }
+    Ok(AuthPoints::EMPTY)
+}
 
 /// `off + len <= cap` in `u64`, or [`SPAN_ABSENT`] with `len == 0` when `optional`.
 fn span(s: Span, cap: u64, optional: bool, a: &Arms) -> Result<(), Fault> {
@@ -88,9 +139,21 @@ fn span(s: Span, cap: u64, optional: bool, a: &Arms) -> Result<(), Fault> {
     Ok(())
 }
 
-/// The host buffer's two dimensions under the multi-buffer short-buffer rule
-/// ([`results`]): a `needed_*` only on FAILED, each within its hard maximum, at least one above
-/// its capacity. The plugin states no `written` count, so each dimension's is `0`.
+/// One host-buffer dimension of an answer: what it needs, the capacity handed in and its hard
+/// maximum. The plugin states no `written` count, so its `written` is `0`.
+const fn dim(needed: u64, cap: u64, max: u64, field: &'static str) -> Dim {
+    Dim {
+        written: 0,
+        needed,
+        cap,
+        max,
+        field,
+    }
+}
+
+/// The host buffer's two dimensions (bytes and the op's counted one) under the multi-buffer
+/// short-buffer rule ([`results`]): a `needed_*` only on FAILED, each within its hard maximum,
+/// at least one above its capacity.
 fn needed(
     outcome: Outcome,
     (needed_bytes, bytes_cap): (u64, u64),
@@ -98,77 +161,115 @@ fn needed(
     a: &Arms,
 ) -> Result<(), Fault> {
     let dims = [
-        Dim {
-            written: 0,
-            needed: needed_bytes,
-            cap: bytes_cap,
-            max: MAX_BYTES,
-            field: a.bytes,
-        },
-        Dim {
-            written: 0,
-            needed: u64::from(needed_count),
-            cap: u64::from(count_cap),
-            max: u64::from(hard),
-            field: a.count,
-        },
+        dim(needed_bytes, bytes_cap, MAX_BYTES, a.bytes),
+        dim(
+            u64::from(needed_count),
+            u64::from(count_cap),
+            u64::from(hard),
+            a.count,
+        ),
     ];
     results(outcome, a.op, &dims)?;
     Ok(())
 }
 
-/// `verify`'s answer. `buf` is the [`IdentityBuf`] the host handed in, and `groups` the first
-/// `groups_len` spans of its group array.
+/// `verify`'s answer. `buf` is the [`IdentityBuf`] the host handed in, `groups` the first
+/// `groups_len` spans of its group array, `strip_cap` the capacity of the strip array the host
+/// handed in and `strips` its first `strip_len` entries.
 ///
-/// HOST DUTY: the host checks `out.identity.groups_len <= buf.groups_cap` BEFORE it builds
-/// `groups` from its array; a larger count is FAULT without reading a single span.
+/// HOST DUTY: the host checks `out.identity.groups_len <= buf.groups_cap` and
+/// `out.strip_len <= strip_cap` BEFORE it builds `groups` and `strips` from its arrays; a larger
+/// count is FAULT without reading a single entry.
+///
+/// # Errors
+/// The answer breaks a rule [`IdentifyOut`] states.
 pub fn check_identify(
     outcome: Outcome,
     out: &IdentifyOut,
     buf: &IdentityBuf,
     groups: &[Span],
+    strip_cap: u32,
+    strips: &[StripName],
 ) -> Result<(), Fault> {
-    identify(
-        outcome,
+    if outcome == Outcome::Fault {
+        return Ok(());
+    }
+    let a = &VERIFY;
+    let cap = buf.buf_cap as u64;
+    let dims = [
+        dim(out.needed_bytes, cap, MAX_BYTES, a.bytes),
+        dim(
+            u64::from(out.needed_groups),
+            u64::from(buf.groups_cap),
+            u64::from(IDENTITY_GROUPS_HARD_MAX),
+            a.count,
+        ),
+        dim(
+            u64::from(out.needed_strip),
+            u64::from(strip_cap),
+            u64::from(FIELDS_HARD_MAX),
+            VERIFY_STRIP,
+        ),
+    ];
+    results(outcome, a.op, &dims)?;
+    if outcome != Outcome::Ready {
+        return Ok(());
+    }
+    identity(
         out,
         buf,
         groups,
         (VERDICT_IDENTITY, VERDICT_PASS),
         VERDICT_IDENTITY,
-        &VERIFY,
-    )
+        a,
+    )?;
+    if !matches!(out.decision, DECISION_CONTINUE | DECISION_STOP) {
+        return Err(fault(Rule::UnknownCode, a.vocabulary));
+    }
+    // The credential rides only an identity; `len == 0` is absent.
+    if out.identity.credential.len != 0 {
+        if out.verdict != VERDICT_IDENTITY {
+            return Err(fault(Rule::Contradiction, a.unexpected));
+        }
+        span(out.identity.credential, cap, false, a)?;
+    }
+    if out.strip_len > strip_cap {
+        return Err(fault(Rule::OverCap, a.count_over_cap));
+    }
+    if strips.len() as u64 != u64::from(out.strip_len) {
+        return Err(fault(Rule::Contradiction, a.count_mismatch));
+    }
+    strips.iter().try_for_each(|s| {
+        if !matches!(s.place, STRIP_FIELD | STRIP_QUERY) {
+            return Err(fault(Rule::UnknownCode, a.vocabulary));
+        }
+        span(s.name, cap, false, a)
+    })
 }
 
-/// `complete_login`'s answer: the same rules as [`check_identify`] (and the same host duty), over
-/// the login vocabulary [`LOGIN_IDENTITY`] ..= [`LOGIN_OUTAGE`].
+/// `complete_login`'s answer: the same identity rules as [`check_identify`] (and the same host
+/// duty for the groups), over the login vocabulary [`LOGIN_IDENTITY`] ..=
+/// [`LOGIN_SECURITY_CHECK_FAILED`]. A login answers no decision, names no line to strip and
+/// carries no credential: each is `0`/absent ([`Rule::Contradiction`] otherwise).
+///
+/// # Errors
+/// The answer breaks a rule [`IdentifyOut`] states.
 pub fn check_complete_login(
     outcome: Outcome,
     out: &IdentifyOut,
     buf: &IdentityBuf,
     groups: &[Span],
 ) -> Result<(), Fault> {
-    identify(
-        outcome,
-        out,
-        buf,
-        groups,
-        (LOGIN_IDENTITY, LOGIN_OUTAGE),
-        LOGIN_IDENTITY,
-        &COMPLETE_LOGIN,
-    )
-}
-
-fn identify(
-    outcome: Outcome,
-    out: &IdentifyOut,
-    buf: &IdentityBuf,
-    groups: &[Span],
-    (lo, hi): (u32, u32),
-    identified: u32,
-    a: &Arms,
-) -> Result<(), Fault> {
     if outcome == Outcome::Fault {
         return Ok(());
+    }
+    let a = &COMPLETE_LOGIN;
+    if out.decision != 0
+        || out.strip_len != 0
+        || out.needed_strip != 0
+        || out.identity.credential.len != 0
+    {
+        return Err(fault(Rule::Contradiction, a.unexpected));
     }
     let cap = buf.buf_cap as u64;
     needed(
@@ -180,6 +281,27 @@ fn identify(
     if outcome != Outcome::Ready {
         return Ok(());
     }
+    identity(
+        out,
+        buf,
+        groups,
+        (LOGIN_IDENTITY, LOGIN_SECURITY_CHECK_FAILED),
+        LOGIN_IDENTITY,
+        a,
+    )
+}
+
+/// A READY identity answer's shared rules: the verdict in `lo..=hi`, and, for the `identified`
+/// verdict, a well-formed identity.
+fn identity(
+    out: &IdentifyOut,
+    buf: &IdentityBuf,
+    groups: &[Span],
+    (lo, hi): (u32, u32),
+    identified: u32,
+    a: &Arms,
+) -> Result<(), Fault> {
+    let cap = buf.buf_cap as u64;
     if !(lo..=hi).contains(&out.verdict) {
         return Err(fault(Rule::UnknownCode, a.vocabulary));
     }
@@ -192,6 +314,10 @@ fn identify(
     }
     if id.claims_fmt > BLOB_OCTETS {
         return Err(fault(Rule::UnknownCode, a.vocabulary));
+    }
+    // A replay TTL with no replay key is half an answer (its key is Missing): never half-read.
+    if id.replay_ttl_secs != 0 && (id.replay_key.offset == SPAN_ABSENT || id.replay_key.len == 0) {
+        return Err(fault(Rule::Missing, a.missing));
     }
     if id.groups_len > buf.groups_cap {
         return Err(fault(Rule::OverCap, a.count_over_cap));
@@ -207,6 +333,7 @@ fn identify(
         id.provider,
         id.name,
         id.claims,
+        id.replay_key,
     ] {
         span(s, cap, true, a)?;
     }
@@ -245,12 +372,27 @@ pub fn check_fields(
         return Err(fault(Rule::Contradiction, a.count_mismatch));
     }
     fields.iter().try_for_each(|f| {
-        if f.flags & !FIELD_SENSITIVE != 0 {
+        if f.flags & !(FIELD_SENSITIVE | FIELD_QUERY) != 0 {
             return Err(fault(Rule::UnknownCode, a.unknown_flags));
         }
         span(f.name, cap, false, a)?;
         span(f.value, cap, false, a)
     })
+}
+
+/// One [`super::StyleDecl`]'s `flags` and `points`: only [`STYLE_NEEDS_HEADERS`] |
+/// [`STYLE_CALLER_CREDENTIAL`] flag bits, nothing else, and a valid, non-empty point set
+/// ([`check_points`]). Run by the loader when it reads a plugin's declared styles, so a plugin
+/// build with a stray or future bit, or a style that needs no point, refuses the load rather than
+/// have the host silently ignore it.
+///
+/// # Errors
+/// An unknown flag bit, or a point set [`check_points`] refuses.
+pub const fn check_style_decl(flags: u32, points: u32) -> Result<AuthPoints, Fault> {
+    if flags & !(STYLE_NEEDS_HEADERS | STYLE_CALLER_CREDENTIAL) != 0 {
+        return Err(fault(Rule::UnknownCode, "style.unknown_flags"));
+    }
+    check_points(points, true)
 }
 
 /// A plugin-owned string: a non-zero length never rides a NULL pointer.

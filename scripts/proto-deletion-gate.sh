@@ -157,7 +157,7 @@ require_scan_dir() { # $1 = directory this gate scans or path-pins inside; $2 = 
 #     place the kind boundaries are drawn (manifest-allowlist, source-denylist and forbid-unsafe read
 #     the same table), so a plane or transport crate is a needle the moment it is in its kind;
 #   * the #34 naming-law families `busbar-plane-*` and `busbar-*-codec`, which were already here.
-# NOT needles, and why: `busbar-contract`/`busbar-plugin` are the ABI core is built on; `busbar-oauth2`
+# NOT needles, and why: `busbar-contract`/`busbar-plugin` are the ABI core is built on; `busbar-core-oauth2`
 # and `busbar-core-*` are compiled-in cleanliness crates that plane-keys.sh's `neutral_src_roots`
 # lists as NEUTRAL (they depend on the kernel, not the reverse).
 # $1 = tree root (default: this repo). Dies -- never an empty or narrowed list -- if a source is unreadable.
@@ -213,8 +213,24 @@ llm_dialects() {
   for m in $mods; do
     f="$src/$m/mod.rs"; [ -f "$f" ] || f="$src/$m.rs"
     [ -f "$f" ] || die "DECLS names module '$m' but neither $src/$m/mod.rs nor $src/$m.rs exists"
-    n="$(awk '/^pub (const|static) DECL:/ {on=1} on && match($0, /name:[[:space:]]*"[^"]+"/) {
-            v = substr($0, RSTART, RLENGTH); sub(/^name:[[:space:]]*"/, "", v); sub(/"$/, "", v); print v; exit }' "$f")"
+    # The FIRST `name:` of the DECL is the dialect's name; a later `name:` is a nested field.
+    n="$(awk '/^pub (const|static) DECL:/ {on=1} on && /name:/ {
+            if (match($0, /name:[[:space:]]*"[^"]+"/)) {
+              v = substr($0, RSTART, RLENGTH); sub(/^name:[[:space:]]*"/, "", v); sub(/"$/, "", v); print v }
+            exit }' "$f")"
+    if [ -z "$n" ]; then
+      # The dialect spells its name as a const (`name: VENDOR_NAME,`): resolve it to the string
+      # literal the const is bound to, in the dialect's own module (the file or its directory).
+      local id dir
+      id="$(awk '/^pub (const|static) DECL:/ {on=1} on && match($0, /name:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*,/) {
+              v = substr($0, RSTART, RLENGTH); sub(/^name:[[:space:]]*/, "", v); sub(/[[:space:]]*,$/, "", v); print v }
+            on && /name:/ { exit }' "$f")"
+      dir="$(dirname "$f")"; [ "$f" = "$src/$m.rs" ] && dir="$f"
+      if [ -n "$id" ]; then
+        n="$(grep -rhE --exclude-dir=tests --exclude='*_tests.rs' "^(pub(\\([a-z]+\\))? +)?const[[:space:]]+${id}:[[:space:]]*&(.static[[:space:]]+)?str[[:space:]]*=[[:space:]]*\"[^\"]+\"" "$dir" 2>/dev/null \
+             | head -1 | sed -E 's/.*= *"([^"]+)".*/\1/')"
+      fi
+    fi
     [ -n "$n" ] || die "DECLS names module '$m' but its DECL carries no name: in $f"
     out="${out:+$out }$n"
   done
@@ -307,7 +323,7 @@ if [ "${1:-}" = "--selftest" ]; then
     st_fail=1; note "SELF-TEST NEEDLE case FAILED: core naming busbar_transport_http was not flagged (needles: $(printf '%s' "$needles" | tr '\n' ' '))"
   fi
   rm -f "$st_tmp/core/transport_leak.rs"
-  for st_n in busbar_contract busbar_plugin busbar_oauth2 busbar_kernel; do
+  for st_n in busbar_contract busbar_plugin busbar_core_oauth2 busbar_kernel; do
     if printf '%s\n' "$needles" | grep -qx "$st_n"; then
       st_fail=1; note "SELF-TEST NEEDLE case FAILED: $st_n (ABI / neutral) is a needle -- level 1 would red on core's own foundations"
     fi

@@ -493,6 +493,11 @@ mcp|streamable-http|client|server|roots/list = implemented
 # exchange must complete" (403 `ask_unsatisfiable` where 200 is owed).
 mcp|streamable-http|client|server|sampling/createMessage = implemented
 
+# 2026-10-02 (ARCHITECT ruling, lane ORACLE-PLANES): the fifteen verbs below and the nineteen stdio twins further down
+# are NO LONGER CLAIMED here. The evidence beneath is true of the LEG (`issue` sends each one correctly) and false of
+# the CELL: no front-door request reaches `issue`, so a customer cannot make busbar send them. They are pinned in
+# qa/method-coverage.missing as owed work, with that reason.
+#
 # ── THE STREAMABLE-HTTP CLIENT COLUMN, ISSUED (1.6.0) ───────────────────────────────────────────
 #
 # ONE verb enum and ONE governed send site serve BOTH client transports. `mcp/client/verb.rs`'s
@@ -528,21 +533,6 @@ mcp|streamable-http|client|server|sampling/createMessage = implemented
 # AND the authorization server's own hit counters at zero; a link-local URI in a verb's params is
 # refused before the exchange; an unpinned registration issues nothing; an upstream's ask terminates
 # and its text never reaches busbar's caller; a wildcard principal's exchange asks for no tool scope.
-mcp|streamable-http|client|client|server/discover = implemented
-mcp|streamable-http|client|client|prompts/list = implemented
-mcp|streamable-http|client|client|prompts/get = implemented
-mcp|streamable-http|client|client|resources/list = implemented
-mcp|streamable-http|client|client|resources/read = implemented
-mcp|streamable-http|client|client|resources/templates/list = implemented
-mcp|streamable-http|client|client|completion/complete = implemented
-mcp|streamable-http|client|client|tasks/get = implemented
-mcp|streamable-http|client|client|tasks/update = implemented
-mcp|streamable-http|client|client|tasks/cancel = implemented
-mcp|streamable-http|client|client|subscriptions/listen = implemented
-mcp|streamable-http|client|client|notifications/cancelled = implemented
-mcp|streamable-http|client|client|notifications/progress = implemented
-mcp|streamable-http|client|client|notifications/roots/list_changed = implemented
-mcp|streamable-http|client|client|notifications/elicitation/response = implemented
 
 # ── WHAT AN UPSTREAM SAYS BACK OVER STREAMABLE HTTP, HANDLED (1.6.0) ────────────────────────────
 #
@@ -822,27 +812,8 @@ a2a|jsonrpc|server|client|ListTasks = implemented
 a2a|jsonrpc|server|client|SendMessage = implemented
 a2a|jsonrpc|server|client|SendStreamingMessage = implemented
 a2a|jsonrpc|server|client|SubscribeToTask = implemented
-mcp|stdio|client|client|completion/complete = implemented
 mcp|stdio|client|client|initialize = implemented
-mcp|stdio|client|client|logging/setLevel = implemented
-mcp|stdio|client|client|notifications/cancelled = implemented
-mcp|stdio|client|client|notifications/elicitation/response = implemented
 mcp|stdio|client|client|notifications/initialized = implemented
-mcp|stdio|client|client|notifications/progress = implemented
-mcp|stdio|client|client|notifications/roots/list_changed = implemented
-mcp|stdio|client|client|ping = implemented
-mcp|stdio|client|client|prompts/get = implemented
-mcp|stdio|client|client|prompts/list = implemented
-mcp|stdio|client|client|resources/list = implemented
-mcp|stdio|client|client|resources/read = implemented
-mcp|stdio|client|client|resources/subscribe = implemented
-mcp|stdio|client|client|resources/templates/list = implemented
-mcp|stdio|client|client|resources/unsubscribe = implemented
-mcp|stdio|client|client|server/discover = implemented
-mcp|stdio|client|client|subscriptions/listen = implemented
-mcp|stdio|client|client|tasks/cancel = implemented
-mcp|stdio|client|client|tasks/get = implemented
-mcp|stdio|client|client|tasks/update = implemented
 mcp|stdio|client|server|elicitation/create = implemented
 mcp|stdio|client|server|notifications/cancelled = implemented
 mcp|stdio|client|server|notifications/message = implemented

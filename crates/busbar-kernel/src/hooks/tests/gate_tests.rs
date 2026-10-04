@@ -70,32 +70,19 @@ impl RoutingPolicy for Broken {
     }
 }
 
-/// A gate that carries a raw hook REPLY (the JSON a plugin returns) and parses it through the
-/// engine's OWN `normalize` projector — the exact closure `DlopenPolicy::decide` runs on a
-/// `HookReply::Reply`. This asserts the fix at the seam that ships: a reply that fails to parse
+/// A gate that answers a raw hook REPLY (the 1.5.5 JSON a plugin returns): the hook fixture, loaded
+/// through the hook axis on the one dispatcher and told to answer `reply` verbatim
+/// (`raw_decide_reply`). The SDK lowers the reply on the plugin side and the kernel's hook seam
+/// lowers the fixed answer back, so this drives the shipped path whole: a reply that fails to parse
 /// yields `Err(..)` (→ the gate's `on_error`), a reply that parses to "no opinion" yields
-/// `Ok(Abstain)` (→ proceed). Nothing here re-implements the normalizer; it drives the real one.
-struct ReplyGate {
-    reply: serde_json::Value,
-}
-
-#[async_trait::async_trait]
-impl RoutingPolicy for ReplyGate {
-    async fn decide(
-        &self,
-        _req: &RoutingRequest<'_>,
-        candidates: &[Candidate<'_>],
-        _ctx: &RoutingContext<'_>,
-        _budget: std::time::Duration,
-    ) -> PolicyResult {
-        // Byte-for-byte the `HookReply::Reply(v)` arm in `busbar_plugin_loader::hook`: hand the
-        // reply Value to the engine's shared projector and return its `PolicyResult` unchanged.
-        (crate::hooks::plugin::projectors().normalize)(self.reply.clone(), candidates)
-    }
-
-    fn name(&self) -> &'static str {
-        "reply-gate"
-    }
+/// `Ok(Abstain)` (→ proceed). Nothing here re-implements the normalizer.
+fn reply_gate(reply: serde_json::Value) -> Arc<dyn RoutingPolicy> {
+    let env = crate::test_support::test_hook_env(&["reply-gate"], Default::default())
+        .expect("the hook fixture cdylib");
+    let mut settings = serde_json::Map::new();
+    settings.insert("raw_decide_reply".into(), reply);
+    env.open("reply-gate", &settings, "reply-gate", 5_000)
+        .expect("the hook fixture opens through the axis")
 }
 
 /// A reply carrying a VALID `reject` beside a WRONG-TYPED sibling (`order` must be an array of
@@ -105,15 +92,13 @@ impl RoutingPolicy for ReplyGate {
 #[tokio::test]
 async fn a_valid_reject_with_a_wrong_typed_sibling_rejects_under_on_error_reject() {
     let facts = tool_call();
+    // `reject` is untyped (fail-closed by design); `order` is strictly `Vec<usize>`, so a string
+    // aborts the WHOLE parse.
     let gates = gate(
-        Arc::new(ReplyGate {
-            // `reject` is untyped (fail-closed by design); `order` is strictly `Vec<usize>`, so a
-            // string aborts the WHOLE `from_value` parse.
-            reply: serde_json::json!({
-                "reject": { "status": 403, "message": "screened" },
-                "order": "not-an-array",
-            }),
-        }),
+        reply_gate(serde_json::json!({
+            "reject": { "status": 403, "message": "screened" },
+            "order": "not-an-array",
+        })),
         crate::config::PolicyOnError::Reject,
         true,
         false,
@@ -146,9 +131,7 @@ async fn a_totally_malformed_reply_applies_on_error() {
     };
 
     let closed = gate(
-        Arc::new(ReplyGate {
-            reply: serde_json::json!("garbage"),
-        }),
+        reply_gate(serde_json::json!("garbage")),
         crate::config::PolicyOnError::Reject,
         false,
         false,
@@ -166,12 +149,10 @@ async fn a_totally_malformed_reply_applies_on_error() {
 async fn a_malformed_reply_honors_a_non_reject_on_error() {
     let facts = tool_call();
     let open = gate(
-        Arc::new(ReplyGate {
-            reply: serde_json::json!({
-                "reject": { "status": 403 },
-                "order": "not-an-array",
-            }),
-        }),
+        reply_gate(serde_json::json!({
+            "reject": { "status": 403 },
+            "order": "not-an-array",
+        })),
         crate::config::PolicyOnError::Weighted,
         true,
         false,
@@ -211,9 +192,7 @@ async fn an_empty_reply_still_abstains_even_under_on_error_reject() {
         serde_json::json!({ "note": "looked, nothing to flag" }),
     ] {
         let gates = gate(
-            Arc::new(ReplyGate {
-                reply: reply.clone(),
-            }),
+            reply_gate(reply.clone()),
             crate::config::PolicyOnError::Reject,
             true,
             false,
@@ -231,9 +210,7 @@ async fn an_empty_reply_still_abstains_even_under_on_error_reject() {
 async fn a_well_formed_reject_still_rejects() {
     let facts = tool_call();
     let gates = gate(
-        Arc::new(ReplyGate {
-            reply: serde_json::json!({ "reject": { "status": 451, "message": "no" } }),
-        }),
+        reply_gate(serde_json::json!({ "reject": { "status": 451, "message": "no" } })),
         // Even with an advisory on_error, a PARSED reject wins — it is the hook's own verdict, not an
         // error.
         crate::config::PolicyOnError::Weighted,

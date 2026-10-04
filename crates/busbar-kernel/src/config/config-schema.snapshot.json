@@ -18,6 +18,14 @@
     "AdvancedCfg": {
       "deny_unknown_fields": true,
       "fields": {
+        "allow_destinations": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "block_private_addresses": {
+          "optional": true,
+          "type": "bool"
+        },
         "rate_sweep_interval": {
           "optional": true,
           "type": "u32"
@@ -463,7 +471,7 @@
         },
         "oauth_as": {
           "optional": true,
-          "type": "crate::oauth_as::config::OauthAsCfg"
+          "type": "serde_yaml::Value"
         },
         "per_request_fee": {
           "optional": true,
@@ -1189,9 +1197,17 @@
           "optional": true,
           "type": "u64"
         },
+        "clients": {
+          "optional": true,
+          "type": "Vec<StaticClientCfg>"
+        },
         "default_grant": {
           "optional": true,
           "type": "Vec<String>"
+        },
+        "fapi2": {
+          "optional": true,
+          "type": "bool"
         },
         "issuer": {
           "optional": false,
@@ -1637,11 +1653,19 @@
           "optional": true,
           "type": "bool"
         },
+        "organization": {
+          "optional": true,
+          "type": "String"
+        },
         "path": {
           "optional": true,
           "type": "String"
         },
         "path_base": {
+          "optional": true,
+          "type": "String"
+        },
+        "project": {
           "optional": true,
           "type": "String"
         },
@@ -1704,11 +1728,19 @@
           "optional": true,
           "type": "bool"
         },
+        "organization": {
+          "optional": true,
+          "type": "String"
+        },
         "path": {
           "optional": true,
           "type": "String"
         },
         "path_base": {
+          "optional": true,
+          "type": "String"
+        },
+        "project": {
           "optional": true,
           "type": "String"
         },
@@ -1775,11 +1807,19 @@
           "optional": true,
           "type": "bool"
         },
+        "organization": {
+          "optional": true,
+          "type": "String"
+        },
         "path": {
           "optional": true,
           "type": "String"
         },
         "path_base": {
+          "optional": true,
+          "type": "String"
+        },
+        "project": {
           "optional": true,
           "type": "String"
         },
@@ -2247,6 +2287,79 @@
       "fields": {},
       "kind": "struct"
     },
+    "StaticClientCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "client_id": {
+          "optional": false,
+          "type": "String"
+        },
+        "jwks": {
+          "optional": false,
+          "type": "StaticClientJwks"
+        },
+        "redirect_uris": {
+          "optional": false,
+          "type": "Vec<String>"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "StaticClientJwk": {
+      "deny_unknown_fields": false,
+      "fields": {
+        "alg": {
+          "optional": true,
+          "type": "String"
+        },
+        "crv": {
+          "optional": true,
+          "type": "String"
+        },
+        "d": {
+          "optional": true,
+          "type": "String"
+        },
+        "e": {
+          "optional": true,
+          "type": "String"
+        },
+        "kid": {
+          "optional": true,
+          "type": "String"
+        },
+        "kty": {
+          "optional": false,
+          "type": "String"
+        },
+        "n": {
+          "optional": true,
+          "type": "String"
+        },
+        "x": {
+          "optional": true,
+          "type": "String"
+        },
+        "y": {
+          "optional": true,
+          "type": "String"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "StaticClientJwks": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "keys": {
+          "optional": false,
+          "type": "Vec<StaticClientJwk>"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
     "StoreCfg": {
       "deny_unknown_fields": true,
       "fields": {
@@ -2561,6 +2674,10 @@
       "refused": [],
       "wire_keys": []
     },
+    "type AdminChainAnswer": {
+      "kind": "alias",
+      "target": "Result<(ChainVerdict, Option<busbar_contract::authz::Scope>), AdminUnavailable>"
+    },
     "type Answer": {
       "kind": "alias",
       "target": "Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>"
@@ -2612,6 +2729,10 @@
     "type RoleBindings": {
       "kind": "alias",
       "target": "std::collections::BTreeMap<String, std::collections::BTreeMap<String, RoleBindingCfg>>"
+    },
+    "type Rows": {
+      "kind": "alias",
+      "target": "&'static [(&'static str, &'static str)]"
     },
     "type Verdict": {
       "kind": "alias",

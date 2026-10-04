@@ -218,8 +218,8 @@ fn repo_root() -> PathBuf {
 //      whose body asserts nothing passes unconditionally and proves exactly nothing.
 // ---------------------------------------------------------------------------
 
-// The three checks' building blocks live in `common` (item 262), because `field_coverage.rs`
-// accepts a named test as evidence too and two copies of the rule would be two bars.
+// The three checks' building blocks live in `common` (item 262): one copy of the evidence rule is
+// one bar for every gate that accepts a named test.
 use common::{asserts_directly, called_idents, has_test_attribute};
 
 /// THE EVIDENCE CHECK. `kind` names the column so the failure reads as the caller's own.

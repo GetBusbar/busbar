@@ -15,6 +15,16 @@
 //! SLOT LAYOUT. A kind's table is [`OpsHead`] followed by contiguous `Option<Op>` fields: kind op `k`
 //! is at slot index [`LIFECYCLE_SLOTS`]` + k`. [`OpsHead::slots`] and [`OpsHead::size`] must EQUAL
 //! the host's values for that kind's ABI version, or the load is refused.
+//!
+//! READY, THE ONE OPTIONAL LIFECYCLE OP (ARCHITECT 2026-10-02, "discovery at boot"). It is not a
+//! table slot: it rides the door's append-only tail ([`super::door::Door::ready`]), so no kind's
+//! table and no kind op's index moves. A plugin that must reach the network before it serves (a
+//! discovery exchange through its declared need) states it; the host calls it after `open` answered
+//! READY, on a REAL ticket (it may pend, and is resumed after the wake like any op), with the host
+//! tables in [`ReadyIn::host`], before any listener binds, and boot awaits it. READY = the
+//! instance serves; FAILED or REFUSED refuses the boot with the plugin's `OutHead.error` text. A
+//! door without it (NULL, or a door whose `size` ends before it) is opened exactly as before.
+//! `ready` is a lifecycle op: it never overlaps `open`, `refresh`, `retire` or `close`.
 
 use super::call::{Blob, InHead, Op, OutHead};
 use super::ticket::{HostTables, Ticket};
@@ -40,6 +50,9 @@ pub mod slot {
     pub const RELEASE: u32 = 7;
     /// `close`.
     pub const CLOSE: u32 = 8;
+    /// `ready`: the door's optional tail op ([`super::super::door::Door::ready`]), NOT a table
+    /// slot; [`InHead::op`] carries this number on its call.
+    pub const READY: u32 = u32::MAX;
 }
 
 /// How many lifecycle slots [`OpsHead`] holds.
@@ -74,6 +87,13 @@ pub struct OpsHead {
 }
 
 /// `validate`'s `in`.
+///
+/// THE VALIDATE REFUSAL, every kind (ARCHITECT ruling 2026-09-29): the settings blob is exactly the
+/// operator's section, so the plugin cannot name its instance; the HOST composes the refusal words.
+/// A FAILED `validate`'s error text may hold several lines separated by `\n` (none empty, no
+/// leading or trailing `\n`: [`check_validate_refusal`]). The host splits them; a line whose first
+/// path segment is `settings` is instance-relative and reads `<kind-section>.<instance>.<line>`;
+/// any other line is the plugin's own sentence, verbatim ([`refusal_lines`]).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ValidateIn {
@@ -129,6 +149,17 @@ pub struct OpenOut {
     /// For an `open` that did not answer READY: how many bytes of [`OpenIn::err_buf`] its reason
     /// fills; `0` = none. More than [`OpenIn::err_cap`] is a malformed answer (FAULT).
     pub err_len: usize,
+}
+
+/// `ready`'s `in`; its `out` is [`OutHead`] (FAILED or REFUSED name their text in
+/// `OutHead.error`, the per-call class of memory: valid until the next op on the ticket).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ReadyIn {
+    /// The head; its `ticket` is a real ticket, so the op may pend.
+    pub head: InHead,
+    /// The host tables, the same `open` was handed.
+    pub host: *const HostTables,
 }
 
 /// `retire`'s `in`.
@@ -218,3 +249,60 @@ pub struct ReleaseIn {
     /// The lease an `out` handed the host.
     pub lease: u64,
 }
+
+/// The first path segment of a refusal line: its text up to the first `.`, `:`, `[` or space.
+fn first_segment(line: &str) -> &str {
+    line.split(['.', ':', '[', ' ']).next().unwrap_or("")
+}
+
+/// A FAILED `validate`'s error text, as the rule on [`ValidateIn`] states it: not empty, no empty
+/// line, no leading or trailing `\n`.
+///
+/// # Errors
+///
+/// [`Rule::Missing`](super::check::Rule::Missing) naming the arm.
+pub fn check_validate_refusal(text: &[u8]) -> Result<(), super::check::Fault> {
+    use super::check::{fault, Rule};
+    if text.is_empty() {
+        return Err(fault(Rule::Missing, "validate.error.empty"));
+    }
+    if text.first() == Some(&b'\n') {
+        return Err(fault(Rule::Missing, "validate.error.leading_newline"));
+    }
+    if text.last() == Some(&b'\n') {
+        return Err(fault(Rule::Missing, "validate.error.trailing_newline"));
+    }
+    if text.windows(2).any(|w| w == b"\n\n") {
+        return Err(fault(Rule::Missing, "validate.error.empty_line"));
+    }
+    Ok(())
+}
+
+/// THE HOST'S RENDERING of a validate refusal for `instance` of `section` (the kind's configuration
+/// section: `export`, `secrets`, …), one configuration error per line, in order.
+///
+/// # Examples
+/// ```
+/// use busbar_contract::abi::mechanism::lifecycle::refusal_lines;
+/// assert_eq!(
+///     refusal_lines("export", "metrics", "settings: missing field `buffer_seconds`"),
+///     vec!["export.metrics.settings: missing field `buffer_seconds`"],
+/// );
+/// assert_eq!(
+///     refusal_lines("export", "metrics", "a whole sentence\nsettings.x: bad"),
+///     vec!["a whole sentence", "export.metrics.settings.x: bad"],
+/// );
+/// ```
+#[must_use]
+pub fn refusal_lines(section: &str, instance: &str, text: &str) -> Vec<String> {
+    text.split('\n')
+        .map(|line| match first_segment(line) == "settings" {
+            true => format!("{section}.{instance}.{line}"),
+            false => line.to_string(),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+#[path = "../tests/validate_refusal_tests.rs"]
+mod tests;

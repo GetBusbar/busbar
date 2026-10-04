@@ -37,10 +37,11 @@ pub enum ContentType {
 }
 
 /// Whether the far end's success answer is taken whole rather than relayed: a non-stream answer
-/// that crosses dialects, or one the caller asked to stream from a far end that answered one body.
+/// that crosses dialects. Within one dialect the answer is relayed as the far end sent it, a
+/// stream-asked, body-answered reply included (DIALECT FIDELITY, owner 2026-10-02).
 #[must_use]
-pub fn takes_whole(ingress: &str, egress: &str, far_is_stream: bool, wants_stream: bool) -> bool {
-    !far_is_stream && (ingress != egress || wants_stream)
+pub fn takes_whole(ingress: &str, egress: &str, far_is_stream: bool) -> bool {
+    !far_is_stream && ingress != egress
 }
 
 /// The content type a relayed answer wears.
@@ -88,6 +89,9 @@ pub struct End {
     pub usage: Option<TokenUsage>,
     /// Every open class the body counted beside its tokens (only when metering).
     pub open_units: BTreeMap<String, u64>,
+    /// The far-end wire paths a translated stream dropped (design F3 "Drops"), each warned once:
+    /// the host records one audit row per path.
+    pub dropped: Vec<String>,
 }
 
 /// How a relayed answer was cut: by the far end's transport, or by the stream's ceiling.
@@ -162,15 +166,23 @@ pub type Parts = (
 );
 
 /// The translator the pair of dialects names for a far end's answer (a stream reframed across
-/// dialects, re-emitted byte-exact within one, or a same-dialect whole body a dialect completes),
+/// dialects, or re-emitted byte-exact within one),
 /// told the caller's usage opt-in and request; and the JSON-array framer for a caller that asked
 /// for its stream as an array.
 #[must_use]
 pub fn parts(ctx: &RelayCtx<'_>) -> Parts {
-    let translate = crate::codec::proto_stream::new_stream_translator(
+    parts_on(ctx, std::time::Instant::now)
+}
+
+/// [`parts`], the stream timed on `clock` (a Bedrock caller's `metrics.latencyMs`): a proof that
+/// relays one stream twice and compares the bytes hands both relays one clock.
+#[must_use]
+pub fn parts_on(ctx: &RelayCtx<'_>, clock: fn() -> std::time::Instant) -> Parts {
+    let translate = crate::codec::proto_stream::new_stream_translator_on(
         ctx.ingress,
         ctx.egress,
         ctx.far_is_stream,
+        clock,
     )
     .map(|mut t| {
         t.set_client_include_usage(ctx.client_include_usage);
@@ -193,7 +205,13 @@ impl Relay {
     /// OPEN the relay.
     #[must_use]
     pub fn new(ctx: RelayCtx<'_>) -> Self {
-        let (translate, json_array) = parts(&ctx);
+        Self::new_on(ctx, std::time::Instant::now)
+    }
+
+    /// OPEN the relay, its stream timed on `clock` ([`parts_on`]).
+    #[must_use]
+    pub fn new_on(ctx: RelayCtx<'_>, clock: fn() -> std::time::Instant) -> Self {
+        let (translate, json_array) = parts_on(&ctx, clock);
         Self::from_parts(
             ctx.ingress,
             ctx.far_is_stream,
@@ -390,6 +408,11 @@ impl Relay {
             failed,
             usage,
             open_units: wire::open_units_of(&open_billing),
+            dropped: self
+                .translate
+                .as_ref()
+                .map(|t| t.dropped())
+                .unwrap_or_default(),
         }
     }
 

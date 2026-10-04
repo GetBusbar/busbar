@@ -101,7 +101,7 @@ pub(super) fn read_block(
                 .to_string();
             let content_val = obj.get(keys::CONTENT).unwrap_or(&serde_json::Value::Null);
             let content = if let Some(arr) = content_val.as_array() {
-                arr.iter().map(read_block).collect::<Result<_, _>>()?
+                read_blocks(arr)?
             } else {
                 vec![crate::codec::ir::IrBlock::Text {
                     text: content_val.as_str().unwrap_or("").to_string(),
@@ -165,11 +165,13 @@ pub(super) fn read_block(
                         detail: None,
                     });
                 }
-                let media_type = src_obj
-                    .get(super::MEDIA_TYPE)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                // A present `media_type` that is not a string is the caller's error, answered in
+                // Anthropic's own error envelope (spec Part 2 #76), never read as "" and
+                // projected onto some format downstream.
+                let media_type = match src_obj.get(super::MEDIA_TYPE) {
+                    None => String::new(),
+                    Some(v) => v.as_str().ok_or_else(ir_parse_error)?.to_string(),
+                };
                 let data = src_obj
                     .get(keys::DATA)
                     .and_then(|v| v.as_str())
@@ -203,17 +205,10 @@ pub(super) fn read_block(
             // conversation history into a rejected request. Degrade to the empty-Text placeholder
             // (holding the block's POSITION in the turn) with a warn naming it, which is what every
             // other unmodeled Anthropic block does.
+            // [`read_blocks`] never hands this arm a document with no `source` (it carries no
+            // payload, so it is not read at all); a direct call with one is malformed.
             let Some(source) = obj.get(keys::SOURCE) else {
-                tracing::warn!(
-                    "degrading anthropic `document` block with no `source` to an empty text \
-                     placeholder: the block carries no payload to translate"
-                );
-                return Ok(crate::codec::ir::IrBlock::Text {
-                    text: String::new(),
-                    cache_control: None,
-                    citations: Vec::new(),
-                    refusal: false,
-                });
+                return Err(ir_parse_error());
             };
             let cache_control = read_cache_control(obj.get(super::CACHE_CONTROL))?;
             // `document.context` (a free-text hint) and `document.citations` (an `{enabled}` toggle)
@@ -331,53 +326,19 @@ pub(super) fn read_block(
                         .join("\n")
                 })
                 .unwrap_or_default();
-            // A HEADER naming the result, so the model reading a foreign protocol's plain text can
-            // still tell one retrieved passage from the next and attribute its answer. Built only
-            // from the fields that are present — an empty header would prepend a bare newline.
-            let mut header = String::new();
-            if !title.is_empty() {
-                header.push_str(title);
-            }
-            if !source.is_empty() {
-                if !header.is_empty() {
-                    header.push_str(" — ");
-                }
-                header.push_str(source);
-            }
-            let text = if header.is_empty() {
-                body
-            } else if body.is_empty() {
-                header
-            } else {
-                format!("{header}\n{body}")
-            };
-            let citations = if source.is_empty() && title.is_empty() {
-                Vec::new()
-            } else {
-                vec![crate::codec::ir::IrCitation {
-                    domain: None,
-                    kind: Some(keys::SEARCH_RESULT_LOCATION.to_string()),
-                    cited_text: None,
-                    title: (!title.is_empty()).then(|| title.to_string()),
-                    url: (!source.is_empty()).then(|| source.to_string()),
-                    document_index: None,
-                    start_index: None,
-                    end_index: None,
-                    encrypted_index: None,
-                    // No `raw`: the byte-exact same-protocol path is the sentinel splice above, not
-                    // this citation, and parking an Anthropic SEARCH-RESULT object under a citation's
-                    // `raw` would have the Anthropic writer re-emit it as a CITATION on a
-                    // foreign→Anthropic hop — a different wire shape than the one it came from.
-                    raw: None,
-                }]
-            };
+            // THE SEARCH-RESULT SLOT (`IrBlock::search_result`, shared with Converse `searchResult`):
+            // a `title — source` header line so a model reading a foreign protocol's plain text can
+            // tell one passage from the next, the provenance as a `search_result_location` citation
+            // with no location indices, and the block's `citations` switch verbatim in that
+            // citation's `raw`. The Anthropic and Bedrock writers re-emit the native block from it.
             let cache_control = read_cache_control(obj.get(super::CACHE_CONTROL))?;
-            Ok(crate::codec::ir::IrBlock::Text {
-                text,
+            Ok(crate::codec::ir::IrBlock::search_result(
+                source,
+                title,
+                body,
+                obj.get(keys::CITATIONS).cloned(),
                 cache_control,
-                citations,
-                refusal: false,
-            })
+            ))
         }
         // A native `redacted_thinking` block carries opaque `data` bytes (Anthropic's encrypted
         // reasoning). Map it onto the same typed IR carrier Bedrock's `redactedContent` uses: a
@@ -404,29 +365,51 @@ pub(super) fn read_block(
                 signature_origin: None,
             })
         }
-        // Forward-compatibility: a valid native Anthropic content-block type the IR does not model
-        // (e.g. `document`, or a future type Anthropic adds after this build).
-        // These appear in legitimate Messages API requests, so the prior `_ => Err(ClientError)`
-        // catch-all turned an otherwise-valid request into a 400. Mirror the OpenAI reader's
-        // unmodeled-part handling (see `read_openai_block`): degrade gracefully to an empty Text
-        // block — preserving the block's position in the turn without injecting foreign data —
-        // rather than failing the whole request. This is a content-shape match, not a
-        // disposition/breaker match, so a NAMED graceful-degradation arm (binding `other`) is
-        // correct here, and there is no `_ =>` swallowing a real disposition.
-        other => {
-            tracing::warn!(
-                block_type = other,
-                "skipping unmodeled anthropic content-block type during ir parse; degrading to an \
-                 empty text block rather than 400ing a legitimate request"
-            );
-            Ok(crate::codec::ir::IrBlock::Text {
-                text: String::new(),
-                cache_control: None,
-                citations: Vec::new(),
-                refusal: false,
-            })
+        // A provider-run web search's results (DF-MAP, ARCHITECT ruling 2026-10-02 item 2): the
+        // IR's hosted-tool record. A `web_search_tool_result_error` content carries its error code
+        // as the record's status and no results.
+        WEB_SEARCH_TOOL_RESULT => Ok(read_web_search_tool_result(obj)),
+        // A block kind the IR does not model never reaches here: [`read_blocks`] leaves it out of
+        // the IR (nothing is put in its place, design F3 "Drops"). A direct call with one is
+        // malformed.
+        _ => Err(ir_parse_error()),
+    }
+}
+
+/// Whether [`read_block`] reads `block_val` into the IR: a block of a kind the reader models
+/// ([`BLOCK_KINDS`]) that carries a payload. A block of another kind (a type Anthropic added after
+/// this build, a server-tool result) and a `document` with no `source` are not read: nothing
+/// stands in for them in the IR. A same-dialect write splices the raw block back at its position
+/// ([`ANTHROPIC_UNMODELED_BLOCKS_SENTINEL`]); a translate attempt drops it, named. A non-object is
+/// read (and refused by [`read_block`] in the dialect's own error envelope).
+pub(super) fn is_read_into_ir(block_val: &serde_json::Value) -> bool {
+    let Some(obj) = block_val.as_object() else {
+        return true;
+    };
+    let kind = obj.get(keys::TYPE).and_then(|v| v.as_str()).unwrap_or("");
+    BLOCK_KINDS.contains(&kind) && !(kind == BLOCK_TYPE_DOCUMENT && obj.get(keys::SOURCE).is_none())
+}
+
+/// Read a content-block array into the IR: every block [`is_read_into_ir`] keeps, in order. A
+/// `document` with no `source` is dropped through the one drop path (its kind is modelled, so the
+/// block grammar does not name it); an unmodelled kind is named by the grammar walk at the seam.
+pub(super) fn read_blocks(
+    arr: &[serde_json::Value],
+) -> Result<Vec<crate::codec::ir::IrBlock>, IrError> {
+    let mut out = Vec::with_capacity(arr.len());
+    for block_val in arr {
+        if is_read_into_ir(block_val) {
+            out.push(read_block(block_val)?);
+        } else if block_val.get(keys::TYPE).and_then(|v| v.as_str()) == Some(BLOCK_TYPE_DOCUMENT) {
+            crate::codec::drops::note(crate::codec::drops::Dropped::new(
+                "messages[].content[].type=document",
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                "dropping an Anthropic `document` block with no `source` on the cross-protocol \
+                 seam: it carries no payload to translate (nothing is put in its place)",
+            ));
         }
     }
+    Ok(out)
 }
 
 pub(super) fn read_message(
@@ -451,7 +434,7 @@ pub(super) fn read_message(
         return Err(ir_parse_error());
     }
     let content = if let Some(arr) = content_val.as_array() {
-        arr.iter().map(read_block).collect::<Result<_, _>>()?
+        read_blocks(arr)?
     } else {
         vec![crate::codec::ir::IrBlock::Text {
             text: content_val.as_str().unwrap_or("").to_string(),
@@ -503,3 +486,47 @@ pub(super) fn read_tool(tool_val: &serde_json::Value) -> Result<crate::codec::ir
         strict,
     })
 }
+
+/// The block type of a provider-run web search's results.
+pub(super) const WEB_SEARCH_TOOL_RESULT: &str = "web_search_tool_result";
+
+/// Anthropic `web_search_tool_result` -> [`crate::codec::ir::IrBlock::HostedToolRecord`].
+fn read_web_search_tool_result(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> crate::codec::ir::IrBlock {
+    let content = obj.get(keys::CONTENT);
+    let results = content
+        .and_then(|c| c.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|r| {
+                    Some(crate::codec::ir::IrSearchResult {
+                        url: r.get(keys::URL)?.as_str()?.to_string(),
+                        title: r
+                            .get(keys::TITLE)
+                            .and_then(|t| t.as_str())
+                            .map(String::from),
+                        snippet: None,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let status = content
+        .and_then(|c| c.get(ERROR_CODE))
+        .and_then(|e| e.as_str())
+        .map(String::from);
+    crate::codec::ir::IrBlock::HostedToolRecord {
+        kind: crate::codec::ir::IrHostedToolKind::WebSearch,
+        call_id: obj
+            .get(TOOL_USE_ID)
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        status,
+        results,
+    }
+}
+
+/// The error member of a `web_search_tool_result_error` content.
+const ERROR_CODE: &str = "error_code";

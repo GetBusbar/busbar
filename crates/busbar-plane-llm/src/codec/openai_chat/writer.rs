@@ -60,6 +60,9 @@ impl ProtocolWriter for OpenAiWriter {
         _model: &str,
         caps: &LaneCaps,
     ) -> serde_json::Value {
+        // The request controls with no Chat form — the same set `dropped_egress_controls` reports
+        // for the seam's audit.
+        crate::codec::carry::warn_drops(super::map::REQUEST, super::map::CONTROLS, None, req);
         let mut messages_array: Vec<serde_json::Value> = Vec::new();
 
         // Prepend system message as first message if present. OpenAI system messages carry plain
@@ -82,7 +85,8 @@ impl ProtocolWriter for OpenAiWriter {
                 | crate::codec::ir::IrBlock::ToolResult { .. }
                 | crate::codec::ir::IrBlock::Image { .. }
                 | crate::codec::ir::IrBlock::Media { .. }
-                | crate::codec::ir::IrBlock::Json(_) => "",
+                | crate::codec::ir::IrBlock::Json(_)
+                | crate::codec::ir::IrBlock::HostedToolRecord { .. } => "",
             };
             messages_array.push(serde_json::json!({
                 (keys::ROLE): system_role,
@@ -155,11 +159,13 @@ impl ProtocolWriter for OpenAiWriter {
                                         (keys::IMAGE_URL): image_url
                                     }))
                                 }
-                                None => tracing::warn!(
+                                None => crate::codec::drops::writer_drop!(
+                                    crate::codec::drops::IMAGE,
+                                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                    [],
                                     "dropping unresolvable vendor-scoped image reference on OpenAI \
                                      egress: a Responses input_image.file_id or a Bedrock s3Location \
-                                     has no cross-vendor analog; the block is NOT emitted"
-                                ),
+                                     has no cross-vendor analog; the block is NOT emitted"),
                             }
                         }
                         crate::codec::ir::IrBlock::Media {
@@ -185,7 +191,8 @@ impl ProtocolWriter for OpenAiWriter {
                             // Lossy-by-necessity: OpenAI Chat Completions has no thinking/reasoning
                             // content block on request input, so a Thinking block is dropped here.
                         }
-                        crate::codec::ir::IrBlock::Json(_) => {
+                        crate::codec::ir::IrBlock::Json(_)
+                        | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
                             // Structured-json (a Bedrock tool-result content member) has no OpenAI
                             // message-content shape; dropped here.
                         }
@@ -453,7 +460,10 @@ impl ProtocolWriter for OpenAiWriter {
                 serde_json::json!(keys::NONE_WORD),
             );
         } else if req.reasoning == Some(crate::codec::ir::IrReasoningAsk::Off) {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::REASONING,
+                &crate::codec::diagnostics::IR_DROP_REASONING,
+                [],
                 "omitting reasoning OFF on OpenAI Chat egress: reasoning_effort \"none\" is not \
                  accepted by every OpenAI reasoning model and this lane does not declare it"
             );
@@ -461,10 +471,23 @@ impl ProtocolWriter for OpenAiWriter {
             let table = req
                 .reasoning_budgets
                 .unwrap_or(crate::codec::ir::REASONING_BUDGET_DEFAULTS);
-            out.insert(
-                REASONING_EFFORT.to_string(),
-                serde_json::json!(ask.to_effort(table).as_openai_reasoning_effort()),
-            );
+            match ask.to_effort(table) {
+                Some(effort) => {
+                    out.insert(
+                        REASONING_EFFORT.to_string(),
+                        serde_json::json!(effort.as_three_word_str()),
+                    );
+                }
+                // "The model decides" (`Off` is matched above) has no effort word: DROPPED, never
+                // a word put in its place (design F3); the model runs at its default.
+                None => crate::codec::drops::writer_drop!(
+                    crate::codec::drops::REASONING,
+                    &crate::codec::diagnostics::IR_DROP_REASONING,
+                    [],
+                    "dropping a \"model decides\" reasoning ask on OpenAI Chat egress: \
+                     reasoning_effort has no dynamic form"
+                ),
+            }
         }
         // The logprobs ask in OpenAI's native spelling (a Gemini `responseLogprobs`/`logprobs`
         // arrives here via the IR).
@@ -513,7 +536,10 @@ impl ProtocolWriter for OpenAiWriter {
                     if hosted.get(keys::TYPE).and_then(|t| t.as_str()) == Some(TOOL_TYPE_CUSTOM) {
                         tools_arr.push(hosted.clone());
                     } else {
-                        tracing::warn!(
+                        crate::codec::drops::writer_drop!(
+                            crate::codec::drops::TOOLS,
+                            &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
+                            [],
                             "dropping a hosted tool on OpenAI Chat egress: it has no Chat \
                              Completions tool shape"
                         );
@@ -574,7 +600,10 @@ impl ProtocolWriter for OpenAiWriter {
             .filter(|_| !req.extra.contains_key(keys::FUNCTION_CALL))
         {
             if req.tools.is_empty() && custom_tools.is_empty() {
-                tracing::warn!(
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::TOOL_CHOICE,
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [],
                     "dropping tool_choice on OpenAI egress: \"tool_choice\" is only allowed when \
                      \"tools\" are specified (likely because the hosted tools that carried it were \
                      stripped on the cross-protocol seam)"
@@ -741,7 +770,7 @@ impl ProtocolWriter for OpenAiWriter {
                     // and a zero base — a citation whose span cannot be resolved is then emitted
                     // WITHOUT one rather than with a fabricated one.
                     let annotations =
-                        super::super::openai_annotations::chat_url_annotations("", 0, cits);
+                        super::super::url_citation_wire::chat_url_annotations("", 0, cits);
                     if annotations.is_empty() {
                         return None;
                     }
@@ -761,7 +790,7 @@ impl ProtocolWriter for OpenAiWriter {
                             (CHOICES): [{
                                 (keys::INDEX): 0,
                                 (keys::DELTA): {},
-                                (keys::LOGPROBS): write_openai_logprobs(lps),
+                                (keys::LOGPROBS): crate::codec::logprob_wire::write_token_logprobs(lps),
                                 (keys::FINISH_REASON): null
                             }]
                         });
@@ -1054,13 +1083,13 @@ impl ProtocolWriter for OpenAiWriter {
         for block in &resp.content {
             if let crate::codec::ir::IrBlock::Thinking { text, redacted, .. } = block {
                 if !text.is_empty() {
-                    tracing::warn!(
-                        redacted = *redacted,
-                        byte_len = text.len(),
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::THINKING,
+                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                        [redacted = *redacted, byte_len = text.len(), ],
                         "dropping a reasoning/thinking block on OpenAI Chat egress: the completion \
                          response shape has no thinking output field (lossy-by-target); the \
-                         chain-of-thought is NOT forwarded on this cross-protocol response"
-                    );
+                         chain-of-thought is NOT forwarded on this cross-protocol response");
                 }
             }
         }
@@ -1134,7 +1163,7 @@ impl ProtocolWriter for OpenAiWriter {
                 text, citations, ..
             } = block
             {
-                annotations.extend(super::super::openai_annotations::chat_url_annotations(
+                annotations.extend(super::super::url_citation_wire::chat_url_annotations(
                     text, base, citations,
                 ));
                 // CHARACTERS, not bytes: the IR citation contract (`IrCitation::start_index`/
@@ -1177,7 +1206,7 @@ impl ProtocolWriter for OpenAiWriter {
             if resp.logprobs.is_empty() {
                 serde_json::Value::Null
             } else {
-                write_openai_logprobs(&resp.logprobs)
+                crate::codec::logprob_wire::write_token_logprobs(&resp.logprobs)
             },
         );
         choice_obj.insert(keys::FINISH_REASON.to_string(), finish_reason);
@@ -1244,8 +1273,20 @@ impl ProtocolWriter for OpenAiWriter {
                     serde_json::json!(cache_read),
                 );
             }
-            if let Some(a) = resp.usage.detail.input_audio_tokens {
+            let modality = resp.usage.detail.by_modality.as_ref();
+            if let Some(a) = resp
+                .usage
+                .detail
+                .input_audio_tokens
+                .or(modality.and_then(|m| m.input.audio))
+            {
                 ptd.insert(AUDIO_TOKENS.to_string(), serde_json::json!(a));
+            }
+            if let Some(t) = modality.and_then(|m| m.input.text) {
+                ptd.insert(TEXT_TOKENS.to_string(), serde_json::json!(t));
+            }
+            if let Some(i) = modality.and_then(|m| m.input.image) {
+                ptd.insert(IMAGE_TOKENS.to_string(), serde_json::json!(i));
             }
             if !ptd.is_empty() {
                 usage_map.insert(
@@ -1263,8 +1304,17 @@ impl ProtocolWriter for OpenAiWriter {
             if let Some(rt) = resp.usage.detail.reasoning_tokens {
                 ctd.insert(keys::REASONING_TOKENS.to_string(), serde_json::json!(rt));
             }
-            if let Some(a) = resp.usage.detail.output_audio_tokens {
+            let modality = resp.usage.detail.by_modality.as_ref();
+            if let Some(a) = resp
+                .usage
+                .detail
+                .output_audio_tokens
+                .or(modality.and_then(|m| m.output.audio))
+            {
                 ctd.insert(AUDIO_TOKENS.to_string(), serde_json::json!(a));
+            }
+            if let Some(t) = modality.and_then(|m| m.output.text) {
+                ctd.insert(TEXT_TOKENS.to_string(), serde_json::json!(t));
             }
             if let Some(t) = resp.usage.detail.accepted_prediction_tokens {
                 ctd.insert(ACCEPTED_PREDICTION_TOKENS.to_string(), serde_json::json!(t));

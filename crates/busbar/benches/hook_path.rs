@@ -207,6 +207,8 @@ fn install_prompt_ro_hook(dir: &Path) {
     // The manifest's own spelling of the grant it asks for: `needs: { prompt: ro, user: no }`.
     m.needs = serde_json::from_value(serde_json::json!({ "prompt": "ro", "user": "no" }))
         .expect("a hook's needs");
+    // The Statement its door states: a dropped-in hook is admitted against it.
+    m.statement = Some(busbar_kernel::test_support::hook_fixture_statement(&cdylib));
     let tarball = plugins::seal(m, &lib);
     std::fs::write(dir.join("bench-hook.tar.gz"), tarball).unwrap();
 }

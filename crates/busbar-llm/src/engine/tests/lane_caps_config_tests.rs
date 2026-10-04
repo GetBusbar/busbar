@@ -45,6 +45,8 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
         health: None,
         path: None,
         path_base: None,
+        organization: None,
+        project: None,
         token_url: None,
         scope: None,
         subject: None,

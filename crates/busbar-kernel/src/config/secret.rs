@@ -59,9 +59,8 @@ pub struct SecretResolver {
 pub(crate) type PluginResolveFn = Box<dyn Fn(&str, &str) -> Result<Vec<u8>, String> + Send + Sync>;
 
 impl SecretResolver {
-    /// A built-ins-only resolver (no plugin subsystem): `env` / `file` resolve, everything else is
-    /// fail-closed. The zero-plugin resolver used by tests and any path with no registry.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// A resolver over the linked secret plugins alone (no cold lane): what the build links (`env`
+    /// / `file` in the default build) resolves, everything else is fail-closed.
     pub fn builtins_only() -> Self {
         Self { plugin: None }
     }
@@ -74,48 +73,49 @@ impl SecretResolver {
         }
     }
 
-    /// Resolve a reference to raw bytes. `env` / `file` are built in; any other module delegates to
-    /// the plugin resolver (fail-closed if none is wired or it fails).
+    /// Resolve a reference to raw bytes. A module the build LINKS (`env` / `file` in the default
+    /// build) resolves through the root's secret axis, on its one shared instance; any other module
+    /// delegates to the plugin resolver (fail-closed if none is wired or it fails).
     pub(crate) fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String> {
-        match secret.module.as_str() {
-            // `none` routes to the built-in resolver, which refuses it: it declares the ABSENCE of
-            // a credential, so it must never be mistaken for a plugin module name and dispatched to
-            // a `kind: secret` plugin that happens to be called `none`.
-            busbar_contract::secret_ref::SECRET_MODULE_NONE => resolve_builtin(secret),
-            // A module the build links onto the secret axis resolves in process through its row
-            // (DECISIONS #2 rule (1)); any other is a `kind: secret` plugin.
-            module => match (crate::preflight::builtin_secret(module), &self.plugin) {
-                (Some(row), _) => row.resolve(&secret.settings).map_err(|e| e.message),
-                (None, Some(f)) => {
-                    let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
-                    let bytes = f(module, &settings).map_err(|e| {
-                        format!(
-                            "secret module '{module}' (a kind: secret plugin) failed to resolve \
-                             {}: {e}",
-                            secret.describe()
-                        )
-                    })?;
-                    if bytes.is_empty() {
-                        return Err(format!(
-                            "secret module '{module}' resolved {} to an EMPTY value; a secret must \
-                             be non-empty (fail-closed)",
-                            secret.describe()
-                        ));
-                    }
-                    Ok(bytes)
-                }
-                (None, None) => Err(format!(
-                    "secret module '{module}' is not a built-in (`env` / `file`) and the plugin \
-                     subsystem is not enabled, so no secret plugin can resolve {}; a secret that \
-                     cannot resolve is a hard error (fail-closed)",
-                    secret.describe()
-                )),
-            },
+        let module = secret.module.as_str();
+        // `none` declares the ABSENCE of a credential, so it is never looked up as a module: asking
+        // for its bytes is a category error, refused rather than resolved to empty.
+        if module == busbar_contract::secret_ref::SECRET_MODULE_NONE {
+            return Err(NONE_HAS_NO_VALUE.to_string());
         }
+        let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
+        if let Some(axis) = axis().filter(|a| a.linked(module)) {
+            let material = axis.shared(module)?.resolve(settings.as_bytes());
+            return material
+                .map(|m| m.expose_secret().clone())
+                .map_err(|r| r.text);
+        }
+        let Some(f) = &self.plugin else {
+            return Err(format!(
+                "secret module '{module}' is not a built-in (`env` / `file`) and the plugin \
+                 subsystem is not enabled, so no secret plugin can resolve {}; a secret that \
+                 cannot resolve is a hard error (fail-closed)",
+                secret.describe()
+            ));
+        };
+        let bytes = f(module, &settings).map_err(|e| {
+            format!(
+                "secret module '{module}' (a kind: secret plugin) failed to resolve {}: {e}",
+                secret.describe()
+            )
+        })?;
+        if bytes.is_empty() {
+            return Err(format!(
+                "secret module '{module}' resolved {} to an EMPTY value; a secret must be \
+                 non-empty (fail-closed)",
+                secret.describe()
+            ));
+        }
+        Ok(bytes)
     }
 
     /// Resolve to a UTF-8 STRING (trailing newline trimmed; fail-closed on non-UTF-8 or empty).
-    /// The string-secret convenience twin of [`Self::resolve`], mirroring [`resolve_builtin_string`].
+    /// The string-secret convenience twin of [`Self::resolve`], mirroring [`resolve_linked_string`].
     pub(crate) fn resolve_string(&self, secret: &SecretRef) -> Result<String, String> {
         let bytes = self.resolve(secret)?;
         let s = String::from_utf8(bytes).map_err(|_| {
@@ -266,13 +266,30 @@ impl busbar_contract::secret::SecretResolve for SecretResolver {
     }
 }
 
-/// BUILT-IN resolution of a secret reference to its raw bytes (`env` / `file`) and its UTF-8-string
-/// twin now live in the dependency-light `busbar-api` contract crate — they are pure
-/// `std::env`/`std::fs` + `busbar_contract::SecretRef`, with no engine coupling, so a plane crate
-/// can resolve a built-in ref without reaching into `busbar`. Re-exported so every in-crate call
-/// site (the [`SecretResolver`] built-in fallback below) is unchanged.
-pub(crate) use busbar_plugin_loader::builtin_secret::resolve_builtin;
-pub use busbar_plugin_loader::builtin_secret::resolve_builtin_string;
+/// The refusal a `none` reference answers when asked for its bytes (1.5.5's words).
+const NONE_HAS_NO_VALUE: &str = "the `none` secret reference declares that there is NO credential, \
+     so it has no value to resolve; it is accepted only where an absent credential is meaningful (a \
+     provider `api_key` for a keyless upstream such as ollama or vLLM)";
+
+/// The secret axis the composition root installed (a test build stands the shipped sources in).
+/// The kernel names none of the plugins behind it.
+pub(crate) fn axis() -> Option<&'static dyn busbar_contract::secret::SecretAxis> {
+    crate::preflight::root_rows().secret_axis
+}
+
+/// Whether a secret plugin the build LINKS answers `module` (a reference to it needs no `secrets:`
+/// block and no plugins directory).
+pub(crate) fn is_linked_secret(module: &str) -> bool {
+    axis().is_some_and(|a| a.linked(module))
+}
+
+/// Resolve `secret` to a UTF-8 string through the linked secret plugins alone (no `secrets:` block,
+/// no cold lane). OWED: a plane still calls this (the mcp stdio child's environment and its
+/// token-exchange subject token) until those sites move to host-held replacements; the
+/// plane-secret-blindness gate lists them.
+pub fn resolve_linked_string(secret: &SecretRef) -> Result<String, String> {
+    SecretResolver::builtins_only().resolve_string(secret)
+}
 
 #[cfg(test)]
 #[path = "tests/secret_tests.rs"]
@@ -285,3 +302,7 @@ mod resolver_tests;
 #[cfg(test)]
 #[path = "tests/settings_resolution_tests.rs"]
 mod settings_resolution_tests;
+
+#[cfg(test)]
+#[path = "tests/linked_secret_hardening_tests.rs"]
+mod linked_secret_hardening_tests;

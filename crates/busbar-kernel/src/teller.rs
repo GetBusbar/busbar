@@ -425,7 +425,7 @@ pub trait Units {
     /// The default is a door with no slice to draw against: the hold is sized at what the child
     /// pushed and nothing refuses. A door that keeps the principal's slice draws the hold against
     /// it and refuses a child the slice cannot back, with the budget block it renders for any
-    /// other unit (`busbar_kernel_budget::AdmissionUnit::at_parent_exit`).
+    /// other unit.
     fn at_parent_exit(&self, _ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal> {
         Ok(accrual.amount())
     }
@@ -826,12 +826,18 @@ fn open_to_door<U: Units>(
 }
 
 /// How a session opener left the door.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum SessionOpen {
-    /// The door passed. A session admits at [`Admission::ZeroHold`] — it opens its own reservation
-    /// AFTER, plane-side — so nothing was swapped into the cell and there is nothing to settle. The
-    /// caller opens its live carrier next.
-    Admitted,
+    /// The door passed. A session admits at [`Admission::ZeroHold`], so nothing was swapped into
+    /// the cell and there is nothing to settle. The caller opens its live carrier next: every turn
+    /// leg of the session is a route walk under this ONE admission, with this Route pass, inside
+    /// the destination set Verify sealed at the open (K6).
+    Admitted {
+        /// The session's Route pass, for its turn legs.
+        route: Pass<Route>,
+        /// The destination set sealed at the open.
+        destinations: Vec<VerifiedDestination>,
+    },
     /// The door refused before any charge. The plane's own refusal was audited and encoded; nothing
     /// was charged and nothing settled.
     Refused,
@@ -869,10 +875,9 @@ pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'
             SessionOpen::Refused
         }
         // The door passed at ZeroHold. Record the admission (success-audit + encode) and hand the
-        // door back OPEN — no `under_hold`, no `exit`. The plane opens its own reservation next.
-        // A session's door is always ZeroHold (see the doc above), so there is no Route or Meter
-        // step here to hand the sealed destinations to; they are discarded with the admission.
-        Ok((_admission, _destinations)) => {
+        // door back OPEN, with the sealed destinations and the session's Route pass: no
+        // `under_hold`, no `exit`.
+        Ok((_admission, destinations)) => {
             let outcome = Outcome::Completed;
             let pass = Pass::<Audit>::mint(seal);
             if let Ok(facts) = units.audit(&pass, ctx, &outcome).into_result(seal) {
@@ -881,7 +886,10 @@ pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'
             let _bytes = units
                 .encode(&Pass::<Encode>::mint(seal), ctx, &outcome)
                 .into_result(seal);
-            SessionOpen::Admitted
+            SessionOpen::Admitted {
+                route: Pass::<Route>::mint(seal),
+                destinations,
+            }
         }
     }
 }

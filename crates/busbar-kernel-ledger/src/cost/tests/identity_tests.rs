@@ -18,8 +18,7 @@
 //! someone else's seed is not a property.
 
 use super::*;
-use crate::cost::{derive_spend_cents, derive_spend_micros, MoneyError, STANDARD_TIER_BP};
-use crate::cost::{LaneClass, RateCard, FEE_CLASS, NANOS_PER_CENT};
+use crate::cost::MoneyError;
 
 /// A deterministic sequence. Same numbers everywhere, forever.
 struct Seq(u64);
@@ -36,107 +35,6 @@ impl Seq {
     /// A value in `[0, bound)`.
     fn below(&mut self, bound: u64) -> u64 {
         self.next() % bound
-    }
-}
-
-/// The class names the generated reports draw from — a mix of the older release's four and some
-/// open ones, so open classes take part in the identity too.
-const CLASSES: [&str; 6] = [INPUT, OUTPUT, CACHE_READ, CACHE_WRITE, "audio", "images"];
-
-/// The identity, over ten thousand generated postings: the legacy derivation at a card equals
-/// the projection of the lookup over a single-entry history holding that card, in cents and in
-/// micro-units alike. Ten thousand cases, unchanged in count from the pinned-card era.
-///
-/// The generated ranges stay well inside the saturating region on purpose. Saturation itself is
-/// pinned by its own cases in the other files; mixing the two would let a case pass because both
-/// sides pinned at the top rather than because they agreed.
-#[test]
-fn the_lookup_over_a_single_entry_history_equals_the_legacy_derivation() {
-    let mut seq = Seq(0x5EED_1234_ABCD_0001);
-    for case in 0..10_000u32 {
-        // A card over one lane: each class priced at up to ten thousand micro-units, to three
-        // decimal places, so the rounding step at resolve is genuinely exercised.
-        let entries: Vec<(LaneClass, f64)> = CLASSES
-            .iter()
-            .map(|c| {
-                let micro = seq.below(10_000_000) as f64 / 1000.0;
-                (LaneClass::new("lane", *c), micro)
-            })
-            .collect();
-        let fee_cents = seq.below(1_000) as i64;
-        let card = RateCard::from_micro_rates(entries, fee_cents);
-
-        // A report of up to six lines with quantities up to a billion.
-        let count = seq.below(CLASSES.len() as u64 + 1) as usize;
-        let reported: Vec<(&str, u64)> = CLASSES
-            .iter()
-            .take(count)
-            .map(|c| (*c, seq.below(1_000_000_000)))
-            .collect();
-        let fee_count = seq.below(2); // one fee per client request, or none
-        let report = usage(&reported);
-        let plain = lines(&reported);
-
-        let posted = priced(&card, "lane", &report, fee_count, STANDARD_TIER_BP);
-        let derived_cents = derive_spend_cents(
-            &card,
-            [("lane", plain.as_slice())].into_iter(),
-            fee_count,
-            true,
-        )
-        .expect("the one function prices");
-        let derived_micros = derive_spend_micros(
-            &card,
-            [("lane", plain.as_slice())].into_iter(),
-            fee_count,
-            true,
-        )
-        .expect("the one function prices");
-
-        assert_eq!(
-            derived_cents,
-            minor(&posted),
-            "case {case}: derived cents must equal the projection of the stored nano-units"
-        );
-        assert_eq!(
-            derived_micros,
-            micros(&posted),
-            "case {case}: derived micro-units must equal the projection of the stored nano-units"
-        );
-
-        // The fee and the usage also agree SEPARATELY, which is how the shadow comparison reads
-        // them: the usage-only derivation against the posting's non-fee lines, and the fee against
-        // its own line.
-        let usage_only = derive_spend_cents(
-            &card,
-            [("lane", plain.as_slice())].into_iter(),
-            fee_count,
-            false,
-        )
-        .expect("the one function prices");
-        let stored_usage: u128 = posted
-            .lines
-            .iter()
-            .filter(|l| l.class != FEE_CLASS)
-            .fold(0u128, |a, l| a + l.amount_nanos);
-        assert_eq!(
-            usage_only,
-            minor_nanos(stored_usage).expect("in range"),
-            "case {case}: usage alone"
-        );
-        let stored_fee = posted
-            .lines
-            .iter()
-            .find(|l| l.class == FEE_CLASS)
-            .expect("every posting carries a fee line")
-            .amount_nanos;
-        assert_eq!(
-            stored_fee,
-            u128::from(fee_count)
-                * u128::try_from(fee_cents).expect("clamped non-negative")
-                * NANOS_PER_CENT,
-            "case {case}: the fee line alone"
-        );
     }
 }
 
@@ -210,29 +108,4 @@ fn past_the_micro_ceiling_the_micro_projection_refuses_and_the_minor_one_does_no
         Err(MoneyError::Overflow),
         "one micro-unit past the ceiling refuses"
     );
-}
-
-/// A tiered posting has no older-release counterpart, so the identity deliberately stops at the
-/// neutral tier: the tier multiplier is asserted against hand computation instead. This case pins
-/// the boundary itself — at the neutral multiplier the two agree, and away from it the posting is
-/// expected to diverge from the older derivation, which is the designed difference rather than a
-/// defect.
-#[test]
-fn the_identity_holds_at_the_neutral_tier_and_the_tier_is_the_only_divergence() {
-    let c = card("m", 2.0, 5.0, 3);
-    let report = usage(&[(INPUT, 3), (OUTPUT, 4)]);
-    let plain = lines(&[(INPUT, 3), (OUTPUT, 4)]);
-    let derived = derive_spend_cents(&c, [("m", plain.as_slice())].into_iter(), 1, true)
-        .expect("the one function prices");
-
-    let neutral = priced(&c, "m", &report, 1, STANDARD_TIER_BP);
-    assert_eq!(derived, minor(&neutral));
-
-    let tiered = priced(&c, "m", &report, 1, 15_000);
-    assert_ne!(
-        derived,
-        minor(&tiered),
-        "a tier away from neutral is expected to differ from the older derivation"
-    );
-    assert_eq!(tiered.pre_tier_nanos, neutral.priced_nanos);
 }

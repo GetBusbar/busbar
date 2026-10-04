@@ -57,6 +57,7 @@ pub(crate) async fn exchange(
         &app.auth,
         &app.credential_cache,
         candidate,
+        crate::auth::ChainHead::of(&req),
         app.governance.clone(),
         // `/auth/token` is a DATA-PLANE route and mints data-plane keys, so the expected audience is
         // `None` — which makes the verifier reject any audience-bound token presented here. That is

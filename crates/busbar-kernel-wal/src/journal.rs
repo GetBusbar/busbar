@@ -72,7 +72,7 @@
 use std::collections::VecDeque;
 
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
-use sha2::{Digest as _, Sha256};
+use ring::digest::{Context, SHA256};
 
 use crate::record::Record;
 use crate::ship::Shipper;
@@ -429,9 +429,9 @@ impl JournalRecord {
     #[must_use]
     pub fn digest_of_chain(&self) -> [u8; 32] {
         let bytes = self.encode();
-        let mut hasher = Sha256::new();
+        let mut hasher = Context::new(&SHA256);
         hasher.update(&bytes[0..at::HASH]);
-        hasher.finalize().into()
+        crate::record::digest32(hasher)
     }
 
     /// This record's identity as the log knows it.
@@ -439,20 +439,14 @@ impl JournalRecord {
     pub fn identity(&self) -> (u64, u64) {
         (self.node, self.node_seq)
     }
-
-    /// This record's chain hash in hexadecimal, for a report or a comparison a person reads.
-    #[must_use]
-    pub fn hash_hex(&self) -> String {
-        hex(&self.hash)
-    }
 }
 
 /// The digest of a body.
 #[must_use]
 pub fn body_digest(body: &[u8]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
+    let mut hasher = Context::new(&SHA256);
     hasher.update(body);
-    hasher.finalize().into()
+    crate::record::digest32(hasher)
 }
 
 /// Thirty-two bytes as hexadecimal.
@@ -987,7 +981,7 @@ impl Journal {
         })
     }
 
-    /// Read the chain back out of the log's current segment, verifying as it goes.
+    /// Read the chain back out of the whole log, every segment oldest first, verifying as it goes.
     ///
     /// # Errors
     ///

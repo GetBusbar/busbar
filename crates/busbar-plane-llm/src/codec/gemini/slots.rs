@@ -41,8 +41,15 @@ pub(super) fn read_gemini_hosted_tools(
         match kind {
             Some(hosted) => {
                 if v.as_object().is_some_and(|m| !m.is_empty()) {
-                    tracing::warn!(
-                        hosted_tool = %k,
+                    let path = match k.as_str() {
+                        GEMINI_GOOGLE_SEARCH => "tools[].googleSearch",
+                        GEMINI_CODE_EXECUTION => "tools[].codeExecution",
+                        _ => "tools[].urlContext",
+                    };
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::wire(path),
+                        &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
+                        [hosted_tool = %k,],
                         "gemini hosted tool config has no neutral IR member; the tool crosses the \
                          seam without it"
                     );
@@ -82,8 +89,10 @@ pub(super) fn write_gemini_hosted_tools(hosted: &[IrHostedTool]) -> Vec<serde_js
             let (key, params_set) = match tool {
                 // OAI-09: Gemini has no free-text / grammar tool (N).
                 IrHostedTool::Custom(_) => {
-                    tracing::warn!(
-                        hosted_tool = tool.kind_str(),
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::TOOLS,
+                        &crate::codec::diagnostics::IR_DROP_HOSTED_TOOLS,
+                        [hosted_tool = tool.kind_str(),],
                         "dropping an OpenAI custom tool on Gemini egress: Gemini has no free-text \
                          / grammar tool (lossy-by-target)"
                     );
@@ -106,8 +115,10 @@ pub(super) fn write_gemini_hosted_tools(hosted: &[IrHostedTool]) -> Vec<serde_js
                 ),
             };
             if params_set {
-                tracing::warn!(
-                    hosted_tool = tool.kind_str(),
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::TOOLS,
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [hosted_tool = tool.kind_str(),],
                     "dropping hosted-tool parameters on Gemini egress: {key} takes none of them; \
                      the tool is kept"
                 );
@@ -172,11 +183,12 @@ pub(super) fn write_gemini_labels(metadata: &[(String, String)]) -> serde_json::
         }
     }
     if dropped > 0 {
-        tracing::warn!(
-            dropped,
+        crate::codec::drops::writer_drop!(
+            crate::codec::drops::METADATA,
+            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+            [dropped, ],
             "dropping metadata entries on Gemini egress: labels allow at most 64 entries of \
-             lowercase letters, digits, '_' and '-' (a key starting with a letter), 63 characters each"
-        );
+             lowercase letters, digits, '_' and '-' (a key starting with a letter), 63 characters each");
     }
     serde_json::Value::Object(out)
 }
@@ -213,8 +225,10 @@ pub(super) fn read_gemini_response_modalities(
     for word in arr {
         match word.as_str().and_then(IrModality::parse) {
             Some(m) => out.push(m),
-            None => tracing::warn!(
-                modality = %word,
+            None => crate::codec::drops::writer_drop!(
+                crate::codec::drops::wire("generationConfig.responseModalities[]"),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [modality = %word,],
                 "gemini responseModalities entry has no IR modality; not carried"
             ),
         }

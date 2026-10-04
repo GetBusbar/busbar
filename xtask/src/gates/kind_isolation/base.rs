@@ -2,12 +2,12 @@
 //!
 //! > "if we slip once the whole effort is pointless." — owner, 2026-09-09
 //!
-//! THE LEDGER IS THE EVIDENCE, NEVER THE JUDGE. Every ratchet in this gate compares a measurement
-//! against a number a human wrote in `qa/kind-isolation.toml`, and until this module the human
-//! could write any number they liked in the same commit as the thing it excused. A red team proved
+//! THE LEDGER IS THE EVIDENCE, NEVER THE JUDGE. Every rule in this gate compares a measurement
+//! against a row a human wrote in `qa/kind-isolation.toml`, and until this module the human could
+//! write any row they liked in the same commit as the thing it excused. A red team proved
 //! it end to end: a real `busbar-transport-tcp -> busbar-plane-llm` path dependency — a plane
 //! compiled into a wire, the exact fusion this gate exists to make impossible — went GREEN by
-//! appending nine lines that say out loud `verdict = "not-allowed"`, plus one `[[cell]]` count.
+//! appending nine lines that say out loud `verdict = "not-allowed"`, plus one `[[cell]]` row.
 //! The rows were honest. The gate read them and agreed with them. Nothing asked where they came
 //! from.
 //!
@@ -18,15 +18,15 @@
 //!   the base's own manifests, not the row — so no row, no verdict word and no count changes the
 //!   answer. Writing the row is how a pre-existing debt is described; it is not how a new one is
 //!   authorised.
-//! * A `[[cell]]`, `[[edge]]` or `[[disagreement]]` row that is **not in the base's copy of the
-//!   file at all** is a ceiling minted on this branch. `ceiling-rose` cannot see one — it walks the
-//!   numbers the BASE carries and asks whether they went up, so a key that is new has no `before`
-//!   to compare against and is skipped in silence. A new row is a 0 -> N raise wearing the clothes
-//!   of a first measurement, and it is refused here.
+//! * A `[[cell]]`, `[[edge]]` or `[[instance]]` row that is **not in the base's copy of the file at
+//!   all** is an edge allowance minted on this branch. The rows are presence only (size is not a CI
+//!   check, owner 2026-10-02), so a row is the whole of what legitimises a cross-kind edge, and the
+//!   mint rule is what refuses a branch legitimising a NEW edge by writing its row in the same
+//!   commit as the coupling.
 //!
-//! A BASE THAT CANNOT BE ESTABLISHED IS RED, NEVER GREEN, on exactly the terms `ceiling-rose` sets:
-//! "the branch has no history here" is the state a shallow clone is in, and a ratchet that switches
-//! itself off on the runner where it is cheapest to switch off is not a ratchet.
+//! A BASE THAT CANNOT BE ESTABLISHED IS RED, NEVER GREEN: "the branch has no history here" is the
+//! state a shallow clone is in, and a rule that switches itself off on the runner where it is
+//! cheapest to switch off is not a rule.
 //!
 //! THE READING IS MEMOISED PER PROCESS because it is immutable: a commit's tree does not change
 //! while the process runs. The self-test drives this gate ninety times, and ninety readings of
@@ -161,9 +161,10 @@ fn build(cx: &Ctx, commit: &str) -> Result<Base, String> {
 /// The KEY SET of one `[[table]]` in a ledger text: the identifying fields of every row of that
 /// table, in the order the table declares them.
 ///
-/// Deliberately the row's IDENTITY and not its whole text: a `[[cell]]` whose count moved is a
-/// raise, which is `ceiling-rose`'s subject, and a `[[cell]]` that did not exist is a MINT, which
-/// is this module's. Reading whole rows would collapse the two and report the first as the second.
+/// Deliberately the row's IDENTITY and not its whole text: a row whose other fields moved (a
+/// `[[dep]]` count, a reworded `why`) is not a new row, and a row that did not exist is a MINT,
+/// which is this module's subject. Reading whole rows would collapse the two and report the first
+/// as the second.
 pub fn row_keys(text: &str, table: &str, id_fields: &[&str]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let header = format!("[[{table}]]");

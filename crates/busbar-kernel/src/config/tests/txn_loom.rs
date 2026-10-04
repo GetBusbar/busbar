@@ -1,6 +1,6 @@
 //! A TARGETED loom model of the one invariant the config-mutation lock exists to protect.
 //!
-//! Run with `scripts/loom.sh` (`cargo test -p busbar --features loom-model txn_loom`). The whole
+//! Run with `cargo xtask loom` (`cargo test -p busbar --features loom-model txn_loom`). The whole
 //! file sits behind the optional `loom-model` feature, so it never compiles into a normal build or
 //! CI test run. It is a cargo FEATURE rather than loom's usual `--cfg loom` because RUSTFLAGS is
 //! global: `--cfg loom` makes tokio compile out `tokio::net`, which the server needs.

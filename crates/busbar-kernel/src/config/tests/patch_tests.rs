@@ -67,6 +67,10 @@ fn every_patch_mirrors_every_field_of_its_section() {
         worker_threads: _,
         upstream_http1_only: _,
         upstream_h2_prior_knowledge: _,
+        // The destination guard's inputs: BOOT-TIME too (the connector and its guard are built
+        // once), so not runtime-patchable.
+        block_private_addresses: _,
+        allow_destinations: _,
     } = crate::config::AdvancedCfg::default();
     let _ = AdvancedPatch {
         rate_sweep_interval: Some(rate_sweep_interval),

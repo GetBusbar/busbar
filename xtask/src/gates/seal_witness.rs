@@ -6,7 +6,7 @@
 //! This is the wave-W2.e proof (arm-gate-per-wave): after the capability-proof vocabulary was
 //! unified to `Pass<stage>` + `Grant<capability>` + one kernel root minter (DECISIONS #72/#73), and
 //! the single-minter posture was tightened (DECISIONS #65), this gate holds both properties so they
-//! cannot silently regress. It is green on the tree and blocking in CI (`ci.yml`), and each of its
+//! cannot silently regress. It is green on the tree and run by the pipeline's turnstile on every hop, and each of its
 //! failing rows is proven RED-able by its own selftest over a green baseline.
 //!
 //! Three rows, two claims and one census:

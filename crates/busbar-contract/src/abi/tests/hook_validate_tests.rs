@@ -785,3 +785,136 @@ fn transform_has_reject_status_without_reject_verb_faults() {
         red(Rule::Contradiction, "transform.has_reject_status")
     );
 }
+
+// ── check_prompt_view (WIRE-HOOK Q1: the 1.5.5 `(role, text)` messages on the view) ─────────────
+
+/// One message, for a view whose `messages` must be non-NULL (leaked: a test-lifetime buffer).
+fn one_message() -> *const crate::abi::hook::MessageView {
+    let empty = AbiStr {
+        ptr: std::ptr::null(),
+        len: 0,
+    };
+    Box::leak(Box::new(crate::abi::hook::MessageView {
+        role: empty,
+        text: empty,
+    }))
+}
+
+fn prompt_view(len: usize) -> PromptView {
+    PromptView {
+        system: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        message_count: len as u64,
+        body: blob_absent(),
+        messages: one_message(),
+        messages_len: len,
+    }
+}
+
+#[test]
+fn prompt_view_green() {
+    assert_eq!(check_prompt_view(&prompt_view(1)), Ok(()));
+    let mut none = prompt_view(0);
+    none.messages = std::ptr::null();
+    assert_eq!(check_prompt_view(&none), Ok(()));
+}
+
+#[test]
+fn prompt_view_null_messages_is_fault() {
+    let mut v = prompt_view(1);
+    v.messages = std::ptr::null();
+    assert_eq!(
+        check_prompt_view(&v),
+        red(Rule::NullWithCount, "prompt.messages")
+    );
+}
+
+#[test]
+fn prompt_view_over_max_messages_is_fault() {
+    let v = prompt_view(HARD_MAX_MESSAGES as usize + 1);
+    assert_eq!(
+        check_prompt_view(&v),
+        red(Rule::OverMax, "prompt.messages_len")
+    );
+}
+
+#[test]
+fn prompt_view_count_disagreeing_with_messages_is_fault() {
+    let mut v = prompt_view(1);
+    v.message_count = 2;
+    assert_eq!(
+        check_prompt_view(&v),
+        red(Rule::Contradiction, "prompt.message_count")
+    );
+}
+
+#[test]
+fn prompt_view_body_blob_rules_hold() {
+    let mut v = prompt_view(1);
+    v.body.len = 3;
+    assert_eq!(
+        check_prompt_view(&v),
+        red(Rule::NullWithCount, "prompt.body")
+    );
+}
+
+// ── check_notify_in (WIRE-HOOK Q5: the 1.5.5 tap view's signals and prompt) ────────────────────
+
+fn notify_in() -> crate::abi::hook::NotifyIn {
+    // SAFETY: every field is an integer, a raw pointer or a plain struct of those.
+    let mut i: crate::abi::hook::NotifyIn = unsafe { std::mem::zeroed() };
+    i.prompt = prompt_view(1);
+    i
+}
+
+#[test]
+fn notify_in_green() {
+    let mut i = notify_in();
+    assert_eq!(check_notify_in(&i), Ok(()));
+    i.present = VIEW_HAS_PROMPT;
+    assert_eq!(check_notify_in(&i), Ok(()));
+}
+
+#[test]
+fn notify_in_null_signals_is_fault() {
+    let mut i = notify_in();
+    i.signals_len = 1;
+    assert_eq!(
+        check_notify_in(&i),
+        red(Rule::NullWithCount, "notify.signals")
+    );
+}
+
+#[test]
+fn notify_in_over_max_signals_is_fault() {
+    let mut i = notify_in();
+    i.signals = std::ptr::NonNull::dangling().as_ptr();
+    i.signals_len = HARD_MAX_SIGNALS as usize + 1;
+    assert_eq!(
+        check_notify_in(&i),
+        red(Rule::OverMax, "notify.signals_len")
+    );
+}
+
+#[test]
+fn notify_in_unknown_presence_bit_is_fault() {
+    let mut i = notify_in();
+    i.present = VIEW_HAS_PROMPT << 1;
+    assert_eq!(
+        check_notify_in(&i),
+        red(Rule::UnknownCode, "notify.present")
+    );
+}
+
+#[test]
+fn notify_in_judges_a_present_prompt() {
+    let mut i = notify_in();
+    i.present = VIEW_HAS_PROMPT;
+    i.prompt.message_count = 3;
+    assert_eq!(
+        check_notify_in(&i),
+        red(Rule::Contradiction, "prompt.message_count")
+    );
+}

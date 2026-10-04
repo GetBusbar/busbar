@@ -61,6 +61,8 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
+advanced:
+  allow_destinations: ["127.0.0.1"]
 admin_require_mtls: false
 auth:
   chain: []

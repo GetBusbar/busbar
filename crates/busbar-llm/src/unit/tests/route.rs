@@ -12,8 +12,8 @@ use serde_json::json;
 /// A kernel seal for the length of one leg, and the step-5 token minted from it — exactly as
 /// the loop lends it, and dropped when the call it was lent to returns.
 fn tokens() -> (KernelSeal, Pass<Route>) {
-    let seal = KernelSeal::acquire_for_kernel();
-    let token = Pass::mint(&seal);
+    let seal = busbar_kernel::test_support::tokens::seal();
+    let token = busbar_kernel::test_support::tokens::pass();
     (seal, token)
 }
 
@@ -229,7 +229,7 @@ async fn leg_live(proto: &'static str, fixture: Fixture) -> Observed {
         proto,
         crate::test_support::CHAT,
         None,
-        Vec::new(),
+        Default::default(),
     )
     .await;
     let drawn = host.next_request_id() - before - 1;
@@ -260,6 +260,7 @@ async fn leg_unit(proto: &'static str, fixture: Fixture) -> Observed {
             op: crate::test_support::CHAT,
             destination: "p",
             headers: &headers,
+            query: None,
             body: body.clone(),
             parsed: LazyBody::parse(&body).ok(),
             caller_token: None,
@@ -360,6 +361,7 @@ async fn route_step_pick_order_matches_the_live_forward() {
                         op: crate::test_support::CHAT,
                         destination: "p",
                         headers: &headers,
+                        query: None,
                         body: body.clone(),
                         parsed: LazyBody::parse(&body).ok(),
                         caller_token: None,
@@ -390,7 +392,7 @@ async fn route_step_pick_order_matches_the_live_forward() {
                     proto,
                     crate::test_support::CHAT,
                     None,
-                    Vec::new(),
+                    Default::default(),
                 )
                 .await
             };
@@ -445,6 +447,7 @@ async fn route_step_refuses_an_unresolved_destination_without_a_terminal() {
             op: crate::test_support::CHAT,
             destination: "nope",
             headers: &headers,
+            query: None,
             body: body.clone(),
             parsed: LazyBody::parse(&body).ok(),
             caller_token: None,
@@ -528,6 +531,7 @@ async fn route_reports_the_taps_figures_for_an_answer_that_finished() {
             op: crate::test_support::CHAT,
             destination: "p",
             headers: &headers,
+            query: None,
             body: body.clone(),
             parsed: LazyBody::parse(&body).ok(),
             caller_token: None,
@@ -577,8 +581,13 @@ impl busbar_contract::hooks::RoutingPolicy for CaptureTap {
     fn name(&self) -> &'static str {
         "route-step-capture-tap"
     }
-    async fn notify(&self, projection: &[u8], _budget: std::time::Duration) {
-        *self.last.lock().unwrap() = Some(projection.to_vec());
+    async fn notify(
+        &self,
+        tap: std::sync::Arc<busbar_contract::abi::host::hook::NotifyFrame>,
+        _budget: std::time::Duration,
+    ) {
+        let projection = serde_json::to_vec(&tap.projection_json()).expect("the tap's JSON");
+        *self.last.lock().unwrap() = Some(projection);
         self.fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
@@ -638,6 +647,7 @@ async fn completion_tap_fires_once_on_the_walk_and_never_on_a_pre_forward_refusa
                     op: crate::test_support::CHAT,
                     destination,
                     headers: &headers,
+                    query: None,
                     body: body.clone(),
                     parsed: LazyBody::parse(&body).ok(),
                     caller_token: None,
@@ -665,7 +675,7 @@ async fn completion_tap_fires_once_on_the_walk_and_never_on_a_pre_forward_refusa
                         proto,
                         crate::test_support::CHAT,
                         None,
-                        Vec::new(),
+                        Default::default(),
                     )
                     .await
                 }
@@ -791,6 +801,7 @@ async fn completion_tap_carries_response_tokens_out_when_declared() {
                     op: crate::test_support::CHAT,
                     destination: "p",
                     headers: &headers,
+                    query: None,
                     body: body.clone(),
                     parsed: LazyBody::parse(&body).ok(),
                     caller_token: None,
@@ -817,7 +828,7 @@ async fn completion_tap_carries_response_tokens_out_when_declared() {
                 ingress,
                 crate::test_support::CHAT,
                 None,
-                Vec::new(),
+                Default::default(),
             )
             .await
         };

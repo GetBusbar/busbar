@@ -19,12 +19,16 @@ use std::task::Poll;
 
 use crate::abi::host::conn::connector::WITHIN_SEPARATOR;
 use crate::abi::host::service::{
-    check_dest_judge, check_entitlement_check, check_random_fill, check_random_fill_in,
-    check_trust_due, check_trust_sight, op, DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan,
-    RandomFillIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut, TrustDueIn, TrustSightIn,
-    DEST_RESOLVE, ENTITLED,
+    check_clock_now, check_dest_judge, check_entitlement_check, check_random_fill,
+    check_random_fill_in, check_records_claim, check_records_claim_in, check_records_get,
+    check_records_list, check_trust_due, check_trust_sight, check_trust_verify, op, ClockNowIn,
+    ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn,
+    RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut,
+    TrustDueIn, TrustSightIn, TrustVerifyIn, CLAIM_WON, DEST_RESOLVE, ENTITLED, FOUND,
 };
-use crate::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
+use crate::abi::mechanism::call::{
+    AbiStr, Blob, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
+};
 use crate::abi::mechanism::check::{Fault, Filled, SPAN_ABSENT};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables};
 
@@ -103,11 +107,40 @@ impl Judged<'_> {
 
 /// The counterparty span `s` names: its key, present and UTF-8.
 fn name<'b>(bytes: &'b [u8], s: &ItemSpan) -> Option<&'b str> {
-    if s.key.offset == SPAN_ABSENT {
+    std::str::from_utf8(present(bytes, s.key)?).ok()
+}
+
+/// The bytes `s` covers, when it is present.
+fn present(bytes: &[u8], s: Span) -> Option<&[u8]> {
+    if s.offset == SPAN_ABSENT {
         return None;
     }
-    let at = s.key.offset as usize;
-    std::str::from_utf8(bytes.get(at..at.checked_add(s.key.len as usize)?)?).ok()
+    let at = s.offset as usize;
+    bytes.get(at..at.checked_add(s.len as usize)?)
+}
+
+/// `records.list`'s answer: the caller's records, each a key and a value as views into the
+/// caller's buffers, every one checked present before it is answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Records<'b> {
+    bytes: &'b [u8],
+    spans: &'b [ItemSpan],
+}
+
+impl<'b> Records<'b> {
+    /// The records as `(key, value)`, in key order.
+    pub fn records(&self) -> impl Iterator<Item = (&'b [u8], &'b [u8])> + 'b {
+        let bytes = self.bytes;
+        self.spans
+            .iter()
+            .filter_map(move |s| Some((present(bytes, s.key)?, present(bytes, s.value)?)))
+    }
+
+    /// The key of the last record: the `after` that lists the next page.
+    #[must_use]
+    pub fn last_key(&self) -> Option<&'b [u8]> {
+        present(self.bytes, self.spans.last()?.key)
+    }
 }
 
 /// The host services an instance was opened with: its context and the table.
@@ -131,6 +164,33 @@ impl Services {
             ctx: tables.ctx,
             table: tables.services,
         })
+    }
+
+    /// `clock.now`: the kernel's one clock, wall and monotonic, so a plugin reads no clock of its
+    /// own and a test or the oracle controls its time. `handle` is the op's own completion handle.
+    /// Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError`]: the host serves no `clock.now`, declined it, or broke its rules.
+    pub fn clock_now(&self, handle: CompletionHandle) -> Result<ClockReading, ServiceError> {
+        let mut reading = ClockReading {
+            size: size_of::<ClockReading>() as u32,
+            _reserved: 0,
+            wall_ns: 0,
+            mono_ns: 0,
+        };
+        let input = ClockNowIn {
+            head: head::<ClockNowIn>(op::CLOCK_NOW, handle),
+            reading: std::ptr::from_mut(&mut reading),
+        };
+        match self
+            .cross(op::CLOCK_NOW, |t| t.clock_now, &input, check_clock_now)?
+            .0
+        {
+            Outcome::Ready => Ok(reading),
+            other => Err(ServiceError::Declined(other)),
+        }
     }
 
     /// `entitlement.check`: whether the unit the calling op serves is entitled to `target`,
@@ -278,6 +338,171 @@ impl Services {
         named(crossed, buf, spans).map(|(_, due)| due)
     }
 
+    /// `trust.verify`: verify `signatures` (the document's signature list as written, one JSON
+    /// array; empty = none) over `payload` against the root key the kernel holds for
+    /// `counterparty`; the KERNEL judges. Ready: the `SIGNED_*` verdict and, for
+    /// `SIGNED_ALGORITHM` / `SIGNED_CRITICAL`, the name it refused, written into the caller's
+    /// preallocated `buf`. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::Short`] when `buf` is short (re-call once, same handle); otherwise as every
+    /// service: unserved, declined, or broken (a name that is not UTF-8 is broken).
+    pub fn trust_verify<'b>(
+        &self,
+        handle: CompletionHandle,
+        counterparty: &str,
+        payload: &[u8],
+        signatures: &[u8],
+        buf: &'b mut [u8],
+    ) -> Result<Signed<'b>, ServiceError> {
+        let input = TrustVerifyIn {
+            head: head::<TrustVerifyIn>(op::TRUST_VERIFY, handle),
+            counterparty: text(counterparty),
+            payload: blob(payload, BLOB_OCTETS),
+            signatures: blob(signatures, BLOB_JSON),
+            into: bufs(buf, &mut []),
+        };
+        let crossed = self.cross(
+            op::TRUST_VERIFY,
+            |t| t.trust_verify,
+            &input,
+            check_trust_verify,
+        )?;
+        let out = ready(crossed)?;
+        let buf: &'b [u8] = buf;
+        let named =
+            std::str::from_utf8(&buf[..out.len as usize]).map_err(|_| ServiceError::Broken)?;
+        Ok(Signed {
+            verdict: out.value,
+            named,
+        })
+    }
+
+    /// `records.get`: the record `key` of the caller's own record `kind`, written into the caller's
+    /// preallocated `buf`; reads see the instance's own queued writes. Ready: `Some` the record's
+    /// value, or `None` when there is no such record (a tombstone reads absent). May pend (the
+    /// kernel reads the store off the calling thread), so callable only from a ticketed op: on
+    /// [`Poll::Pending`] re-issue the SAME handle to read the stored answer. A short `buf` is
+    /// [`ServiceError::Short`]: re-call once, same handle, with the bytes it names.
+    pub fn records_get<'b>(
+        &self,
+        handle: CompletionHandle,
+        kind: &str,
+        key: &[u8],
+        buf: &'b mut [u8],
+    ) -> Pend<Option<&'b [u8]>> {
+        let mut span = [ItemSpan {
+            key: Span { offset: 0, len: 0 },
+            value: Span { offset: 0, len: 0 },
+        }];
+        let input = RecordsGetIn {
+            head: head::<RecordsGetIn>(op::RECORDS_GET, handle),
+            kind: text(kind),
+            key: raw(key),
+            into: bufs(buf, &mut span),
+        };
+        let crossed = self.cross(
+            op::RECORDS_GET,
+            |t| t.records_get,
+            &input,
+            check_records_get,
+        );
+        if let Ok((Outcome::Pending, ..)) = crossed {
+            return Poll::Pending;
+        }
+        let buf: &'b [u8] = buf;
+        Poll::Ready(crossed.and_then(ready).and_then(|out| {
+            if out.value != FOUND {
+                return Ok(None);
+            }
+            // FOUND writes the record into span `0`; one without it broke the rule.
+            let s = span.get(..out.items as usize).and_then(<[ItemSpan]>::first);
+            s.and_then(|s| present(&buf[..out.len as usize], s.value))
+                .map(Some)
+                .ok_or(ServiceError::Broken)
+        }))
+    }
+
+    /// `records.list`: the caller's own records of `kind` whose keys start with `prefix` (empty =
+    /// every key), in key order after `after` (`None` = from the first), at most `limit` (`0` = as
+    /// many as fit `MAX_SPANS`), written into the caller's preallocated `into` (bytes and spans).
+    /// A tombstoned key is not listed. May pend, so callable only from a ticketed op; a short
+    /// answer is [`ServiceError::Short`] (re-call once, same handle). A page's
+    /// [`Records::last_key`] is the next page's `after`.
+    pub fn records_list<'b>(
+        &self,
+        handle: CompletionHandle,
+        kind: &str,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+        limit: u32,
+        (buf, spans): (&'b mut [u8], &'b mut [ItemSpan]),
+    ) -> Pend<Records<'b>> {
+        let input = RecordsListIn {
+            head: head::<RecordsListIn>(op::RECORDS_LIST, handle),
+            kind: text(kind),
+            prefix: raw(prefix),
+            after: after.map_or(NO_TEXT, raw),
+            limit,
+            _reserved: 0,
+            into: bufs(buf, spans),
+        };
+        let crossed = self.cross(
+            op::RECORDS_LIST,
+            |t| t.records_list,
+            &input,
+            check_records_list,
+        );
+        if let Ok((Outcome::Pending, ..)) = crossed {
+            return Poll::Pending;
+        }
+        let (buf, spans): (&'b [u8], &'b [ItemSpan]) = (buf, spans);
+        Poll::Ready(crossed.and_then(ready).and_then(|out| {
+            // The service's check held `len` and `items` within the caps and every span inside
+            // `len`.
+            let records = Records {
+                bytes: &buf[..out.len as usize],
+                spans: &spans[..out.items as usize],
+            };
+            if records.records().count() == records.spans.len() {
+                Ok(records)
+            } else {
+                Err(ServiceError::Broken)
+            }
+        }))
+    }
+
+    /// `records.claim`: claim `key` of the caller's own record `kind` once, for `ttl_ms`
+    /// milliseconds: a put-if-absent, THE ONE path for approval redemption and replay refusal.
+    /// Ready: `true` when this call won the claim, `false` when the key was already claimed. A
+    /// claim with no time to live is REFUSED here, before the host is called (there is no
+    /// default). May pend, so callable only from a ticketed op.
+    pub fn records_claim(
+        &self,
+        handle: CompletionHandle,
+        kind: &str,
+        key: &[u8],
+        ttl_ms: u64,
+    ) -> Pend<bool> {
+        let input = RecordsClaimIn {
+            head: head::<RecordsClaimIn>(op::RECORDS_CLAIM, handle),
+            kind: text(kind),
+            key: raw(key),
+            ttl_ms,
+        };
+        if check_records_claim_in(&input).is_err() {
+            return Poll::Ready(Err(ServiceError::Declined(Outcome::Refused)));
+        }
+        verdict(self.cross(
+            op::RECORDS_CLAIM,
+            |t| t.records_claim,
+            &input,
+            check_records_claim,
+        ))
+        .map(|r| r.map(|v| v == CLAIM_WON))
+    }
+
     /// Call `service` through `pick`'s slot with `input`, and judge the answer by `check`: the
     /// outcome, the `out` and how it filled the caller's buffers.
     fn cross<I>(
@@ -327,20 +552,11 @@ fn bufs(buf: &mut [u8], spans: &mut [ItemSpan]) -> ServiceBufs {
 /// names it wrote; a short answer, [`ServiceError::Short`]; any other outcome declined. A name
 /// absent or not UTF-8 is broken.
 fn named<'b>(
-    (outcome, out, filled): (Outcome, ServiceOut, Filled),
+    crossed: (Outcome, ServiceOut, Filled),
     buf: &'b [u8],
     spans: &'b [ItemSpan],
 ) -> Result<(ServiceOut, Names<'b>), ServiceError> {
-    match (outcome, filled) {
-        (Outcome::Ready, _) => {}
-        (Outcome::Failed, Filled::Short) => {
-            return Err(ServiceError::Short {
-                bytes: out.needed_bytes,
-                items: out.needed_items,
-            })
-        }
-        (other, _) => return Err(ServiceError::Declined(other)),
-    }
+    let out = ready(crossed)?;
     // The service's check held `len` and `items` within the caps and every span inside `len`.
     let names = Names {
         bytes: &buf[..out.len as usize],
@@ -350,6 +566,42 @@ fn named<'b>(
         return Err(ServiceError::Broken);
     }
     Ok((out, names))
+}
+
+/// A crossed answer that writes the caller's buffers: READY, its `out`; a short answer,
+/// [`ServiceError::Short`]; any other outcome declined.
+fn ready(
+    (outcome, out, filled): (Outcome, ServiceOut, Filled),
+) -> Result<ServiceOut, ServiceError> {
+    match (outcome, filled) {
+        (Outcome::Ready, _) => Ok(out),
+        (Outcome::Failed, Filled::Short) => Err(ServiceError::Short {
+            bytes: out.needed_bytes,
+            items: out.needed_items,
+        }),
+        (other, _) => Err(ServiceError::Declined(other)),
+    }
+}
+
+/// `b`, borrowed for the call, in format `fmt`.
+const fn blob(b: &[u8], fmt: u32) -> Blob {
+    Blob {
+        ptr: b.as_ptr(),
+        len: b.len(),
+        fmt,
+        flags: 0,
+    }
+}
+
+/// What `trust.verify` answered: the verdict, and the name a `SIGNED_ALGORITHM` /
+/// `SIGNED_CRITICAL` verdict refused (empty for every other verdict), a view into the caller's
+/// buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Signed<'b> {
+    /// The `SIGNED_*` verdict.
+    pub verdict: u64,
+    /// The refused algorithm or critical member.
+    pub named: &'b str,
 }
 
 /// The head of an `I` for `service`, under `handle`.
@@ -363,11 +615,22 @@ const fn head<I>(service: u32, handle: CompletionHandle) -> ServiceHead {
 
 /// `s`, borrowed for the call.
 const fn text(s: &str) -> AbiStr {
+    raw(s.as_bytes())
+}
+
+/// `b`, borrowed for the call.
+const fn raw(b: &[u8]) -> AbiStr {
     AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
+        ptr: b.as_ptr(),
+        len: b.len(),
     }
 }
+
+/// An absent text: NULL, no length.
+const NO_TEXT: AbiStr = AbiStr {
+    ptr: std::ptr::null(),
+    len: 0,
+};
 
 /// A verdict service's answer: Ready its `value`, PENDING held on the ticket, else declined.
 fn verdict(crossed: Result<(Outcome, ServiceOut, Filled), ServiceError>) -> Pend<u64> {

@@ -3,7 +3,7 @@
 #
 # WHY THE GATE'S LOGIC LIVES IN SCRIPTS AND NOT INLINE IN THE WORKFLOW.
 #
-# verify-deploy.yml deliberately carries its checks inline and checks nothing out: its subject is
+# the removed verify-deploy.yml deliberately carries its checks inline and checks nothing out: its subject is
 # the LIVE deployment, and reading ./install.sh from a working copy would hide a fix that merged
 # and never deployed. That reasoning is about DATA — the bytes under test must come from the wire.
 # It says nothing about LOGIC. The gate's logic being inline had one concrete cost: nobody could
@@ -168,7 +168,7 @@ print(h.hexdigest())' "$f"
 
 # staged_record_json -> the staged record's JSON on stdout; non-zero when there is none or it is not
 # a JSON object.
-# STAGED_RECORD carries the record's CONTENT — fleet-autoscaler.yml's `resolve` job emits
+# STAGED_RECORD carries the record's CONTENT — the removed fleet-autoscaler.yml's `resolve` job emits
 # `jq -c . staged/staged.json` as a job output and every leg receives it in the environment. It is
 # never a path: there is no default guess, because a gate that fell back to "some staged.json
 # somewhere on the runner" would bind the release to whatever file happened to be lying around.
@@ -359,7 +359,7 @@ target_field() {  # target_field <target> <field>
 # `.metadata_assets` is an array of STRINGS ("busbar-{tag}.cdx.json"), not of objects, so `.name`
 # is `Cannot index string with string "name"` — jq exits 5, prints nothing, and because the
 # substitution's status is discarded into a `$( )` the owed list simply came back two names short.
-# The placeholder is lowercase `{tag}` as well; release-stage.yml's `a.replace("{tag}", tag)` reads
+# The placeholder is lowercase `{tag}` as well; the removed release-stage.yml's `a.replace("{tag}", tag)` reads
 # it correctly, and this one was matching an uppercase spelling that does not appear in the file.
 #
 # The two errors pointed opposite ways and neither was visible: the metadata assets were absent from

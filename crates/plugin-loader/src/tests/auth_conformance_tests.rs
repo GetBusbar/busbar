@@ -36,6 +36,9 @@ use crate::tests::artifact;
 use busbar_contract::abi::cold::auth::{AuthRequest, AuthResponse, BeginLoginRequest};
 use busbar_contract::abi::cold::observe::Envelope;
 use busbar_contract::auth::{AuthModule, AuthPlugin};
+use busbar_contract::auth_calls::{Verified, VerifyRequest};
+use busbar_contract::redacted::Redacted;
+use std::sync::Arc;
 
 /// The plugin's open-time config (data: `both_ways_auth_config`).
 fn cfg() -> &'static str {
@@ -317,6 +320,68 @@ fn a_linked_and_a_dropped_in_auth_module_register_byte_identical_rows() {
         linked.1
     );
     assert_eq!(linked, dropped, "the two doors must register one row");
+}
+
+/// THE AUTH ROWS LEND THE PRESENTED CREDENTIAL (AUTH-CHAIN-SWITCH, ARCHITECT lane L2-AUTH): the auth
+/// fixture — a REAL plugin, on the cold lane until its door lands (M6-COLD-DELETE) — opened through
+/// the auth rows (`AuthRows::open`, the axis the kernel's chain opens every `kind: auth` provider
+/// through) judges the credential a request presents exactly as its module judges it: the token it
+/// cannot verify is REFUSED (fail-closed), a credential that is not a token and none PASS.
+///
+/// RED before the rows lent it: the request's candidate never reached the module (`ColdAuth` handed
+/// it none), so the token PASSED — a wrong credential was never refused.
+#[test]
+fn the_auth_rows_judge_the_presented_credential_as_the_module_does() {
+    let manifest = statement(
+        "auth",
+        "auth-fixture",
+        "the-auth",
+        busbar_contract::abi::cold::AUTH_ABI_VERSION,
+    );
+    let registry = Arc::new(super::both_ways::linked(manifest, fixture_entry()));
+    let module = registry
+        .open_auth("the-auth", cfg())
+        .expect("the auth module opens through its alias");
+    let dispatcher = Arc::new(crate::dispatch::Dispatcher::new(
+        crate::dispatch::DispatchConfig::default(),
+    ));
+    let rows = crate::auth_axis::AuthRows::new(registry, dispatcher);
+    let opened = rows
+        .open(
+            "the-auth",
+            "the-auth",
+            &serde_json::Value::String(cfg().to_string()),
+        )
+        .expect("the auth rows open the module");
+    for c in candidates() {
+        let c = (!c.is_empty()).then_some(c);
+        let request = VerifyRequest {
+            credential: c.map(|c| Redacted::new(c.as_bytes().to_vec())),
+            ..VerifyRequest::default()
+        };
+        let want = match module.authenticate(c) {
+            busbar_contract::auth::AuthVerdict::Reject => Verified::Reject,
+            busbar_contract::auth::AuthVerdict::Pass => Verified::Pass,
+            other => panic!("the fixture identifies none of the script's candidates: {other:?}"),
+        };
+        let got = opened.verify_now(&request).map(|a| a.verified);
+        assert_eq!(got, Some(want), "{c:?}");
+    }
+    let token = artifact("both_ways_auth_token");
+    let refused = opened.verify_now(&VerifyRequest {
+        credential: Some(Redacted::new(token.as_bytes().to_vec())),
+        ..VerifyRequest::default()
+    });
+    assert_eq!(
+        refused.map(|a| a.verified),
+        Some(Verified::Reject),
+        "the token the module cannot verify is refused through the rows"
+    );
+}
+
+/// The auth fixture's linked entry (its `rlib`'s `BUSBAR_COLD_ENTRY`), by its both-ways row.
+fn fixture_entry() -> &'static busbar_contract::abi::cold::ColdEntry {
+    super::both_ways::fixture("auth").1
 }
 
 /// The same both ways through the LOGIN handle: the payload schema `open_login` reports, and the

@@ -985,3 +985,24 @@ fn append_plane_record_refuses_a_second_writers_fork_at_an_occupied_seq() {
         "the original record must survive the refused fork attempt untouched"
     );
 }
+
+/// Record blobs are opaque to the store (unit-map shapes plus the scale marker are
+/// the KERNEL's encoding): whatever bytes go in come back exactly, by key and by prefix scan.
+/// Moved here from plugin-loader's store money acceptance suite: the record half is this store's own
+/// inherent API, so the store tests it itself.
+#[test]
+fn a_record_blob_comes_back_byte_exact() {
+    const SCHEMA: RecordSchemaId = RecordSchemaId::new("money_acceptance");
+    let blob = br#"{"scale":6,"units":{"input":27500000,"output":1}}"#.to_vec();
+    let s = MemoryStore::new();
+    let body = RecordBytes::new(blob.clone()).expect("inside the record ceiling");
+    s.record_put(SCHEMA, b"cell/k/1", &body).expect("put");
+    let got = s
+        .record_get(SCHEMA, b"cell/k/1")
+        .expect("get")
+        .expect("present");
+    assert_eq!(got.as_slice(), blob.as_slice());
+    let scan = s.record_scan(SCHEMA, b"cell/k/", 10).expect("scan");
+    assert_eq!(scan.len(), 1);
+    assert_eq!(scan[0].1.as_slice(), blob.as_slice());
+}

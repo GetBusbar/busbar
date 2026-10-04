@@ -63,7 +63,10 @@ use std::sync::Arc;
 
 use axum::response::Response;
 use busbar_contract::caps::{Refusal, VerifiedDestination};
-use busbar_kernel::{door::admit_verdict, plane_host::EngineHost};
+use busbar_kernel::{
+    door::admit_verdict,
+    plane_host::{AdmitHandle, EngineHost},
+};
 
 /// What the door needs that the step shape has nowhere to put.
 ///
@@ -97,10 +100,11 @@ pub struct AdmitCtx<'a> {
 pub struct Admitted {
     /// The door's verdict: `Ok` when it admitted the unit, the refusal when it did not.
     pub verdict: Result<(), Refusal>,
-    /// Whether the charge LANDED. `false` means the request was admitted without charging
-    /// (governance off, or no key resolved), and a non-2xx end must NOT refund: the refund is a
-    /// blind decrement that would erode another request's spend in the same window.
-    pub charged: bool,
+    /// The charge, when it LANDED: the admission's own handle, which the admitted terminal's
+    /// non-2xx refund returns the fee through. `None` means the request was admitted without
+    /// charging (governance off, or no key resolved), and a non-2xx end must NOT refund: there is
+    /// nothing of this unit's to give back, and a refund would erode another request's spend.
+    pub charged: Option<AdmitHandle>,
     /// `Some` when a budget `on_exhaust: downgrade` re-pooled the admission. The charge landed on
     /// THIS pool's buckets, so the dispatch follows it — accounting follows the traffic.
     pub effective_pool: Option<String>,
@@ -147,6 +151,7 @@ pub fn admit(ctx: &AdmitCtx<'_>, destinations: &[VerifiedDestination]) -> Admitt
             // The kernel reads the outcome: whether the charge landed (governance off or no
             // resolved key admits without charging) and the pool a budget downgrade moved it to.
             let door = admit_verdict(Ok((admit.as_ref(), downgraded)));
+            let charged = admit.clone().filter(|_| door.charged);
             // A budget downgrade re-pooled the admission: the accrual scope is the pool the charge
             // landed on, not the one the caller asked for, so the sink is built against it.
             let pool = door.effective_pool.as_deref().unwrap_or(ctx.destination);
@@ -155,7 +160,7 @@ pub fn admit(ctx: &AdmitCtx<'_>, destinations: &[VerifiedDestination]) -> Admitt
             Admitted {
                 // A yes, and nothing more: the hold it entitles the unit to is the kernel's to open.
                 verdict: door.verdict,
-                charged: door.charged,
+                charged,
                 effective_pool: door.effective_pool,
                 upstream_candidate: !destinations.is_empty(),
                 sink,
@@ -176,7 +181,7 @@ fn refused(resp: Response) -> Admitted {
     let door = admit_verdict(Err(retry_after_secs(&resp)));
     Admitted {
         verdict: door.verdict,
-        charged: door.charged,
+        charged: None,
         effective_pool: door.effective_pool,
         upstream_candidate: false,
         sink: None,

@@ -124,6 +124,20 @@ fn trailing_detail_merge_is_exhaustive_over_every_bucket() {
         }),
         traffic_type: Some("ON_DEMAND".to_string()),
         create_time: Some("2026-09-07T16:54:20.179017Z".to_string()),
+        by_modality: Some(crate::codec::ir::IrUsageByModality {
+            input: crate::codec::ir::IrModalityCounts {
+                text: Some(14),
+                image: Some(15),
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        // Bedrock's guardrail residuals ride the stream's trailing `metadata` frame only; a fold
+        // that dropped them would leave the streamed turn with no unbilled audit row.
+        residual_units: std::collections::BTreeMap::from([(
+            "guardrail.inputAssessment.topicPolicyUnits".to_string(),
+            14,
+        )]),
     };
     let mut acc = usage(0, 0, None, None);
     let mut trailing = usage(50, 20, None, None);

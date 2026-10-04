@@ -67,6 +67,7 @@ pub(super) fn read_citation(val: &serde_json::Value) -> crate::codec::ir::IrCita
         encrypted_index,
         // VERBATIM source object → byte-exact same-protocol re-emission.
         raw: Some(val.clone()),
+        ..Default::default()
     }
 }
 

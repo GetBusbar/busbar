@@ -23,11 +23,12 @@ pub const IR_CLAMP_N_TO_1: Diagnostic = Diagnostic {
     class: Class::Plane,
     slug: "ir-clamp-n-to-1",
     title: "Cross-protocol transcode clamped n>1 to 1",
-    severity: Severity::BenignRecurring,
-    summary: "On a cross-protocol hop the neutral response IR carries a single candidate, so a \
-              request asking for n>1 completions is clamped to n=1 before the egress writer emits it \
-              — otherwise extra choices would be generated, billed, and then dropped. Fires per \
-              request on the affected seam, so it is logged at debug.",
+    severity: Severity::Actionable,
+    summary: "On a cross-protocol hop the neutral response IR carries a single candidate, so a request \
+              asking for n>1 completions is clamped to n=1 before the egress writer emits it — \
+              otherwise extra choices would be generated, billed, and then dropped. Warned on every \
+              translated request it affects (one drop path, `codec::drops`), and recorded in the audit \
+              log as `egress.control_unrepresentable` naming the wire path.",
     action: "None — self-heals. To use n>1, route the request to a same-protocol lane where the \
              body is forwarded verbatim.",
     since: "1.6.0",
@@ -39,12 +40,13 @@ pub const IR_DROP_CACHED_CONTENT: Diagnostic = Diagnostic {
     class: Class::Plane,
     slug: "ir-drop-cached-content",
     title: "Cross-protocol transcode dropped a provider cachedContent reference",
-    severity: Severity::BenignRecurring,
-    summary:
-        "A provider `cachedContent` reference was dropped on the cross-protocol seam because the \
-              referenced context cache lives server-side at the origin provider and cannot be projected into \
-              `contents`: the backend answers on the visible history only and the caller is billed \
-              full uncached input. Fires per request, logged at debug.",
+    severity: Severity::Actionable,
+    summary: "A provider `cachedContent` reference was dropped on the cross-protocol seam because the \
+              referenced context cache lives server-side at the origin provider and cannot be \
+              projected into `contents`: the backend answers on the visible history only and the \
+              caller is billed full uncached input. Warned on every translated request it affects (one \
+              drop path, `codec::drops`), and recorded in the audit log as \
+              `egress.control_unrepresentable` naming the wire path.",
     action: "None — self-heals. Route cachedContent requests to a same-protocol lane to use the cache.",
     since: "1.6.0",
     retired: false,
@@ -55,12 +57,12 @@ pub const IR_DROP_CACHE_CONTROL_OVER_CAP: Diagnostic = Diagnostic {
     class: Class::Plane,
     slug: "ir-drop-cache-control-over-cap",
     title: "Cross-protocol transcode dropped cache_control breakpoints past the dialect cap",
-    severity: Severity::BenignRecurring,
-    summary:
-        "The request carried more cache_control breakpoints than the egress dialect allows (the \
+    severity: Severity::Actionable,
+    summary: "The request carried more cache_control breakpoints than the egress dialect allows (the \
               target vendor 400s past its documented cap), so the breakpoints past the cap were \
-              dropped before the writer emitted them. Reachable only cross-protocol; fires per \
-              request, logged at debug.",
+              dropped before the writer emitted them. Reachable only cross-protocol. Warned on every \
+              translated request it affects (one drop path, `codec::drops`), and recorded in the audit \
+              log as `egress.control_unrepresentable` naming the wire path.",
     action:
         "None — self-heals. Reduce the number of cache breakpoints, or route to a same-protocol \
              lane if the full set is load-bearing.",
@@ -73,11 +75,12 @@ pub const IR_DROP_HOSTED_TOOLS: Diagnostic = Diagnostic {
     class: Class::Plane,
     slug: "ir-drop-hosted-tools",
     title: "Cross-protocol transcode dropped hosted (built-in) tools",
-    severity: Severity::BenignRecurring,
+    severity: Severity::Actionable,
     summary: "One or more provider-hosted (built-in) tools were dropped on the cross-protocol seam \
-              because they have no function-tool equivalent on a backend that does not host them; forwarding \
-              them would emit a malformed empty-name function tool the upstream rejects. Fires per \
-              request, logged at debug.",
+              because they have no function-tool equivalent on a backend that does not host them; \
+              forwarding them would emit a malformed empty-name function tool the upstream rejects. \
+              Warned on every translated request it affects (one drop path, `codec::drops`), and \
+              recorded in the audit log as `egress.control_unrepresentable` naming the wire path.",
     action: "None — self-heals. Route hosted-tool requests to a lane whose backend hosts them.",
     since: "1.6.0",
     retired: false,
@@ -88,11 +91,12 @@ pub const IR_DROP_MESSAGE_NAME: Diagnostic = Diagnostic {
     class: Class::Plane,
     slug: "ir-drop-message-name",
     title: "Cross-protocol transcode dropped per-message participant names (messages[].name)",
-    severity: Severity::BenignRecurring,
-    summary: "Per-message participant names (`messages[].name`) were dropped on the \
-              cross-protocol seam because no target protocol models a per-message speaker name, so a \
-              multi-speaker transcript reaches the backend with its speaker labels removed. Fires \
-              per request, logged at debug.",
+    severity: Severity::Actionable,
+    summary: "Per-message participant names (`messages[].name`) were dropped on the cross-protocol \
+              seam because no target protocol models a per-message speaker name, so a multi-speaker \
+              transcript reaches the backend with its speaker labels removed. Warned on every \
+              translated request it affects (one drop path, `codec::drops`), and recorded in the audit \
+              log as `egress.control_unrepresentable` naming the wire path.",
     action: "None — self-heals. Put the speaker in the message text, or route to a same-protocol lane that models them.",
     since: "1.6.0",
     retired: false,
@@ -103,11 +107,12 @@ pub const IR_DROP_PROMPT_CACHE: Diagnostic = Diagnostic {
     class: Class::Plane,
     slug: "ir-drop-prompt-cache",
     title: "Cross-protocol transcode dropped prompt-cache breakpoints",
-    severity: Severity::BenignRecurring,
+    severity: Severity::Actionable,
     summary: "Prompt-cache breakpoints were cleared on the cross-protocol seam because the target \
               lane's dialect gates its cache marker per model and the lane does not declare the \
-              capability; the request proceeds uncached. Fires per request on the affected seam, \
-              logged at debug.",
+              capability; the request proceeds uncached. Warned on every translated request it affects \
+              (one drop path, `codec::drops`), and recorded in the audit log as \
+              `egress.control_unrepresentable` naming the wire path.",
     action:
         "None — self-heals. Set `prompt_caching: true` on the model if the backend accepts cache \
              markers.",
@@ -120,11 +125,12 @@ pub const IR_DROP_REASONING: Diagnostic = Diagnostic {
     class: Class::Plane,
     slug: "ir-drop-reasoning",
     title: "Cross-protocol transcode dropped a reasoning/thinking ask",
-    severity: Severity::BenignRecurring,
+    severity: Severity::Actionable,
     summary: "A request's reasoning/thinking parameter was dropped on the cross-protocol seam because \
               the target lane does not declare the reasoning capability; the request proceeds at the \
-              backend's default thinking level. Fires per request on the affected seam, logged at \
-              debug.",
+              backend's default thinking level. Warned on every translated request it affects (one \
+              drop path, `codec::drops`), and recorded in the audit log as \
+              `egress.control_unrepresentable` naming the wire path.",
     action: "None — self-heals. Set `reasoning: true` on the model or pool member if the backend \
              accepts thinking params.",
     since: "1.6.0",
@@ -135,12 +141,14 @@ pub const IR_DROP_UNMODELED_KEYS: Diagnostic = Diagnostic {
     code: 7085,
     class: Class::Plane,
     slug: "ir-drop-unmodeled-keys",
-    title: "Cross-protocol transcode dropped unmodeled request keys",
-    severity: Severity::BenignRecurring,
-    summary: "The source dialect's unmodeled top-level request keys were dropped on the \
-              cross-protocol seam because no target writer can re-emit a foreign dialect's key, so \
-              every key named in the log is not forwarded to the backend. Fires per request; only \
-              key names are logged (never their values), at debug.",
+    title: "Cross-protocol transcode dropped an unmapped member",
+    severity: Severity::Actionable,
+    summary: "A member of the source dialect that the target dialect has no form for was dropped on \
+              the cross-protocol seam: a request member its map file does not model, or a request or \
+              answer content block of a kind the other dialect cannot carry. Nothing is put in its \
+              place. Only the wire path is logged (never the value). Warned on every translated \
+              request or response it affects (one drop path, `codec::drops`); a request-side drop is \
+              also recorded in the audit log as `egress.control_unrepresentable` naming the wire path.",
     action:
         "None — self-heals. Route to a same-protocol lane (which forwards the caller's original \
              bytes verbatim) if a named field is load-bearing.",
@@ -153,10 +161,11 @@ pub const IR_TRUNCATE_STOP_SEQUENCES: Diagnostic = Diagnostic {
     class: Class::Plane,
     slug: "ir-truncate-stop-sequences",
     title: "Stop sequences truncated to the protocol's documented cap",
-    severity: Severity::BenignRecurring,
+    severity: Severity::Actionable,
     summary: "The request carried more stop sequences than the target protocol's documented cap \
-              allows, so the excess were dropped before forwarding. Fires per request on the \
-              affected seam, logged at debug.",
+              allows, so the excess were dropped before forwarding. Warned on every translated request \
+              it affects (one drop path, `codec::drops`), and recorded in the audit log as \
+              `egress.control_unrepresentable` naming the wire path.",
     action: "None — self-heals. Reduce the number of stop sequences, or route to a same-protocol \
              lane if the full set is required.",
     since: "1.6.0",
@@ -250,12 +259,12 @@ pub const PROTO_DROP_PROVIDER_METADATA: Diagnostic = Diagnostic {
     class: Class::Plane,
     slug: "proto-drop-provider-metadata",
     title: "Cross-protocol transcode dropped response-side provider metadata",
-    severity: Severity::BenignRecurring,
+    severity: Severity::Actionable,
     summary:
         "Response-side provider metadata (a vendor guardrail `trace`, a vendor `safetyRatings`) \
               was dropped on the cross-protocol seam because it is a vendor-scoped artifact the \
-              caller's protocol has no shape to receive. Fires per response on the affected seam, \
-              logged at debug.",
+              caller's protocol has no shape to receive. Warned on every translated response it \
+              affects (one drop path, `codec::drops`), naming the wire path.",
     action: "None — self-heals. If this metadata is compliance evidence, route the request to a \
              same-protocol lane where the upstream body reaches the client verbatim.",
     since: "1.6.0",

@@ -6,7 +6,7 @@
 //! with the same bytes, and a manifest check built on it would pass a lying manifest.
 
 use super::*;
-use crate::abi::host::conn::connector::DIRECTION_OUTBOUND;
+use crate::abi::host::conn::connector::{DIRECTION_OUTBOUND, KEEP_NAMED};
 use crate::abi::mechanism::call::{BLOB_JSON, BLOB_OCTETS};
 use crate::abi::mechanism::door::{
     KindTailHead, FAMILY_COUNTER, MARK_ONE_INSTANCE, MARK_WORD_HOOK, REWRITE_ALIAS, REWRITE_KEY,
@@ -75,6 +75,10 @@ const NEEDS: &[Need] = &[Need {
     keep_response_headers: std::ptr::null(),
     keep_response_headers_len: 0,
     timeout_ms: 30_000,
+    keep_mode: KEEP_NAMED,
+    _reserved: 0,
+    deny_response_headers: core::ptr::null(),
+    deny_response_headers_len: 0,
 }];
 const ANSWERS: &[AbiStr] = &[abi_str("status")];
 const CLAIMS: &[AbiStr] = &[abi_str("https"), abi_str("sse")];

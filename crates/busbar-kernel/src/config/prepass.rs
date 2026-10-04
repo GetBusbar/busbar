@@ -89,7 +89,7 @@ impl LiftableSection for EndpointSection {
     }
 }
 
-impl LiftableSection for Option<crate::oauth_as::config::OauthAsCfg> {
+impl LiftableSection for Option<serde_yaml::Value> {
     fn bank(self, into: &mut Lifted) {
         into.oauth_as = Some(self);
     }
@@ -201,7 +201,7 @@ const AUTH_LIFTS: &[(&str, Dest)] = &[(LIFTED_AUTH_KEYS[0], Dest::AuthPolicy)];
 #[derive(Default)]
 pub(crate) struct Lifted {
     endpoint: Option<EndpointSection>,
-    oauth_as: Option<Option<crate::oauth_as::config::OauthAsCfg>>,
+    oauth_as: Option<Option<serde_yaml::Value>>,
     tools: Option<ToolsSection>,
     agents: Option<AgentsSection>,
     declared: DeclaredSections,
@@ -209,6 +209,7 @@ pub(crate) struct Lifted {
     plane_rate_cards: super::PlaneRateCards,
     plane_fees: super::PlaneFeesMap,
     plane_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
+    declared_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
     /// The top-level keys the key reader watches for: the nested key, then every section a
     /// registered plane requires. A key is struck as the document is seen to carry it, so what is
     /// left once the document is read is what it omitted.
@@ -222,6 +223,7 @@ impl Lifted {
         deploy.plane_rate_cards = self.plane_rate_cards;
         deploy.plane_fees = self.plane_fees;
         deploy.plane_raw = self.plane_raw;
+        deploy.declared_raw = self.declared_raw;
         deploy.declared = self.declared;
         if let Some(v) = self.endpoint {
             deploy.endpoint = v;
@@ -264,13 +266,12 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
         let (key, lifted) = (self.key, self.lifted);
         match self.dest {
             Dest::Endpoint => EndpointSection::deserialize(de)?.bank(lifted),
-            Dest::OauthAs => {
-                Option::<crate::oauth_as::config::OauthAsCfg>::deserialize(de)?.bank(lifted)
-            }
+            Dest::OauthAs => Option::<serde_yaml::Value>::deserialize(de)?.bank(lifted),
             Dest::Tools => lift_plane::<ToolsSection, D>(key, de, lifted)?,
             Dest::Agents => lift_plane::<AgentsSection, D>(key, de, lifted)?,
             Dest::Declared => {
                 let section = plane_remainder::<D>(key, de, lifted)?;
+                lifted.declared_raw.insert(key, section.clone());
                 DeclaredSections::parse(key, section)
                     .map_err(D::Error::custom)?
                     .bank(lifted);

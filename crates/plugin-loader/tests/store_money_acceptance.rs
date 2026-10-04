@@ -32,10 +32,18 @@ use busbar_contract::records::{
 // The build's store, named once: every subject below reaches it through this alias.
 use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceId, SliceRequest, SliceStore};
 use busbar_plugin_loader::store_adapter::StoreAdapter;
-use busbar_store_memory as store_fixture;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use store_fixture::MemoryStore;
+
+// The build's store, reached BY KIND (`store_fixture`, `STORE_FIXTURE_CDYLIB`): `build.rs` writes them
+// from the `[package.metadata.busbar.both-ways] store` row, so this suite names no store instance.
+include!(concat!(env!("OUT_DIR"), "/store_fixture.rs"));
+
+/// A FRESH store through the fixture's one constructor (the one both its doors reach), as its Rust
+/// type behind the record-store face.
+fn fresh() -> Arc<dyn RecordStore> {
+    Arc::from(store_fixture::open("{}").expect("the store opens"))
+}
 
 // ── subjects: every door the build's store has ─────────────────────────────────────────────────
 
@@ -51,7 +59,7 @@ fn dropped_in() -> Option<Arc<dyn RecordStore>> {
     let exe = std::env::current_exe().ok()?;
     let profile_dir = exe.parent()?.parent()?;
     let name = format!(
-        "{}busbar_store_memory{}",
+        "{}{STORE_FIXTURE_CDYLIB}{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     );
@@ -89,7 +97,7 @@ fn subjects() -> Vec<Subject> {
     let mut all = vec![
         Subject {
             door: "rust type",
-            store: Arc::new(MemoryStore::new()),
+            store: fresh(),
         },
         Subject {
             door: "compiled-in table",
@@ -746,7 +754,7 @@ fn slice(wanted: u64, epoch: u64) -> SliceRequest {
 /// net holding is granted minus what came back.
 #[test]
 fn reserve_grants_at_most_wanted_and_release_returns_the_unspent() {
-    let a = StoreAdapter::native(Arc::new(MemoryStore::new()));
+    let a = StoreAdapter::native(fresh());
     let g1 = a.reserve(&slice(100, 0)).expect("reserve");
     let g2 = a.reserve(&slice(50, 0)).expect("reserve");
     assert!(g1.granted <= 100 && g2.granted <= 50);
@@ -761,7 +769,7 @@ fn reserve_grants_at_most_wanted_and_release_returns_the_unspent() {
 /// release of the same slice moves nothing (it is already closed).
 #[test]
 fn release_is_clamped_to_the_grant_and_closes_the_slice() {
-    let a = StoreAdapter::native(Arc::new(MemoryStore::new()));
+    let a = StoreAdapter::native(fresh());
     let keep = a.reserve(&slice(30, 0)).expect("reserve");
     let g = a.reserve(&slice(10, 0)).expect("reserve");
     a.release(g.id, 1_000).expect("over-release");
@@ -773,7 +781,7 @@ fn release_is_clamped_to_the_grant_and_closes_the_slice() {
 /// A release naming a slice this adapter never granted is accepted and moves nothing.
 #[test]
 fn releasing_an_unknown_slice_moves_nothing() {
-    let a = StoreAdapter::native(Arc::new(MemoryStore::new()));
+    let a = StoreAdapter::native(fresh());
     let g = a.reserve(&slice(7, 0)).expect("reserve");
     a.release(SliceId(g.id.0 + 999), 7)
         .expect("unknown release");
@@ -785,7 +793,7 @@ fn releasing_an_unknown_slice_moves_nothing() {
 /// read back from the store itself, figure for figure.
 #[test]
 fn the_adapter_passes_money_through_to_the_loaded_store() {
-    let inner = Arc::new(MemoryStore::new());
+    let inner = fresh();
     let a = StoreAdapter::native(inner.clone());
     a.store()
         .add_usage("k", DAY, &delta(2, 1, "m", &[(UNIT_OUTPUT, 9)]))
@@ -803,27 +811,6 @@ fn the_adapter_passes_money_through_to_the_loaded_store() {
         (2, 1, 9)
     );
     assert_eq!(inner.list_metering(DAY).expect("list")[0].requests, 2);
-}
-
-/// Record blobs are opaque to the store (unit-map shapes plus the scale marker are
-/// the KERNEL's encoding): whatever bytes go in come back exactly, by key and by prefix scan.
-#[test]
-fn a_record_blob_comes_back_byte_exact() {
-    use busbar_contract::ids::RecordSchemaId;
-    use busbar_contract::kinds::RecordBytes;
-    const SCHEMA: RecordSchemaId = RecordSchemaId::new("money_acceptance");
-    let blob = br#"{"scale":6,"units":{"input":27500000,"output":1}}"#.to_vec();
-    let s = MemoryStore::new();
-    let body = RecordBytes::new(blob.clone()).expect("inside the record ceiling");
-    s.record_put(SCHEMA, b"cell/k/1", &body).expect("put");
-    let got = s
-        .record_get(SCHEMA, b"cell/k/1")
-        .expect("get")
-        .expect("present");
-    assert_eq!(got.as_slice(), blob.as_slice());
-    let scan = s.record_scan(SCHEMA, b"cell/k/", 10).expect("scan");
-    assert_eq!(scan.len(), 1);
-    assert_eq!(scan[0].1.as_slice(), blob.as_slice());
 }
 
 // ── store v3: the money slots through the table ────────────────────────────────────────────────
@@ -848,6 +835,15 @@ mod v3 {
 
     pub use busbar_contract::abi::store::OpId;
 
+    /// This test process's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
+    fn mint() -> OpId {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        OpId::from_parts(
+            0x3a11,
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
+        )
+    }
+
     fn bind_to(d: &Dispatcher) -> Bind {
         Bind {
             instance: Arc::from("the-instance"),
@@ -863,7 +859,7 @@ mod v3 {
         let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
         let row = LinkedRow::of(store_fixture::door).expect("the store states its Statement");
         let p = load_linked::<Store>(&row, bind_to(&d)).expect("door");
-        LoadedStore::open(p, d, b"{}", 3).expect("open")
+        LoadedStore::open(p, d, b"{}", mint).expect("open")
     }
 
     /// The same door dropped in (the `store_v3_door` example cdylib) through the same table;
@@ -887,7 +883,7 @@ mod v3 {
         // The signed manifest's rendering: the linked rlib's door, the same crate the cdylib is.
         let stated = rendering_of(store_fixture::door).expect("the store renders its Statement");
         let p = load_dropped::<Store>(&path, &stated, bind_to(&d)).expect("dropped door");
-        Some(LoadedStore::open(p, d, b"{}", 3).expect("open"))
+        Some(LoadedStore::open(p, d, b"{}", mint).expect("open"))
     }
 
     /// The window every `v3_*` test draws in (ms), and its bucket.
@@ -1025,7 +1021,7 @@ fn v3_a_duplicate_usage_batch_applies_once_after_restart() {
     let s = v3::bind();
     assert!(
         s.facts().ephemeral,
-        "the memory store states it keeps nothing across a restart"
+        "the fixture store states it keeps nothing across a restart"
     );
     let batch = [("k", DAY, delta(1, 1, "m", &[(UNIT_OUTPUT, 3)]))];
     assert_eq!(s.add_usage_batch(op(2), &batch), Ok(()));
@@ -1134,7 +1130,7 @@ fn v3_a_replayed_reserve_does_not_draw_twice() {
 #[test]
 fn v3_a_stale_epoch_reserve_is_refused() {
     let s = v3::bind();
-    assert!(s.facts().ephemeral, "the memory store is node-local");
+    assert!(s.facts().ephemeral, "the fixture store is node-local");
     s.cap(op(100), v3::requests("k"), 10);
     s.reserve(op(9), 3, &draw("k", 1)).expect("epoch 3");
     s.reserve(op(10), 2, &draw("k", 1))

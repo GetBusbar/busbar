@@ -331,12 +331,27 @@ fn the_url_facts_drive_the_two_steps_to_the_live_paths_answer() {
                 obj.insert(key.to_string(), serde_json::Value::Bool(true));
             }
         }
-        let live: Bytes = busbar_plane_llm::codec::json::to_vec(&v)
-            .expect("live serialize")
-            .into();
+        // The live arm carries the same three members, spliced into the caller's bytes (never a
+        // re-serialization): the same document, and the caller's own bytes where it named neither.
+        let live = crate::engine::xchg::arrive::splice_path_facts(
+            &body,
+            &f.model,
+            f.stream,
+            f.gemini_json_array
+                .then(|| busbar_kernel::proto::array_stream_shim_key_for(proto))
+                .flatten(),
+        )
+        .expect("a native body is a document");
         assert_eq!(
-            step0.injected, live,
+            step0.injected.as_ref(),
+            live.as_slice(),
             "{path}: the step's injected body is not the live path's"
+        );
+        let carried: serde_json::Value =
+            busbar_plane_llm::codec::json::parse(&step0.injected).expect("carried JSON");
+        assert_eq!(
+            carried, v,
+            "{path}: the carried bytes read as another document"
         );
 
         // STEP 1, in the path-model spelling: the live arm's one chained lookup.

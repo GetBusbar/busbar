@@ -611,6 +611,7 @@ fn ant15_response_image_and_json_blocks_are_not_invalid_blocks() {
         stop_sequence: None,
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = protocol_for("anthropic")
         .unwrap()

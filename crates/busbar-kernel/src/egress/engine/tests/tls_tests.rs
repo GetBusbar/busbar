@@ -341,6 +341,49 @@ async fn the_mtls_fixture_accepts_the_engine_identity_and_records_its_leaf() {
     );
 }
 
+/// 1.5.5's ClientHello offered ALPN `http/1.1` under the http1-only key, and `h2, http/1.1`
+/// otherwise (hyper-rustls leaves the http1-only offer EMPTY; the engine states it). The fixture
+/// serves only `http/1.1`, so what it agrees tells whether the hello carried the extension: an
+/// empty offer agrees nothing.
+#[tokio::test]
+async fn the_http1_only_hello_offers_http_1_1_as_1_5_5_did() {
+    for http1_only in [true, false] {
+        let server = ca_and_leaf(&["alpn.test"]);
+        let fixture = spawn_tls(TlsServerSpec {
+            cert_chain_pem: server.leaf_pem.clone(),
+            key_pem: server.leaf_key_pem.clone(),
+            client_auth: ClientAuth::None,
+            response: CannedResponse::ok("alpn"),
+            max_requests_per_connection: 1,
+        });
+        let mut spec = EngineSpec::pinned(
+            Arc::from("alpn.test"),
+            fixture.addr.ip(),
+            None,
+            certs_from_pem(&server.ca_pem),
+        );
+        spec.http1_only = http1_only;
+        let client = build_client(&spec).expect("the posture builds");
+        let resp = client
+            .request(egress_request(
+                format!("https://alpn.test:{}/v1/x", fixture.addr.port())
+                    .parse()
+                    .expect("uri"),
+                http::HeaderMap::new(),
+                Bytes::new(),
+            ))
+            .await
+            .expect("the handshake completes");
+        assert_eq!(resp.status(), 200);
+        let records = fixture.records_when(|r| r.first().is_some_and(|c| c.handshake_ok));
+        assert_eq!(
+            records[0].alpn.as_deref(),
+            Some(&b"http/1.1"[..]),
+            "http1_only = {http1_only}: the hello must carry ALPN http/1.1"
+        );
+    }
+}
+
 /// The private-CA posture: accepted ONLY with the extra root. The extras JOIN the webpki store
 /// (`Trust::WebpkiPlus`), they never replace it; without them the private chain has no anchor and
 /// the connect refuses.

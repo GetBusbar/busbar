@@ -8,7 +8,7 @@
 //! through the same table and never holds a plugin crate's Rust types (the design: compiled in or
 //! dropped in, the same table).
 
-use super::call::{AbiStr, Blob};
+use super::call::{AbiStr, Blob, Op};
 use super::lifecycle::OpsHead;
 use crate::abi::host::conn::connector::Need;
 
@@ -34,6 +34,11 @@ pub struct Door {
     pub statement: *const Statement,
     /// The kind's ops table; every kind's table begins with [`OpsHead`].
     pub ops: *const OpsHead,
+    /// APPEND-ONLY TAIL: `ready` (`abi::mechanism::lifecycle`, READY), in [`super::lifecycle::ReadyIn`],
+    /// out [`super::call::OutHead`]; `None` = the plugin has none and is opened exactly as before.
+    /// A door whose `size` ends before this field has none: the host reads it only when `size`
+    /// covers it.
+    pub ready: Option<Op>,
 }
 
 /// The door function: the ONE symbol a plugin exports. `extern "C"`: a panic escaping it aborts.
@@ -228,4 +233,19 @@ pub struct KindTailHead {
     pub size: u32,
     /// Alignment padding.
     pub _reserved: u32,
+}
+
+/// THE KIND TAIL GROWTH RULE: a kind tail grows only by APPENDING fields, and its head's `size`
+/// says how much of it the plugin wrote. The host reads the plugin's first `min(size, host)` bytes
+/// and zero-fills the rest, so a field the plugin predates reads absent (`0`, NULL, an empty
+/// string); a newer plugin's bytes past the host's tail are not read. Only a tail smaller than
+/// `frozen`, the kind's size when its tail last froze, is refused (`None`). Returns how many of
+/// the plugin's bytes the host reads.
+#[must_use]
+pub const fn tail_read_len(size: u32, frozen: usize, host: usize) -> Option<usize> {
+    let size = size as usize;
+    if size < frozen {
+        return None;
+    }
+    Some(if size < host { size } else { host })
 }

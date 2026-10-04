@@ -71,7 +71,7 @@ item = "extern 'C-unwind'"
 
 [[finding]]
 rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-kernel/src/plane/auditlog.rs"
+file = "crates/busbar-kernel/src/audit/auditlog.rs"
 item = "extern 'C-unwind'"
 
 [[finding]]
@@ -161,16 +161,6 @@ item = "busbar_call"
 
 [[finding]]
 rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-kernel-identity/src/operator.rs"
-item = "ColdEntry"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-kernel-identity/src/operator.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
 file = "crates/busbar-kernel/src/observe.rs"
 item = "abi::cold"
 
@@ -192,11 +182,6 @@ item = "abi::cold"
 [[finding]]
 rule = "one-memory-abi:cold-lane"
 file = "crates/plugin-loader/src/export.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/plugin-loader/src/hook.rs"
 item = "abi::cold"
 
 [[finding]]
@@ -316,11 +301,6 @@ item = "spawn_blocking"
 
 [[finding]]
 rule = "one-memory-abi:spawn-blocking"
-file = "crates/plugin-loader/src/hook.rs"
-item = "spawn_blocking"
-
-[[finding]]
-rule = "one-memory-abi:spawn-blocking"
 file = "crates/plugin-loader/src/host.rs"
 item = "spawn_blocking"
 
@@ -340,7 +320,16 @@ item = "spawn_blocking"
 rule = "one-memory-abi:cold-lane"
 file = "crates/busbar/src/root/linked.rs"
 item = "abi::cold"
-count = 16
+count = 1
+expires = "M6-COLD-DELETE"
+
+# BOOT-TAIL card item 4: the host egress carrier moved whole from root/linked.rs into root/boot.rs
+# (a pure move), and its 15 cold-lane lines with it: linked.rs 16 -> 1, boot.rs 15. Net zero.
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/busbar/src/root/boot.rs"
+item = "abi::cold"
+count = 15
 expires = "M6-COLD-DELETE"
 
 [[finding]]

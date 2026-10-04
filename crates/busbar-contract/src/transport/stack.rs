@@ -232,6 +232,9 @@ pub struct Framed<'a> {
     pub status_code: Option<u32>,
     /// How long the far side asked to be left alone, in seconds.
     pub retry_after_secs: Option<u64>,
+    /// The bytes belong to a TEXT message, not a binary one
+    /// ([`crate::abi::transport::PIECE_TEXT`]; read above the ABI as `FrameMeta::text`).
+    pub text: bool,
 }
 
 impl<'a> Framed<'a> {
@@ -245,7 +248,15 @@ impl<'a> Framed<'a> {
             status: None,
             status_code: None,
             retry_after_secs: None,
+            text: false,
         }
+    }
+
+    /// The same piece, stated as part of a TEXT message (`true`) or a binary one.
+    #[must_use]
+    pub const fn text(mut self, text: bool) -> Self {
+        self.text = text;
+        self
     }
 }
 
@@ -373,17 +384,21 @@ pub trait Framer: Plugin + Send + Sync + 'static {
     ) -> Result<(), TransportError>;
 
     /// Put the bytes that carry `bytes` on `stream` into `out`. `end_of_frame` marks the last piece
-    /// of the frame.
+    /// of the frame; `text` says the frame is a TEXT message, not a binary one
+    /// ([`crate::abi::transport::EMIT_TEXT`]), for a wire whose messages are one or the other (a
+    /// wire that draws no such line ignores it).
     ///
     /// # Errors
     ///
-    /// The frame cannot be carried on this state (framing, or a closed state).
+    /// The frame cannot be carried on this state (framing, or a closed state), or a text frame is
+    /// not UTF-8.
     fn emit(
         &self,
         state: u64,
         stream: StreamId,
         bytes: &[u8],
         end_of_frame: bool,
+        text: bool,
         out: &mut dyn FramerOut,
     ) -> Result<(), TransportError>;
 

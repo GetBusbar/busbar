@@ -82,8 +82,13 @@ fn bytes_go_through_the_framer_both_ways_byte_exact() {
         let mut c = Connection::dial(door.clone(), d).expect("dials");
         let waker = std::task::Waker::noop();
         let sent: Vec<u8> = (0..=255_u8).cycle().take(100_000).collect();
-        c.write(&sent, true, &mut std::task::Context::from_waker(waker))
-            .unwrap();
+        c.write(
+            &sent,
+            true,
+            false,
+            &mut std::task::Context::from_waker(waker),
+        )
+        .unwrap();
         let got = gather(&mut c, 6 + sent.len()).await;
         assert_eq!(&got[..6], b"hello ", "the opening message goes first");
         assert_eq!(
@@ -297,7 +302,12 @@ fn a_far_end_that_never_reads_fills_the_buffer_and_writes_are_refused_room() {
         let mut full = false;
         for _ in 0..2000 {
             let n = c
-                .write(&chunk, false, &mut std::task::Context::from_waker(waker))
+                .write(
+                    &chunk,
+                    false,
+                    false,
+                    &mut std::task::Context::from_waker(waker),
+                )
                 .expect("the connection lives");
             assert!(
                 c.buffered() <= WRITE_BUFFER_BYTES,
@@ -315,7 +325,12 @@ fn a_far_end_that_never_reads_fills_the_buffer_and_writes_are_refused_room() {
         );
         assert!(
             matches!(
-                c.write(&chunk, false, &mut std::task::Context::from_waker(waker)),
+                c.write(
+                    &chunk,
+                    false,
+                    false,
+                    &mut std::task::Context::from_waker(waker)
+                ),
                 Ok(0)
             ),
             "and a full buffer keeps refusing room"

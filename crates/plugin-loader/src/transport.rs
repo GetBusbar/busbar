@@ -59,7 +59,6 @@ use futures::task::AtomicWaker;
 use libloading::Library;
 use std::collections::HashMap;
 use std::os::raw::c_void;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
@@ -735,6 +734,9 @@ extern "C-unwind" fn out_frame(ctx: *mut c_void, piece: *const WireFramed) {
             status,
             status_code: (p.flags & FRAMED_HAS_STATUS_CODE != 0).then_some(p.status_code),
             retry_after_secs: (p.flags & FRAMED_HAS_RETRY_AFTER != 0).then_some(p.retry_after_secs),
+            // The condemned HOT lane carries no text bit (`qa/abi-freeze.toml`): a text message
+            // reaches the host over the memory ABI only (`abi::transport::PIECE_TEXT`).
+            text: false,
         });
     }));
 }
@@ -910,6 +912,9 @@ impl Framer for DeclFramer {
         stream: StreamId,
         bytes: &[u8],
         end_of_frame: bool,
+        // The condemned HOT lane carries no text bit (`qa/abi-freeze.toml`); a text message goes
+        // out over the memory ABI only (`abi::transport::EMIT_TEXT`).
+        _text: bool,
         mut out: &mut dyn FramerOut,
     ) -> Result<(), TransportError> {
         let f = self.slots.emit.ok_or(TransportError::Closed)?;
@@ -1051,27 +1056,6 @@ pub fn load_transport_from_bytes(
     wire_up_transport(lib, display.to_string(), manifest_kind, Some(staged))
 }
 
-/// Load a transport from the `cdylib` at `lib_path`. A bare path load has no signed manifest, so the
-/// seam's expected kind (`transport`) is the authority; [`load_transport_from_bytes`] is the real
-/// gate for a dropped-in tarball.
-///
-/// # Errors
-///
-/// As [`load_transport_from_bytes`].
-#[cold]
-#[inline(never)]
-pub fn load_transport(lib_path: &Path) -> Result<DynTransport, String> {
-    let display = lib_path.display().to_string();
-    let lib = crate::dlopen_on_worker(lib_path.as_os_str())
-        .map_err(|e| format!("failed to load transport '{display}': {e}"))?;
-    wire_up_transport(
-        lib,
-        display,
-        busbar_contract::abi::cold::kind::TRANSPORT,
-        None,
-    )
-}
-
 /// Admit a transport decl handed over by address through exactly the admission a dropped-in one
 /// gets.
 ///
@@ -1096,19 +1080,7 @@ pub(crate) fn wire_up_transport(
     manifest_kind: &str,
     backing: Option<stage::Staged>,
 ) -> Result<DynTransport, String> {
-    let handshake = {
-        let f = unsafe {
-            lib.get::<busbar_contract::abi::cold::AbiFn>(busbar_contract::abi::cold::symbol::ABI)
-        }
-        .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
-        crate::ffi_guard_confined(&display, "abi", || unsafe { (*f)() })?
-    };
-    if handshake != busbar_contract::abi::cold::TRANSPORT_VERSION {
-        return Err(format!(
-            "transport '{display}' targets transport ABI v{handshake}, engine speaks v{}",
-            busbar_contract::abi::cold::TRANSPORT_VERSION
-        ));
-    }
+    crate::abi_handshake(crate::abi_symbol(&lib, &display)?, &display, "transport")?;
     let exported_kind = crate::read_plugin_kind(&lib, &display)?;
     if exported_kind != busbar_contract::abi::cold::kind::TRANSPORT {
         return Err(format!(

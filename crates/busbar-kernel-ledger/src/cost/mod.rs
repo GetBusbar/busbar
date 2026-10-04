@@ -82,7 +82,7 @@ pub use posting::{
     apply_tier, apply_tier_signed, checked_apply_tier, price, price_at_card, price_fail_closed,
     CachedPrice, Posting, Priced, PricedLine, Quantity, Unpriceable, FEE_CLASS, STANDARD_TIER_BP,
 };
-pub use project::{derive_spend_cents, derive_spend_micros};
+pub use project::{derive_spend_cents, derive_spend_micros, MeteredRow};
 pub use rate::{
     compose_plane_cards, flat_card_present, nano_rate, nanos_sum, plane_fee_lane,
     representable_nano_rate, split_plane_lane, CellPrices, LaneClass, LaneRates, PlaneFees,

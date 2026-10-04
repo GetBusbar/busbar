@@ -6,7 +6,7 @@
 # core assumed it always had that module — and that module is not a plugin, it is a welded-in part of
 # the engine wearing a plugin's name.
 #
-# WHAT "STILL WORK" MEANS HERE, and why it is not what the tree already checked. `ci.yml`'s
+# WHAT "STILL WORK" MEANS HERE, and why it is not what the tree already checked. the removed `ci.yml`'s
 # `no-default-features` job builds, clippy-lints, and unit-tests the featureless binary. That proves
 # the featureless binary COMPILES and that the tests which remain compiled in still pass. It never
 # boots the binary and never serves a request, so it cannot see a core path that compiles fine and

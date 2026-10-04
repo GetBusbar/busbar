@@ -42,7 +42,7 @@ impl SecretModule for NeedDialler {
                 },
             )
             .map_err(dial)?;
-        table.write(c, b"ping", true).map_err(dial)?;
+        table.write(c, b"ping", true, false).map_err(dial)?;
         let mut buf = [0_u8; 64];
         // Nothing blocks: a read with nothing ready is pending, and this one-shot fixture reports
         // that as unavailable rather than wait.

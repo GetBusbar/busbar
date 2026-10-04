@@ -196,6 +196,12 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
         self.head().map_or(0, |h| h.parked().len())
     }
 
+    /// Whether this entry is its op's RESUME (the mechanism's `FLAG_RESUME`).
+    #[must_use]
+    pub const fn resuming(&self) -> bool {
+        self.resuming
+    }
+
     /// This call's ticket ([`Ticket::NONE`] for a call that may not pend).
     #[must_use]
     pub const fn ticket(&self) -> Ticket {

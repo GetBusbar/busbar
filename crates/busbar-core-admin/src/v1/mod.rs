@@ -15,6 +15,11 @@ pub mod json;
 mod named_def_views;
 pub mod service;
 
+// SCHEMA-ONLY response views for the ad-hoc-`json!` endpoints (moved from the kernel's
+// `admin::v1::contract::schema`); compiled only under the CI-only `openapi-schema` feature.
+#[cfg(feature = "openapi-schema")]
+pub mod schema;
+
 #[cfg(test)]
 #[path = "tests/hook_stage_projection.rs"]
 mod hook_stage_projection;

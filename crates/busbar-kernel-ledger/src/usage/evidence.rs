@@ -50,11 +50,6 @@ impl RetainedLocatorValues {
         }
     }
 
-    /// Retain values alongside the lane names the three legs saw.
-    pub fn with_lane_legs(values: Vec<LocatedValue>, lane_legs: LaneLegs) -> Self {
-        RetainedLocatorValues { values, lane_legs }
-    }
-
     /// The retained values, in the order the locators produced them.
     pub fn values(&self) -> &[LocatedValue] {
         &self.values

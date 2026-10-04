@@ -20,6 +20,7 @@
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::reason_of;
+use super::{units_bill, UNITS_FLOOR};
 use super::{
     AdminRoute, ArriveOut, BillableClass, Claim, DialectAuth, OnPieceOut, OutField, PinMechanism,
     PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut,
@@ -28,15 +29,15 @@ use super::{
     EMIT_DONE, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP,
     INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
     INGRESS_SUBSCRIPTION, MAX_REFUSAL_TEXT, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT,
-    PRINCIPAL_OPTIONAL, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_PUBLIC, SHAPE_PIECEWISE,
-    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_PROBES, TRUST_PIN, TRUST_RECOVERY_BACKOFF, UNITS_ESTIMATED,
-    UNITS_REPORTED, VERDICT_HARD,
+    PRINCIPAL_OPTIONAL, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_POOL, ROUTE_PUBLIC,
+    SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_PROBES, TRUST_PIN, TRUST_RECOVERY_BACKOFF,
+    UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
     SIGNAL_TAG_BOOL, SIGNAL_TAG_STR, SIGNAL_TAG_U64,
 };
-use crate::abi::mechanism::call::{AbiStr, Outcome};
+use crate::abi::mechanism::call::{AbiStr, Outcome, MAX_TEXT};
 use crate::abi::mechanism::check::{
     bits, code, fault, first, index, listed, range, result, results, span, text, weight, Dim,
     Filled, MAX_BYTES,
@@ -111,14 +112,15 @@ fn units(buf: &[UnitCount], n: u64, b: &Bounds) -> Result<(), Fault> {
         code(
             u64::from(u.source),
             u64::from(UNITS_ESTIMATED),
-            u64::from(UNITS_REPORTED),
+            u64::from(UNITS_FLOOR),
             "unit.source",
         )?;
-        // ONE CUMULATIVE COUNT per class and source: a second is a contradiction (two running
-        // totals of one thing), never a sum the host would have to add.
+        // ONE CUMULATIVE COUNT per class and source, and ONE BILLING COUNT per class: a second is a
+        // contradiction (two running totals of one thing), never a sum the host would have to add
+        // and never a choice it would have to make between a reported count and a floor.
         if counts[..i]
             .iter()
-            .any(|p| p.class == u.class && p.source == u.source)
+            .any(|p| p.class == u.class && units_bill(p.source) == units_bill(u.source))
         {
             return Err(fault(Rule::Contradiction, "unit.class"));
         }
@@ -197,6 +199,16 @@ pub fn check_arrive(
         if out.correlation != 0 && out.cancels != 0 {
             return Err(fault(Rule::Contradiction, "arrive.cancel_with_correlation"));
         }
+        text(out.pool, "arrive.pool")?;
+        if out.pool.len > MAX_TEXT {
+            return Err(fault(Rule::OverMax, "arrive.pool"));
+        }
+        if out.route != ROUTE_POOL && out.route != ROUTE_DIRECT {
+            return Err(fault(Rule::UnknownCode, "arrive.route"));
+        }
+    } else if out.pool.len != 0 || !out.pool.ptr.is_null() || out.route != ROUTE_POOL {
+        // The pool names where an admitted unit routes: an answer that admits nothing names none.
+        return Err(fault(Rule::Contradiction, "arrive.pool"));
     }
     if outcome == Outcome::Refused {
         text(out.head.error, "arrive.refusal_text")?;

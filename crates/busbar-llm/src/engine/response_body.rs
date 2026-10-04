@@ -30,6 +30,9 @@ pub(crate) struct UsageSink {
     /// calls read the clock independently and could land in different 60s rate windows / budget
     /// periods, mis-attributing spend and TPM.
     pub(crate) charged_at: u64,
+    /// This request's correlation id, stamped by the forward path once it is minted
+    /// (`forward_with_pool_parsed_inner`); 0 before then. The residual audit row names it.
+    pub(crate) request_id: u64,
     /// The admission's in-flight HOLDS (the `concurrent` limit gauges), released when the LAST
     /// clone of this sink drops - i.e. when the response stream completes or the request context
     /// unwinds on any error path. `Arc` because the sink clones per failover attempt; `None` for
@@ -406,6 +409,24 @@ where
                     let end = this.relay.end();
                     if let Some(reason) = end.stream_fault {
                         this.record_transient(reason);
+                    }
+                    // The stream's drops (design F3 "Drops"), already warned once each: one audit row
+                    // per wire path, the twin of the buffered answer's rows.
+                    if let (Some(host), Some(rt)) = (this.host.as_ref(), this.rt.as_ref()) {
+                        if let Some(lane) = EngineTables::new(rt).lanes().get(this.lane_idx) {
+                            let caller = this
+                                .usage_sink
+                                .as_ref()
+                                .map_or("anonymous", |s| s.key.id.as_str());
+                            for path in &end.dropped {
+                                host.audit_record(
+                                    "egress.control_unrepresentable",
+                                    &format!("{path} from {}", lane.protocol),
+                                    busbar_contract::vocab::OUTCOME_DEGRADED,
+                                    caller,
+                                );
+                            }
+                        }
                     }
                     drop(this.permit.take());
                     this.ended = true;

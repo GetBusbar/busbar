@@ -124,7 +124,7 @@ fn a_claimants_rung_orders_its_own_lines() {
         b"",
     );
     second.rung = 1;
-    let list = GuestList::seal(vec![line("llm", first), line("llm", second)]).unwrap();
+    let list = GuestList::seal(vec![line("a", first), line("a", second)]).unwrap();
     assert_eq!(
         list.lines()[0].route.fields[0].1,
         "x-b",

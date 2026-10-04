@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::sigv4;
 use busbar_contract::records::ScopeRef;
 
 /// Helper: a `RoleBindingCfg` from optional pool list / group / admin scope.
@@ -820,8 +821,8 @@ async fn forbidden_admin_requests_audit_once_per_window() {
 
 /// A test-only external admin module that SLEEPS on the (blocking-pool) thread before returning —
 /// stands in for a wedged admin IdP doing blocking JWKS/introspection I/O. Returns `Pass` (so the
-/// chain fail-closed-denies) once it wakes. Injected via `TestApp::admin_module`, which forces
-/// `has_plugin`, so the admin middleware OFFLOADS it off the reactor.
+/// chain fail-closed-denies) once it wakes. Injected via `TestApp::admin_module` as an external
+/// module, so the admin middleware OFFLOADS its call off the reactor.
 struct SleepingAdminModule(std::time::Duration);
 impl crate::auth::AuthModule for SleepingAdminModule {
     fn name(&self) -> &'static str {
@@ -1226,7 +1227,7 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     store
         .put_key(&VirtualKey {
             id: "empty".to_string(),
-            generation_hash: crate::sigv4::sha256_hex(b""),
+            generation_hash: sigv4::sha256_hex(b""),
             name: "empty".to_string(),
             allowed_scopes: Some(vec![ScopeRef::pool("pa")]),
             enabled: true,
@@ -1357,7 +1358,7 @@ fn test_caller_token_debug_redacts_value() {
 
 /// Sign a SigV4 POST (the verifier is service-agnostic: the service is read from the credential scope) and return the full `Authorization` header value plus the headers
 /// (host / x-amz-date / x-amz-content-sha256) the client would send, using the SAME signer
-/// (`crate::sigv4::sign_v4`) a real client uses. `amzdate` controls the signature timestamp.
+/// (`sigv4::sign_v4`) a real client uses. `amzdate` controls the signature timestamp.
 fn sign_sigv4_request(
     secret: &str,
     access_key_id: &str,
@@ -1368,7 +1369,7 @@ fn sign_sigv4_request(
     amzdate: &str,
 ) -> (String, Vec<(String, String)>) {
     let datestamp = &amzdate[0..8];
-    let payload_hash = crate::sigv4::sha256_hex(body);
+    let payload_hash = sigv4::sha256_hex(body);
     let headers = vec![
         (
             "host".to_string(),
@@ -1377,8 +1378,8 @@ fn sign_sigv4_request(
         (X_AMZ_CONTENT_SHA256.to_string(), payload_hash.clone()),
         (X_AMZ_DATE.to_string(), amzdate.to_string()),
     ];
-    let canonical_uri = crate::sigv4::uri_encode_path(path);
-    let (sig, signed_headers) = crate::sigv4::sign_v4(
+    let canonical_uri = sigv4::uri_encode_path(path);
+    let (sig, signed_headers) = sigv4::sign_v4(
         secret,
         region,
         service,
@@ -1434,7 +1435,7 @@ fn test_verify_sigv4_ingress_credential_roundtrip_admits_with_govctx() {
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
     let amzdate = {
-        let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+        let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
         a
     };
     let path = "/model/vendor.model/converse";
@@ -1464,7 +1465,7 @@ fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admit
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
     let amzdate = {
-        let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+        let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
         a
     };
     let datestamp = &amzdate[0..8];
@@ -1472,7 +1473,7 @@ fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admit
     // The client's ONE correct URI-encoding of a value containing '/' (per AWS SigV4 query rules,
     // which — unlike CanonicalURI — are never double-encoded).
     let wire_query = "p=a%2Fb";
-    let payload_hash = crate::sigv4::sha256_hex(b"");
+    let payload_hash = sigv4::sha256_hex(b"");
     let headers = vec![
         (
             "host".to_string(),
@@ -1481,9 +1482,9 @@ fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admit
         (X_AMZ_CONTENT_SHA256.to_string(), payload_hash.clone()),
         (X_AMZ_DATE.to_string(), amzdate.to_string()),
     ];
-    let canonical_uri = crate::sigv4::uri_encode_path(path);
+    let canonical_uri = sigv4::uri_encode_path(path);
     // The client signs the wire query text UNCHANGED — that IS its CanonicalQueryString.
-    let (sig, signed_headers) = crate::sigv4::sign_v4(
+    let (sig, signed_headers) = sigv4::sign_v4(
         &secret,
         "us-east-1",
         "svc",
@@ -1510,7 +1511,7 @@ fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admit
 fn test_verify_sigv4_ingress_credential_wrong_secret_rejected() {
     crate::metrics::init();
     let (gov, akid, _secret) = gov_with_aws_key();
-    let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
     let path = "/model/vendor.model/converse";
     // Sign with a DIFFERENT secret than the key's.
     let (auth, headers) = sign_sigv4_request(
@@ -1539,7 +1540,7 @@ fn test_verify_sigv4_ingress_credential_wrong_secret_rejected() {
 fn test_verify_sigv4_ingress_credential_unknown_access_key_id_rejected() {
     crate::metrics::init();
     let (gov, _akid, secret) = gov_with_aws_key();
-    let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
     let path = "/model/vendor.model/converse";
     // A well-formed signature under an AccessKeyId that does not exist in the store.
     let (auth, headers) = sign_sigv4_request(
@@ -1567,8 +1568,8 @@ fn test_verify_sigv4_ingress_credential_expired_date_rejected() {
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
     // Sign with a timestamp 10 minutes in the past — outside the ±5min skew window.
-    let stale = busbar_kernel::store::now().saturating_sub(crate::sigv4::CLOCK_SKEW_SECS + 60);
-    let (a, _d) = crate::sigv4::format_amz_time(stale);
+    let stale = busbar_kernel::store::now().saturating_sub(sigv4::CLOCK_SKEW_SECS + 60);
+    let (a, _d) = sigv4::format_amz_time(stale);
     let path = "/model/vendor.model/converse";
     let (auth, headers) = sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, b"", &a);
     let req = sigv4_request(path, &auth, &headers);
@@ -1611,7 +1612,7 @@ fn test_verify_sigv4_ingress_credential_disabled_key_rejected() {
         .unwrap();
     // Disable the key.
     gov.update_key(&key.id, Some(false), None).unwrap();
-    let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
     let path = "/model/vendor.model/converse";
     let (auth, headers) = sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, b"", &a);
     let req = sigv4_request(path, &auth, &headers);
@@ -1649,7 +1650,7 @@ fn test_verify_sigv4_ingress_credential_revoked_key_rejected() {
         .unwrap();
 
     let amzdate = {
-        let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+        let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
         a
     };
     let path = "/model/vendor.model/converse";
@@ -1670,7 +1671,7 @@ fn test_verify_sigv4_ingress_credential_revoked_key_rejected() {
     // Re-sign a fresh request (same secret/akid) and assert the SigV4 path now REJECTS — the revoked
     // subject's SigV4 credential must be rejected exactly like its signed token would be.
     let amzdate2 = {
-        let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+        let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
         a
     };
     let (auth2, headers2) =
@@ -1690,7 +1691,7 @@ fn test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits() {
     // body): the verifier must re-hash THESE bytes and find they match the signed digest.
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
-    let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
     let path = "/model/vendor.model/converse";
     let body = br#"{"messages":[{"role":"user","content":"hi"}]}"#;
     let (auth, headers) = sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, body, &a);
@@ -1709,7 +1710,7 @@ fn test_verify_sigv4_ingress_credential_tampered_body_rejected() {
     // failure (no oracle distinguishing "body tampered" from "bad signature").
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
-    let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
     let path = "/model/vendor.model/converse";
     let signed_body = br#"{"max_tokens":16}"#;
     let tampered_body = br#"{"max_tokens":999999}"#;
@@ -1733,7 +1734,7 @@ fn test_verify_sigv4_ingress_credential_unsigned_payload_rejected() {
     // rejects it independently of any signature check, with the same opaque `Err(())`.
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
-    let (a, _d) = crate::sigv4::format_amz_time(busbar_kernel::store::now());
+    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
     let path = "/model/vendor.model/converse";
     let body = b"some-body";
     let (auth, mut headers) =
@@ -1888,7 +1889,7 @@ fn test_admin_scope_cap_ceilings_external_module() {
     // Default ceiling for an external module is read-only: the full binding is capped.
     let app = mk_app(None, "test-scope-module");
     assert_eq!(
-        dry_run_admin_scope(&app, Some("grp:ops"), None),
+        dry_run_admin_scope(&app, &admin_headers(Some("grp:ops"), None)),
         Grants::of(Scope::ReadOnly),
         "an external module without an explicit cap must be ceilinged to read-only"
     );
@@ -1896,7 +1897,7 @@ fn test_admin_scope_cap_ceilings_external_module() {
     // Explicit max_admin_scope: full lifts the ceiling; the full binding now lands.
     let app = mk_app(Some("full"), "test-scope-module");
     assert_eq!(
-        dry_run_admin_scope(&app, Some("grp:ops"), None),
+        dry_run_admin_scope(&app, &admin_headers(Some("grp:ops"), None)),
         Grants::of(Scope::Full),
         "an explicit full cap must let the full binding through"
     );
@@ -1905,13 +1906,15 @@ fn test_admin_scope_cap_ceilings_external_module() {
     // the principal (identified by test-scope-module) earns no scope at all.
     let app = mk_app(Some("full"), "other-module");
     assert!(
-        dry_run_admin_scope(&app, Some("grp:ops"), None) == Grants::default(),
+        dry_run_admin_scope(&app, &admin_headers(Some("grp:ops"), None)) == Grants::default(),
         "a binding under another module's table must grant nothing"
     );
 
     // A credential no chain module identifies: denied (fail closed).
     let app = mk_app(Some("full"), "test-scope-module");
-    assert!(dry_run_admin_scope(&app, Some("not-a-grp"), None) == Grants::default());
+    assert!(
+        dry_run_admin_scope(&app, &admin_headers(Some("not-a-grp"), None)) == Grants::default()
+    );
 }
 
 /// AF1 (security-visibility): an EMPTY admin chain is the anonymous OPEN dev posture — a property of
@@ -1931,7 +1934,7 @@ fn test_dry_run_empty_admin_chain_is_not_full() {
     a.admin_chain = vec![]; // the empty / open posture
 
     // No admin credential presented: an empty chain earns nothing (NOT Full).
-    let g = dry_run_admin_scope(&app, None, None);
+    let g = dry_run_admin_scope(&app, &admin_headers(None, None));
     assert!(
         !g.contains(Scope::Full),
         "an empty admin_auth chain must NOT dry-run to Full — that masks the fail-open the \
@@ -1946,7 +1949,11 @@ fn test_dry_run_empty_admin_chain_is_not_full() {
     // ...and even WITH an arbitrary credential waved, the empty chain still earns no Full: the
     // (absent) chain is what decides, not what the caller presented.
     assert!(
-        !dry_run_admin_scope(&app, Some("anything"), Some("x-admin-token")).contains(Scope::Full),
+        !dry_run_admin_scope(
+            &app,
+            &admin_headers(Some("anything"), Some("x-admin-token"))
+        )
+        .contains(Scope::Full),
         "an empty chain must not grant Full to any presented credential"
     );
 }
@@ -2212,7 +2219,7 @@ fn the_operator_credential_opens_from_the_axis() {
     use crate::auth::{open_operator, OperatorCredential};
     let digest = busbar_contract::redacted::sha256_hex(b"tok");
     // This crate's test binary links no auth row, so its linked registry has none to open.
-    let linked = crate::preflight::linked().expect("the linked registry");
+    let linked = std::sync::Arc::new(crate::preflight::linked().expect("the linked registry"));
     let none = Default::default();
     let open = |digest| open_operator(&linked, digest, &none).expect("opens");
     assert!(matches!(
@@ -2220,4 +2227,473 @@ fn the_operator_credential_opens_from_the_axis() {
         OperatorCredential::Unanswered
     ));
     assert!(matches!(*open(None), OperatorCredential::Unanswered));
+}
+
+/// TEST-ONLY: a request's head presenting `bearer` as its Bearer and `header` on the second admin
+/// carrier.
+pub(super) fn admin_headers(bearer: Option<&str>, header: Option<&str>) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    if let Some(b) = bearer {
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {b}")).expect("a header value"),
+        );
+    }
+    if let Some(h) = header {
+        headers.insert(
+            HeaderName::from_static(X_ADMIN_TOKEN),
+            HeaderValue::from_str(h).expect("a header value"),
+        );
+    }
+    headers
+}
+
+/// TEST-ONLY: the admin chain as the synchronous probe walks it (the sync [`admin_door`]'s walk),
+/// over the two admin carriers. A chain that cannot be judged on the spot reads `Denied`.
+pub(super) fn run_admin_chain_on(
+    app: &crate::state::App,
+    bearer: Option<&str>,
+    header: Option<&str>,
+) -> (ChainVerdict, Option<busbar_contract::authz::Scope>) {
+    let headers = admin_headers(bearer, header);
+    let walk = std::pin::pin!(run_admin_chain(app, "GET", "/", &headers, true));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    match std::future::Future::poll(walk, &mut cx) {
+        std::task::Poll::Ready(Ok(answer)) => answer,
+        std::task::Poll::Ready(Err(_)) | std::task::Poll::Pending => (ChainVerdict::Denied, None),
+    }
+}
+
+/// An operator credential's door stand-in: answers `verified` to every verify, on the spot and
+/// submitted.
+struct OperatorDouble(busbar_contract::auth_calls::Verified);
+
+struct OperatorAnswer(Option<busbar_contract::auth_calls::VerifyAnswer>);
+
+impl std::future::Future for OperatorAnswer {
+    type Output = busbar_contract::auth_calls::VerifyAnswer;
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Ready(self.0.take().expect("polled once"))
+    }
+}
+
+impl busbar_contract::auth_calls::Verifying for OperatorAnswer {
+    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        self.0.take()
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for OperatorDouble {
+    fn name(&self) -> &str {
+        "operator-double"
+    }
+    fn facts(&self) -> u32 {
+        0
+    }
+    fn verify_now(
+        &self,
+        _: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        Some(self.0.clone().into())
+    }
+    fn verify(
+        &self,
+        _: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        Box::new(OperatorAnswer(Some(self.0.clone().into())))
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+
+/// An app whose admin chain is the operator credential alone, its door answering `verified`.
+pub(super) fn operator_app(
+    verified: busbar_contract::auth_calls::Verified,
+) -> std::sync::Arc<crate::state::App> {
+    let op = crate::config::operator_provider();
+    let mut app = crate::test_support::TestApp::new()
+        .admin_chain(vec![op.to_string()])
+        .build();
+    let operator = Operator::open(
+        op,
+        std::iter::empty(),
+        true,
+        Some("digest".to_string()),
+        |_| Ok(std::sync::Arc::new(OperatorDouble(verified))),
+    )
+    .expect("opens");
+    std::sync::Arc::get_mut(&mut app)
+        .expect("freshly built App Arc is unshared")
+        .admin_modules = std::sync::Arc::new(AdminAuthChain {
+        modules: std::collections::HashMap::new(),
+        operator,
+    });
+    app
+}
+
+/// The admin chain of [`operator_app`] over `verified`, awaited, for a request presenting a Bearer.
+async fn walk(verified: busbar_contract::auth_calls::Verified) -> AdminChainAnswer {
+    let app = operator_app(verified);
+    let headers = admin_headers(Some("tok"), None);
+    run_admin_chain(&app, "GET", "/", &headers, false).await
+}
+
+/// THE ADMIN DOOR ON THE OPERATOR'S DOOR (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1): the operator
+/// credential's verify is AWAITED, and its answer is read apart — an identity admits, a bad
+/// credential is the 1.5.5 refusal (Denied, 401), and an overloaded verifier or one that answered no
+/// verdict is 503 `unavailable`, never a 401. RED: were an overloaded or failed verify folded into a
+/// bad credential (as the cold lane did), the two `Err` arms below would read `Ok(Denied)`.
+#[tokio::test]
+async fn the_operator_door_is_awaited_and_its_outage_is_not_a_bad_credential() {
+    use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+    let identity = Verified::Identity(VerifiedIdentity {
+        subject: "admin".into(),
+        ..VerifiedIdentity::default()
+    });
+    assert!(matches!(
+        walk(identity).await,
+        Ok((ChainVerdict::Identified { .. }, _))
+    ));
+    assert!(matches!(
+        walk(Verified::Reject).await,
+        Ok((ChainVerdict::Denied, None))
+    ));
+    assert!(matches!(
+        walk(Verified::Pass).await,
+        Ok((ChainVerdict::Denied, None))
+    ));
+    assert_eq!(
+        walk(Verified::Overloaded).await.err(),
+        Some(AdminUnavailable::Overloaded)
+    );
+    assert_eq!(
+        walk(Verified::Failed).await.err(),
+        Some(AdminUnavailable::Outage)
+    );
+}
+
+/// The 503 an admin chain that could not be judged answers: the frozen v1 envelope's `unavailable`.
+#[tokio::test]
+async fn an_unjudged_admin_chain_answers_503_unavailable() {
+    let mut bodies = Vec::new();
+    for why in [AdminUnavailable::Overloaded, AdminUnavailable::Outage] {
+        let resp = admin_unavailable_response(why);
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        bodies.push(body);
+    }
+    assert_eq!(
+        bodies[0], bodies[1],
+        "an outage answers the overloaded verifier's bytes: no new customer string"
+    );
+    let v: serde_json::Value = serde_json::from_slice(&bodies[0]).expect("json");
+    assert_eq!(v["error"]["code"], "unavailable");
+}
+
+/// The synchronous admin door (the dry run, the root's admin unit) PROBES the operator credential
+/// (`verify_now`): an overloaded verifier grants nothing, and the door is `Denied`, fail-closed.
+#[test]
+fn the_sync_admin_door_probe_fails_closed_when_the_operator_verifier_is_overloaded() {
+    let app = operator_app(busbar_contract::auth_calls::Verified::Overloaded);
+    let headers = admin_headers(Some("tok"), None);
+    assert!(dry_run_admin_scope(&app, &headers) == busbar_contract::authz::Grants::default());
+    assert_eq!(admin_door(&app, "GET", "/", &headers), AdminDoor::Denied);
+}
+
+/// The operator credential's door reads the request's head: its method, its path and query apart,
+/// its authority off the `host` line, and every field line as presented.
+#[test]
+fn the_admin_head_hands_the_request_through_as_presented() {
+    let mut headers = admin_headers(Some("tok"), Some("hdr"));
+    headers.insert(
+        axum::http::header::HOST,
+        HeaderValue::from_static("node.example:8443"),
+    );
+    let head = admin_head("POST", "/api/v1/admin/keys?limit=2", &headers, 7);
+    assert_eq!(head.point, busbar_contract::abi::auth::AuthPoint::Head);
+    assert_eq!(
+        (
+            head.method.as_str(),
+            head.path.as_str(),
+            head.query.as_deref()
+        ),
+        ("POST", "/api/v1/admin/keys", Some("limit=2"))
+    );
+    assert_eq!(head.authority, "node.example:8443");
+    assert_eq!(head.timestamp, 7);
+    let names: Vec<&str> = head.lines.iter().map(|l| l.0.as_str()).collect();
+    assert_eq!(names, ["authorization", X_ADMIN_TOKEN, "host"]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// L2-AUTH-1 (ARCHITECT ruling 2026-10-03): a data-plane door that answers no verdict, or whose
+// `max_inflight` is full, is a REJECT on the data plane — 1.5.5's 401, never a pass to the next
+// position and never a new status. (The admin chain keeps its ruled 503.)
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A kind-neutral double of one opened auth instance that answers every `verify` with `verified`
+/// (an overloaded verifier, or one that answered no verdict).
+struct AnswersOnly(busbar_contract::auth_calls::Verified);
+
+/// A `verify` answered before anything crossed.
+struct Answered(Option<busbar_contract::auth_calls::VerifyAnswer>);
+
+impl std::future::Future for Answered {
+    type Output = busbar_contract::auth_calls::VerifyAnswer;
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Ready(self.0.take().expect("polled once"))
+    }
+}
+
+impl busbar_contract::auth_calls::Verifying for Answered {
+    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        self.0.take()
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for AnswersOnly {
+    fn name(&self) -> &str {
+        "answers-only"
+    }
+    fn facts(&self) -> u32 {
+        0
+    }
+    fn verify_now(
+        &self,
+        _: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        Some(self.0.clone().into())
+    }
+    fn verify(
+        &self,
+        _: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        Box::new(Answered(Some(self.0.clone().into())))
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+
+/// The chain `[answers-only door, test-groups stand-in]`: the second position identifies
+/// `grp:<role>`, so a first position that PASSED would admit.
+fn door_then_identifier(verified: busbar_contract::auth_calls::Verified) -> AuthMiddleware {
+    let identifier = busbar_plugin_loader::auth_axis::ColdAuth::new(Box::new(TestGroupsModule));
+    AuthMiddleware::from_doors_for_test(vec![
+        (
+            "door".to_string(),
+            std::sync::Arc::new(AnswersOnly(verified)) as std::sync::Arc<dyn AuthCalls>,
+        ),
+        (
+            "test-groups-module".to_string(),
+            std::sync::Arc::new(identifier),
+        ),
+    ])
+}
+
+/// An overloaded door and a door that answered no verdict each STOP the chain denied: the identifier
+/// behind them is never reached (RED if either were read as a pass: the chain would admit).
+#[tokio::test]
+async fn a_data_plane_door_overloaded_or_without_a_verdict_denies_the_chain() {
+    use busbar_contract::auth_calls::Verified;
+    let cache = std::sync::Arc::new(crate::auth_cache::CredentialCache::new());
+    for verified in [Verified::Overloaded, Verified::Failed] {
+        let auth = std::sync::Arc::new(door_then_identifier(verified.clone()));
+        let verdict = AuthMiddleware::run_chain_on_request_path(
+            &auth,
+            &cache,
+            Some("grp:admins".into()),
+            ChainHead::default(),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(
+            verdict,
+            ChainVerdict::Denied,
+            "{verified:?} must deny, not pass"
+        );
+    }
+}
+
+/// On the wire: the request an overloaded (or verdict-less) data-plane door refuses is answered
+/// with 1.5.5's 401, byte for byte the refusal an all-pass chain earns — no 503, no new body.
+#[tokio::test]
+async fn a_data_plane_door_overloaded_or_without_a_verdict_answers_the_1_5_5_401() {
+    use crate::test_support::{LaneSpec, MockServer, TestApp};
+    use busbar_contract::auth_calls::Verified;
+    crate::metrics::init();
+    let server = MockServer::new(dp_ok_state()).await;
+    let ask = |auth: AuthMiddleware| {
+        let app = TestApp::new()
+            .lane(
+                LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, &server.base_url()).api_key("up"),
+            )
+            .pool("pa", &[(0, 1)])
+            .auth(std::sync::Arc::new(auth))
+            .build();
+        async move {
+            let (addr, handle) = dp_serve(app).await;
+            let body = serde_json::json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).to_string();
+            let r = reqwest::Client::new()
+                .post(format!("http://{addr}/pa/v1/messages"))
+                .bearer_auth("not-a-credential-anyone-knows")
+                .body(body)
+                .send()
+                .await
+                .unwrap();
+            let status = r.status().as_u16();
+            let content_type = r
+                .headers()
+                .get("content-type")
+                .map(|v| v.to_str().unwrap_or_default().to_string());
+            let text = r.text().await.unwrap();
+            handle.abort();
+            (status, content_type, text)
+        }
+    };
+    // The 1.5.5 refusal: a configured chain whose every position passed.
+    let all_pass = ask(AuthMiddleware::new_builtin(&chain_cfg(&[
+        "test-groups-module",
+    ])))
+    .await;
+    assert_eq!(all_pass.0, 401, "the all-pass refusal: {all_pass:?}");
+    for verified in [Verified::Overloaded, Verified::Failed] {
+        let refused = ask(door_then_identifier(verified.clone())).await;
+        assert_eq!(
+            refused, all_pass,
+            "{verified:?}: the 1.5.5 401, byte for byte"
+        );
+    }
+    server.shutdown().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// L2-AUTH-4 (ARCHITECT ruling 2026-10-03): admin_auth's EXTERNAL modules open on the auth axis.
+// A door among them is awaited, lent the request's head and 1.5.5's candidate (`bearer.or(header)`),
+// never cached by the kernel, and an overloaded or verdict-less door is the ruled 503.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// An external admin door that identifies `ext:<who>` only when the lent credential is `tok`, and
+/// otherwise answers `otherwise`.
+struct LentCredentialDoor(busbar_contract::auth_calls::Verified);
+
+impl LentCredentialDoor {
+    fn answer(
+        &self,
+        r: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> busbar_contract::auth_calls::VerifyAnswer {
+        use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+        match r.credential.as_ref().map(|c| c.expose_secret().as_slice()) {
+            Some(b"tok") => Verified::Identity(VerifiedIdentity {
+                subject: "ext:who".into(),
+                groups: vec!["ops".into()],
+                ..VerifiedIdentity::default()
+            })
+            .into(),
+            _ => self.0.clone().into(),
+        }
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for LentCredentialDoor {
+    fn name(&self) -> &str {
+        "lent-credential-door"
+    }
+    fn facts(&self) -> u32 {
+        busbar_contract::abi::auth::FACT_CACHEABLE
+    }
+    fn verify_now(
+        &self,
+        r: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        Some(self.answer(r))
+    }
+    fn verify(
+        &self,
+        r: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        Box::new(OperatorAnswer(Some(self.answer(&r))))
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+
+/// An app whose admin chain is the external door `ext-door` alone (opened as a door: not cold).
+fn external_door_app(
+    otherwise: busbar_contract::auth_calls::Verified,
+) -> std::sync::Arc<crate::state::App> {
+    let mut app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["ext-door".to_string()])
+        .build();
+    let mut modules = std::collections::HashMap::new();
+    modules.insert(
+        "ext-door".to_string(),
+        AdminModule {
+            calls: std::sync::Arc::new(LentCredentialDoor(otherwise)),
+            cold: false,
+        },
+    );
+    std::sync::Arc::get_mut(&mut app)
+        .expect("freshly built App Arc is unshared")
+        .admin_modules = std::sync::Arc::new(AdminAuthChain {
+        modules,
+        operator: Operator::new(crate::config::operator_provider()),
+    });
+    app
+}
+
+/// The external admin door judges the candidate it is lent — the Bearer, else the admin header, as
+/// 1.5.5 handed an external module `bearer.or(header)` — awaited and on the spot; its identity is
+/// never cached by the kernel (R3: a door caches inside itself, even one stating cacheable); an
+/// overloaded door and one with no verdict are the ruled 503, a reject and a pass the 1.5.5 401.
+#[tokio::test]
+async fn an_external_admin_door_is_lent_the_candidate_and_its_outage_is_the_ruled_503() {
+    use busbar_contract::auth_calls::Verified;
+    for headers in [
+        admin_headers(Some("tok"), None),
+        admin_headers(None, Some("tok")),
+    ] {
+        let app = external_door_app(Verified::Reject);
+        assert!(matches!(
+            run_admin_chain(&app, "GET", "/", &headers, false).await,
+            Ok((ChainVerdict::Identified { ref module, .. }, _)) if module == "ext-door"
+        ));
+        assert!(matches!(
+            admin_door(&app, "GET", "/", &headers),
+            AdminDoor::Identified(..)
+        ));
+        assert_eq!(
+            app.credential_cache.flush_all(),
+            0,
+            "the kernel caches no door's verdict"
+        );
+    }
+    let wrong = admin_headers(Some("not-tok"), None);
+    for (otherwise, want) in [
+        (Verified::Reject, Ok(())),
+        (Verified::Pass, Ok(())),
+        (Verified::Overloaded, Err(AdminUnavailable::Overloaded)),
+        (Verified::Failed, Err(AdminUnavailable::Outage)),
+    ] {
+        let app = external_door_app(otherwise.clone());
+        let got = run_admin_chain(&app, "GET", "/", &wrong, false).await;
+        match want {
+            Ok(()) => assert!(
+                matches!(got, Ok((ChainVerdict::Denied, None))),
+                "{otherwise:?}: the 1.5.5 refusal"
+            ),
+            Err(why) => assert_eq!(got.err(), Some(why), "{otherwise:?}: the ruled 503"),
+        }
+    }
 }

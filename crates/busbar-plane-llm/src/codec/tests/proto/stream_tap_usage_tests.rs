@@ -158,3 +158,44 @@ fn same_proto_tap_carries_cohere_billed_units() {
         "streamed Cohere must ledger the billed counts, not the raw totals"
     );
 }
+
+/// A stream that ends before its terminal `message_delta` (the far end cut it, or the caller left)
+/// still bills what the far end REPORTED so far (#62). Anthropic reports the prompt's input tokens
+/// on `message_start` alone; the billing source `usage()` must carry them as soon as they arrive,
+/// on the same-protocol tap and the cross-protocol translator alike, not only once a terminal delta
+/// backfills them. Without it a 100k-token prompt whose stream is abandoned mid-answer bills zero.
+#[test]
+fn anthropic_stream_start_usage_bills_before_the_terminal_delta() {
+    let start = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"m\",\"content\":[],\"usage\":{\"input_tokens\":100000,\"cache_read_input_tokens\":7,\"output_tokens\":1}}}\n\n";
+    let block = b"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n";
+    let delta = b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hel\"}}\n\n";
+
+    let mut same = StreamTranslate::new_same_proto("anthropic").expect("same-proto translator");
+    let _ = same.feed(start);
+    let _ = same.feed(block);
+    let _ = same.feed(delta);
+    let u = same
+        .usage()
+        .expect("same-protocol: the message_start usage the far end reported must bill");
+    assert_eq!(u.input_tokens, 100000);
+    assert_eq!(u.output_tokens, 1);
+    assert_eq!(u.cache_read_input_tokens, Some(7));
+
+    let mut cross = StreamTranslate::new("openai", "anthropic").expect("cross-proto translator");
+    let _ = cross.feed(start);
+    let _ = cross.feed(block);
+    let _ = cross.feed(delta);
+    let u = cross
+        .usage()
+        .expect("cross-protocol: the message_start usage the far end reported must bill");
+    assert_eq!(u.input_tokens, 100000);
+    assert_eq!(u.output_tokens, 1);
+    assert_eq!(u.cache_read_input_tokens, Some(7));
+
+    // The terminal delta, when it does arrive, still wins with its cumulative output count and the
+    // start's input count is kept (the same totals the completed stream billed before).
+    let _ = cross.feed(b"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":42}}\n\n");
+    let u = cross.usage().expect("usage after the terminal delta");
+    assert_eq!(u.input_tokens, 100000);
+    assert_eq!(u.output_tokens, 42);
+}

@@ -79,99 +79,97 @@ fn head_parse_rejects_iff_dom_parse_rejects() {
     assert!(LazyBody::parse(&Bytes::from(deep.into_bytes())).is_err());
 }
 
-/// PARITY PIN: `head_provably_pristine == true` must imply the REAL translate seam re-emits the
-/// retained bytes verbatim; and for the cases it declines, translate's output is still whatever
-/// it always was (exercised here to show the decline is safe, not wrong).
+/// Within one dialect a hop's body is the caller's bytes with the governed splices only (DIALECT
+/// FIDELITY): an alias model is replaced where it stands, busbar's own router key is
+/// removed, a path-model arrival's spliced `model`/`stream` come back out, and nothing else moves —
+/// key order, spacing, number spelling and unknown members stay the caller's. A re-serialize (the
+/// RED arm) would sort `z` after `a` and print `1.50` as `1.5`.
 #[test]
-fn head_pristine_matches_translate_output() {
+fn a_same_dialect_hop_is_the_callers_bytes_with_governed_splices() {
     crate::testkit::install_test_seams();
-    let cases: &[(&'static str, &'static str, &'static str, Value)] = &[
-        // (proto, name, lane_model, body) — pristine expected
+    let shim = busbar_kernel::proto::array_stream_shim_key_for("gemini").expect("shim key");
+    let shimmed = format!(r#"{{"model":"gpt-4o", "{shim}":true,"z":1.50,"a":[]}}"#);
+    let cases: Vec<(&'static str, &'static str, &'static str, String, String)> = vec![
         (
             crate::proto_codec::PROTO_OPENAI,
             "openai",
-            "gpt-4o",
-            json!({"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true}),
+            "gpt-4o-real",
+            r#"{"z":1.50, "model":"alias","never_heard_of":{"y":1,"x":2},"messages":[]}"#.into(),
+            r#"{"z":1.50, "model":"gpt-4o-real","never_heard_of":{"y":1,"x":2},"messages":[]}"#.into(),
         ),
         (
             crate::proto_codec::PROTO_ANTHROPIC,
             "anthropic",
             "claude-3",
-            json!({"model":"claude-3","max_tokens":7,"messages":[]}),
+            r#"{"max_tokens":7,"model":"claude-3","messages":[],"zz":{"b":1,"a":2}}"#.into(),
+            r#"{"max_tokens":7,"model":"claude-3","messages":[],"zz":{"b":1,"a":2}}"#.into(),
         ),
-        // model differs → not head-pristine (translate rewrites)
-        (
-            crate::proto_codec::PROTO_OPENAI,
-            "openai",
-            "gpt-4o-real",
-            json!({"model":"alias","messages":[]}),
-        ),
-        // shim key present → not head-pristine
         (
             crate::proto_codec::PROTO_OPENAI,
             "openai",
             "gpt-4o",
-            json!({"model":"gpt-4o","__busbar_gemini_json_array":true}),
+            shimmed,
+            r#"{"model":"gpt-4o","z":1.50,"a":[]}"#.into(),
         ),
-        // gemini: no body model → not head-pristine (conservative), translate still byte-identical
         (
             crate::proto_codec::PROTO_GEMINI,
             "gemini",
             "url-model-x",
-            json!({"contents":[{"role":"user","parts":[{"text":"hi"}]}]}),
+            r#"{"model":"url-model-x","stream":false,"contents":[{"role":"user","parts":[{"text":"hi"}]}],"b":1,"a":2}"#.into(),
+            r#"{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"b":1,"a":2}"#.into(),
+        ),
+        (
+            crate::proto_codec::PROTO_COHERE,
+            "cohere",
+            "command-r",
+            r#"{"zz_never_heard_of":[1.50,{"b":1,"a":2}], "model":"alias","messages":[]}"#.into(),
+            r#"{"zz_never_heard_of":[1.50,{"b":1,"a":2}], "model":"command-r","messages":[]}"#.into(),
+        ),
+        (
+            crate::proto_codec::PROTO_RESPONSES,
+            "responses",
+            "gpt-4o",
+            r#"{"input":"hi", "model":"gpt-4o","zz_never_heard_of":{"b":1,"a":2}}"#.into(),
+            r#"{"input":"hi", "model":"gpt-4o","zz_never_heard_of":{"b":1,"a":2}}"#.into(),
+        ),
+        (
+            crate::proto_codec::PROTO_BEDROCK,
+            "bedrock",
+            "anthropic.claude",
+            r#"{"model":"anthropic.claude","stream":true,"messages":[{"role":"user","content":[{"text":"hi"}]}], "zz_never_heard_of":{"b":1,"a":2}}"#.into(),
+            r#"{"messages":[{"role":"user","content":[{"text":"hi"}]}], "zz_never_heard_of":{"b":1,"a":2}}"#.into(),
+        ),
+        (
+            crate::proto_codec::PROTO_OPENAI,
+            "openai",
+            "m",
+            "[1,2,3]".into(),
+            "[1,2,3]".into(),
         ),
     ];
-    for (proto, name, lane_model, body) in cases {
+    for (proto, name, lane_model, carried, expected) in cases {
         let app = TestApp::new()
             .lane(LaneSpec::new(lane_model, proto, "http://unused.local"))
             .build();
-        let hop_bytes = Bytes::from(busbar_plane_llm::codec::json::to_vec(body).unwrap());
-        let lazy = LazyBody::parse(&hop_bytes).unwrap();
+        let hop_bytes = Bytes::from(carried.into_bytes());
         let (host, rt) = crate::engine::test_host_rt(&app);
-        let head_says = head_provably_pristine(&rt, 0, lazy.probe());
         let out = translate_request_cross_protocol(
             &host,
             &rt,
             0,
             name,
             chat(name, busbar_contract::transport::transport::Transport::Http),
-            Some(body.clone()),
+            None,
             APPLICATION_JSON,
             true,
             &hop_bytes,
             "test-key",
         )
-        .expect("same-proto shaping is infallible for a valid body");
-        if head_says {
-            assert_eq!(
-                out.as_ref(),
-                hop_bytes.as_ref(),
-                "{name}: head said pristine but translate mutated the body — UNSOUND"
-            );
-        }
-        // (When head declines, translate's own pristine tracking still decides — no assertion
-        // needed beyond translate succeeding; the decline path is byte-identical to today.)
-    }
-}
-
-/// Non-object same-protocol bodies are pristine on BOTH paths (every invalidator no-ops).
-#[test]
-fn non_object_body_is_head_pristine() {
-    crate::testkit::install_test_seams();
-    let app = TestApp::new()
-        .lane(LaneSpec::new(
-            "m",
-            crate::proto_codec::PROTO_OPENAI,
-            "http://unused.local",
-        ))
-        .build();
-    let (_host, rt) = crate::engine::test_host_rt(&app);
-    for raw in [r#"[1,2,3]"#, r#""s""#, r#"null"#] {
-        let bytes = Bytes::from(raw.as_bytes().to_vec());
-        let lazy = LazyBody::parse(&bytes).unwrap();
-        assert!(
-            head_provably_pristine(&rt, 0, lazy.probe()),
-            "non-object body {raw} must be head-pristine"
+        .expect("a same-dialect relay is infallible");
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            expected,
+            "{name}: only the governed members move"
         );
     }
 }

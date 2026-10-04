@@ -18,12 +18,15 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 ///
 /// The transport takes the whole leg because its INBOUND half — the server-originated frames on an
 /// SSE answer — needs the registration they arrived from and the pool's refresh triggers. These
-/// tests are about the outbound half; `tests/http_peer_tests.rs` owns the inbound one.
+/// tests are about the outbound half; `tests/http_peer_tests.rs` owns the inbound one. The hop runs
+/// on the hostless-egress driver the composition root installs, bound here through the plane's
+/// test-kit because no `TestApp` is built in this file to bind it.
 fn leg<'a>(
     pool: &'a crate::mcp::client::pool::McpConnectionPool,
     policy: SsrfPolicy,
     timeout: Duration,
 ) -> crate::mcp::client::wire::WireLeg<'a> {
+    crate::testkit::install_test_seams();
     crate::mcp::client::wire::WireLeg {
         pool,
         policy,

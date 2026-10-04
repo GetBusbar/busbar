@@ -182,6 +182,13 @@ pub struct FrameMeta {
     /// already in the past. Carrying the raw header instead would push a clock reading onto a
     /// layer that no longer has the answer's arrival instant.
     pub retry_after_secs: Option<u64>,
+    /// The frame's bytes are a TEXT message, not a binary one, on a wire whose messages are one or
+    /// the other (ws's TEXT and BINARY opcodes). THE BIT'S ONE HOME: a framer states it as
+    /// [`crate::abi::transport::PIECE_TEXT`], the host reads it here, and a reader of the frame
+    /// reads nothing else. `false` (the [`Default`]) is binary, the meaning every transport whose
+    /// wire draws no such line keeps; it is not serialized, so a binary frame's record is unchanged.
+    #[serde(skip_serializing_if = "core::ops::Not::not")]
+    pub text: bool,
 }
 
 /// Why a frame was dropped without changing any state.
@@ -486,9 +493,9 @@ impl<T: futures::io::AsyncRead + futures::io::AsyncWrite + Send + Unpin> RawIo f
 /// This is deliberately rustls-free, matching the ABI-face rule that already keeps rustls (and
 /// every other concrete crypto/cert type) out of this crate (DECISIONS #38/#39): a plugin manifest
 /// — and a transport, which is in-tree but still only ever named through this trait here — never
-/// names `rustls::ServerConfig` or any key byte. `busbar-core-connector` is the one crate that
-/// builds a concrete implementation (an identity no-op for a plaintext binding, a rustls-backed one
-/// for a TLS binding); everything on this side of the seam sees only `wrap`.
+/// names `rustls::ServerConfig` or any key byte. The concrete implementation (an identity no-op for
+/// a plaintext binding, a rustls-backed one for a TLS binding) is built on the far side of the
+/// seam, which this crate does not name; everything on this side of the seam sees only `wrap`.
 ///
 /// A transport that can call `wrap` on its accepted/dialled stream declares
 /// [`super::TransportMeta::WRAPPABLE_BYTE_STREAM`]; one that cannot (e.g. a stdio transport, which

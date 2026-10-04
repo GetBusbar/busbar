@@ -19,7 +19,7 @@
 # reversed to make a number go green, and neither is an undocumented gap laundered into a waiver.
 #
 # Regenerate deliberately (read the diff -- a new line is a new gap):
-#   BUSBAR_PIN_MISSING_CELLS=1 cargo test -p busbar --test method_coverage
+#   cargo xtask pin-missing-cells --write
 #
 # 2026-08-14, WAIVER LIST TO ZERO: 38 cells arrived here FROM the status file's waiver list, and
 # that direction of travel is the honest one, not a regression. Each was waived on reasoning its
@@ -62,3 +62,46 @@
 # the three `*_client_issues_get_extended_agent_card` instruments. THE QUEUE IS NOW EMPTY: every
 # cell of qa/method-inventory.json is implemented or is a recorded impossibility in qa/WAIVERS.md.
 #
+#
+# 2026-10-02 (ARCHITECT ruling, lane ORACLE-PLANES): THE 34 busbar-as-CLIENT mcp cells whose verb busbar can BUILD but no
+# front-door request ever SENDS. They were claimed `implemented` on mcp/tests/http_client_leg_tests.rs and the
+# stdio client-leg batteries, which call `mcp::client::issue::issue` directly; in production `issue` has no inbound
+# caller (mcp/client/wire.rs: "Called from super::issue::issue, which has no inbound caller yet"), so a customer
+# cannot make busbar issue any of them. An unreachable method is not implemented: they are OWED. 1.5.5 had no mcp
+# plane at all (v1.5.5 crates/busbar/src/main.rs routes llm + admin only; golden/1.5.5 neutrality|routes|mcp-shaped-404),
+# so these are 1.6.0 claims, not 1.5.5 parity. Each line clears per method: a real front-door path where the
+# specification requires one, or the dead sender deleted with the row and a spec citation where it does not.
+mcp|streamable-http|client|client|server/discover  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|streamable-http|client|client|prompts/list  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|streamable-http|client|client|prompts/get  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|streamable-http|client|client|resources/list  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|streamable-http|client|client|resources/read  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|streamable-http|client|client|resources/templates/list  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|streamable-http|client|client|completion/complete  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|streamable-http|client|client|tasks/get  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|streamable-http|client|client|tasks/update  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|streamable-http|client|client|tasks/cancel  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|streamable-http|client|client|subscriptions/listen  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|streamable-http|client|client|notifications/cancelled  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|streamable-http|client|client|notifications/progress  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|streamable-http|client|client|notifications/roots/list_changed  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|streamable-http|client|client|notifications/elicitation/response  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|server/discover  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|prompts/list  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|prompts/get  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|resources/list  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|resources/read  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|resources/templates/list  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|completion/complete  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|tasks/get  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|tasks/update  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|tasks/cancel  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|subscriptions/listen  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|notifications/cancelled  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|notifications/progress  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|notifications/roots/list_changed  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|notifications/elicitation/response  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|ping  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|logging/setLevel  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|resources/subscribe  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests
+mcp|stdio|client|client|resources/unsubscribe  # no front-door path; only client/issue.rs::issue sends it, uncalled outside tests

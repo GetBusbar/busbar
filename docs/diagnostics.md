@@ -1517,99 +1517,99 @@ Renaming the current request-log file to its first archive slot failed, so busba
 <a id="ir-clamp-n-to-1"></a>
 ### BUSBAR-7078 — Cross-protocol transcode clamped n>1 to 1
 
-- **Severity:** benign_recurring
+- **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `ir-clamp-n-to-1`
 
-On a cross-protocol hop the neutral response IR carries a single candidate, so a request asking for n>1 completions is clamped to n=1 before the egress writer emits it — otherwise extra choices would be generated, billed, and then dropped. Fires per request on the affected seam, so it is logged at debug.
+On a cross-protocol hop the neutral response IR carries a single candidate, so a request asking for n>1 completions is clamped to n=1 before the egress writer emits it — otherwise extra choices would be generated, billed, and then dropped. Warned on every translated request it affects (one drop path, `codec::drops`), and recorded in the audit log as `egress.control_unrepresentable` naming the wire path.
 
 **What to do:** None — self-heals. To use n>1, route the request to a same-protocol lane where the body is forwarded verbatim.
 
 <a id="ir-drop-reasoning"></a>
 ### BUSBAR-7079 — Cross-protocol transcode dropped a reasoning/thinking ask
 
-- **Severity:** benign_recurring
+- **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `ir-drop-reasoning`
 
-A request's reasoning/thinking parameter was dropped on the cross-protocol seam because the target lane does not declare the reasoning capability; the request proceeds at the backend's default thinking level. Fires per request on the affected seam, logged at debug.
+A request's reasoning/thinking parameter was dropped on the cross-protocol seam because the target lane does not declare the reasoning capability; the request proceeds at the backend's default thinking level. Warned on every translated request it affects (one drop path, `codec::drops`), and recorded in the audit log as `egress.control_unrepresentable` naming the wire path.
 
 **What to do:** None — self-heals. Set `reasoning: true` on the model or pool member if the backend accepts thinking params.
 
 <a id="ir-drop-prompt-cache"></a>
 ### BUSBAR-7080 — Cross-protocol transcode dropped prompt-cache breakpoints
 
-- **Severity:** benign_recurring
+- **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `ir-drop-prompt-cache`
 
-Prompt-cache breakpoints were cleared on the cross-protocol seam because the target lane's dialect gates its cache marker per model and the lane does not declare the capability; the request proceeds uncached. Fires per request on the affected seam, logged at debug.
+Prompt-cache breakpoints were cleared on the cross-protocol seam because the target lane's dialect gates its cache marker per model and the lane does not declare the capability; the request proceeds uncached. Warned on every translated request it affects (one drop path, `codec::drops`), and recorded in the audit log as `egress.control_unrepresentable` naming the wire path.
 
 **What to do:** None — self-heals. Set `prompt_caching: true` on the model if the backend accepts cache markers.
 
 <a id="ir-drop-cache-control-over-cap"></a>
 ### BUSBAR-7081 — Cross-protocol transcode dropped cache_control breakpoints past the dialect cap
 
-- **Severity:** benign_recurring
+- **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `ir-drop-cache-control-over-cap`
 
-The request carried more cache_control breakpoints than the egress dialect allows (the target vendor 400s past its documented cap), so the breakpoints past the cap were dropped before the writer emitted them. Reachable only cross-protocol; fires per request, logged at debug.
+The request carried more cache_control breakpoints than the egress dialect allows (the target vendor 400s past its documented cap), so the breakpoints past the cap were dropped before the writer emitted them. Reachable only cross-protocol. Warned on every translated request it affects (one drop path, `codec::drops`), and recorded in the audit log as `egress.control_unrepresentable` naming the wire path.
 
 **What to do:** None — self-heals. Reduce the number of cache breakpoints, or route to a same-protocol lane if the full set is load-bearing.
 
 <a id="ir-drop-hosted-tools"></a>
 ### BUSBAR-7082 — Cross-protocol transcode dropped hosted (built-in) tools
 
-- **Severity:** benign_recurring
+- **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `ir-drop-hosted-tools`
 
-One or more provider-hosted (built-in) tools were dropped on the cross-protocol seam because they have no function-tool equivalent on a backend that does not host them; forwarding them would emit a malformed empty-name function tool the upstream rejects. Fires per request, logged at debug.
+One or more provider-hosted (built-in) tools were dropped on the cross-protocol seam because they have no function-tool equivalent on a backend that does not host them; forwarding them would emit a malformed empty-name function tool the upstream rejects. Warned on every translated request it affects (one drop path, `codec::drops`), and recorded in the audit log as `egress.control_unrepresentable` naming the wire path.
 
 **What to do:** None — self-heals. Route hosted-tool requests to a lane whose backend hosts them.
 
 <a id="ir-drop-message-name"></a>
 ### BUSBAR-7083 — Cross-protocol transcode dropped per-message participant names (messages[].name)
 
-- **Severity:** benign_recurring
+- **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `ir-drop-message-name`
 
-Per-message participant names (`messages[].name`) were dropped on the cross-protocol seam because no target protocol models a per-message speaker name, so a multi-speaker transcript reaches the backend with its speaker labels removed. Fires per request, logged at debug.
+Per-message participant names (`messages[].name`) were dropped on the cross-protocol seam because no target protocol models a per-message speaker name, so a multi-speaker transcript reaches the backend with its speaker labels removed. Warned on every translated request it affects (one drop path, `codec::drops`), and recorded in the audit log as `egress.control_unrepresentable` naming the wire path.
 
 **What to do:** None — self-heals. Put the speaker in the message text, or route to a same-protocol lane that models them.
 
 <a id="ir-drop-cached-content"></a>
 ### BUSBAR-7084 — Cross-protocol transcode dropped a provider cachedContent reference
 
-- **Severity:** benign_recurring
+- **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `ir-drop-cached-content`
 
-A provider `cachedContent` reference was dropped on the cross-protocol seam because the referenced context cache lives server-side at the origin provider and cannot be projected into `contents`: the backend answers on the visible history only and the caller is billed full uncached input. Fires per request, logged at debug.
+A provider `cachedContent` reference was dropped on the cross-protocol seam because the referenced context cache lives server-side at the origin provider and cannot be projected into `contents`: the backend answers on the visible history only and the caller is billed full uncached input. Warned on every translated request it affects (one drop path, `codec::drops`), and recorded in the audit log as `egress.control_unrepresentable` naming the wire path.
 
 **What to do:** None — self-heals. Route cachedContent requests to a same-protocol lane to use the cache.
 
 <a id="ir-drop-unmodeled-keys"></a>
-### BUSBAR-7085 — Cross-protocol transcode dropped unmodeled request keys
+### BUSBAR-7085 — Cross-protocol transcode dropped an unmapped member
 
-- **Severity:** benign_recurring
+- **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `ir-drop-unmodeled-keys`
 
-The source dialect's unmodeled top-level request keys were dropped on the cross-protocol seam because no target writer can re-emit a foreign dialect's key, so every key named in the log is not forwarded to the backend. Fires per request; only key names are logged (never their values), at debug.
+A member of the source dialect that the target dialect has no form for was dropped on the cross-protocol seam: a request member its map file does not model, or a request or answer content block of a kind the other dialect cannot carry. Nothing is put in its place. Only the wire path is logged (never the value). Warned on every translated request or response it affects (one drop path, `codec::drops`); a request-side drop is also recorded in the audit log as `egress.control_unrepresentable` naming the wire path.
 
 **What to do:** None — self-heals. Route to a same-protocol lane (which forwards the caller's original bytes verbatim) if a named field is load-bearing.
 
 <a id="ir-truncate-stop-sequences"></a>
 ### BUSBAR-7086 — Stop sequences truncated to the protocol's documented cap
 
-- **Severity:** benign_recurring
+- **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `ir-truncate-stop-sequences`
 
-The request carried more stop sequences than the target protocol's documented cap allows, so the excess were dropped before forwarding. Fires per request on the affected seam, logged at debug.
+The request carried more stop sequences than the target protocol's documented cap allows, so the excess were dropped before forwarding. Warned on every translated request it affects (one drop path, `codec::drops`), and recorded in the audit log as `egress.control_unrepresentable` naming the wire path.
 
 **What to do:** None — self-heals. Reduce the number of stop sequences, or route to a same-protocol lane if the full set is required.
 
@@ -1627,11 +1627,11 @@ An egress authorization credential contained bytes that are not valid in an HTTP
 <a id="proto-drop-provider-metadata"></a>
 ### BUSBAR-7088 — Cross-protocol transcode dropped response-side provider metadata
 
-- **Severity:** benign_recurring
+- **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `proto-drop-provider-metadata`
 
-Response-side provider metadata (a vendor guardrail `trace`, a vendor `safetyRatings`) was dropped on the cross-protocol seam because it is a vendor-scoped artifact the caller's protocol has no shape to receive. Fires per response on the affected seam, logged at debug.
+Response-side provider metadata (a vendor guardrail `trace`, a vendor `safetyRatings`) was dropped on the cross-protocol seam because it is a vendor-scoped artifact the caller's protocol has no shape to receive. Warned on every translated response it affects (one drop path, `codec::drops`), naming the wire path.
 
 **What to do:** None — self-heals. If this metadata is compliance evidence, route the request to a same-protocol lane where the upstream body reaches the client verbatim.
 

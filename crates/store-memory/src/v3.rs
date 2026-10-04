@@ -13,8 +13,12 @@
 //! guards, so a replay after a restart re-applies onto an empty store, which is the state the
 //! restart left.
 //!
-//! EPOCH: a node-local store holds one constant epoch and never answers a stale one (`ReserveIn`'s
-//! doc, "A node-local store"), so the `epoch` a caller states is accepted as given.
+//! EPOCH AND SLICE LIFE (`abi::store::SLICE_TTL_MS`, the store kind's spec): this is a NODE-LOCAL
+//! store, and its rule holds for a SINGLE node only. It holds one constant epoch, never answers a
+//! stale one (the `epoch` a caller states is accepted as given) and grants slices that never expire
+//! (`valid_until_ms = u64::MAX`): no other node can draw against its windows. A store a fleet shares
+//! persists and fences the epoch and bounds every slice. A release, here as everywhere, returns at
+//! most what the slice has left, and a slice with nothing left returns `0`.
 //!
 //! GRANT SIZE: a cell grants its whole `amount` or the reserve fails; the per-dimension test
 //! is 1.5.5's, cited on `abi::store::ReserveIn`.
@@ -22,14 +26,16 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, MutexGuard};
 
+use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::sdk::store::{
-    Cap, CapsRefused, Cell, CellKey, Dimension, Grant, OpRefused, OpResult, ReserveRefused,
-    StoreSlots, Tail,
+    Cap, CapsRefused, Cell, CellKey, Dimension, Grant, Op, OpRefused, OpResult, ReserveRefused,
+    Scanned, Step, StoreSlots, Tail,
 };
 use busbar_contract::abi::store::{OpId, OP_ID_RETENTION_SECS};
 use busbar_contract::kinds::{Head, RecordBytes};
 use busbar_contract::records::{
-    AuditRecord, MeteringDelta, PlaneRecordRef, RecordStore, UsageDelta,
+    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
+    PlaneSelector, RecordStore, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
 
 use crate::MemoryStore;
@@ -95,6 +101,9 @@ struct Inner {
     /// `slot -> drawn and not released`.
     used: HashMap<Slot, u64>,
     slices: HashMap<u64, Drawn>,
+    /// The slices whose unreturned unspent reached `0`, with when: a later release of one returns
+    /// `0`. Kept as long as an `op_id` is (`OP_ID_RETENTION_SECS`), then forgotten.
+    closed: HashMap<u64, u64>,
     next_slice: u64,
     /// `stream -> its records`; the head's `seq` is the count.
     journals: HashMap<String, Vec<RecordBytes>>,
@@ -204,18 +213,10 @@ impl MemoryStore {
     }
 }
 
-impl StoreSlots for MemoryStore {
-    const TAIL: Tail = Tail {
-        ephemeral: true,
-        durable_plane: false,
-        fork_refusal: true,
-    };
-
-    fn open(_settings: &[u8]) -> Result<Self, String> {
-        Ok(Self::new())
-    }
-
-    fn add_usage_op(
+/// The store v3 slots' own bodies: each op's ONE body, which the table's slot answers inline (the
+/// memory store never pends).
+impl MemoryStore {
+    pub(crate) fn v3_add_usage_op(
         &self,
         op: OpId,
         bucket: &str,
@@ -230,7 +231,7 @@ impl StoreSlots for MemoryStore {
         .map(drop)
     }
 
-    fn add_metering_op(&self, op: OpId, delta: &MeteringDelta) -> OpResult<()> {
+    pub(crate) fn v3_add_metering_op(&self, op: OpId, delta: &MeteringDelta) -> OpResult<()> {
         let body = format!("add_metering:{delta:?}");
         self.deduped(op, body, |s, _| {
             s.add_metering(delta).map_err(failed)?;
@@ -239,7 +240,7 @@ impl StoreSlots for MemoryStore {
         .map(drop)
     }
 
-    fn append_audit_op(&self, op: OpId, entry: &AuditRecord) -> OpResult<()> {
+    pub(crate) fn v3_append_audit_op(&self, op: OpId, entry: &AuditRecord) -> OpResult<()> {
         let body = format!("append_audit:{entry:?}");
         self.deduped(op, body, |s, _| {
             s.append_audit(entry).map_err(failed)?;
@@ -248,7 +249,11 @@ impl StoreSlots for MemoryStore {
         .map(drop)
     }
 
-    fn append_plane_record_op(&self, op: OpId, record: PlaneRecordRef<'_>) -> OpResult<()> {
+    pub(crate) fn v3_append_plane_record_op(
+        &self,
+        op: OpId,
+        record: PlaneRecordRef<'_>,
+    ) -> OpResult<()> {
         let body = format!("append_plane_record:{:?}", record.to_record());
         self.deduped(op, body, |s, _| {
             s.append_plane_record(record).map_err(failed)?;
@@ -257,7 +262,12 @@ impl StoreSlots for MemoryStore {
         .map(drop)
     }
 
-    fn append_batch(&self, op: OpId, stream: &str, records: &[RecordBytes]) -> OpResult<Head> {
+    pub(crate) fn v3_append_batch(
+        &self,
+        op: OpId,
+        stream: &str,
+        records: &[RecordBytes],
+    ) -> OpResult<Head> {
         let body = format!("append_batch:{stream:?}:{records:?}");
         let answer = self.deduped(op, body, |_, inner| {
             let rows = inner.journals.entry(stream.to_string()).or_default();
@@ -273,7 +283,7 @@ impl StoreSlots for MemoryStore {
         }
     }
 
-    fn heads(&self) -> Result<Vec<(String, Head)>, String> {
+    pub(crate) fn v3_heads(&self) -> Result<Vec<(String, Head)>, String> {
         let inner = self.v3.lock();
         let mut heads: Vec<(String, Head)> = inner
             .journals
@@ -292,7 +302,12 @@ impl StoreSlots for MemoryStore {
         Ok(heads)
     }
 
-    fn session_put(&self, session: u64, node: &str, principal: &str) -> Result<(), String> {
+    pub(crate) fn v3_session_put(
+        &self,
+        session: u64,
+        node: &str,
+        principal: &str,
+    ) -> Result<(), String> {
         self.v3
             .lock()
             .sessions
@@ -300,12 +315,12 @@ impl StoreSlots for MemoryStore {
         Ok(())
     }
 
-    fn session_remove(&self, session: u64) -> Result<(), String> {
+    pub(crate) fn v3_session_remove(&self, session: u64) -> Result<(), String> {
         self.v3.lock().sessions.remove(&session);
         Ok(())
     }
 
-    fn sessions_for(&self, principal: &str) -> Result<Vec<(u64, String)>, String> {
+    pub(crate) fn v3_sessions_for(&self, principal: &str) -> Result<Vec<(u64, String)>, String> {
         let inner = self.v3.lock();
         let mut rows: Vec<(u64, String)> = inner
             .sessions
@@ -317,7 +332,12 @@ impl StoreSlots for MemoryStore {
         Ok(rows)
     }
 
-    fn record_put(&self, schema: &str, key: &[u8], value: &[u8]) -> Result<(), String> {
+    pub(crate) fn v3_record_put(
+        &self,
+        schema: &str,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), String> {
         // The store keeps the record, so it copies it here (the door lends the host's bytes).
         let value = RecordBytes::new(value.to_vec())
             .map_err(|n| format!("a record of {n} bytes is over the ceiling"))?;
@@ -325,11 +345,15 @@ impl StoreSlots for MemoryStore {
         Ok(())
     }
 
-    fn record_get(&self, schema: &str, key: &[u8]) -> Result<Option<RecordBytes>, String> {
+    pub(crate) fn v3_record_get(
+        &self,
+        schema: &str,
+        key: &[u8],
+    ) -> Result<Option<RecordBytes>, String> {
         Ok(self.record_get_at(schema, key))
     }
 
-    fn record_scan(
+    pub(crate) fn v3_record_scan(
         &self,
         schema: &str,
         prefix: &[u8],
@@ -338,7 +362,7 @@ impl StoreSlots for MemoryStore {
         Ok(self.record_scan_at(schema, prefix, limit))
     }
 
-    fn reserve<'c>(
+    pub(crate) fn v3_reserve<'c>(
         &self,
         op: OpId,
         epoch: u64,
@@ -389,7 +413,7 @@ impl StoreSlots for MemoryStore {
             granted.push(Grant {
                 slice_id,
                 granted: c.amount,
-                // Nothing expires a slice that no other node can draw against.
+                // Single node: nothing expires a slice no other node can draw against.
                 valid_until_ms: u64::MAX,
             });
         }
@@ -398,7 +422,7 @@ impl StoreSlots for MemoryStore {
         Ok(())
     }
 
-    fn slice_release(
+    pub(crate) fn v3_slice_release(
         &self,
         op: OpId,
         epoch: u64,
@@ -407,16 +431,24 @@ impl StoreSlots for MemoryStore {
     ) -> OpResult<()> {
         let items: Vec<(u64, u64)> = items.collect();
         let body = format!("slice_release:{epoch}:{items:?}");
+        let now = self.now();
         let answer = self.deduped(op, body, |_, inner| {
-            if let Some((id, _)) = items.iter().find(|(id, _)| !inner.slices.contains_key(id)) {
+            if inner.closed.len() > 1024 {
+                inner
+                    .closed
+                    .retain(|_, at| at.saturating_add(OP_ID_RETENTION_SECS) > now);
+            }
+            let known = |id: &u64| inner.slices.contains_key(id) || inner.closed.contains_key(id);
+            if let Some((id, _)) = items.iter().find(|(id, _)| !known(id)) {
                 return Err(OpRefused::Failed(format!(
-                    "slice_release: slice {id} is not held"
+                    "slice_release: slice {id} was never granted"
                 )));
             }
             let mut back_all = Vec::with_capacity(items.len());
             for &(id, unspent) in &items {
+                // A slice closed once its unreturned unspent reached 0 (by an earlier release, or an
+                // earlier item of this call) returns nothing more.
                 let Some(d) = inner.slices.get_mut(&id) else {
-                    // An item naming a slice an EARLIER item of this call closed.
                     back_all.push(0);
                     continue;
                 };
@@ -425,6 +457,7 @@ impl StoreSlots for MemoryStore {
                 let slot = d.slot.clone();
                 if d.left == 0 {
                     inner.slices.remove(&id);
+                    inner.closed.insert(id, now);
                 }
                 if let Some(u) = inner.used.get_mut(&slot) {
                     *u = u.saturating_sub(back);
@@ -442,7 +475,11 @@ impl StoreSlots for MemoryStore {
         }
     }
 
-    fn add_usage_batch(&self, op: OpId, cells: &[(&str, u64, UsageDelta)]) -> OpResult<()> {
+    pub(crate) fn v3_add_usage_batch(
+        &self,
+        op: OpId,
+        cells: &[(&str, u64, UsageDelta)],
+    ) -> OpResult<()> {
         let body = format!("add_usage_batch:{cells:?}");
         self.deduped(op, body, |s, _| {
             // A RAM ledger cannot fail an add, so applying in order is atomic.
@@ -454,7 +491,7 @@ impl StoreSlots for MemoryStore {
         .map(drop)
     }
 
-    fn add_metering_batch(&self, op: OpId, deltas: &[MeteringDelta]) -> OpResult<()> {
+    pub(crate) fn v3_add_metering_batch(&self, op: OpId, deltas: &[MeteringDelta]) -> OpResult<()> {
         let body = format!("add_metering_batch:{deltas:?}");
         self.deduped(op, body, |s, _| {
             for d in deltas {
@@ -465,7 +502,7 @@ impl StoreSlots for MemoryStore {
         .map(drop)
     }
 
-    fn append_audit_batch(&self, op: OpId, entries: &[AuditRecord]) -> OpResult<()> {
+    pub(crate) fn v3_append_audit_batch(&self, op: OpId, entries: &[AuditRecord]) -> OpResult<()> {
         let body = format!("append_audit_batch:{entries:?}");
         self.deduped(op, body, |s, _| {
             s.audit_fits(entries)?;
@@ -477,7 +514,7 @@ impl StoreSlots for MemoryStore {
         .map(drop)
     }
 
-    fn window_caps(&self, op: OpId, caps: &[Cap<'_>]) -> Result<(), CapsRefused> {
+    pub(crate) fn v3_window_caps(&self, op: OpId, caps: &[Cap<'_>]) -> Result<(), CapsRefused> {
         let body = format!("window_caps:{caps:?}");
         let mut inner = self.v3.lock();
         match inner.seen(op, &body) {
@@ -503,5 +540,394 @@ impl StoreSlots for MemoryStore {
         inner.caps.extend(pushed);
         inner.record(self.now(), op, body, Answer::Done);
         Ok(())
+    }
+}
+
+impl StoreSlots for MemoryStore {
+    const TAIL: Tail = Tail {
+        ephemeral: true,
+        durable_plane: false,
+        fork_refusal: true,
+    };
+
+    fn validate(_settings: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn open(_settings: &[u8], _host: Option<Host>) -> Result<Self, String> {
+        Ok(Self::new())
+    }
+
+    fn add_usage_op(
+        &self,
+        _: &mut Op<'_>,
+        op: OpId,
+        bucket: &str,
+        window_start: u64,
+        delta: &UsageDelta,
+    ) -> Step<OpResult<()>> {
+        Step::Ready(self.v3_add_usage_op(op, bucket, window_start, delta))
+    }
+
+    fn add_metering_op(
+        &self,
+        _: &mut Op<'_>,
+        op: OpId,
+        delta: &MeteringDelta,
+    ) -> Step<OpResult<()>> {
+        Step::Ready(self.v3_add_metering_op(op, delta))
+    }
+
+    fn append_audit_op(&self, _: &mut Op<'_>, op: OpId, entry: &AuditRecord) -> Step<OpResult<()>> {
+        Step::Ready(self.v3_append_audit_op(op, entry))
+    }
+
+    fn append_plane_record_op(
+        &self,
+        _: &mut Op<'_>,
+        op: OpId,
+        record: PlaneRecordRef<'_>,
+    ) -> Step<OpResult<()>> {
+        Step::Ready(self.v3_append_plane_record_op(op, record))
+    }
+
+    fn append_batch(
+        &self,
+        _: &mut Op<'_>,
+        op: OpId,
+        stream: &str,
+        records: &[RecordBytes],
+    ) -> Step<OpResult<Head>> {
+        Step::Ready(self.v3_append_batch(op, stream, records))
+    }
+
+    fn heads(&self, _: &mut Op<'_>) -> Step<Result<Vec<(String, Head)>, String>> {
+        Step::Ready(self.v3_heads())
+    }
+
+    fn session_put(
+        &self,
+        _: &mut Op<'_>,
+        session: u64,
+        node: &str,
+        principal: &str,
+    ) -> Step<Result<(), String>> {
+        Step::Ready(self.v3_session_put(session, node, principal))
+    }
+
+    fn session_remove(&self, _: &mut Op<'_>, session: u64) -> Step<Result<(), String>> {
+        Step::Ready(self.v3_session_remove(session))
+    }
+
+    fn sessions_for(
+        &self,
+        _: &mut Op<'_>,
+        principal: &str,
+    ) -> Step<Result<Vec<(u64, String)>, String>> {
+        Step::Ready(self.v3_sessions_for(principal))
+    }
+
+    fn record_put(
+        &self,
+        _: &mut Op<'_>,
+        schema: &str,
+        key: &[u8],
+        value: &[u8],
+    ) -> Step<Result<(), String>> {
+        Step::Ready(self.v3_record_put(schema, key, value))
+    }
+
+    fn record_get(
+        &self,
+        _: &mut Op<'_>,
+        schema: &str,
+        key: &[u8],
+    ) -> Step<Result<Option<RecordBytes>, String>> {
+        Step::Ready(self.v3_record_get(schema, key))
+    }
+
+    fn record_scan(
+        &self,
+        _: &mut Op<'_>,
+        schema: &str,
+        prefix: &[u8],
+        limit: u32,
+    ) -> Step<Result<Scanned, String>> {
+        Step::Ready(self.v3_record_scan(schema, prefix, limit))
+    }
+
+    fn reserve<'c>(
+        &self,
+        _: &mut Op<'_>,
+        op: OpId,
+        epoch: u64,
+        cells: impl Iterator<Item = Cell<'c>> + Clone,
+        grants: &mut impl Extend<Grant>,
+    ) -> Step<Result<(), ReserveRefused>> {
+        Step::Ready(self.v3_reserve(op, epoch, cells, grants))
+    }
+
+    fn slice_release(
+        &self,
+        _: &mut Op<'_>,
+        op: OpId,
+        epoch: u64,
+        items: impl Iterator<Item = (u64, u64)> + Clone,
+        released: &mut impl Extend<u64>,
+    ) -> Step<OpResult<()>> {
+        Step::Ready(self.v3_slice_release(op, epoch, items, released))
+    }
+
+    fn add_usage_batch(
+        &self,
+        _: &mut Op<'_>,
+        op: OpId,
+        cells: &[(&str, u64, UsageDelta)],
+    ) -> Step<OpResult<()>> {
+        Step::Ready(self.v3_add_usage_batch(op, cells))
+    }
+
+    fn add_metering_batch(
+        &self,
+        _: &mut Op<'_>,
+        op: OpId,
+        deltas: &[MeteringDelta],
+    ) -> Step<OpResult<()>> {
+        Step::Ready(self.v3_add_metering_batch(op, deltas))
+    }
+
+    fn append_audit_batch(
+        &self,
+        _: &mut Op<'_>,
+        op: OpId,
+        entries: &[AuditRecord],
+    ) -> Step<OpResult<()>> {
+        Step::Ready(self.v3_append_audit_batch(op, entries))
+    }
+
+    fn window_caps(
+        &self,
+        _: &mut Op<'_>,
+        op: OpId,
+        caps: &[Cap<'_>],
+    ) -> Step<Result<(), CapsRefused>> {
+        Step::Ready(self.v3_window_caps(op, caps))
+    }
+
+    fn put_key(&self, _: &mut Op<'_>, key: &VirtualKey) -> Step<RecordStoreResult<()>> {
+        Step::Ready(RecordStore::put_key(self, key))
+    }
+
+    fn get_key(&self, _: &mut Op<'_>, id: &str) -> Step<RecordStoreResult<Option<VirtualKey>>> {
+        Step::Ready(RecordStore::get_key(self, id))
+    }
+
+    fn list_keys(&self, _: &mut Op<'_>) -> Step<RecordStoreResult<Vec<VirtualKey>>> {
+        Step::Ready(RecordStore::list_keys(self))
+    }
+
+    fn delete_key(&self, _: &mut Op<'_>, id: &str) -> Step<RecordStoreResult<()>> {
+        Step::Ready(RecordStore::delete_key(self, id))
+    }
+
+    fn scrub_key(&self, _: &mut Op<'_>, id: &str) -> Step<RecordStoreResult<()>> {
+        Step::Ready(RecordStore::scrub_key(self, id))
+    }
+
+    fn list_keys_since(
+        &self,
+        _: &mut Op<'_>,
+        since: u64,
+    ) -> Step<RecordStoreResult<Vec<VirtualKey>>> {
+        Step::Ready(RecordStore::list_keys_since(self, since))
+    }
+
+    fn get_usage(
+        &self,
+        _: &mut Op<'_>,
+        bucket_id: &str,
+        window_start: u64,
+    ) -> Step<RecordStoreResult<UsageLedger>> {
+        Step::Ready(RecordStore::get_usage(self, bucket_id, window_start))
+    }
+
+    fn put_usage(
+        &self,
+        _: &mut Op<'_>,
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &UsageLedger,
+    ) -> Step<RecordStoreResult<()>> {
+        Step::Ready(RecordStore::put_usage(
+            self,
+            bucket_id,
+            window_start,
+            ledger,
+        ))
+    }
+
+    fn list_metering(
+        &self,
+        _: &mut Op<'_>,
+        bucket: u64,
+    ) -> Step<RecordStoreResult<Vec<MeteringRow>>> {
+        Step::Ready(RecordStore::list_metering(self, bucket))
+    }
+
+    fn purge_windows_before(&self, _: &mut Op<'_>, before: u64) -> Step<RecordStoreResult<u64>> {
+        Step::Ready(RecordStore::purge_windows_before(self, before))
+    }
+
+    fn purge_metering_before(&self, _: &mut Op<'_>, bucket: &str) -> Step<RecordStoreResult<u64>> {
+        Step::Ready(RecordStore::purge_metering_before(self, bucket))
+    }
+
+    fn put_credential(
+        &self,
+        _: &mut Op<'_>,
+        secret: &CredentialSecret,
+    ) -> Step<RecordStoreResult<()>> {
+        Step::Ready(RecordStore::put_credential(self, secret))
+    }
+
+    fn put_key_with_credential(
+        &self,
+        _: &mut Op<'_>,
+        key: &VirtualKey,
+        secret: &CredentialSecret,
+    ) -> Step<RecordStoreResult<()>> {
+        Step::Ready(RecordStore::put_key_with_credential(self, key, secret))
+    }
+
+    fn list_credentials(
+        &self,
+        _: &mut Op<'_>,
+        key_id: &str,
+    ) -> Step<RecordStoreResult<Vec<CredentialMeta>>> {
+        Step::Ready(RecordStore::list_credentials(self, key_id))
+    }
+
+    fn lookup_credential_secret(
+        &self,
+        _: &mut Op<'_>,
+        kind: &str,
+        public_id: &str,
+    ) -> Step<RecordStoreResult<Option<CredentialSecret>>> {
+        Step::Ready(RecordStore::lookup_credential_secret(self, kind, public_id))
+    }
+
+    fn revoke_credential(
+        &self,
+        _: &mut Op<'_>,
+        id: &str,
+        reason: &str,
+    ) -> Step<RecordStoreResult<()>> {
+        Step::Ready(RecordStore::revoke_credential(self, id, reason))
+    }
+
+    fn list_credentials_since(
+        &self,
+        _: &mut Op<'_>,
+        since: u64,
+    ) -> Step<RecordStoreResult<Vec<CredentialSecret>>> {
+        Step::Ready(RecordStore::list_credentials_since(self, since))
+    }
+
+    fn list_audit(&self, _: &mut Op<'_>) -> Step<RecordStoreResult<Vec<AuditRecord>>> {
+        Step::Ready(RecordStore::list_audit(self))
+    }
+
+    fn add_denylist(&self, _: &mut Op<'_>, sub: &str, reason: &str) -> Step<RecordStoreResult<()>> {
+        Step::Ready(RecordStore::add_denylist(self, sub, reason))
+    }
+
+    fn list_denylist(&self, _: &mut Op<'_>) -> Step<RecordStoreResult<Vec<String>>> {
+        Step::Ready(RecordStore::list_denylist(self))
+    }
+
+    fn list_audit_tail(
+        &self,
+        _: &mut Op<'_>,
+        limit: u64,
+    ) -> Step<RecordStoreResult<Vec<AuditRecord>>> {
+        Step::Ready(RecordStore::list_audit_tail(self, limit))
+    }
+
+    fn upsert_plane_record(
+        &self,
+        _: &mut Op<'_>,
+        record: PlaneRecordRef<'_>,
+    ) -> Step<RecordStoreResult<()>> {
+        Step::Ready(RecordStore::upsert_plane_record(self, record))
+    }
+
+    fn get_plane_record(
+        &self,
+        _: &mut Op<'_>,
+        kind: &str,
+        id: &str,
+    ) -> Step<RecordStoreResult<Option<Vec<u8>>>> {
+        Step::Ready(RecordStore::get_plane_record(self, kind, id))
+    }
+
+    fn list_plane_records(
+        &self,
+        _: &mut Op<'_>,
+        kind: &str,
+        selector: &PlaneSelector<'_>,
+    ) -> Step<RecordStoreResult<Vec<Vec<u8>>>> {
+        Step::Ready(RecordStore::list_plane_records(self, kind, selector))
+    }
+
+    fn list_plane_record_parents(
+        &self,
+        _: &mut Op<'_>,
+        kind: &str,
+    ) -> Step<RecordStoreResult<Vec<String>>> {
+        Step::Ready(RecordStore::list_plane_record_parents(self, kind))
+    }
+
+    fn purge_plane_records_before(
+        &self,
+        _: &mut Op<'_>,
+        kind: &str,
+        before: u64,
+    ) -> Step<RecordStoreResult<u64>> {
+        Step::Ready(RecordStore::purge_plane_records_before(self, kind, before))
+    }
+
+    fn delete_plane_record(
+        &self,
+        _: &mut Op<'_>,
+        kind: &str,
+        id: &str,
+    ) -> Step<RecordStoreResult<()>> {
+        Step::Ready(RecordStore::delete_plane_record(self, kind, id))
+    }
+
+    fn redeem_plane_token(
+        &self,
+        _: &mut Op<'_>,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> Step<RecordStoreResult<bool>> {
+        Step::Ready(RecordStore::redeem_plane_token(
+            self, kind, token, expires_at, now,
+        ))
+    }
+
+    fn plane_token_live(
+        &self,
+        _: &mut Op<'_>,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> Step<RecordStoreResult<bool>> {
+        Step::Ready(RecordStore::plane_token_live(
+            self, kind, token, expires_at, now,
+        ))
     }
 }

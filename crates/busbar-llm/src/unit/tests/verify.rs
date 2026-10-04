@@ -63,7 +63,7 @@ fn envelope(status: u16, kind: &str, message: &str) -> (u16, Vec<u8>) {
 }
 
 fn seal() -> KernelSeal {
-    KernelSeal::acquire_for_kernel()
+    busbar_kernel::test_support::tokens::seal()
 }
 
 /// IDENTITY — guard one. The live door answers a pool the key may not reach with
@@ -197,7 +197,7 @@ fn an_empty_destination_set_proceeds_rather_than_refusing() {
     let seal = seal();
     let view = View::default();
     let d = verify(
-        &Pass::<Verify>::mint(&seal),
+        &busbar_kernel::test_support::tokens::pass::<Verify>(),
         &view,
         "pool-a",
         &PrincipalId::new("vk_x"),
@@ -218,7 +218,7 @@ fn the_step_stamps_its_refusal_with_verify() {
         ..Default::default()
     };
     let answer = verify(
-        &Pass::<Verify>::mint(&seal),
+        &busbar_kernel::test_support::tokens::pass::<Verify>(),
         &view,
         "denied",
         &PrincipalId::new("vk_x"),

@@ -103,99 +103,55 @@ use super::named_def_views::{export_def_view, identity_provider_view, unparseabl
 /// This derivation is what the read answers when there is no dated history to resolve against — a
 /// build whose composition root installed no [`UsageRateHistory`], or a row whose instant falls in
 /// a hole no entry of the snapshot covers.
-/// It prices at the CURRENT card — the previous release's reading — but through THE ONE FUNCTION
-/// (`CostModel::derive_spend_micros` is `busbar_kernel_ledger::cost::Tally` at that card): a model
-/// or class the present card does not price REFUSES (#42, item 31) instead of reading as the flat
-/// fee alone, and an overflow refuses instead of pinning (item 28).
+/// It prices at the CURRENT card — the previous release's reading — and prices nothing here: the
+/// row goes to the cost unit's own row read,
+/// [`busbar_kernel_ledger::cost::MeteredRow::spend_micros_at_card`], which projects it onto lanes
+/// and drives the one function at that card. A model or class the present card does not price
+/// REFUSES (#42, item 31) instead of reading as the flat fee alone, and an overflow refuses instead
+/// of pinning (item 28).
 pub fn derive_spend_micros_row(
     cost: &busbar_kernel::cost::CostModel,
     model: &str,
     b: &UsageBreakdown,
 ) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
-    let (lanes, fee_requests, include_fee) =
-        row_lanes(cost, model, b, &std::collections::BTreeMap::new());
-    cost.derive_spend_micros(
-        lanes.iter().map(|(lane, units)| (lane.as_str(), units)),
-        fee_requests,
-        include_fee,
-    )
+    metered_row(cost, model, b, &std::collections::BTreeMap::new())
+        .spend_micros_at_card(cost.card())
 }
 
 /// [`derive_spend_micros_row`] for a row that also carries LEDGERED CLASSES outside its token split
 /// (`MeteringRow::usage_units` — a plane's declared classes, an open class, a plane's session count):
 /// each is priced on the row's lane beside its tokens, exactly as the budget book prices the same
-/// counts — through the one function, so a present card silent about one REFUSES (#42).
+/// counts — by the cost unit, so a present card silent about one REFUSES (#42).
 pub fn derive_spend_micros_row_classes(
     cost: &busbar_kernel::cost::CostModel,
     model: &str,
     b: &UsageBreakdown,
     classes: &std::collections::BTreeMap<String, u64>,
 ) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
-    let (lanes, fee_requests, include_fee) = row_lanes(cost, model, b, classes);
-    cost.derive_spend_micros(
-        lanes.iter().map(|(lane, units)| (lane.as_str(), units)),
-        fee_requests,
-        include_fee,
-    )
+    metered_row(cost, model, b, classes).spend_micros_at_card(cost.card())
 }
 
-/// ONE METERING ROW AS THE LANES THE ONE FUNCTION PRICES — no arithmetic, a projection: each lane
-/// with its counts per class, the flat fee count, and whether the flat fee applies. Shared by the two
-/// current-card derivations above so they cannot spell a row two ways.
-#[allow(clippy::type_complexity)]
-fn row_lanes(
-    cost: &busbar_kernel::cost::CostModel,
-    model: &str,
+/// ONE METERING ROW, HANDED TO THE COST UNIT AS IT IS — no projection and no arithmetic here. The
+/// row's lane is its CONFIGURED model name through the `upstream_model` alias resolution, its counts
+/// are its token columns under the reserved class spellings ([`row_counts`]), and its requests and
+/// ledgered classes go as they are. Which lane each count prices on, and whether the requests are
+/// the pools plane's flat fee or a plane's own fee units, is the cost unit's
+/// ([`busbar_kernel_ledger::cost::MeteredRow`], one-pricing-site, ARCHITECT ruling 2026-09-30).
+/// Shared by the current-card and the dated reads so they cannot spell a row two ways.
+fn metered_row<'a>(
+    cost: &'a busbar_kernel::cost::CostModel,
+    model: &'a str,
     b: &UsageBreakdown,
-    classes: &std::collections::BTreeMap<String, u64>,
-) -> (
-    Vec<(String, std::collections::BTreeMap<String, u64>)>,
-    u64,
-    bool,
-) {
-    // Project the metering row's flat tier fields (its OWN JSON-contract names, unchanged) onto the
-    // name-keyed unit map the pricer now consumes. `tokens_cache_creation` is the row's field name;
-    // it maps onto the canonical `cache_write` unit key.
-    let mut units: std::collections::BTreeMap<String, u64> =
-        row_counts(b).map(|(k, v)| (k.to_string(), v)).collect();
-    let resolved = cost.resolve_model_alias(model);
-    // A PLANE'S ROW (`"<plane>\u{1f}<lane>"`, see [`row_lane`]) prices its requests the way the
-    // budget book does (#47): one PER_REQUEST each on that plane's FEE LANE, at the plane's own
-    // `fees.per_request` (0 for a plane that configured none) — never the pools plane's flat fee.
-    let (plane, subject) = busbar_kernel_ledger::cost::split_plane_lane(resolved);
-    if plane.is_empty() {
-        add_classes(&mut units, classes);
-        return (vec![(resolved.to_string(), units)], b.requests, true);
-    }
-    let mut fees = std::collections::BTreeMap::from([(
-        busbar_kernel_ledger::cost::PER_REQUEST.to_string(),
+    classes: &'a std::collections::BTreeMap<String, u64>,
+) -> busbar_kernel_ledger::cost::MeteredRow<'a> {
+    busbar_kernel_ledger::cost::MeteredRow::new(
+        cost.resolve_model_alias(model),
+        row_counts(b)
+            .map(|(class, quantity)| (class.to_string(), quantity))
+            .collect(),
         b.requests,
-    )]);
-    // The plane's FEE LANE row (`("", <plane>)`) carries its session count: it IS that lane.
-    add_classes(
-        if subject.is_empty() {
-            &mut fees
-        } else {
-            &mut units
-        },
         classes,
-    );
-    let mut lanes = vec![(busbar_kernel_ledger::cost::plane_fee_lane(plane), fees)];
-    if !units.is_empty() {
-        lanes.push((resolved.to_string(), units));
-    }
-    (lanes, 0, false)
-}
-
-/// Fold a row's ledgered classes into a lane's counts, additively (never overwriting a token tier).
-fn add_classes(
-    into: &mut std::collections::BTreeMap<String, u64>,
-    classes: &std::collections::BTreeMap<String, u64>,
-) {
-    for (class, n) in classes.iter().filter(|(_, n)| **n != 0) {
-        let cur = into.entry(class.clone()).or_insert(0);
-        *cur = cur.saturating_add(*n);
-    }
+    )
 }
 
 /// **THE LANE A METERING ROW PRICES ON.** A row a non-pools plane metered carries that plane's
@@ -399,22 +355,28 @@ fn row_counts(b: &UsageBreakdown) -> impl Iterator<Item = (&'static str, u64)> +
     .filter(|(_, quantity)| *quantity != 0)
 }
 
-/// **THE LOOKUP, AND IT IS THE ONE FUNCTION** — one metering row priced through
-/// [`busbar_kernel_ledger::cost::price_in_view`], the single implementation of
-/// `money = f(ledger_slice, card_history)` that satisfies #79 (`BUSBAR-1.6.0.md:423`), #42 (`:367`)
-/// and #81 (`:425`) together.
+/// **THE LOOKUP, AND IT IS THE ONE FUNCTION** — one metering row priced by the cost unit's dated
+/// row read, [`busbar_kernel_ledger::cost::MeteredRow::spend_micros_in_view`], which projects the
+/// row into a ledger slice and prices it through [`busbar_kernel_ledger::cost::price_in_view`], the
+/// single implementation of `money = f(ledger_slice, card_history)` that satisfies #79
+/// (`BUSBAR-1.6.0.md:423`), #42 (`:367`) and #81 (`:425`) together.
 ///
-/// Before this, the dated read carried its OWN multiply-and-sum — it called
+/// THIS CRATE PRICES NOTHING (one-pricing-site, ARCHITECT ruling 2026-09-30). It used to build the
+/// ledger slice itself (the lane, the plane's fee lane, the classes) and hand it to the one
+/// function, which made the slice's shape a second pricing policy living beside the cost unit. The
+/// projection now lives in the cost unit with the price, and this read hands over the row.
+///
+/// Before that, the dated read carried its OWN multiply-and-sum — it called
 /// `busbar_kernel_ledger::cost::derive_spend_micros`, which is the LEGACY read-time projection and a
 /// second implementation of the same arithmetic. The two agreed on every input either of them
 /// answered, and that agreement was the hazard rather than the reassurance: two implementations are
 /// two chances to be wrong and two places to remember when the ruling changes. #71 (`:409`) says
 /// pricing is read-time and in the kernel; it does not say it may be read-time in two kernels.
 ///
-/// **THE RESOLUTION MOVES INSIDE.** The card is no longer chosen by the caller and handed in: the
-/// entry carries its own `arrived_ms` and [`busbar_kernel_ledger::cost::HistoryView::card_at`] — the
-/// one place entitled to say which entry answers for an instant — resolves it. #79 is now applied in
-/// exactly one place on this path instead of being applied by the caller and trusted here.
+/// **THE RESOLUTION IS INSIDE.** The card is not chosen by the caller and handed in: the entry
+/// carries its own `arrived_ms` and [`busbar_kernel_ledger::cost::HistoryView::card_at`] — the one
+/// place entitled to say which entry answers for an instant — resolves it. #79 is applied in exactly
+/// one place on this path instead of being applied by the caller and trusted here.
 ///
 /// The lane is the row's CONFIGURED model name through the same `upstream_model` alias resolution
 /// the flat derivation uses, so a card entry is found by the same name on both paths.
@@ -436,14 +398,8 @@ pub fn derive_spend_micros_row_at_card(
     model: &str,
     b: &UsageBreakdown,
 ) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
-    let entries = row_entries(
-        arrived_ms,
-        cost,
-        model,
-        b,
-        &std::collections::BTreeMap::new(),
-    );
-    busbar_kernel_ledger::cost::price_in_view(&entries, view)?.micros_i64()
+    metered_row(cost, model, b, &std::collections::BTreeMap::new())
+        .spend_micros_in_view(arrived_ms, view)
 }
 
 /// [`derive_spend_micros_row_at_card`] for a row that also carries LEDGERED CLASSES outside its
@@ -459,56 +415,7 @@ pub fn derive_spend_micros_row_classes_at_card(
     b: &UsageBreakdown,
     classes: &std::collections::BTreeMap<String, u64>,
 ) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
-    let entries = row_entries(arrived_ms, cost, model, b, classes);
-    busbar_kernel_ledger::cost::price_in_view(&entries, view)?.micros_i64()
-}
-
-/// ONE METERING ROW AS A LEDGER SLICE — no arithmetic, a projection: a lane, counts keyed by meter
-/// class, a fee count, and THE INSTANT (#79's resolution key, in MILLISECONDS —
-/// `row_priced_at_ms` is what decides which instant this row claims). The row's counts are its
-/// token split and its ledgered classes, summed per class. Shared by the two dated derivations above.
-fn row_entries(
-    arrived_ms: u64,
-    cost: &busbar_kernel::cost::CostModel,
-    model: &str,
-    b: &UsageBreakdown,
-    classes: &std::collections::BTreeMap<String, u64>,
-) -> Vec<busbar_kernel_ledger::cost::LedgerEntry> {
-    use busbar_kernel_ledger::cost::{plane_fee_lane, split_plane_lane, LedgerEntry, PER_REQUEST};
-    let lane = cost.resolve_model_alias(model);
-    let mut counts: std::collections::BTreeMap<String, u64> = row_counts(b)
-        .map(|(class, quantity)| (class.to_string(), quantity))
-        .collect();
-    let entry = |lane: &str, counts: &std::collections::BTreeMap<String, u64>| {
-        counts.iter().fold(
-            LedgerEntry::new(lane, arrived_ms),
-            |e, (class, quantity)| e.with_whole(class, *quantity),
-        )
-    };
-    let (plane, subject) = split_plane_lane(lane);
-    if plane.is_empty() {
-        add_classes(&mut counts, classes);
-        return vec![entry(lane, &counts).with_fee_count(b.requests)];
-    }
-    // A PLANE'S ROW (see [`row_lane`]): its requests are that plane's fee units, one PER_REQUEST each
-    // on its FEE LANE — the budget book's own spelling (#47) — so they price at the plane's
-    // `fees.per_request` (0 when it configured none), never at the pools plane's flat fee. Its other
-    // counts price on its plane-qualified lane with no fee of their own; the plane's FEE LANE row
-    // (`("", <plane>)`) carries its session count on the fee lane itself.
-    let mut fees = std::collections::BTreeMap::from([(PER_REQUEST.to_string(), b.requests)]);
-    add_classes(
-        if subject.is_empty() {
-            &mut fees
-        } else {
-            &mut counts
-        },
-        classes,
-    );
-    let mut entries = vec![entry(&plane_fee_lane(plane), &fees)];
-    if !counts.is_empty() {
-        entries.push(entry(lane, &counts));
-    }
-    entries
+    metered_row(cost, model, b, classes).spend_micros_in_view(arrived_ms, view)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

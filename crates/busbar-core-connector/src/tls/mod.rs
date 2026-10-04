@@ -5,7 +5,7 @@
 //! verbatim from the `busbar-core-connsec` crate it was (THE DESIGN: TLS lives only in the connector).
 //!
 //! A trusted, compiled-in `core`-kind sibling of `busbar-kernel` (the same category as
-//! `busbar-core-admin` / `busbar-core-oauth2`): never a plugin, always linked, off the hot path. It owns the
+//! the other core-tier crates): never a plugin, always linked, off the hot path. It owns the
 //! WHOLE connection-security prep for one binding — read the operator's `tls:` config, pull the
 //! resolved key material through the secret kind (`busbar_kernel::config::secret::SecretResolver`,
 //! the one seam every other TLS-material reader in this tree already goes through), and build an

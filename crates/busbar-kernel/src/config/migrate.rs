@@ -24,38 +24,15 @@
 use busbar_contract::plugin::Kind;
 use serde_yaml::{Mapping, Value};
 
-/// The 1.5.x store-module text this migration and its refusals print, read from the ONE data table
-/// `data/legacy_store_modules.toml` (ruling F-D): frozen text naming store backends no crate in this
-/// tree declares, each row citing the v1.5.5 line it is verbatim from. Among them `gov14_db_path`,
-/// 1.4.x's real default `governance.db_path` (`DEFAULT_GOVERNANCE_DB` in the retired v1.4.1
-/// schema): migration reproduces that exact default, so a config that omitted `db_path` still finds
-/// its real, existing database file after migration. A key the table lacks is a build defect.
+/// The 1.5.x store-module text this migration and its refusals print, read off the ROOT LEGACY
+/// TABLE the composition root hands in ([`crate::config::legacy`]; moved from
+/// `data/legacy_store_modules.toml`): frozen text naming store backends no crate in the kernel
+/// declares, each row citing the v1.5.5 line it is verbatim from in `plugins.yaml`. Among them
+/// `gov14_db_path`, 1.4.x's real default `governance.db_path` (`DEFAULT_GOVERNANCE_DB` in the
+/// retired v1.4.1 schema): migration reproduces that exact default, so a config that omitted
+/// `db_path` still finds its real, existing database file after migration.
 pub fn legacy_store_text(key: &str) -> &'static str {
-    frozen_row(include_str!("../../data/legacy_store_modules.toml"), key)
-}
-
-/// The `key = "value"` row of a frozen-text data `table` (one row per line; ruling F-D). A key the
-/// table lacks is a build defect.
-pub(crate) fn frozen_row(table: &'static str, key: &str) -> &'static str {
-    let rows = table.lines().filter_map(|l| l.strip_prefix(key));
-    let mut values = rows.filter_map(|r| r.strip_prefix(" = \"")?.strip_suffix('"'));
-    values.next().expect("a frozen-text row")
-}
-
-/// The 1.5.3 store-plugin RENAME: is `module` a retired `store.module:` spelling of the first-party
-/// store plugin (the `retired_modules` row)? The plugin was renamed wholesale — repo, crate, artifact,
-/// manifest `name` and config `alias` (the `renamed_*` rows) — so NONE of these resolve against the
-/// renamed manifest.
-///
-/// Unlike the other retirement tables this one is keyed on a VALUE, not a field name, so serde never
-/// sees it: `store.module` is a plain `String` and any spelling parses. The loud-fail therefore has
-/// to come from `detect_legacy_markers` (which this row drives, together with
-/// `migrate_store_module`'s mechanical rewrite, so the two cannot drift) — without it the operator
-/// gets the loader's generic "does not match any plugin", which names neither the rename nor the fix.
-pub fn is_retired_store_module(module: &str) -> bool {
-    legacy_store_text("retired_modules")
-        .split(' ')
-        .any(|m| m == module)
+    crate::config::legacy::text(key)
 }
 
 /// The named boot error for a detected 1.x config. Every marker is listed so the operator
@@ -285,23 +262,22 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     // backend": nothing in the renamed artifact's manifest matches it, so the store the operator
     // asked for simply does not exist and boot dies on the loader's generic "does not match any
     // plugin", which names neither the rename nor the fix. Caught HERE instead, with the named
-    // marker + the migrate breadcrumb. Driven by the SHARED
-    // `is_retired_store_module` row so this marker and `migrate_store_module`'s
+    // marker + the migrate breadcrumb. Driven by the ONE rewrite over the root legacy table
+    // (`legacy::rewrite_retired`, here without applying) so this marker and `migrate_store_module`'s
     // rewrite cannot drift over WHICH spellings are retired.
-    if let Some(store) = get(root, Kind::Store.root()).and_then(|v| v.as_mapping().cloned()) {
-        if let Some(module) = get(&store, "module").and_then(|v| v.as_str().map(str::to_string)) {
-            if is_retired_store_module(&module) {
-                markers.push(format!(
-                    "`store.module: {module}` (RENAMED 1.5.3 → `{}`; the first-party store plugin \
-                     is {} — artifact `{}-<ver>-<target>.tar.gz`, manifest name `{}`. The old \
-                     name/alias resolve against NOTHING, so this would fail at boot with a generic \
-                     unresolved-plugin error; run `busbar --migrate-config`)",
-                    legacy_store_text("renamed_module"),
-                    legacy_store_text("renamed_display"),
-                    legacy_store_text("renamed_asset_stem"),
-                    legacy_store_text("renamed_manifest_name"),
-                ));
-            }
+    if let Some(mut store) = get(root, Kind::Store.root()).and_then(|v| v.as_mapping().cloned()) {
+        if let Some((module, alias)) =
+            crate::config::legacy::rewrite_retired(Kind::Store.root(), &mut store, false)
+        {
+            markers.push(format!(
+                "`store.module: {module}` (RENAMED 1.5.3 → `{alias}`; the first-party store plugin \
+                 is {} — artifact `{}-<ver>-<target>.tar.gz`, manifest name `{}`. The old \
+                 name/alias resolve against NOTHING, so this would fail at boot with a generic \
+                 unresolved-plugin error; run `busbar --migrate-config`)",
+                legacy_store_text("renamed_display"),
+                legacy_store_text(&format!("asset.{alias}")),
+                legacy_store_text(&format!("manifest.{alias}")),
+            ));
         }
     }
     if let Some(providers) = get(root, Kind::Transport.root()).and_then(|v| v.as_mapping().cloned())
@@ -2250,8 +2226,9 @@ fn migrate_pools_upstream_credentials(root: &mut Mapping, changes: &mut Vec<Stri
 /// its current alias. The plugin was renamed WHOLESALE (repo, crate, artifact, manifest
 /// `name`, config `alias`), so `redis` / `busbar-store-redis` / `busbar-store-redis-plugin` match
 /// nothing in the renamed artifact's manifest and the store the operator asked for is simply gone.
-/// Driven by the SHARED [`is_retired_store_module`] row, so this rewrite and
-/// [`detect_legacy_markers`]'s loud-fail cannot disagree about which spellings are retired.
+/// Driven by the ONE rewrite over the root legacy table
+/// ([`crate::config::legacy::rewrite_retired`]), so this rewrite and [`detect_legacy_markers`]'s
+/// loud-fail cannot disagree about which spellings are retired.
 ///
 /// The `settings:` bag rides through VERBATIM. The connection URL's `redis://` / `rediss://` scheme
 /// is the upstream driver's own registered scheme — an unrenamable upstream identifier, not a
@@ -2272,20 +2249,17 @@ fn migrate_store_module(root: &mut Mapping, changes: &mut Vec<String>, todos: &m
         Taken::Got(m) => m,
         Taken::Absent | Taken::Malformed => return,
     };
-    let module = store.get("module").and_then(Value::as_str);
-    let retired = module.filter(|m| is_retired_store_module(m));
-    if let Some(old) = retired.map(str::to_string) {
-        let renamed = legacy_store_text("renamed_module");
-        store.insert("module".into(), renamed.into());
+    if let Some((old, alias)) =
+        crate::config::legacy::rewrite_retired(Kind::Store.root(), &mut store, true)
+    {
         changes.push(format!(
-            "store.module: {old} -> {} (the first-party store plugin for this backend was RENAMED \
-             in 1.5.3: artifact `{}-<ver>-<target>.tar.gz`, manifest name `{}`. Install the \
+            "store.module: {old} -> {alias} (the first-party store plugin for this backend was \
+             RENAMED in 1.5.3: artifact `{}-<ver>-<target>.tar.gz`, manifest name `{}`. Install the \
              renamed tarball — the old one no longer answers to any name in this config. Your \
              `settings.url` is UNCHANGED: `{}://` is the driver's own URL scheme, not a busbar \
              name.)",
-            legacy_store_text("renamed_module"),
-            legacy_store_text("renamed_asset_stem"),
-            legacy_store_text("renamed_manifest_name"),
+            legacy_store_text(&format!("asset.{alias}")),
+            legacy_store_text(&format!("manifest.{alias}")),
             legacy_store_text("retired_url_scheme"),
         ));
     }

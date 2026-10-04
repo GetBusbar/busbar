@@ -41,6 +41,7 @@
 //! ```
 
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use crate::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT, BLOB_JSON};
@@ -360,6 +361,90 @@ impl<T: Publish> Generations<T> {
     #[must_use]
     pub fn live(&self) -> usize {
         self.lock().len()
+    }
+}
+
+/// PER-INSTANCE KEYED STATE: a map the SDK locks for the plugin, so a `forbid(unsafe_code)` plugin
+/// that holds no lock of its own can keep per-session and per-request state (what a session set,
+/// what a request was admitted under) across calls.
+///
+/// It lives INSIDE the instance state and nowhere else: a plugin holds no process-global state, so
+/// what it keeps is per-instance and dropped with the instance (`close`). It is not `const`
+/// constructible, so it cannot be a `static`. The plugin bounds it: [`Keyed::len`] is what it
+/// checks before an insert that grows it.
+pub struct Keyed<K, V> {
+    map: Mutex<BTreeMap<K, V>>,
+}
+
+impl<K, V> std::fmt::Debug for Keyed<K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Keyed").field("len", &self.len()).finish()
+    }
+}
+
+impl<K: Ord, V> Default for Keyed<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K, V> Keyed<K, V> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<K, V>> {
+        self.map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// How many entries are held.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    /// Whether none is held.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.lock().is_empty()
+    }
+}
+
+impl<K: Ord, V> Keyed<K, V> {
+    /// None held.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            map: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// Hold `value` under `key`, answering what it replaced.
+    pub fn insert(&self, key: K, value: V) -> Option<V> {
+        self.lock().insert(key, value)
+    }
+
+    /// Drop what `key` holds, answering it.
+    pub fn remove(&self, key: &K) -> Option<V> {
+        self.lock().remove(key)
+    }
+
+    /// Run `f` over the entry `key` names, or `None`, under the lock. `f` must not reach this
+    /// same `Keyed` again.
+    pub fn with<R>(&self, key: &K, f: impl FnOnce(Option<&mut V>) -> R) -> R {
+        f(self.lock().get_mut(key))
+    }
+
+    /// Run `f` over the whole map, under the lock. `f` must not reach this same `Keyed` again.
+    pub fn with_all<R>(&self, f: impl FnOnce(&mut BTreeMap<K, V>) -> R) -> R {
+        f(&mut self.lock())
+    }
+
+    /// A copy of what `key` holds.
+    #[must_use]
+    pub fn get(&self, key: &K) -> Option<V>
+    where
+        V: Clone,
+    {
+        self.lock().get(key).cloned()
     }
 }
 

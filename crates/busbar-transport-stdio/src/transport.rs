@@ -343,6 +343,7 @@ impl Transport for StdioTransport {
                                 status: None,
                                 status_code: None,
                                 retry_after_secs: None,
+                                text: false,
                             };
                             break Some(Ok((
                                 StreamId(0),

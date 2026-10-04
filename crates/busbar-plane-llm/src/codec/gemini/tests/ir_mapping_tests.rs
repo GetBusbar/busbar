@@ -389,6 +389,7 @@ fn gem16_streamed_citation_offsets_are_bytes_for_a_gemini_client() {
         end_index: Some(11),
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     };
     let (_, frame) = writer
         .write_response_event(&IrStreamEvent::BlockDelta {

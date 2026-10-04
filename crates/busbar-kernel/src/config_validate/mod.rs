@@ -812,7 +812,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             // Compiled out (`--no-default-features`), naming one is a boot error, never a silent
             // degrade (the same compliance-by-compilation stance as the pool strategy rule).
             if crate::config::is_strategy_name(current) {
-                if crate::preflight::builtin_ranking(current).is_none() {
+                if !crate::preflight::builtin_ranking_known(current) {
                     errors.push(format!(
                         "hook '{hook_name}' on_error names the built-in ranking strategy \
                          '{current}' but this binary was built WITHOUT the `hooks-ranking` \
@@ -1046,7 +1046,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // works — it's the engine's inline SWRR floor, not a plugin.)
     for (pool_name, pool_cfg) in &cfg.pools {
         let name = pool_cfg.policy.native_name();
-        if name.is_some_and(|n| crate::preflight::builtin_ranking(n).is_none()) {
+        if name.is_some_and(|n| !crate::preflight::builtin_ranking_known(n)) {
             errors.push(format!(
                 "pool '{pool_name}' names the {:?} ranking strategy but this binary was built \
                  WITHOUT the `hooks-ranking` feature — the built-in ranking strategies are absent. \
@@ -1194,7 +1194,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         if any_passthrough {
             for (provider_name, provider_cfg) in &cfg.providers {
                 let resolved_key =
-                    crate::config::secret::resolve_builtin_string(&provider_cfg.api_key)
+                    crate::config::secret::resolve_linked_string(&provider_cfg.api_key)
                         .unwrap_or_default();
                 if !resolved_key.trim().is_empty() {
                     diag_warn!(
@@ -1675,6 +1675,46 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         }
     }
 
+    // EVERY REGISTRATION A PLANE BILLS FROM CONFIG IS PRICED (#42, #77(5)): a plane whose lanes are
+    // its config registrations names them ([`PlaneCfg::ledger_lanes`]), and its present card silent
+    // about one refuses here with a paste-ready stub, rather than a unit ledgered on a lane no card
+    // prices (which fails every read of the bucket that holds it).
+    //
+    // [`PlaneCfg::ledger_lanes`]: crate::plane::config::PlaneCfg::ledger_lanes
+    if let Some(card) = &cfg.rate_card {
+        for defs in [cfg.tool_defs.as_ref(), cfg.agent_defs.as_ref()] {
+            let lanes = defs.ledger_lanes();
+            let missing: Vec<&str> = (lanes.iter().map(String::as_str))
+                .filter(|l| {
+                    let plane = split_plane_lane(l).0;
+                    card.keys().any(|k| split_plane_lane(k).0 == plane) && !card.contains_key(*l)
+                })
+                .collect();
+            let Some(d) = missing
+                .first()
+                .and_then(|l| plane_decl_for(split_plane_lane(l).0))
+            else {
+                continue;
+            };
+            let zero = (d.billable_classes.iter())
+                .map(|c| format!("{}: 0", c.class))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let stub: String = (missing.iter())
+                .map(|l| format!("    {}: {{ units: {{ {zero} }} }}\n", split_plane_lane(l).1))
+                .collect();
+            errors.push(format!(
+                "{section}.rate_card is present but {n} {noun}{s} no rate entry (a present card is \
+                 AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
+                 Paste these under {section}.rate_card and fill in your rates:\n\n{stub}",
+                section = d.config_section,
+                n = missing.len(),
+                noun = d.subject_noun,
+                s = if missing.len() == 1 { " has" } else { "s have" },
+            ));
+        }
+    }
+
     if cfg.per_request_fee < 0 {
         errors.push(format!(
             "per_request_fee must be >= 0 (got {}); a negative fee would credit every request",
@@ -1803,7 +1843,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // per-reference). A non-built-in module additionally requires the plugin subsystem, which the
     // shared `plugins_preflight` verifies against the registry at boot.
     for module in cfg.secrets.keys() {
-        if crate::preflight::builtin_secret(module).is_some() {
+        if crate::config::secret::is_linked_secret(module) {
             errors.push(format!(
                 "secrets.{module}: the built-in '{module}' secret module takes no module-level \
                  config; its settings (`key` / `path`) belong on each individual secret reference, \
@@ -2346,7 +2386,7 @@ fn validate_providers_with(
             // colon-split lives only in `build()`, which `--validate` never reaches, so a malformed
             // credential otherwise passes validate and fails at boot/apply. Check it here when the env var
             // resolves (an unset var can't be validated — caught at boot).
-            let cred = crate::config::secret::resolve_builtin_string(&provider_cfg.api_key)
+            let cred = crate::config::secret::resolve_linked_string(&provider_cfg.api_key)
                 .unwrap_or_default();
             if !cred.trim().is_empty() {
                 if let Err(e) =
@@ -2377,7 +2417,7 @@ fn validate_providers_with(
                      service-account JSON or key file), so there is nothing to declare keyless"
                 ));
             }
-            let cred = crate::config::secret::resolve_builtin_string(&provider_cfg.api_key)
+            let cred = crate::config::secret::resolve_linked_string(&provider_cfg.api_key)
                 .unwrap_or_default();
             if !cred.trim().is_empty() {
                 // Pass the SAME operator metadata posture the boot path threads into jwt_bearer::build,

@@ -294,6 +294,7 @@ fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {
         &Default::default(),
     )
     .expect("preflight resolves the kind:auth plugin");
+    let registry = std::sync::Arc::new(registry);
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,
@@ -373,6 +374,7 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
         "preflight resolves the kind:auth plugin, whose manifest declares `audience` as a \
                  root-level x-busbar-secret field",
     );
+    let registry = std::sync::Arc::new(registry);
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,
@@ -440,6 +442,7 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
         &Default::default(),
     )
     .expect("preflight resolves the kind:auth plugin");
+    let registry = std::sync::Arc::new(registry);
 
     // The real load through the middleware — resolve → open_auth → box → chain.
     let mw = AuthMiddleware::new(
@@ -532,6 +535,7 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
         &Default::default(),
     )
     .expect("preflight");
+    let registry = std::sync::Arc::new(registry);
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,
@@ -572,7 +576,7 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
 
 /// 1.5.2 admin-plane OIDC: `AdminAuthChain::build` — the function `build_app_from_config` invokes on
 /// BOTH boot and reload — resolves every NON-BUILTIN `admin_auth:` entry into a loaded `kind: auth`
-/// plugin, keyed by config name, `has_plugin: true`; the operator credential is NOT in the map (it
+/// plugin, keyed by config name; the operator credential is NOT in the map (it
 /// is held apart, `AdminAuthChain::operator`). Building it TWICE against the same registry (boot, then the reload rebuild) both populate:
 /// the reload path can never leave `admin_modules` stale/empty.
 #[test]
@@ -589,6 +593,7 @@ fn admin_modules_rebuilt_on_reload() {
         &crate::test_support::trust_policy(&plugins).unwrap(),
     )
     .expect("scan succeeds");
+    let registry = std::sync::Arc::new(registry);
     let mut cfg = AuthCfg::default_none();
     let mut entry = AuthChainEntry::bare("admin-oidc");
     entry.settings = settings();
@@ -600,10 +605,6 @@ fn admin_modules_rebuilt_on_reload() {
 
     // BOOT build.
     let boot = AdminAuthChain::build(&cfg, &registry, &resolver).expect("boot builds admin chain");
-    assert!(
-        boot.has_plugin,
-        "an external admin module is a loaded plugin"
-    );
     assert!(
         boot.modules.contains_key("admin-oidc"),
         "keyed by the config module name"
@@ -618,7 +619,7 @@ fn admin_modules_rebuilt_on_reload() {
     let reload =
         AdminAuthChain::build(&cfg, &registry, &resolver).expect("reload rebuilds admin chain");
     assert!(
-        reload.has_plugin && reload.modules.contains_key("admin-oidc"),
+        reload.modules.contains_key("admin-oidc"),
         "reload repopulates admin_modules — never stale/empty"
     );
 
@@ -672,6 +673,7 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
         &crate::test_support::trust_policy(&strict).unwrap(),
     )
     .expect("scan succeeds; the untrusted plugin is merely skipped");
+    let registry = std::sync::Arc::new(registry);
     let mw_err = AuthMiddleware::new(
         &cfg,
         &registry,
@@ -731,6 +733,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
         &crate::test_support::trust_policy(&plugins).unwrap(),
     )
     .expect("scan");
+    let registry = std::sync::Arc::new(registry);
     let mw_err = AuthMiddleware::new(
         &cfg,
         &registry,
@@ -793,6 +796,7 @@ fn keys_module_is_not_a_plugin_ref() {
         &Default::default(),
     )
     .expect("keys needs no plugin");
+    let registry = std::sync::Arc::new(registry);
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,
@@ -851,7 +855,7 @@ fn a_blocking_auth_plugin_does_not_park_the_reactor() {
                 hold: std::time::Duration::from_secs(3),
             }) as Box<dyn crate::auth::AuthModule>,
         )],
-        /* has_plugin_module = */ true,
+        /* offload = */ true,
     ));
     let cache = std::sync::Arc::new(crate::auth_cache::CredentialCache::new());
 
@@ -866,6 +870,7 @@ fn a_blocking_auth_plugin_does_not_park_the_reactor() {
             &auth,
             &cache,
             Some("tok".into()),
+            crate::auth::ChainHead::default(),
             None,
             None,
         )
@@ -901,7 +906,7 @@ fn an_in_process_chain_is_not_offloaded() {
             "test-groups-module".to_string(),
             Box::new(crate::auth::TestGroupsModule) as Box<dyn crate::auth::AuthModule>,
         )],
-        /* has_plugin_module = */ false,
+        /* offload = */ false,
     ));
     let cache = std::sync::Arc::new(crate::auth_cache::CredentialCache::new());
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -916,6 +921,7 @@ fn an_in_process_chain_is_not_offloaded() {
             &auth,
             &cache,
             Some("grp:admins".into()),
+            crate::auth::ChainHead::default(),
             None,
             None,
         )
@@ -997,7 +1003,7 @@ fn an_unauthenticated_chain_admits_nothing_to_the_cache() {
             "cacheable-pass".to_string(),
             Box::new(CacheablePass) as Box<dyn crate::auth::AuthModule>,
         )],
-        /* has_plugin_module = */ false,
+        /* offload = */ false,
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
@@ -1034,7 +1040,7 @@ fn a_rejected_chain_admits_nothing_to_the_cache() {
                 Box::new(CacheableReject) as Box<dyn crate::auth::AuthModule>,
             ),
         ],
-        /* has_plugin_module = */ false,
+        /* offload = */ false,
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
@@ -1067,7 +1073,7 @@ fn pass_churn_cannot_evict_an_identity() {
             "cacheable-pass".to_string(),
             Box::new(CacheablePass) as Box<dyn crate::auth::AuthModule>,
         )],
-        /* has_plugin_module = */ false,
+        /* offload = */ false,
     );
     let cache = crate::auth_cache::CredentialCache::new();
     let now = 1_000_000u64;
@@ -1117,7 +1123,7 @@ fn an_identified_chain_still_caches_the_leading_pass() {
                 Box::new(CacheableIdentify) as Box<dyn crate::auth::AuthModule>,
             ),
         ],
-        /* has_plugin_module = */ false,
+        /* offload = */ false,
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
@@ -1191,7 +1197,7 @@ fn a_credential_hit_within_ttl_does_not_extend_the_cache_entrys_lifetime() {
                 calls: calls.clone(),
             }) as Box<dyn crate::auth::AuthModule>,
         )],
-        /* has_plugin_module = */ false,
+        /* offload = */ false,
     );
     let cache = crate::auth_cache::CredentialCache::new();
     let t0 = 1_000_000u64;
@@ -1264,7 +1270,7 @@ fn an_unauthenticated_admin_chain_admits_nothing_to_the_cache() {
         .admin_chain(vec!["test-scope-module".to_string()])
         .build();
 
-    let (verdict, _cap) = crate::auth::run_admin_chain(&app, Some("junk-token"), None);
+    let (verdict, _cap) = crate::auth::tests::run_admin_chain_on(&app, Some("junk-token"), None);
 
     assert_eq!(verdict, ChainVerdict::Denied);
     assert_eq!(
@@ -1300,7 +1306,7 @@ fn admin_pass_churn_cannot_evict_an_identified_data_plane_row() {
     // The cache's own ceiling (`auth_cache::MAX_ENTRIES`) worth of unauthenticated admin probes.
     for i in 0..4096u64 {
         let junk = format!("junk-{i}");
-        let (verdict, _cap) = crate::auth::run_admin_chain(&app, Some(&junk), None);
+        let (verdict, _cap) = crate::auth::tests::run_admin_chain_on(&app, Some(&junk), None);
         assert_eq!(
             verdict,
             ChainVerdict::Denied,
@@ -1328,7 +1334,7 @@ fn an_identified_admin_chain_still_caches_its_identity() {
         .admin_chain(vec!["test-scope-module".to_string()])
         .build();
 
-    let (verdict, _cap) = crate::auth::run_admin_chain(&app, Some("grp:admins"), None);
+    let (verdict, _cap) = crate::auth::tests::run_admin_chain_on(&app, Some("grp:admins"), None);
 
     assert!(matches!(verdict, ChainVerdict::Identified { .. }));
     assert_eq!(

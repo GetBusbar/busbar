@@ -47,6 +47,8 @@ const ADDITIONAL_MODEL_REQUEST_FIELDS: &str = "additionalModelRequestFields";
 const ADDITIONAL_MODEL_RESPONSE_FIELDS: &str = "additionalModelResponseFields";
 const CACHE_DETAILS: &str = "cacheDetails";
 const CACHE_POINT: &str = "cachePoint";
+/// The Converse answer's (and the stream `metadata` frame's) served-tier member: `{"type": <tier>}`.
+const SERVICE_TIER_CAMEL: &str = "serviceTier";
 const CACHE_READ_INPUT_TOKENS: &str = "cacheReadInputTokens";
 const CACHE_WRITE_INPUT_TOKENS: &str = "cacheWriteInputTokens";
 const CFG_SCALE: &str = "cfgScale";
@@ -74,6 +76,8 @@ const REASONING_CONFIG: &str = "reasoningConfig";
 const REASONING_CONTENT: &str = "reasoningContent";
 const REASONING_TEXT: &str = "reasoningText";
 const REDACTED_CONTENT: &str = "redactedContent";
+/// A Converse `searchResult` content block (request content and `toolResult` content).
+const SEARCH_RESULT_CAMEL: &str = "searchResult";
 const SEARCH_RESULT_INDEX: &str = "searchResultIndex";
 const SEARCH_RESULT_LOCATION_CAMEL: &str = "searchResultLocation";
 const SERVICE_UNAVAILABLE_EXCEPTION: &str = "serviceUnavailableException";
@@ -101,17 +105,14 @@ const APPLICATION_VND_OPENXMLFORMATS_OFFICEDOCUMENT_WORDPROCESSINGML_DOCUMENT: &
 const DOC: &str = "doc";
 const DOCX: &str = "docx";
 const FLV: &str = "flv";
-const GIF: &str = "gif";
 const MKV: &str = "mkv";
 const MOV: &str = "mov";
 const FORMAT_MP4: &str = "mp4";
 const MPEG: &str = "mpeg";
 const MPG: &str = "mpg";
 const PDF: &str = "pdf";
-const PNG: &str = "png";
 const THREE_GP: &str = "three_gp";
 const WEBM: &str = "webm";
-const WEBP: &str = "webp";
 const WMV: &str = "wmv";
 const XLS: &str = "xls";
 const XLSX: &str = "xlsx";
@@ -132,7 +133,7 @@ const VIDEO: &str = "video";
 const WIDTH: &str = "width";
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
-/// resolution, exactly as the registry's field doc requires. Mirrors `super::anthropic::protocol`.
+/// resolution, exactly as the registry's field doc requires.
 pub fn protocol() -> Protocol {
     Protocol::new(VENDOR_NAME, BedrockReader, BedrockWriter)
 }
@@ -260,6 +261,18 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // `AWS4-HMAC-SHA256` credential must NOT steer a models-list GET; the OpenAI residual wins).
     list_models_fingerprint_headers: &[],
     static_headers: &[],
+};
+
+/// This dialect's registration (its one line is in `crate::codec::DIALECTS`).
+pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::DialectEntry {
+    decl: &DECL,
+    protocol,
+    with_writer: |f| {
+        let w = BedrockWriter;
+        f(&w)
+    },
+    with_reader: |f| f(&BedrockReader),
+    leaf: &handler::LEAF,
 };
 
 /// The two response headers a native AWS Bedrock endpoint ALWAYS emits (lowercase on the wire):
@@ -530,6 +543,172 @@ const FIELD_LATENCY_MS: &str = "latencyMs";
 /// the canonical `top_k`. The leading `__busbar` prefix never collides with a real Bedrock field.
 const TOP_K_CAMEL_SENTINEL: &str = "__busbar_top_k_camel";
 
+/// The Converse request content grammar (`codec::drops`): a union keyed by its kind member. A block
+/// of any other kind (an inline `guardContent` marker) does not cross a translate attempt, which
+/// names it.
+const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[
+    crate::codec::drops::Blocks {
+        at: &["messages[]", "content[]"],
+        tag: None,
+        modelled: &[
+            keys::TEXT,
+            keys::IMAGE,
+            keys::DOCUMENT,
+            VIDEO,
+            TOOL_USE_CAMEL,
+            TOOL_RESULT,
+            REASONING_CONTENT,
+            CITATIONS_CONTENT,
+            CACHE_POINT,
+        ],
+        companions: &[],
+    },
+    crate::codec::drops::Blocks {
+        at: &["system[]"],
+        tag: None,
+        modelled: &[keys::TEXT, CACHE_POINT],
+        companions: &[],
+    },
+];
+
+/// The Converse answer content grammar.
+/// How this dialect spells each IR content-block kind (a dropped block's warn names it so).
+const IR_BLOCK_KINDS: &[(&str, &str)] = &[
+    (crate::codec::drops::kind::TEXT, keys::TEXT),
+    (crate::codec::drops::kind::IMAGE, keys::IMAGE),
+    (crate::codec::drops::kind::DOCUMENT, keys::DOCUMENT),
+    (crate::codec::drops::kind::VIDEO, VIDEO),
+    (crate::codec::drops::kind::THINKING, REASONING_CONTENT),
+    (crate::codec::drops::kind::TOOL_USE, TOOL_USE_CAMEL),
+    (crate::codec::drops::kind::TOOL_RESULT, TOOL_RESULT),
+];
+
+/// The IR request members the reader carries by code from a path no map-file row names (how a drop
+/// of one is named by the caller's wire path).
+const REQUEST_CODE_NAMES: &[(&str, &str)] = &[
+    (
+        crate::codec::drops::name::RESPONSE_FORMAT,
+        "outputConfig.textFormat",
+    ),
+    (crate::codec::drops::name::METADATA, FIELD_REQUEST_METADATA),
+    // Converse has no `top_k`: the reader takes it from the model-specific fields.
+    (
+        crate::codec::drops::name::TOP_K,
+        "additionalModelRequestFields.top_k",
+    ),
+];
+
+/// The IR request members the reader never sets.
+// A `cachePoint` is its own block, kept raw for a same-dialect hop (never a block's cache mark);
+// no candidate count, parallel-call switch, logprobs or output modalities.
+const UNREAD: &[&str] = &[
+    crate::codec::drops::name::N,
+    crate::codec::drops::name::CACHE_CONTROL,
+    crate::codec::drops::name::PARALLEL_TOOL_CALLS,
+    crate::codec::drops::name::TOP_LOGPROBS,
+    crate::codec::drops::name::OUTPUT_MODALITIES,
+    crate::codec::drops::name::LOGPROBS,
+];
+
+const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["output", "message", "content[]"],
+    tag: None,
+    modelled: &[
+        keys::TEXT,
+        TOOL_USE_CAMEL,
+        CITATIONS_CONTENT,
+        REASONING_CONTENT,
+        keys::IMAGE,
+    ],
+    companions: &[],
+}];
+
+/// What the Converse reader parks in `extra` beside the members its map file does not model.
+const PARKED: &[crate::codec::drops::Parked] = &[
+    // Positional stashes for a same-dialect write: the cache points and documents cross as the IR's
+    // cache breakpoints and media; `REQUEST_BLOCKS` names the guard markers; the `topK` spelling is
+    // a hint.
+    crate::codec::drops::Parked {
+        key: CACHE_POINTS_SENTINEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: GUARD_CONTENT_SENTINEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: DOC_VIDEO_SENTINEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    crate::codec::drops::Parked {
+        key: TOP_K_CAMEL_SENTINEL,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    // `requestMetadata` crosses as the caller metadata.
+    crate::codec::drops::Parked {
+        key: FIELD_REQUEST_METADATA,
+        holds: crate::codec::drops::Holds::Nothing,
+    },
+    // The members of each config object the reader's own code carries; the map file maps the rest
+    // of what crosses.
+    crate::codec::drops::Parked {
+        key: INFERENCE_CONFIG,
+        holds: crate::codec::drops::Holds::Members(&[MAX_TOKENS_CAMEL]),
+    },
+    crate::codec::drops::Parked {
+        key: ADDITIONAL_MODEL_REQUEST_FIELDS,
+        holds: crate::codec::drops::Holds::Members(&[
+            TOP_K,
+            TOP_K_CAMEL,
+            keys::THINKING,
+            keys::OUTPUT_CONFIG,
+            REASONING_CONFIG,
+        ]),
+    },
+    crate::codec::drops::Parked {
+        key: keys::TOOL_CONFIG,
+        holds: crate::codec::drops::Holds::Members(&[keys::TOOLS, TOOL_CHOICE_CAMEL]),
+    },
+    crate::codec::drops::Parked {
+        key: OUTPUT_CONFIG_CAMEL,
+        holds: crate::codec::drops::Holds::Members(&[TEXT_FORMAT]),
+    },
+    crate::codec::drops::Parked {
+        key: SERVICE_TIER_CAMEL,
+        holds: crate::codec::drops::Holds::Members(&[]),
+    },
+];
+
+/// What this dialect's answers carry beyond its map file's rows (the drop walk, design F3 "Drops").
+// The per-TTL cache split is read into the usage detail; a stream exception is the terminal error.
+const RESPONSE_CODE: &[&str] = &["usage.cacheDetails"];
+const STREAM_CODE: &[&str] = &[
+    INTERNAL_SERVER_EXCEPTION,
+    MODEL_STREAM_ERROR_EXCEPTION,
+    SERVICE_UNAVAILABLE_EXCEPTION,
+    THROTTLING_EXCEPTION,
+    VALIDATION_EXCEPTION,
+];
+
+/// The answer paths INSIDE a subtree this dialect carries that its code does not carry, named by the
+/// drop walk (DF-MAP-IR-GAPS section E: its A, B and C paths that a coarse map row covers).
+const RESPONSE_DROPS: &[&str] = &[
+    "output.message.content[].searchResult",
+    "output.message.content[].toolAddition",
+    "output.message.content[].toolRemoval",
+    "output.message.content[].toolResult.content[].searchResult",
+    "performanceConfig.latency",
+    TRACE,
+];
+const STREAM_DROPS: &[&str] = &[
+    "metadata.performanceConfig.latency",
+    "metadata.serviceTier",
+    "metadata.trace.guardrail",
+    "metadata.trace.promptRouter",
+    "modelStreamErrorException.originalMessage",
+    "modelStreamErrorException.originalStatusCode",
+];
+
 /// Read a native Bedrock Converse `reasoningContent` content block into an IR `Thinking` block, or
 /// `None` when the block carries neither known member (forward-compatibility: a future
 /// `reasoningContent` union member is left undecoded rather than mis-mapped).
@@ -613,8 +792,10 @@ fn bedrock_reasoning_block(
 /// The Bedrock Converse `image` block has only two source shapes: `source.bytes` (base64) and
 /// `source.s3Location` (an S3 URI). It has NO arbitrary-URL source. The typed `IrImageSource` maps
 /// cleanly onto this:
-///   - `Base64 { media_type, data }` → `source.bytes`, normalizing the MIME subtype onto Converse's
-///     `ImageFormat` union {png, jpeg, gif, webp} (jpg→jpeg; unknown→png with a warn).
+///   - `Base64 { media_type, data }` → `source.bytes`, the MIME subtype carried onto Converse's
+///     `ImageFormat` union {png, jpeg, gif, webp} (jpg is spelled jpeg). A subtype outside the union
+///     (or a media type that is not `image/<subtype>`) has no Converse form: the block is DROPPED on
+///     the one drop path, never relabelled as some other format (design F3).
 ///   - `Vendor { vendor: "bedrock", value }` → `source.s3Location` re-emitted faithfully (the reader
 ///     captured a native `s3Location` source here, preserving `uri`/`bucketOwner` for a lossless
 ///     same-protocol round-trip).
@@ -624,60 +805,53 @@ fn bedrock_image_block(source: &crate::codec::ir::IrImageSource) -> Option<serde
     match source {
         // A Bedrock-produced vendor reference is an `s3Location` (stored as `{format, s3Location}`);
         // re-emit it faithfully. A vendor reference from ANOTHER protocol has no Bedrock projection.
+        // The caller's own `format` is carried as it came; one it did not send is not invented.
         crate::codec::ir::IrImageSource::Vendor { vendor, value } if *vendor == VENDOR_NAME => {
-            let format_str = value
-                .get(keys::FORMAT)
-                .and_then(|f| f.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or(PNG);
             let s3_location = value
                 .get(S3_LOCATION)
                 .cloned()
                 .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-            Some(serde_json::json!({
-                (keys::FORMAT): format_str,
-                (keys::SOURCE): { (S3_LOCATION): s3_location }
-            }))
+            let mut block = serde_json::Map::new();
+            if let Some(format_str) = value
+                .get(keys::FORMAT)
+                .and_then(|f| f.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                block.insert(keys::FORMAT.to_string(), serde_json::json!(format_str));
+            }
+            block.insert(
+                keys::SOURCE.to_string(),
+                serde_json::json!({ (S3_LOCATION): s3_location }),
+            );
+            Some(serde_json::Value::Object(block))
         }
         // Bedrock Converse has no arbitrary-URL image source, and a foreign vendor reference (a
         // Responses file_id) has no Converse projection — emitting either as base64 `bytes` would
         // corrupt the block. Drop with a warn.
         crate::codec::ir::IrImageSource::Url(_)
         | crate::codec::ir::IrImageSource::Vendor { .. } => {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::IMAGE,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping image with no Bedrock Converse projection (URL or foreign vendor ref)"
             );
             None
         }
         crate::codec::ir::IrImageSource::Base64 { media_type, data } => {
-            // Map the MIME subtype onto a member of Bedrock Converse's `ImageFormat` union
-            // {png, jpeg, gif, webp}. `image/jpg` (and casing variants) is NOT a member — Bedrock
-            // spells it `jpeg` — so emitting it verbatim 400s a valid client image. Normalize
-            // jpg→jpeg; an empty/unsupported subtype coerces to `png` (with a warn) to keep the block
-            // valid rather than emit a `format: ""` the SDK rejects.
-            let format_str = match media_type.strip_prefix("image/").filter(|s| !s.is_empty()) {
-                Some(subtype) => match subtype.to_ascii_lowercase().as_str() {
-                    keys::JPEG | "jpg" => keys::JPEG,
-                    PNG => PNG,
-                    GIF => GIF,
-                    WEBP => WEBP,
-                    _ => {
-                        tracing::warn!(
-                            media_type = %media_type,
-                            "coercing unsupported image subtype to format=png: not a member of \
-                             Bedrock Converse's ImageFormat union {{png, jpeg, gif, webp}}"
-                        );
-                        PNG
-                    }
-                },
-                None => {
-                    tracing::warn!(
-                        media_type = %media_type,
-                        "coercing malformed image media_type to format=png: not a well-formed \
-                         'image/<subtype>'"
-                    );
-                    PNG
-                }
+            // Carry the MIME subtype onto its member of Bedrock Converse's `ImageFormat` union
+            // {png, jpeg, gif, webp}. `image/jpg` (and casing variants) is that union's `jpeg`
+            // spelled another way, so it maps; any other subtype, and a media type that is not a
+            // well-formed `image/<subtype>`, has no Converse form and the block is dropped.
+            let Some(format_str) = crate::codec::ir::image_subtype_if_supported(media_type) else {
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::IMAGE,
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [media_type = %media_type, ],
+                    "dropping image block on Bedrock egress: media_type is not one of \
+                     image/{{png,jpeg,gif,webp}}, Bedrock Converse's ImageFormat union"
+                );
+                return None;
             };
             Some(serde_json::json!({
                 (keys::FORMAT): format_str,
@@ -691,6 +865,51 @@ fn bedrock_image_block(source: &crate::codec::ir::IrImageSource) -> Option<serde
 /// `s3Location` document/video/image source, which names an S3 object in the CALLER's AWS account
 /// and is meaningless to any other backend.
 const VENDOR_NAME: &str = "bedrock";
+
+/// A Converse `searchResult` block (`{source, title, content: [{text}], citations: {enabled}}`) ->
+/// THE SEARCH-RESULT SLOT (`IrBlock::search_result`), the same slot an Anthropic `search_result`
+/// reads into, so the passage and its provenance translate both ways. The text parts join with
+/// `\n` in wire order; the `citations` switch rides verbatim.
+fn read_bedrock_search_result(sr: &serde_json::Value) -> crate::codec::ir::IrBlock {
+    let source = sr.get(keys::SOURCE).and_then(|v| v.as_str()).unwrap_or("");
+    let title = sr.get(keys::TITLE).and_then(|v| v.as_str()).unwrap_or("");
+    let body = sr
+        .get(keys::CONTENT)
+        .and_then(|v| v.as_array())
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p.get(keys::TEXT).and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    crate::codec::ir::IrBlock::search_result(
+        source,
+        title,
+        body,
+        sr.get(keys::CITATIONS).cloned(),
+        None,
+    )
+}
+
+/// The search-result slot -> a Converse `{"searchResult": {...}}` content block (the inverse of
+/// [`read_bedrock_search_result`]): the passage as one text part, the `citations` switch verbatim.
+fn write_bedrock_search_result(
+    sr: &crate::codec::ir::IrSearchResultParts<'_>,
+) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(keys::SOURCE.to_string(), serde_json::json!(sr.source));
+    obj.insert(keys::TITLE.to_string(), serde_json::json!(sr.title));
+    obj.insert(
+        keys::CONTENT.to_string(),
+        serde_json::json!([{ (keys::TEXT): sr.body }]),
+    );
+    if let Some(cfg) = sr.citations_config {
+        obj.insert(keys::CITATIONS.to_string(), cfg.clone());
+    }
+    serde_json::json!({ (SEARCH_RESULT_CAMEL): obj })
+}
 
 /// Read a native Converse `document` / `video` block body into an [`crate::codec::ir::IrBlock::Media`].
 ///
@@ -840,7 +1059,10 @@ fn bedrock_media_content_block(
         }
         crate::codec::ir::IrMediaKind::Video => (VIDEO, bedrock_video_format(source)?),
         crate::codec::ir::IrMediaKind::Audio => {
-            tracing::warn!(
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::AUDIO,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [],
                 "dropping audio attachment on Bedrock egress: Converse has `document` and `video` \
                  content blocks and NO audio block, so there is no native slot; the block is NOT \
                  emitted"
@@ -857,8 +1079,10 @@ fn bedrock_media_content_block(
         }
         crate::codec::ir::IrImageSource::Url(_)
         | crate::codec::ir::IrImageSource::Vendor { .. } => {
-            tracing::warn!(
-                media_kind = kind.as_str(),
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::block(kind.as_str()),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [media_kind = kind.as_str(),],
                 "dropping attachment on Bedrock egress: Converse has no arbitrary-URL source and \
                  cannot resolve a foreign vendor file handle; the block is NOT emitted"
             );
@@ -892,8 +1116,10 @@ fn bedrock_media_content_block(
             );
         }
     } else if citations.is_some() || context.is_some() {
-        tracing::warn!(
-            media_kind = kind.as_str(),
+        crate::codec::drops::writer_drop!(
+            crate::codec::drops::DOCUMENT,
+            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+            [media_kind = kind.as_str(),],
             "dropping attachment citations/context on Bedrock egress: Converse carries them on a \
              document block only"
         );
@@ -920,12 +1146,13 @@ fn bedrock_document_format(source: &crate::codec::ir::IrImageSource) -> Option<&
         APPLICATION_VND_MS_EXCEL => XLS,
         APPLICATION_VND_OPENXMLFORMATS_OFFICEDOCUMENT_SPREADSHEETML_SHEET => XLSX,
         other => {
-            tracing::warn!(
-                media_type = %other,
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::DOCUMENT,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [media_type = %other, ],
                 "dropping document attachment on Bedrock egress: the mime type is not a member of \
                  Converse's DocumentFormat union {{pdf,csv,doc,docx,xls,xlsx,html,txt,md}} and AWS \
-                 rejects anything else; the block is NOT emitted"
-            );
+                 rejects anything else; the block is NOT emitted");
             return None;
         }
     };
@@ -951,11 +1178,12 @@ fn bedrock_video_format(source: &crate::codec::ir::IrImageSource) -> Option<&'st
         Some("x-matroska") | Some(MKV) => MKV,
         Some("3gpp") => THREE_GP,
         _ => {
-            tracing::warn!(
-                media_type = %media_type,
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::VIDEO,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [media_type = %media_type, ],
                 "dropping video attachment on Bedrock egress: the mime type is not a member of \
-                 Converse's VideoFormat union; the block is NOT emitted"
-            );
+                 Converse's VideoFormat union; the block is NOT emitted");
             return None;
         }
     };
@@ -1126,7 +1354,8 @@ fn set_preceding_block_cache_control(blocks: &mut [crate::codec::ir::IrBlock]) {
                 *cache_control = cc;
             }
             // Json is a tool-result member only; the positional stash carries the marker.
-            crate::codec::ir::IrBlock::Json(_) => {}
+            crate::codec::ir::IrBlock::Json(_)
+            | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {}
         }
     }
 }
@@ -1507,19 +1736,21 @@ fn write_bedrock_request_metadata(pairs: &[(String, String)]) -> Option<serde_js
     let mut out = serde_json::Map::new();
     for (k, v) in pairs {
         if !bedrock_request_metadata_fits(k, 1) || !bedrock_request_metadata_fits(v, 0) {
-            tracing::warn!(
-                key = %k,
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::METADATA,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [key = %k, ],
                 "dropping a metadata entry on Bedrock egress: Converse requestMetadata keys and \
-                 values are at most 256 characters of [a-zA-Z0-9 whitespace :_@$#=/+,-.]"
-            );
+                 values are at most 256 characters of [a-zA-Z0-9 whitespace :_@$#=/+,-.]");
             continue;
         }
         if out.len() == REQUEST_METADATA_MAX_ENTRIES && !out.contains_key(k) {
-            tracing::warn!(
-                key = %k,
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::METADATA,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [key = %k, ],
                 "dropping a metadata entry on Bedrock egress: Converse requestMetadata holds at \
-                 most 16 entries"
-            );
+                 most 16 entries");
             continue;
         }
         out.insert(k.clone(), serde_json::json!(v));
@@ -1611,11 +1842,164 @@ const USAGE: &[UsageCount] = &[
     ),
 ];
 
+/// Stable identifier of the identity [`read_bedrock_usage`] checks `usage.totalTokens` against,
+/// carried on [`crate::codec::ir::UsageIdentityNote::identity`].
+const BEDROCK_USAGE_IDENTITY: &str = "bedrock.usage";
+
 /// A Bedrock Converse `usage` object (`None` when absent) → the IR usage, through [`USAGE`].
+///
+/// EVERY COUNT THE PINNED WIRE LOCK (`testing/llm-conformance/wire/bedrock.wire.json`) DECLARES
+/// UNDER `usage` IS LEDGERED OR A SLICE OF A LEDGERED COUNT: `inputTokens` (input),
+/// `outputTokens` (output), `cacheReadInputTokens` (cache read), `cacheWriteInputTokens` (cache
+/// write); `cacheDetails[].inputTokens` is the per-TTL split of the cache write, carried as the 5m
+/// and 1h attribution and ledgered inside the one cache-write class. `totalTokens` is AWS's sum of
+/// the four (cache tokens included, see the writer's `converse_total_tokens`), never a unit: it is
+/// cross-checked against the ledgered classes and a gap is WARN-logged and carried as the usage
+/// identity note, never ledgered. The guardrail policy units ride `trace`, not `usage`: see
+/// [`warn_guardrail_units`].
 fn read_bedrock_usage(
     usage_obj: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
-    crate::codec::usage_count::read_usage(VENDOR_NAME, usage_obj, USAGE)
+    let mut ir = crate::codec::usage_count::read_usage(VENDOR_NAME, usage_obj, USAGE)?;
+    ir.detail.usage_identity_note = crate::codec::usage_count::stated_total_note(
+        VENDOR_NAME,
+        BEDROCK_USAGE_IDENTITY,
+        usage_obj.and_then(|u| u.get(TOTAL_TOKENS_CAMEL)),
+        &ir,
+    );
+    Ok(ir)
+}
+
+/// The members of a Converse `TokenUsage` object: a `usage` object naming none of them is not the
+/// turn's token usage (a guardrail's `invocationMetrics.usage` names policy units instead).
+const TOKEN_USAGE_MEMBERS: &[&str] = &[
+    INPUT_TOKENS_CAMEL,
+    OUTPUT_TOKENS_CAMEL,
+    TOTAL_TOKENS_CAMEL,
+    CACHE_READ_INPUT_TOKENS,
+    CACHE_WRITE_INPUT_TOKENS,
+];
+
+/// `trace.guardrail` members, as the Converse service model spells them.
+const GUARDRAIL: &str = "guardrail";
+const GUARDRAIL_INPUT_ASSESSMENT: &str = "inputAssessment";
+const GUARDRAIL_OUTPUT_ASSESSMENTS: &str = "outputAssessments";
+const GUARDRAIL_INVOCATION_METRICS: &str = "invocationMetrics";
+
+/// Every count of a guardrail assessment's `invocationMetrics.usage` (the service model's
+/// `GuardrailUsage`), as AWS spells it: the policy units AWS bills per policy type, the free
+/// units it reports beside them, and the automated-reasoning policy count.
+const GUARDRAIL_USAGE_COUNTS: &[&str] = &[
+    "topicPolicyUnits",
+    "contentPolicyUnits",
+    "wordPolicyUnits",
+    "sensitiveInformationPolicyUnits",
+    "sensitiveInformationPolicyFreeUnits",
+    "contextualGroundingPolicyUnits",
+    "contentPolicyImageUnits",
+    "automatedReasoningPolicyUnits",
+    "automatedReasoningPolicies",
+];
+
+/// READ EVERY GUARDRAIL POLICY-UNIT COUNT A TURN REPORTS, AND SAY THAT NONE OF IT IS LEDGERED.
+///
+/// A Converse response (or the stream's `metadata` frame) that ran a guardrail carries
+/// `trace.guardrail.inputAssessment.<id>.invocationMetrics.usage` and
+/// `trace.guardrail.outputAssessments.<id>[].invocationMetrics.usage`: the policy units AWS bills
+/// for the guardrail SEPARATELY from the model's tokens, per policy type. They are not tokens, and
+/// no meter class this plane declares holds them (input, output, cache read and cache write are
+/// token classes), so folding them into one would price a policy unit at a token rate. They are
+/// therefore a residual: each count is summed per side over every guardrail and assessment, and
+/// one WARN names them all (`inputAssessment.<count>=n`, `outputAssessments.<count>=n`), so the
+/// gap between the ledger and AWS's invoice is visible rather than silent. A present count that is
+/// not a count is named `unreadable`. Nothing is ledgered; nothing is refused.
+///
+/// The readable sums are RETURNED as the turn's residual units (MONEY LAW, owner 2026-10-02),
+/// keyed `guardrail.<side>.<count>`, for the reader to carry on the usage it reports: never
+/// billed, and the kernel's settle step writes the `usage.residual` audit row that names them.
+fn warn_guardrail_units(holder: &serde_json::Value) -> std::collections::BTreeMap<String, u64> {
+    let mut residual = std::collections::BTreeMap::new();
+    let Some(guardrail) = holder.get(TRACE).and_then(|t| t.get(GUARDRAIL)) else {
+        return residual;
+    };
+    let usage_of = |a: &serde_json::Value| {
+        a.get(GUARDRAIL_INVOCATION_METRICS)
+            .and_then(|m| m.get(keys::USAGE))
+            .cloned()
+    };
+    let input: Vec<serde_json::Value> = guardrail
+        .get(GUARDRAIL_INPUT_ASSESSMENT)
+        .and_then(|m| m.as_object())
+        .into_iter()
+        .flat_map(|m| m.values())
+        .filter_map(usage_of)
+        .collect();
+    let output: Vec<serde_json::Value> = guardrail
+        .get(GUARDRAIL_OUTPUT_ASSESSMENTS)
+        .and_then(|m| m.as_object())
+        .into_iter()
+        .flat_map(|m| m.values())
+        .filter_map(|v| v.as_array())
+        .flatten()
+        .filter_map(usage_of)
+        .collect();
+    let mut named: Vec<String> = Vec::new();
+    for (side, usages) in [
+        (GUARDRAIL_INPUT_ASSESSMENT, &input),
+        (GUARDRAIL_OUTPUT_ASSESSMENTS, &output),
+    ] {
+        for count in GUARDRAIL_USAGE_COUNTS {
+            let mut sum: Option<u64> = None;
+            let mut unreadable = false;
+            for u in usages {
+                match u.get(*count).filter(|v| !v.is_null()) {
+                    None => {}
+                    Some(v) => match crate::codec::usage_count::read_count_u64(v) {
+                        Some(n) => sum = Some(sum.unwrap_or(0).saturating_add(n)),
+                        None => unreadable = true,
+                    },
+                }
+            }
+            if unreadable {
+                named.push(format!("{side}.{count}=unreadable"));
+            } else if let Some(n) = sum {
+                named.push(format!("{side}.{count}={n}"));
+                if n > 0 {
+                    residual.insert(format!("{GUARDRAIL}.{side}.{count}"), n);
+                }
+            }
+        }
+    }
+    if named.is_empty() {
+        return residual;
+    }
+    let units = named.join(" ");
+    tracing::warn!(
+        protocol = VENDOR_NAME,
+        units = %units,
+        "bedrock guardrail policy units are billed by AWS separately from the model's tokens and \
+         land in no meter class this plane declares: they are not ledgered"
+    );
+    residual
+}
+
+/// The tier that SERVED a Converse answer (`serviceTier.type`), in the IR's words: the usage
+/// attribution every dialect with a served tier carries (`IrUsageDetail::service_tier`).
+fn read_served_tier(answer: &serde_json::Value) -> Option<String> {
+    crate::codec::carry::read_word(
+        map::WORDS_SERVICE_TIER,
+        answer
+            .get(SERVICE_TIER_CAMEL)
+            .and_then(|t| t.get(keys::TYPE)),
+    )
+}
+
+/// The `serviceTier` member a Converse answer carries for `usage`'s served tier, when the dialect
+/// has a word for it.
+fn served_tier_member(usage: &crate::codec::ir::IrUsage) -> Option<serde_json::Value> {
+    let tier = usage.detail.service_tier.as_deref()?;
+    let word = crate::codec::carry::word_out(map::WORDS_SERVICE_TIER, tier)?;
+    Some(serde_json::json!({ (keys::TYPE): word }))
 }
 
 /// The `CacheTTL` enum's two values, as the Bedrock service model spells them.
@@ -1730,7 +2114,7 @@ impl super::proto_codec::StreamFraming for BedrockStreamFraming {
         &self,
         event_type: &str,
         data: &mut serde_json::Value,
-        started_at: Option<std::time::Instant>,
+        elapsed_ms: Option<u64>,
     ) {
         // A native ConverseStream `metadata` frame carries a `metrics` object with the stream's real
         // `latencyMs`, and the service model marks it required. Inject the elapsed wall-clock since
@@ -1741,9 +2125,6 @@ impl super::proto_codec::StreamFraming for BedrockStreamFraming {
         if event_type != ET_METADATA {
             return;
         }
-        // u128 -> u64 for JSON; saturate (elapsed never realistically exceeds u64 ms).
-        let elapsed_ms =
-            started_at.map(|start| u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX));
         ensure_metrics(data, elapsed_ms);
     }
 
@@ -2098,7 +2479,8 @@ pub fn bedrock_response_to_eventstream(
             IrBlock::ToolResult { .. }
             | IrBlock::Image { .. }
             | IrBlock::Media { .. }
-            | IrBlock::Json(_) => {}
+            | IrBlock::Json(_)
+            | IrBlock::HostedToolRecord { .. } => {}
         }
     }
 
@@ -2186,177 +2568,6 @@ pub fn ensure_metrics(value: &mut serde_json::Value, elapsed_ms: Option<u64>) {
     }
 }
 
-/// Complete a SERIALIZED Converse response body so it carries `metrics.latencyMs`, preserving every
-/// other byte. Returns `None` when the body already carries a well-formed `metrics` (pass the
-/// upstream's through untouched) or when it is not a JSON object. When the top-level object simply
-/// lacks the member, the member is spliced in before the closing brace so key order, whitespace and
-/// number formatting of the upstream body survive; only a malformed `metrics` (present but without
-/// an integer `latencyMs`) forces a full re-serialization.
-pub fn complete_converse_body(
-    body: &[u8],
-    parsed: &serde_json::Value,
-    elapsed_ms: Option<u64>,
-) -> Option<Vec<u8>> {
-    let obj = parsed.as_object()?;
-    if has_valid_metrics(parsed) {
-        return None;
-    }
-    let latency_ms = elapsed_ms.unwrap_or(0);
-    if obj.contains_key(FIELD_METRICS) {
-        // Present but unusable: replace it. Splicing would leave two `metrics` keys.
-        let mut fixed = parsed.clone();
-        ensure_metrics(&mut fixed, Some(latency_ms));
-        return crate::codec::json::to_vec(&fixed).ok();
-    }
-    // The last significant byte must be the object's closing brace (the parse above guarantees a
-    // top-level object, so this only guards against trailing garbage a lenient parser accepted).
-    let close = body.iter().rposition(|b| !b.is_ascii_whitespace())?;
-    if body[close] != b'}' {
-        return None;
-    }
-    let prev = body[..close]
-        .iter()
-        .rposition(|b| !b.is_ascii_whitespace())?;
-    let separator = if body[prev] == b'{' { "" } else { "," };
-    let member = format!("{separator}\"{FIELD_METRICS}\":{{\"{FIELD_LATENCY_MS}\":{latency_ms}}}");
-    let mut out = Vec::with_capacity(body.len() + member.len());
-    out.extend_from_slice(&body[..close]);
-    out.extend_from_slice(member.as_bytes());
-    out.extend_from_slice(&body[close..]);
-    Some(out)
-}
-
-/// The same-protocol (Bedrock -> Bedrock) NON-stream response translator. The forward path relays a
-/// same-protocol non-stream 2xx verbatim, chunk by chunk, so nothing ever added the `metrics` member
-/// a Converse response is required to carry when the upstream left it out. This translator stands
-/// in for that relay on Bedrock ingress: it buffers the body, and at end-of-stream emits it with
-/// `metrics.latencyMs` present (the upstream's own value when it sent one, else busbar's measured
-/// latency from the moment the upstream's headers arrived to the end of its body). A body that is
-/// not a Converse response (an InvokeModel embeddings / image / rerank body) is emitted unchanged.
-///
-/// Because the forward path takes billing usage from the installed translator, this also reports
-/// the body's usage, via the same per-operation tap the relay used (`handler::same_protocol_usage`),
-/// and a rerank body's counted search units (`handler::same_protocol_open_billing`).
-///
-/// Bounded: past the translation cap the body is relayed verbatim from that point on (no member can
-/// be added to a body busbar will not hold whole), keeping only the tail so usage can still be
-/// recovered from the trailing `usage` object.
-pub struct BedrockConverseBodyTranslator {
-    started: std::time::Instant,
-    buf: Vec<u8>,
-    cap: usize,
-    /// Set once the body outgrew `cap`: everything is relayed as it arrives and `buf` holds only
-    /// the most recent `cap` bytes.
-    passthrough: bool,
-    usage: Option<busbar_contract::billing::TokenUsage>,
-    /// The non-token billing the body reported (a rerank's search units, item 134).
-    open_billing: Option<busbar_contract::billing::Billing>,
-}
-
-impl Default for BedrockConverseBodyTranslator {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl BedrockConverseBodyTranslator {
-    pub fn new() -> Self {
-        Self::with_cap(crate::codec::wire_shim::max_translated_body_bytes())
-    }
-
-    pub fn with_cap(cap: usize) -> Self {
-        Self {
-            started: std::time::Instant::now(),
-            buf: Vec::new(),
-            cap,
-            passthrough: false,
-            usage: None,
-            open_billing: None,
-        }
-    }
-
-    fn elapsed_ms(&self) -> Option<u64> {
-        u64::try_from(self.started.elapsed().as_millis()).ok()
-    }
-
-    /// Drop the oldest bytes so `buf` keeps only the last `cap` (the usage object sits at the end).
-    fn keep_tail(&mut self) {
-        if self.buf.len() > self.cap {
-            let excess = self.buf.len() - self.cap;
-            self.buf.drain(..excess);
-        }
-    }
-}
-
-impl busbar_contract::protocol::StreamTranslator for BedrockConverseBodyTranslator {
-    fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
-        self.buf.extend_from_slice(chunk);
-        if self.passthrough {
-            self.keep_tail();
-            return chunk.to_vec();
-        }
-        if self.buf.len() > self.cap {
-            // Too large to complete: release everything withheld so far and relay from here on.
-            self.passthrough = true;
-            let withheld = self.buf.clone();
-            self.keep_tail();
-            return withheld;
-        }
-        Vec::new()
-    }
-
-    fn finish(&mut self) -> Vec<u8> {
-        let body = std::mem::take(&mut self.buf);
-        if self.passthrough {
-            // Only a tail fragment is held: isolate the trailing `usage` object for billing, and
-            // fall back to the same conservative floor the verbatim relay used for an over-cap body.
-            // The floor mirrors the relay's: an over-cap body demonstrably consumed tokens, so it
-            // is never metered at zero; the retained tail prices as output at the shared
-            // bytes-per-token rate (a genuine under-estimate, never an over-charge).
-            let tail_len = body.len() as u64;
-            self.usage = protocol()
-                .reader()
-                .recover_truncated_usage(&body)
-                .or_else(|| {
-                    Some(busbar_contract::billing::TokenUsage {
-                        output: (tail_len
-                            / crate::codec::wire_shim::TRUNCATED_TAIL_BYTES_PER_TOKEN)
-                            .max(1),
-                        ..Default::default()
-                    })
-                });
-            return Vec::new();
-        }
-        let parsed = crate::codec::json::parse::<serde_json::Value>(&body).ok();
-        self.usage = handler::same_protocol_usage(&body, parsed.as_ref());
-        self.open_billing = handler::same_protocol_open_billing(&body, parsed.as_ref());
-        match parsed {
-            Some(v) if handler::is_converse_response(&v) => {
-                complete_converse_body(&body, &v, self.elapsed_ms()).unwrap_or(body)
-            }
-            _ => body,
-        }
-    }
-
-    fn usage(&self) -> Option<busbar_contract::billing::TokenUsage> {
-        self.usage.clone()
-    }
-
-    fn open_billing(&self) -> Option<busbar_contract::billing::Billing> {
-        self.open_billing.clone()
-    }
-
-    fn terminal_error(&self) -> Option<&str> {
-        None
-    }
-
-    fn aborted(&self) -> bool {
-        false
-    }
-
-    fn set_client_include_usage(&mut self, _include: bool) {}
-}
-
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
@@ -2372,6 +2583,10 @@ mod field_carry_tests;
 #[cfg(test)]
 #[path = "tests/usage_float_tests.rs"]
 mod usage_float_tests;
+
+#[cfg(test)]
+#[path = "tests/usage_census_tests.rs"]
+mod usage_census_tests;
 
 #[cfg(test)]
 #[path = "tests/ir_mapping_tests.rs"]
@@ -2390,3 +2605,57 @@ mod ir_slot_wiring_tests;
 #[cfg(test)]
 #[path = "tests/ir_round3_tests.rs"]
 mod ir_round3_tests;
+
+#[cfg(test)]
+#[path = "tests/df_map_audit_tests.rs"]
+mod df_map_audit_tests;
+
+const CONTENT_POLICY: &str = "contentPolicy";
+const FILTERS: &str = "filters";
+const DETECTED: &str = "detected";
+const ACTION: &str = "action";
+const ACTION_BLOCKED: &str = "BLOCKED";
+
+/// A guardrail trace's content-policy filters -> the IR's safety verdicts (DF-MAP item 1): one per
+/// filter that `detected` or BLOCKED, its `type` the category. `confidence` and `filterStrength`
+/// are AWS's own scale and do not cross; the other policies (topics, words, PII, grounding) have
+/// no counterpart.
+fn read_guardrail_verdicts(
+    trace: Option<&serde_json::Value>,
+) -> Vec<crate::codec::ir::IrSafetyVerdict> {
+    let Some(g) = trace.and_then(|t| t.get(GUARDRAIL)) else {
+        return Vec::new();
+    };
+    let input = g
+        .get(GUARDRAIL_INPUT_ASSESSMENT)
+        .and_then(|m| m.as_object())
+        .into_iter()
+        .flat_map(|m| m.values());
+    let output = g
+        .get(GUARDRAIL_OUTPUT_ASSESSMENTS)
+        .and_then(|m| m.as_object())
+        .into_iter()
+        .flat_map(|m| m.values())
+        .filter_map(|a| a.as_array())
+        .flatten();
+    input
+        .chain(output)
+        .filter_map(|a| a.get(CONTENT_POLICY)?.get(FILTERS)?.as_array())
+        .flatten()
+        .filter_map(|f| {
+            let blocked = f.get(ACTION).and_then(|a| a.as_str()) == Some(ACTION_BLOCKED);
+            let detected = f.get(DETECTED).and_then(|d| d.as_bool()).unwrap_or(blocked);
+            (detected || blocked).then_some(())?;
+            Some(crate::codec::ir::IrSafetyVerdict {
+                category: f.get(keys::TYPE)?.as_str()?.to_string(),
+                flagged: true,
+                blocked,
+            })
+        })
+        .collect()
+}
+
+/// The search-result slot: Converse `searchResult` <-> Anthropic `search_result` (DF-MAP-2).
+#[cfg(test)]
+#[path = "tests/search_result_slot_tests.rs"]
+mod search_result_slot_tests;

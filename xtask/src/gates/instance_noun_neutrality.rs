@@ -147,7 +147,7 @@ const FAM_GRPC: &[&str] = &["busbar-transport-http"];
 const FAM_NONE: &[&str] = &[];
 
 // ── AUTH SCHEMES (DECISION #3: currently internal units, so heavy known-debt into core/units) ──
-const FAM_AUTH: &[&str] = &["auth-admin-tokens", "busbar-oauth2"];
+const FAM_AUTH: &[&str] = &["auth-admin-tokens", "busbar-core-oauth2"];
 
 /// DOCUMENTED EXEMPTION for the `gcp` noun: these 2 files use "GCP" as the general
 /// Google-Cloud-Platform term in cloud-metadata/SSRF security prose — `busbar-a2a`'s
@@ -158,7 +158,7 @@ const FAM_AUTH: &[&str] = &["auth-admin-tokens", "busbar-oauth2"];
 /// already excludes bare `aws` for (broad infra, never an instance spelling);
 /// `gcp` was never given the same treatment even though no code anywhere in this tree defines a
 /// `"gcp"` scheme constant for either file to be leaking (checked: `auth-static-plugin`,
-/// `auth-admin-tokens`, `busbar-oauth2` name nothing spelled `gcp`). Excluded by exact file, not by
+/// `auth-admin-tokens`, `busbar-core-oauth2` name nothing spelled `gcp`). Excluded by exact file, not by
 /// loosening the token or dropping the noun — a real `gcp` auth scheme, when one lands, will get its
 /// own unambiguous scheme spelling (a plugin crate identifier), and that spelling
 /// (not bare `gcp`) is what should be tracked.
@@ -719,6 +719,8 @@ fn census(cx: &Ctx) -> Result<Census, String> {
             })
             .collect();
         let nouns = counted_nouns(krate, &rel);
+        // A dialect module's own wire-path table (ruling C5-Q1, on the #324 precedent).
+        let wire_words = dialect_wire_table_lines(cx, krate, &rel, &f.text);
         // THE PRAGMAS, only where a marker is spelled: every other file is judged exactly as before.
         let lexed = f
             .text
@@ -742,6 +744,7 @@ fn census(cx: &Ctx) -> Result<Census, String> {
             let count = lines
                 .iter()
                 .enumerate()
+                .filter(|(idx, _)| !wire_words.contains(idx))
                 .filter(|(_, (orig, lower))| line_hits(orig, lower, noun))
                 .filter(|(idx, _)| match &lexed {
                     Some(fl) if !exempt_ids.is_empty() && *idx < fl.lines() => {
@@ -771,6 +774,75 @@ fn census(cx: &Ctx) -> Result<Census, String> {
         scanned,
         pragmas,
     })
+}
+
+/// THE DIALECT'S OWN WIRE-PATH TABLE (ARCHITECT ruling C5-Q1, 2026-10-03, on the #324 precedent
+/// the kind-isolation matrix applies to a dialect's item-id prefixes): a provider's own wire words
+/// (the OpenAI Responses item types `mcp_call`, `mcp_list_tools`, ...) are that dialect's protocol
+/// vocabulary, not a coupling to the sibling plane they happen to spell. So, in a plane crate's
+/// DIALECT MODULE (a file under `<crate>/src/` with a path segment `<d>` or a file `<d>.rs` such
+/// that `<crate>/dialects/<d>.toml` exists), the entry lines of a table
+/// `const <NAME>_DROPS: &[&str] = &[` ... `];` are not counted, where each such line is one string
+/// literal and its comma (the paths the dialect's drop walk names). Nothing else is: not the
+/// table's name, not the same word in another constant, a comment or code, and not such a table
+/// outside a dialect module. Answers the line indexes (0-based) the census skips.
+fn dialect_wire_table_lines(
+    cx: &Ctx,
+    krate: &str,
+    rel: &str,
+    text: &str,
+) -> std::collections::BTreeSet<usize> {
+    let mut skipped = std::collections::BTreeSet::new();
+    let dir = format!("crates/{krate}");
+    let in_dialect = rel
+        .strip_prefix(&dir)
+        .and_then(|r| r.strip_prefix("/src/"))
+        .is_some_and(|r| {
+            r.split('/').any(|seg| {
+                let d = seg.strip_suffix(".rs").unwrap_or(seg);
+                !d.is_empty()
+                    && d.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                    && cx.exists(format!("{dir}/dialects/{d}.toml"))
+            })
+        });
+    if !in_dialect {
+        return skipped;
+    }
+    let mut inside = false;
+    for (idx, line) in text.lines().enumerate() {
+        let t = line.trim();
+        if !inside {
+            let head = t
+                .strip_prefix("pub(crate) ")
+                .or_else(|| t.strip_prefix("pub "))
+                .unwrap_or(t);
+            inside = head.strip_prefix("const ").is_some_and(|r| {
+                r.split_once(':').is_some_and(|(name, rest)| {
+                    let name = name.trim();
+                    name.ends_with("_DROPS")
+                        && name
+                            .bytes()
+                            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+                        && rest.trim() == "&[&str] = &["
+                })
+            });
+            continue;
+        }
+        if t == "];" {
+            inside = false;
+            continue;
+        }
+        let entry = t.strip_suffix(',').unwrap_or(t);
+        let lone_literal = entry.len() >= 2
+            && entry.starts_with('"')
+            && entry.ends_with('"')
+            && !entry[1..entry.len() - 1].contains('"');
+        if lone_literal {
+            skipped.insert(idx);
+        }
+    }
+    skipped
 }
 
 /// One baseline `[[leak]]` row: its `(noun, file)` key and the `count` it recorded. A row with no

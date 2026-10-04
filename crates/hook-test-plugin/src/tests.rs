@@ -4,8 +4,8 @@
 //! Coverage for the trivial `kind: hook` test-support plugin: `open`'s config parsing and every
 //! `HookConfig` knob's effect on `TestGate`'s `decide`/`transform`/`notify`/`describe`/`status`/
 //! `configure` behavior. This crate is itself a TEST fixture for other crates' seam tests, so its
-//! own tests exercise it directly (no dlopen/ABI crossing here — that is what `busbar`'s
-//! `DlopenPolicy` seam tests use this cdylib for).
+//! own tests exercise it directly (no ABI crossing here — that is what the hook seam tests that
+//! load this cdylib through the hook axis are for).
 
 use super::*;
 

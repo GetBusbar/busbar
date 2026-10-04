@@ -34,7 +34,9 @@ fn gemini_body_with_logprobs() -> serde_json::Value {
 fn openai_logprobs_codec_round_trips_bytes_and_top() {
     // Direct read/write of the OpenAI logprobs codec: bytes and top_logprobs survive, and a
     // missing `bytes` is synthesized from the token's UTF-8 on write.
-    use super::super::openai_chat::{read_openai_logprobs, write_openai_logprobs};
+    use crate::codec::logprob_wire::{
+        read_token_logprobs as read_openai_logprobs, write_token_logprobs as write_openai_logprobs,
+    };
     let src = serde_json::json!({"content": [
         {"token": "Hi", "logprob": -0.1, "bytes": [72, 105],
          "top_logprobs": [{"token": "Hi", "logprob": -0.1, "bytes": [72, 105]},

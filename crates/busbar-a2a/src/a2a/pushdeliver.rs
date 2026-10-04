@@ -474,7 +474,7 @@ fn attempt(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
     let resp = seam
         .transport()
         .send("POST", &parsed, addr, &headers, &body)
-        .map_err(PushRefusal::Transport)?;
+        .map_err(|f| PushRefusal::Transport(f.err))?;
 
     // Remember what this delivery pinned, so the next one can require an overlap with it.
     remember(&task.task_id, &pinned);

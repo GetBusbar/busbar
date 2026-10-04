@@ -36,14 +36,8 @@ pub struct RequestFacts {
     /// The query without `?`; absent = none. For `fields`: as it will be sent (a signing style
     /// sorts and encodes it). For `verify`: the raw RECEIVED bytes, never normalized.
     pub query: AbiStr,
-    /// Wall-clock seconds since the Unix epoch, read once by the kernel for this call.
+    /// Wall-clock seconds since the Unix epoch, read once by the host for this call.
     pub timestamp: u64,
-    /// SHA-256 of the body. Filled only when the style or the tail says it is needed.
-    pub body_hash: [u8; 32],
-    /// `1` when [`RequestFacts::body_hash`] is filled, else `0`.
-    pub body_hash_present: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
 }
 
 /// The HOST buffer an identity is written into (request-path results live in host memory).
@@ -90,44 +84,102 @@ pub struct IdentityOut {
     pub groups_len: u32,
     /// Alignment padding.
     pub _reserved: u32,
+    /// A key the kernel must see only ONCE within [`Self::replay_ttl_secs`] (a signed webhook's
+    /// message id). After a `verify` identity carrying one, the kernel claims
+    /// `<plugin name>/<replay_key>` in its record store for that long, and a key already claimed
+    /// refuses the request (replay). Absent or empty = no claim. The plane never sees it. Appended
+    /// last (a pre-tag layout edit).
+    pub replay_key: Span,
+    /// How long the replay claim stands, seconds. Read only when [`Self::replay_key`] is present
+    /// and non-empty.
+    pub replay_ttl_secs: u64,
+    /// The credential the identity was verified from, as the kernel holds it on the unit for the
+    /// `caller-credential` style (THE DESIGN, "Auth points and guest lists", step 4). SECRET:
+    /// it goes to the kernel only, never to the transport, never logged, zeroised at the unit's
+    /// exit. Only with [`super::VERDICT_IDENTITY`]; absent = `len == 0`. Appended last (a pre-tag
+    /// layout edit).
+    pub credential: Span,
 }
 
-/// `verify`'s `in`.
+/// One credential line or query key an auth names for the transport to strip: a NAME, never a
+/// value, so the plane never sees a credential (THE DESIGN, "Auth points and guest lists",
+/// step 4). The name is a [`Span`] into the host's [`IdentityBuf`] bytes.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StripName {
+    /// The name.
+    pub name: Span,
+    /// [`super::STRIP_FIELD`] (a field line, ASCII case-insensitive) | [`super::STRIP_QUERY`] (a
+    /// query key, case-sensitive).
+    pub place: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+}
+
+/// `verify`'s `in`: the request at one AUTH POINT (THE DESIGN, "Auth points and guest lists").
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct VerifyIn {
     /// The head.
     pub head: InHead,
-    /// The candidate credential (secret), extracted by the kernel exactly as 1.5.5 extracted the
-    /// opaque string it passed to `authenticate`; absent = none presented.
+    /// The candidate credential (secret); absent = none presented.
     pub credential: Blob,
-    /// The carrier fields the tail names, as presented (every request header when the tail states
-    /// [`super::FACT_INBOUND_ALL_HEADERS`]).
-    pub carrier: *const NamedValue,
+    /// The request's neutral field lines, as presented: the lines the Statement's carrier word
+    /// marks name, or every line when the tail states [`super::FACT_INBOUND_ALL_HEADERS`]. At
+    /// [`super::POINT_PEER`] there are none.
+    pub lines: *const NamedValue,
     /// How many.
-    pub carrier_len: usize,
+    pub lines_len: usize,
     /// The request's fixed facts (an inbound signature check reads them).
     pub request: RequestFacts,
-    /// Where the identity goes.
+    /// Where the identity and the strip names' bytes go.
     pub out_buf: IdentityBuf,
+    /// The [`AuthPoint`](super::AuthPoint) this call is made at: exactly one of
+    /// [`super::POINT_PEER`] | [`super::POINT_HEAD`] | [`super::POINT_HEAD_BODY`], one the tail's
+    /// [`AuthTail::inbound_points`](super::AuthTail) holds.
+    pub point: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+    /// The connection the request arrived on, so an auth needing several points correlates them.
+    pub conn: u64,
+    /// The unit the kernel minted for the request; `0` at [`super::POINT_PEER`] (no request yet).
+    pub unit: u64,
+    /// The peer facts (the TLS peer certificate from the connector, a spawn environment); present
+    /// only at [`super::POINT_PEER`], else absent.
+    pub peer: Blob,
+    /// The whole request body; present only at [`super::POINT_HEAD_BODY`], else absent. Bounded
+    /// by the size gate: over its limit the request is refused (413) before any verdict.
+    pub body: Blob,
+    /// The host array the plugin names its credential lines and query keys in
+    /// ([`StripName`]), whatever its verdict.
+    pub strip: *mut StripName,
+    /// Its capacity ([`super::FIELDS_MAX`] to start).
+    pub strip_cap: u32,
+    /// Alignment padding.
+    pub _reserved2: u32,
 }
 
 /// `verify`'s and `complete_login`'s `out`.
 ///
-/// SHORT BUFFER: when the identity does not fit, the plugin answers `FAILED` with `needed_bytes`
-/// or `needed_groups` above the capacity it was given and writes nothing else. The host re-issues
+/// SHORT BUFFER: when the identity or the strip names do not fit, the plugin answers `FAILED`
+/// with `needed_bytes`, `needed_groups` or `needed_strip` above the capacity it was given and
+/// writes nothing else. The host re-issues
 /// the op once, as a fresh call (no `FLAG_RESUME`) on the SAME ticket, with buffers at least that
 /// large; a second short answer is FAULT. The plugin keeps the identity it reached for that ticket
 /// and serves the retry from it, never repeating the work (an authorization code redeems once).
 /// `FAILED` with both at `0` is a real failure. A buffer is at most `u32::MAX` bytes ([`Span`]).
 ///
 /// THE ANSWER RULES, enforced by [`super::check_identify`] and [`super::check_complete_login`]
-/// in `u64` math (any violation is FAULT). On REFUSED or PENDING, every `needed_*` is `0`. On READY, `needed_groups == 0` and `needed_bytes == 0`; the verdict is in the op's vocabulary;
+/// in `u64` math (any violation is FAULT). On REFUSED or PENDING, every `needed_*` is `0`. On
+/// READY, every `needed_*` is `0`; the verdict is in the op's vocabulary; for `verify` the
+/// decision is in its vocabulary, `strip_len <= strip_cap`, every strip name is present and in
+/// bounds with a known `place`, and a `credential` span is present only with an identity; for
+/// `complete_login` the decision, `strip_len` and `credential` are `0`/absent;
 /// for an identity, `subject` is present, every present [`Span`] has `off + len <= buf_cap`, an
 /// absent one ([`super::SPAN_ABSENT`]) has `len == 0`, `groups_len <= groups_cap`, every group
 /// span is present and in bounds, and `flags` holds only [`super::IDENTITY_HAS_TTL`]. On FAILED,
-/// `needed_bytes <= u32::MAX` and `needed_groups <=` [`super::IDENTITY_GROUPS_HARD_MAX`]; both `0`
-/// is a real failure; otherwise each reports its FULL size and at least one exceeds its capacity
+/// `needed_bytes <= u32::MAX`, `needed_groups <=` [`super::IDENTITY_GROUPS_HARD_MAX`] and
+/// `needed_strip <=` [`super::FIELDS_HARD_MAX`]; all `0` is a real failure; otherwise each reports its FULL size and at least one exceeds its capacity
 /// (a fitting dimension's full size is legal; none exceeding is FAULT, a wasted re-call).
 ///
 /// The identity buffer is ALWAYS secret material to the host (claims may carry an identity token):
@@ -139,7 +191,7 @@ pub struct IdentifyOut {
     pub head: OutHead,
     /// `verify`: [`super::VERDICT_IDENTITY`] | [`super::VERDICT_REJECT`] | [`super::VERDICT_PASS`].
     /// `complete_login`: [`super::LOGIN_IDENTITY`] | [`super::LOGIN_BAD_CREDENTIAL`] |
-    /// [`super::LOGIN_OUTAGE`]. `0` is FAULT.
+    /// [`super::LOGIN_OUTAGE`] | [`super::LOGIN_SECURITY_CHECK_FAILED`]. `0` is FAULT.
     pub verdict: u32,
     /// Short buffer: the group spans needed.
     pub needed_groups: u32,
@@ -147,6 +199,16 @@ pub struct IdentifyOut {
     pub needed_bytes: u64,
     /// Who, for an identity verdict.
     pub identity: IdentityOut,
+    /// `verify` on READY: [`super::DECISION_CONTINUE`] | [`super::DECISION_STOP`], what the
+    /// transport does with the request. `complete_login`: `0`.
+    pub decision: u32,
+    /// `verify` on READY: how many [`StripName`]s the plugin wrote into [`VerifyIn::strip`],
+    /// whatever the verdict. `complete_login`: `0`.
+    pub strip_len: u32,
+    /// Short buffer: the strip names needed.
+    pub needed_strip: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 /// `begin_login`'s `in`. Every field is core-minted or public; there is no secret.
@@ -225,4 +287,7 @@ pub struct CompleteLoginIn {
     pub submitted_len: usize,
     /// Where the identity goes.
     pub out_buf: IdentityBuf,
+    /// The nonce the login's `begin_login` was handed (the core's, carried in its login cookie),
+    /// so the plugin binds the IdP's identity token to it; absent = none. Appended.
+    pub nonce: AbiStr,
 }

@@ -123,7 +123,7 @@ pub fn logical_lines(text: &str) -> Vec<String> {
 
 /// Every `cargo xtask gate <name>` (and the pre-registry `cargo xtask <name>`) call site in a
 /// workflow, in first-seen order, deduplicated. Set equality against the registry is what retires
-/// `full-gate.sh`'s `MIN_GATES` floor: a registered gate absent from `ci.yml` is a failure a floor
+/// `full-gate.sh`'s `MIN_GATES` floor: a registered gate absent from the removed `ci.yml` is a failure a floor
 /// could only approximate.
 pub fn xtask_gate_invocations(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -238,7 +238,7 @@ fn block_scalar(
 }
 
 /// Parse the workflow subset. An EMPTY document, or one with no jobs, is an ERROR — the
-/// `full-gate.sh` floor that an empty `ci.yml` must be refused rather than read as a workflow with
+/// `full-gate.sh` floor that an empty the removed `ci.yml` must be refused rather than read as a workflow with
 /// nothing to run.
 pub fn parse_workflow(text: &str) -> Result<Workflow, String> {
     if text.trim().is_empty() {
@@ -311,7 +311,7 @@ pub fn parse_workflow(text: &str) -> Result<Workflow, String> {
                         let mut j = i + 1;
                         while j < lines.len() {
                             let nt = lines[j].trim_start();
-                            // A COMMENT INSIDE THE LIST IS NOT THE END OF THE LIST. `ci.yml`
+                            // A COMMENT INSIDE THE LIST IS NOT THE END OF THE LIST. the removed `ci.yml`
                             // explains its last dependency in three comment lines sitting between
                             // the entries above it and the entry itself; a reader that stopped at
                             // the first `#` dropped that job from `needs` silently, and a job

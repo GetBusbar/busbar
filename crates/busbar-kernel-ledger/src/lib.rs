@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! # busbar-unit-ledger — the ledger unit
+//! # busbar-kernel-ledger — the ledger unit
 //!
 //! What money IS, as opposed to where its bytes landed. This crate settles holds, keeps the running
 //! figures a checkpoint seals, states the one identity those figures have to satisfy, reprices every
@@ -64,7 +64,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod checkpoint;
-// Folded from the former `busbar-unit-cost` and `busbar-unit-usage` crates (#36: the book merges
+// Folded from the former cost and usage crates (#36: the book merges
 // rates+usage+ledger as three modules).
 pub mod cost;
 pub mod usage;

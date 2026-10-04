@@ -4,8 +4,7 @@
 //! THE USAGE-TAP COUNT PIN (#83a SD-3, architect ruling R-USAGE): every way a same-protocol usage
 //! tap can fail to read a 2xx body reports ONCE to the host's usage-tap seam, under the reason that
 //! says which way — whether the tap is the chat cell's own (unknown protocol / bad JSON / a body its
-//! reader refuses), a leaf cell's default (the host's decode reporter), or the signing dialect's
-//! direct shape-probed call (`bedrock::handler::same_protocol_usage`, which calls both). One report
+//! reader refuses) or a leaf cell's default (the host's decode reporter). One report
 //! is one increment of `busbar_billing_tap_decode_fail_total{protocol,reason}`: the host's suite pins
 //! that step. The plane names no metrics crate and reaches no host: this suite reads the reports the
 //! test host recorded.
@@ -63,25 +62,4 @@ fn a_leaf_cells_default_tap_counts_a_refused_body_as_a_decode_failure() {
             .is_none());
     });
     assert_eq!(counts, faults(&[("bedrock", "decode", 2)]));
-}
-
-/// THE DIRECT CALL R-USAGE names: the signing dialect's shape-probed same-protocol tap reaches the
-/// chat cell or a leaf cell by the body's shape, and each counts exactly as the cell counts when the
-/// host dispatches it.
-#[test]
-fn the_shape_probed_same_protocol_tap_counts_exactly_as_the_cell_it_reaches() {
-    // The probe reads the parsed SHAPE; the tap it picks reads the body — so a body the picked cell
-    // refuses, under each shape, is what reaches each cell's fault path.
-    let image_shaped: serde_json::Value = serde_json::json!({"images": []});
-    let converse_shaped: serde_json::Value = serde_json::json!({"output": {}});
-    let counts = crate::codec::test_host::tap_faults(|| {
-        let usage = crate::codec::bedrock::handler::same_protocol_usage;
-        assert!(usage(NOT_JSON, None).is_none());
-        assert!(usage(NOT_JSON, Some(&image_shaped)).is_none());
-        assert!(usage(UNREADABLE, Some(&converse_shaped)).is_none());
-    });
-    assert_eq!(
-        counts,
-        faults(&[("bedrock", "bad_json", 1), ("bedrock", "decode", 2)])
-    );
 }

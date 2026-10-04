@@ -73,16 +73,22 @@ pub mod auth_bindings;
 pub mod boot;
 pub mod cli;
 pub mod connector;
+pub mod credentials;
 pub mod dispatch;
+pub mod door_steps;
 pub mod doors;
 pub mod durability;
+pub mod egress_ports;
+pub mod exports;
 pub mod gauntlet_install;
 pub mod gauntlet_kernel;
 #[cfg(any(test, feature = "test-harness"))]
 pub mod harness;
+pub mod hooks;
 pub mod kernel;
 pub mod keyset;
 pub mod ledger_identity;
+pub mod legacy;
 pub mod linked;
 pub(crate) mod loader;
 pub mod migration;
@@ -93,7 +99,6 @@ pub mod plane_decisions;
 // The node a plane's units run through: compiled when a linked plane rides the `node` axis, read
 // off the same manifest table the root folds (the generated `linked_axis_node` cfg).
 #[cfg(linked_axis_node)]
-pub mod plane_egress;
 pub mod plane_node;
 pub mod policy;
 pub mod registry;

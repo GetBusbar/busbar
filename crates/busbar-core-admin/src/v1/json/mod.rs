@@ -244,7 +244,7 @@ async fn record_declared_error(
             tag.kind.code(),
             tag.kind.status(),
         );
-        taxonomy::observed::record(rel, method, tag);
+        crate::witness::record(rel, method, tag);
     }
     resp
 }

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! S6: AN UNRESOLVABLE UPSTREAM SUBJECT TOKEN must not hand the CALLER — who is not the operator —
-//! the secret's SOURCE (the env var name / file path `resolve_builtin_string`'s own error names).
+//! the secret's SOURCE (the env var name / file path `resolve_linked_string`'s own error names).
 //! That detail belongs in the server log, where the operator who can fix it can see it; the caller
 //! gets a generic refusal and a pointer to the log.
 //!
@@ -32,7 +32,7 @@ async fn an_unresolvable_subject_token_refuses_generically_and_names_no_secret_s
     let peer = Peer::start(Behaviour::Result, "unused-issued-token").await;
     let mut cfg = exchanging_server(&peer, "unused-subject-value");
     // Point the subject token at an env var that is guaranteed unset, so
-    // `busbar_plugin_loader::builtin_secret::resolve_builtin_string` fails exactly the way S6 documents.
+    // `busbar_kernel::config::secret::resolve_linked_string` fails exactly the way S6 documents.
     cfg.token_exchange.as_mut().unwrap().subject_token =
         busbar_contract::secret_ref::SecretRef::env(UNSET_VAR);
     let app = test_app()
@@ -84,14 +84,14 @@ async fn an_unresolvable_subject_token_refuses_generically_and_names_no_secret_s
 ///
 /// `Display` is the rendering `refuse_setup` feeds to `diag_debug!`'s `detail = %denied` field —
 /// the operator's own server log, never the wire — and must still carry the secret's source
-/// exactly as `busbar_plugin_loader::builtin_secret::resolve_builtin_string` names it. `client_message()` is the ONLY
+/// exactly as `busbar_kernel::config::secret::resolve_linked_string` names it. `client_message()` is the ONLY
 /// rendering that reaches the caller, and must not.
 #[test]
 fn client_message_redacts_the_source_but_display_still_carries_it_for_the_operator() {
     use crate::mcp::upstream::SetupRefusal;
 
     // The exact shape `credential_mode` produces (see `upstream.rs`'s `credential_mode`, which
-    // wraps `busbar_plugin_loader::builtin_secret::resolve_builtin_string`'s error): a message that NAMES the source.
+    // wraps `busbar_kernel::config::secret::resolve_linked_string`'s error): a message that NAMES the source.
     let denied = SetupRefusal::Credential(format!(
         "busbar's own subject token for this upstream cannot resolve: secret env:{UNSET_VAR} \
          cannot resolve: environment variable '{UNSET_VAR}' is unset"

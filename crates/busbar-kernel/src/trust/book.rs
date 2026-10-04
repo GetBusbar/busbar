@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE KERNEL'S TRUST STATE, per instance and counterparty: what `trust.sight` judges a reported
-//! catalogue hash against and what `trust.due` answers from. The lifecycle is the kernel's; a plane
-//! only reports hashes.
+//! catalogue hash against, what `trust.due` answers from, and the root key `trust.verify` reads.
+//! The lifecycle is the kernel's; a plane only reports hashes and hands signatures.
 //!
 //! * **The policy** is the instance's [`TrustEntry`] map, as [`super::section`] parsed it from the
 //!   plane's declared trust keys. A counterparty the map does not name is refused, never judged.
@@ -191,6 +191,26 @@ impl TrustBook {
         }
         s.quarantined = false;
         Ok((Sight::Same, Effect::Clear))
+    }
+
+    /// The root key `instance` declares for `counterparty`: its pin's material when the pin is an
+    /// authenticity root, else `None`.
+    ///
+    /// # Errors
+    ///
+    /// [`Unjudged`] for an instance never admitted or a counterparty it does not declare.
+    pub fn root_key(&self, instance: &str, counterparty: &str) -> Result<Option<String>, Unjudged> {
+        let map = self.lock();
+        let book = map.get(instance).ok_or(Unjudged::UnknownInstance)?;
+        let entry = book
+            .entries
+            .get(counterparty)
+            .ok_or(Unjudged::UnknownCounterparty)?;
+        Ok(entry
+            .pin
+            .as_ref()
+            .filter(|p| p.root)
+            .and_then(|p| p.key.clone()))
     }
 
     /// The kernel tick: mark every counterparty whose declared cadence says it is due at `now_ms`.

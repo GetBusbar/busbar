@@ -50,7 +50,6 @@ const REQUIRED_KERNEL_CRATES: &[&str] = &[
     "busbar-kernel",
     "busbar-kernel-audit",
     "busbar-kernel-breaker",
-    "busbar-kernel-budget",
     "busbar-kernel-egress",
     "busbar-kernel-identity",
     "busbar-kernel-ledger",

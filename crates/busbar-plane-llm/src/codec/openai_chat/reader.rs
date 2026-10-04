@@ -78,9 +78,8 @@ impl ProtocolReader for OpenAiReader {
 
     #[cfg(test)]
     fn classify(&self, status: StatusCode, body: &[u8]) -> CanonicalSignal {
-        // Identical to ResponsesReader::classify — both emit the same OpenAI error envelope, so the
-        // mapping is single-sourced in `super::openai_classify` (the OpenAI dialect's codec home).
-        super::openai_classify(status, body)
+        // Both bearer-envelope dialects classify alike: single-sourced in the shared dialect module.
+        crate::codec::dialect::bearer_error_classify(status.as_u16(), body)
     }
 
     fn read_request(
@@ -218,7 +217,7 @@ impl ProtocolReader for OpenAiReader {
                             });
                         } else if let Some(arr) = content.as_array() {
                             for block_val in arr {
-                                system_blocks.push(read_openai_block(block_val)?);
+                                system_blocks.extend(read_openai_part(block_val)?);
                             }
                         }
                     }
@@ -226,7 +225,13 @@ impl ProtocolReader for OpenAiReader {
                     // empty array) must not silently vanish: emit an empty Text block so the system
                     // turn is preserved rather than dropped. `content_val.is_none()` (key absent)
                     // also lands here, which matches treating an empty system turn as present.
-                    if system_blocks.len() == blocks_before {
+                    // A turn whose parts were all of kinds the reader does not model is NOT empty:
+                    // those parts are dropped (named at a translate seam) and nothing is put in
+                    // their place (design F3 "Drops").
+                    let had_parts = content_val
+                        .and_then(|c| c.as_array())
+                        .is_some_and(|a| !a.is_empty());
+                    if system_blocks.len() == blocks_before && !had_parts {
                         system_blocks.push(crate::codec::ir::IrBlock::Text {
                             text: String::new(),
                             cache_control: None,
@@ -266,8 +271,7 @@ impl ProtocolReader for OpenAiReader {
                                 });
                             } else if let Some(arr) = cv.as_array() {
                                 for block_val in arr {
-                                    let block = read_openai_block(block_val)?;
-                                    msg_content.push(block);
+                                    msg_content.extend(read_openai_part(block_val)?);
                                 }
                             }
                         }
@@ -278,6 +282,22 @@ impl ProtocolReader for OpenAiReader {
                         if let Some(tool_calls) = msg_val.get(keys::TOOL_CALLS) {
                             if let Some(tc_arr) = tool_calls.as_array() {
                                 for tc_val in tc_arr {
+                                    // A replayed CUSTOM-tool call (`{"type":"custom","custom":{name,
+                                    // input}}`, free-text input) has no IR tool-call form: it is a
+                                    // valid native message the reader must not refuse (design F2,
+                                    // reader tolerance). It is dropped, observably.
+                                    if tc_val.get(keys::TYPE).and_then(|t| t.as_str())
+                                        == Some(keys::CUSTOM)
+                                    {
+                                        crate::codec::drops::writer_drop!(
+                                            crate::codec::drops::wire("messages[].tool_calls[]"),
+                                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                            [],
+                                            "dropping a replayed custom-tool call on translate: the \
+                                             IR carries function tool calls only (no-equivalent)"
+                                        );
+                                        continue;
+                                    }
                                     // A present tool call MUST carry a non-empty string `id`: it is
                                     // the correlation key an egress dialect emits back to pair the
                                     // eventual tool result. An absent/blank/wrong-typed id yields an
@@ -289,8 +309,12 @@ impl ProtocolReader for OpenAiReader {
                                         .filter(|s| !s.is_empty())
                                         .ok_or_else(ir_parse_error)?
                                         .to_string();
-                                    let func =
-                                        tc_val.get(keys::FUNCTION).ok_or_else(ir_parse_error)?;
+                                    let Some(func) = tc_val.get(keys::FUNCTION) else {
+                                        if unmodeled_tool_call(tc_val) {
+                                            continue;
+                                        }
+                                        return Err(ir_parse_error());
+                                    };
                                     let name = func
                                         .get(keys::NAME)
                                         .and_then(|v| v.as_str())
@@ -379,8 +403,9 @@ impl ProtocolReader for OpenAiReader {
                             Some(serde_json::Value::Array(parts)) => {
                                 let mut acc = String::new();
                                 for part in parts {
-                                    if let Ok(crate::codec::ir::IrBlock::Text { text, .. }) =
-                                        read_openai_block(part)
+                                    if let Ok(Some(crate::codec::ir::IrBlock::Text {
+                                        text, ..
+                                    })) = read_openai_part(part)
                                     {
                                         acc.push_str(&text);
                                     }
@@ -612,8 +637,10 @@ impl ProtocolReader for OpenAiReader {
         if let Some(raw) = reasoning_effort_raw {
             if crate::codec::ir::IrReasoningEffort::parse(raw).is_none() {
                 if reasoning.is_none() {
-                    tracing::warn!(
-                        reasoning_effort = raw,
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::REASONING,
+                        &crate::codec::diagnostics::IR_DROP_REASONING,
+                        [reasoning_effort = raw,],
                         "reasoning_effort value has no IR word; preserving it verbatim in extra so \
                          a same-protocol OpenAI egress still carries it (a cross-protocol hop \
                          carries no ask)"
@@ -749,8 +776,10 @@ impl ProtocolReader for OpenAiReader {
         if let Some(arr) = choices_arr {
             if arr.len() > 1 && !state.multi_candidate_warned {
                 state.multi_candidate_warned = true;
-                tracing::warn!(
-                    choices = arr.len(),
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::wire("choices[]"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [choices = arr.len(),],
                     "openai stream chunk carried multiple choices; only choices[0] survives IR translation — a cross-protocol hop drops the rest (a same-protocol relay preserves all)"
                 );
             }
@@ -889,7 +918,9 @@ impl ProtocolReader for OpenAiReader {
         let lp_entries = if state.text_block_closed {
             Vec::new()
         } else {
-            read_openai_logprobs(choice0.and_then(|c| c.get(keys::LOGPROBS)))
+            crate::codec::logprob_wire::read_token_logprobs(
+                choice0.and_then(|c| c.get(keys::LOGPROBS)),
+            )
         };
         if !lp_entries.is_empty() {
             if !state.text_block_open {
@@ -926,15 +957,17 @@ impl ProtocolReader for OpenAiReader {
         //     `read_url_annotations` gives (the buffered path drops them the same way).
         let citations = delta
             .and_then(|d| d.get(keys::ANNOTATIONS))
-            .map(super::super::openai_annotations::read_url_annotations)
+            .map(super::super::url_citation_wire::read_url_annotations)
             .unwrap_or_default();
         if !citations.is_empty() {
             if state.text_block_closed && !state.text_block_open {
                 // The text these sources annotate is already closed (a tool call intervened), and
                 // a CitationsDelta at a closed index would un-balance the stream. Say so rather
                 // than detach the sources into a new, empty text block.
-                tracing::warn!(
-                    citations = citations.len(),
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::wire("choices[].delta.annotations[]"),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [citations = citations.len(),],
                     "dropping streamed url_citation annotations that arrived after their text \
                      block closed; they are NOT forwarded on this cross-protocol stream"
                 );
@@ -1194,6 +1227,50 @@ impl ProtocolReader for OpenAiReader {
         Box::new(self.clone())
     }
 
+    fn request_map(&self) -> crate::codec::carry::Table {
+        super::map::REQUEST
+    }
+
+    fn parked(&self) -> &'static [crate::codec::drops::Parked] {
+        super::PARKED
+    }
+
+    fn request_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::REQUEST_BLOCKS
+    }
+
+    fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::RESPONSE_BLOCKS
+    }
+
+    fn response_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::RESPONSE_PATHS,
+            code: super::RESPONSE_CODE,
+            drops: super::RESPONSE_DROPS,
+        })
+    }
+
+    fn stream_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::STREAM_PATHS,
+            code: super::STREAM_CODE,
+            drops: super::STREAM_DROPS,
+        })
+    }
+
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        super::IR_BLOCK_KINDS
+    }
+
+    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
+        super::REQUEST_CODE_NAMES
+    }
+
+    fn unread(&self) -> &'static [&'static str] {
+        super::UNREAD
+    }
+
     fn read_response(
         &self,
         body: &serde_json::Value,
@@ -1215,8 +1292,10 @@ impl ProtocolReader for OpenAiReader {
         // cross-protocol case rather than asserting an unconditional drop. Defense-in-depth: the
         // engine now rejects n>1 up front on cross-protocol routes.
         if choices.len() > 1 {
-            tracing::warn!(
-                choices = choices.len(),
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::wire("choices[]"),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [choices = choices.len(),],
                 "openai response carried multiple choices; only choices[0] survives IR translation — a cross-protocol hop drops the rest (a same-protocol relay preserves all)"
             );
         }
@@ -1261,7 +1340,7 @@ impl ProtocolReader for OpenAiReader {
                     // `read_url_annotations` for why offsets are deliberately not carried.
                     let citations = message_val
                         .get(keys::ANNOTATIONS)
-                        .map(super::super::openai_annotations::read_url_annotations)
+                        .map(super::super::url_citation_wire::read_url_annotations)
                         .unwrap_or_default();
                     content.push(crate::codec::ir::IrBlock::Text {
                         text: text.to_string(),
@@ -1272,13 +1351,18 @@ impl ProtocolReader for OpenAiReader {
                 }
             } else if let Some(arr) = content_val.as_array() {
                 for block_val in arr {
-                    let block = read_openai_block(block_val)?;
+                    let Some(block) = read_openai_part(block_val)? else {
+                        continue;
+                    };
                     // An image part in a RESPONSE message array has no Chat Completions response
                     // representation (the completion `message.content` carries no image output), so it
                     // is dropped — but OBSERVABLY: `warn!` instead of the prior silent skip, so a
                     // dropped image part in a model's array-content response is visible in logs.
                     if matches!(block, crate::codec::ir::IrBlock::Image { .. }) {
-                        tracing::warn!(
+                        crate::codec::drops::writer_drop!(
+                            crate::codec::drops::IMAGE,
+                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                            [],
                             "dropping an image content part from an OpenAI Chat response message: the \
                              completion response shape carries no image output; the block is NOT \
                              emitted"
@@ -1323,7 +1407,12 @@ impl ProtocolReader for OpenAiReader {
                     // deterministic `call_…` id when the backend supplied none — so the correlation key
                     // is never blank. (`unwrap_or("")` previously let an empty id through to egress.)
                     let raw_id = tc_val.get(keys::ID).and_then(|v| v.as_str()).unwrap_or("");
-                    let func = tc_val.get(keys::FUNCTION).ok_or_else(ir_parse_error)?;
+                    let Some(func) = tc_val.get(keys::FUNCTION) else {
+                        if unmodeled_tool_call(tc_val) {
+                            continue;
+                        }
+                        return Err(ir_parse_error());
+                    };
                     let name = func
                         .get(keys::NAME)
                         .and_then(|v| v.as_str())
@@ -1423,7 +1512,8 @@ impl ProtocolReader for OpenAiReader {
 
         // Per-token logprobs from the first choice, carried neutrally so a foreign-dialect caller
         // (e.g. Gemini) receives them in its own shape.
-        let logprobs = read_openai_logprobs(choices[0].get(keys::LOGPROBS));
+        let logprobs =
+            crate::codec::logprob_wire::read_token_logprobs(choices[0].get(keys::LOGPROBS));
 
         Ok(crate::codec::ir::IrResponse {
             logprobs,
@@ -1439,9 +1529,16 @@ impl ProtocolReader for OpenAiReader {
 
             request_echo: None,
             stop_detail: None,
+            safety: super::read_moderation(obj.get(MODERATION)),
+            audio: super::read_message_audio(
+                choice.get(keys::MESSAGE).and_then(|m| m.get(super::AUDIO)),
+            ),
         })
     }
 }
+
+/// The top-level moderation results of a Chat completion.
+const MODERATION: &str = "moderation";
 
 /// The `tool_ir_index` key that records the IR index of a Thinking block opened AFTER the answer
 /// phase began (OAI-14). Tool keys are upstream `tool_calls[].index` values clamped to
@@ -1529,3 +1626,15 @@ fn tool_input_from_arguments(v: Option<&serde_json::Value>) -> serde_json::Value
 #[cfg(test)]
 #[path = "tests/unreadable_count_refusal_tests.rs"]
 mod unreadable_count_refusal_tests;
+
+/// A tool call of a type the IR does not model (a `custom` tool call, or a type OpenAI adds later):
+/// its `type` names something other than `function`. The reader is a TAP: it skips such a call
+/// rather than refuse the request, so a same-dialect relay carries it byte for byte (DIALECT FIDELITY;
+/// DIALECT-FIDELITY-DESIGN F2 reader tolerance). A call that claims `function` (or names
+/// no type) and carries none is still malformed in its own dialect.
+fn unmodeled_tool_call(tc_val: &serde_json::Value) -> bool {
+    tc_val
+        .get(keys::TYPE)
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|t| t != keys::FUNCTION)
+}

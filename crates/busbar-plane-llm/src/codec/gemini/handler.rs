@@ -18,6 +18,7 @@ use crate::codec::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
 use crate::codec::keys;
+use crate::codec::leaf_codec::LeafCodec;
 use busbar_contract::codec::{CodecError, IngressReject, RequestHandler};
 // The leaf cells' trait, which the dialect's handler tests call through.
 #[cfg(test)]
@@ -453,8 +454,10 @@ pub fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
             // embed the first here (batch would need `:batchEmbedContents`, a 1.3 item). Warn
             // rather than silently drop the rest.
             if v.len() > 1 {
-                tracing::warn!(
-                    dropped = v.len() - 1,
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::member(keys::INPUT),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [dropped = v.len() - 1,],
                     "Gemini :embedContent takes one input; embedding only the first of a \
                      multi-input request (the rest are not sent)"
                 );
@@ -462,8 +465,10 @@ pub fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
             v.first().cloned().unwrap_or_default()
         }
         other => {
-            tracing::warn!(
-                dropped = 1,
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::member(keys::INPUT),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [dropped = 1,],
                 "Gemini :embedContent takes text input only; dropping a non-text embeddings \
                  input ({other:?} kind) with no analog"
             );
@@ -953,3 +958,33 @@ pub fn read_embeddings_response(
         ..Default::default()
     })
 }
+
+/// This dialect's row of the leaf-op `(operation, protocol)` dispatch, carried on `super::ENTRY`.
+pub(crate) const LEAF: crate::codec::leaf_codec::LeafCodecs =
+    crate::codec::leaf_codec::LeafCodecs {
+        embeddings: Some(LeafCodec {
+            write_request: write_embeddings_request,
+            write_response: write_embeddings_response,
+            read_request: read_embeddings_request,
+            read_response: read_embeddings_response,
+        }),
+        image: Some(LeafCodec {
+            write_request: write_image_request,
+            write_response: write_image_response,
+            read_request: read_image_request,
+            read_response: read_image_response,
+        }),
+        transcription: Some(LeafCodec {
+            write_request: write_transcription_request,
+            write_response: write_transcription_response,
+            read_request: read_transcription_request,
+            read_response: read_transcription_response,
+        }),
+        speech: Some(LeafCodec {
+            write_request: write_speech_request,
+            write_response: write_speech_response,
+            read_request: read_speech_request,
+            read_response: read_speech_response,
+        }),
+        ..crate::codec::leaf_codec::LeafCodecs::NONE
+    };

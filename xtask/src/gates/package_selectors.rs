@@ -8,7 +8,7 @@
 //! sweeps (`afe12ec00`, `fe689c616`) repointed them one by one. Nothing stopped it recurring.
 //!
 //! THE FAILURE MODE IS NOT "A JOB GOES RED". It is a check that stops checking and says nothing
-//! while it stops, and the sharpest instance is `scripts/txn-fence.sh`, whose PASS CONDITION IS A
+//! while it stops, and the sharpest instance is `cargo xtask txn-fence`, whose PASS CONDITION IS A
 //! BUILD FAILURE:
 //!
 //! ```text
@@ -19,10 +19,10 @@
 //! 'busbar-core' did not match any packages` — a NON-ZERO exit, which is this script's green —
 //! while compiling nothing at all. A pass condition satisfied by a build failure. The same shape
 //! was in the release-cutting workflows, where it could only ever have been discovered at the
-//! moment of cutting a release, and in `ci.yml`'s feature matrix, where a `tests:` cell selected a
+//! moment of cutting a release, and in the removed `ci.yml`'s feature matrix, where a `tests:` cell selected a
 //! package that no longer existed and a libtest filter over zero packages exits 0.
 //!
-//! THE SHAPE OF THE CONTRACT is `feature-sets`': membership is DERIVED from the tree (the workspace
+//! THE SHAPE OF THE CONTRACT is the one `qa-names` keeps: membership is DERIVED from the tree (the workspace
 //! members plus `Cargo.lock`, which is the exact set `cargo -p` resolves against) and ASSERTED
 //! against every covered file, and a deliberate exception is possible only IN WRITING, next to the
 //! site, as a comment:
@@ -43,13 +43,13 @@
 //! 2. A `tests:` or `features:` MATRIX CELL. `tests:` is passed verbatim after `cargo test`;
 //!    `features:` is `<pkg>/<feature>`, so its left half is a package selector in all but spelling.
 //! 3. A Rust string literal under `xtask/src` that BEGINS with `cargo ` — the command strings
-//!    `full_gate` mirrors CI with. The "begins with" is load-bearing: the same tuples carry PROSE
+//!    a runner mirrors a pipeline with. The "begins with" is load-bearing: the same tuples carry PROSE
 //!    strings that quote dead selectors on purpose, and prose is not a command.
 //!
 //! WHAT IS DELIBERATELY NOT COVERED, stated so it is not mistaken for held: the general "no string
 //! literal anywhere names a non-workspace crate". Historical crate names legitimately appear in
 //! prose everywhere — commit messages, design docs, the comments that RECORD these very repointings
-//! — and `verify-deploy.yml` installs a real PyPI package called `busbar-admin`. That version needs
+//! — and the removed `verify-deploy.yml` installs a real PyPI package called `busbar-admin`. That version needs
 //! an allowlist, and an allowlist needs its own liveness check; this one needs neither, because a
 //! comment is not an executable position.
 //!
@@ -112,11 +112,11 @@ pub const ROW_DECL_REASON: &str = "package-selectors:declaration-reason";
 /// makes every selector in the tree look dead, which is a defect in the instrument reported as a
 /// defect in the tree.
 pub const UNIVERSE_FLOOR: usize = 40;
-/// The floor under the discovered selector sites. Measured at 200, across 245 covered files, on the
-/// 1.6.0 integration tree. This is the floor that matters: an empty scan set is the one state in
+/// The floor under the discovered selector sites. Measured at 47, across 243 covered files, once
+/// the deleted workflows' selectors, then the dead landing/runner scripts and the retired qa soak, left the tree (it read 200 across 245 files before). This is the floor that matters: an empty scan set is the one state in
 /// which "every selector resolves" is true and means nothing.
-pub const SITE_FLOOR: usize = 120;
-/// The shortest exemption reason that is a reason rather than a shrug. `feature-sets`' number.
+pub const SITE_FLOOR: usize = 47;
+/// The shortest exemption reason that is a reason rather than a shrug.
 pub const MIN_REASON: usize = 30;
 
 /// Where a selector was found, and in what shape — carried so a finding cites the line a reader has
@@ -335,7 +335,7 @@ fn segments(line: &str) -> Vec<&str> {
 }
 
 /// The file's lines with backslash continuations JOINED, each paired with the line number the
-/// JOINED command STARTS on. `ci.yml` spreads one `cargo build` over five lines, one `-p` each, and
+/// JOINED command STARTS on. the removed `ci.yml` spreads one `cargo build` over five lines, one `-p` each, and
 /// a scanner that reads lines would see four selectors with no cargo anywhere near them.
 fn logical_lines(text: &str) -> Vec<(usize, String)> {
     let mut out = Vec::new();
@@ -361,7 +361,7 @@ fn logical_lines(text: &str) -> Vec<(usize, String)> {
 /// Whole-line comments only. A shell `#` mid-line is not reliably a comment (`"$#"`, `${x#y}`, a
 /// URL fragment), and the sites this gate exists for are all executable lines anyway — while the
 /// PROSE that would otherwise be reported (the comments recording these very repointings, and
-/// `qa-gate-run.sh`'s note about what the selector used to read) is all whole-line.
+/// the removed `qa-gate-run.sh`'s note about what the selector used to read) is all whole-line.
 fn scan_commands(rel: &str, text: &str, out: &mut Vec<Site>) {
     for (line, joined) in logical_lines(text) {
         if joined.trim_start().starts_with('#') {
@@ -429,9 +429,9 @@ fn scan_matrix(rel: &str, text: &str, out: &mut Vec<Site>) {
 
 /// Rule 3: a Rust string literal that BEGINS with `cargo `.
 ///
-/// `full_gate`'s `CARGO_CI_ONLY` is a list of (command, reason) tuples on ONE line each, and the
-/// reason quotes dead selectors deliberately — `"(It read '-p busbar-core' here for as long as
-/// ci.yml did …)"`. A literal that begins with `cargo ` is a command; one that begins with anything
+/// A list of (command, reason) tuples on ONE line each (a command mirror) carries reasons that
+/// quote dead selectors deliberately — `"(It read '-p busbar-core' here for as long as the old
+/// workflow did …)"`. A literal that begins with `cargo ` is a command; one that begins with anything
 /// else is prose about a command, and prose is out of scope by construction rather than by
 /// allowlist.
 fn scan_rust_commands(rel: &str, text: &str, out: &mut Vec<Site>) {
@@ -661,7 +661,7 @@ impl Gate for PackageSelectorsGate {
                 format!(
                     "{} — `cargo … -p <gone>` does not select nothing, it FAILS: `package ID \
                      specification '<gone>' did not match any packages`. Where the check's pass \
-                     condition is a non-zero exit (scripts/txn-fence.sh) that failure reads as a \
+                     condition is a non-zero exit (cargo xtask txn-fence) that failure reads as a \
                      pass, and where it is a test filter it selects zero tests and exits 0. \
                      Repoint the selector, or write a `{DECL_HASH} <pkg>{SEP}<file>{SEP}<reason>` \
                      line beside it.",
@@ -838,7 +838,7 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
     let target = plant_target(cx);
 
     // THE DEFECT THIS GATE IS NAMED FOR, RE-PLANTED: a command selects a package the workspace does
-    // not have. This is the shape `scripts/txn-fence.sh` carried while reporting a compile fence as
+    // not have. This is the shape `cargo xtask txn-fence` carried while reporting a compile fence as
     // holding over a crate that was never compiled.
     let dead = target.as_ref().map(|(rel, text)| {
         let mut ov = Overlay::new();

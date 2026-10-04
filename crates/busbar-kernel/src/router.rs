@@ -313,7 +313,8 @@ pub fn build_router_with_limits(
     // exercises the whole surface. Production never does this — `build_split_routers_with_limits`
     // mounts admin on its OWN router served on a separate listener. Both planes' plugin routes are
     // mounted here (the combined router IS both listeners).
-    let (router, core_routes) = base_data_router(&plugin_routes, &plane_slots, oauth_as.as_ref());
+    let (router, core_routes) =
+        base_data_router(&plugin_routes, &plane_slots, oauth_as.as_ref(), Vec::new());
     let router = crate::admin::seam::mount_admin(router);
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
@@ -340,6 +341,7 @@ pub(crate) fn base_data_router(
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
     >,
     oauth_as: Option<&std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
 ) -> (
     Router<std::sync::Arc<state::AppHandle>>,
     crate::core_routes::CoreRouteTable,
@@ -450,6 +452,14 @@ pub(crate) fn base_data_router(
             }
         }
     }
+    // THE DOOR PLANES' DATA ROUTES (ARCHITECT Q-SW1, 2026-10-02): every claim of every plane the
+    // composition root serves through its door, handed in at construction and mounted here, ahead of
+    // the protocol fallback, by the same adapter and at the same bar a plane route takes. A claim
+    // carries no slot: its handler holds what it serves.
+    let unslotted: std::sync::Arc<dyn std::any::Any + Send + Sync> = std::sync::Arc::new(());
+    for spec in doors {
+        router = mount_plane_route(router, std::sync::Arc::clone(&unslotted), spec);
+    }
     // THE PLANES' INBOUND WS-ACCEPT ARRIVALS, drained from the neutral substrate registry the
     // composition root installed (`install_ws_arrivals`). Behind the neutral `duplex-ws` feature: the
     // default/shipped money-path build compiles neither this line nor `mount_ws_arrivals`, so the
@@ -462,7 +472,7 @@ pub(crate) fn base_data_router(
     // deployment that is not an authorization server carries no `/authorize`, no `/token`, no
     // metadata document and nothing in the route table. Mounted through the seam
     // (`crate::oauth_as::seam`) rather than a direct `crate::oauth_as::routes::mount` call: the
-    // real mount lives in the sibling `busbar-oauth2` crate, which core cannot name. An
+    // real mount lives in the sibling `busbar-core-oauth2` crate, which core cannot name. An
     // unregistered seam (only busbar-core's own test binary) behaves exactly as `None` did before
     // the extraction — this binary never configures `oauth_as:` either, so the two states agree.
     let router = match crate::oauth_as::seam::seam() {
@@ -1039,6 +1049,26 @@ pub fn build_split_routers_with_limits(
     max_inbound_concurrent: usize,
     server_timing_enabled: bool,
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
+    build_split_routers_serving(
+        app,
+        Vec::new(),
+        request_body_max_bytes,
+        max_inbound_concurrent,
+        server_timing_enabled,
+    )
+}
+
+/// [`build_split_routers_with_limits`], with the data routes of the planes the composition root
+/// serves through their doors (`doors`, one per claim) mounted on the data router ahead of the
+/// protocol fallback: the route install is the router's construction, never a mutation once it is built
+/// (ARCHITECT Q-SW1, 2026-10-02).
+pub fn build_split_routers_serving(
+    app: std::sync::Arc<state::App>,
+    doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
+    request_body_max_bytes: usize,
+    max_inbound_concurrent: usize,
+    server_timing_enabled: bool,
+) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
     // Capture the plugin route table before `app` moves into the handle.
     let plugin_routes = app.plugin_routes.clone();
     let plane_slots = app.plane_slots.clone();
@@ -1047,7 +1077,7 @@ pub fn build_split_routers_with_limits(
     // DATA plane: protocols + health/metrics/stats + the `none`/`key`-auth plugin routes, NO admin
     // mount and NO admin-auth plugin routes (those are physically absent from the data listener).
     let (data, data_core_routes) =
-        base_data_router(&plugin_routes, &plane_slots, oauth_as.as_ref());
+        base_data_router(&plugin_routes, &plane_slots, oauth_as.as_ref(), doors);
     let data = apply_common_layers(
         data,
         data_core_routes,
@@ -1134,3 +1164,7 @@ pub(crate) fn apply_inbound_concurrency_limit(
 #[cfg(test)]
 #[path = "tests/router_doc_tests.rs"]
 mod router_doc_tests;
+
+#[cfg(test)]
+#[path = "tests/router_door_tests.rs"]
+mod router_door_tests;

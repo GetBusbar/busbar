@@ -132,6 +132,12 @@ pub mod check;
 pub mod fields;
 pub mod route;
 
+/// THE AUTH POINTS a transport offers and calls its bound auth at (THE DESIGN, "Auth points
+/// and guest lists", step 1): defined once in `abi::auth`, referred to here, never redefined.
+pub use super::auth::{
+    AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER,
+};
+
 use super::mechanism::call::{AbiStr, Field, InHead, Op, OutHead};
 use super::mechanism::check::{contract, OpContract};
 use super::mechanism::door::KindTailHead;
@@ -379,6 +385,18 @@ pub const PIECE_FIELDS: u16 = 16;
 /// piece of the block began (a sink too small for the block split it mid-line). A fields piece
 /// without it starts a line.
 pub const PIECE_CONTINUED: u16 = 32;
+
+/// [`FramePiece::flags`]: the piece's bytes belong to a TEXT message, not a binary one, on a wire
+/// whose messages are one or the other (ws's TEXT and BINARY opcodes). Absent means binary, the
+/// meaning every framer that never sets it keeps. On every message-bearing piece (`len > 0`) of a
+/// text message; never on an empty piece, a field block or a failed stream's reason. The host reads
+/// it into `FrameMeta::text`, the bit's one home above the ABI.
+pub const PIECE_TEXT: u16 = 64;
+
+/// [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are
+/// one or the other (ws sends them under its TEXT opcode); read on the call that completes the
+/// frame. Absent means binary. The outbound twin of [`PIECE_TEXT`].
+pub const EMIT_TEXT: u32 = 1;
 
 /// [`FramerYield::flags`]: no frame follows on this connection.
 pub const YIELD_ENDED: u32 = 1;
@@ -936,8 +954,8 @@ pub struct EmitIn {
     pub len: usize,
     /// `1` = they complete the frame.
     pub end_of_frame: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// `EMIT_*` bits: [`EMIT_TEXT`].
+    pub flags: u32,
     /// The sink.
     pub sink: FramerSink,
     /// The monotonic instant this stream's ATTEMPT must be over by, response body included: one

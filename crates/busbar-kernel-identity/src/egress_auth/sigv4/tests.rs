@@ -199,3 +199,18 @@ fn split_credential_takes_the_first_two_colons_and_refuses_a_missing_half() {
         assert_eq!(split_credential(refused), None, "{refused:?}");
     }
 }
+
+/// The signer's primitives moved from RustCrypto (`sha2` + `hmac`) to ring (ONE crypto backend =
+/// ring). A SigV4 signature is a byte string AWS recomputes, so the primitives must be bit-identical:
+/// RFC 4231 test case 2 for HMAC-SHA256 and the FIPS 180-2 "abc" vector for SHA-256.
+#[test]
+fn the_sigv4_primitives_are_byte_identical_on_ring() {
+    assert_eq!(
+        hex::encode(hmac(b"Jefe", b"what do ya want for nothing?")),
+        "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+    );
+    assert_eq!(
+        sha256_hex(b"abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+}

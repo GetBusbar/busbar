@@ -23,7 +23,7 @@
 //! produces. **What a plugin owns:** what a CANDIDATE is ([`Candidate`]), what makes two of them
 //! interchangeable (the pin it hands back from [`Candidate::interchange_key`]), the ORDER they are
 //! offered in ([`Order`]) and which admission primitive its dispatch needs — and nothing else.
-//! [`crate::egress_auth::gate`] is the precedent this copies rather
+//! `busbar_kernel_scope::egress` is the precedent this copies rather
 //! than a new idea: a plugin supplies a grant kind and keeps its refusal wording; it does not keep its
 //! own decision. [`crate::audit`] is the nearer one still: core owns the mechanism, a stream supplies
 //! one record type.
@@ -204,9 +204,8 @@ impl CandidatePoolCfg {
 // No production caller now: both planes drive [`walk_with`] with the host `breaker_admit` seam
 // directly (CLUSTER-1), so the breaker-only spelling survives only for the failover unit tests, which
 // drive it under `#[cfg(test)]`.
-// `pub` (was `pub(crate)`): a disposition half a plane's relocating engine drives — surfaced through
-// `crate::engine_facade` (Phase-0 visibility lift; pure visibility). A `pub` fn is never dead, so the
-// `not(test)` dead-code allow is now a harmless no-op the Phase-6 tighten-back will drop.
+// `pub` (was `pub(crate)`): a disposition half a plane's relocating engine drives. A `pub` fn is
+// never dead, so the `not(test)` dead-code allow is a harmless no-op the Phase-6 tighten-back drops.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn walk<'a, C: Candidate>(
     store: &dyn LaneRuntime,
@@ -239,8 +238,7 @@ pub fn walk<'a, C: Candidate>(
 ///
 /// Returns the [`crate::breaker::Disposition`] taken, so a plane can shape its own answer without
 /// re-deciding it.
-// `pub` (was `pub(crate)`): the disposition writer the relocated engine records through —
-// surfaced via `crate::engine_facade` (Phase-0). Its `cfg: &busbar_kernel::store::BreakerCfg` arg names a
+// `pub` (was `pub(crate)`): the disposition writer the relocated engine records through. Its `cfg: &busbar_kernel::store::BreakerCfg` arg names a
 // still-crate-private carrier the engine passes back verbatim, so a narrow `#[allow(private_interfaces)]`
 // keeps `BreakerCfg` `pub(crate)` (reversible in Phase 6).
 #[allow(private_interfaces)]
@@ -296,8 +294,7 @@ pub fn record_outcome<C: Candidate>(
 
 /// The success half of [`record_outcome`], kept separate because a success closes a HalfOpen cell and
 /// resets its accumulator, and that is a different write from any failure.
-// `pub` (was `pub(crate)`): the success half of `record_outcome`, surfaced via `crate::engine_facade`
-// (Phase-0 visibility lift). Signature names only `pub`/neutral types, so no leak allow is needed.
+// `pub` (was `pub(crate)`): the success half of `record_outcome`. Signature names only `pub`/neutral types, so no leak allow is needed.
 #[cfg_attr(not(test), allow(dead_code))] // twin of `record_outcome`'s allow, same argument.
 pub fn record_success<C: Candidate>(store: &dyn LaneRuntime, pool: &str, candidate: &C) {
     store.record_success_in(pool, candidate.lane());

@@ -91,11 +91,11 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 pub mod approvals;
-pub mod auditlog;
 pub mod config;
-pub mod cost;
 pub mod observe;
 pub(crate) mod quarantine;
+/// The durable demotion record, which the root attaches to the kernel's host services.
+pub use quarantine::DemotionRecord;
 pub mod registry;
 // `store` is a core-internal plane primitive. Its module is widened to `pub` ONLY under the
 // test-support surface so an extracted plane's own test binary can name the durable-body

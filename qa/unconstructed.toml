@@ -202,10 +202,9 @@ why       = "Every deployed node seals an audit chain and ledger checkpoints; wi
 # MONEY — `hold-late-accrual-parent-exit` STRUCK 2026-09-26 (UC-HOLD, owner ruling Q71(4)): the
 # loop's one terminal (`crates/busbar-kernel/src/teller.rs` → `at_parent_exit`) converts a child's
 # accrual to its own hold when the parent's cell is already taken at the child's end — sized by the
-# door (`Units::at_parent_exit`; the budget door's `AdmissionUnit::at_parent_exit` draws it against
-# the slice and refuses on the budget block where the slice cannot back it) and swapped into the
-# child's cell, so the exit settles it against a reservation instead of posting it late against
-# nothing. A refused child ends `Failed(Admit, OverBudget)` and its accrual still posts, late.
+# door (`Units::at_parent_exit`; busbar-kernel-budget's copy of it, which had no production caller,
+# is deleted with its crate, ARCHITECT ruling 2026-09-30) and swapped into the child's cell, so
+# the exit settles it against a reservation instead of posting it late against nothing. A refused child ends `Failed(Admit, OverBudget)` and its accrual still posts, late.
 
 # MONEY — `rate-card-multi-currency` STRUCK 2026-09-25 (UC-STRIKE, #66 OWNER-LOCKED + spec Q4 "no
 # currency"): the mutators `RateCard::set_rate`/`set_fee` had no production caller and are DELETED —

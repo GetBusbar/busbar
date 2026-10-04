@@ -284,7 +284,7 @@ pub struct AmendChain {
     next_seq: u64,
 }
 
-/// HAND-WRITTEN, and it must stay that way — the same reason the previous release's chain writes its
+/// HAND-WRITTEN, and it must stay that way — the same reason the retired admin chain writes its
 /// own: a DERIVED default gives a next position of zero, which is not a position a chain has, and
 /// the position is DIGESTED here, so a silently zero-based chain would seal amendments that a
 /// verifier walking from one rejects. It delegates to the one real constructor so the two cannot
@@ -341,7 +341,7 @@ impl AmendChain {
 
     /// Recompute one amendment's digest from its own fields.
     ///
-    /// Length-prefixed, like the fixed audit record and unlike the previous release's chain: nothing
+    /// Length-prefixed, like the fixed audit record and unlike the retired admin chain: nothing
     /// here is already on anybody's disk, so the framing is chosen for the property rather than
     /// inherited for compatibility.
     ///
@@ -353,7 +353,7 @@ impl AmendChain {
     /// than one for the reason the record gives: a principal whose pseudonym happened to read as
     /// "node" must not digest as a node.
     pub fn digest_of(amendment: &Amendment) -> String {
-        let mut d = crate::legacy::Digest::new(crate::legacy::Framing::LengthPrefixed);
+        let mut d = crate::digest::Digest::new(crate::digest::Framing::LengthPrefixed);
         d.text(&amendment.prev_hash);
         d.num(amendment.seq);
         d.text(amendment.class().as_str());
@@ -683,7 +683,7 @@ fn node() -> std::sync::MutexGuard<'static, AmendJournal> {
 
 /// WHERE THE NODE JOURNAL'S AMENDMENTS ARE MADE DURABLE: handed every amendment the node journal
 /// seals, in chain order, as it is sealed. The composition root binds one over its own journal;
-/// with none bound the node journal is memory-only, the previous release's shape.
+/// with none bound the node journal is memory-only, the retired shape.
 ///
 /// Called with the node journal's lock held — that is what keeps what reaches the sink in chain
 /// order with no gap — so an implementation must never seal an amendment itself, and no caller

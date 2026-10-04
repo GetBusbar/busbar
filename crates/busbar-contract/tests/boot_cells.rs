@@ -138,7 +138,8 @@ fn every_rung_of_the_ladder_routes() {
     }
 }
 
-/// Every rung is a well-formed claim, and every claim overlaps itself.
+/// Every rung is a well-formed claim, and every claim's selector overlaps itself (whether two CLAIMS
+/// collide, binding and schemes included, is the kernel registry's `claims_overlap`).
 #[test]
 fn every_rung_is_a_claim_that_a_boot_would_check() {
     for rung in ladder() {
@@ -150,7 +151,7 @@ fn every_rung_is_a_claim_that_a_boot_would_check() {
             idempotency: None,
         };
         assert!(
-            claim.overlaps(&claim),
+            claim.selector.overlaps(&claim.selector),
             "the rung for {} does not overlap itself",
             rung.what
         );

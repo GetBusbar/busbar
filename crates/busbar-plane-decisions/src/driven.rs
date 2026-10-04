@@ -63,8 +63,26 @@ pub mod tail {
     /// The one dialect this plane speaks. Dialect index 0 everywhere below.
     pub const DIALECTS: &[&str] = &[config::PROTOCOL];
 
+    /// The outbound auth style a jev far end is reached under: the operator's credential as a
+    /// bearer (the signed design: "auth = core gateway credential, plane returns a
+    /// CredentialLocator, never sees the secret").
+    pub const OUTBOUND_STYLE: &str = "bearer";
+
+    /// Each dialect's default outbound auth style, `(dialect index, style)` (the design, "Outbound auth", step 2:
+    /// a provider entry's `auth:`, else this; ARCHITECT Q-L1-AUTH (A), 2026-10-03).
+    pub const DIALECT_AUTH: &[(u32, &str)] = &[(0, OUTBOUND_STYLE)];
+
     /// The resource granularity a grant names: a configured decision provider.
     pub const SCOPE_KINDS: &[&str] = &["decision_provider"];
+
+    /// What one registration on this plane is called.
+    pub const SUBJECT_NOUN: &str = "decision provider";
+
+    /// The singular noun for one registration in admin responses.
+    pub const ADMIN_NOUN: &str = "decision-provider";
+
+    /// The record resource kind a registration is audited under: the scope kind.
+    pub const AUDIT_KIND: &str = SCOPE_KINDS[0];
 
     /// The op classes this plane serves, in index order. `systemone` alone (see the module doc).
     pub const OP_CLASSES: &[OpClassId] = &[ops::OP_SYSTEMONE];
@@ -79,9 +97,10 @@ pub mod tail {
     /// own decision count.
     pub const FEE_UNITS: &[&str] = &[];
 
-    /// The connection needs, `(transport, auth)`, for the far-end direction. The plane names the
-    /// auth scheme and never holds what is behind it.
-    pub const NEEDS: &[(&str, &str)] = &[(claims::TRANSPORT, super::EGRESS_SCHEME)];
+    /// The connection needs, `(transport, auth)`, for the far-end direction: its dialect's style, the
+    /// one a member resolves to by default (a member is bound on the need its resolved style names).
+    /// The plane names the style and never holds what is behind it.
+    pub const NEEDS: &[(&str, &str)] = &[(claims::TRANSPORT, OUTBOUND_STYLE)];
 
     /// The claims the generation snapshot publishes, `(verb, target)`.
     pub const CLAIMS: &[(&str, &str)] = &[("POST", ops::PATH_SYSTEMONE)];
@@ -174,9 +193,11 @@ pub struct FarEndRequest<'a> {
 }
 
 /// Answer an ATTEMPT piece: the same request on every attempt, whichever member the kernel picked.
-/// jev names no provider on the wire, so the member changes nothing in the request.
+/// jev names no provider on the wire, so the member changes nothing in the request. Named
+/// `attempt_request`, not `attempt`, so it is not a cross-plane re-spelling of llm/a2a's `attempt`
+/// (structure-lint plane-dup; ARCHITECT ruling 2b 2026-10-04).
 #[must_use]
-pub fn attempt(caller_body: &[u8]) -> FarEndRequest<'_> {
+pub fn attempt_request(caller_body: &[u8]) -> FarEndRequest<'_> {
     FarEndRequest {
         verb: "POST",
         target: ops::PATH_SYSTEMONE,
@@ -220,27 +241,24 @@ impl FarEndReading {
         bytes
     }
 
-    /// The units the far end reported, read at the last piece.
-    ///
-    /// A count is reported only for a successful answer (a 2xx status and no `/error` member)
-    /// whose `/usage/units` is a whole number. An error answer, or a count that is missing,
-    /// negative or fractional, reports nothing.
-    ///
-    /// NOT YET THE LIVE DECODE, and it must be before the driver goes live: the served count must
-    /// match predev's `Plane::decode_response` + `meter` byte for byte. Two known differences:
-    /// this reading accepts a count above `i64::MAX`, where `decode_response` drops it (its
-    /// `i64::try_from`) and `meter` falls back to a locator; and this reading requires a 2xx
-    /// status, where `decode_response` judges success by the `/error` member alone.
+    /// The units the far end reported, read at the last piece, by the rule the plane's
+    /// `decode_response` reads them (`plane.rs`): a count is reported only for an answer with no
+    /// `/error` member, whose `/usage/units` is a whole number a signed 64-bit count holds. An
+    /// error answer, or a count that is missing, negative, fractional or past `i64::MAX`, reports
+    /// nothing. The status plays no part: `decode_response` judges success by the `/error` member
+    /// alone.
     #[must_use]
-    pub fn units(&self, status: u16) -> Option<Units> {
-        if !(200..300).contains(&status) || codec::has(&self.body, PTR_ERROR) {
+    pub fn units(&self) -> Option<Units> {
+        if codec::has(&self.body, PTR_ERROR) {
             return None;
         }
-        codec::read_u64(&self.body, PTR_USAGE_UNITS).map(|amount| Units {
-            class: tail::CLASS_DECISION_INDEX,
-            reported: true,
-            amount,
-        })
+        codec::read_u64(&self.body, PTR_USAGE_UNITS)
+            .filter(|amount| i64::try_from(*amount).is_ok())
+            .map(|amount| Units {
+                class: tail::CLASS_DECISION_INDEX,
+                reported: true,
+                amount,
+            })
     }
 }
 

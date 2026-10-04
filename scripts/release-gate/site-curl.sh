@@ -15,7 +15,7 @@
 #     shared self-hosted runner cannot read it;
 #   * SITE_VERIFY_TOKEN empty -> an ::error:: naming it and the Q39 rule, exit 125, and NO request
 #     is made. Never a silent unauthenticated fallback: that is the 403 this exists to end.
-# THIS FILE IS THE ONE DEFINITION. verify-deploy.yml checks nothing out, so its jobs write a
+# THIS FILE IS THE ONE DEFINITION. the removed verify-deploy.yml checks nothing out, so its jobs write a
 # verbatim copy from a heredoc; .github/workflows/lint/workflow-invariants.py (check q39) fails the
 # moment a copy drifts from this file.
 

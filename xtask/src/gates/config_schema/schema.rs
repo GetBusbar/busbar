@@ -164,8 +164,14 @@ pub fn core_roots(cx: &Ctx) -> Result<Vec<String>, String> {
         // the admin crate's source layout around a fingerprint it was never part of. If
         // `busbar-core-admin` ever grows real operator-config grammar, give it a `config/`
         // submodule (the established escape) and delete this exclusion.
+        //
+        // `busbar-core-oauth2` is the SECOND named exception, for the same reason: it is the
+        // authorization-server plane (routes, consent screen, signer), not a slice of the config
+        // drain, and its `Deserialize` types (`ConsentForm`, `ConsentQuery`) are HTTP request
+        // shapes. It was `busbar-oauth2` and outside the prefix until the P5 rename put it inside.
         if (name == "busbar-kernel" || name == "busbar-core" || name.starts_with("busbar-core-"))
             && name != "busbar-core-admin"
+            && name != "busbar-core-oauth2"
         {
             roots.push(format!("{dir}/src"));
         }
@@ -311,7 +317,7 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         format!("{a2a}/config.rs"),
         // `oauth_as:` — including the `default_grant` CEILING that decides what a self-registered
         // client may ever hold.
-        core_file(cx, &core, "oauth_as/config.rs")?,
+        "crates/busbar-core-oauth2/src/config.rs".to_string(),
         format!("{a2a}/creds.rs"),
         format!("{mcp}/config.rs"),
         // `tool_pools:` / `agent_pools:` — one type, two sections, and `repeatable:` is the SAFETY

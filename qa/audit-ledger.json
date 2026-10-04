@@ -13,10 +13,6 @@
    "reason": "crate manifest -- governed by workspace-deps-lint, not a code audit"
   },
   {
-   "glob": "crates/*/Cargo.lock",
-   "reason": "resolved lockfile -- governed by the build gates, not a code audit"
-  },
-  {
    "glob": "crates/*/fixtures/**",
    "reason": "fixture inputs a crate's own gate reads; not shipped code"
   },
@@ -347,24 +343,6 @@
    ]
   },
   {
-   "id": "crates/busbar-kernel-budget/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-kernel-budget/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-kernel-budget/src/tests"
-   ]
-  },
-  {
    "id": "crates/busbar-kernel-egress/src",
    "kind": "production",
    "paths": [
@@ -506,10 +484,10 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-oauth2/src",
+   "id": "crates/busbar-core-oauth2/src",
    "kind": "production",
    "paths": [
-    "crates/busbar-oauth2/src"
+    "crates/busbar-core-oauth2/src"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -520,7 +498,7 @@
    "auditor": null,
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-oauth2/src/tests"
+    "crates/busbar-core-oauth2/src/tests"
    ]
   },
   {
@@ -614,24 +592,6 @@
    ]
   },
   {
-   "id": "crates/busbar-transport-http/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-transport-http/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-transport-http/src/tests"
-   ]
-  },
-  {
    "id": "crates/busbar-transport-stdio/src",
    "kind": "production",
    "paths": [
@@ -647,42 +607,6 @@
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-stdio/src/tests"
-   ]
-  },
-  {
-   "id": "crates/busbar-transport-tcp/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-transport-tcp/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-transport-tcp/src/tests"
-   ]
-  },
-  {
-   "id": "crates/busbar-transport-ws/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-transport-ws/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-transport-ws/src/tests"
    ]
   },
   {
@@ -1052,21 +976,6 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-kernel-budget/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-kernel-budget/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
    "id": "crates/busbar-kernel-egress/src/tests",
    "kind": "test",
    "paths": [
@@ -1217,10 +1126,10 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-oauth2/src/tests",
+   "id": "crates/busbar-core-oauth2/src/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-oauth2/src/tests"
+    "crates/busbar-core-oauth2/src/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -1367,36 +1276,6 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-transport-http/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-transport-http/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-transport-http/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-transport-http/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
    "id": "crates/busbar-transport-stdio/src/tests",
    "kind": "test",
    "paths": [
@@ -1416,51 +1295,6 @@
    "kind": "test",
    "paths": [
     "crates/busbar-transport-stdio/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-transport-tcp/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-transport-tcp/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-transport-ws/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-transport-ws/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-transport-ws/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-transport-ws/tests"
    ],
    "tree_hash": null,
    "audited_at": null,

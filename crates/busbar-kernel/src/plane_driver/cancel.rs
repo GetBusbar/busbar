@@ -22,7 +22,6 @@ use busbar_contract::abi::mechanism::call::Outcome as AbiOutcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     cancel_bills_reported_units, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL,
-    UNITS_REPORTED,
 };
 use busbar_contract::caps::ReasonCode;
 use busbar_contract::plane_calls::PieceInFlight;
@@ -45,8 +44,8 @@ pub enum Checkpoint {
 /// units, cancel bills and abandoned ends here, and nothing else.
 pub trait MoneySeam: Send + Sync {
     /// Every READY answer's cumulative units, as the plane reported them (estimated and reported
-    /// alike; only [`UNITS_REPORTED`] ever bills). Feeds the budget check and the checkpoint
-    /// cadence.
+    /// alike; only a source [`units_bill`](busbar_contract::abi::plane::units_bill) passes ever
+    /// bills). Feeds the budget check and the checkpoint cadence.
     fn checkpoint(&self, ctx: &UnitCtx, units: &[UnitCount]) -> Checkpoint;
 
     /// A cancelled unit's bill, by the four 1.5.5 cancel rules.
@@ -70,6 +69,20 @@ pub trait MoneySeam: Send + Sync {
     /// money steps exactly as a returned end is. Runs inside a `Drop`: it must not panic, await or
     /// cross a plugin.
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended);
+
+    /// A duplex session opens under its unit's one admission (THE DESIGN §7: the kernel's session
+    /// account, one sealed line at the end). REFUSES by default: session money is K6-4's, and until
+    /// a money seam states it no session runs unbilled.
+    fn session_opened(&self, ctx: &UnitCtx) -> Result<(), ReasonCode> {
+        let _ = ctx;
+        Err(ReasonCode::Unpriced)
+    }
+
+    /// The session's one cleanup ran: it is over. Runs inside a `Drop`: it must not panic, await
+    /// or cross a plugin.
+    fn session_ended(&self, ctx: &UnitCtx) {
+        let _ = ctx;
+    }
 }
 
 /// The driver's own facts about a unit (never the plane's word alone).
@@ -111,12 +124,7 @@ impl CancelBill {
         // streamed, and the plane's partial counts only if the far end did answer.
         let bills =
             facts.far_end_answered && cancel_bills_reported_units(disposition, facts.streamed);
-        let billed = facts
-            .units
-            .iter()
-            .filter(|u| bills && u.source == UNITS_REPORTED)
-            .map(|u| (u.class, u.amount))
-            .collect();
+        let billed = super::money::reported(if bills { &facts.units[..] } else { &[] });
         CancelBill {
             cause,
             disposition,

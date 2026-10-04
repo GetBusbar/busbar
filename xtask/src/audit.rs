@@ -136,10 +136,6 @@ pub const UNCOVERED_BY_DESIGN: &[(&str, &str)] = &[
         "crates/*/Cargo.toml",
         "crate manifest -- governed by workspace-deps-lint, not a code audit",
     ),
-    (
-        "crates/*/Cargo.lock",
-        "resolved lockfile -- governed by the build gates, not a code audit",
-    ),
     // qa-names: crates/*/fixtures/** -- xtask/src/audit.rs -- an EXCLUSION matching nothing excludes nothing, so it is rot and not blindness; no crate has a fixtures/ dir at its root any more (the surviving ones are nested under src/), and striking the row regenerates the committed register copy, which is a separate reviewed act
     (
         "crates/*/fixtures/**",
@@ -286,13 +282,12 @@ impl Git {
     /// — `git ls-remote origin 'refs/audit-pins/*'` returns nothing — so on the runner the pin set
     /// was EMPTY and `reachable()` degenerated to "an ancestor of HEAD". Measured on this base: 13
     /// of the 23 `audited_at` commits are not ancestors of HEAD and were green only because of pin
-    /// refs that exist in one working copy on one laptop. In `ci.yml`'s blocking audit-ledger job
+    /// refs that exist in one working copy on one laptop. In a runner's blocking audit-ledger run
     /// all 13 would have been RED. The mirror was being pushed to `refs/backup/audit-pins/*`, a
     /// namespace this function never read.
     ///
-    /// Reading both is half the fix; the other half is the workflows fetching the backup namespace
-    /// before the job runs, which is why `ci.yml` and `keep-proof.yml` now carry
-    /// `git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*'`.
+    /// Reading both is half the fix; the other half is the runner fetching the backup namespace
+    /// before the gate runs: `git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*'`.
     pub fn audit_pins(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for ns in Self::PIN_NAMESPACES {

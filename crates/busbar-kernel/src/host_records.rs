@@ -17,6 +17,17 @@
 //!   once the store took it ([`Acked`]): a write is durable before its writer hears so, as the
 //!   durable handle engine's write-through is. A write the store refuses answers FAILED and leaves
 //!   the overlay.
+//! * THE BOUNDS (ruling H2 U10): at most [`QUEUE_CAP`] writes wait (a write past it is refused,
+//!   and fails the op that carried it), at most [`BATCH_CAP`] cross in one batch, and a flush the
+//!   pool refused is restarted within [`FLUSH_INTERVAL`] by the kernel's cadence
+//!   (`KernelServices::flushes`), never left to wait on a later write.
+//! * THE CRASH WINDOW: what a crash loses is exactly the queued writes (at most [`QUEUE_CAP`]), and
+//!   none of them was answered: the op that carried each never completed, so no caller was told it
+//!   was kept. Every answered write is in the store. A graceful stop drains the queue
+//!   (`KernelServices::drain`, under its own deadline, so a hung store cannot hold the stop).
+//! * NEVER BEHIND: `records.claim` (approval redemption, replay refusal, idempotency) is the store's
+//!   own one-time put, answered only after the store decided it; it never joins this queue. Money
+//!   writes do not reach this path at all.
 //! * [`record_key`] scopes every stored key by the instance's LABEL: two instances declaring one
 //!   kind (of one plugin or of two) never read or write each other's records.
 //! * The list rule, laying the overlay over the store's rows, is the contract's
@@ -156,8 +167,8 @@ impl PendingRecords {
 pub const BATCH_CAP: usize = 256;
 /// The most writes that wait for the store; a write past it is refused.
 pub const QUEUE_CAP: usize = 4096;
-/// How often the kernel tick restarts a flush that did not run (its pool refused it), so a queued
-/// write is never left waiting on the next write.
+/// How often the kernel's flush cadence (`KernelServices::flushes`) restarts a flush that did not
+/// run (its pool refused it), so a queued write is never left waiting on the next write.
 pub const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Where a record write's answer goes, once: `Ok` when the store took it, or the refusal.

@@ -387,3 +387,65 @@ fn translate_anthropic_onto_openai(
     .expect("the request forwards");
     serde_json::from_slice(&out).unwrap()
 }
+
+/// THE ONE DROP PATH reaches the audit (design F3 "Drops"): a cross-dialect request member the far
+/// end's dialect cannot carry — an unmapped top-level member, a content part of a kind it has no
+/// form for — still forwards, and each is recorded as a `degraded` audit event naming its WIRE PATH.
+/// Nothing stands in for the dropped part.
+#[test]
+fn openai_to_anthropic_unmapped_members_are_audited_by_wire_path() {
+    crate::testkit::install_test_seams();
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            "claude-3-5-sonnet",
+            crate::proto_codec::PROTO_ANTHROPIC,
+            "http://unused.local",
+        ))
+        .build();
+    let body = json!({
+        "model": "gpt-4o",
+        "logit_bias": {"50256": -100},
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "hi"},
+            {"type": "x_future_part", "x": 1}
+        ]}]
+    });
+    let hop_bytes = bytes::Bytes::from(busbar_plane_llm::codec::json::to_vec(&body).unwrap());
+    let caller = "test-key-anthropic-drop-paths";
+    let (host, rt) = crate::engine::test_host_rt(&app);
+    let out = translate_request_cross_protocol(
+        &host,
+        &rt,
+        0,
+        "openai",
+        chat("openai", http()),
+        Some(body),
+        crate::engine::APPLICATION_JSON,
+        true,
+        &hop_bytes,
+        caller,
+    );
+    let bytes = out.expect("audit-and-allow: the dropped members must not refuse the request");
+    let rebuilt: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        rebuilt
+            .pointer("/messages/0/content")
+            .and_then(|c| c.as_array())
+            .map(Vec::len),
+        Some(1),
+        "the unknown part is dropped, not replaced: {rebuilt}"
+    );
+    let entries = crate::test_support::engine_kit::CORE_ENGINE_KIT.audit_entries();
+    for resource in [
+        "logit_bias on anthropic",
+        "messages[].content[].type=x_future_part on anthropic",
+    ] {
+        assert!(
+            entries.iter().any(|e| e.principal == caller
+                && e.action == "egress.control_unrepresentable"
+                && e.outcome == "degraded"
+                && e.resource == resource),
+            "a `degraded` audit event must name `{resource}`"
+        );
+    }
+}

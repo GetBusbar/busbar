@@ -27,12 +27,10 @@ impl GovState {
     /// signing-key seed. The HMAC output is a mint-time id selector (see the block comment); it is
     /// NEVER the credential and is never recomputed on the verify path.
     fn derive_self_subject(seed: &[u8; 32], user_sub: &str, epoch: u64) -> String {
-        use hmac::{Hmac, KeyInit, Mac};
-        let mut mac = <Hmac<sha2::Sha256>>::new_from_slice(seed)
-            .expect("HMAC-SHA256 accepts a key of any length");
-        mac.update(format!("{SELF_KEY_GROUP_PREFIX}{user_sub}#{epoch}").as_bytes());
-        let tag = mac.finalize().into_bytes();
-        format!("{VK_ID_PREFIX}{}", hex::encode(&tag[..16]))
+        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, seed);
+        let msg = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}#{epoch}");
+        let tag = ring::hmac::sign(&key, msg.as_bytes());
+        format!("{VK_ID_PREFIX}{}", hex::encode(&tag.as_ref()[..16]))
     }
 
     /// The current ENABLED self-serve binding for `user_sub` (group `user:<sub>`), if any. At most

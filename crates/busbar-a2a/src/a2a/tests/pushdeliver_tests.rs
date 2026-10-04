@@ -73,7 +73,7 @@ impl RelayTransport for RecordingTransport {
         addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],
-    ) -> Result<HttpResponse, String> {
+    ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
         self.log
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -886,7 +886,7 @@ impl RelayTransport for ScriptedTransport {
         _addr: IpAddr,
         _headers: &[(String, String)],
         body: &[u8],
-    ) -> Result<HttpResponse, String> {
+    ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
         let n = self.posts.fetch_add(1, Ordering::SeqCst);
         if let (0, Some(gate)) = (n, &self.first_post) {
             gate.wait_open();
@@ -901,7 +901,7 @@ impl RelayTransport for ScriptedTransport {
                 status: *status,
                 ..Default::default()
             }),
-            Err(e) => Err(e.clone()),
+            Err(e) => Err(e.clone().into()),
         }
     }
 

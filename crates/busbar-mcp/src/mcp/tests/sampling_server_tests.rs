@@ -6,7 +6,7 @@
 //! refusals that name that plane read its DECLARED display name, and a registry where no plane
 //! declares the class refuses exactly as a deployment with no such plane always has.
 
-use super::{complete, completion_server, NO_COMPLETION_SERVER};
+use super::{complete, completion_server, refusal_text, CompletionRefusal, NO_COMPLETION_SERVER};
 use crate::mcp::inputreq::Refusal;
 use crate::mcp::test_engine::*;
 use busbar_contract::plane::{PlaneDeclaration, ServedOpClass};
@@ -139,5 +139,22 @@ async fn a_plane_that_does_not_declare_the_class_answers_no_sampling_ask() {
              budget: group `agents` requests/minute cap reached. A tool call is charged on your \
              budget, so a runaway loop stops when the budget stops it."
         )
+    );
+}
+
+/// THE HOST NAMES THE FACT, THIS PLANE WORDS IT (lean-core). The host's completion seam returns a
+/// neutral [`CompletionRefusal`]; the words a sampling ask is refused in live here, byte for byte
+/// what the seam used to return as text.
+#[test]
+fn the_hosts_neutral_completion_refusals_read_in_this_planes_words() {
+    assert_eq!(
+        refusal_text(CompletionRefusal::NotInstalled),
+        "no default chat protocol is installed"
+    );
+    assert_eq!(
+        refusal_text(CompletionRefusal::BodyUnread(
+            "length limit exceeded".to_string()
+        )),
+        "the sampling completion's body could not be read: length limit exceeded"
     );
 }

@@ -34,8 +34,7 @@ use serde::{Deserialize, Serialize};
 /// A REMOVED wire token is a breaking payload change, so the floor moves rather than accepting a
 /// token the engine can no longer route. This is the per-kind PAYLOAD axis, NOT the transport axis
 /// — an export plugin exports the SAME six neutral symbols ([`crate::abi::cold::symbol`]) as every other kind, at
-/// `busbar_abi() == TRANSPORT_VERSION`. Named the same way [`crate::abi::cold::SECRET_ABI_VERSION`] and
-/// [`crate::abi::cold::hook::HOOK_ABI_VERSION`] are, so the loader floor and the SDK's declared version share one
+/// `busbar_abi() == TRANSPORT_VERSION`. Named the same way [`crate::abi::cold::SECRET_ABI_VERSION`] is, so the loader floor and the SDK's declared version share one
 /// const and cannot silently drift apart.
 ///
 /// v2 -> v3 (1.6.0, DECISIONS #85 — THE OBSERVABILITY ENVELOPE): an export response is now
@@ -408,8 +407,8 @@ pub struct RotationFault {
 /// sink that genuinely errored) rides `STATUS_ERR` with a UTF-8 message, NOT here.
 ///
 /// UNLIKE [`ExportRequest`] (`op`-tagged, snake_case), this type carries NO `#[serde(...)]` attribute,
-/// so it serializes with serde's default externally-tagged representation — the SAME asymmetry
-/// [`crate::abi::cold::hook::HookReply`] carries and for the same reason: this is JSON over the frozen C-ABI
+/// so it serializes with serde's default externally-tagged representation — the same externally-tagged
+/// shape the auth reply carries, and for the same reason: this is JSON over the frozen C-ABI
 /// transport, so a tagging change is a wire-breaking change, not a cosmetic one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ExportResponse {

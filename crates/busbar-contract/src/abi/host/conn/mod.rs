@@ -209,12 +209,16 @@ pub const PIECE_HAS_CODE: u8 = 1;
 /// [`WirePiece::flags`]: the retry-after is present.
 pub const PIECE_HAS_RETRY_AFTER: u8 = 2;
 
+/// The `write` slot's `end` byte: the bytes are a text message ([`Conns::write`]'s `text`).
+pub const WRITE_TEXT: u8 = 2;
+
 slot_table! {
 /// THE CONNECTION TABLE: one slot per [`Conns`] method, named for it.
 pub struct ConnSlots lowers Conns -> RawConnOutcome {
     /// [`Conns::open`]: writes the connection.
     open: ConnOpenFn = fn(ctx: ConnCtx, need: u32, desc: *const WireOpenDesc, out_conn: *mut u64);
-    /// [`Conns::write`]: writes how many were taken.
+    /// [`Conns::write`]: writes how many were taken. `end` is `0`/`1`, with [`WRITE_TEXT`] set for a
+    /// text message.
     write: ConnWriteFn = fn(ctx: ConnCtx, conn: u64, bytes: *const u8, len: usize, end: u8,
         out_written: *mut usize);
     /// [`Conns::read`]: the piece's bytes into `buf`, the piece into `out_piece`; with nothing
@@ -440,9 +444,13 @@ extern "C-unwind" fn host_write(
     hosted(ctx, |host| {
         // SAFETY: the plugin's live range and out-slot, for the call.
         unsafe {
-            let n = host
-                .conns
-                .write(host.instance, ConnId(conn), bytes(buf, len)?, end == 1)?;
+            let n = host.conns.write(
+                host.instance,
+                ConnId(conn),
+                bytes(buf, len)?,
+                end & 1 == 1,
+                end & WRITE_TEXT != 0,
+            )?;
             set(out_written, n)
         }
     })
@@ -670,7 +678,13 @@ impl HostConns {
     /// # Errors
     ///
     /// As [`Conns::write`].
-    pub fn write(&self, conn: ConnId, bytes: &[u8], end: bool) -> Result<usize, ConnError> {
+    pub fn write(
+        &self,
+        conn: ConnId,
+        bytes: &[u8],
+        end: bool,
+        text: bool,
+    ) -> Result<usize, ConnError> {
         let f = self.slots.write.ok_or(ConnError::Fault)?;
         let mut n = 0_usize;
         f(
@@ -678,7 +692,7 @@ impl HostConns {
             conn.0,
             bytes.as_ptr(),
             bytes.len(),
-            u8::from(end),
+            u8::from(end) | if text { WRITE_TEXT } else { 0 },
             &mut n,
         )
         .result()?;

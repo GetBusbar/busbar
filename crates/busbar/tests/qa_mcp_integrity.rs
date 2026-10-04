@@ -3,7 +3,7 @@
 
 //! THE `mcp-integrity` QA SEGMENT — the MCP plane's tool-integrity defence, proven live.
 //!
-//! `qa/segments.toml` names this target for the `mcp-integrity` segment (`cargo test -p busbar
+//! the removed `qa/segments.toml` names this target for the `mcp-integrity` segment (`cargo test -p busbar
 //! --test qa_mcp_integrity`, tier `live-mock`). Everything here runs the SHIPPED BINARY against a
 //! REAL upstream MCP server listening on a loopback socket, and talks to both over the wire. No
 //! engine is constructed in-process and no seam is stubbed: the claim is about what a deployed node

@@ -224,6 +224,9 @@ rule = "door-only:static-seam"
 file = "crates/busbar-kernel/src/plane/config.rs"
 item = "PLANE_SECTIONS"
 
+# judge_answer: interim for the 8 pooled-client builders; struck when D1-D6 move onto conns (Phase B).
+# (ARCHITECT ruling (C), DEST-GUARD 2026-10-02: the engine's pooled resolver asks the connector's
+# destination guard through this seam; no new static.)
 [[finding]]
 rule = "door-only:static-seam"
 file = "crates/busbar-kernel/src/plane_host/egress_trust.rs"

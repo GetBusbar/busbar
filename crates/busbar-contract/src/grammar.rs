@@ -371,21 +371,6 @@ macro_rules! claims_from_ladder {
 }
 
 impl Claim {
-    /// Whether two claims could ever match the same arriving bytes.
-    ///
-    /// Claims on different transports cannot collide, because bytes arrive on one transport. On
-    /// the same transport the answer is the selectors' answer.
-    ///
-    /// This is the SELECTOR-and-transport half of the question. The other half — whether two claims'
-    /// scheme sets could be answered by one credential, which is what makes two claims with disjoint
-    /// sets never collide however alike their selectors read — is the kernel's, alongside the
-    /// precedence rule that decides what an overlap MEANS. A claim carries the declaration; it does
-    /// not carry the boot decision over it.
-    #[must_use]
-    pub fn overlaps(&self, other: &Claim) -> bool {
-        self.transport == other.transport && self.selector.overlaps(&other.selector)
-    }
-
     /// Whether this claim's units carry no credential at all.
     #[must_use]
     pub const fn is_anonymous(&self) -> bool {

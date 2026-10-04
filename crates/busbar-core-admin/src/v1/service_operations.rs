@@ -445,7 +445,7 @@ impl AdminService {
                         let op = &self.app.admin_modules.operator;
                         self.app.admin_chain.iter().any(|m| op.is(m))
                     } else {
-                        chain.contains(&name)
+                        chain.iter().any(|c| c == name)
                     };
                     plugins.push(PluginView::basic(
                         name.to_string(),
@@ -462,7 +462,7 @@ impl AdminService {
                 // in the chain by construction).
                 let compiled = auth_modules_compiled_in();
                 for name in &chain {
-                    if !compiled.contains(name) {
+                    if !compiled.contains(&name.as_str()) {
                         plugins.push(PluginView::basic(
                             name.to_string(),
                             "auth",

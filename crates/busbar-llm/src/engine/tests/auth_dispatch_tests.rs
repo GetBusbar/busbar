@@ -12,7 +12,7 @@ use axum::http::header::AUTHORIZATION;
 use busbar_contract::records::ScopeRef;
 use busbar_kernel::{
     auth::AuthMiddleware,
-    sigv4::{
+    test_support::sigv4::{
         format_amz_time, sha256_hex, sign_v4, uri_encode_path, X_AMZ_CONTENT_SHA256, X_AMZ_DATE,
     },
 };

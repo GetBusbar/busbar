@@ -103,7 +103,7 @@
     ],
     "path": "/api/v1/admin/hooks/does-not-exist"
    },
-   "notes": "ok: null \u2014 no hook exists on the oracle config; needs plugin fixture. Unknown name 404; base-defined 409; stale If-Match 409. | oracle: variant=hooks (published headroom + webrequest loaded)",
+   "notes": "ok: null \u2014 no hook exists on the oracle config; needs plugin fixture. Unknown name 404; base-defined 409; stale If-Match 409. | oracle: variant=hooks-webrequest (published webrequest loaded; one busbar-webrequest gate on oracle-hooked)",
    "ok": {
     "body": null,
     "expect": [
@@ -116,7 +116,16 @@
    "path": "/api/v1/admin/hooks/{name}",
    "restart": false,
    "scope": "full",
-   "variant": "hooks"
+   "variant": "hooks-webrequest",
+   "variant_ok": {
+    "body": null,
+    "expect": [
+     200,
+     204
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/hooks/busbar-webrequest"
+   }
   },
   "DeleteIdentityProvidersName": {
    "bad_body": null,
@@ -205,7 +214,7 @@
     ],
     "path": "/api/v1/admin/plugins/does-not-exist.tar.gz"
    },
-   "notes": "ok: null \u2014 needs published plugin fixture. 204 on success; unknown file 404; invalid filename 400. No If-Match on this op. | oracle: variant=hooks (published headroom + webrequest loaded)",
+   "notes": "ok: null \u2014 needs published plugin fixture. 204 on success; unknown file 404; invalid filename 400. No If-Match on this op. | oracle: variant=hooks-webrequest (published webrequest loaded; one busbar-webrequest gate on oracle-hooked)",
    "ok": {
     "body": null,
     "expect": [
@@ -213,12 +222,12 @@
      204
     ],
     "headers": {},
-    "path": "/api/v1/admin/plugins/busbar-webrequest-1.0.6-{TRIPLE}.tar.gz"
+    "path": "/api/v1/admin/plugins/{ASSET:webrequest-hook}"
    },
    "path": "/api/v1/admin/plugins/{file}",
    "restart": false,
    "scope": "full",
-   "variant": "hooks"
+   "variant": "hooks-webrequest"
   },
   "DeleteToolsName": {
    "bad_body": null,
@@ -619,7 +628,7 @@
    "path": "/api/v1/admin/hooks",
    "restart": false,
    "scope": "read-only",
-   "variant": "hooks"
+   "variant": "hooks-webrequest"
   },
   "GetHooksName": {
    "bad_body": null,
@@ -633,7 +642,7 @@
     ],
     "path": "/api/v1/admin/hooks/does-not-exist"
    },
-   "notes": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks (published headroom + webrequest loaded)",
+   "notes": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks-webrequest (published webrequest loaded; one busbar-webrequest gate on oracle-hooked)",
    "ok": {
     "body": null,
     "expect": [
@@ -645,7 +654,15 @@
    "path": "/api/v1/admin/hooks/{name}",
    "restart": false,
    "scope": "read-only",
-   "variant": "hooks"
+   "variant": "hooks-webrequest",
+   "variant_ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/hooks/busbar-webrequest"
+   }
   },
   "GetHooksNameHealth": {
    "bad_body": null,
@@ -659,7 +676,7 @@
     ],
     "path": "/api/v1/admin/hooks/does-not-exist/health"
    },
-   "notes": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks (published headroom + webrequest loaded)",
+   "notes": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks-webrequest (published webrequest loaded; one busbar-webrequest gate on oracle-hooked)",
    "ok": {
     "body": null,
     "expect": [
@@ -671,7 +688,15 @@
    "path": "/api/v1/admin/hooks/{name}/health",
    "restart": false,
    "scope": "read-only",
-   "variant": "hooks"
+   "variant": "hooks-webrequest",
+   "variant_ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/hooks/busbar-webrequest/health"
+   }
   },
   "GetHooksNameSchema": {
    "bad_body": null,
@@ -685,7 +710,7 @@
     ],
     "path": "/api/v1/admin/hooks/does-not-exist/schema"
    },
-   "notes": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks (published headroom + webrequest loaded)",
+   "notes": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks-webrequest (published webrequest loaded; one busbar-webrequest gate on oracle-hooked)",
    "ok": {
     "body": null,
     "expect": [
@@ -697,7 +722,15 @@
    "path": "/api/v1/admin/hooks/{name}/schema",
    "restart": false,
    "scope": "read-only",
-   "variant": "hooks"
+   "variant": "hooks-webrequest",
+   "variant_ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/hooks/busbar-webrequest/schema"
+   }
   },
   "GetHooksNameStatus": {
    "bad_body": null,
@@ -711,7 +744,7 @@
     ],
     "path": "/api/v1/admin/hooks/does-not-exist/status"
    },
-   "notes": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks (published headroom + webrequest loaded)",
+   "notes": "ok: null \u2014 no hook exists on the oracle config (needs plugin fixture); only the 404 is recordable. | oracle: variant=hooks-webrequest (published webrequest loaded; one busbar-webrequest gate on oracle-hooked)",
    "ok": {
     "body": null,
     "expect": [
@@ -723,7 +756,15 @@
    "path": "/api/v1/admin/hooks/{name}/status",
    "restart": false,
    "scope": "read-only",
-   "variant": "hooks"
+   "variant": "hooks-webrequest",
+   "variant_ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/hooks/busbar-webrequest/status"
+   }
   },
   "GetIdentityProviders": {
    "bad_body": null,
@@ -1033,7 +1074,7 @@
    "path": "/api/v1/admin/plugins",
    "restart": false,
    "scope": "read-only",
-   "variant": "hooks"
+   "variant": "hooks-webrequest"
   },
   "GetPluginsFileSchema": {
    "bad_body": null,
@@ -1047,7 +1088,7 @@
     ],
     "path": "/api/v1/admin/plugins/does-not-exist.tar.gz/schema"
    },
-   "notes": "ok: null \u2014 needs published plugin fixture. 200 PluginSchemaView on success; unknown file 404. | oracle: variant=hooks (published headroom + webrequest loaded)",
+   "notes": "ok: null \u2014 needs published plugin fixture. 200 PluginSchemaView on success; unknown file 404. | oracle: variant=hooks-webrequest (published webrequest loaded; one busbar-webrequest gate on oracle-hooked)",
    "ok": {
     "body": null,
     "expect": [
@@ -1059,7 +1100,15 @@
    "path": "/api/v1/admin/plugins/{file}/schema",
    "restart": false,
    "scope": "read-only",
-   "variant": "hooks"
+   "variant": "hooks-webrequest",
+   "variant_ok": {
+    "body": null,
+    "expect": [
+     200
+    ],
+    "headers": {},
+    "path": "/api/v1/admin/plugins/{ASSET:webrequest-hook}/schema"
+   }
   },
   "GetPools": {
    "bad_body": null,
@@ -1338,7 +1387,7 @@
     ],
     "path": "/api/v1/admin/hooks/does-not-exist/settings"
    },
-   "notes": "ok: null \u2014 needs plugin fixture. `settings` is REPLACED and pushed to the plugin commit-on-ack (Cond::SettingsPush on failure). Stale If-Match 409. | oracle: variant=hooks (published headroom + webrequest loaded)",
+   "notes": "ok: null \u2014 needs plugin fixture. `settings` is REPLACED and pushed to the plugin commit-on-ack (Cond::SettingsPush on failure). Stale If-Match 409. | oracle: variant=hooks-webrequest (published webrequest loaded; one busbar-webrequest gate on oracle-hooked)",
    "ok": {
     "body": {
      "settings": {
@@ -1357,7 +1406,22 @@
    "path": "/api/v1/admin/hooks/{name}/settings",
    "restart": false,
    "scope": "full",
-   "variant": "hooks"
+   "variant": "hooks-webrequest",
+   "variant_ok": {
+    "body": {
+     "settings": {
+      "timeout_ms": 60,
+      "url": "http://127.0.0.1:9/oracle-sidecar"
+     }
+    },
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    },
+    "path": "/api/v1/admin/hooks/busbar-webrequest/settings"
+   }
   },
   "PatchIdentityProvidersNameSettings": {
    "bad_body": {
@@ -2197,7 +2261,7 @@
    "method": "POST",
    "mutating": true,
    "not_found": null,
-   "notes": "Registers the NEW tap hook `oracle-webreq` backed by the published busbar-webrequest plugin (kind: hook in its manifest; declares no settings schema, so `open()` succeeds with no `settings` key at all -- verified against the live 1.5.5 binary: 201 Created). `config` is required \u21d2 bad_body 400. Re-registering the base-defined `busbar-headroom` name (defined in config.yaml as kind: gate) would be a grant/kind change \u21d2 409, but the ok body avoids that by using a fresh name. Stale If-Match 409; malformed If-Match 400. | oracle: variant=hooks (published headroom + webrequest loaded)",
+   "notes": "Registers the NEW tap hook `oracle-webreq` backed by the published busbar-webrequest plugin (kind: hook in its manifest; declares no settings schema, so `open()` succeeds with no `settings` key at all -- verified against the live 1.5.5 binary: 201 Created). `config` is required \u21d2 bad_body 400. Re-registering the base-defined `busbar-headroom` name (defined in config.yaml as kind: gate) would be a grant/kind change \u21d2 409, but the ok body avoids that by using a fresh name. Stale If-Match 409; malformed If-Match 400. | oracle: variant=hooks-webrequest (published webrequest loaded; one busbar-webrequest gate on oracle-hooked)",
    "ok": {
     "body": {
      "config": {
@@ -2217,7 +2281,7 @@
    "path": "/api/v1/admin/hooks",
    "restart": false,
    "scope": "full",
-   "variant": "hooks"
+   "variant": "hooks-webrequest"
   },
   "PostKeys": {
    "bad_body": {
@@ -2408,10 +2472,10 @@
    "method": "POST",
    "mutating": true,
    "not_found": null,
-   "notes": "ok: null \u2014 needs published plugin fixture. 201 PluginInstallView on success. `tarball_b64` required \u21d2 bad_body 400; bad filename 400 Cond::InvalidFilename; untrusted upload 409 Cond::UntrustedUpload; name collision 409. | oracle: variant=hooks (published headroom + webrequest loaded)",
+   "notes": "ok: null \u2014 needs published plugin fixture. 201 PluginInstallView on success. `tarball_b64` required \u21d2 bad_body 400; bad filename 400 Cond::InvalidFilename; untrusted upload 409 Cond::UntrustedUpload; name collision 409. | oracle: variant=hooks-webrequest (published webrequest loaded; one busbar-webrequest gate on oracle-hooked)",
    "ok": {
     "body": {
-     "file": "busbar-webrequest-1.0.6-{TRIPLE}.tar.gz",
+     "file": "{ASSET:webrequest-hook}",
      "tarball_b64": "{TARBALL_B64:webrequest-hook}"
     },
     "expect": [
@@ -2425,7 +2489,7 @@
    "path": "/api/v1/admin/plugins",
    "restart": false,
    "scope": "full",
-   "variant": "hooks"
+   "variant": "hooks-webrequest"
   },
   "PostPluginsInspect": {
    "bad_body": {
@@ -2444,10 +2508,10 @@
    "method": "POST",
    "mutating": false,
    "not_found": null,
-   "notes": "ok: null \u2014 needs published plugin fixture. 200 PluginSchemaView; read-only scope, own rate class PluginInspect (30/min). `tarball_b64` required \u21d2 bad_body 400; a non-loadable artifact is 400 Cond::NotLoadable. | oracle: variant=hooks (published headroom + webrequest loaded)",
+   "notes": "ok: null \u2014 needs published plugin fixture. 200 PluginSchemaView; read-only scope, own rate class PluginInspect (30/min). `tarball_b64` required \u21d2 bad_body 400; a non-loadable artifact is 400 Cond::NotLoadable. | oracle: variant=hooks-webrequest (published webrequest loaded; one busbar-webrequest gate on oracle-hooked)",
    "ok": {
     "body": {
-     "file": "busbar-webrequest-1.0.6-{TRIPLE}.tar.gz",
+     "file": "{ASSET:webrequest-hook}",
      "tarball_b64": "{TARBALL_B64:webrequest-hook}"
     },
     "expect": [
@@ -2460,7 +2524,7 @@
    "path": "/api/v1/admin/plugins/inspect",
    "restart": false,
    "scope": "read-only",
-   "variant": "hooks"
+   "variant": "hooks-webrequest"
   },
   "PostPluginsReload": {
    "bad_body": null,
@@ -2498,7 +2562,7 @@
    "method": "POST",
    "mutating": true,
    "not_found": null,
-   "notes": "Rolls the published busbar-headroom plugin back to the SAME version already active (the only artifact present in the plugins dir under the hooks variant) -- a no-op-equivalent self-rollback, same pattern as PutAdminAuth's own-chain PUT: verified against the live 1.5.5 binary as 200 PluginRollbackView, config_version incremented (normalise). `file` required \u21d2 bad_body 400 (the existing bad_body sends `version` instead, which is not a field of PluginRollbackReq). Unknown file is 404 (no path param, so not_found stays null -- the distinguishing input is in the body, which this driver cannot express as a separate not_found probe). Stale If-Match 409; ephemeral 400. | oracle: variant=hooks (published headroom + webrequest loaded)",
+   "notes": "Rolls the published busbar-webrequest plugin back to the SAME version already active (the only artifact present in the plugins dir under the hooks-webrequest variant) -- a no-op-equivalent self-rollback, same pattern as PutAdminAuth's own-chain PUT: verified against the live 1.5.5 binary as 200 PluginRollbackView, config_version incremented (normalise). `file` required \u21d2 bad_body 400 (the existing bad_body sends `version` instead, which is not a field of PluginRollbackReq). Unknown file is 404 (no path param, so not_found stays null -- the distinguishing input is in the body, which this driver cannot express as a separate not_found probe). Stale If-Match 409; ephemeral 400. | oracle: variant=hooks-webrequest (published webrequest loaded; one busbar-webrequest gate on oracle-hooked)",
    "ok": {
     "body": {
      "file": "busbar-headroom-2.0.7-{TRIPLE}.tar.gz"
@@ -2513,7 +2577,18 @@
    "path": "/api/v1/admin/plugins/rollback",
    "restart": false,
    "scope": "full",
-   "variant": "hooks"
+   "variant": "hooks-webrequest",
+   "variant_ok": {
+    "body": {
+     "file": "{ASSET:webrequest-hook}"
+    },
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    }
+   }
   },
   "PostResealEpochFloor": {
    "bad_body": null,
@@ -2849,7 +2924,7 @@
     ],
     "path": "/api/v1/admin/hooks/does-not-exist"
    },
-   "notes": "ok: null \u2014 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (per the config inventory's hook-module row); the compiled-in `weighted`/`first` words are POOL strategies, not hook modules, so no plugin-free body can be registered. needs plugin fixture. `config` is required \u21d2 bad_body 400. Not an upsert: unknown name 404. | oracle: variant=hooks (published headroom + webrequest loaded)",
+   "notes": "ok: null \u2014 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (per the config inventory's hook-module row); the compiled-in `weighted`/`first` words are POOL strategies, not hook modules, so no plugin-free body can be registered. needs plugin fixture. `config` is required \u21d2 bad_body 400. Not an upsert: unknown name 404. | oracle: variant=hooks-webrequest (published webrequest loaded; one busbar-webrequest gate on oracle-hooked)",
    "ok": {
     "body": {
      "config": {
@@ -2875,7 +2950,28 @@
    "path": "/api/v1/admin/hooks/{name}",
    "restart": false,
    "scope": "full",
-   "variant": "hooks"
+   "variant": "hooks-webrequest",
+   "variant_ok": {
+    "body": {
+     "config": {
+      "kind": "gate",
+      "module": "busbar-webrequest",
+      "on_error": "nothing",
+      "settings": {
+       "timeout_ms": 60,
+       "url": "http://127.0.0.1:9/oracle-sidecar"
+      },
+      "timeout_ms": 60
+     }
+    },
+    "expect": [
+     200
+    ],
+    "headers": {
+     "Content-Type": "application/json"
+    },
+    "path": "/api/v1/admin/hooks/busbar-webrequest"
+   }
   },
   "PutIdentityProvidersName": {
    "bad_body": {

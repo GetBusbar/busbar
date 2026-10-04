@@ -22,7 +22,7 @@ use crate::codec::ir::StreamDecodeState;
 #[test]
 fn recover_truncated_usage_reads_float_encoded_counts() {
     let reader = GeminiReader;
-    let tail = br#"..."},"finishReason":"MAX_TOKENS"}],"usageMetadata":{"promptTokenCount":1000.0,"candidatesTokenCount":50.0,"thoughtsTokenCount":4000.0,"toolUsePromptTokenCount":32.0,"cachedContentTokenCount":200.0,"totalTokenCount":5282.0}}"#;
+    let tail = br#"..."},"finishReason":"MAX_TOKENS"}],"usageMetadata":{"promptTokenCount":1000.0,"candidatesTokenCount":50.0,"thoughtsTokenCount":4000.0,"toolUsePromptTokenCount":32.0,"cachedContentTokenCount":200.0,"totalTokenCount":5082.0}}"#;
     let usage = reader
         .recover_truncated_usage(tail)
         .expect("usageMetadata tail must be recoverable");
@@ -57,7 +57,7 @@ fn buffered_read_response_reads_float_encoded_counts() {
             "thoughtsTokenCount": 83.0,
             "toolUsePromptTokenCount": 32.0,
             "cachedContentTokenCount": 5.0,
-            "totalTokenCount": 227.0
+            "totalTokenCount": 222.0
         }
     });
     let ir = GeminiReader.read_response(&body).expect("read_response");
@@ -101,7 +101,7 @@ fn streaming_terminal_reads_float_encoded_counts() {
             "thoughtsTokenCount": 83.0,
             "toolUsePromptTokenCount": 32.0,
             "cachedContentTokenCount": 5.0,
-            "totalTokenCount": 227.0
+            "totalTokenCount": 222.0
         }
     });
     let events = reader.read_response_events("", &chunk, &mut state);

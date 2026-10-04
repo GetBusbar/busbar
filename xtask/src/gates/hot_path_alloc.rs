@@ -20,7 +20,7 @@
 //!
 //! TWO MODES. The registered gate is the CONTRACT half, for the reason `hot-path-perf`'s header
 //! gives: `xtask` depends on no product crate (`segregation`) and a Tier::Fast gate builds nothing.
-//! The contract alone never showed the count IS zero — `qa/segments.toml`'s `benches` segment only
+//! The contract alone never showed the count IS zero — the removed `qa/segments.toml`'s `benches` segment only
 //! compiles the bench (`--no-run`). [`HotPathAllocExecGate`] adds two `:executed*` rows that RUN
 //! `cargo bench -p busbar-kernel --bench plane_host_vtable_alloc` into a fresh criterion home and
 //! judge the result: the run completed with `POD_HOST_CALL_BATCH` samples recorded, and the bench's

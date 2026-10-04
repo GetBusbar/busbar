@@ -13,7 +13,7 @@
 #                        contract comes from.
 #
 # One implementation for the whole fleet: plugin-repin.yml runs it in the plugin repo, and
-# `cargo xtask fleet sync` produces the same four edits from plugins.yaml.
+# `busbar-release plugin sync` produces the same four edits from plugins.yaml.
 #
 # Usage: repin.sh <40-hex sha> <version>     (run from the plugin repo root; needs cargo + network)
 #        repin.sh --decide <sha|""> <version|"">

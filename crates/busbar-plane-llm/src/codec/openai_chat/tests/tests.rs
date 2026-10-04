@@ -940,6 +940,7 @@ fn write_response_joins_text_blocks_and_keeps_tool_calls() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     let msg = &out["choices"][0]["message"];
@@ -979,6 +980,7 @@ fn write_response_content_null_when_no_text() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(
@@ -1111,6 +1113,7 @@ fn cross_protocol_write_synthesizes_valid_id() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     let id = out["id"].as_str().expect("synthesized id is a string");
@@ -1158,6 +1161,7 @@ fn cross_protocol_write_response_emits_fallback_model() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     let obj = out.as_object().expect("response object");
@@ -1193,6 +1197,7 @@ fn write_response_preserves_upstream_model_over_fallback() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(out["model"], serde_json::json!("gpt-4o-mini"));
@@ -1474,6 +1479,7 @@ fn write_response_total_tokens_saturates_on_overflow() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     // Must not panic (debug) or wrap (release); saturates at u64::MAX.
     let out = openai_writer().write_response(&resp);
@@ -2409,6 +2415,7 @@ fn write_response_falls_back_to_stop_when_stop_reason_none() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     let choice = out["choices"][0].as_object().expect("choice object");
@@ -2458,6 +2465,7 @@ fn write_response_maps_finish_reason_enum_values() {
 
             request_echo: None,
             stop_detail: None,
+            ..Default::default()
         };
         let out = openai_writer().write_response(&resp);
         assert_eq!(
@@ -3408,14 +3416,12 @@ fn read_openai_block_refusal_maps_to_text() {
 }
 
 #[test]
-fn read_openai_block_unknown_type_degrades_to_empty_text() {
-    // A future/unknown content-part type must not break otherwise-valid history.
+fn read_openai_part_unknown_type_is_dropped_not_substituted() {
+    // A future/unknown content-part type must not break otherwise-valid history, and nothing is put
+    // in its place (design F3 "Drops"): the part is not read; a translate attempt names it.
     let block = serde_json::json!({"type": "some_future_part", "foo": "bar"});
-    let ir = read_openai_block(&block).expect("unknown type must degrade, not error");
-    match ir {
-        crate::codec::ir::IrBlock::Text { text, .. } => assert_eq!(text, ""),
-        other => panic!("expected empty Text, got {other:?}"),
-    }
+    let ir = read_openai_part(&block).expect("unknown type must not error");
+    assert!(ir.is_none(), "an unknown part is dropped, got {ir:?}");
 }
 
 // --- finish_reason normalization (content_filter -> safety, function_call -> tool_use) ---
@@ -3477,6 +3483,7 @@ fn write_response_safety_round_trips_to_content_filter() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(
@@ -3748,6 +3755,7 @@ fn write_response_string_tool_arguments_emitted_verbatim() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     let args = &out["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"];
@@ -4885,6 +4893,7 @@ fn write_response_reconstructs_prompt_tokens_total_with_cached_details() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(
@@ -4924,6 +4933,7 @@ fn write_response_omits_cached_details_when_no_cache_read() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = openai_writer().write_response(&resp);
     assert_eq!(out["usage"]["prompt_tokens"], serde_json::json!(7));
@@ -5191,6 +5201,7 @@ fn write_response_carries_citations_with_join_relative_offsets() {
         end_index: None,
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     };
     let text_block = |text: &str, citations: Vec<crate::codec::ir::IrCitation>| IrBlock::Text {
         text: text.into(),
@@ -5228,6 +5239,7 @@ fn write_response_carries_citations_with_join_relative_offsets() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
 
     let v = openai_writer().write_response(&resp);
@@ -5261,9 +5273,10 @@ fn url_annotation_offset_saturates_on_absurd_upstream_index() {
         end_index: Some(i64::MAX),
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     }];
     // Must not panic.
-    let anns = super::super::openai_annotations::url_annotations("hi", 5, &citations);
+    let anns = super::super::url_citation_wire::url_annotations("hi", 5, &citations);
     assert_eq!(anns.len(), 1, "{anns:?}");
     assert_eq!(
         anns[0]["start_index"],
@@ -5288,6 +5301,7 @@ fn url_annotation_base_accumulates_in_characters() {
         end_index: None,
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     };
     // "héllo wörld " has 12 CHARS but 14 BYTES (é and ö are 2 bytes each in UTF-8).
     let first_block = "héllo wörld ";
@@ -5327,6 +5341,7 @@ fn url_annotation_base_accumulates_in_characters() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let v = openai_writer().write_response(&resp);
     let anns = v["choices"][0]["message"]["annotations"]
@@ -5356,10 +5371,11 @@ fn url_annotation_quote_recovery_reports_character_indices() {
         end_index: None,
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     }];
     // "héllo " is 6 chars / 7 bytes; "wörld" (the quote) is 5 chars / 6 bytes.
     let text = "héllo wörld";
-    let anns = super::super::openai_annotations::url_annotations(text, 0, &citations);
+    let anns = super::super::url_citation_wire::url_annotations(text, 0, &citations);
     assert_eq!(anns.len(), 1, "{anns:?}");
     assert_eq!(
         anns[0]["start_index"], 6,
@@ -5400,6 +5416,7 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let v = openai_writer().write_response(&resp);
     assert!(v["choices"][0]["message"].get("annotations").is_none());
@@ -5482,8 +5499,9 @@ fn anthropic_sourced_citation_indices_are_not_double_converted() {
         end_index: Some(11),
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     }];
-    let anns = super::super::openai_annotations::url_annotations("héllo wörld", 0, &citations);
+    let anns = super::super::url_citation_wire::url_annotations("héllo wörld", 0, &citations);
     assert_eq!(anns.len(), 1, "{anns:?}");
     assert_eq!(
         anns[0]["start_index"], 6,
@@ -5711,6 +5729,7 @@ fn openai_write_drops_thinking_observably() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
 
     let cap = WarnCapture::default();
@@ -5860,6 +5879,7 @@ fn plain_ir_response(
         stop_sequence: None,
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     }
 }
 
@@ -6086,4 +6106,79 @@ fn status_word_golden() {
             "class={class:?}"
         );
     }
+}
+
+/// A `custom` tool call in the conversation history (a type the IR does not model) is skipped by
+/// the reader, never refused: the reader is a tap, and a same-dialect relay carries the call byte
+/// for byte (DIALECT-FIDELITY-DESIGN F2 reader tolerance). The `function` call beside it is still
+/// read. RED arm: the reader that required `function` on every call answered a 400 here. A call
+/// that claims `function` and carries none stays malformed.
+#[test]
+fn a_custom_tool_call_in_history_is_skipped_not_refused() {
+    let body = serde_json::json!({
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": null, "tool_calls": [
+                {"id": "call_c", "type": "custom", "custom": {"name": "grammar", "input": "x = 1"}},
+                {"id": "call_f", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "call_c", "content": "ok"}
+        ]
+    });
+    let ir = OpenAiReader
+        .read_request(&body)
+        .expect("a custom tool call is not a refusal");
+    let uses: Vec<&str> = ir
+        .messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            IrBlock::ToolUse { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(uses, ["call_f"]);
+    let answer = serde_json::json!({
+        "id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "gpt-4o",
+        "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant",
+            "content": null, "tool_calls": [
+                {"id": "call_c", "type": "custom", "custom": {"name": "grammar", "input": "x"}}
+            ]}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    });
+    assert!(OpenAiReader.read_response(&answer).is_ok());
+    let malformed = serde_json::json!({
+        "model": "gpt-4o",
+        "messages": [{"role": "assistant", "tool_calls": [{"id": "call_x", "type": "function"}]}]
+    });
+    assert!(OpenAiReader.read_request(&malformed).is_err());
+}
+
+/// DESIGN F3 "Drops" (DF-WIRE card item 5): a system turn whose parts are all of kinds the reader
+/// does not model is not an empty system turn: nothing is put in place of the dropped parts. RED
+/// before: the IR's system held `{"type":"text","text":""}`. A genuinely empty system turn keeps its
+/// empty text (that is the caller's own turn).
+#[test]
+fn system_turn_of_unmodelled_parts_gets_no_empty_text() {
+    let body = serde_json::json!({
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "system", "content": [{"type": "some_future_part", "x": 1}]},
+            {"role": "user", "content": "hi"}
+        ]
+    });
+    let ir = OpenAiReader.read_request(&body).expect("parses");
+    assert!(ir.system.is_empty(), "{:?}", ir.system);
+
+    let empty_turn = serde_json::json!({
+        "model": "gpt-4o",
+        "messages": [{"role": "system", "content": []}, {"role": "user", "content": "hi"}]
+    });
+    let ir = OpenAiReader.read_request(&empty_turn).expect("parses");
+    assert_eq!(
+        ir.system.len(),
+        1,
+        "the caller's own empty system turn is kept"
+    );
 }

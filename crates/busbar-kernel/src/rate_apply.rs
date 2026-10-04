@@ -58,6 +58,22 @@ pub trait RateApply: Send + Sync {
     /// Must be atomic from a reader's point of view: a request that pinned the previous rates keeps
     /// them for its whole life, and the next request sees these.
     fn rates_applied(&self, rates: &RawRates<'_>);
+
+    /// STAGE the rates a config change is about to commit: make them durable BEFORE the change is
+    /// saved (MONEY-AUDIT D-6, ARCHITECT ruling 2026-10-02). `Err` refuses the WHOLE config change,
+    /// so the old configuration and the old card both stay; the message is the operator's. A
+    /// holder with no journal has nothing to make durable: the default stages nothing.
+    ///
+    /// # Errors
+    ///
+    /// The holder could not make the rates durable.
+    fn rates_staged(&self, _rates: &RawRates<'_>) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// The config change the staged rates were made durable for did NOT commit (its persist or its
+    /// swap never landed): the holder puts the card that stays in force back on its record.
+    fn rates_withdrawn(&self) {}
 }
 
 /// THE PROCESS-WIDE rate holder, installed once by the composition root ([`install_rate_apply`]).
@@ -122,6 +138,21 @@ pub fn effective_from_at(at_ms: u64) -> u64 {
 #[must_use]
 pub fn dated_history() -> Option<std::sync::Arc<busbar_kernel_ledger::cost::History>> {
     EPOCH.get().and_then(|holder| holder.history())
+}
+
+/// Stage the rates a config change is about to commit — see [`RateApply::rates_staged`]. `Ok` in
+/// a build that installed no holder: there is no journal to refuse.
+///
+/// # Errors
+///
+/// The installed holder could not make the rates durable; the config change must be refused.
+pub fn rates_staged(rates: &RawRates<'_>) -> Result<(), String> {
+    APPLY.get().map_or(Ok(()), |h| h.rates_staged(rates))
+}
+
+/// The staged rates' config change did not commit — see [`RateApply::rates_withdrawn`].
+pub fn rates_withdrawn() {
+    APPLY.get().into_iter().for_each(|h| h.rates_withdrawn());
 }
 
 /// Raise the seam: the configured rates are now `rates`.

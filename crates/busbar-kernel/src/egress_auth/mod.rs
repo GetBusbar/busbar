@@ -6,16 +6,8 @@
 //! every historical `busbar_kernel::egress_auth::…` name — `resolve`, `prebuild_auth`,
 //! `CredentialProvider`, `MetadataSsrfPolicy`, and the `jwt_bearer` /
 //! `oauth_client_credentials` mint modules — resolves unchanged, and hosts the two egress-auth
-//! tests that must stay core-side (below).
-//!
-//! Mirrors the sibling `gate` submodule, which relocated the same way in Phase-B B1: the real
-//! content lives in `busbar_kernel::egress_auth`, and the local `pub mod gate;` below keeps
-//! core's own gate shim (which hosts the gate tests that name `crate::audit_ring`). The glob's
-//! `gate` is shadowed by that explicit declaration.
-
-// Core's gate re-export shim (hosts the core-only `gate_tests`, which name `crate::audit_ring` /
-// `crate::audit`). Explicitly declared so it shadows the glob's `gate`.
-pub mod gate;
+//! tests that must stay core-side (below). The egress grant gate is authorization and lives in
+//! `busbar_kernel_scope::egress`.
 
 // THE PREBUILT-AUTH DIFFERENTIAL PROOF stays core-side: `resolve` reads the LLM dialect
 // `ProtocolDecl`s, and only core's `proto::decl_for` wrapper seeds a built-in decl under
@@ -284,7 +276,7 @@ impl CredentialProvider for DeclaredCredential {
 // proof STAY in busbar-core after the module relocated DOWN here: the prebuilt proof reads the
 // LLM dialect `ProtocolDecl`s that only core's `#[cfg(test)]` decl seeding registers, and the
 // license scan is a crate-wide meta-test core keeps for its own `src`. Both host under core's
-// `egress_auth` re-export shim (mirroring how the `gate` submodule keeps its core-only gate tests).
+// `egress_auth` re-export shim.
 
 // `read_capped_token_response` meta-test lives in tests/ per the repo layout rule (no inline test
 // bodies in a mod.rs); keep the module here via a #[path] decl.

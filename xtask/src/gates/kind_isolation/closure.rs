@@ -72,15 +72,6 @@ pub const ROW_CLOSURE: &str = "kind-isolation:closure";
 /// THE ONE CRATE #40(a) ADMITS. Everything else in a plugin's closure is a finding.
 const CONTRACT: &str = "busbar-contract";
 
-/// A graph smaller than this is not this workspace, and a wall measured over it is a wall measured
-/// over nothing. Mirrors the census floor (`kind_isolation::MIN_MANIFESTS`) for the same reason,
-/// and moves with it: 30, not 40 (item F0b, same shape as F0's `workspace-deps`
-/// `MIN_CRATE_MANIFESTS`, `98434a220`). The Phase 4 fold's planned end state is 35 crates under
-/// `crates/` (34 / 33 in the roster variants); at 40 this row would have reddened around fold #11,
-/// against a planned shrink. 30 sits three under the smallest planned roster variant, so no planned
-/// fold trips it, while a graph collapsed to a third of today's census is still RED.
-const MIN_GRAPH_CRATES: usize = 30;
-
 // ------------------------------------------------------------------------------------------------
 // the graph
 // ------------------------------------------------------------------------------------------------
@@ -210,7 +201,7 @@ fn cargo_graph(cx: &Ctx) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
     graph_from_metadata(&cx.cargo_metadata("Cargo.toml")?)
 }
 
-/// The reading half of [`cargo_graph`], with the subprocess taken out so the FLOOR and the
+/// The reading half of [`cargo_graph`], with the subprocess taken out so the member check and the
 /// shipped/test split can be proven without one.
 fn graph_from_metadata(json: &str) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
     let value: serde_json::Value = serde_json::from_str(json)
@@ -223,12 +214,35 @@ fn graph_from_metadata(json: &str) -> Result<BTreeMap<String, BTreeSet<String>>,
         .iter()
         .filter_map(|p| p.get("name").and_then(|v| v.as_str()))
         .collect();
-    if members.len() < MIN_GRAPH_CRATES {
+    // THE GRAPH IS THE WORKSPACE, EXACTLY (ARCHITECT 2026-10-02): every id in cargo's own
+    // `workspace_members` resolves to a package of this graph, and there is at least one. A
+    // metadata that half-ran misses members by name; a number would only say it was small.
+    let ids: BTreeSet<&str> = packages
+        .iter()
+        .filter_map(|p| p.get("id").and_then(|v| v.as_str()))
+        .collect();
+    let workspace: Vec<&str> = value
+        .get("workspace_members")
+        .and_then(|m| m.as_array())
+        .map(|m| m.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    if workspace.is_empty() {
+        return Err(
+            "`cargo metadata` named no workspace member. A graph of no member is not this \
+                    workspace, and a closure walked over it satisfies every ban vacuously"
+                .to_string(),
+        );
+    }
+    let missed: Vec<&str> = workspace
+        .iter()
+        .copied()
+        .filter(|id| !ids.contains(id))
+        .collect();
+    if !missed.is_empty() {
         return Err(format!(
-            "`cargo metadata` named {} package(s), under the floor of {MIN_GRAPH_CRATES}. A graph \
-             that small is not this workspace, and a closure walked over it satisfies every ban \
-             vacuously",
-            members.len()
+            "missed-member: `cargo metadata` lists workspace member(s) its package graph does not \
+             carry: {}. A closure walked over a graph that skipped a member says nothing about it",
+            missed.join(", ")
         ));
     }
     let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -354,19 +368,32 @@ pub fn rule_closure(cx: &Ctx, crates: &[CrateInfo]) -> Row {
         }
     }
 
+    // THE CENSUS IS THE WORKSPACE, EXACTLY: a closure walked over a census that skipped a member
+    // satisfies every ban on that member vacuously, and a ban satisfied vacuously is not a ban.
+    match super::missed_members(cx, crates) {
+        Err(why) => {
+            return Row::fail(
+                ROW_CLOSURE,
+                "the closure could not be walked over this tree",
+                why,
+            )
+        }
+        Ok(missed) if !missed.is_empty() => {
+            return Row::fail(
+                ROW_CLOSURE,
+                "the closure could not be walked over this tree",
+                format!(
+                    "missed-member: the census did not read workspace member(s) {}. A closure \
+                     walked over a census that skipped a member satisfies every dependency ban on \
+                     it vacuously.",
+                    missed.join(", ")
+                ),
+            )
+        }
+        Ok(_) => {}
+    }
     let (census, dev) = census_graphs(cx, crates);
     let census_crates = census.len();
-    if census_crates < MIN_GRAPH_CRATES {
-        return Row::fail(
-            ROW_CLOSURE,
-            "the closure could not be walked over this tree",
-            format!(
-                "the census carried {census_crates} crate(s), under the floor of \
-                 {MIN_GRAPH_CRATES}. A closure walked over a graph this small satisfies every \
-                 dependency ban vacuously, and a ban satisfied vacuously is not a ban."
-            ),
-        );
-    }
 
     // THE CORROBORATION. See this module's own note for why cargo is the check and not the claim,
     // and why an overlaid tree is not asked.
@@ -776,14 +803,20 @@ mod tests {
         }
     }
 
-    /// THE FALSE ZERO, CONTROLLED. A `cargo metadata` that resolved almost nothing is an ERROR,
-    /// never a clean graph: an empty closure satisfies every dependency ban vacuously, and a
+    /// THE FALSE ZERO, CONTROLLED, WITH NO NUMBER. A `cargo metadata` whose package list misses a
+    /// workspace member it names is an ERROR naming that member, and one that names no member at
+    /// all is an ERROR too: an empty closure satisfies every dependency ban vacuously, and a
     /// subprocess that half-ran is exactly how a wall reports itself standing over nothing.
     #[test]
-    fn a_metadata_graph_under_the_floor_is_refused_rather_than_read_as_clean() {
-        let tiny = r#"{"packages":[{"name":"busbar-contract","dependencies":[]}]}"#;
-        let err = graph_from_metadata(tiny).expect_err("one package is not this workspace");
-        assert!(err.contains("under the floor"), "{err}");
+    fn a_metadata_graph_that_misses_a_member_is_refused_naming_it() {
+        let missed = r#"{"workspace_members":["busbar-contract 0.0.0 (path+file:///w/crates/busbar-contract)","busbar-kernel 0.0.0 (path+file:///w/crates/busbar-kernel)"],
+            "packages":[{"name":"busbar-contract","id":"busbar-contract 0.0.0 (path+file:///w/crates/busbar-contract)","dependencies":[]}]}"#;
+        let err = graph_from_metadata(missed).expect_err("a member with no package is a miss");
+        assert!(err.contains("missed-member"), "{err}");
+        assert!(err.contains("busbar-kernel"), "{err}");
+
+        let none = r#"{"workspace_members":[],"packages":[{"name":"busbar-contract","id":"c","dependencies":[]}]}"#;
+        let err = graph_from_metadata(none).expect_err("no member is not this workspace");
         assert!(err.contains("vacuously"), "{err}");
     }
 
@@ -791,19 +824,22 @@ mod tests {
     /// corroboration compares the same half of the graph the census walks.
     #[test]
     fn the_metadata_reader_takes_the_shipped_half_and_leaves_the_test_half() {
-        let mut pkgs: Vec<String> = (0..MIN_GRAPH_CRATES)
-            .map(|i| format!(r#"{{"name":"filler-{i}","dependencies":[]}}"#))
+        let mut pkgs: Vec<String> = (0..3)
+            .map(|i| format!(r#"{{"name":"filler-{i}","id":"filler-{i}","dependencies":[]}}"#))
             .collect();
         pkgs.push(
-            r#"{"name":"busbar-transport-tls","dependencies":[
+            r#"{"name":"busbar-transport-tls","id":"tls","dependencies":[
                  {"name":"filler-0"},
                  {"name":"filler-1","kind":"dev"},
                  {"name":"filler-2","kind":"build"},
                  {"name":"serde"}]}"#
                 .to_string(),
         );
-        let json = format!(r#"{{"packages":[{}]}}"#, pkgs.join(","));
-        let g = graph_from_metadata(&json).expect("the floor is cleared");
+        let json = format!(
+            r#"{{"workspace_members":["filler-0","filler-1","filler-2","tls"],"packages":[{}]}}"#,
+            pkgs.join(",")
+        );
+        let g = graph_from_metadata(&json).expect("every member resolves");
         let row: Vec<&str> = g["busbar-transport-tls"]
             .iter()
             .map(String::as_str)

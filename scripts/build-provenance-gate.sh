@@ -21,7 +21,7 @@
 #     a string handed in on the command line. Anything can write that string; a workflow step that
 #     produced the line by any means other than running the binary would pass this gate green while
 #     proving nothing about any bytes. `--line` IS GONE. The only way to get a verdict is to hand
-#     the gate an executable, which it runs. (The one real caller, docker.yml, was already running
+#     the gate an executable, which it runs. (The one real caller, the removed docker.yml, was already running
 #     the binary into a temp file and then passing the file's contents back in — it now passes the
 #     binary, which is what it always meant.) The literal-line assertion still exists, but only as
 #     an INTERNAL helper the self-test drives over planted stamps.

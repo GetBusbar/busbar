@@ -78,6 +78,17 @@ fn the_wire_model_is_written_when_it_differs() {
     assert!(!r.pristine);
     let v: Value = busbar_plane_llm::codec::json::parse(&r.body).expect("json");
     assert_eq!(v["model"], "gpt-4o");
+    // Only the governed member moves: key order, spacing and number spelling stay the caller's.
+    let a = arrived(
+        "/v1/chat/completions",
+        &h,
+        r#"{"z":1.50, "model":"gpt-alias","messages":[],"a":{"y":1,"x":2}}"#,
+    );
+    let r = build(&a, &h, &shaping(), "p", "gpt-alias").expect("built");
+    assert_eq!(
+        r.body,
+        br#"{"z":1.50, "model":"gpt-4o","messages":[],"a":{"y":1,"x":2}}"#
+    );
 }
 
 #[test]
@@ -101,14 +112,15 @@ fn a_cross_dialect_request_is_written_in_the_far_ends_dialect() {
 }
 
 #[test]
-fn a_native_clients_head_fields_then_the_callers_selectors_for_that_dialect_only() {
+fn a_same_dialect_caller_s_fields_all_go_out_but_the_governed_ones() {
     let h = head(&[
         ("content-type", "application/json"),
         ("anthropic-version", "2023-06-01"),
         ("anthropic-beta", "a"),
         ("anthropic-beta", "b"),
-        ("openai-beta", "assistants=v2"),
+        ("X-Client-Trace", "abc"),
         ("authorization", "Bearer never-forwarded"),
+        ("x-api-key", "never-forwarded"),
     ]);
     let a = arrived(
         "/v1/messages",
@@ -120,28 +132,109 @@ fn a_native_clients_head_fields_then_the_callers_selectors_for_that_dialect_only
     assert_eq!(
         names,
         [
-            "content-type",
             "user-agent",
             "accept",
+            "content-type",
             "anthropic-version",
             "anthropic-beta",
-            "anthropic-beta"
-        ]
+            "anthropic-beta",
+            "x-client-trace"
+        ],
+        "busbar's native defaults the caller did not send, then every caller field but the credential"
     );
     assert_eq!(
         field(&r, "user-agent"),
-        [b"Anthropic/Python 0.39.0".as_slice()]
+        [b"Anthropic/Python 0.39.0".as_slice()],
+        "a caller that sent no user-agent: the native client's (1.5.5's bytes)"
     );
     assert_eq!(field(&r, "accept"), [b"application/json".as_slice()]);
     assert_eq!(
         field(&r, "anthropic-beta"),
         [b"a".as_slice(), b"b".as_slice()]
     );
-    // The same caller routed to an openai far end forwards none of the anthropic selectors.
+    assert_eq!(field(&r, "x-client-trace"), [b"abc".as_slice()]);
+}
+
+#[test]
+fn the_caller_s_value_replaces_busbar_s_native_default() {
+    let h = head(&[
+        ("content-type", "application/json"),
+        ("user-agent", "my-sdk/1.0"),
+    ]);
+    let a = arrived(
+        "/v1/messages",
+        &h,
+        r#"{"model":"claude","max_tokens":5,"messages":[]}"#,
+    );
+    let r = build(&a, &h, &shaping(), "p", "claude").expect("built");
+    assert_eq!(field(&r, "user-agent"), [b"my-sdk/1.0".as_slice()]);
+}
+
+#[test]
+fn the_caller_s_tenant_selectors_never_go_out() {
+    let h = head(&[
+        ("content-type", "application/json"),
+        ("OpenAI-Organization", "org-caller"),
+        ("OpenAI-Project", "proj-caller"),
+    ]);
+    let a = arrived(
+        "/v1/chat/completions",
+        &h,
+        r#"{"model":"gpt","messages":[]}"#,
+    );
     let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
-    assert_eq!(field(&r, "anthropic-version").len(), 0);
-    assert_eq!(field(&r, "openai-beta"), [b"assistants=v2".as_slice()]);
-    assert_eq!(field(&r, "authorization").len(), 0);
+    assert_eq!(field(&r, "openai-organization").len(), 0);
+    assert_eq!(field(&r, "openai-project").len(), 0);
+}
+
+#[test]
+fn a_translated_route_forwards_no_caller_field() {
+    let h = head(&[
+        ("content-type", "application/json"),
+        ("anthropic-beta", "a"),
+        ("openai-beta", "assistants=v2"),
+        ("x-client-trace", "abc"),
+    ]);
+    let a = arrived(
+        "/v1/messages",
+        &h,
+        r#"{"model":"claude","max_tokens":5,"messages":[]}"#,
+    );
+    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    let names: Vec<&str> = r.fields.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["content-type", "user-agent", "accept"]);
+    assert_eq!(
+        field(&r, "user-agent"),
+        [b"OpenAI/Python 1.54.0".as_slice()],
+        "written in the far dialect, as its native client"
+    );
+}
+
+#[test]
+fn a_same_dialect_unknown_body_member_goes_out() {
+    let h = head(&[("content-type", "application/json")]);
+    let a = arrived(
+        "/v1/chat/completions",
+        &h,
+        r#"{"model":"gpt-alias","messages":[],"x_vendor_flag":true}"#,
+    );
+    let r = build(&a, &h, &shaping(), "p", "gpt-alias").expect("built");
+    let v: Value = busbar_plane_llm::codec::json::parse(&r.body).expect("json");
+    assert_eq!(v["model"], "gpt-4o", "the mapped model");
+    assert_eq!(v["x_vendor_flag"], true, "the unknown member, unchanged");
+}
+
+#[test]
+fn a_translated_route_drops_a_member_the_far_dialect_cannot_carry() {
+    let h = head(&[("content-type", "application/json")]);
+    let a = arrived(
+        "/v1/chat/completions",
+        &h,
+        r#"{"model":"claude","messages":[{"role":"user","content":"hi"}],"x_vendor_flag":true}"#,
+    );
+    let r = build(&a, &h, &shaping(), "p", "claude").expect("built");
+    let v: Value = busbar_plane_llm::codec::json::parse(&r.body).expect("json");
+    assert!(v.get("x_vendor_flag").is_none());
 }
 
 #[test]
@@ -223,13 +316,123 @@ fn a_member_the_generation_does_not_hold_is_the_callers_500() {
 }
 
 #[test]
-fn the_pristine_ask_splices_after_the_opening_brace_and_falls_back_to_a_parse() {
-    let out = try_inject_stream_include_usage_pristine(br#" {"a":1}"#.to_vec()).expect("asked");
+fn the_usage_ask_is_a_splice_after_the_opening_brace_or_in_place() {
+    let out = try_inject_stream_include_usage(br#" {"a":1}"#.to_vec()).expect("asked");
     assert_eq!(out, br#" {"stream_options":{"include_usage":true},"a":1}"#);
-    let out = try_inject_stream_include_usage_pristine(br#"{"stream_options":null}"#.to_vec())
-        .expect("asked");
+    let out =
+        try_inject_stream_include_usage(br#"{"stream_options":null}"#.to_vec()).expect("asked");
     assert_eq!(out, br#"{"stream_options":{"include_usage":true}}"#);
-    let out = try_inject_stream_include_usage_pristine(b"[1]".to_vec()).expect("unchanged");
+    let out = try_inject_stream_include_usage(br#"{"z":1, "stream_options":{"b":2}}"#.to_vec())
+        .expect("asked");
+    assert_eq!(
+        out,
+        br#"{"z":1, "stream_options":{"include_usage":true,"b":2}}"#
+    );
+    let out = try_inject_stream_include_usage(b"[1]".to_vec()).expect("unchanged");
     assert_eq!(out, b"[1]");
     assert!(try_inject_stream_include_usage(br#"{"stream_options":"x"}"#.to_vec()).is_err());
+}
+
+/// BUSBAR IS INVISIBLE TO UPSTREAMS, THE URL TOO: a same-dialect attempt carries the caller's own
+/// query, in its order and spelling, but the dialect's governed credential parameters and the ones
+/// the target already sets (busbar's own stream framing); a translated attempt carries none.
+#[test]
+fn the_callers_query_goes_out_on_a_same_dialect_attempt() {
+    assert_eq!(
+        with_caller_query(
+            "gemini",
+            "/v1beta/models/m:streamGenerateContent?alt=sse",
+            "key=secret&alt=json&trace=a%2Fb"
+        ),
+        Some("/v1beta/models/m:streamGenerateContent?alt=sse&trace=a%2Fb".to_string())
+    );
+    assert_eq!(
+        with_caller_query("openai", "/v1/chat/completions", "trace=1&beta=true"),
+        Some("/v1/chat/completions?trace=1&beta=true".to_string())
+    );
+    assert_eq!(with_caller_query("gemini", "/x", "key=secret"), None);
+    let h = head(&[("content-type", "application/json")]);
+    let a = arrive(
+        "POST",
+        "/v1/messages?beta=true",
+        &h,
+        br#"{"model":"claude","max_tokens":5,"messages":[]}"#,
+        &(),
+    )
+    .expect("arrives");
+    let same = build(&a, &h, &shaping(), "p", "claude").expect("built");
+    assert_eq!(same.target, "/v1/messages?beta=true");
+    let crossed = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    assert_eq!(crossed.target, "/v1/chat/completions");
+}
+
+/// A signed dialect's attempt carries no caller query until its signer signs the canonical query
+/// (never a query the signature omits).
+#[test]
+fn a_signed_dialects_attempt_carries_no_query_yet() {
+    assert_eq!(
+        with_caller_query("bedrock", "/model/m/converse", "trace=1"),
+        None
+    );
+}
+
+/// A path-model same-dialect relay sends the caller's bytes: the `model` and `stream` the arrival
+/// carried for routing come back out by byte splices, so key order, spacing and a member busbar has
+/// never heard of all reach the far end as the caller wrote them (DIALECT FIDELITY).
+#[test]
+fn a_path_model_same_dialect_request_reaches_the_far_end_as_the_caller_wrote_it() {
+    let h = head(&[("content-type", "application/json")]);
+    let body = "{ \"zz_never_heard_of\": {\"b\":1,\"a\":2},\n  \"contents\": [ {\"parts\":[{\"text\":\"hi\"}]} ], \"n\": 1.50 }";
+    let a = arrive(
+        "POST",
+        "/v1beta/models/gemini-pro:streamGenerateContent?alt=sse",
+        &h,
+        body.as_bytes(),
+        &(),
+    )
+    .expect("arrives");
+    let r = build(&a, &h, &shaping(), "p", "gem").expect("built");
+    assert_eq!(String::from_utf8_lossy(&r.body), body);
+}
+
+/// A conversation history carrying a `custom` tool call (a type the IR does not model) is relayed
+/// byte-identical within one dialect.
+#[test]
+fn a_history_with_a_custom_tool_call_relays_byte_identical() {
+    let h = head(&[("content-type", "application/json")]);
+    let body = r#"{"model":"gpt","messages":[{"role":"user","content":"go"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_c","type":"custom","custom":{"name":"grammar","input":"x = 1"}}]},{"role":"tool","tool_call_id":"call_c","content":"ok"}],"tools":[{"type":"custom","custom":{"name":"grammar"}}]}"#;
+    let a = arrived("/v1/chat/completions", &h, body);
+    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    assert_eq!(String::from_utf8_lossy(&r.body), body);
+}
+
+/// TENANT SELECTORS COME FROM BUSBAR'S CONFIG: a provider's `organization` / `project` ride every
+/// far request under the headers its dialect declares, and a caller's own never do.
+#[test]
+fn the_providers_tenant_goes_out_and_the_callers_does_not() {
+    let shaping = Shaping::from_settings(&json!({
+        "providers": {
+            "oai": {
+                "protocol": "openai",
+                "base_url": "https://api.example",
+                "organization": "org-cfg",
+                "project": "proj-cfg"
+            }
+        },
+        "models": { "gpt": { "provider": "oai" } },
+        "pools": { "p": { "members": ["gpt"] } }
+    }))
+    .expect("reads");
+    let h = head(&[
+        ("content-type", "application/json"),
+        ("openai-organization", "org-caller"),
+    ]);
+    let a = arrived(
+        "/v1/chat/completions",
+        &h,
+        r#"{"model":"gpt","messages":[]}"#,
+    );
+    let r = build(&a, &h, &shaping, "p", "gpt").expect("built");
+    assert_eq!(field(&r, "openai-organization"), [b"org-cfg".as_slice()]);
+    assert_eq!(field(&r, "openai-project"), [b"proj-cfg".as_slice()]);
 }

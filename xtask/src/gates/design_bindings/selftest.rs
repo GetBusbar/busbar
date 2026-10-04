@@ -281,7 +281,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &["xtask/src/gates/no_such_gate.rs"],
     ));
 
-    // (j) A GATE NOBODY RUNS PROVES NOTHING. `qa/segments.toml` is a real file that no workflow
+    // (j) A GATE NOBODY RUNS PROVES NOTHING. `qa/construction.toml` is a real file that no workflow
     //     invokes as a script, so citing it as a gate is exactly the shape this refuses.
     let mut ov = Overlay::new();
     ov.set(
@@ -290,7 +290,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
             "PB-6",
             "a data file cited as a gate",
             "mapped",
-            vec![check("gate", "qa/segments.toml")],
+            vec![check("gate", "qa/construction.toml")],
         )]),
     );
     r.push(prove_red(

@@ -1,4 +1,0 @@
-# The source roots a `carried` instrument may live in (read by path by crates/busbar/tests/field_evidence.rs):
-# the engine's thin bin, then the llm codec. One path per line.
-crates/busbar/src
-crates/busbar-plane-llm/src/codec

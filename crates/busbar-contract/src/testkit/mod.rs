@@ -7,6 +7,7 @@
 //! the dev-only `test-seal` feature (Locked Decision #33: no testkit ships), so a release build has
 //! none of it and a plugin reaches it only on its `[dev-dependencies]` edge.
 
+pub mod store_v3;
 pub mod warn_capture;
 
 pub use warn_capture::WarnCapture;

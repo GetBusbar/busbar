@@ -89,6 +89,17 @@ pub trait HostServices: Send + Sync {
     /// span each (key = the counterparty), drained. Never pends.
     fn trust_due(&self, caller: &Caller) -> Stored;
 
+    /// `trust.verify`: verify `signatures` (a JSON array as the document wrote it; empty = none)
+    /// over `payload` against the root key `caller`'s declared pin names for `counterparty`. READY
+    /// with a `SIGNED_*` verdict; the bytes name a refused algorithm or critical member. Never pends.
+    fn trust_verify(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        payload: &[u8],
+        signatures: &[u8],
+    ) -> Stored;
+
     /// `entitlement.check`: whether the principal of `unit` (the unit the calling crossing
     /// serves, `None` for a crossing that serves none) is entitled to `target`,
     /// `"<scope_kind>:<name>"`. READY `ENTITLED` or `NOT_ENTITLED`. Never pends.
@@ -97,6 +108,20 @@ pub trait HostServices: Send + Sync {
     /// `random.fill`: `len` bytes from the kernel's CSPRNG, READY with exactly those bytes; `len`
     /// outside `1..=MAX_RANDOM_FILL` is REFUSED, an OS randomness failure FAILED. Never pends.
     fn random_fill(&self, len: u64) -> Stored;
+
+    /// `records.secret`: the secret of the host-held credential `id` of `kind`, and whether it is
+    /// live (`SECRET_LIVE`), in span `0`; an unknown id answers a fixed dummy secret, not live, in
+    /// equal time. The loader has already checked that the caller declared `kind`. A host with no
+    /// credential source refuses.
+    fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran;
+}
+
+/// THE HOST-HELD CREDENTIAL READ `records.secret` serves: the secret of credential `id` of `kind`
+/// and whether it may authenticate now. An unknown id answers a fixed dummy secret, not live, at the
+/// same cost (the kernel's credential lookup holds that rule; an implementation only delegates).
+pub trait CredentialRead: Send + Sync {
+    /// The secret and its liveness.
+    fn read(&self, kind: &str, id: &str) -> (crate::redacted::Redacted<String>, bool);
 }
 
 /// A `records.list` request, as the host copied it out of the caller's `in`.

@@ -20,6 +20,9 @@ const PLANT: &str = "crates/busbar-core/src/frozen.rs";
 // qa-names: docs/pin.md -- xtask/src/gates/instance_noun_neutrality/cases.rs -- the overlay-only pinning document a planted frozen-literal marker cites; one case deletes it to prove a cited pin that does not exist is refused
 const PIN: &str = "docs/pin.md";
 const NEUTRAL: &str = "pub fn install() {}\n";
+const WIRE_TOML: &str = "crates/busbar-plane-llm/dialects/openai_responses.toml";
+const WIRE_MOD: &str = "crates/busbar-plane-llm/src/codec/openai_responses/mod.rs";
+const WIRE_OTHER: &str = "crates/busbar-plane-llm/src/codec/proto_stream.rs";
 const GOOD: &str = "pub const DOOR: &str = \"the mcp door\"; \
                     // noun-neutrality: frozen-literal pinned-by=docs/pin.md the door's wire text\n";
 const PIN_TEXT: &str = "The catalog renders: the mcp door\n";
@@ -121,6 +124,29 @@ pub(super) fn push(
     };
     let good = || ov(&[(PLANT, GOOD), (PIN, PIN_TEXT)]);
     let mcp = row_id("mcp");
+
+    // THE DIALECT'S OWN WIRE-PATH TABLE (ruling C5-Q1, the #324 precedent): a Responses item type
+    // spelled in the dialect module's drop table is the provider's word; the same word in another
+    // constant of that module, or in a drop table outside a dialect module, is a leak.
+    let table = "const RESPONSE_DROPS: &[&str] = &[\n    \"output[].type=mcp_call\",\n];\n";
+    let dialect = |body: &str| ov(&[(WIRE_TOML, ""), (WIRE_MOD, body), (WIRE_OTHER, NEUTRAL)]);
+    red(
+        "a dialect module's wire-path table entry is the provider's word; the same word in another \
+         constant of that module is a leak",
+        &mcp,
+        WIRE_MOD,
+        dialect(table),
+        dialect(&format!(
+            "{table}const PLANTED: &str = \"output[].type=mcp_call\";\n"
+        )),
+    );
+    red(
+        "a wire-path table outside a dialect module still counts",
+        &mcp,
+        WIRE_OTHER,
+        dialect(table),
+        ov(&[(WIRE_TOML, ""), (WIRE_MOD, table), (WIRE_OTHER, table)]),
+    );
 
     // THE EXEMPTION IS REAL, AND ONLY THE MARKER GRANTS IT: with the pragma the `mcp` row is green;
     // the same literal with the marker stripped reds it, naming the file.

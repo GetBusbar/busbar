@@ -135,6 +135,7 @@ pub mod grammar;
 pub mod guest;
 pub mod inflight;
 pub mod plane_driver;
+pub mod probe;
 pub mod pump;
 pub mod recovery;
 pub mod registry;
@@ -224,11 +225,11 @@ pub use busbar_kernel_wal::durable;
 // whether or not a plane needing the seam is built. See the module header.
 pub mod egress;
 pub mod egress_auth;
+/// THE EGRESS GRANT GATE: may busbar spend its own outbound credential on a subject for this
+/// caller? Authorization, so it lives in `busbar-kernel-scope` (Part 2 #36); re-exported here for
+/// the planes that already reach the kernel.
+pub use busbar_kernel_scope::egress as egress_grant;
 pub mod endpoints;
-// The narrow, `pub` re-export facade a plane's own extracted engine reaches DOWN into core through
-// once it lives in its own plane crate (1.6.0 money-path relocation, Phase 0). Pure visibility lift
-// — see the module.
-pub mod engine_facade;
 pub mod export;
 pub mod failover;
 pub mod governance;
@@ -259,6 +260,10 @@ pub mod operation {
     pub use busbar_contract::operation::*;
 }
 
+// The kernel member crates' minting tests (ARCHITECT ruling A): minting is legal only here.
+#[cfg(test)]
+#[path = "tests/members/mod.rs"]
+mod member_tests;
 #[cfg(test)]
 #[path = "tests/operation_tests.rs"]
 mod operation_tests;
@@ -282,26 +287,26 @@ pub mod proxy;
 /// de-vocab): it is core's own auth-middleware infrastructure — gating every request in
 /// `auth_middleware` before any handler runs — not part of the admin HTTP API service.
 pub mod ratelimit;
+/// THE DURABLE PER-PRINCIPAL RESIDUAL LOG: one hash-chained `usage.residual` row per settle that
+/// carried usage counts no billing class records (MONEY LAW). See the module header.
+pub mod residual_log;
 // THE NEUTRAL PER-SESSION SUBSTRATE relocated DOWN to busbar-substrate (std-only, money-safe, zero
 // busbar deps). Core re-exports it so `crate::session::{SessionStore, SessionKey, OwnerKey}` — the
 // gate's screen-cache tenant, the appbuild session_store construction and the App field — are
 // unchanged. The former hooks::gate ↔ core::session co-location edge is dissolved: the gate now
 // reaches `SessionStore` via the substrate type.
 pub mod session;
+pub mod state;
+pub mod store;
 /// The wire error-type taxonomy (`ERR_TYPE_*`), relocated out of `admin::` (1.6.0 de-vocab): the
 /// constant string VALUES (the wire error-type tokens) are byte-identical; only their Rust binding
 /// path moved, since `ingress::dispatch`/`ingress::arrival_host`/`router` consume them, not the
 /// admin HTTP API.
 pub(crate) mod taxonomy;
-// AWS SigV4: the inbound check (the identity unit's) and its signing helpers.
-pub mod sigv4;
-pub mod state;
-pub mod store;
 
 // ── W4.b P2: substrate ENGINE absorbed INTO busbar-kernel; busbar-substrate deleted. The neutral
 // engine modules that had no kernel counterpart land here at their historical `busbar_kernel::` paths.
 pub mod admin_verbs;
-pub mod admin_witness;
 pub mod api;
 pub mod detached;
 pub mod plane_routes;
@@ -344,6 +349,11 @@ pub mod router;
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+// busbar-contract's capability tests that mint a token: a token constructor is spelled only inside
+// this crate's src (construction `token-sealed`), so they live here.
+#[cfg(test)]
+#[path = "tests/caps_tests/mod.rs"]
+mod caps_tests;
 
 pub use appbuild::{
     build_app_from_config, inert_durable_keys_banner, load_config_from_disk, open_relay_banner,
@@ -354,7 +364,8 @@ pub use preflight::{
     plugins_preflight, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
 };
 pub use router::{
-    build_router, build_split_routers_with_limits, fallback_error_response, REQUEST_ACTIVITY_TICKS,
+    build_router, build_split_routers_serving, build_split_routers_with_limits,
+    fallback_error_response, REQUEST_ACTIVITY_TICKS,
 };
 // Referenced as `crate::...` only from the test trees (`#[cfg(test)]`), so the production lib
 // build sees them as unused — allowed, with the reason written down rather than widened away.
@@ -379,12 +390,42 @@ use busbar_contract::abi::mechanism::route::RouteAuth;
 /// core widening the `pub(crate)` router fn or the `CoreRouteTable`/`CoreRoute` types to `pub`.
 #[cfg(any(test, feature = "test-support"))]
 pub fn base_data_route_table_view(app: &state::App) -> Vec<(String, RouteAuth)> {
-    router::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref())
-        .1
-        .routes()
-        .iter()
-        .map(|r| (r.path.clone(), r.auth))
-        .collect()
+    router::base_data_router(
+        &app.plugin_routes,
+        &app.plane_slots,
+        app.oauth_as.as_ref(),
+        Vec::new(),
+    )
+    .1
+    .routes()
+    .iter()
+    .map(|r| (r.path.clone(), r.auth))
+    .collect()
+}
+
+/// THE KERNEL'S OWN DATA ROUTES for `app`, as lines (path, method, bar): the routes the data router
+/// mounts before any door plane's, read off the same `router::base_data_router` production calls.
+/// The composition root writes them on the data listener's guest list beside the door planes'
+/// claims (THE DESIGN §6: a cleanliness crate's route is a claimant).
+#[must_use]
+pub fn base_data_core_lines(
+    app: &state::App,
+) -> Vec<(
+    String,
+    busbar_contract::abi::mechanism::route::RouteMethod,
+    busbar_contract::abi::mechanism::route::RouteAuth,
+)> {
+    router::base_data_router(
+        &app.plugin_routes,
+        &app.plane_slots,
+        app.oauth_as.as_ref(),
+        Vec::new(),
+    )
+    .1
+    .routes()
+    .iter()
+    .map(|r| (r.path.clone(), r.method, r.auth))
+    .collect()
 }
 
 /// TEST-SUPPORT ROUTER-SURFACE VIEW, with the declared METHOD. The sibling of
@@ -393,12 +434,17 @@ pub fn base_data_route_table_view(app: &state::App) -> Vec<(String, RouteAuth)> 
 /// [`RouteAuth`]) — the `pub(crate)` `CoreRoute`/`CoreRouteTable` stay sealed.
 #[cfg(any(test, feature = "test-support"))]
 pub fn base_data_route_method_view(app: &state::App) -> Vec<(String, String, RouteAuth)> {
-    router::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref())
-        .1
-        .routes()
-        .iter()
-        .map(|r| (r.path.clone(), r.method.as_str().to_string(), r.auth))
-        .collect()
+    router::base_data_router(
+        &app.plugin_routes,
+        &app.plane_slots,
+        app.oauth_as.as_ref(),
+        Vec::new(),
+    )
+    .1
+    .routes()
+    .iter()
+    .map(|r| (r.path.clone(), r.method.as_str().to_string(), r.auth))
+    .collect()
 }
 
 /// TEST-SUPPORT VIEW of [`state::App::boot_route_paths`]: the plugin-route paths this process can

@@ -878,19 +878,7 @@ fn wire_up_plane(
     backing: Option<stage::Staged>,
 ) -> Result<DynPlane, String> {
     // ── 1. Transport handshake FIRST (shared with the cold kinds). ──
-    let transport = {
-        let f = unsafe {
-            lib.get::<busbar_contract::abi::cold::AbiFn>(busbar_contract::abi::cold::symbol::ABI)
-        }
-        .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
-        crate::ffi_guard_confined(&display, "abi", || unsafe { (*f)() })?
-    };
-    if transport != busbar_contract::abi::cold::TRANSPORT_VERSION {
-        return Err(format!(
-            "plane '{display}' targets transport ABI v{transport}, engine speaks v{}",
-            busbar_contract::abi::cold::TRANSPORT_VERSION
-        ));
-    }
+    crate::abi_handshake(crate::abi_symbol(&lib, &display)?, &display, "plane")?;
 
     // ── 2. Kind bound at load — exported kind must be `plane` AND equal the signed manifest kind. ──
     let exported_kind = crate::read_plugin_kind(&lib, &display)?;

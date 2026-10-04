@@ -6,7 +6,7 @@
 # decides anything; every check before it merely reports. That inversion is the entire design:
 #
 #   * NO CHECK CAN MASK ANOTHER. Checks do not control flow, so ordering cannot decide what runs.
-#     verify-deploy.yml's (g) failed on a Cloudflare 403 from 2026-08-08 and (h)(i)(j)(k)(l) —
+#     the removed verify-deploy.yml's (g) failed on a Cloudflare 403 from 2026-08-08 and (h)(i)(j)(k)(l) —
 #     including the only check that boots the published image — did not execute once for six days,
 #     while a `latest` that exited 1 on `docker run` sat in production.
 #   * A CHECK THAT COULD NOT RUN IS NOT A PASS. An id in the expected list with no ledger row is
@@ -225,7 +225,7 @@ selftest() {
   #
   # Every case in 5b/5c drove lib.sh's lookups — and no check called them. docker-checks.sh and
   # platform-checks.sh hand-rolled the same lookup with `printf '%s' "$STAGED_RECORD" | jq`, i.e.
-  # treating STAGED_RECORD as JSON CONTENT (which is what fleet-autoscaler.yml's resolve job emits),
+  # treating STAGED_RECORD as JSON CONTENT (which is what the removed fleet-autoscaler.yml's resolve job emits),
   # while lib.sh required a PATH. So this selftest proved code no release executed, and record()'s
   # qa-sha column — read through the path convention — was blank on every real row.
   local chk

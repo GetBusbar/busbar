@@ -4,8 +4,10 @@
 //! `crates/busbar-plane-llm/dialects/<d>.toml`, and `cargo xtask dialect compile`
 //! ([`crate::dialect`]) emits the committed `src/codec/<d>/map.gen.rs` the plane compiles. A table
 //! file edited by hand, or a mapping file edited without a recompile, is a plane that no longer runs
-//! the mapping it states. This gate compiles every mapping file afresh and is RED, naming the file,
-//! when any committed table file differs from (or is missing beside) its compile.
+//! the mapping it states. The same compile renders the translation matrix
+//! (`docs/llm-translation-matrix.md`), so a matrix edited by hand, or left stale beside an edited
+//! mapping file, is the same drift. This gate compiles every mapping file afresh and is RED, naming
+//! the file, when any committed output differs from (or is missing beside) its compile.
 
 use crate::ctx::{Ctx, Overlay};
 use crate::gates::{prove_green, prove_red, Gate, Report};
@@ -102,6 +104,44 @@ impl Gate for DialectMapGate {
             &[ROW_DRIFT],
             stale,
             &[responses.as_str()],
+        ));
+
+        // An ANSWER row naming a slot the registry (`codec::carry::AnswerSlot`) does not have.
+        let anthropic = format!("{}/anthropic.toml", crate::dialect::DIALECT_DIR);
+        let mut unregistered = Overlay::new();
+        unregistered.set(
+            &anthropic,
+            cx.read(&anthropic).unwrap_or_default().replacen(
+                "\"stop_reason\" = { prim = \"finish_reason\" }",
+                "\"stop_reason\" = { ir = \"no_such_answer_slot\" }",
+                1,
+            ),
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "an answer row naming an unregistered slot does not compile, naming it",
+            &[ROW_DRIFT],
+            unregistered,
+            &["no_such_answer_slot"],
+        ));
+
+        // A HAND EDIT of the generated translation matrix.
+        let matrix = crate::dialect::MATRIX;
+        let mut matrix_edit = Overlay::new();
+        matrix_edit.set(
+            matrix,
+            cx.read(matrix)
+                .unwrap_or_default()
+                .replacen(" | - |", " | yes |", 1),
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a hand-edited translation matrix is RED, naming it",
+            &[ROW_DRIFT],
+            matrix_edit,
+            &[matrix],
         ));
 
         report

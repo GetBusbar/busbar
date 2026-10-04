@@ -56,7 +56,7 @@ use crate::grammar::SelectorForm;
 use crate::transport::wire::{
     CloseReason, Encode, Framing, StatusAt, TransportError, Unit0Trigger, WireStatusClass,
 };
-use crate::transport::{Role, Side};
+use crate::transport::Side;
 
 /// The transport decl's own generation (module docs): the value of [`TransportDecl::version`].
 pub const TRANSPORT_DECL_MAJOR: u32 = 2;
@@ -406,16 +406,6 @@ pub mod code {
             0 => Some(Side::Accept),
             1 => Some(Side::Dial),
             _ => None,
-        }
-    }
-
-    /// The role a composes-over list of `len` entries derives (`crate::transport::role_of`).
-    #[must_use]
-    pub const fn role_of_len(len: usize) -> Role {
-        if len == 0 {
-            Role::Carrier
-        } else {
-            Role::Framer
         }
     }
 }

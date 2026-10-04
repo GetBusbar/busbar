@@ -27,14 +27,39 @@
 //! The driver moves no money: units, cancel bills and abandoned ends go to the [`MoneySeam`].
 //!
 //! A plane's admin routes are served by its `serve` op, on the admin router: [`serve`].
+//!
+//! THE INSTANCE'S ONE DRIVER TICKET (`BUSBAR-1.6.0.md` :2558, :3315, B.3.7): minted when the driver
+//! is built, persistent, outside `max_inflight`, recycled when the driver goes. [`PlaneDriver::ticks`]
+//! runs the instance's lifecycle `tick` on it at each `next_tick_ns` the last answered (the first at
+//! once; `0` = no more), so a conn read or a host service that pends inside `tick` is woken through
+//! `drive`. A session's unsolicited output (R-B) wakes the same ticket: [`PlaneDriver::drives`]
+//! wakes each session its `drive` names, and the session collects its output.
+//!
+//! DUPLEX SESSIONS (K6): [`PlaneUnits::session`], after `open_unit` admitted the unit.
+//!
+//! THE INSTANCE'S ADMISSION: built, the driver admits the instance to the kernel's host services
+//! ([`KernelServices::admit`]) from what it declares ([`PlaneCalls::declared`], its Statement tail)
+//! and its configured section, so its caller-scoped services (`records.*`, `sign`, `trust.*`)
+//! answer; right before each `tick` it marks what is due ([`KernelServices::mark_due`]), so the
+//! plane's `trust.due` sees the marks.
+//!
+//! THE INSTANCE'S RECORD WRITES (ruling H2 U10): a piece's `RecordWrite`s join the kernel's one
+//! write-behind batcher ([`crate::host_records::WriteBehind`]) and the instance reads them at once
+//! through the pending-records overlay; the piece completes only once the store took every one.
+//! The batcher's cadence is not the plane's tick schedule: [`KernelServices::flushes`] restarts a
+//! stalled flush every second, and a reload never waits on a store write (the unit waiting on it is
+//! cancelled; the write itself runs on).
 
 mod cancel;
 mod epoch;
 mod far_end;
 mod money;
+mod needs;
+mod probe;
 mod route;
 pub mod serve;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::mechanism::call::{
@@ -53,20 +78,24 @@ use busbar_contract::caps::{
 };
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::Caller;
-use tokio::sync::watch;
+use tokio::sync::{watch, Notify};
 
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
 pub use far_end::{
-    AuthBinding, Egress, EgressFarEnd, MemberRoute, UnitRoute, DEFAULT_ERROR_BODY_MAX,
+    AuthBinding, Egress, EgressFarEnd, MemberRoute, ResponseKeep, UnitRoute, DEFAULT_ERROR_BODY_MAX,
 };
 pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
-pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick};
+pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
+pub use probe::PlaneProbes;
+pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, SessionCaller};
 
 use crate::auth::CallerRefKey;
-use crate::host_services::KernelServices;
+use crate::host_services::{InstanceFacts, KernelServices, Signing};
 use crate::slice::GroupLeaseSlip;
 use crate::teller::{Ended, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
+use crate::trust::section::parse_section;
+use busbar_contract::ids::RecordSchemaId;
 
 /// The capacities of the host buffers the driver hands a plane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +194,18 @@ pub struct PlaneDriver {
     reload: watch::Sender<bool>,
     /// The kernel's record write path and the instance the plane's writes are keyed by.
     records: Option<(Arc<KernelServices>, Caller)>,
+    driver: Option<Ticket>,
+    services: Arc<KernelServices>,
+    /// The open duplex sessions, by stream: what wakes each when `drive` names it (R-B).
+    sessions: Mutex<HashMap<u64, Arc<Notify>>>,
+}
+
+impl Drop for PlaneDriver {
+    fn drop(&mut self) {
+        if let Some(t) = self.driver.take() {
+            self.calls.recycle(t);
+        }
+    }
 }
 
 impl std::fmt::Debug for PlaneDriver {
@@ -176,19 +217,71 @@ impl std::fmt::Debug for PlaneDriver {
 }
 
 impl PlaneDriver {
-    /// The driver of one open plane instance, reached through `calls`.
+    /// The driver of one open plane instance, reached through `calls`: the instance admitted to
+    /// `services` from what it declares and its configured `section` (its key and value), then its
+    /// one driver ticket minted.
+    ///
+    /// # Errors
+    ///
+    /// The section's trust keys break their rule, or `services` refused the admission.
     pub fn new(
         calls: Arc<dyn PlaneCalls>,
         config: DriverConfig,
         money: Arc<dyn MoneySeam>,
-    ) -> Self {
-        PlaneDriver {
+        services: Arc<KernelServices>,
+        section: (&str, &serde_yaml::Value),
+    ) -> Result<Self, String> {
+        let d = calls.declared();
+        let trust = parse_section(section.0, section.1, &d.trust_keys)?;
+        let facts = InstanceFacts {
+            record_kinds: d
+                .record_kinds
+                .iter()
+                .copied()
+                .map(RecordSchemaId::new)
+                .collect(),
+            signing: d.signing.map(|(domain, kid_prefix)| Signing {
+                domain: domain.into(),
+                kid_prefix: kid_prefix.into(),
+            }),
+            trust: trust.into_iter().collect(),
+            scope_kinds: d.scope_kinds.iter().map(|k| (*k).to_string()).collect(),
+            record_chains: d.record_chains.clone(),
+        };
+        services.admit(&d.label, facts).map_err(|e| e.to_string())?;
+        let driver = calls.driver();
+        Ok(PlaneDriver {
             calls,
             config,
             money,
             buried: Mutex::new(Vec::new()),
             reload: watch::channel(false).0,
             records: None,
+            driver,
+            services,
+            sessions: Mutex::default(),
+        })
+    }
+
+    /// THE INSTANCE'S TICK SCHEDULE, on its driver ticket: `tick` at once, then at each
+    /// `next_tick_ns` it answers, on the dispatcher's clock; it ends when an answer names `0`, or
+    /// is not READY or PENDING, or no driver ticket was minted. It waits on the runtime's timer
+    /// (as the route's deadline does) and holds no `max_inflight` slot.
+    pub async fn ticks(&self) {
+        let Some(driver) = self.driver else {
+            return;
+        };
+        let mut at = 0;
+        loop {
+            let now = self.calls.now_ns();
+            if at > now {
+                tokio::time::sleep(std::time::Duration::from_nanos(at - now)).await;
+            }
+            self.services.mark_due();
+            match self.calls.tick(driver, self.calls.now_ns()).await {
+                Some(next) if next != 0 => at = next,
+                _ => return,
+            }
         }
     }
 
@@ -264,6 +357,24 @@ pub struct Decoded {
     pub dialect: u32,
     /// The expected units (the admission estimate).
     pub expected: Vec<UnitCount>,
+    /// The entry it routes over: the name inside the plane's own section (ARCHITECT Q-SW6), opaque
+    /// bytes the kernel never parses; `None` = it named none.
+    pub pool: Option<Vec<u8>>,
+    /// What [`Decoded::pool`] names: `ROUTE_POOL` or `ROUTE_DIRECT` (ARCHITECT Q-FL3).
+    pub route: u8,
+}
+
+/// THE KERNEL STEPS A PLANE'S UNIT IS SERVED UNDER ([`PlaneDriver::unit`]'s `steps`): the loop's
+/// [`Units`], told once what the plane's `arrive` decided, before identity and scope run.
+pub trait DriverSteps: Units {
+    /// The unit `ctx` decoded to operation class `op`, routing over the entry its `arrive` named
+    /// (`None` = none named) as a pool or directly (`route`, `ROUTE_*`). Called once, when decode
+    /// proceeds.
+    fn decoded(&self, _ctx: &UnitCtx, _op: OpClassId, _route: u8, _pool: Option<&[u8]>) {}
+
+    /// The units the plane's `arrive` expects the unit to do (its admission estimate, THE DESIGN
+    /// §7 `admission: estimate`), told with [`Self::decoded`]. An estimate never bills.
+    fn expected(&self, _ctx: &UnitCtx, _units: &[UnitCount]) {}
 }
 
 /// A refusal or failure the plane rendered, for the caller.
@@ -401,6 +512,8 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
                 .take(o.units_written as usize)
                 .copied()
                 .collect(),
+            pool: self.driver.calls.arrived_pool(&o),
+            route: o.route,
         })
     }
 
@@ -497,7 +610,7 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
     }
 }
 
-impl<S: Units + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
+impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
     /// S3, the route step: the pump over the unit's own ticket, then the cancel the driver makes
     /// itself on a deadline, a cut or a reload.
     async fn route_async(&self, token: &Pass<Route>, ctx: &UnitCtx) -> StepAnswer<Route> {
@@ -520,9 +633,9 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             let dialect = st.decoded.as_ref().map_or(0, |d| d.dialect);
             let caller_ref = st.caller_ref.clone();
             drop(st);
-            run.lend_unit(self.arrival.claim, dialect, &caller_ref);
+            run.lend_unit(self.arrival.claim, dialect, &caller_ref, 0);
         }
-        let end = self.attempts(&mut run).await;
+        let end = self.attempts(&mut run, None).await;
         let answer = match end {
             route::End::Done => StepAnswer::proceed(token, RoutePlan::default()),
             route::End::Failed(reason) => StepAnswer::refuse(token, Refusal::new(reason)),
@@ -571,7 +684,7 @@ macro_rules! forward_to_steps {
     )*};
 }
 
-impl<S: Units + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C> {
+impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C> {
     forward_to_steps! {
         arrival(token: &Pass<ArrivalStep>, ctx: &UnitCtx) -> StepAnswer<ArrivalStep>;
         authenticate(token: &Pass<Authenticate>, ctx: &UnitCtx) -> StepAnswer<Authenticate>;
@@ -611,6 +724,10 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C>
         let op = decoded
             .as_ref()
             .and_then(|d| classes.get(d.op_class as usize).copied());
+        if let (Some(op), Some(d)) = (op, decoded.as_ref()) {
+            self.steps.decoded(ctx, op, d.route, d.pool.as_deref());
+            self.steps.expected(ctx, &d.expected);
+        }
         self.lock().decoded = decoded;
         op.map_or_else(
             || StepAnswer::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
@@ -667,7 +784,7 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C>
     }
 }
 
-impl<S: Units + Sync, F: FarEnd, C: CallerEnd> RouteAwait for PlaneUnits<'_, S, F, C> {
+impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> RouteAwait for PlaneUnits<'_, S, F, C> {
     fn route_leg<'a>(
         &'a self,
         token: &'a Pass<Route>,

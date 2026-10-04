@@ -9,8 +9,9 @@
 //!   through the governance book's one accrual (`GovState::record_usage`), which files it in the
 //!   window of the unit's ARRIVAL epoch (THE DESIGN, section 7: "same balance, same window, same row");
 //! * the unit's flat request fee is refunded as a separate act from the ledgering
-//!   (`GovState::refund_request`), decided by the unit's [`FeeRefund`] rule: 1.5.5's non-2xx
-//!   caller status, or, for a plane new in 1.6.0, the plane's own fee-unit report;
+//!   (`GovState::refund_charge`, over the admission's own charge), decided by the unit's
+//!   [`FeeRefund`] rule: 1.5.5's non-2xx caller status, or, for a plane new in 1.6.0, the plane's
+//!   own fee-unit report;
 //! * a cancelled unit's bill (the four 1.5.5 cancel rules, computed by the driver) is ledgered the
 //!   same way, and the unit's later end ledgers nothing twice;
 //! * `on_exhaustion: finish-unit` (the default, 1.5.5) never cuts. `cut-stream` (new in 1.6.0) cuts
@@ -26,7 +27,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::abi::plane::{UnitCount, UNITS_REPORTED};
+use busbar_contract::abi::plane::{units_bill, UnitCount};
 use busbar_contract::records::VirtualKey;
 use busbar_contract::UnitKey;
 
@@ -66,6 +67,9 @@ pub struct UnitMoney {
     pub mode: ExhaustionMode,
     /// Who decides the unit's flat-fee refund, chosen by the root for the unit's plane.
     pub fee: FeeRefund,
+    /// What the unit's admission charged ([`AdmitGrant::charge`](crate::governance::AdmitGrant::charge)):
+    /// the one input its fee refund reads.
+    pub charge: crate::governance::FeeCharge,
 }
 
 /// WHO DECIDES A UNIT'S FLAT-FEE REFUND. The design's money section: the plane reports the units it
@@ -79,7 +83,7 @@ pub enum FeeRefund {
     CallerStatus,
     /// The plane decides: these indices into [`UnitMoney::classes`] are its declared fee units,
     /// each also a billable class (the tail check holds `fee_units ⊆ billable_classes`) reported as a
-    /// [`UNITS_REPORTED`] count of 0 or 1. An end whose fee units report no count above zero
+    /// billing count ([`units_bill`]) of 0 or 1. An end whose fee units report no count above zero
     /// refunds the fee. A fee unit's count is never ledgered as usage: the fee itself was charged
     /// at admission (#21).
     PlaneFeeUnits(Arc<[u32]>),
@@ -101,7 +105,7 @@ impl FeeRefund {
             FeeRefund::CallerStatus => !(200..=299).contains(&caller_status),
             FeeRefund::PlaneFeeUnits(fees) => !last
                 .iter()
-                .any(|u| u.source == UNITS_REPORTED && u.amount > 0 && fees.contains(&u.class)),
+                .any(|u| units_bill(u.source) && u.amount > 0 && fees.contains(&u.class)),
         }
     }
 }
@@ -184,7 +188,7 @@ impl PlaneMoney {
             }
         }
         if m.fee.refunds(caller_status, &open.last) {
-            self.gov.refund_request(&m.cost, &m.key, &m.pool, m.arrived);
+            self.gov.refund_charge(&m.charge);
         }
     }
 
@@ -195,6 +199,14 @@ impl PlaneMoney {
             .get(&key)
             .map(|o| o.last.clone())
             .unwrap_or_default()
+    }
+
+    /// The key unit `key` is ledgered, metered and priced under: its serving member's once its
+    /// answer committed ([`MoneySeam::served`]), else the member it was opened with; `None` when no
+    /// money facts are open for it.
+    #[must_use]
+    pub fn serving(&self, key: UnitKey) -> Option<String> {
+        self.lock().get(&key).map(|o| o.money.model.clone())
     }
 
     /// How many units' money facts are open (a witness: every end closes its unit).
@@ -302,11 +314,12 @@ fn named(
     Some(units)
 }
 
-/// The counts the plane REPORTED (not its estimates), as `(class, amount)`: what a bill ledgers.
-fn reported(units: &[UnitCount]) -> Vec<(u32, u64)> {
+/// The counts that bill ([`units_bill`]: reported or floor, never an estimate), as `(class, amount)`:
+/// what a bill ledgers.
+pub(super) fn reported(units: &[UnitCount]) -> Vec<(u32, u64)> {
     units
         .iter()
-        .filter(|u| u.source == UNITS_REPORTED)
+        .filter(|u| units_bill(u.source))
         .map(|u| (u.class, u.amount))
         .collect()
 }

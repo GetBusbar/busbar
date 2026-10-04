@@ -499,3 +499,69 @@ async fn webrtc_attach_fails_closed_when_mint_fails() {
     .await;
     assert!(r.is_err(), "a failed mint refuses the session");
 }
+
+/// A FAILED WEBRTC MINT REFUNDS ITS SESSION FEE EXACTLY ONCE (TODO 17(b), ARCHITECT R4): `attach`
+/// opens the governed session, counting its fee at the open under the same dry check, then mints; a
+/// mint that fails hands the browser no secret, so the session never opened and its fee is given back
+/// through the governance refund. The metering row keeps the count (the refund adjusts the budget
+/// book only); a kept session attached first on the same key proves one fee comes back and not two.
+/// RED with the fee counted at `served()`: the failed attach counted nothing.
+#[tokio::test]
+async fn a_failed_webrtc_mint_refunds_its_session_fee_exactly_once() {
+    let host = Arc::new(FixtureHost::new().governed().with_count_cap(1_000));
+    let key = busbar_contract::records::VirtualKey {
+        id: "vk-webrtc-fee".to_string(),
+        ..Default::default()
+    };
+    let meter = || {
+        let host: Arc<FixtureHost> = Arc::clone(&host);
+        TurnMeter::new(
+            host,
+            key.clone(),
+            "streaming-server",
+            crate::OPENAI_REALTIME,
+        )
+    };
+    let rt = runtime();
+    let locked = SessionConfig {
+        instructions: Some("be helpful".into()),
+        ..SessionConfig::default()
+    };
+    let _kept = attach(
+        &rt,
+        &FakeMinter { fail: false },
+        OpenAiRealtimeCodec,
+        "acct",
+        "call-kept",
+        locked.clone(),
+        Some(meter()),
+        1,
+    )
+    .await
+    .expect("the kept session attaches");
+    let failed = attach(
+        &rt,
+        &FakeMinter { fail: true },
+        OpenAiRealtimeCodec,
+        "acct",
+        "call-mint-fails",
+        locked,
+        Some(meter()),
+        1,
+    )
+    .await;
+    assert!(
+        matches!(failed, Err(crate::topology::webrtc::AttachError::Mint(_))),
+        "the premise: the mint failed after the governed open"
+    );
+    assert_eq!(
+        host.session_rows(&key.id),
+        2,
+        "the failed attach counted its session fee at the open, under the dry check"
+    );
+    assert_eq!(
+        host.ledger_usage(&key.id).map_or(0, |u| u.sessions),
+        1,
+        "the failed mint's fee is given back exactly once; the kept session's stays"
+    );
+}

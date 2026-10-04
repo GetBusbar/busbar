@@ -25,7 +25,9 @@ fn installed() -> Vec<&'static Diagnostic> {
 
 /// The codes the linked first-party plugins DECLARE (K9a S3), read off each linked row's `declares`
 /// section exactly as the plugin states it — the same field-by-field reading the composition root's
-/// declaration check makes, so the page documents what the catalogue installs.
+/// declaration check makes, so the page documents what the catalogue installs. Read only by the
+/// `linked_axis_exports` cells, so gated with them.
+#[cfg(linked_axis_exports)]
 fn declared_by_linked_plugins() -> Vec<&'static Diagnostic> {
     use busbar_contract::diagnostic::{Class, Severity};
     let leak = |v: &serde_json::Value| -> &'static str {
@@ -114,6 +116,9 @@ fn every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues() {
 /// A declared code never collides with the catalogue (the root refuses that at boot; the page would
 /// document two meanings for one banner) — and the linked plugins do declare codes, so the page's
 /// declared half is not vacuously empty.
+// "The linked plugins declare codes" reads the linked export rows' declared codes; a build that
+// links no plugin (`--no-default-features`) declares none, so this cell gates on the exports axis.
+#[cfg(linked_axis_exports)]
 #[test]
 fn declared_codes_do_not_collide_with_the_registry() {
     let declared = declared_by_linked_plugins();

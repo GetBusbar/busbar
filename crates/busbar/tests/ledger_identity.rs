@@ -55,9 +55,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use busbar_contract::caps::{
-    Consumption, Grant, KernelSeal, MeterClassId, QuantitySource, Usage, UsageLine,
-};
+use busbar_contract::caps::{Consumption, MeterClassId, QuantitySource, Usage, UsageLine};
 use busbar_kernel_ledger::cost::{price, History, LaneClass, Posting, RateCard, STANDARD_TIER_BP};
 
 // The binary has no library target, so the composition root's identity check is reached the only
@@ -203,9 +201,26 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
     // ── the readout ─────────────────────────────────────────────────────────────────────────────
     let first = rig.settled_usage(delivered);
     let second = rig.usage_bytes();
+    // Two no-traffic reads must RECONCILE — every usage FIGURE byte-for-byte identical. The one
+    // field excluded from this compare is the top-level `as_of`: the freshness marker
+    // (`UsageView.as_of`), stamped at serialize time from `busbar_kernel::store::now()`, which is
+    // `SystemTime::now()` wall-now (store/vocab.rs:142, "THE host wall clock" — no pinnable seam:
+    // the admin read calls it directly, not the plane host-clock service). 1.5.5 stamps as_of at
+    // read time too, so two reads taken a wall-second apart legitimately differ THERE and only
+    // there; the shadow-oracle masks it the same way (1.5.5 golden `as_of:0`). It is a freshness
+    // marker, explicitly NOT part of the ledger/legacy reconciliation this test claims. Everything
+    // else — window, total, by_model, by_key, by_key_truncated, currency — must be equal.
+    let without_as_of = |bytes: &[u8]| -> serde_json::Value {
+        let mut v: serde_json::Value =
+            serde_json::from_slice(bytes).expect("the usage response is JSON");
+        v.as_object_mut().expect("an object").remove("as_of");
+        v
+    };
     assert_eq!(
-        first, second,
-        "two reads of the legacy usage projection with no traffic between them differ"
+        without_as_of(&first),
+        without_as_of(&second),
+        "two reads of the legacy usage projection with no traffic between them differ beyond the \
+         volatile `as_of` freshness marker"
     );
     let usage: serde_json::Value =
         serde_json::from_slice(&first).expect("the usage response is JSON");
@@ -532,7 +547,7 @@ fn card() -> RateCard {
 
 /// One delivered response's usage report, as the mock fixes it.
 fn one_response() -> Usage {
-    let token = Grant::<Consumption>::mint(&KernelSeal::acquire_for_kernel());
+    let token = busbar_kernel::test_support::tokens::grant::<Consumption>();
     Usage::report(
         &token,
         [("input", IN_TOK), ("output", OUT_TOK)]
@@ -588,7 +603,7 @@ impl Rig {
         // a control file the rig flips to take it down without busbar ever seeing a control header.
         // It is the `mock` SUBCOMMAND of the pinned native engine, spawned through the shim so the
         // engine is resolved in exactly one place. Its argv is the argv the retired
-        // `mock-upstream.py` took (`<port> [marker] [control-file]`) and it BLOCKS until killed, so
+        // Python mock took (`<port> [marker] [control-file]`) and it BLOCKS until killed, so
         // the rig's spawn/kill contract is unchanged. The shim `exec`s the engine, so the `Child`
         // here IS the mock process and `kill()` reaches it.
         let shim = oracle_shim();
@@ -875,6 +890,8 @@ fn write_configs(dir: &Path) {
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
+advanced:
+  allow_destinations: ["127.0.0.1"]
 admin_require_mtls: false
 identity-providers:
   admin-tokens:

@@ -1,7 +1,7 @@
 //! `cargo xtask gate no-self-filed-issues` — THE REPOSITORY DOES NOT FILE ISSUES AGAINST ITSELF.
 //! The successor to `scripts/no-self-filed-issues-lint.sh`, rule for rule.
 //!
-//! `verify-deploy.yml` used to open an issue when a published release was broken, and it did so at
+//! the removed `verify-deploy.yml` used to open an issue when a published release was broken, and it did so at
 //! least once. Three things were wrong with it. A self-filed issue is INDISTINGUISHABLE from a
 //! user's: it lands in the queue a human triages wearing the same clothes as a real report, on the
 //! one channel whose whole value is signal. It LEFT THE RUN GREEN — the filing step began `set +e`

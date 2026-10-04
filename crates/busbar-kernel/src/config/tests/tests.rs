@@ -11,6 +11,8 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
         health: None,
         path: None,
         path_base: None,
+        organization: None,
+        project: None,
         token_url: None,
         scope: None,
         subject: None,
@@ -32,6 +34,8 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
         error_map: None,
         path: None,
         path_base: None,
+        organization: None,
+        project: None,
         token_url: None,
         scope: None,
         subject: None,
@@ -75,6 +79,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         plane_rate_cards: Default::default(),
         plane_fees: Default::default(),
         plane_raw: Default::default(),
+        declared_raw: Default::default(),
         store: None,
         secrets: Default::default(),
         advanced: AdvancedCfg::default(),
@@ -1991,18 +1996,22 @@ fn test_secret_ref_malformed_shapes_rejected() {
 /// string form trims trailing newlines (the file-delivered-secret convention).
 #[test]
 fn test_secret_ref_builtin_resolution_fail_closed() {
-    use crate::config::secret::{resolve_builtin, resolve_builtin_string};
+    use crate::config::secret::{resolve_linked_string, SecretResolver};
 
     // env: set, non-empty.
     std::env::set_var("BUSBAR_T_SECRET_ENV_OK", "s3cr3t-value");
     assert_eq!(
-        resolve_builtin(&SecretRef::env("BUSBAR_T_SECRET_ENV_OK")).unwrap(),
+        SecretResolver::builtins_only()
+            .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_OK"))
+            .unwrap(),
         b"s3cr3t-value".to_vec()
     );
     std::env::remove_var("BUSBAR_T_SECRET_ENV_OK");
 
     // env: unset -> error naming the variable.
-    let err = resolve_builtin(&SecretRef::env("BUSBAR_T_SECRET_ENV_UNSET")).unwrap_err();
+    let err = SecretResolver::builtins_only()
+        .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_UNSET"))
+        .unwrap_err();
     assert!(
         err.contains("BUSBAR_T_SECRET_ENV_UNSET") && err.contains("unset"),
         "{err}"
@@ -2010,7 +2019,9 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
 
     // env: set but EMPTY -> fail-closed error, never an empty secret.
     std::env::set_var("BUSBAR_T_SECRET_ENV_EMPTY", "");
-    let err = resolve_builtin(&SecretRef::env("BUSBAR_T_SECRET_ENV_EMPTY")).unwrap_err();
+    let err = SecretResolver::builtins_only()
+        .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_EMPTY"))
+        .unwrap_err();
     std::env::remove_var("BUSBAR_T_SECRET_ENV_EMPTY");
     assert!(err.contains("EMPTY"), "{err}");
 
@@ -2019,13 +2030,16 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     let path = dir.join(format!("busbar-secret-test-{}", std::process::id()));
     std::fs::write(&path, "file-secret\n").unwrap();
     let sref = SecretRef::file(path.to_str().unwrap());
-    assert_eq!(resolve_builtin(&sref).unwrap(), b"file-secret\n".to_vec());
-    assert_eq!(resolve_builtin_string(&sref).unwrap(), "file-secret");
+    assert_eq!(
+        SecretResolver::builtins_only().resolve(&sref).unwrap(),
+        b"file-secret\n".to_vec()
+    );
+    assert_eq!(resolve_linked_string(&sref).unwrap(), "file-secret");
     std::fs::remove_file(&path).unwrap();
 
     // file: missing -> error.
     let missing = SecretRef::file("/nonexistent/busbar-secret-test");
-    assert!(resolve_builtin(&missing).is_err());
+    assert!(SecretResolver::builtins_only().resolve(&missing).is_err());
 
     // unknown module -> fail-closed error naming the module.
     let mut settings = serde_json::Map::new();
@@ -2034,7 +2048,9 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
         module: "vault".to_string(),
         settings,
     };
-    let err = resolve_builtin(&unknown).unwrap_err();
+    let err = SecretResolver::builtins_only()
+        .resolve(&unknown)
+        .unwrap_err();
     assert!(
         err.contains("vault") && err.contains("fail-closed"),
         "{err}"
@@ -3900,6 +3916,40 @@ fn every_owned_declaring_section_lands_in_the_one_map_carrier() {
     }
 }
 
+/// THE DOOR'S SETTINGS (SERVE-WIRE, DEC-SERVE P2): a declaring section its plane owns the grammar
+/// of is parsed into the map carrier AND kept as written (card and fees stripped), so a plane
+/// served through its door opens with it as its settings, as a raw-carried plane does.
+#[test]
+fn a_declared_section_is_kept_as_written_for_the_door_beside_its_parse() {
+    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+        &NEUTRAL_SECTION_PLANE,
+        &RAW_SECTION_PLANE,
+    ]);
+    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(&format!(
+        "neutral_section:\n  a: 1\n  fees: {{ per_request: 3 }}\n{RAW_SECTION}:\n  greeting: hi\n\
+         providers: {{}}\nmodels: {{}}\npools: {{}}\n",
+    ))
+    .expect("both sections parse");
+    let sections = deploy.door_sections();
+    let a: serde_yaml::Value = serde_yaml::from_str("a: 1").unwrap();
+    let raw: serde_yaml::Value = serde_yaml::from_str("greeting: hi").unwrap();
+    assert_eq!(
+        sections.get("neutral_section"),
+        Some(&a),
+        "kept as written, fees lifted off"
+    );
+    assert_eq!(
+        sections.get(RAW_SECTION),
+        Some(&raw),
+        "the raw carrier's too"
+    );
+    assert!(
+        !deploy.plane_raw.contains_key("neutral_section"),
+        "never raw-carried"
+    );
+}
+
 /// The top-level section [`RAW_SECTION_PLANE`] declares — and does NOT own the grammar of.
 const RAW_SECTION: &str = "raw_section";
 
@@ -4358,4 +4408,19 @@ fn warn_invalid_floors_keeps_both_warnings_byte_for_byte() {
             && m[1].contains(&CONFIG_FIRSTPARTY_FLOOR_INVALID.banner().to_string()),
         "{m:?}"
     );
+}
+
+/// The provider's tenant (`organization`, `project`) merges like `path_base`: the deployment's value
+/// wins over the catalog's, and absent everywhere it stays absent.
+#[test]
+fn the_provider_tenant_merges_deployment_over_catalog() {
+    let mut def = provider_def("openai", "https://api.example.com");
+    let mut deploy = provider_deploy("K");
+    assert_eq!(merge_provider_fallback(&def, &deploy).organization, None);
+    def.organization = Some("org-catalog".to_string());
+    def.project = Some("proj-catalog".to_string());
+    deploy.organization = Some("org-deploy".to_string());
+    let merged = merge_provider_fallback(&def, &deploy);
+    assert_eq!(merged.organization.as_deref(), Some("org-deploy"));
+    assert_eq!(merged.project.as_deref(), Some("proj-catalog"));
 }

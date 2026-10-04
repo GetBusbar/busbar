@@ -185,6 +185,67 @@ pub trait ProtocolReader: Send + Sync {
 
     /// Clone this reader as a trait object.
     fn clone_box(&self) -> Box<dyn ProtocolReader>;
+
+    // ── what a translate attempt cannot carry (`codec::drops`), declared per dialect as data ──
+
+    /// The dialect's request field table (its map file), which the drop walker reads to tell a
+    /// mapped nested member from an unmapped one.
+    fn request_map(&self) -> crate::codec::carry::Table {
+        &[]
+    }
+
+    /// The members this reader parks in `extra` beside the ones its map file does not model, and
+    /// what each holds of the caller's request.
+    fn parked(&self) -> &'static [crate::codec::drops::Parked] {
+        &[]
+    }
+
+    /// The content-block grammar of the dialect's requests.
+    fn request_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        &[]
+    }
+
+    /// The content-block grammar of the dialect's answers.
+    fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        &[]
+    }
+
+    /// What the dialect's buffered answers carry, for the drop walk (design F3 "Drops"). `None`
+    /// walks nothing.
+    fn response_carried(&self) -> Option<crate::codec::drops::Carried> {
+        None
+    }
+
+    /// What the dialect's stream frames carry, for the drop walk. `None` walks nothing.
+    fn stream_carried(&self) -> Option<crate::codec::drops::Carried> {
+        None
+    }
+
+    /// The dialect's stream frames are keyed by their event name (the event is the root member of
+    /// its wire paths: Bedrock's `contentBlockDelta.delta...`).
+    fn stream_keyed_by_event(&self) -> bool {
+        false
+    }
+
+    /// How the dialect spells each IR content-block kind (`("image", "type=image_url")`), for a
+    /// dropped block's warn.
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        &[]
+    }
+
+    /// The IR request members this reader carries by its own code from a wire path no map-file row
+    /// names (`("response_format", "output_config.format")`): how a drop of one is named by the
+    /// caller's wire path ([`crate::codec::drops::resolve`]).
+    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
+        &[]
+    }
+
+    /// The IR request members this reader never sets: the dialect has no wire form for them (or
+    /// keeps its own spelling of the concept for a same-dialect hop only), so a caller of this
+    /// dialect never has one dropped and no drop is ever named for it.
+    fn unread(&self) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 pub trait ProtocolWriter: Send + Sync {
@@ -321,6 +382,13 @@ pub trait ProtocolWriter: Send + Sync {
         true
     }
 
+    /// Whether this dialect's request carries an input image's requested fidelity (IR-08,
+    /// `image_url.detail`). A dialect without the slot answers `false`, and the egress seam warns for
+    /// each image whose ask it drops (1.5.5's operator warning).
+    fn carries_image_detail(&self) -> bool {
+        true
+    }
+
     /// The caller controls this writer will DROP for `req` on cross-protocol egress because the target
     /// dialect has no native representation (audit-and-allow: the request still forwards, but each drop
     /// is recorded as a first-class audit event by the cross-protocol seam). Default: none.
@@ -445,6 +513,20 @@ pub trait ProtocolWriter: Send + Sync {
         })
     }
 
+    /// [`Self::write_error`] with the entropy for any identifier the envelope mints handed in by the
+    /// caller ([`crate::codec::write_error_envelope`]), for a caller that may not read a random
+    /// source. Default: the envelope mints nothing, so the entropy is unused. A dialect whose
+    /// envelope carries a minted id overrides this and builds that id from `entropy`.
+    fn write_error_from_entropy(
+        &self,
+        status: u16,
+        kind: &str,
+        message: &str,
+        _entropy: &[u8],
+    ) -> serde_json::Value {
+        self.write_error(status, kind, message)
+    }
+
     /// Attach any protocol-specific RESPONSE HEADERS a native endpoint always carries on an error
     /// response, given the already-built error `envelope` and canonical `kind`. Default no-op (most
     /// protocols carry the error entirely in the body). Bedrock attaches `x-amzn-RequestId` +
@@ -493,23 +575,6 @@ pub trait ProtocolWriter: Send + Sync {
     /// `BedrockWriter` overrides: inserts `metrics: { latencyMs: ms }` when both `elapsed_ms` is
     /// `Some` AND `value` is a JSON object (same double-`Some` guard the original inline branches use).
     fn inject_response_metrics(&self, _value: &mut serde_json::Value, _elapsed_ms: Option<u64>) {}
-
-    /// A byte-in/byte-out translator for a SAME-protocol NON-stream (buffered JSON) 2xx body, or
-    /// `None` to relay the upstream bytes verbatim (the default, and what every dialect did before).
-    ///
-    /// The same-protocol non-stream path never reaches `write_response`/`inject_response_metrics`:
-    /// the body streams straight through. A dialect whose response shape has a REQUIRED member the
-    /// proxy must supply itself can hand back a translator here that buffers the body and completes
-    /// it at end-of-stream. `BedrockWriter` overrides: a Converse response always carries
-    /// `metrics.latencyMs`, so its translator passes an upstream `metrics` through untouched and
-    /// otherwise adds busbar's own measured latency. The translator also owns the billing usage for
-    /// that body (`StreamTranslator::usage`), since the forward path reads usage from the translator
-    /// whenever one is installed.
-    fn same_protocol_buffered_response_translator(
-        &self,
-    ) -> Option<Box<dyn busbar_contract::protocol::StreamTranslator>> {
-        None
-    }
 
     /// The request-id RESPONSE HEADER (name + value) to ATTACH to a 2xx/relay response on THIS
     /// protocol's INGRESS path, or `None` when no header is attached. This is the SUCCESS-path analog
@@ -684,8 +749,8 @@ pub trait StreamFraming: Send {
     }
 
     /// METADATA-METRICS seam (Bedrock ingress). Called in the eventstream-framing branch for each
-    /// emitted frame with the frame's event-type, its just-built data object, and the stream's start
-    /// instant. A native ConverseStream `metadata` frame carries `metrics.latencyMs`; the Bedrock impl
+    /// emitted frame with the frame's event-type, its just-built data object, and the milliseconds
+    /// since the stream's first byte, read off the translator's clock (`None`: timing unavailable). A native ConverseStream `metadata` frame carries `metrics.latencyMs`; the Bedrock impl
     /// injects the elapsed wall-clock into that one frame (omitting `metrics` entirely if timing is
     /// unavailable, rather than emitting a tell-tale `0`), mutating `data` in place. Keeps the wire
     /// event-type literal and the latency shape in the Bedrock module, out of the agnostic translator.
@@ -695,7 +760,7 @@ pub trait StreamFraming: Send {
         &self,
         _event_type: &str,
         _data: &mut serde_json::Value,
-        _started_at: Option<std::time::Instant>,
+        _elapsed_ms: Option<u64>,
     ) {
     }
 
@@ -954,19 +1019,44 @@ pub fn protocol_for(name: &str) -> Option<Protocol> {
     #[cfg(test)]
     crate::codec::ensure_test_protocols_registered();
     // Post-A4b the `ProtocolDecl.codec` field is the NEUTRAL `DialectCodec` factory (core names no
-    // `Protocol`), so the name→codec map lives here in the plugin that owns the six dialects. A fresh
-    // instance per resolution, exactly as the registry field doc required (the writers carry per-stream
-    // state). MCP declares no codec and is absent here → `None`, as before. Reached both standalone
-    // (`crate::codec::<dialect>`) and netted-into-core (`core::proto::<dialect>`) via the relative `super::`.
-    match name {
-        PROTO_ANTHROPIC => Some(super::anthropic::protocol()),
-        PROTO_BEDROCK => Some(super::bedrock::protocol()),
-        PROTO_COHERE => Some(super::cohere::protocol()),
-        PROTO_GEMINI => Some(super::gemini::protocol()),
-        PROTO_OPENAI => Some(super::openai_chat::protocol()),
-        PROTO_RESPONSES => Some(super::openai_responses::protocol()),
-        _ => None,
-    }
+    // `Protocol`), so the name→codec map lives here in the plugin that owns the dialects: each
+    // dialect's registration ([`DialectEntry::protocol`]) builds a fresh instance per resolution,
+    // exactly as the registry field doc required (the writers carry per-stream state). MCP declares
+    // no codec and is absent here → `None`, as before.
+    entry_of(name).map(|d| (d.protocol)())
+}
+
+/// ONE DIALECT'S REGISTRATION: everything this plane resolves BY NAME about a dialect, declared by
+/// the dialect itself in its own module (design F3 SELF-CONTAINED: "central name-`match` registries
+/// become per-dialect registration"; spec Part 3 #5: adding a dialect = adding a file). The plane's
+/// one list of them is [`crate::codec::DIALECTS`], so a new dialect is a new module plus ONE line
+/// there; nothing in this file names a dialect.
+pub struct DialectEntry {
+    /// The dialect's declaration (its name is the registry key).
+    pub decl: &'static busbar_contract::protocol::ProtocolDecl,
+    /// Build the dialect's wire codec: a fresh instance per resolution ([`protocol_for`]).
+    pub protocol: fn() -> Protocol,
+    /// Hand a fresh writer, built on the stack, to the callback ([`with_writer`]).
+    pub with_writer: WithWriter,
+    /// Hand the (stateless) reader to the callback ([`with_reader`]).
+    pub with_reader: WithReader,
+    /// The dialect's row of the leaf-op `(operation, protocol)` dispatch.
+    pub leaf: &'static crate::codec::leaf_codec::LeafCodecs,
+}
+
+/// A dialect's stack-writer callback: builds a fresh writer and hands it to the closure.
+pub type WithWriter = fn(&mut dyn FnMut(&dyn ProtocolWriter));
+
+/// A dialect's reader callback: hands its (stateless) reader to the closure.
+pub type WithReader = fn(&mut dyn FnMut(&dyn ProtocolReader));
+
+/// The registration of the dialect named `name`, read off [`crate::codec::DIALECTS`]. `None` for a
+/// name this plane does not register.
+pub fn entry_of(name: &str) -> Option<&'static DialectEntry> {
+    crate::codec::DIALECTS
+        .iter()
+        .copied()
+        .find(|d| d.decl.name == name)
 }
 
 /// Run `f` against the named dialect's WRITER built ON THE STACK — no `Protocol`, no `Box`.
@@ -992,33 +1082,11 @@ pub fn protocol_for(name: &str) -> Option<Protocol> {
 /// see the same writer on frame after frame — must not come here: it wants a resolution it can hold,
 /// which is [`protocol_for`].
 pub fn with_writer<T>(name: &str, f: impl FnOnce(&dyn ProtocolWriter) -> T) -> Option<T> {
-    match name {
-        PROTO_ANTHROPIC => {
-            let w = super::anthropic::AnthropicWriter;
-            Some(f(&w))
-        }
-        PROTO_BEDROCK => {
-            let w = super::bedrock::BedrockWriter;
-            Some(f(&w))
-        }
-        PROTO_COHERE => {
-            let w = super::cohere::CohereWriter;
-            Some(f(&w))
-        }
-        PROTO_GEMINI => {
-            let w = super::gemini::GeminiWriter;
-            Some(f(&w))
-        }
-        PROTO_OPENAI => {
-            let w = super::openai_chat::OpenAiWriter;
-            Some(f(&w))
-        }
-        PROTO_RESPONSES => {
-            let w = super::openai_responses::ResponsesWriter;
-            Some(f(&w))
-        }
-        _ => None,
-    }
+    let entry = entry_of(name)?;
+    let mut f = Some(f);
+    let mut out = None;
+    (entry.with_writer)(&mut |w| out = f.take().map(|f| f(w)));
+    out
 }
 
 /// The reader twin of [`with_writer`]: the named dialect's READER on the stack (the readers are
@@ -1029,15 +1097,11 @@ pub fn with_writer<T>(name: &str, f: impl FnOnce(&dyn ProtocolWriter) -> T) -> O
 /// answer's state is the caller's `StreamDecodeState`, handed in — so every reader question is a
 /// stateless question and belongs here.
 pub fn with_reader<T>(name: &str, f: impl FnOnce(&dyn ProtocolReader) -> T) -> Option<T> {
-    match name {
-        PROTO_ANTHROPIC => Some(f(&super::anthropic::AnthropicReader)),
-        PROTO_BEDROCK => Some(f(&super::bedrock::BedrockReader)),
-        PROTO_COHERE => Some(f(&super::cohere::CohereReader)),
-        PROTO_GEMINI => Some(f(&super::gemini::GeminiReader)),
-        PROTO_OPENAI => Some(f(&super::openai_chat::OpenAiReader)),
-        PROTO_RESPONSES => Some(f(&super::openai_responses::ResponsesReader)),
-        _ => None,
-    }
+    let entry = entry_of(name)?;
+    let mut f = Some(f);
+    let mut out = None;
+    (entry.with_reader)(&mut |r| out = f.take().map(|f| f(r)));
+    out
 }
 
 /// The sole [`DialectCodec`] implementor today: a name-keyed forwarder to this protocol's in-core
@@ -1205,7 +1269,7 @@ pub struct ToolIdRemap {
 /// (OpenAI's documented parallel-tool-call limit), which is the number of distinct tool ids a
 /// legitimate turn can carry; a stream that presents more is an untrusted upstream growing a
 /// per-request map without bound, not a request busbar needs to memoize for.
-pub const TOOL_ID_REMAP_MAX_MEMO: usize = crate::codec::openai_chat::OPENAI_FAMILY_MAX_OPEN_TOOLS;
+pub const TOOL_ID_REMAP_MAX_MEMO: usize = crate::codec::dialect::MAX_OPEN_TOOL_CALLS;
 
 impl ToolIdRemap {
     /// Number of memoized pairs currently retained — the retention the cap bounds.
@@ -1289,7 +1353,8 @@ impl ToolIdRemap {
             | crate::codec::ir::IrBlock::Thinking { .. }
             | crate::codec::ir::IrBlock::Image { .. }
             | crate::codec::ir::IrBlock::Media { .. }
-            | crate::codec::ir::IrBlock::Json(_) => {}
+            | crate::codec::ir::IrBlock::Json(_)
+            | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {}
         }
     }
 }
@@ -1367,7 +1432,8 @@ pub fn decode_request_tool_ids(
             | crate::codec::ir::IrBlock::Thinking { .. }
             | crate::codec::ir::IrBlock::Image { .. }
             | crate::codec::ir::IrBlock::Media { .. }
-            | crate::codec::ir::IrBlock::Json(_) => {}
+            | crate::codec::ir::IrBlock::Json(_)
+            | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {}
         }
     }
     for msg in messages {

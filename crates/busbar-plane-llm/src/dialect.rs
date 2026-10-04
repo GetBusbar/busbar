@@ -49,6 +49,21 @@ pub struct Dialect {
     pub scheme_alt: &'static str,
     /// The egress-auth scheme that decorates a request to an upstream of this dialect.
     pub egress_scheme: &'static str,
+    /// The request headers busbar GOVERNS for this dialect (lower-case): its credential headers and
+    /// its tenant selectors. A same-dialect route forwards every other client header unchanged; these
+    /// never pass, because busbar's upstream credential and configuration replace them (OWNER HARD
+    /// RULE 2026-10-02, "BUSBAR IS INVISIBLE TO UPSTREAMS", governed fields (1) and (2)).
+    pub governed_headers: &'static [&'static str],
+    /// The request URL query parameters busbar GOVERNS for this dialect: its credential parameters.
+    /// A same-dialect route forwards every other caller parameter unchanged; these never pass.
+    pub governed_query: &'static [&'static str],
+    /// The tenant selectors this dialect's far end reads, as `(config key, header)`: busbar sets
+    /// each from the provider's config (`organization`, `project`) on every upstream request.
+    pub tenant_headers: &'static [(&'static str, &'static str)],
+    /// The response headers busbar GOVERNS for this dialect (lower-case): what the far end derives
+    /// from busbar's own credential and tenant (the operator's organization or project id). A
+    /// same-dialect answer relays every other upstream header; these never reach the caller.
+    pub governed_response_headers: &'static [&'static str],
 }
 
 /// The top-level member the four body-carrying dialects name the model under.
@@ -63,6 +78,23 @@ const MODEL: Location = Location::Arrival(ArrivalLocation::FirstFrameJsonPointer
 /// the pattern's first variable, which is why one index serves both.
 const MODEL_IN_PATH: Location = Location::Arrival(ArrivalLocation::PathSegment(0));
 
+/// What the two dialects of one vendor govern: its credential headers (a bearer, and the key header
+/// a re-hosted deployment of it reads) and its two tenant selectors.
+/// The tenant selectors of the two dialects of one vendor, by provider config key.
+const OPENAI_TENANT: &[(&str, &str)] = &[
+    ("organization", "openai-organization"),
+    ("project", "openai-project"),
+];
+/// What the two dialects of one vendor govern on an answer: the operator's tenant ids it echoes.
+const OPENAI_GOVERNED_RESPONSE: &[&str] = &["openai-organization", "openai-project"];
+
+const OPENAI_GOVERNED: &[&str] = &[
+    "authorization",
+    "api-key",
+    "openai-organization",
+    "openai-project",
+];
+
 /// The table, one row per dialect, in the order the codec crate declares them.
 pub const DIALECTS: &[Dialect] = &[
     Dialect {
@@ -76,6 +108,10 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: Some("/usage/cache_creation_input_tokens"),
         scheme_alt: "api-key",
         egress_scheme: "bearer",
+        governed_headers: &["authorization", "x-api-key"],
+        governed_query: &[],
+        tenant_headers: &[],
+        governed_response_headers: &["anthropic-organization-id"],
     },
     Dialect {
         name: "openai",
@@ -92,6 +128,10 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: None,
         scheme_alt: "bearer",
         egress_scheme: "bearer",
+        governed_headers: OPENAI_GOVERNED,
+        governed_query: &[],
+        tenant_headers: OPENAI_TENANT,
+        governed_response_headers: OPENAI_GOVERNED_RESPONSE,
     },
     Dialect {
         name: "gemini",
@@ -105,6 +145,10 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: None,
         scheme_alt: "api-key",
         egress_scheme: "bearer",
+        governed_headers: &["authorization", "x-goog-api-key", "x-goog-user-project"],
+        governed_query: &["key"],
+        tenant_headers: &[],
+        governed_response_headers: &[],
     },
     Dialect {
         name: "bedrock",
@@ -118,6 +162,15 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: Some("/usage/cacheWriteInputTokens"),
         scheme_alt: "request-signature",
         egress_scheme: "request-signature",
+        governed_headers: &[
+            "authorization",
+            "x-amz-date",
+            "x-amz-content-sha256",
+            "x-amz-security-token",
+        ],
+        governed_query: &[],
+        tenant_headers: &[],
+        governed_response_headers: &[],
     },
     Dialect {
         name: "responses",
@@ -130,6 +183,10 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: Some("/usage/input_tokens_details/cache_write_tokens"),
         scheme_alt: "bearer",
         egress_scheme: "bearer",
+        governed_headers: OPENAI_GOVERNED,
+        governed_query: &[],
+        tenant_headers: OPENAI_TENANT,
+        governed_response_headers: OPENAI_GOVERNED_RESPONSE,
     },
     Dialect {
         name: "cohere",
@@ -143,6 +200,10 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: None,
         scheme_alt: "bearer",
         egress_scheme: "bearer",
+        governed_headers: &["authorization"],
+        governed_query: &[],
+        tenant_headers: &[],
+        governed_response_headers: &[],
     },
 ];
 

@@ -217,7 +217,7 @@ fn admin_audit_chain_boot_verifies_from_frozen_bytes() {
     // restore. The FROZEN BYTES/HASHES above are unchanged — only the scaffolding that replays them
     // through the durable seam changed. The restore SEEDS positions from the store passed here (the
     // frozen bytes), so the throwaway app the harness registers against is immaterial to the digests.
-    let h = crate::plane::auditlog::AuditTestHarness::over(std::sync::Arc::new(
+    let h = crate::audit::auditlog::AuditTestHarness::over(std::sync::Arc::new(
         crate::governance::MemoryStore::new(),
     ));
     let restored = h.restore_from_store(&store).expect("store read");

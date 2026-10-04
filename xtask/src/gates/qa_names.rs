@@ -32,7 +32,7 @@
 //! gate — and a KIND that is in no list is in no gate either. The census rows count the roster;
 //! neither can see a population that was never enrolled. Enrolment is the gap no count detects."*
 //!
-//! THE SHAPE OF THE CONTRACT is `package-selectors`' and `feature-sets`': every universe is DERIVED
+//! THE SHAPE OF THE CONTRACT is `package-selectors`': every universe is DERIVED
 //! from the tree — the workspace members plus `Cargo.lock` for packages, `[gate.plugin_kinds]`'s own
 //! keys for kinds, the filesystem for paths — and ASSERTED against every name in every covered file.
 //! A deliberate exception is possible only IN WRITING, beside the site, as a comment:
@@ -202,7 +202,7 @@ pub const NAME_FLOOR: usize = 300;
 /// reader whose item parser stopped matching would report ZERO dead constants and a green row. A
 /// scan set gets its own floor or it has none.
 pub const XTASK_NAME_FLOOR: usize = 150;
-/// The shortest exemption reason that is a reason rather than a shrug. `feature-sets`' number, kept.
+/// The shortest exemption reason that is a reason rather than a shrug.
 pub const MIN_REASON: usize = 30;
 
 /// Key tokens that put a value in a PATH position — used ONLY to VETO the crate reading, so that

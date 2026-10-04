@@ -345,6 +345,7 @@ impl HostWire {
                             status: None,
                             status_code: None,
                             retry_after_secs: None,
+                            text: got.text,
                         },
                     };
                     return Poll::Ready(Some(Ok((StreamId(got.stream), frame))));
@@ -395,19 +396,21 @@ impl HostWire {
         }))
     }
 
-    /// Write `bytes` on `stream` of `conn` through the framer.
+    /// Write `bytes` on `stream` of `conn` through the framer, as one text message where `text`
+    /// (`FrameMeta::text` on the frame being written).
     pub fn write<'a>(
         &'a self,
         conn: &'a Conn,
         stream: StreamId,
         bytes: ScratchBytes<'a>,
+        text: bool,
     ) -> Fut<'a, usize> {
         Box::pin(async move {
             let c = self.get(conn.id()).ok_or(TransportError::Closed)?;
             let wire = {
                 let mut framing = c.framing.lock().expect("framing");
                 let f = framing.as_mut().ok_or(TransportError::Closed)?;
-                f.emit(stream.0, bytes.as_slice(), true)
+                f.emit(stream.0, bytes.as_slice(), true, text)
                     .map_err(|_| TransportError::Framing)?
                     .wire
             };

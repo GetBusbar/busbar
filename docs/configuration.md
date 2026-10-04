@@ -165,6 +165,7 @@ A map of provider name → `ProviderDef`. The shipped catalog is a curated set o
 | `error_map` | map<string, string> | no | `{}` | Maps a provider-specific error **code string** (from the JSON error body) to a canonical disposition class. Valid values: `rate_limit`, `overloaded`, `server_error`, `timeout`, `network`, `auth`, `billing`, `client_error`, `context_length`. An unrecognized class value is a startup error. HTTP-status classification (401→auth, 429→rate_limit, 5xx→server_error, etc.) applies automatically without an `error_map`; this field is only for provider-specific JSON codes. |
 | `path` | string | no | Protocol's standard path | Overrides the upstream request path appended to `base_url`. Must begin with `/`. Static, ignores the per-request model. Use when the API version is in `base_url` and the endpoint path differs from the protocol default (e.g. `/chat/completions` without `/v1`). |
 | `path_base` | string | no | Protocol's default base | For URL-model protocols: overrides the hardcoded base segment while the per-request suffix is still appended. Must begin with `/`. On **Gemini** it replaces `/v1beta/models` (suffix `/{model}:verb`) to reach Google Vertex AI's `/v1/projects/{project}/locations/{location}/publishers/google/models` layout; on **Anthropic** it enables Claude-on-Vertex (the model moves into a `:rawPredict`/`:streamRawPredict` suffix and the body carries `anthropic_version` in place of `model`). Config-only, no code. |
+| `organization`, `project` | string | no | none | The tenant the upstream bills this provider's traffic to, sent on every upstream request under the header its protocol defines (OpenAI and Responses: `OpenAI-Organization`, `OpenAI-Project`). A caller's own tenant headers are never forwarded. Absent: none is sent. |
 | `auth` | string | no | Protocol's native auth | The egress auth mechanism. `bearer` (sends `Authorization: Bearer <key>`) · `api-key` (sends `api-key: <key>`, for Azure OpenAI) · `jwt-bearer` (OAuth 2.0 JWT-bearer, RFC 7523: mints + auto-refreshes a bearer from a service-account key resolved via `api_key`; e.g. Google Vertex AI) · `oauth-client-credentials` (OAuth 2.0 client-credentials, RFC 6749 §4.4: the `api_key` reference resolves to `client_id:client_secret`, exchanged at `token_url` for a bearer; e.g. Azure OpenAI via Entra ID). When unset, each protocol uses its native scheme: bearer for anthropic/openai/responses/cohere, `x-goog-api-key` for gemini, AWS SigV4 for bedrock. |
 | `token_url` | string | no | none | OAuth token endpoint for `auth: oauth-client-credentials`, where Busbar POSTs the client credentials for a bearer. Required for that auth; must be https for a public host. |
 | `scope` | string | no | none | OAuth scope for `auth: oauth-client-credentials`. Required for that auth. |
@@ -661,7 +662,9 @@ units: {...} }` shape (a non-LLM plane's classes are all OPEN, so only `units:` 
 it); the shipped field-by-field grammar and per-plane boot refusals for each are in
 [mcp.md](mcp.md) (`tools.rate_card`, keyed by tool name — prices `tool_calls` and `bytes`),
 [a2a.md](a2a.md) (`agents.rate_card`, keyed `agent:<id>` — prices `bytes`, the request + response
-body bytes an A2A hop relayed both ways), and [voice.md](voice.md) (`streams.rate_card`). The same
+body bytes an A2A hop relayed both ways; a present card must carry an entry for every agent under
+`agents:`, and one silent about an agent fails boot and every apply with a paste-ready stub), and
+[voice.md](voice.md) (`streams.rate_card`). The same
 rule applies everywhere: a plane section with no `rate_card` of its own bills that plane's traffic
 at `0` (no refusal); a plane section WITH a card must configure every class the plane declares (the
 generic boot rule above) and REFUSES a hit against a class or lane it left silent, rather than
@@ -745,6 +748,7 @@ Declares which catalog providers this deployment uses and supplies the env var h
 | `error_map` | map<string, string> | no | `{}` merged onto catalog | Merged with the catalog's `error_map`; deployment entries win per code. |
 | `path` | string | no | Catalog value | Override the upstream path. Must begin with `/`. |
 | `path_base` | string | no | Catalog value | Override the URL-model base segment (Gemini or Anthropic), keeping the per-request verb suffix. Must begin with `/`. For Gemini-on-Vertex and Claude-on-Vertex. |
+| `organization`, `project` | string | no | Catalog value | Override the provider's tenant (see the catalog keys above). |
 | `auth` | string | no | Catalog value | `bearer`, `api-key`, `jwt-bearer` (OAuth service-account, e.g. Vertex AI), or `oauth-client-credentials` (e.g. Azure Entra ID). |
 | `token_url` | string | no | Catalog value | OAuth token endpoint for `oauth-client-credentials`. |
 | `scope` | string | no | Catalog value | OAuth scope for `oauth-client-credentials`. |
@@ -1728,6 +1732,8 @@ advanced:
   response_headers:                 # every busbar-injected response header, opt-in, default OFF
     server_timing: false            # `Server-Timing: busbar;dur=<ms>` (formerly observability.emit_server_timing)
     route_policy: false             # `x-busbar-route-policy` / `x-busbar-route-target`
+  block_private_addresses: true     # the destination guard: refuse private/loopback/link-local/CGNAT/ULA/metadata targets
+  allow_destinations: []            # always allowed: hosts, `*.domain` wildcards, IPs, CIDRs
 ```
 
 `worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
@@ -1741,6 +1747,23 @@ composition at boot and `route_policy` seeds a process-wide flag, so a live `PUT
 durably (`reload_to_apply` flags `advanced.response_headers`) but only takes effect on the next
 restart. Full catalogue, rationale for defaulting off, and exactly when each header fires:
 [observability.md#response-headers](observability.md#response-headers).
+
+`block_private_addresses` and `allow_destinations` are the **destination guard**, one check for every
+outbound connection busbar makes (provider upstreams, token endpoints, health probes, export sinks,
+plugin fetches, plane and plugin dials). With `block_private_addresses: true` (the default) a provider
+upstream (its `base_url` and `token_url` included), and a destination that comes from request data or
+the network (a target a caller or a plane names), is refused when it is, or resolves to, a private
+(RFC 1918), loopback, link-local, CGNAT (`100.64.0.0/10`) or IPv6 unique-local (`fc00::/7`) address,
+unless `allow_destinations` names it: a provider on `localhost` or an internal name is listed there.
+Operator infrastructure a plugin's config names (a database, a secret service, a directory) may be
+private or loopback without an entry. A cloud-metadata address is refused for every destination,
+configured ones included (a configured name that later resolves to one is refused). The check runs after name resolution, and the connection is
+made to the address that was checked. `allow_destinations` lists what is always allowed: an exact host (`ollama.internal`), a
+wildcard (`*.corp.example.com` matches names under it, not the apex), an IP (`127.0.0.1`), or a CIDR
+(`10.20.0.0/16`). A host entry never admits a cloud-metadata answer; only an IP or CIDR entry naming the
+address does. With `block_private_addresses: false`, cloud metadata is still refused. Both are
+**boot-time** knobs. The 1.5.5 keys `security.allow_metadata_hosts`, `security.blocked_metadata_hosts`,
+`security.allow_all_metadata` and `providers.<p>.allow_metadata_hosts` still load and feed the same check.
 
 ### `providers_file`
 

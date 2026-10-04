@@ -9,7 +9,9 @@ use std::ptr::null;
 
 use super::*;
 use crate::abi::hook::{SignalEntry, SignalValue, SIGNAL_TAG_BOOL, SIGNAL_TAG_STR};
-use crate::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_RESPONSE_HEADERS_MAX};
+use crate::abi::host::conn::connector::{
+    Need, DIRECTION_OUTBOUND, KEEP_ALL_EXCEPT_DENIED, KEEP_NAMED, KEEP_RESPONSE_HEADERS_MAX,
+};
 use crate::abi::mechanism::call::AbiStr;
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
@@ -186,6 +188,33 @@ fn a_class_counted_twice_is_fault() {
     v.source = UNITS_REPORTED;
     v.class = 0;
     assert_eq!(check_arrive(Ready, &o, &[u, v], 4, &bounds()), Ok(()));
+    // ONE BILLING COUNT per class: a floor beside a reported count of the same class is two bills
+    // of one thing, refused; a floor beside an estimate is not.
+    v.class = 1;
+    v.source = UNITS_FLOOR;
+    assert_eq!(
+        check_arrive(Ready, &o, &[u, v], 4, &bounds()),
+        f(Rule::Contradiction, "unit.class")
+    );
+    u.source = UNITS_ESTIMATED;
+    assert_eq!(check_arrive(Ready, &o, &[u, v], 4, &bounds()), Ok(()));
+}
+
+/// THE USAGE FLOOR (Q24/Q28): a floor count is a known source and bills like a reported one; an
+/// estimate never bills, and no other value is a source.
+#[test]
+fn a_floor_count_is_a_known_source_that_bills() {
+    let mut o: ArriveOut = z();
+    o.units_written = 1;
+    let mut u: UnitCount = z();
+    u.class = 1;
+    u.source = UNITS_FLOOR;
+    u.amount = 51;
+    assert_eq!(check_arrive(Ready, &o, &[u], 4, &bounds()), Ok(()));
+    assert!(units_bill(UNITS_FLOOR));
+    assert!(units_bill(UNITS_REPORTED));
+    assert!(!units_bill(UNITS_ESTIMATED));
+    assert!(!units_bill(UNITS_FLOOR + 1));
 }
 
 /// THE CANCEL RULE's shape: an arrival is either a cancellable unit (`correlation`) or a cancel
@@ -212,6 +241,48 @@ fn an_arrival_that_cancels_carries_no_correlation_of_its_own() {
     assert_eq!(
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::Contradiction, "arrive.cancel_with_correlation")
+    );
+}
+
+/// THE POOL AN ARRIVAL NAMES (ARCHITECT Q-SW6, 2026-10-02): the entry name inside the plane's own
+/// section, on a READY answer only. Absent is valid (the plane's single default entry); a length
+/// with no bytes is FAULT, and a refused or failed arrival naming a pool is a contradiction.
+#[test]
+fn an_arrival_names_its_pool_only_when_ready_and_only_with_bytes() {
+    let mut o: ArriveOut = z();
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "absent");
+    o.pool = s("entry");
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "named");
+    let long = "p".repeat(crate::abi::mechanism::call::MAX_TEXT + 1);
+    o.pool = AbiStr {
+        ptr: long.as_ptr(),
+        len: long.len(),
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::OverMax, "arrive.pool")
+    );
+    o.pool = AbiStr {
+        ptr: null(),
+        len: 5,
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::NullWithCount, "arrive.pool")
+    );
+    let mut o: ArriveOut = z();
+    o.refusal = 3;
+    o.refusal_status = 404;
+    o.pool = s("entry");
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.pool")
+    );
+    let mut o: ArriveOut = z();
+    o.pool = s("entry");
+    assert_eq!(
+        check_arrive(Failed, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.pool")
     );
 }
 
@@ -308,7 +379,7 @@ fn a_unit_naming_no_billable_class_or_unknown_source_is_fault() {
         f(Rule::IndexOutOfRange, "unit.class")
     );
     u.class = 1;
-    u.source = 2;
+    u.source = UNITS_FLOOR + 1;
     assert_eq!(
         check_arrive(Ready, &o, &[u], 4, &bounds()),
         f(Rule::UnknownCode, "unit.source")
@@ -990,6 +1061,134 @@ fn a_need_keeps_only_declarable_response_fields() {
     assert_eq!(
         check_needs(&[b]),
         f(Rule::NullWithCount, "need.keep_response_headers")
+    );
+}
+
+/// RED for the keep mode (OWNER ruling 2026-10-02, dialect fidelity F2): a need keeps either the
+/// fields it names or every field but the ones it denies, never both lists, and no other mode.
+/// Denied names are lower-case tokens, bounded; denying a credential name is allowed.
+#[test]
+fn a_need_keeps_named_fields_or_all_but_denied_ones_and_nothing_else() {
+    let mut n: Need = z();
+    n.direction = DIRECTION_OUTBOUND;
+    n.transport = s("t");
+    n.keep_mode = KEEP_ALL_EXCEPT_DENIED;
+    let denied = [
+        s("openai-organization"),
+        s("openai-project"),
+        s("set-cookie"),
+    ];
+    n.deny_response_headers = denied.as_ptr();
+    n.deny_response_headers_len = denied.len();
+    assert_eq!(check_needs(&[n]), Ok(()));
+    let mut none = n;
+    none.deny_response_headers = null();
+    none.deny_response_headers_len = 0;
+    assert_eq!(check_needs(&[none]), Ok(()), "an empty deny list");
+
+    let kept = [s("retry-after")];
+    let mut both = n;
+    both.keep_response_headers = kept.as_ptr();
+    both.keep_response_headers_len = 1;
+    assert_eq!(
+        check_needs(&[both]),
+        f(Rule::Contradiction, "need.keep_response_headers")
+    );
+    let mut named = both;
+    named.keep_mode = KEEP_NAMED;
+    assert_eq!(
+        check_needs(&[named]),
+        f(Rule::Contradiction, "need.deny_response_headers")
+    );
+    let mut unknown = none;
+    unknown.keep_mode = 2;
+    assert_eq!(
+        check_needs(&[unknown]),
+        f(Rule::UnknownCode, "need.keep_mode")
+    );
+    let mut padded = none;
+    padded._reserved = 1;
+    assert_eq!(
+        check_needs(&[padded]),
+        f(Rule::UnknownCode, "need._reserved")
+    );
+
+    let upper = [s("OpenAI-Project")];
+    let mut b = n;
+    b.deny_response_headers = upper.as_ptr();
+    b.deny_response_headers_len = 1;
+    assert_eq!(
+        check_needs(&[b]),
+        f(Rule::UnknownCode, "need.deny_response_headers")
+    );
+    let many: Vec<AbiStr> = (0..=KEEP_RESPONSE_HEADERS_MAX).map(|_| s("x")).collect();
+    let mut b = n;
+    b.deny_response_headers = many.as_ptr();
+    b.deny_response_headers_len = many.len();
+    assert_eq!(
+        check_needs(&[b]),
+        f(Rule::OverMax, "need.deny_response_headers")
+    );
+    let mut b = n;
+    b.deny_response_headers = null();
+    b.deny_response_headers_len = 1;
+    assert_eq!(
+        check_needs(&[b]),
+        f(Rule::NullWithCount, "need.deny_response_headers")
+    );
+}
+
+/// What crosses under each mode: the named fields (never a `NEVER_KEPT` one), or every field but
+/// hop-by-hop, the connection's nominees, the re-derived framing and the plugin's denied names.
+#[test]
+fn a_response_field_crosses_by_the_needs_mode() {
+    use crate::abi::host::conn::connector::keeps_response_field as keeps;
+    let none: [&[u8]; 0] = [];
+    assert!(keeps(
+        KEEP_NAMED,
+        &["retry-after"],
+        &[],
+        "retry-after",
+        none
+    ));
+    assert!(!keeps(
+        KEEP_NAMED,
+        &["retry-after"],
+        &[],
+        "x-request-id",
+        none
+    ));
+    assert!(!keeps(KEEP_NAMED, &["set-cookie"], &[], "set-cookie", none));
+    let denied = ["openai-project"];
+    for kept in [
+        "x-request-id",
+        "retry-after",
+        "content-type",
+        "anthropic-ratelimit-requests-limit",
+    ] {
+        assert!(
+            keeps(KEEP_ALL_EXCEPT_DENIED, &[], &denied, kept, none),
+            "{kept}"
+        );
+    }
+    for stripped in [
+        "openai-project",
+        "content-length",
+        "content-encoding",
+        "transfer-encoding",
+        "connection",
+        "keep-alive",
+    ] {
+        assert!(
+            !keeps(KEEP_ALL_EXCEPT_DENIED, &[], &denied, stripped, none),
+            "{stripped}"
+        );
+    }
+    let nominated: [&[u8]; 1] = [b"x-hop, close"];
+    assert!(!keeps(KEEP_ALL_EXCEPT_DENIED, &[], &[], "x-hop", nominated));
+    assert!(
+        !keeps(7, &["x"], &[], "x", none),
+        "an unknown mode keeps nothing"
     );
 }
 
@@ -1804,4 +2003,35 @@ fn a_plane_naming_a_kernel_money_verdict_is_malformed_not_the_verdict() {
             "{reason:?}: a tail row naming it is malformed"
         );
     }
+}
+
+/// THE ROUTE CLASS (ARCHITECT Q-SW6 amended by Q-FL3, 2026-10-02): a READY arrival names whether its
+/// entry is a pool or a model routed directly; any other class is FAULT, and an answer that admits
+/// nothing names the default class only.
+#[test]
+fn an_arrivals_route_class_is_pool_or_direct() {
+    for class in [ROUTE_POOL, ROUTE_DIRECT] {
+        let mut o: ArriveOut = z();
+        o.route = class;
+        o.pool = s("entry");
+        assert_eq!(
+            check_arrive(Ready, &o, &[], 4, &bounds()),
+            Ok(()),
+            "{class}"
+        );
+    }
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_DIRECT + 1;
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::UnknownCode, "arrive.route")
+    );
+    let mut o: ArriveOut = z();
+    o.refusal = 3;
+    o.refusal_status = 404;
+    o.route = ROUTE_DIRECT;
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.pool")
+    );
 }

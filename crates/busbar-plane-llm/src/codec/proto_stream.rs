@@ -48,6 +48,11 @@ pub struct StreamTranslate {
     /// hard-coded `0` was a detectable tell). Set lazily on the first `feed`. `None` until then (and
     /// for non-Bedrock ingress, where it is never read).
     started_at: Option<std::time::Instant>,
+    /// The clock `started_at` and the `metrics.latencyMs` it measures are read from:
+    /// [`std::time::Instant::now`] on every serving path. A caller that relays one stream twice and
+    /// compares the bytes (a piece-boundary proof) hands both relays one clock
+    /// ([`StreamTranslate::with_clock`]), so the latency they report cannot differ by scheduling.
+    clock: fn() -> std::time::Instant,
     /// Per-stream, INGRESS-keyed protocol framing state. All protocol-specific stream-shape
     /// decisions the translator used to make inline — the OpenAI per-chunk identity replay +
     /// include_usage trailing-usage un-fold, and the Bedrock messageStop/metadata two-frame deferral
@@ -214,6 +219,7 @@ impl StreamTranslate {
             egress_eventstream,
             ingress_eventstream,
             started_at: None,
+            clock: std::time::Instant::now,
             framing,
             tool_id_remap: ToolIdRemap::default(),
             // The wire-frame paths (`new`/`new_same_proto`) always read ids straight off the egress
@@ -232,6 +238,13 @@ impl StreamTranslate {
             #[cfg(test)]
             parse_calls: std::cell::Cell::new(0),
         })
+    }
+
+    /// The translator over `clock` instead of [`std::time::Instant::now`] (see the field).
+    #[must_use]
+    pub fn with_clock(mut self, clock: fn() -> std::time::Instant) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Record whether the ORIGINAL client request opted into streaming usage
@@ -261,13 +274,29 @@ impl StreamTranslate {
         // `self.tool_id_remap` borrow in `remap_event` below — unlike `Protocol::name(&self) -> &str`,
         // whose return borrows `self`'s (elided) lifetime and so would collide. No allocation per frame.
         let ingress_name = self.ingress.name_static();
-        for ev in self
-            .egress
-            .reader()
-            .read_response_events(event_type, data, &mut self.decode)
-        {
+        // ONE translate attempt per stream: what the caller's dialect will not get is named once per
+        // path for the whole stream (design F3 "Drops"), and read back by [`Self::dropped`].
+        let seam = crate::codec::drops::Seam {
+            direction: crate::codec::drops::Direction::Response,
+            ingress: ingress_name,
+            egress: self.egress.name_static(),
+        };
+        let events = crate::codec::drops::read_stream_frame(
+            seam,
+            self.egress.reader(),
+            event_type,
+            data,
+            &mut self.decode,
+        );
+        for ev in events {
             self.translate_ir_event(ingress_name, ev, out);
         }
+    }
+
+    /// The far-end wire paths this stream dropped on its way to the caller, each warned once; the
+    /// host records one audit row per path at the stream's end.
+    pub fn dropped(&self) -> &[String] {
+        &self.decode.dropped
     }
 
     /// Run ONE decoded IR event through the cross-protocol pipeline (tool-id remap, identity strip,
@@ -326,6 +355,9 @@ impl StreamTranslate {
             // delta below keeps the prompt-token count from vanishing across the cross-protocol seam.
             if let Some(u) = usage {
                 self.start_usage = Some(u.clone());
+                // The far end has REPORTED these counts: they bill even when the stream ends
+                // before its terminal delta (cut or abandoned), so they fold into `last_usage` now.
+                self.fold_reported_usage(u);
             }
             *id = None;
             *created = None;
@@ -348,18 +380,7 @@ impl StreamTranslate {
             // zero usage, then a usage-only delta) does not let the first zero clobber the second's
             // real counts. `last_usage` is the production billing source the stream-end arm reads
             // for the per-request token fee (Change A step 3, now permanent).
-            let acc = self.last_usage.get_or_insert(crate::codec::ir::IrUsage {
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
-                detail: crate::codec::ir::IrUsageDetail::default(),
-            });
-            // The ONE per-field non-zero/`Some`-wins merge (shared with the terminal-usage
-            // fold), so this A-tap and the fold cannot drift — and the DETAIL sub-buckets ride
-            // along here too instead of being silently dropped by a hand-copied totals-only
-            // merge.
-            merge_trailing_usage(acc, usage);
+            self.fold_reported_usage(usage);
         }
         // A-tap terminal-error capture (Change A): a reader-emitted `Error` event is the IR-sourced
         // breaker-failure signal that replaces the byte-scanner's `UsageTap::terminal_error`. Record
@@ -623,6 +644,22 @@ impl StreamTranslate {
         Some(out)
     }
 
+    /// Fold a far-end-reported usage into `last_usage`, the billing source. The ONE per-field
+    /// non-zero/`Some`-wins merge (shared with the terminal-usage fold), so the cross-protocol and
+    /// same-protocol A-taps cannot drift and the DETAIL sub-buckets ride along. Fed by every usage the
+    /// far end reports: the stream-start counts (Anthropic `message_start`) as well as the terminal
+    /// delta, so a stream that ends before its terminal frame bills what was reported so far (#62).
+    fn fold_reported_usage(&mut self, reported: &crate::codec::ir::IrUsage) {
+        let acc = self.last_usage.get_or_insert(crate::codec::ir::IrUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            detail: crate::codec::ir::IrUsageDetail::default(),
+        });
+        merge_trailing_usage(acc, reported);
+    }
+
     /// SAME-PROTOCOL usage side-channel (Change B step 2). Runs ONLY the egress reader + the
     /// start-usage/backfill/`last_usage` accumulation that `translate_event` does — and NOTHING ELSE
     /// (no tool-id remap, no identity strip, no writer/fan-out/reframe). The same-proto path re-emits
@@ -638,6 +675,7 @@ impl StreamTranslate {
         {
             if let crate::codec::ir::IrStreamEvent::MessageStart { usage: Some(u), .. } = &ev {
                 self.start_usage = Some(u.clone());
+                self.fold_reported_usage(u);
             }
             // A-tap terminal-error capture (Change A) on the SAME-PROTOCOL path: a reader-emitted
             // `Error` event is the IR-sourced breaker-failure signal replacing the byte-scanner's
@@ -662,14 +700,7 @@ impl StreamTranslate {
                 if let Some(start) = &self.start_usage {
                     backfill_from_start_usage(&mut trailing, start);
                 }
-                let acc = self.last_usage.get_or_insert(crate::codec::ir::IrUsage {
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cache_creation_input_tokens: None,
-                    cache_read_input_tokens: None,
-                    detail: crate::codec::ir::IrUsageDetail::default(),
-                });
-                merge_trailing_usage(acc, &trailing);
+                self.fold_reported_usage(&trailing);
             }
         }
     }
@@ -709,8 +740,13 @@ impl StreamTranslate {
                 // `application/vnd.amazon.eventstream` frame with valid CRC32. Per-frame protocol metrics
                 // (a native usage frame's real latency) are injected through the framing vtable, so this
                 // agnostic emitter names no wire event-type of its own.
+                // u128 -> u64 for JSON; saturate (elapsed never realistically exceeds u64 ms).
+                let elapsed_ms = self.started_at.map(|start| {
+                    let ms = (self.clock)().saturating_duration_since(start).as_millis();
+                    u64::try_from(ms).unwrap_or(u64::MAX)
+                });
                 self.framing
-                    .inject_streaming_metrics(&out_et, &mut out_data, self.started_at);
+                    .inject_streaming_metrics(&out_et, &mut out_data, elapsed_ms);
                 let payload = crate::codec::json::to_vec(&out_data).unwrap_or_default();
                 // Bedrock-INGRESS usage (Change A): the usage carried by this frame was already accumulated
                 // into `last_usage` by `translate_event`/`extract_usage_only` from the structured IR event,
@@ -766,7 +802,7 @@ impl StreamTranslate {
         // frame can report a real `metrics.latencyMs` (elapsed since the stream began) instead of a
         // tell-tale hard-coded 0. Cheap monotonic clock read; only read on the bedrock-ingress path.
         if self.started_at.is_none() {
-            self.started_at = Some(std::time::Instant::now());
+            self.started_at = Some((self.clock)());
         }
         self.buf.extend_from_slice(chunk);
         let mut out: Vec<u8> = Vec::new();
@@ -1192,6 +1228,9 @@ impl StreamTranslator for StreamTranslate {
     fn set_request_echo(&mut self, ingress_request_body: &serde_json::Value) {
         self.set_request_echo(ingress_request_body)
     }
+    fn dropped(&self) -> Vec<String> {
+        StreamTranslate::dropped(self).to_vec()
+    }
     fn terminal_error_frame(&mut self, err: &IrError) -> Option<(String, serde_json::Value)> {
         self.terminal_error_frame(err)
     }
@@ -1313,7 +1352,7 @@ pub fn response_to_ir_events(
             IrBlock::Image { .. } | IrBlock::Media { .. } => {}
             // No streamed analog: skipped without spending an index. Enumerated explicitly so a new
             // block kind is a compile error here rather than silent data loss.
-            IrBlock::ToolResult { .. } | IrBlock::Json(_) => {}
+            IrBlock::ToolResult { .. } | IrBlock::Json(_) | IrBlock::HostedToolRecord { .. } => {}
         }
     }
     // IR-21: a GENERATED image / audio part (a Bedrock response `image`, a
@@ -1367,16 +1406,20 @@ pub fn new_stream_translator(
     egress: &str,
     is_sse: bool,
 ) -> Option<Box<dyn StreamTranslator>> {
+    new_stream_translator_on(ingress, egress, is_sse, std::time::Instant::now)
+}
+
+/// [`new_stream_translator`], its stream timed on `clock` ([`StreamTranslate::with_clock`]).
+pub fn new_stream_translator_on(
+    ingress: &str,
+    egress: &str,
+    is_sse: bool,
+    clock: fn() -> std::time::Instant,
+) -> Option<Box<dyn StreamTranslator>> {
     if !is_sse {
         // A buffered (non-stream) body. Cross-protocol never reaches here (the forward path buffers
-        // and translates it before building a stream wrapper); same-protocol is a verbatim relay
-        // UNLESS the ingress dialect supplies a translator that completes its own response shape
-        // (Bedrock: the required `metrics.latencyMs` on a Converse body).
-        if ingress == egress {
-            return protocol_for(ingress)?
-                .writer()
-                .same_protocol_buffered_response_translator();
-        }
+        // and translates it before building a stream wrapper); same-protocol is a verbatim relay:
+        // the far end's bytes, untouched (DIALECT FIDELITY, owner 2026-10-02).
         return None;
     }
     let st = if ingress == egress {
@@ -1384,7 +1427,7 @@ pub fn new_stream_translator(
     } else {
         StreamTranslate::new(ingress, egress)
     }?;
-    Some(Box::new(st))
+    Some(Box::new(st.with_clock(clock)))
 }
 
 /// Rewrite a same-protocol OpenAI SSE frame's bytes with its top-level `usage` member removed,
@@ -1551,8 +1594,10 @@ fn merge_trailing_usage_detail(
         billed_output_tokens,
         billed_classifications,
         usage_identity_note,
+        residual_units,
         traffic_type,
         create_time,
+        by_modality,
     } = trailing;
 
     if reasoning_tokens.is_some() {
@@ -1575,6 +1620,10 @@ fn merge_trailing_usage_detail(
     }
     if service_tier.is_some() {
         acc.service_tier = service_tier.clone();
+    }
+    // The by-modality split (presentation only, DF-MAP item 4) rides the same Some-wins rule.
+    if by_modality.is_some() {
+        acc.by_modality = by_modality.clone();
     }
     // The four OpenAI-family slices arrive on the trailing `include_usage` chunk — the only frame of
     // an OpenAI stream that carries a usage object at all — so folding only the four totals reported
@@ -1615,6 +1664,13 @@ fn merge_trailing_usage_detail(
     }
     if billed_classifications.is_some() {
         acc.billed_classifications = *billed_classifications;
+    }
+    // The residuals (counts no billing class records, never billed) ride the frame that reported
+    // them, as the note above does: Bedrock's guardrail units arrive on the stream's `metadata`
+    // frame only, and a fold that dropped them would leave the streamed turn with no audit row where
+    // its buffered twin has one.
+    if !residual_units.is_empty() {
+        acc.residual_units = residual_units.clone();
     }
     // A streamed Gemini egress reports `usageMetadata.trafficType` only on the trailing
     // usage-bearing chunk (same shape as `tool_use_prompt_tokens` above), so folding only the four

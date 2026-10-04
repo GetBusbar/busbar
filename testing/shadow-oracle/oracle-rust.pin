@@ -2,13 +2,10 @@
 #
 # The money oracle is now the Rust `busbar-oracle` crate in GetBusbar/busbar-release. bin/oracle
 # obtains that binary from the SOURCE pin below and runs it against this directory's DATA. This
-# source pin (repo + git ref + crate) REPLACES the old archive digest-pin in oracle.pin: the thing
-# that must not change quietly is which judge ran, and a git ref + `cargo build --locked` from that
-# tree is the reproducible source identity (the Cargo.lock at the ref pins every dependency). The
-# ref moves only by editing this file, exactly as the old sha256 did.
-#
-# oracle.pin (the Python archive digest-pin) is KEPT for this pass as a fallback and is NOT deleted;
-# the Python tool is retired in a later step (see the Phase C cutover checklist).
+# source pin (repo + git ref + crate) is the ONE pin of the judge (the old archive digest-pin and the
+# Python tool are gone): the thing that must not change quietly is which judge ran, and a git ref +
+# `cargo build --locked` from that tree is the reproducible source identity (the Cargo.lock at the ref
+# pins every dependency). The ref moves only by editing this file.
 #
 # 2026-09-22 (DECISION #80): moved to the commit that ports the corpus GENERATOR into the judge, so
 # `./bin/oracle cells --check` regenerates the 2318-cell corpus and refuses byte drift instead of
@@ -158,8 +155,73 @@
 # answered later cells from stale state, outliving the run. Still a feature branch head; re-pin to the
 # integration/merge commit when that branch lands.
 #
+# 2026-10-02 (owner ruling §9.2 OWNER ACTS, lane ORACLE-CELLS): moved ccef3c1 -> 7168e25 (busbar-release
+# branch `lane-oracle-cells`, cut from main 4a5f57d which carries ccef3c1). fe8cc49: the capture driver
+# boots the build under test by ABSOLUTE path. With a relative `--bin target/release/busbar` (ci.yml,
+# oracle-proof.yml, prove-remote.sh) the boot, run with the cell's work dir as cwd, spawned nothing, so
+# `record --native` recorded none of the capture-driver cells (wire.*, egress.*, export.*, ...): every
+# one was FAIL `capture cell: No such file or directory`. Each capture cell now also leaves a
+# diagnostic trail under <out>/raw/. 7168e25: the owner-review cells (574's driven as_of, usage.gemini,
+# money.reserved-tier, egress.image-detail, egress.headers, boot.deprecated-env, plugins.abi), staged
+# for the owner; no golden is recorded by this move. Still a feature branch head; re-pin to the merge
+# commit when it lands.
+#
+# 2026-10-01 (ARCHITECT, lane ORACLE-CELLS-2): moved 7168e25 -> 76e732b -> e58d85c (busbar-release branch
+# `lane-oracle-cells-2` = PR #7 `oracle-capture-reap` + the owner-review cells). 7efd38a: a capture boot
+# that outlives its expected exit is reaped (it used to be dropped unkilled and held the listen port for
+# every later capture cell), a cell never boots beside a listener already on its port, and an expected-
+# exit cell with steps runs them against a boot that did not exit. 237f9fc: the h2 compare drops the
+# client's timing-placed SETTINGS ACK from the frame-order view (1.5.5 recorded egress.auth|h2|bearer as
+# 3 and as 4 frames). 76e732b: the cross-dialect beta cell reaches an upstream, ABI-o1 drives the plugin,
+# 574's clock pin is withdrawn. e58d85c: the corpus fixture re-vendored (2484 -> 2504, the twenty owner-review
+# cells; cells.json moves with it in this commit). No golden is recorded by this move. Feature branch head; re-pin to the
+# merge commit when it lands.
+#
+# 2026-10-02 (ARCHITECT rulings on the ORACLE-COMMIT findings, lane ORACLE-CELLS-3): moved e58d85c -> b168741
+# (busbar-release main, the merge of #18; carries #14 and #17). 1ef9f05: an accepted-differences transform also rewrites
+# string values inside body.json (a capture cell records its boot log there, not in body.text), so the D-1 diagnostic
+# suffix is normalized on capture cells as it already was on body.text; keys and non-string values are untouched. No
+# golden is recorded or moved by this pin. promote.yml RELEASE_REF is NOT moved here: the CI harness ref moves with
+# #181 / #265 and ORACLE-STABLE (busbar-release #24, cut from b168741).
+#
+# 2026-10-02 (SWITCH-OVER, ARCHITECT rulings Q-SO2/Q-SO3/Q-SO4): moved e58d85c -> 6839561 (busbar-release main;
+# e58d85c's patches are in main as f13bdd6/f16d1dc/7d1d307/cf1954d). #19: plugin-digests.tsv gains an optional 5th
+# column, the busbar line a row serves (1.5 | 1.6, absent = 1.5), chosen from the binary's --version; {ASSET:<plugin>}
+# fills an asset file name from the chosen row; fetch-plugin takes --bin/--line. #23: headroom leaves the hooks variant
+# (HEADROOM-REMOVE), so its 43 cells are NEW cells `<old id>@hooks-webrequest` (variant hooks-webrequest, one webrequest
+# gate); per-cell mask.json_keys (scoped to the webrequest asset-name fields; a key both kept and masked is refused).
+#
+# 2026-10-02 (owner rulings, ORACLE-STABLE; lane ORACLE-PIN): moved b168741 -> eff9c67 (busbar-release
+# `lane-oracle-stable`: #24 merged as 669981e on dev, eff9c67 its follow-up, PR #53). The 1.5.5 golden is IMMUTABLE and
+# ADD-ONLY: the harness_rev refusal and `--allow-harness-skew` are deleted from the engine (golden-guard in the promote
+# hop and the engine's own CI, which replays published 1.5.5 over this golden twice, replace them); a golden cell leaves
+# only through a cited, add-only row in golden/<version>/retired.tsv, and only whole (definition, ledger row, bytes).
+# The vendored corpus it checks this cells.json against is 2506 cells: the SWITCH-OVER move above (43 hooks cells ->
+# `@hooks-webrequest`), the DF-WIRE ruling-3 cell `hooks|hooked-pool|unmodelled-block@hooks-webrequest`, and the
+# billing retirement (`billing|key-usage|after-upstream-down` -> `upstream-down-refunded` + `upstream-healthy-billed`).
+# #53 landed on dev as 305477e.
+#
+# 2026-10-02 (lane ORACLE-FINISH): moved eff9c67 -> 2815f7a (busbar-release dev; it carries #53 and #77). #77: the
+# normalizer's boot.pair-order rule no longer records itself in `applied` when it swaps the pair, because the swap is
+# 1.5.5's per-process HashMap seed. That had moved golden/1.5.5 boot.refusal|BOOT-100|validate in oracle-rerecord run
+# 36967636979. The only other engine change since eff9c67 is doc deletion. Re-record run 36970480705 (this engine,
+# busbar ref lane-oracle-pin) reproduced every committed cell byte for byte on both recordings, and golden-add
+# recorded the 46 owed new cells committed beside this pin. Its other 69 additions are the 1.6.0-only cells that
+# accepted-gaps.json says the 1.5.5 golden cannot owe, so they are not committed.
+#
+# 2026-10-02 (lane oracle-pin-bump): moved 2815f7a -> da60cad9d8fe (busbar-release dev; the same sha promote.yml
+# RELEASE_REF moves to in busbar #433, so CI and lane proofs run ONE engine). 68aec44: `fetch-plugin` takes the
+# release line from the FIRST line of `busbar --version` (1.6.0 prints a `build:` line after it, the owner-signed
+# accepted difference on cli|--version). 2815f7a refused that two-line output, so no lane could record an oracle
+# cell on a predev build. The range also carries the golden-guard in-range fix, nextest timeouts and the plane drivers.
+#
+# 2026-10-03 (LAND-ALL, ARCHITECT): moved on to 7b039b65795c (busbar-release dev, merge of #141): `oracle record`
+# FAILs the cells of a variant whose config cannot be written and runs on (it aborted the whole record before), and
+# a capture cell may name its plugins' release line. da60cad9 (above) is an ancestor, so the --version first-line
+# read rides along.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=ccef3c1
+release_ref=7b039b65795cb4ce4935c9f32ef3263e65e20f1a
 crate=busbar-release-oracle
 bin=busbar-oracle

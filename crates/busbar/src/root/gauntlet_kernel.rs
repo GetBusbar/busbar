@@ -496,7 +496,9 @@ pub fn open_gauntlet_via_kernel(
             match opened {
                 // The door passed at ZeroHold — the caller opens its own carrier next. The
                 // correlation is the request's own, exactly as the substrate opener returns it.
-                busbar_kernel::teller::SessionOpen::Admitted => Ok(Admitted { correlation_id }),
+                busbar_kernel::teller::SessionOpen::Admitted { .. } => {
+                    Ok(Admitted { correlation_id })
+                }
                 // The plane refused at its verify step; its own finished response was stashed.
                 busbar_kernel::teller::SessionOpen::Refused => Err(table
                     .take(raw_key)

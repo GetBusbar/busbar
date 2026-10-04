@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A DROPPED-IN TRANSPORT DOOR THROUGH THE REGISTRY: the in-tree transport fixture's `cdylib`, signed
+//! A DROPPED-IN TRANSPORT DOOR THROUGH THE REGISTRY: the neutral frame door's `cdylib`, signed
 //! first-party into a `plugins/` directory, is scanned, trusted, staged, `dlopen`ed once and
 //! admitted through the one dispatcher's door validation — its tail read into the claims the
 //! connector's registry view serves. A manifest outside the transport's version window is refused at
@@ -30,23 +30,21 @@ mod conformance;
 #[path = "transport_adapter_tests.rs"]
 mod adapter;
 
-/// A dropped-in transport door that frames the host's socket, found by KIND among the example
-/// `cdylib`s beside the test binary (a workspace test build emits the transport crates' door
-/// examples; no linked dev edge carries a door export). Under CI a missing artifact is a failure,
-/// never a skip.
+/// The neutral frame door (`tests/fixtures/neutral_frame_door.rs`): a dropped-in transport door
+/// that frames the host's socket, built beside the test binary as this crate's example `cdylib`.
+/// Under CI a missing artifact is a failure, never a skip.
 fn fixture() -> Option<Vec<u8>> {
     Some(std::fs::read(fixture_path()?).expect("read the cdylib"))
 }
 
-/// Where [`fixture`] is: the first example `cdylib` that admits, against its own Statement
-/// rendering, as a transport composing over nothing.
+/// Where [`fixture`] is: the neutral frame door example, which admits against its own Statement
+/// rendering as a transport composing over nothing.
 fn fixture_path() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let examples = exe.parent()?.parent()?.join("examples");
-    let found = crate::list_plugin_files(&examples)
-        .into_iter()
-        .map(|f| examples.join(f))
-        .find(|p| {
+    let found = Some(examples.join(crate::plugin_library_filename("neutral_frame_door")))
+        .filter(|p| p.exists())
+        .filter(|p| {
             crate::dispatch::rendering_of_library(p)
                 .ok()
                 .flatten()
@@ -63,7 +61,7 @@ fn fixture_path() -> Option<std::path::PathBuf> {
         });
     assert!(
         found.is_some() || std::env::var_os("CI").is_none(),
-        "a socket-framing transport door example is built beside the test binary under CI"
+        "the neutral frame door example is built beside the test binary under CI"
     );
     found
 }

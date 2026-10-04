@@ -28,7 +28,7 @@ use std::sync::Arc;
 /// (a)), so only the audit block below — which IS the chain — holds the full `Store`.
 pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
     // DURABLE AUDIT (#17): the admin audit log's ONE durable path is the neutral journal seam
-    // ([`crate::plane::auditlog`]). Register the `audit` stream, run the ONE-TIME legacy-table →
+    // ([`crate::audit::auditlog`]). Register the `audit` stream, run the ONE-TIME legacy-table →
     // `plane_records` migration (idempotent; a no-op on a migrated / fresh / memory store), and RESTORE
     // the audit log FROM `plane_records` — seeding both the seam chain position (so a later append
     // continues the same chain) and the `AUDIT_LOG` read-model ring `GET /audit` serves. The RAM
@@ -40,8 +40,13 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
     // the FULL `Store` (the legacy `list_audit` table it copies from), the one durable-state block that
     // must hold what every plane hook is narrowed away from.
     if let Some(gov) = app.governance.as_ref() {
-        crate::plane::auditlog::register_and_migrate(app, &gov.store());
+        crate::audit::auditlog::register_and_migrate(app, &gov.store());
     }
+    // THE RESIDUAL LOG (MONEY LAW, ARCHITECT ruling 2026-10-02): core's per-principal
+    // `usage.residual` chain, registered and REPLAYED from the durable store before a listener binds,
+    // so every principal's chain continues where the last process stopped. Core's, not a plane's: the
+    // kernel spells the row at the settle step for every plane.
+    crate::residual_log::register_and_restore(app);
 
     // THE PLANE HYDRATION FOLD. Each plane restores its OWN durable state through the `hydrate` hook
     // it declared, in plane-list order (the audit ring, above, already went first). The store handed

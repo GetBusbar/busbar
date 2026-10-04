@@ -30,12 +30,13 @@ pub enum TranslateReqInput<'a> {
     },
 }
 
-/// The neutral result of a cross-protocol request translation: the egress wire plus the caller
-/// controls the egress dialect dropped (surfaced for the seam's audit-and-allow event; empty on the
-/// opaque path, which carries no droppable controls).
+/// The neutral result of a cross-protocol request translation: the egress wire plus what did not
+/// cross — the caller controls the egress dialect dropped, then every other dropped member by its
+/// wire path (`codec::drops`) — surfaced for the seam's audit-and-allow event (empty on the opaque
+/// path, which carries no droppable members).
 pub struct TranslatedRequest {
     pub wire: EgressWire,
-    pub dropped_controls: Vec<&'static str>,
+    pub dropped_controls: Vec<String>,
 }
 
 /// Why a cross-protocol request translation could not proceed — the three terminal outcomes the
@@ -117,24 +118,66 @@ pub trait TranslateCodec: OperationHandler {
                 })
             }
             TranslateReqInput::Json(v) => {
-                let mut ir = self
-                    .read_request_value(v)
-                    .map_err(TranslateReqReject::Ingress)?;
-                ir.prepare_for_egress(prep);
-                // Egress-absent surfaces only AFTER read+prepare, so a malformed body still rejects as
-                // a 400 (via `Ingress` above) rather than a 404, exactly as the pre-cutover branch did.
-                let egress_proto = egress_proto.ok_or(TranslateReqReject::EgressUnsupported)?;
-                if let Err(reason) = ir.egress_representable(egress_proto) {
-                    return Err(TranslateReqReject::Unrepresentable(reason));
+                // ONE translate attempt: every drop on it, from the reader, the seam and the
+                // writer, goes through the one drop path and comes back here for the audit.
+                let seam = crate::codec::drops::Seam {
+                    direction: crate::codec::drops::Direction::Request,
+                    ingress: prep.ingress_protocol,
+                    egress: egress_proto.unwrap_or_default(),
+                };
+                let (written, dropped) = crate::codec::drops::scope(seam, || {
+                    let mut ir = self
+                        .read_request_value(v)
+                        .map_err(TranslateReqReject::Ingress)?;
+                    ir.prepare_for_egress(prep);
+                    // The content blocks the caller's dialect has and its reader does not model.
+                    crate::codec::proto_codec::with_reader(prep.ingress_protocol, |r| {
+                        crate::codec::drops::note_unmodelled_blocks(
+                            r.request_blocks(),
+                            v,
+                            crate::codec::drops::UNMODELLED_REQUEST_BLOCK,
+                        )
+                    });
+                    // Egress-absent surfaces only AFTER read+prepare, so a malformed body still
+                    // rejects as a 400 (via `Ingress` above) rather than a 404, exactly as the
+                    // pre-cutover branch did.
+                    let egress_proto = egress_proto.ok_or(TranslateReqReject::EgressUnsupported)?;
+                    if let Err(reason) = ir.egress_representable(egress_proto) {
+                        return Err(TranslateReqReject::Unrepresentable(reason));
+                    }
+                    let controls = ir.egress_dropped_controls(egress_proto);
+                    // A4b: the handle owns the value-first / set-model+bytes write onto the egress
+                    // dialect.
+                    let wire = ir.write_egress_request(egress_proto, model);
+                    // A write that could not be represented is a REFUSAL, on the same terminal the
+                    // pre-write representability guard above uses: the guard answers before the
+                    // write for what it can see, and this answers after it for what only the writer
+                    // can.
+                    if let EgressWire::Unrepresentable { reason } = wire {
+                        return Err(TranslateReqReject::Unrepresentable(reason));
+                    }
+                    Ok((wire, controls))
+                });
+                let (wire, controls) = written?;
+                // A control is named by the caller's wire path for it, as every other drop is.
+                let mut dropped_controls: Vec<String> = Vec::new();
+                for control in controls {
+                    let path = crate::codec::drops::wire_path(prep.ingress_protocol, control, &[]);
+                    if !dropped_controls.contains(&path) {
+                        dropped_controls.push(path);
+                    }
                 }
-                let dropped_controls = ir.egress_dropped_controls(egress_proto);
-                // A4b: the handle owns the value-first / set-model+bytes write onto the egress dialect.
-                let wire = ir.write_egress_request(egress_proto, model);
-                // A write that could not be represented is a REFUSAL, on the same terminal the
-                // pre-write representability guard above uses: the guard answers before the write
-                // for what it can see, and this answers after it for what only the writer can.
-                if let EgressWire::Unrepresentable { reason } = wire {
-                    return Err(TranslateReqReject::Unrepresentable(reason));
+                // A writer's drop of a member a control already names by its value
+                // (`tool_choice=none` for `tool_choice`) is that control's drop, recorded once.
+                for path in dropped {
+                    let named = dropped_controls.iter().any(|c| {
+                        c == &path
+                            || c.strip_prefix(path.as_str())
+                                .is_some_and(|rest| rest.starts_with('='))
+                    });
+                    if !named {
+                        dropped_controls.push(path);
+                    }
                 }
                 Ok(TranslatedRequest {
                     wire,

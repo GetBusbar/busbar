@@ -130,11 +130,17 @@ where
 
     // Only past the governed open: mint the ephemeral secret scoped to the SAME config busbar locked and
     // re-applies. A mint failure tears the just-opened session down through the returned handle
-    // drop rather than leaking a governed-but-unusable session.
-    let token = minter
-        .mint(&locked_config)
-        .await
-        .map_err(AttachError::Mint)?;
+    // drop rather than leaking a governed-but-unusable session, and gives back the session fee its
+    // open counted (TODO 17(b), ARCHITECT R4): a session that never opened charges nothing.
+    let token = match minter.mint(&locked_config).await {
+        Ok(token) => token,
+        Err(e) => {
+            core.refund_open();
+            return Err(AttachError::Mint(e));
+        }
+    };
+    // The secret is out: the session is served, and the fee its open counted is final.
+    core.served();
 
     let session = VoiceSession::new(Arc::clone(&core));
     Ok(Attached {

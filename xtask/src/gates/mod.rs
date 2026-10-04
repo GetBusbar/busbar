@@ -25,19 +25,20 @@ pub mod blocking_ffi;
 pub mod c1_literals;
 pub mod changelog;
 pub mod changelog_register;
-pub mod ci_umbrella;
 pub mod config_schema;
 pub mod conformance_sync;
 pub mod construction;
 pub mod contract_stateless;
+pub mod deferral_words;
 pub mod denylist_gate;
 pub mod dep_wall;
 pub mod design_bindings;
 pub mod design_docs_allowlist;
+pub mod dialect_coverage;
 pub mod dialect_map;
+pub mod documented_claims;
 pub mod door_only;
 pub mod duplex_ws_default_edge;
-pub mod feature_sets;
 pub mod field_inventory;
 pub mod hot_path_alloc;
 pub mod hot_path_perf;
@@ -58,15 +59,17 @@ pub mod package_selectors;
 pub mod plane_abi_neutrality;
 pub mod plane_pricing_blindness;
 pub mod plane_purity;
+pub mod plane_secret_blindness;
 pub mod plane_transport_neutrality;
 pub mod plugin_closure_deps;
 pub mod population;
-pub mod qa_gate_dispatch;
 pub mod qa_names;
 pub mod reachability;
-pub mod release_order;
 pub mod response_header;
+pub mod script_allowlist;
 pub mod seal_witness;
+pub mod secret_accessor_seal;
+pub mod secret_hygiene;
 pub mod segregation;
 pub mod service_images;
 pub mod settings_leak;
@@ -76,6 +79,7 @@ pub mod structure_lint;
 pub mod teller_steps;
 pub mod tracing;
 pub mod unconstructed;
+pub mod workflow_rules;
 pub mod workspace_deps;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -110,32 +114,17 @@ pub struct Registration {
 /// fact that reason turns on.
 ///
 /// THIS LIST WAS ONE NAME AND A COMMENT, AND THAT COST THE ONE SIGNAL IT PROTECTS.
-/// `cargo xtask gate --all` exited 1 on a clean tree — `RED in design-bindings,
-/// kind-isolation-ship` — because both are red on HEAD for reasons nothing here knew about. The
-/// workflow that ran it then (`keep-proof.yml`, now the dispatch-only `manual-keep-proof.yml`) was
-/// the only judge of an agent hand-back, and its gate job was permanently red: a real regression
-/// was indistinguishable from the standing red. The runner this vocabulary serves TODAY is
-/// [`ALL_RUNNER`] — ci.yml's `gate-all` job, `cargo xtask gate --all` on every push — and a test
-/// (`posture_tests::the_all_runner_this_vocabulary_serves_is_invoked`) holds that it still is, so
-/// this paragraph cannot outlive its workflow a second time. Two excuse vocabularies existed — this one, and
-/// `full_gate`'s [`crate::full_gate::REGISTRY_NOT_IN_CI`], which knew about `kind-isolation-ship`
-/// and checks its claim against the tree — and `--all` read the wrong one.
+/// `cargo xtask gate --all` exited 1 on a clean tree because a gate was red on HEAD for reasons
+/// nothing here knew about, so a real regression was indistinguishable from the standing red.
 ///
-/// So there is one vocabulary now, and every entry carries an [`Excused`] that is CHECKED on the
-/// run. An entry whose fact no longer holds excuses nothing: the gate is scored, exactly as if the
-/// entry had never been written. `--all` prints the excuse it applied on every run, so a red that
-/// was not counted is never a red that was not mentioned.
+/// Every entry carries an [`Excused`] that is CHECKED on the run. An entry whose fact no longer
+/// holds excuses nothing: the gate is scored, exactly as if the entry had never been written.
+/// `--all` prints the excuse it applied on every run, so a red that was not counted is never a red
+/// that was not mentioned.
 ///
 /// An excused gate is still fully reconciled, still self-tested, and still exits non-zero when run
-/// BY NAME (`cargo xtask gate construction`), which is what the CI job captures. This governs one
-/// thing: whether `--all` adds it to the red list.
-/// WHERE `cargo xtask gate --all` RUNS, which is the whole reason [`REPORT_ONLY`] exists: the file
-/// and the needle, checked over executed lines by `full_gate::Excuse::holds`.
-pub const ALL_RUNNER: crate::full_gate::Excuse = crate::full_gate::Excuse::ReleaseScript(
-    ".github/workflows/ci.yml",
-    "run: cargo xtask gate --all\n",
-);
-
+/// BY NAME (`cargo xtask gate construction`), which is what the pipeline's turnstile captures. This
+/// governs one thing: whether `--all` adds it to the red list.
 pub const REPORT_ONLY: &[Posture] = &[
     Posture {
         name: "construction",
@@ -144,16 +133,8 @@ pub const REPORT_ONLY: &[Posture] = &[
         excuse: Excused::OnlyRows(StandingReds {
             rows: CONSTRUCTION_STANDING_REDS,
             list: "CONSTRUCTION_STANDING_REDS",
-            mirror: Some("land_construction_standing_reds in scripts/land.sh"),
+            mirror: None,
         }),
-    },
-    Posture {
-        name: "kind-isolation-ship",
-        why: "the SHIP-criterion twin of kind-isolation. Its enforceable rows run on every push \
-              under `kind-isolation`; the ones it adds are a claim about the SHIP SHA and are RED \
-              on HEAD by design. It is a release-time gate, and full_gate's own excuse table is \
-              where that claim is written down and checked.",
-        excuse: Excused::ReleaseTime,
     },
     Posture {
         name: "instance-noun-neutrality",
@@ -182,27 +163,11 @@ pub const REPORT_ONLY: &[Posture] = &[
         excuse: Excused::OnlyAbout("tracked money debt"),
     },
     Posture {
-        name: "reachability",
-        why:
-            "THE PLANE-ROSTER REACHABILITY WITNESS, and it is RED BY DESIGN on HEAD: it was built \
-              on 2026-09-22 to red on `crates/busbar/src/root/units_a2a.rs`, which ships three \
-              money faults in a module whose unit's only construction site in the crate is under \
-              `#[cfg(test)]`. A gate that did not red there would not work. It also reds on four \
-              more nobody had written down (units_voice, units_mcp, money_book, vocabulary) and \
-              PASSES the llm plane, which is live. It is a release-time claim — \
-              scripts/verify-1.6.0-done.sh runs it, full_gate's own excuse table is where that is \
-              written down and checked — and every row it is red about is printed in full on every \
-              run, so a red that is not counted here is never a red that was not mentioned. DELETE \
-              THIS POSTURE when qa/reachability.toml's findings are drained (each either switched \
-              on or declared) and the gate is green on HEAD.",
-        excuse: Excused::ReleaseTime,
-    },
-    Posture {
         name: "qa-names",
         why:
             "GREEN, AND HELD THERE BY NAME. This entry once said the list was empty and the gate \
               green outright while the gate was red, so the blocking `cargo xtask gate qa-names \
-              --posture` step in ci.yml exited 1 on a tree nobody had touched (item 176). Its one \
+              --posture` run exited 1 on a tree nobody had touched (item 176). Its one \
               red, `qa-names:path-names-a-live-path` on xtask/src/audit.rs's `REGISTER_REL`, is \
               drained by a written declaration beside the const and QA_NAMES_STANDING_REDS is \
               empty again. Every row of this gate is scored like any gate's: a new dead name, a \
@@ -270,7 +235,7 @@ pub const REPORT_ONLY: &[Posture] = &[
               into the contract and tcp took the contract's one door; its line is struck.) \
               Every OTHER row \
               of this gate is scored like any gate's, so a new red anywhere else reds `--all` and \
-              the blocking `--posture` step in ci.yml alike, and a listed row that goes green \
+              the blocking `--posture` run alike, and a listed row that goes green \
               without its strike is STALE and reds them too. \
               `posture_tests::the_structure_lint_posture_holds_on_the_tree` runs the real gate and \
               holds this entry to what it says.",
@@ -281,31 +246,11 @@ pub const REPORT_ONLY: &[Posture] = &[
         }),
     },
     Posture {
-        name: "ship-ready",
-        why: "THE SHIP CRITERION, and the integration line is not the ship SHA. Every one of its \
-              rows is a claim about a tree that is ready to promote — the twin at zero, the \
-              ceilings tight, nothing standing red, the mutants caught — and this tree is \
-              deliberately none of those things yet. It is a REQUIRED CHECK on `qa` and `main`, \
-              which is where the claim is meant to bite and where branch protection scores it; \
-              `--all` on the dev line is not. It cannot be `ReleaseTime`: ci.yml DOES invoke it, so \
-              it has no `full_gate::REGISTRY_NOT_IN_CI` entry for that arm to read, and the arm \
-              excused nothing. The excuse is the two facts the promotion claim turns on.",
-        excuse: Excused::RequiredAtPromotion(&[
-            crate::full_gate::Excuse::ReleaseScript(
-                ".github/workflows/ci.yml",
-                "run: cargo xtask gate ship-ready\n",
-            ),
-            crate::full_gate::Excuse::ReleaseScript(
-                "scripts/ci-branch-protection.sh",
-                "\"ship-ready\"",
-            ),
-        ]),
-    },
-    Posture {
         name: "kind-isolation",
-        why: "RED on the Phase 4 drain debt and on nothing new. `:deps`, `:test-deps`, `:closure` \
-              and `:matrix` carry the measured coupling the Phase 4 kind-isolation drain removes \
-              (their rises await owner questions Q77/Q77a). They are excused FINDING BY FINDING: \
+        why: "RED on the Phase 4 drain debt and on nothing new. `:deps`, `:test-deps` and `:closure` \
+              carry the measured coupling the Phase 4 kind-isolation drain removes (their rises \
+              await owner questions Q77/Q77a). `:matrix` is no longer excused here because it no \
+              longer fails: it is report-only (owner 2026-10-03). They are excused FINDING BY FINDING: \
               every finding they carry must be in qa/kind-isolation.standing.txt at or below its \
               recorded figure. A new edge, cell or rise reds the posture, and every other row \
               blocks exactly as it always did. The snapshot only shrinks: `--posture \
@@ -315,7 +260,6 @@ pub const REPORT_ONLY: &[Posture] = &[
                 "kind-isolation:deps",
                 "kind-isolation:test-deps",
                 "kind-isolation:closure",
-                "kind-isolation:matrix",
             ],
             file: "qa/kind-isolation.standing.txt",
         }),
@@ -335,10 +279,6 @@ pub const REPORT_ONLY: &[Posture] = &[
 /// Draining a row means striking its name here in the same commit, which is the transaction the
 /// whole gate exists to force.
 ///
-/// `land_construction_standing_reds` in scripts/land.sh subtracts the same rows so that every
-/// landing can run the gate over EVERY row instead of a caller-chosen few. The two lists are held
-/// EQUAL by `posture_tests::land_sh_subtracts_exactly_the_construction_standing_reds`: an edit to
-/// either alone reds `cargo test -p xtask`.
 pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // "hold-discipline:cancellation-before-await" — STRUCK (M1 DISPATCH, 2590f8493). The scan-set
     // floor added 2026-09-09 scored an absent subject RED instead of PASS, catching a rule claiming
@@ -356,44 +296,29 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     "one-pick-site",
     // RE-DERIVED 2026-09-24 FROM A REAL RUN (P1 integration). `cargo xtask gate construction` on a
     // clean checkout of b7200b496, base pinned to origin/predev, is red on exactly the rows on this
-    // list. Three names were STALE and are struck here and in scripts/land.sh in the same commit:
+    // list. Three names were STALE and are struck here in the same commit:
     // `ports-only-tests:busbar-llm`, `request-path-fn-size` and `terminal-doors-in-audit-step` are
-    // PASS on that run. `ceiling-rose` is green again because the ten expired kind-isolation raises
-    // in qa/construction.toml were struck in the same commit (each cell already reads its `to` at
-    // the base). The rows below were red and on no list, so `--posture` scored them NEW; each is a
-    // true finding, named with what it measures and the phase that drains it.
+    // PASS on that run. The rows below were red and on no list, so `--posture` scored them NEW;
+    // each is a true finding, named with what it measures and the phase that drains it.
     //
-    // MONEY — DRAIN: Phase 2.
-    // `one-pricing-site`: `busbar_kernel_ledger::cost::price` called from
-    // crates/busbar-core-admin/src/v1/service.rs, outside the reviewed homes — an admin read that
-    // prices on its own path (the BUDGET row: the enforcement path is not the invoice path).
-    "one-pricing-site",
-    // `token-sealed` and its three named mints: the Teller's tokens, `KernelSeal::acquire_for_kernel(`,
-    // the arrival-hold mint and `SecretOnce::mint(` are spelled outside their one home crate (266,
-    // 136, 49 and 5 sites). Item 317: the one deliberate cross-crate hole in the capability model is
-    // held by nothing while these are red. The arrival hold is a money hold, so this drains with it.
-    "token-sealed",
-    "token-sealed:admit-token-mint",
-    "token-sealed:kernel-seal",
-    "token-sealed:secret-once-mint",
+    // `one-pricing-site` STRUCK (ARCHITECT ruling 2026-09-30, a $ commit landed alone): the admin
+    // usage read built the ledger slice itself and priced it beside the cost unit. The row
+    // projection moved into the cost unit (`busbar_kernel_ledger::cost::MeteredRow`), so admin
+    // hands over its row and prices nothing.
+    // `token-sealed` and its three named mints STRUCK 2026-10-02 (GATE-GREEN, ARCHITECT rulings A + B,
+    // Q-GG2, Q-GG3): every site was test code. The contract's and the kernel member crates' minting
+    // tests moved into busbar-kernel/src; root, llm and core-admin tests take their tokens from the
+    // kernel's test-only mint (`test_support::tokens`) and core-admin's `secret_once`; the lint's
+    // rule-spec literals moved to a data file. Each row measures 0 with the full scan, tests included.
     //
-    // C1 / THE FOLD — DRAIN: Phase 4.
-    // `lean-core`: 14 string literals in the kernel and busbar-kernel-* crates naming a dialect or a
-    // section 1.3 pinned word (config/mod.rs, appbuild.rs). Item 379 widened the scan to the eight
-    // kernel crates the units became, which is what made it visible. Measured 2026-09-27: 5 (two
-    // reserved-name messages in config_validate, a metrics help text, two plane_host errors) once
-    // the 28 `known_sites` pins that had drifted off their literals were re-pointed.
-    "lean-core",
+    // `lean-core` STRUCK 2026-10-02 (GATE-GREEN): #178 re-pointed the reviewed sites by path + text;
+    // the last two, plane_host's completion-seam errors, became the neutral `CompletionRefusal` the
+    // mcp plane words in its own vocabulary, so the kernel spells neither.
     // `neutral-no-dialect` STRUCK 2026-09-25: the dialect and strict-purity drains emptied it, and
     // `--posture` scored the name STALE.
     //
-    // `loc-ceilings:union`: the kernel + contract + unit-* union measures 59342 against 57456 — the
-    // union had been absorbing its members' overage while it read their slack (item 378 made it
-    // read their ceilings). A TRUE red, held under OWNER RULING Q50. Its two members
-    // `loc-ceilings:caps-contract` and `surface-ceiling:contract` are STRUCK 2026-09-25: the pair was
-    // re-armed at the measurement (OWNER RULING Q68(3)), both rows are green, and `--posture` scored
-    // the two names STALE.
-    "loc-ceilings:union",
+    // `loc-ceilings:union` STRUCK 2026-10-02 WITH THE ROW ITSELF: size is not a CI check (owner
+    // 2026-10-02), and every `loc-ceilings:*` and `surface-ceiling:*` row is deleted.
 ];
 
 /// THE `qa-names` GATE'S STANDING REDS, BY NAME.
@@ -469,10 +394,10 @@ pub const MONEY_INVARIANTS_STANDING_REDS: &[&str] = &[
 /// [`QA_NAMES_STANDING_REDS`]: a red this list does not name is scored, and a name on this list that
 /// has gone green is STALE and is scored too.
 pub const CONFORMANCE_SYNC_STANDING_REDS: &[&str] = &[
-    // Item 165 (2026-09-24): freshness is judged against the checkout's own commit, so every
-    // carried-over pass is STALE on the dev line (TODO rule 7.3). Drained in Phase 5 on the release
-    // sha (TODO rule 7.4). Strike this line in the commit that turns the row green.
-    "conformance:freshness",
+    // DRAINED 2026-10-02: `conformance:freshness` stood here (item 165: freshness is judged against
+    // the checkout's own commit, so every carried-over pass was STALE). The ten hand-stamped passes
+    // left the tree (d2b588d74e: a verdict is produced at judge time), so nothing carried over is
+    // left to be stale. Struck in the train that turned it green.
 ];
 
 /// THE STRUCTURE-LINT GATE'S STANDING REDS, BY NAME. Same contract as
@@ -485,7 +410,8 @@ pub const STRUCTURE_LINT_STANDING_REDS: &[&str] = &[
     // other 33. DRAIN: Phase 4 — the plane owners dedupe each plane-local copy or sign its ledger
     // row, prune the stale ledger rows, take the axis identity questions out of the agnostic core
     // and collapse each second spelling. Strike each line in the commit that turns its row green.
-    "structure-lint:axis:purity",
+    // `structure-lint:axis:purity` STRUCK 2026-10-02 (GATE-GREEN, ee06655df0): the contract asks no
+    // claim its transport and the ABI handshake has one home, so the row is green.
     "structure-lint:plane-dup:unledgered",
 ];
 
@@ -501,11 +427,6 @@ pub enum Excused {
     /// The whole gate is reported, not scored, and the reason is about the gate rather than about
     /// any one of its rows.
     Whole,
-    /// It is a RELEASE-TIME claim, and [`crate::full_gate::REGISTRY_NOT_IN_CI`] is where that is
-    /// written down. The entry must still be there AND its own `Excuse` must still hold — a gate
-    /// whose release script stopped invoking it is a gate nothing runs, and excusing it here would
-    /// be the second vocabulary drifting from the first all over again.
-    ReleaseTime,
     /// The gate is red about ONE known thing and nothing else. Every non-PASS row, and every
     /// reconciliation problem, must name this needle; one that does not is a red this excuse was
     /// not written for, and the gate is scored.
@@ -520,10 +441,6 @@ pub enum Excused {
     /// * a name on this list that is NOT red any more is a STALE entry, and the gate is scored for
     ///   that too. Without it the list only ever grows and drifts back into being a blanket.
     OnlyRows(StandingReds),
-    /// The gate is a REQUIRED CHECK at promotion and is red on the dev line by design. Every fact
-    /// listed must hold — the workflow still runs it, and branch protection still requires it — or
-    /// the gate is scored like any other.
-    RequiredAtPromotion(&'static [crate::full_gate::Excuse]),
     /// The gate's named rows are excused FINDING BY FINDING, against a committed snapshot that can
     /// only shrink. See [`standing_snapshot`].
     Snapshot(standing_snapshot::SnapshotReds),
@@ -556,28 +473,6 @@ pub fn excused_from_all(name: &str, cx: &Ctx, verdict: &Verdict) -> Option<Strin
     let p = REPORT_ONLY.iter().find(|p| p.name == name)?;
     match &p.excuse {
         Excused::Whole => Some(p.why.to_string()),
-        Excused::ReleaseTime => {
-            let (_, reason, excuse) = crate::full_gate::REGISTRY_NOT_IN_CI
-                .iter()
-                .find(|(n, _, _)| *n == name)?;
-            excuse.holds(cx).ok()?;
-            Some(format!(
-                "{} — full_gate's excuse still holds: {reason}",
-                p.why
-            ))
-        }
-        Excused::RequiredAtPromotion(facts) => {
-            for fact in facts.iter() {
-                if let Err(why) = fact.holds(cx) {
-                    eprintln!("  {name} posture: the promotion excuse no longer holds: {why}");
-                    return None;
-                }
-            }
-            Some(format!(
-                "{} — ci.yml still runs it and branch protection still requires it",
-                p.why
-            ))
-        }
         Excused::OnlyAbout(needle) => {
             // THE ROWS FIRST, THEN THE RECONCILIATION'S OWN LINES. A reconciler problem is
             // `"<id>: <what>"` and carries none of the row's detail, so matching the needle
@@ -785,8 +680,16 @@ const MEASURED_PLANE_PURITY: f64 = 27_923.0; // 16 cases, 298.0 s
 const MEASURED_PLANE_PURITY_STRICT: f64 = 19_435.0; // 12 cases, 202.1 s
 const MEASURED_STRUCTURE_LINT: f64 = 7_938.0; // 39 cases, 88.4 s
 const MEASURED_CONSTRUCTION: f64 = 33_096.0; // 36 cases, 352.4 s
-const MEASURED_KIND_ISOLATION: f64 = 128_034.0; // 152 cases, 1360.9 s
-const MEASURED_KIND_ISOLATION_SHIP: f64 = 120_208.0; // 122 cases, 1290.7 s
+                                             // RE-ARMED 2026-10-03 (lane-predev-all, run 37150144473's no-default-features shard). #454's crate
+                                             // EXTRACTIONS (`busbar-transport-ws` befd20dc37, and the http/tcp/grpc/a2a wires that are pinned git
+                                             // deps `crates/` no longer holds) grew the per-plant whole-tree scan: more selftest cases now PLANT
+                                             // OR REMOVE a crate — each invalidates the derived-vocabulary matrix memo and forces a full re-scan —
+                                             // so the battery's measured unit count rose. The counts are machine-independent (plants x scan size)
+                                             // and were read off the DENY run's own cost lines; the slack below (1.6x) carries the per-box spread.
+const MEASURED_KIND_ISOLATION: f64 = 319_876.0; // 240 cases; #454 extractions grew the per-plant scan
+const MEASURED_KIND_ISOLATION_SHIP: f64 = 199_904.0; // 137 cases; same cause
+/// The two kind-isolation batteries were re-measured on #454's tree, not the 2026-09-10 sitting.
+const TAKEN_KIND_ISOLATION: &str = "2026-10-03 9c479c0fe9";
 
 // `audit-ledger` IS STRUCK AGAIN, AND THE EXPLANATION IT WAS RE-BASELINED ON WAS WRONG.
 //
@@ -923,15 +826,15 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         gate: "kind-isolation",
         measured: MEASURED_KIND_ISOLATION,
         allowed: MEASURED_KIND_ISOLATION * BUDGET_SLACK,
-        taken: TAKEN,
-        why: "The dearest battery in the registry: every case plants an overlay and drives the whole gate over a 660k-line tree. The per-file compiled set and the matrix scan are memoised on (path, bytes) and the merge-base is read once per process; what is left is the plants and the rules. A plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo, which many cases do, because a census that walks the whole repository is proven by planting crates in it.",
+        taken: TAKEN_KIND_ISOLATION,
+        why: "The dearest battery in the registry: every case plants an overlay and drives the whole gate over a 660k-line tree. The per-file compiled set and the matrix scan are memoised on (path, bytes) and the merge-base is read once per process; what is left is the plants and the rules. A plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo, which many cases do, because a census that walks the whole repository is proven by planting crates in it. RE-MEASURED on #454's tree: its wire extractions (busbar-transport-ws et al.) turned more cases into crate-planting ones, raising the count.",
     },
     Budget {
         gate: "kind-isolation-ship",
         measured: MEASURED_KIND_ISOLATION_SHIP,
         allowed: MEASURED_KIND_ISOLATION_SHIP * BUDGET_SLACK,
-        taken: TAKEN,
-        why: "The ship twin of the battery above: the same shape held to a ceiling of zero, plus the derivations with a degenerate answer and the floors whose subject is the size of their own input.",
+        taken: TAKEN_KIND_ISOLATION,
+        why: "The ship twin of the battery above: the same shape held to a ceiling of zero, plus the derivations with a degenerate answer and the floors whose subject is the size of their own input. RE-MEASURED on #454's tree for the same cause as its non-ship twin.",
     },
     // `audit-ledger` HAS NO ENTRY HERE. It had one, set from 8 779 units and justified by a
     // register-growth story that measurement refuted; the cost was 128 `rev-list` processes per
@@ -2636,11 +2539,40 @@ pub static REGISTRY: &[Registration] = &[
         summary: "how the tree is BUILT, against BUSBAR-1.6.0.md and qa/construction.toml",
     },
     Registration {
+        name: "deferral-words",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(deferral_words::DeferralWordsGate),
+        summary: "DECISIONS #15 banned-word shapes over the 1.6.0 docs (report-only) + the pinned positive control",
+    },
+    Registration {
         name: "design-docs-allowlist",
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(design_docs_allowlist::DesignDocsAllowlistGate),
         summary: "docs/design holds the spec, the TODO, QUESTIONS, SLOT-LOG and 1.6.0-PARKED/ only",
+    },
+    Registration {
+        name: "documented-claims",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(documented_claims::DocumentedClaimsGate),
+        summary: "qa/documented-claims.json: every README/CHANGELOG claim is pinned by a recorded cell or excused, ids address their quotes",
+    },
+    Registration {
+        name: "secret-hygiene",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(secret_hygiene::SecretHygieneGate::shipped()),
+        summary: "no bare-string secret field, no .expose_secret() at a sink, no secret interpolated \
+                  into a returned message (REPORT-ONLY ledger rows; SECRET_GATE_REPORT_ONLY=0 blocks, #53)",
+    },
+    Registration {
+        name: "script-allowlist",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(script_allowlist::ScriptAllowlistGate),
+        summary: "every tracked .py/.sh/.bash is on qa/scripts-allowlist.toml with a class and a reason",
     },
     Registration {
         name: "design-bindings",
@@ -2671,20 +2603,6 @@ pub static REGISTRY: &[Registration] = &[
         summary: "every accepted difference names a changelog line that was actually written",
     },
     Registration {
-        name: "ci-umbrella",
-        batch: 1,
-        tier: Tier::Fast,
-        build: || Box::new(ci_umbrella::CiUmbrellaGate),
-        summary: "every job is in the umbrella's needs or excluded for a written reason",
-    },
-    Registration {
-        name: "feature-sets",
-        batch: 1,
-        tier: Tier::Fast,
-        build: || Box::new(feature_sets::FeatureSetsGate),
-        summary: "every non-default cargo feature is built by a CI job that names it",
-    },
-    Registration {
         name: "inventory-ref",
         batch: 1,
         tier: Tier::Fast,
@@ -2692,18 +2610,11 @@ pub static REGISTRY: &[Registration] = &[
         summary: "every design binding's inventory column names a file that exists",
     },
     Registration {
-        name: "qa-gate-dispatch",
+        name: "workflow-rules",
         batch: 1,
         tier: Tier::Fast,
-        build: || Box::new(qa_gate_dispatch::QaGateDispatchGate::new()),
-        summary: "the dispatcher this branch declares is the dispatcher this branch ships",
-    },
-    Registration {
-        name: "release-order",
-        batch: 1,
-        tier: Tier::Fast,
-        build: || Box::new(release_order::ReleaseOrderGate),
-        summary: "nothing may be tagged until it has been verified from the consumer side",
+        build: || Box::new(workflow_rules::WorkflowRulesGate),
+        summary: "no workflow is tag-triggered or pushes a release branch; every action is a pinned sha; every attestation verify names its signer",
     },
     Registration {
         name: "service-images",
@@ -2778,6 +2689,13 @@ pub static REGISTRY: &[Registration] = &[
         summary: "capability proofs are exactly Pass<stage> + Grant<capability> + one kernel minter (#65/#73)",
     },
     Registration {
+        name: "secret-accessor-seal",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(secret_accessor_seal::SecretAccessorSealGate),
+        summary: "no cdylib plugin crate reaches a raw secret accessor (expose/bytes) or KernelSeal::acquire_for_kernel (DECISIONS #40)",
+    },
+    Registration {
         name: "money-invariants",
         batch: 1,
         tier: Tier::Fast,
@@ -2794,7 +2712,7 @@ pub static REGISTRY: &[Registration] = &[
     },
     // THE ONE-MEMORY-ABI GATES (M0 ABI-SPEC; the design's locked plugin ABI). REPORT-ONLY: each is
     // armed at today's count as a drain-only ledger qa/<name>.toml whose rows are the M2 work
-    // list, and ci.yml runs them in the `one-memory-abi-gates` job the umbrella does not count.
+    // list, and the pipeline's turnstile runs them like every registered gate.
     Registration {
         name: "one-memory-abi",
         batch: 1,
@@ -2849,6 +2767,14 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(door_only::DoorOnlyGate),
         summary: "the binary closure reaches a plugin only through its door and installs no static \
                   fn-pointer seam but oauth2's and admin's (report-only ledger)",
+    },
+    Registration {
+        name: "plane-secret-blindness",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(plane_secret_blindness::PlaneSecretBlindnessGate),
+        summary: "no plane crate names a secret-resolving surface; the owed sites are a drain-only \
+                  ledger (THE DESIGN, the trust boundary)",
     },
     Registration {
         name: "linked-dropped-features",
@@ -2941,7 +2867,7 @@ pub static REGISTRY: &[Registration] = &[
         name: "instance-noun-neutrality",
         batch: 1,
         // RELEASE-TIME, NOT PER-PUSH (item 185): red by design on a tracked burndown baseline, run
-        // in full by release-stage.yml's `done-oracle` job on the sha being staged, on the same
+        // in full by the removed release-stage.yml's `done-oracle` job on the sha being staged, on the same
         // footing as its Tier::Full siblings (reachability, plane-purity-strict, kind-isolation-ship).
         tier: Tier::Full,
         build: || Box::new(instance_noun_neutrality::InstanceNounNeutralityGate::check()),
@@ -2952,7 +2878,7 @@ pub static REGISTRY: &[Registration] = &[
         name: "plane-pricing-blindness",
         batch: 1,
         // RELEASE-TIME, NOT PER-PUSH (item 185): red by design on a tracked burndown baseline, run
-        // in full by release-stage.yml's `done-oracle` job on the sha being staged, on the same
+        // in full by the removed release-stage.yml's `done-oracle` job on the sha being staged, on the same
         // footing as its Tier::Full siblings (reachability, plane-purity-strict, kind-isolation-ship).
         tier: Tier::Full,
         build: || Box::new(plane_pricing_blindness::PlanePricingBlindnessGate),
@@ -3048,6 +2974,22 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(dialect_map::DialectMapGate),
         summary: "every committed LLM dialect table (codec/<d>/map.gen.rs) equals its \
                   dialects/<d>.toml mapping file, compiled",
+    },
+    Registration {
+        name: "dialect-map-in-lock",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(dialect_coverage::DialectMapInLockGate),
+        summary: "every path an LLM dialect mapping file maps or marks no-equivalent is in that \
+                  dialect's wire lock",
+    },
+    Registration {
+        name: "dialect-candidates",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(dialect_coverage::DialectCandidatesGate),
+        summary: "every wire path naming a field another LLM dialect maps is mapped or marked \
+                  no-equivalent in its own dialect's mapping file",
     },
     Registration {
         name: "no-tracked-ignored",
@@ -3779,48 +3721,6 @@ mod posture_tests {
         }
     }
 
-    /// The release-time posture is not a name on a list here: it is a lookup into the table that
-    /// already knew, and that table's own claim is checked against the tree.
-    #[test]
-    fn the_release_time_posture_is_read_from_full_gate_and_expires_with_it() {
-        let cx = Ctx::workspace().expect("the workspace opens");
-        let red = verdict(vec![Row::fail("kind-isolation:shape", "t", "d")]);
-        // THE BASELINE IS PLANTED, NOT BORROWED. The excuse holds only while the script names the
-        // gate AND some workflow runs the script in full (item 161). The control used to read that
-        // second half off whatever the real workflows carried, so on a tree where no workflow ran
-        // the script it failed before the plant, and the plant below proved nothing (item 89's
-        // PROOF IMPOSSIBLE). A workflow job running the script in full is planted here, so the
-        // green -> red transition is the script edit and nothing else.
-        let ci = ".github/workflows/ci.yml";
-        let mut ov = Overlay::new();
-        ov.set(
-            ci,
-            format!(
-                "{}\n  planted-release-run:\n    runs-on: ubuntu-latest\n    steps:\n      \
-                 - run: bash scripts/verify-1.6.0-done.sh\n",
-                cx.read(ci).expect("ci.yml")
-            ),
-        );
-        let base = cx.with_overlay(ov.clone());
-        assert!(
-            excused_from_all("kind-isolation-ship", &base, &red).is_some(),
-            "verify-1.6.0-done.sh invokes it and a workflow runs the script, which is what \
-             full_gate's excuse asserts: {:?}",
-            crate::full_gate::REGISTRY_NOT_IN_CI
-                .iter()
-                .find(|(n, _, _)| *n == "kind-isolation-ship")
-                .map(|(_, _, e)| e.holds(&base))
-        );
-        ov.set(
-            "scripts/verify-1.6.0-done.sh",
-            "#!/usr/bin/env bash\n# the release script no longer runs it\n",
-        );
-        assert!(
-            excused_from_all("kind-isolation-ship", &cx.with_overlay(ov), &red).is_none(),
-            "an excuse whose fact stopped holding excuses nothing"
-        );
-    }
-
     /// THE CONSTRUCTION POSTURE, WHICH USED TO BE `Excused::Whole` — no fact-check, no expiry, no
     /// list. `gate --all` exited 0 however red construction got, so a real regression on a keep
     /// branch was indistinguishable from the standing red. All three arms of the replacement:
@@ -3968,113 +3868,6 @@ mod posture_tests {
         assert_eq!(a, work_unit());
     }
 
-    /// Every posture names a registered gate. An entry for a gate that no longer exists is a
-    /// waiver that outlived what it excused.
-    /// ITEM 205: the runner the REPORT_ONLY header says this vocabulary serves is still invoked.
-    #[test]
-    fn the_all_runner_this_vocabulary_serves_is_invoked() {
-        let cx = Ctx::workspace().expect("the workspace opens");
-        if let Err(why) = ALL_RUNNER.holds(&cx) {
-            panic!("REPORT_ONLY's header rests on `cargo xtask gate --all` running in CI: {why}");
-        }
-    }
-
-    /// ITEM 177: `ReleaseTime` reads `full_gate::REGISTRY_NOT_IN_CI` and excuses nothing without
-    /// an entry there, so a `ReleaseTime` posture without one is a posture that can never apply.
-    #[test]
-    fn every_release_time_posture_has_the_full_gate_entry_it_reads() {
-        for p in REPORT_ONLY {
-            if matches!(p.excuse, Excused::ReleaseTime) {
-                assert!(
-                    crate::full_gate::REGISTRY_NOT_IN_CI
-                        .iter()
-                        .any(|(n, _, _)| *n == p.name),
-                    "`{}` is excused as ReleaseTime and has no REGISTRY_NOT_IN_CI entry, so the \
-                     excuse can never hold and `--all` scores it on every run",
-                    p.name
-                );
-            }
-        }
-    }
-
-    /// ITEM 177: ship-ready's red is excused under `--all` while ci.yml runs it and branch
-    /// protection requires it, and scored the moment either stops being true.
-    #[test]
-    fn the_ship_ready_posture_holds_while_its_promotion_facts_do() {
-        let cx = Ctx::workspace().expect("the workspace opens");
-        let red = verdict(vec![Row::fail("ship-ready:standing-reds", "t", "d")]);
-        assert!(
-            excused_from_all("ship-ready", &cx, &red).is_some(),
-            "ship-ready is red on the dev line by design and --all must not count it"
-        );
-        let ci = cx.read(".github/workflows/ci.yml").expect("ci.yml reads");
-        let mut ov = Overlay::new();
-        ov.set(
-            ".github/workflows/ci.yml",
-            ci.replace("run: cargo xtask gate ship-ready\n", "run: true\n"),
-        );
-        assert!(
-            excused_from_all("ship-ready", &cx.with_overlay(ov), &red).is_none(),
-            "a ship-ready ci.yml no longer runs is a gate nothing runs, and is scored"
-        );
-        let bp = cx
-            .read("scripts/ci-branch-protection.sh")
-            .expect("ci-branch-protection.sh reads");
-        let mut ov = Overlay::new();
-        ov.set(
-            "scripts/ci-branch-protection.sh",
-            bp.replace("\"ship-ready\"", "\"not-required\""),
-        );
-        assert!(
-            excused_from_all("ship-ready", &cx.with_overlay(ov), &red).is_none(),
-            "a ship-ready branch protection no longer requires is not a promotion check"
-        );
-    }
-
-    /// The names in `land_construction_standing_reds`'s heredoc in scripts/land.sh.
-    fn land_sh_standing_reds(text: &str) -> Vec<String> {
-        let body = text
-            .split("land_construction_standing_reds() {")
-            .nth(1)
-            .expect("land.sh defines land_construction_standing_reds");
-        let heredoc = body
-            .split("<<'EOF'\n")
-            .nth(1)
-            .expect("the function reads its list from a quoted heredoc")
-            .split("\nEOF\n")
-            .next()
-            .expect("the heredoc closes");
-        heredoc
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect()
-    }
-
-    /// ITEM 206: land.sh subtracts EXACTLY the rows `--posture` excuses. They differed by four
-    /// rows, so a landing on the dev line was allowed a red `--all` and ship-ready then scored.
-    #[test]
-    fn land_sh_subtracts_exactly_the_construction_standing_reds() {
-        let cx = Ctx::workspace().expect("the workspace opens");
-        let land = cx.read("scripts/land.sh").expect("scripts/land.sh reads");
-        let shell: BTreeSet<String> = land_sh_standing_reds(&land).into_iter().collect();
-        let rust: BTreeSet<String> = CONSTRUCTION_STANDING_REDS
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect();
-        assert_eq!(
-            shell.difference(&rust).collect::<Vec<_>>(),
-            Vec::<&String>::new(),
-            "land.sh excuses rows CONSTRUCTION_STANDING_REDS does not"
-        );
-        assert_eq!(
-            rust.difference(&shell).collect::<Vec<_>>(),
-            Vec::<&String>::new(),
-            "CONSTRUCTION_STANDING_REDS excuses rows land.sh does not"
-        );
-    }
-
     /// ITEMS 207, 208: prose in this file that says a row is CARRIED on a standing-red list names a
     /// row that list carries. Two sentences said so of ceiling-rose and plane-no-money, neither was
     /// a member, and a maintainer was told a live red was excused.
@@ -4164,8 +3957,8 @@ mod posture_tests {
         );
     }
 
-    /// ITEM 176: the qa-names posture holds on the tree — the exact check ci.yml's blocking
-    /// `cargo xtask gate qa-names --posture` step makes. The entry said "green outright" over a
+    /// ITEM 176: the qa-names posture holds on the tree — the exact check a blocking
+    /// `cargo xtask gate qa-names --posture` run makes. The entry said "green outright" over a
     /// gate that was red, with an empty list that could excuse nothing.
     #[test]
     fn the_qa_names_posture_holds_on_the_tree() {
@@ -4186,8 +3979,8 @@ mod posture_tests {
         }
     }
 
-    /// ITEM 9 (posture): the money-invariants posture holds on the tree — the exact check ci.yml's
-    /// blocking `cargo xtask gate money-invariants --posture` step makes — and the standing list
+    /// ITEM 9 (posture): the money-invariants posture holds on the tree — the exact check a
+    /// blocking `cargo xtask gate money-invariants --posture` run makes — and the standing list
     /// names exactly the rows that are red (none, since W2.12 drained `no-stored-price`).
     #[test]
     fn the_money_invariants_posture_holds_on_the_tree() {
@@ -4218,7 +4011,7 @@ mod posture_tests {
     }
 
     /// ITEM 165 (posture): the conformance-sync posture holds on the tree — the exact check
-    /// ci.yml's blocking `cargo xtask gate conformance-sync --posture` step makes — and the
+    /// a blocking `cargo xtask gate conformance-sync --posture` run makes — and the
     /// standing list names exactly the rows that are red: a NEW red on any other row, or a
     /// freshness row that has gone green without its name being struck, fails here.
     #[test]
@@ -4249,8 +4042,8 @@ mod posture_tests {
         );
     }
 
-    /// The structure-lint posture holds on the tree it runs over — the same fact ci.yml's blocking
-    /// `cargo xtask gate structure-lint --posture` step asserts — and the standing list names
+    /// The structure-lint posture holds on the tree it runs over — the same fact a blocking
+    /// `cargo xtask gate structure-lint --posture` run asserts — and the standing list names
     /// exactly the rows that are red: a NEW red on any other row, or a listed row that has gone
     /// green without its name being struck, fails here.
     #[test]

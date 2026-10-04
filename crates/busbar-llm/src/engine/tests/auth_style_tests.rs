@@ -36,6 +36,7 @@ fn lane_with_auth(auth: Option<&str>) -> Lane {
             "/openai/deployments/gpt-4o/chat/completions?api-version=2024-06-01".to_string(),
         ),
         path_base: None,
+        tenant_headers: Vec::new(),
         health: None,
         upstream_model: None,
         attempt_timeout_ms: None,

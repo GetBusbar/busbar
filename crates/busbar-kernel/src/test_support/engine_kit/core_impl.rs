@@ -45,8 +45,8 @@ impl EngineTestKit for CoreEngineKit {
         crate::metrics::init();
     }
 
-    fn install_operator_auth_row(&self, entry: crate::test_support::AuthBoundary) {
-        crate::test_support::install_operator_auth_row(entry);
+    fn install_operator_auth_row(&self, door: crate::test_support::AuthDoor) {
+        crate::test_support::install_operator_auth_row(door);
     }
 
     fn new_app(&self) -> Box<dyn TestAppKit> {
@@ -127,11 +127,11 @@ impl EngineTestKit for CoreEngineKit {
     }
 
     fn emit_admin_audit_now(&self, action: &str, resource: &str, outcome: &str, principal: &str) {
-        crate::plane::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
+        crate::audit::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
     }
 
     fn audit_entries(&self) -> Vec<AuditRecord> {
-        crate::plane::auditlog::AUDIT_LOG
+        crate::audit::auditlog::AUDIT_LOG
             .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None)
             .into_iter()
             .map(|e| AuditRecord {

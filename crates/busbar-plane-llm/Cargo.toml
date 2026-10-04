@@ -75,3 +75,12 @@ busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # ones the codec's tests used before the fold.
 serde_json = { workspace = true }
 getrandom = { workspace = true }
+# THE DOOR'S BOTH-WAYS WITNESS (`tests/conformance.rs`): the linked door and this crate's own
+# dropped-in image (the `llm_door` example below), admitted through the one loader and driven
+# through the one dispatcher.
+busbar-plugin-loader = { path = "../plugin-loader" }
+
+# THE DROPPED-IN DOOR: built by `cargo test`.
+[[example]]
+name = "llm_door"
+crate-type = ["cdylib"]

@@ -197,6 +197,7 @@ unsafe impl<T: Scalar, const N: usize> Scalar for [T; N] {}
 unsafe impl Scalar for crate::abi::mechanism::call::RawOutcome {}
 unsafe impl Scalar for crate::abi::mechanism::ticket::Ticket {}
 unsafe impl Scalar for crate::abi::mechanism::call::Span {}
+unsafe impl Scalar for crate::abi::auth::StripName {}
 unsafe impl Scalar for crate::abi::plane::UnitCount {}
 unsafe impl Scalar for crate::abi::plane::RecordWrite {}
 unsafe impl Scalar for crate::abi::plane::OutField {}
@@ -223,6 +224,20 @@ impl<T> std::fmt::Debug for Out<'_, T> {
             .field("instance", &self.kept.is_some())
             .field("reason", &self.reason)
             .finish_non_exhaustive()
+    }
+}
+
+impl Out<'_, crate::abi::plane::ArriveOut> {
+    /// THE ROUTE a READY arrival names (ARCHITECT Q-SW6 / Q-FL3, 2026-10-02): `class`
+    /// ([`crate::abi::plane::ROUTE_POOL`] or [`crate::abi::plane::ROUTE_DIRECT`]) and the `entry`
+    /// inside the plane's own section it names, the name kept in the instance's memory for the
+    /// answer. An answer with no instance keeps no name, so it names none.
+    pub fn route(&mut self, class: u8, entry: &str) {
+        self.set(|o| &o.route, class);
+        if let Some(kept) = self.kept {
+            let name = kept.text(entry.to_string());
+            self.put(|o| &o.pool, name);
+        }
     }
 }
 

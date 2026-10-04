@@ -351,11 +351,16 @@ fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
 /// session account (Q21b) — taking its ten sites with it: two `NoDestination`, two `OverBudget`, two
 /// `ScopeDenied`, one `DeadlineExceeded`, one `ScratchExhausted`, and the two carried `reason` /
 /// `refusal.reason()` (pinned below until then). The `OverBudget` pair were door refusals on units
-/// no session reached; the served open refuses a dry key itself. The population is sixty-seven
-/// since; the floor is re-armed there. A population that falls because code was DELETED
+/// no session reached; the served open refuses a dry key itself. The population was sixty-seven
+/// since. The deletion of `busbar-kernel-budget` whole (ARCHITECT ruling 2026-09-30) took its
+/// `refusal_for` with it — three sites: one `GroupFrozen`, one `OverBudget` and the one carried
+/// `reason` (its pinned row struck by the deletion commit). No production path constructed that
+/// crate's `Door`; the served admission refuses over-budget in the kernel (`door.rs`), which is
+/// the `OverBudget` the non-vacuity assert below still sees. The population is sixty-four since; the
+/// floor is re-armed there. A population that falls because code was DELETED
 /// re-arms this floor in the same commit as the deletion, naming the sites; a population that falls
 /// with no deletion is the scanner regression this floor exists to catch.
-const MIN_REFUSAL_SITES: usize = 67;
+const MIN_REFUSAL_SITES: usize = 64;
 
 /// THE SITES WHOSE REASON IS CARRIED, NOT WRITTEN — pinned, file by file, at today's measurement.
 ///

@@ -54,7 +54,7 @@ fi
 # THE STAGED-COMPARISON IDS ARE OWED EXACTLY WHEN A RECORD WAS SUPPLIED, AND THAT IS NOT A LOOPHOLE.
 #
 # `sha256:<target>`, `docker:staged-digest` and `docker:staged-armv8-digest` diff the PUBLISHED
-# artifacts against the record release-stage.yml wrote on qa. That record is a workflow artifact
+# artifacts against the record the removed release-stage.yml wrote on qa. That record is a workflow artifact
 # with a 90-day retention, so for a release older than that — or one that predates the design —
 # there is nothing to diff against and demanding the rows would make the required `release gate`
 # status permanently red for a reason that is not about the release. It would also be a lie in the
@@ -115,4 +115,3 @@ emit "site:download-page"     "the marketing download page advertises this versi
 
 # ── Fleet + self-consistency ────────────────────────────────────────────────────────────────────
 emit "plugins:fleet-released" "every first-party plugin in plugins.yaml has a published release"
-emit "contract:drift"         "release-stage.yml still derives its build matrix from the contract, and names no target the contract does not declare"

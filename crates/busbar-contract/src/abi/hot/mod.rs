@@ -2,15 +2,15 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The busbar **protocol-plane HOT-tier ABI** — a `#[repr(C)]`, POD-by-pointer, zero-alloc seam
-//! between the neutral engine and a protocol plane (compiled-in or, later, `dlopen`ed).
+//! between the neutral engine and a protocol plane (compiled in or `dlopen`ed).
 //!
 //! This is the HOT lane of [`busbar_plugin`](crate); the [`cold`](crate::abi::cold) lane is its
 //! deliberately-opposite sibling (JSON over six C symbols, off the request hot path). Both obey the
 //! shared airlock preamble and sized-struct discipline hoisted to the [crate root](crate).
 //!
-//! This lane is the FOUNDATION skeleton: every type and signature is real, every impl is a stub
-//! (`unimplemented!()` / defaults). It is ADDITIVE and UNUSED — nothing in the engine calls it yet;
-//! a later phase wires it in. Downstream plane authors build capability impls against these types.
+//! Every type and signature here is real. The host side of the table is built by busbar-kernel's
+//! `plane_host` (`build_plane_host_vtable`); each plane builds its own decl. Plane authors implement
+//! against these types.
 //!
 //! # The disciplines this lane encodes (all frozen by construction)
 //!

@@ -20,6 +20,8 @@ use busbar_contract::abi::cold::{
 };
 use busbar_contract::abi::export::ExportStream;
 use busbar_contract::abi::mechanism::route::Route;
+use busbar_contract::export_calls::{Delivered, ExportCalls, Family, ServeRequest, Served};
+use std::sync::{Arc, OnceLock};
 
 /// A telemetry export sink loaded from a dynamic library over the kind-neutral ABI. Wraps a
 /// [`RawPlugin`] whose kind was bound to `export` at load; the streams it carries are queried once at
@@ -242,17 +244,26 @@ impl DynExport {
     /// the ONE observability path every envelope takes under this sink's name — so it renders
     /// exactly as the sink's own report of that series would.
     pub fn shed(&self) {
-        let shed = crate::observe::shed_series(&self.raw.path);
-        let metrics = shed.iter();
-        let metrics =
-            metrics.map(|n| serde_json::json!({"name": n, "type": "counter", "value": 1}));
-        let report = busbar_contract::abi::cold::observe::Envelope {
-            result: (),
-            metrics: metrics.collect(),
-            diagnostics: Vec::new(),
-        };
-        crate::observe::fold(&self.raw.path, abi_kind::EXPORT, &report);
+        fold_shed(&self.raw.path);
     }
+}
+
+/// Count one SHED line for the export instance `name` on each counter it was GRANTED as its shed
+/// counter at open (a first-party manifest declaration marked `shed`), folded under its name
+/// through the ONE observability path every envelope takes. The one home of the shed fold: the
+/// cold sink ([`DynExport::shed`]) and the memory-ABI door (`crate::export_door`) both count here
+/// (ARCHITECT ruling 2026-09-30, Q2).
+pub(crate) fn fold_shed(name: &str) {
+    let metrics = crate::observe::shed_series(name)
+        .into_iter()
+        .map(|n| serde_json::json!({"name": n, "type": "counter", "value": 1}))
+        .collect();
+    let report = busbar_contract::abi::cold::observe::Envelope {
+        result: (),
+        metrics,
+        diagnostics: Vec::new(),
+    };
+    crate::observe::fold(name, abi_kind::EXPORT, &report);
 }
 
 impl DynExport {
@@ -334,6 +345,13 @@ impl DynExport {
 }
 
 impl crate::PluginRegistry {
+    /// The loadable row `module` names (canonical name first, then alias) when it is a
+    /// `kind: export` row, else `None`: the one home of that question for every export caller.
+    pub(crate) fn resolve_export(&self, module: &str) -> Option<&crate::registry::LoadablePlugin> {
+        self.resolve(module)
+            .filter(|p| p.manifest.kind == abi_kind::EXPORT)
+    }
+
     /// VALIDATE an `export:` instance's settings against the sink its `module` names — the host's
     /// question while it validates a configuration (K9a S2). `None` when `module` is not a
     /// `kind: export` row (the caller's unknown-module diagnostic owns that). Otherwise the
@@ -361,9 +379,7 @@ impl crate::PluginRegistry {
         instance: &str,
         settings: &serde_json::Value,
     ) -> Option<(Option<Vec<ExportStream>>, Vec<String>)> {
-        let p = self
-            .resolve(module)
-            .filter(|p| p.manifest.kind == abi_kind::EXPORT)?;
+        let p = self.resolve_export(module)?;
         let cfg = settings.to_string();
         let Ok(sink) = load_export_image(p.image(), &cfg, &p.manifest.name, &p.manifest.kind)
         else {
@@ -387,9 +403,7 @@ impl crate::PluginRegistry {
         phase: busbar_contract::abi::export::CheckPhase,
         instances: &[(String, serde_json::Value)],
     ) -> Option<Vec<String>> {
-        let p = self
-            .resolve(module)
-            .filter(|p| p.manifest.kind == abi_kind::EXPORT)?;
+        let p = self.resolve_export(module)?;
         let cfg = instances
             .first()
             .map_or_else(|| "{}".to_string(), |(_, s)| s.to_string());
@@ -588,6 +602,97 @@ fn export_from_raw(raw: RawPlugin, display: &str) -> Result<DynExport, String> {
         destinations: Default::default(),
         egress: EgressPolicy::OpenWeb,
     })
+}
+
+/// M6-COLD-DELETE: a not-yet-ported sink on the cold export lane, as [`ExportCalls`].
+pub struct ColdExport {
+    sink: Arc<DynExport>,
+    streams: Vec<u8>,
+    started: OnceLock<Option<(bool, u64, String)>>,
+}
+
+impl std::fmt::Debug for ColdExport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ColdExport")
+            .field("sink", &self.sink.name())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ColdExport {
+    /// The adapter over an opened cold sink.
+    #[must_use]
+    pub fn open(sink: DynExport) -> Self {
+        let streams = sink.streams().iter().map(|s| *s as u8).collect();
+        Self {
+            sink: Arc::new(sink),
+            streams,
+            started: OnceLock::new(),
+        }
+    }
+}
+
+impl ExportCalls for ColdExport {
+    fn streams(&self) -> &[u8] {
+        &self.streams
+    }
+
+    fn routes(&self) -> &[Route] {
+        self.sink.routes()
+    }
+
+    fn deliver(&self, stream: u8, line: Vec<u8>, hold: Box<dyn Send>) -> Delivered {
+        let (Some(stream), Ok(payload)) = (
+            ExportStream::ALL.get(usize::from(stream)).copied(),
+            serde_json::from_slice::<serde_json::Value>(&line),
+        ) else {
+            return Delivered::Shed;
+        };
+        self.sink.deliver_detached(stream, Arc::new(payload), hold);
+        Delivered::Queued
+    }
+
+    fn scrape(&self, families: &[Family]) -> Result<Vec<u8>, String> {
+        self.sink
+            .scrape(crate::scrape::cold_families(families))
+            .map(|(_, body)| body.into_bytes())
+    }
+
+    fn status(&self) -> Option<Vec<u8>> {
+        self.sink.status();
+        None
+    }
+
+    fn serve(&self, req: &ServeRequest<'_>) -> Result<Served, String> {
+        let request = EndpointRequest {
+            method: req.method.to_string(),
+            path: req.path.to_string(),
+            query: req.query.unwrap_or_default().to_string(),
+            headers: req.headers.to_vec(),
+            body: req.body.to_vec(),
+        };
+        let r = self.sink.serve(&request);
+        Ok(Served {
+            status: r.status,
+            headers: r.headers,
+            body: r.body,
+        })
+    }
+
+    fn admission(&self) -> Option<(bool, u64, String)> {
+        self.started
+            .get_or_init(|| {
+                self.sink.start().unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "export plugin start failed");
+                    None
+                })
+            })
+            .clone()
+    }
+
+    fn shed(&self) {
+        self.sink.shed();
+    }
 }
 
 #[cfg(test)]

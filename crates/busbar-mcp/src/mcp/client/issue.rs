@@ -17,7 +17,7 @@
 //!
 //! | control | where |
 //! |---|---|
-//! | egress gate (transitive confused deputy) | `super::egress::plan_verb_credential` → `busbar_kernel::egress_auth::gate` |
+//! | egress gate (transitive confused deputy) | `super::egress::plan_verb_credential` → `busbar_kernel::egress_grant` |
 //! | outbound credential, RFC 8693/8707 | the same planner, and NEVER the caller's busbar key |
 //! | the supervision breaker | inside the wire — a quarantined child refuses every verb, not just calls |
 //! | the durable per-call hash chain | the host's `call_log_emit_hostless` (core's call-log chain), at every terminal |

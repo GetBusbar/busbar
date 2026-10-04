@@ -163,6 +163,7 @@ pub const START: &str = "start";
 pub const STATUS: &str = "status";
 pub const STOP_SEQUENCE: &str = "stop_sequence";
 pub const STREAM: &str = "stream";
+pub const STREAM_OPTIONS: &str = "stream_options";
 pub const STRICT: &str = "strict";
 pub const SYSTEM: &str = "system";
 pub const TASK_TYPE: &str = "taskType";

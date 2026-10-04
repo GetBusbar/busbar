@@ -472,7 +472,7 @@ pub mod stub {
         _raw_len: usize,
         _out_parsed: *mut MaybeUninit<OpaqueHandle>,
     ) -> RawStatus {
-        unimplemented!("PlaneDecl::config_validate — stub; wired in a later phase")
+        unimplemented!("PlaneDecl::config_validate — stub")
     }
     /// Stub: see module docs.
     pub extern "C-unwind" fn build(
@@ -532,23 +532,6 @@ pub mod stub {
     ) -> RawStatus {
         unimplemented!("PlaneDecl::dispatch — stub")
     }
-}
-
-/// An example of a NEVER-PANICS `free` fn for an [`OpaqueHandle`], reusing the boundary discipline:
-/// the body runs inside a `catch_unwind` so a panicking `Drop` can never unwind across the seam. A
-/// real plane's `free` frees its own state this way; this generic one frees nothing concrete — it
-/// only demonstrates the catch-guarded shape a real `Box::from_raw`/`drop` would sit inside.
-///
-/// # Safety
-/// `ptr`, when non-null, must be exactly a pointer this plane's `build` produced and not yet freed.
-pub extern "C-unwind" fn free_noop(ptr: *mut c_void) {
-    if ptr.is_null() {
-        return;
-    }
-    let _ = std::panic::catch_unwind(|| {
-        // A real plane: `drop(unsafe { Box::from_raw(ptr as *mut PlaneState) })`. The skeleton frees
-        // nothing concrete; it only demonstrates the catch-guarded shape.
-    });
 }
 
 #[cfg(test)]

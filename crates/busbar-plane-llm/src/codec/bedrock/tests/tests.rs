@@ -1134,27 +1134,19 @@ fn test_stream_decode_surfaces_midstream_exception() {
     );
 }
 
-/// `bedrock_image_block` must never emit `format: ""`. An exact `"image/"`
-/// media_type (empty subtype) once slipped past the `strip_prefix(...).unwrap_or("png")` fallback
-/// — `strip_prefix` returns `Some("")`, not `None` — producing a `format: ""` block outside
-/// Bedrock's `ImageFormat` union that the SDK rejects with a ValidationException. It must fall
-/// back to `png`, like a missing/unprefixed media_type.
+/// `bedrock_image_block` must never emit `format: ""`, and never relabel an image as a format it
+/// is not (design F3: never a substitution). An exact `"image/"` media_type (empty subtype), or one
+/// with no `image/` prefix, has no member of Bedrock's `ImageFormat` union: the block is dropped.
 #[test]
-fn test_bedrock_image_block_empty_subtype_falls_back_to_png() {
+fn test_bedrock_image_block_empty_subtype_is_dropped() {
     // Exact `"image/"` prefix with an empty subtype.
-    let block = bedrock_image_block(&crate::codec::ir::IrImageSource::Base64 {
-        media_type: "image/".to_string(),
-        data: ("QQ==").to_string(),
-    })
-    .expect("base64 image must emit a block");
-    assert_eq!(
-        block.pointer("/format").and_then(|f| f.as_str()),
-        Some("png"),
-        "empty subtype must fall back to png, never an empty `format`; got {block}"
-    );
-    assert_eq!(
-        block.pointer("/source/bytes").and_then(|b| b.as_str()),
-        Some("QQ==")
+    assert!(
+        bedrock_image_block(&crate::codec::ir::IrImageSource::Base64 {
+            media_type: "image/".to_string(),
+            data: ("QQ==").to_string(),
+        })
+        .is_none(),
+        "an empty subtype has no Converse format: dropped, never png"
     );
 
     // A real subtype is preserved verbatim.
@@ -1168,15 +1160,14 @@ fn test_bedrock_image_block_empty_subtype_falls_back_to_png() {
         Some("jpeg")
     );
 
-    // A media_type with no `image/` prefix also falls back to png (unchanged behavior).
-    let bare = bedrock_image_block(&crate::codec::ir::IrImageSource::Base64 {
-        media_type: "png".to_string(),
-        data: ("QQ==").to_string(),
-    })
-    .expect("bare png must emit a block");
-    assert_eq!(
-        bare.pointer("/format").and_then(|f| f.as_str()),
-        Some("png")
+    // A media_type with no `image/` prefix is not a well-formed image media type: dropped too.
+    assert!(
+        bedrock_image_block(&crate::codec::ir::IrImageSource::Base64 {
+            media_type: "png".to_string(),
+            data: ("QQ==").to_string(),
+        })
+        .is_none(),
+        "a bare media_type is dropped, never relabelled"
     );
 
     // The URL sentinel is still dropped (no corrupt block).
@@ -1981,6 +1972,7 @@ fn eventstream_emits_reasoning_content_for_thinking_block() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let bytes = bedrock_response_to_eventstream(&resp, Some(5));
     let text = String::from_utf8_lossy(&bytes);
@@ -2039,6 +2031,7 @@ fn eventstream_content_block_index_is_contiguous_when_a_block_is_skipped() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
     let frames = crate::codec::eventstream::drain_frames(&mut bytes);
@@ -2136,6 +2129,7 @@ fn eventstream_every_content_block_start_has_exactly_one_stop() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
     let frames = crate::codec::eventstream::drain_frames(&mut bytes);
@@ -2220,6 +2214,7 @@ fn test_write_response_total_tokens_saturates() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let body = writer.write_response(&resp);
     assert_eq!(
@@ -2287,6 +2282,7 @@ fn test_write_response_projects_image_block() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let body = writer.write_response(&resp);
     let content = body
@@ -2350,6 +2346,7 @@ fn test_write_response_empty_content_emits_placeholder() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let body = writer.write_response(&resp);
     let content = body
@@ -3781,6 +3778,7 @@ fn test_write_response_omits_absent_cache_tokens() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let written = writer.write_response(&resp);
     assert!(
@@ -5829,33 +5827,28 @@ fn test_tool_choice_none_warns_and_omits() {
     );
 }
 
-/// Warn path: a malformed image media_type (an empty subtype) is coerced to `format: "png"`
-/// and a `tracing::warn!` fires. The observable coercion is asserted here; the warn rides the same
-/// fallback branch.
+/// Warn path: a malformed image media_type (an empty subtype, an unprefixed word) or one outside
+/// Bedrock's `ImageFormat` union (`image/bmp`) is DROPPED with the writer's warn, never coerced to
+/// `format: "png"` (design F3: never a substitution).
 #[test]
-fn test_malformed_media_type_warns_and_falls_back_to_png() {
-    // Empty subtype (`image/`) takes the fallback branch that warns.
-    let block = bedrock_image_block(&crate::codec::ir::IrImageSource::Base64 {
-        media_type: "image/".to_string(),
-        data: ("QQ==").to_string(),
-    })
-    .expect("base64 image must emit a block");
-    assert_eq!(
-        block.pointer("/format").and_then(|v| v.as_str()),
-        Some("png"),
-        "an empty subtype must coerce to png (warn-and-degrade); got {block}"
-    );
-    // A bare, unprefixed media_type also takes the warning fallback.
-    let bare = bedrock_image_block(&crate::codec::ir::IrImageSource::Base64 {
-        media_type: "garbage".to_string(),
-        data: ("QQ==").to_string(),
-    })
-    .expect("bare media_type must emit a block");
-    assert_eq!(
-        bare.pointer("/format").and_then(|v| v.as_str()),
-        Some("png"),
-    );
-    // A well-formed subtype does NOT take the fallback (no coercion, no warn).
+fn test_malformed_media_type_warns_and_drops() {
+    for mt in ["image/", "garbage", "image/bmp", "image/svg+xml"] {
+        let cap = busbar_contract::testkit::WarnCapture::default();
+        let block = tracing::subscriber::with_default(cap.clone(), || {
+            bedrock_image_block(&crate::codec::ir::IrImageSource::Base64 {
+                media_type: mt.to_string(),
+                data: ("QQ==").to_string(),
+            })
+        });
+        assert!(block.is_none(), "{mt:?} must be dropped, got {block:?}");
+        assert_eq!(
+            cap.count("dropping image block on Bedrock egress"),
+            1,
+            "{mt:?}: one warn: {:?}",
+            cap.messages()
+        );
+    }
+    // A well-formed subtype is carried (no drop, no warn).
     let jpeg = bedrock_image_block(&crate::codec::ir::IrImageSource::Base64 {
         media_type: "image/jpeg".to_string(),
         data: ("QQ==").to_string(),
@@ -6543,185 +6536,28 @@ fn bedrock_orphan_content_block_delta_before_start_is_dropped() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Same-protocol non-stream Converse body: the required `metrics.latencyMs`
+// Same-protocol non-stream body: relayed as the upstream sent it
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// The mock-shaped Converse body the same-protocol relay used to forward untouched.
-const CONVERSE_BODY_NO_METRICS: &str = r#"{"output":{"message":{"role":"assistant","content":[{"text":"oracle-marker"}]}},"stopReason":"end_turn","usage":{"inputTokens":11,"outputTokens":7,"totalTokens":18}}"#;
-
-fn same_proto_translator(cap: usize) -> BedrockConverseBodyTranslator {
-    BedrockConverseBodyTranslator::with_cap(cap)
-}
-
+/// A same-dialect buffered answer is relayed verbatim in every dialect, Bedrock included: no
+/// translator stands in for the relay, so no member (a busbar-measured `metrics.latencyMs`) is
+/// added to what the upstream sent (DIALECT FIDELITY, owner 2026-10-02; 1.5.5's bytes).
+/// Cross-protocol non-stream never builds one either.
 #[test]
-fn complete_converse_body_splices_metrics_and_preserves_every_other_byte() {
-    // Deliberate non-canonical spacing so a re-serialization would be detectable.
-    let body = b"{ \"stopReason\" : \"end_turn\",\n  \"usage\": {\"inputTokens\":1,\"outputTokens\":2,\"totalTokens\":3} }\n";
-    let parsed: serde_json::Value = serde_json::from_slice(body).unwrap();
-    let out = complete_converse_body(body, &parsed, Some(57)).expect("member added");
-    let text = String::from_utf8(out.clone()).unwrap();
-    assert!(
-        text.starts_with("{ \"stopReason\" : \"end_turn\",\n  \"usage\""),
-        "the upstream bytes ahead of the splice must be untouched: {text}"
-    );
-    assert!(
-        text.ends_with("}\n"),
-        "trailing bytes must survive: {text:?}"
-    );
-    let reparsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
-    assert_eq!(
-        reparsed
-            .pointer("/metrics/latencyMs")
-            .and_then(|v| v.as_u64()),
-        Some(57)
-    );
-    assert_eq!(reparsed["stopReason"], "end_turn");
-    assert_eq!(reparsed["usage"]["totalTokens"], 3);
-}
-
-#[test]
-fn complete_converse_body_passes_an_upstream_metrics_through_untouched() {
-    let body = br#"{"stopReason":"end_turn","metrics":{"latencyMs":905}}"#;
-    let parsed: serde_json::Value = serde_json::from_slice(body).unwrap();
-    assert!(
-        complete_converse_body(body, &parsed, Some(3)).is_none(),
-        "a body that already carries metrics.latencyMs is relayed as-is"
-    );
-}
-
-#[test]
-fn complete_converse_body_replaces_a_malformed_metrics_instead_of_duplicating_the_key() {
-    let body = br#"{"stopReason":"end_turn","metrics":{}}"#;
-    let parsed: serde_json::Value = serde_json::from_slice(body).unwrap();
-    let out = complete_converse_body(body, &parsed, Some(9)).expect("replaced");
-    let reparsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
-    assert_eq!(
-        reparsed
-            .pointer("/metrics/latencyMs")
-            .and_then(|v| v.as_u64()),
-        Some(9)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&out).matches("\"metrics\"").count(),
-        1,
-        "exactly one metrics key: {}",
-        String::from_utf8_lossy(&out)
-    );
-}
-
-#[test]
-fn complete_converse_body_handles_an_empty_object_and_missing_timing() {
-    let body = b"{}";
-    let parsed: serde_json::Value = serde_json::from_slice(body).unwrap();
-    let out = complete_converse_body(body, &parsed, None).expect("member added");
-    assert_eq!(out, br#"{"metrics":{"latencyMs":0}}"#);
-    // A JSON array is not a Converse body; nothing to complete.
-    let arr = b"[1]";
-    let parsed: serde_json::Value = serde_json::from_slice(arr).unwrap();
-    assert!(complete_converse_body(arr, &parsed, Some(1)).is_none());
-}
-
-#[test]
-fn same_proto_translator_completes_a_converse_body_and_reports_its_usage() {
-    use busbar_contract::protocol::StreamTranslator as _;
-    let mut t = same_proto_translator(1 << 20);
-    // Chunked arrival: nothing is released until the whole body is held.
-    let (a, b) = CONVERSE_BODY_NO_METRICS.as_bytes().split_at(40);
-    assert!(t.feed(a).is_empty());
-    assert!(t.feed(b).is_empty());
-    assert!(t.usage().is_none(), "usage is known only at end-of-stream");
-    let out = t.finish();
-    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
-    assert!(
-        v.pointer("/metrics/latencyMs")
-            .and_then(|m| m.as_u64())
-            .is_some(),
-        "the completed body must carry metrics.latencyMs: {v}"
-    );
-    assert_eq!(
-        v["output"]["message"]["content"][0]["text"],
-        "oracle-marker"
-    );
-    let usage = t.usage().expect("billing usage from the Converse reader");
-    assert_eq!((usage.input, usage.output), (11, 7));
-    assert!(!t.aborted());
-    assert!(t.terminal_error().is_none());
-}
-
-#[test]
-fn same_proto_translator_keeps_an_upstream_metrics_byte_for_byte() {
-    use busbar_contract::protocol::StreamTranslator as _;
-    let body = br#"{"output":{"message":{"role":"assistant","content":[{"text":"x"}]}},"stopReason":"end_turn","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2},"metrics":{"latencyMs":777}}"#;
-    let mut t = same_proto_translator(1 << 20);
-    assert!(t.feed(body).is_empty());
-    assert_eq!(t.finish(), body.to_vec());
-}
-
-#[test]
-fn same_proto_translator_leaves_a_non_converse_body_alone_but_still_bills_it() {
-    use busbar_contract::protocol::StreamTranslator as _;
-    // A Titan embeddings body (InvokeModel): no `metrics` member exists on that shape.
-    let body = br#"{"embedding":[0.1,0.2],"inputTextTokenCount":6}"#;
-    let mut t = same_proto_translator(1 << 20);
-    assert!(t.feed(body).is_empty());
-    assert_eq!(
-        t.finish(),
-        body.to_vec(),
-        "an embeddings body relays verbatim"
-    );
-    let usage = t.usage().expect("the embeddings tap still bills");
-    assert_eq!(usage.input, 6);
-    // Non-JSON: verbatim, and nothing to bill.
-    let mut t = same_proto_translator(1 << 20);
-    assert!(t.feed(b"not json").is_empty());
-    assert_eq!(t.finish(), b"not json".to_vec());
-}
-
-#[test]
-fn same_proto_translator_relays_past_the_cap_and_recovers_usage_from_the_tail() {
-    use busbar_contract::protocol::StreamTranslator as _;
-    let body = CONVERSE_BODY_NO_METRICS.as_bytes();
-    let mut t = same_proto_translator(64);
-    let (a, b) = body.split_at(60);
-    assert!(t.feed(a).is_empty(), "under the cap: still withheld");
-    // Crossing the cap releases everything withheld plus this chunk, verbatim.
-    let released = t.feed(b);
-    assert_eq!(released, body.to_vec());
-    let (c, d) = (b"", b"");
-    assert!(t.feed(c).is_empty());
-    assert!(t.feed(d).is_empty());
-    assert!(t.finish().is_empty(), "nothing is held back once relaying");
-    let usage = t
-        .usage()
-        .expect("usage recovered from the trailing usage object");
-    assert_eq!((usage.input, usage.output), (11, 7));
-}
-
-#[test]
-fn same_proto_translator_over_cap_without_a_usage_object_bills_a_floor_not_zero() {
-    use busbar_contract::protocol::StreamTranslator as _;
-    let mut t = same_proto_translator(16);
-    let out = t.feed(&[b'x'; 100]);
-    assert_eq!(out.len(), 100);
-    assert!(t.finish().is_empty());
-    let usage = t
-        .usage()
-        .expect("an over-cap body is never metered at zero");
-    assert!(usage.output >= 1);
-}
-
-#[test]
-fn stream_translator_factory_installs_the_converse_body_translator_for_bedrock_only() {
-    // Same-protocol non-stream: Bedrock gets the completing translator, every other dialect keeps
-    // the verbatim relay (None). Cross-protocol non-stream never builds one.
-    assert!(
-        crate::codec::proto_stream::new_stream_translator("bedrock", "bedrock", false).is_some()
-    );
-    assert!(
-        crate::codec::proto_stream::new_stream_translator("anthropic", "anthropic", false)
-            .is_none()
-    );
-    assert!(crate::codec::proto_stream::new_stream_translator("openai", "openai", false).is_none());
+fn a_same_dialect_buffered_answer_gets_no_translator_in_any_dialect() {
+    for d in [
+        "anthropic",
+        "bedrock",
+        "cohere",
+        "gemini",
+        "openai",
+        "responses",
+    ] {
+        assert!(
+            crate::codec::proto_stream::new_stream_translator(d, d, false).is_none(),
+            "{d}: a same-dialect buffered answer is relayed verbatim"
+        );
+    }
     assert!(
         crate::codec::proto_stream::new_stream_translator("bedrock", "anthropic", false).is_none()
     );
@@ -6740,14 +6576,14 @@ fn streaming_metadata_metrics_is_always_present_and_never_overwrites_upstream() 
     );
     // Upstream-supplied: kept.
     let mut data = serde_json::json!({"usage": {}, "metrics": {"latencyMs": 31}});
-    framing.inject_streaming_metrics(ET_METADATA, &mut data, Some(std::time::Instant::now()));
+    framing.inject_streaming_metrics(ET_METADATA, &mut data, Some(0));
     assert_eq!(
         data.pointer("/metrics/latencyMs").and_then(|v| v.as_u64()),
         Some(31)
     );
     // Only the metadata frame is touched.
     let mut other = serde_json::json!({"stopReason": "end_turn"});
-    framing.inject_streaming_metrics(ET_MESSAGE_STOP, &mut other, Some(std::time::Instant::now()));
+    framing.inject_streaming_metrics(ET_MESSAGE_STOP, &mut other, Some(0));
     assert!(other.get("metrics").is_none());
 }
 
@@ -6778,6 +6614,7 @@ fn buffered_to_eventstream_metadata_carries_metrics_even_without_timing() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let mut bytes = bedrock_response_to_eventstream(&ir, None);
     let frames = crate::codec::eventstream::drain_frames(&mut bytes);
@@ -6810,6 +6647,7 @@ fn bedrock_writer_emits_every_citation_in_a_multi_citation_delta() {
         end_index: Some(6),
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     };
     let writer = BedrockWriter;
     let frames = writer.write_response_events(&crate::codec::ir::IrStreamEvent::BlockDelta {
@@ -6855,4 +6693,39 @@ fn status_word_golden() {
         assert_eq!(name, word, "class={class:?}");
         assert_eq!(message, word, "an absent signal falls back to the name");
     }
+}
+
+/// DF-MAP gap 2: the tier that SERVED a Converse answer (`serviceTier.type`) is read into the usage
+/// attribution, buffered and streamed, and written back on a Converse answer. RED arm: the reader
+/// never read it, so the served tier was lost.
+#[test]
+fn the_served_tier_is_read_and_written() {
+    let answer = serde_json::json!({
+        "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+        "stopReason": "end_turn",
+        "usage": {"inputTokens": 3, "outputTokens": 1, "totalTokens": 4},
+        "serviceTier": {"type": "priority"}
+    });
+    let resp = BedrockReader.read_response(&answer).expect("reads");
+    assert_eq!(resp.usage.detail.service_tier.as_deref(), Some("priority"));
+    let writer = BedrockWriter;
+    let written = writer.write_response(&resp);
+    assert_eq!(written["serviceTier"]["type"], "priority");
+
+    let mut state = crate::codec::ir::StreamDecodeState::default();
+    let events: Vec<_> = [
+        serde_json::json!({"type": "messageStop", "stopReason": "end_turn"}),
+        serde_json::json!({"type": "metadata", "usage": {"inputTokens": 3, "outputTokens": 1},
+            "serviceTier": {"type": "flex"}}),
+    ]
+    .into_iter()
+    .flat_map(|data| BedrockReader.read_response_events("", &data, &mut state))
+    .collect();
+    let tier = events.iter().find_map(|e| match e {
+        crate::codec::ir::IrStreamEvent::MessageDelta { usage, .. } => {
+            usage.detail.service_tier.clone()
+        }
+        _ => None,
+    });
+    assert_eq!(tier.as_deref(), Some("flex"));
 }

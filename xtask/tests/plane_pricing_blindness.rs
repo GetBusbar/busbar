@@ -4,13 +4,9 @@
 //! are kernel-side" (PRICING-BLIND, #71's one-fact-per-unit). The gate is registered and is RED ON HEAD BY
 //! DESIGN — the #83 roster's own SPLIT row already says of `busbar-{llm,mcp,a2a,voice}` that
 //! `unit/{admit,approve,meter,route}` and `runtime/metering.rs` "decide admission and price — that
-//! is defs 5/6, not a plane" — so `full_gate::REGISTRY_NOT_IN_CI` excuses it from ci.yml and points
-//! HERE. This file is the coverage route that excuse rests on, and it runs under
-//! `cargo test --workspace --locked` on every push.
-//!
-//! KEEP THE INVOCATION STRING BELOW BYTE-IDENTICAL to the needle in `xtask/src/full_gate.rs`, or
-//! the excuse stops holding and the gate is reported as unexcused — which is the point of checking
-//! an excuse against the tree rather than trusting its prose.
+//! is defs 5/6, not a plane". This file drives it through the dispatcher under
+//! `cargo test --workspace --locked`, beside the pipeline's turnstile, which runs it by name on
+//! every hop.
 //!
 //! WHAT THIS PINS, AND WHAT IT DELIBERATELY DOES NOT. It pins the SELFTEST at exit 0 — the proof
 //! that the scanner can still be driven RED by a planted violation of each banned act, and still

@@ -50,7 +50,7 @@ PY=python3; command -v python3 >/dev/null 2>&1 || PY=python
 # listed asset can still 404 from the CDN.
 #
 # BY NAME is the load-bearing word. v1.5.3 published five assets where seven were owed and
-# release.yml's `assets | length > 0` phantom guard passed — a count cannot see which platform is
+# the removed release.yml's `assets | length > 0` phantom guard passed — a count cannot see which platform is
 # missing.
 #
 # The name match is `jq --arg` equality, not grep. `busbar-x86_64-unknown-linux-gnu.tar.gz` is a
@@ -97,7 +97,7 @@ fi
 # anybody verified. The release model's whole claim is "the promote ships the exact bytes qa
 # proved", and nothing anywhere was hashing the published bytes to find out.
 #
-# release-stage.yml's `record-staged` job hashed every draft asset by DOWNLOADING IT BACK off the
+# the removed release-stage.yml's `record-staged` job hashed every draft asset by DOWNLOADING IT BACK off the
 # draft rather than copying the build's own artifact.sha256 (a digest over bytes that may not be the
 # bytes on the release page is worth nothing), and wrote name/size/sha256 into the record the
 # promote consumes. This row re-hashes what the CDN just served and diffs it against that record.
@@ -191,7 +191,7 @@ else
 fi
 
 # ── pubkey: the shipped bytes carry the release public key (#52, statically) ────────────────────
-# Reuses scripts/release-key-guard.sh — the SAME assertion release.yml makes at build time, made
+# Reuses scripts/release-key-guard.sh — the SAME assertion the removed release.yml makes at build time, made
 # again against the PUBLISHED artifact. Deliberately not a reimplementation: two copies of one fact
 # is how the fact rots. The build-time half proves the variable was set; this half proves the bytes
 # a user downloads actually contain it, which is the half that would have gone red on real 1.5.3.

@@ -32,15 +32,24 @@ usage:
   cargo xtask loc --selftest
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed|move} | --check
-  cargo xtask full-gate [--list] [--selftest] [--dump-gates|--dump-cargo [FILE]]
+  cargo xtask proof-manifest --version <v> --out <file> [--sha S] [--run-id ID] [--run-url U] [--staged-json F] [--reports-dir D] [--hits-dir D] [--repo-root D] [--run-cargo|--run-parity|--run-composability] [--mark ID=STATUS]... [--index] [--print]
+  cargo xtask proof-manifest --selftest
+  cargo xtask proof-manifest --check [<manifest.json>...]   (the public-safety guard; no args = docs/proof/*.json)
+  cargo xtask proof-manifest --check-selftest
+  cargo xtask loom [<test args>]   (the loom model of the config swap; a run of zero models is red)
+  cargo xtask txn-fence   (the transaction compile fence: passes only when the fence fails to compile, for its three reasons)
+  cargo xtask audit-verify --range <range.json> --keys <keys.json> [--head <head.json>]
+  cargo xtask plugin-gates <depwall|netban|cdeps|imports|parity|bothways|declares|selftest> <args...>
   cargo xtask conformance check --suite <id>|all|--musts [--sha <sha>] [--manifest <path>] [--format=tsv]
   cargo xtask conformance check --selftest
+  cargo xtask method-inventory (--write | --check | --selftest)
+  cargo xtask pin-missing-cells [--write]
+  cargo xtask conformance record --suite <id>|--all [--recording <dir>] [--out <dir>]
   cargo xtask dialect wire [--write | --diff] <dialect|all>
   cargo xtask dialect wire --diff-files <old.wire.json> <new.wire.json>
-  cargo xtask fleet render <repo> [--out <dir>]
-  cargo xtask fleet check [--repo <repo>]...
-  cargo xtask fleet sync [--repo <repo>]... [--workdir <dir>] [--dry-run]
   cargo xtask dialect compile
+  cargo xtask readme-assets [<outdir>]   (redraw the README SVGs from assets/readme/data.json + install.json)
+  cargo xtask install-sizes [--check]    (re-measure the image sizes from the registries into assets/readme/install.json)
   cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64,512] [--secs N] [--streams N] [--trend <file>]";
 
 /// The environment variable the legacy release-gate scripts write their ledger through.
@@ -49,21 +58,30 @@ const LEGACY_LEDGER_ENV: &str = "LEDGER";
 /// The subcommands below that NAME NO GATE.
 ///
 /// `cargo xtask <name>` is a gate invocation for `denylist` and `teller-steps` — both are registry
-/// names kept in their pre-registry spelling — so a reader of `ci.yml` cannot tell a gate from a
+/// names kept in their pre-registry spelling — so a reader of the removed `ci.yml` cannot tell a gate from a
 /// subcommand by shape alone, and [`crate::yaml_lite::xtask_gate_invocations`] reads the token
 /// after `cargo xtask` as a gate name. These two are the exceptions: the runner that DRIVES the
 /// gates and the register that RECORDS the audit, neither of which has an owed row set. Listed
 /// here, beside the dispatch arms that prove it, so the reader and the dispatcher cannot drift.
 pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
-    "full-gate",
     "ledger",
+    "audit-verify",
+    "plugin-gates",
     "conformance",
     "loc",
-    "fleet",
     "root",
     "perf-ab",
     "perf-ab-mock",
+    "secret-hygiene-scan3",
     "dialect",
+    "readme-assets",
+    "install-sizes",
+    "ship",
+    "proof-manifest",
+    "method-inventory",
+    "pin-missing-cells",
+    "txn-fence",
+    "loom",
 ];
 
 pub fn main(args: &[String]) -> i32 {
@@ -94,6 +112,9 @@ pub fn main(args: &[String]) -> i32 {
         // as the one command a change under `abi/` ends with.
         Some("abi-header") => gate(args),
         Some("selftest") => selftest_cmd(&args[1..]),
+        // CHECK 3 against named files (the retro-proof), the script's `--scan3`. A debugging aid,
+        // not a gate: it prints findings and owns no rows.
+        Some("secret-hygiene-scan3") => crate::gates::secret_hygiene::scan3_main(&args[1..]),
         // The pre-registry spelling, kept byte-identical: `cargo xtask denylist` prints exactly
         // what it always printed, so nothing that reads its output has to move on the same day the
         // registry arrives.
@@ -105,24 +126,12 @@ pub fn main(args: &[String]) -> i32 {
         // THE AUDIT REGISTER's commands. `cargo xtask gate audit-ledger` is `--check` as a
         // reconciled row set; this is the same computation plus the four commands that WRITE the
         // register (`sync`/`record`/`fixed`) or the report (`status`), which a gate must not do.
-        // RUN LOCALLY WHAT CI RUNS. Not a gate: it is the runner that discovers and drives the
-        // gates, so it has no owed row set of its own and nothing reconciles it.
-        Some("full-gate") => match open_ctx() {
-            Ok(cx) => crate::full_gate::main(&cx, &args[1..]),
-            Err(code) => code,
-        },
         // THE ONE LINE COUNTER. Not a gate: it is an INSTRUMENT, and the gates that ratchet a
         // line ceiling call the same library in process. It is listed in
-        // `NON_GATE_SUBCOMMANDS` for the same reason `ledger` is — a reader of `ci.yml` cannot
+        // `NON_GATE_SUBCOMMANDS` for the same reason `ledger` is — a reader of the removed `ci.yml` cannot
         // tell a gate from a subcommand by shape, and nothing reconciles an owed row set for it.
         Some("loc") => match open_ctx() {
             Ok(cx) => crate::loc::main(&cx, &args[1..]),
-            Err(code) => code,
-        },
-        // THE PLUGIN FLEET. Not a gate: it renders and checks OTHER repos (plugins.yaml's), and its
-        // RED is the nightly `sched-fleet-check.yml` run, not a row in this tree's ledger.
-        Some("fleet") => match open_ctx() {
-            Ok(cx) => crate::fleet::main(&cx, &args[1..]),
             Err(code) => code,
         },
         // THE SAME-MACHINE A/B, a report-only trend line. Not a gate and never one (the pass/fail
@@ -145,6 +154,47 @@ pub fn main(args: &[String]) -> i32 {
             Ok(cx) => crate::dialect::main(&cx, &args[1..]),
             Err(code) => code,
         },
+        // THE README GENERATORS. Not gates: a human runs them after a re-measure. `readme-assets`
+        // WRITES the figure SVGs from `assets/readme/data.json`; `install-sizes` reads the image
+        // registries and WRITES `assets/readme/install.json` (or, with `--check`, reports drift).
+        Some("readme-assets") => match open_ctx() {
+            Ok(cx) => crate::readme_assets::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
+        Some("install-sizes") => match open_ctx() {
+            Ok(cx) => crate::install_sizes::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
+        // THE OUT-OF-PROCESS AUDIT-CHAIN VERIFIER (#82(c), TODO 597). Not a gate: it checks bodies a
+        // node published, by the published recipe pages alone, and reads no tree.
+        Some("audit-verify") => crate::audit_verify::main(&args[1..]),
+        // THE BUILD PROOF DASHBOARD'S COLLATOR (`docs/proof/README.md`). Not a gate: it WRITES
+        // `docs/proof/<version>.json` (and, with `--index`, `index.json`) from the verdicts of
+        // gates it runs or reads, and owns no row set of its own.
+        Some("proof-manifest") => match open_ctx() {
+            Ok(cx) => crate::proof_manifest::main(cx.root(), &args[1..]),
+            Err(code) => code,
+        },
+        // THE PLUGIN FLEET'S GATES (depwall, netban, cdeps, imports, parity, bothways, declares,
+        // selftest): pure functions over cargo metadata, nm output and the two lockfiles. Not a gate.
+        Some("plugin-gates") => crate::fleet::plugin_gates::main(&args[1..]),
+        // THE METHOD-INVENTORY GENERATOR and THE MISSING-QUEUE PINNER. Neither is a gate: a human
+        // runs them and reads the diff. `method-inventory` WRITES `qa/method-inventory.json` from
+        // the pinned rmcp and a2a-pb sources; `pin-missing-cells` rewrites
+        // `qa/method-coverage.missing`. `crates/busbar/tests/method_coverage.rs` is the gate.
+        Some("method-inventory") => match open_ctx() {
+            Ok(cx) => crate::method_inventory::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
+        Some("pin-missing-cells") => match open_ctx() {
+            Ok(cx) => crate::pin_missing_cells::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
+        // THE TRANSACTION COMPILE FENCE. Not a gate: it COMPILES busbar-kernel under a cfg and
+        // passes only when that build fails for its three named reasons.
+        Some("txn-fence") => crate::txn_fence::main(&args[1..]),
+        // THE LOOM MODEL of the config swap (slow, exhaustive; refuses a run that ran no model).
+        Some("loom") => crate::loom::main(&args[1..]),
         Some("ledger") => match open_ctx() {
             Ok(cx) => crate::audit_cmd::main(cx.root(), &args[1..]),
             Err(code) => code,
@@ -394,8 +444,8 @@ fn gate(args: &[String]) -> i32 {
     // a check that repairs what it is checking has not checked anything, and a caller that wanted
     // both would be asking a gate to make itself pass.
     if cx.env().write {
-        // `kind-isolation --write` RE-PINS ITS EXACT COUNTS DOWNWARD — the `[[cell]]`, `[[dep]]`
-        // and `[[face]]` numbers — and refuses WHOLESALE if any would rise. It answers through the
+        // `kind-isolation --write` RE-PINS ITS EXACT COUNTS DOWNWARD — the `[[dep]]`
+        // and `[[face]]` edge numbers — and refuses WHOLESALE if any would rise. It answers through the
         // ledger rather than through a `Result<String, _>` like its two neighbours, and that is
         // deliberate: the arm is a GATE RUN whose owed set is its own row, so `execute` reconciles
         // it exactly as it reconciles a judging run, and the refusal arrives as a FAIL row a
@@ -423,6 +473,7 @@ fn gate(args: &[String]) -> i32 {
                 | "plugin-closure-deps"
                 | "c1-literals"
                 | "door-only"
+                | "plane-secret-blindness"
                 | "linked-dropped-features"
         ) {
             let verdict = gates::execute(gate.as_ref(), &cx);
@@ -431,20 +482,7 @@ fn gate(args: &[String]) -> i32 {
         }
         let written = match reg.name {
             "design-bindings" => crate::gates::design_bindings::DesignBindingsGate::write(&cx),
-            // The construction gate's write arm RE-PINS ITS CEILINGS TO WHAT THEY MEASURE, and
-            // only downward — see `gates::construction::ceilings`. It is the same derivation the
-            // `ceiling-slack` row reports, so the arm that repairs and the arm that judges cannot
-            // disagree about what the tree measures; what the flag changes is whether the answer
-            // is printed or committed.
-            "construction" => crate::gates::construction::ceilings::rewrite(&cx),
-            // The declared shape is a DERIVED projection of the workflow (structural JSON), never
-            // hand-edited — see `qa_gate_dispatch::DECLARED`'s doc comment. `--write` regenerates it
-            // from whatever `qa-gate.yml` this branch carries, exactly like `design-bindings` and
-            // `construction` regenerate their own derived artifacts from what this branch measures.
             "abi-header" => crate::gates::abi_header::write(&cx),
-            "qa-gate-dispatch" => {
-                crate::gates::qa_gate_dispatch::QaGateDispatchGate::new().write_declared(&cx)
-            }
             _ => {
                 eprintln!("xtask gate {name}: this gate has nothing to write");
                 return 2;
