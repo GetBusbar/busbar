@@ -4525,6 +4525,30 @@ fn entry_count(idx: &SourceIndex, dir: &str, kind: &str, want_trait: &str) -> us
     impls + doors
 }
 
+/// How many entries of `kind` `dir` states AS A BATTERY SUBJECT: its `impl` blocks, plus — for a
+/// door-entry kind — its door tails ONLY once the door is EXPORTED through the SDK door macro. An
+/// unexported door tail is a stated entry ([`entry_count`], which `:shape` counts) but not a usable
+/// implementor, so the battery it would be about has no subject. Any other kind counts its exported
+/// door once, as [`entry_count`] does.
+fn implementor_count(idx: &SourceIndex, dir: &str, kind: &str, want_trait: &str) -> usize {
+    let impls = idx
+        .impls
+        .get(dir)
+        .and_then(|m| m.get(want_trait))
+        .copied()
+        .unwrap_or(0);
+    let doors = if DOOR_ENTRY_KINDS.contains(&kind) {
+        if idx.door_exports.contains(dir) {
+            idx.doors.get(dir).copied().unwrap_or(0)
+        } else {
+            0
+        }
+    } else {
+        usize::from(door_carries(idx, dir, kind))
+    };
+    impls + doors
+}
+
 /// How [`entry_count`] reads `kind`'s entries, for a finding's text.
 fn entry_note(kind: &str) -> &'static str {
     if DOOR_ENTRY_KINDS.contains(&kind) {
@@ -4828,17 +4852,27 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
             // <KindTrait> = &P;`), so a crate of the kind that implements the trait ZERO times has
             // nothing for its battery to be about — and a file that compiles anyway is a file that
             // asserts about something else. Read off the same trait-impl index `:shape` counts with.
-            // A door kind's door is its implementor ([`entry_count`]): a door crate's battery has
-            // the door as its subject.
-            let implementors = entry_count(idx, &c.dir, kind, &want_trait);
+            // A door kind's door is its implementor ONLY once EXPORTED ([`implementor_count`]): a
+            // door crate's battery has the exported door as its subject, and an unexported one is
+            // no subject at all.
+            let implementors = implementor_count(idx, &c.dir, kind, &want_trait);
             if implementors == 0 {
+                // For a door-entry kind, the door is the implementor ([`entry_count`]), so no
+                // implementor means the crate exports no such door through the SDK door macro —
+                // named so the finding says what to add, not merely that something is absent.
+                let door_macro_note = if DOOR_ENTRY_KINDS.contains(kind) {
+                    format!(" and exports no `{kind}` door through the SDK door macro")
+                } else {
+                    String::new()
+                };
                 offenders.push(format!(
                     "no-implementor\t{}\t{} is kind `{kind}` and implements `{want_trait}`{} \
-                     nowhere in shipped source, so its battery has no subject — a conformance file \
-                     that passes over no implementor is not evidence about this crate",
+                     nowhere in shipped source{}, so its battery has no subject — a conformance \
+                     file that passes over no implementor is not evidence about this crate",
                     c.dir,
                     c.name,
-                    entry_note(kind)
+                    entry_note(kind),
+                    door_macro_note
                 ));
             }
             if idx.conformance_dead.contains(&c.dir) {
