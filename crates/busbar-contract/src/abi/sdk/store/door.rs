@@ -52,7 +52,6 @@ use crate::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut,
     ValidateIn,
 };
-use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::conn::Host;
 use crate::abi::sdk::door::abi_str;
 use crate::abi::sdk::{open_failed, HostBuf, Instance, Lent, LentList, Out, SafeSlot};
@@ -781,40 +780,13 @@ impl<B: StoreSlots> SafeSlot for Validate<B> {
     }
 }
 
-/// An `open` whose connect step PENDED: the store [`StoreSlots::open`] answered and the step's op,
-/// kept until `open`'s RESUME on the same ticket. No instance exists yet to park them on, so the
-/// door keeps them, by the host's instance and the ticket ([`OPENING`]).
-struct Opening<B> {
-    store: B,
-    parked: Parked,
-}
-
-/// What `open`s that pended keep across their PENDING answer (any store type, so boxed), by
-/// (the host's instance, the ticket). A fresh `open` on a key drops what an earlier one kept there
-/// (closing its connection): it can no longer be that open's RESUME.
-type Openings = HashMap<(usize, Ticket), Box<dyn std::any::Any + Send>>;
-
-static OPENING: Mutex<Option<Openings>> = Mutex::new(None);
-
-fn opening_take(key: (usize, Ticket)) -> Option<Box<dyn std::any::Any + Send>> {
-    OPENING
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .as_mut()
-        .and_then(|m| m.remove(&key))
-}
-
-fn opening_keep(key: (usize, Ticket), kept: Box<dyn std::any::Any + Send>) {
-    let old = OPENING
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .get_or_insert_with(HashMap::new)
-        .insert(key, kept);
-    drop(old);
-}
-
 /// `open`: the store opens on its settings, then runs its connect step
-/// ([`StoreSlots::connect`]), which may pend on `open`'s ticket.
+/// ([`StoreSlots::connect`]), which may pend on `open`'s ticket. A PENDING open installs the
+/// instance NOW — carrying the opened store and parking the step's context on the ticket — and the
+/// trampoline RETAINS that box across the pend; the open's RESUME resolves it on a non-NULL
+/// instance. The half-open state lives in plugin-owned per-instance memory, never a contract
+/// static: the contract is stateless, a pure shape that links into the host and every dropped-in
+/// plugin alike, so a static in it would be a second static the moment a plugin is dropped in.
 #[derive(Debug)]
 pub struct Open<B>(PhantomData<B>);
 impl<B: StoreSlots> SafeSlot for Open<B> {
@@ -828,24 +800,46 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
     ) -> Outcome {
         let host = input.host().map(|h| Host::of(&h));
         let ticket = instance.ticket();
-        let key = (host.map_or(0, |h| h.instance_key()), ticket);
-        // Whatever was kept here goes now, unless this entry is its RESUME.
-        let kept = opening_take(key).and_then(|b| b.downcast::<Opening<B>>().ok());
-        let (store, parked) = match (instance.resuming(), kept) {
-            (true, Some(o)) => {
-                let o = *o;
-                (o.store, Some(o.parked))
-            }
-            // A RESUME with nothing kept is FAULT: an open never runs afresh on its RESUME.
-            (true, None) => return Outcome::Fault,
-            (false, _) => match B::open(input.field(|i| &i.settings).bytes(), host) {
-                Ok(store) => (store, None),
-                // No instance exists to hold the reason: it goes into the host's lent reason
-                // buffer.
-                Err(e) => return open_failed(input, &mut out, |o| &o.err_len, &e),
-            },
+        // THE RESUME of a pended open: the retained instance box carries the opened store, and
+        // what its connect step parked is read back on this ticket. A RESUME with no instance or
+        // nothing parked is FAULT — an open never runs afresh on its RESUME.
+        if instance.resuming() {
+            let Some(served) = instance.get() else {
+                return Outcome::Fault;
+            };
+            let Some(parked) = instance.resume::<Parked>().map(|b| *b) else {
+                return Outcome::Fault;
+            };
+            let mut cx = Op::enter(ticket, host.as_ref(), Some(parked));
+            return match served.store().connect(&mut cx) {
+                Step::Ready(Ok(())) => {
+                    drop(cx.into_parked());
+                    Outcome::Ready
+                }
+                Step::Ready(Err(e)) => {
+                    drop(cx.into_parked());
+                    open_failed(input, &mut out, |o| &o.err_len, &e)
+                }
+                Step::Pending { wake_at_ns } => {
+                    if !cx.can_pend() || (wake_at_ns == 0 && !cx.made_a_service()) {
+                        drop(cx.into_parked());
+                        return Outcome::Fault;
+                    }
+                    out.raw().head.wake_at_ns = wake_at_ns;
+                    // The box exists (the host kept it across the last pend), so the step's
+                    // context parks on it as any other op's does.
+                    instance.park(cx.into_parked());
+                    Outcome::Pending
+                }
+            };
+        }
+        // A FRESH open: open the store on its settings, then run its connect step.
+        let store = match B::open(input.field(|i| &i.settings).bytes(), host) {
+            Ok(store) => store,
+            // No instance exists to hold the reason: it goes into the host's lent reason buffer.
+            Err(e) => return open_failed(input, &mut out, |o| &o.err_len, &e),
         };
-        let mut cx = Op::enter(ticket, host.as_ref(), parked);
+        let mut cx = Op::enter(ticket, host.as_ref(), None);
         match store.connect(&mut cx) {
             Step::Ready(Ok(())) => {
                 // The step's connection closes with its op (`Parked`'s drop).
@@ -864,8 +858,10 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
                     return Outcome::Fault;
                 }
                 out.raw().head.wake_at_ns = wake_at_ns;
-                let parked = cx.into_parked();
-                opening_keep(key, Box::new(Opening { store, parked }));
+                // Install the instance NOW, carrying the opened store, and park the step's context
+                // on this ticket: the trampoline retains the box across the PENDING, and the
+                // RESUME finds both on a non-NULL instance.
+                instance.open_parking(Served::new(store, host), cx.into_parked());
                 Outcome::Pending
             }
         }

@@ -101,12 +101,6 @@ impl Host {
         }
     }
 
-    /// The instance's identity as the host's context names it (an address, never dereferenced):
-    /// what tells one instance's `open` apart from another's on the same ticket.
-    pub(crate) fn instance_key(&self) -> usize {
-        self.ctx.ptr as usize
-    }
-
     /// The connector for ONE entry of the op running on `ticket`.
     #[must_use]
     pub fn connector(&self, ticket: Ticket) -> Connector<'_> {
