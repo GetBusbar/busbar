@@ -457,7 +457,7 @@ async fn complete(
 pub(crate) fn completion_server() -> Option<busbar_contract::plane::ServedOpClass> {
     let decls = busbar_kernel::plane::registry::plane_decls();
     busbar_contract::plane::plane_serving(
-        busbar_plane_mcp::meta::SAMPLING_OP,
+        busbar_plane_mcp::tool_meta::SAMPLING_OP,
         decls.iter().map(|d| &d.declaration),
     )
     .map(|(_, served)| served)

@@ -70,21 +70,9 @@ use busbar_kernel::plane::approvals::{self, AskState, Sealer};
 /// A closed set, matched by exact string: `mrtr.mdx:184-192` names exactly these, and a fourth that
 /// the protocol grows later must be a deliberate addition here rather than something that flows
 /// through because nobody wrote it down.
-const ELICITATION: &str = "elicitation/create";
-const SAMPLING: &str = "sampling/createMessage";
-const ROOTS: &str = "roots/list";
-
-/// THE CLOSED SET ITSELF, so boot can refuse a method that is not in it against the SAME three
-/// strings dispatch matches on. Two lists would be two closed sets, and the one that decided
-/// anything would be this file's.
-///
-/// Why boot has to look at all: a method outside the set is silently DROPPED at dispatch
-/// ([`CallerAsk::capability_key`] answers `None` and the round's filter removes the ask), so an
-/// operator who wrote `elicitation/created` got a destructive tool that dispatches with NO
-/// confirmation — and the only signal was a refusal blaming the CALLER for declaring no
-/// capabilities, which disappears too once the typo is the round's only entry. A typo must not be
-/// able to remove a confirmation gate (#42: an unknown is REFUSED, never silently defaulted).
-pub(crate) const ASK_METHODS: &[&str] = &[ELICITATION, SAMPLING, ROOTS];
+const ELICITATION: &str = super::config::ASK_ELICITATION;
+const SAMPLING: &str = super::config::ASK_SAMPLING;
+const ROOTS: &str = super::config::ASK_ROOTS;
 
 pub(crate) use authored::CallerAsk;
 

@@ -15,7 +15,7 @@ use busbar_kernel::{
     test_support::seam::{register_test_plane_seam, test_plane_seams},
     test_support::NEUTRAL_FALLBACK,
 };
-use busbar_plane_mcp::meta::SAMPLING_OP;
+use busbar_plane_mcp::tool_meta::SAMPLING_OP;
 
 /// A neutral plane serving the sampling class under the display name `AI`.
 static SERVING: PlaneDecl = PlaneDecl {

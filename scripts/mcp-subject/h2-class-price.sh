@@ -10,7 +10,7 @@
 # strings ... the MONEY VIEW computes Σ count × rate" at READ time).
 #
 # THE CLASSES ARE NOT A CHOICE THIS SCRIPT MAKES. This plane declares TWO and names both in
-# constants (`crates/busbar-plane-mcp/src/meta.rs:33-52`):
+# constants (`crates/busbar-plane-mcp/src/tool_meta.rs:33-52`):
 #
 #   tool_calls   family `count`, direction Response, default_divisor 1
 #   bytes        family `byte`,  direction Response, default_divisor 1

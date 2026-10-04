@@ -320,6 +320,11 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         "crates/busbar-core-oauth2/src/config.rs".to_string(),
         format!("{a2a}/creds.rs"),
         format!("{mcp}/config.rs"),
+        // `tools:` — the MCP plane's grammar, moved VERBATIM out of the engine's `mcp/config.rs`
+        // into the plane crate (MCP-1: the door judges its own section). The engine's file stays
+        // tracked above (it keeps the host glue and re-exports the grammar), and this is the same
+        // tracked SOURCE relocation as `ModelCfg`'s, so the snapshot does not move by a byte.
+        "crates/busbar-plane-mcp/src/tools_config.rs".to_string(),
         // `tool_pools:` / `agent_pools:` — one type, two sections, and `repeatable:` is the SAFETY
         // declaration that decides whether an operation with effects may be performed twice.
         core_file(cx, &core, "failover/mod.rs")?,

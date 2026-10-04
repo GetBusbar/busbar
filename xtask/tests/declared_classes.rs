@@ -109,7 +109,7 @@ const SITES: &[Site] = &[
         file: "crates/busbar-mcp/src/mcp/method.rs",
         shape: "usage_units: std::collections::BTreeMap::from(",
         occurrences: 1,
-        emits: &["busbar_plane_mcp::meta::CLASS_TOOL_CALLS"],
+        emits: &["busbar_plane_mcp::tool_meta::CLASS_TOOL_CALLS"],
         dead: None,
     },
     Site {
@@ -172,7 +172,7 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// The literal a constant path names, read off the file that defines it:
-/// `busbar_plane_mcp::meta::CLASS_BYTES` is `crates/busbar-plane-mcp/src/meta.rs`'s
+/// `busbar_plane_mcp::tool_meta::CLASS_BYTES` is `crates/busbar-plane-mcp/src/tool_meta.rs`'s
 /// `const CLASS_BYTES: … = MeterClassId::new("bytes")` (or `= "bytes"`).
 fn resolve(root: &Path, path: &str) -> Result<String, String> {
     let segments: Vec<&str> = path.split("::").collect();
@@ -372,7 +372,7 @@ fn an_undeclared_class_and_an_unlisted_site_are_both_red() {
         shape: "usage_units: std::collections::BTreeMap::from(",
         occurrences: 1,
         // mcp's tool calls, reported by a2a — which declares only bytes.
-        emits: &["busbar_plane_mcp::meta::CLASS_TOOL_CALLS"],
+        emits: &["busbar_plane_mcp::tool_meta::CLASS_TOOL_CALLS"],
         dead: None,
     }];
     let found = vec![

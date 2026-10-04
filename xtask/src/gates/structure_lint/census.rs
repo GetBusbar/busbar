@@ -91,7 +91,7 @@ pub fn table(a: &Addresses) -> Vec<CensusRow> {
     // `tree()` NOW COVERS THIS TOO (items 183, 224): it is every crate's `src/`, and
     // `busbar-plane-*` is a protocol-crate shape, so the extra prefix below is redundant and kept
     // only so these two rows say where their subject lives. The widening did what this comment
-    // used to say it would: `crates/busbar-plane-mcp/src/plane.rs`'s `FIELD_PROTOCOL_VERSION`
+    // used to say it would: `crates/busbar-plane-mcp/src/tool_plane.rs`'s `FIELD_PROTOCOL_VERSION`
     // beside `busbar-mcp`'s `H_PROTOCOL_VERSION` is a SECOND spelling of a wire word, and the
     // header row below now counts 2 and says so. It is reported, not absorbed.
     let mut mcp_dialect_scope = tree.clone();

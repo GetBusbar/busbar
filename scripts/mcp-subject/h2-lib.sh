@@ -37,7 +37,7 @@ source "${H2_REPO}/testing/fleet-fixtures/lib.sh"
 # (`crates/busbar-kernel/src/config_validate/mod.rs:1465-1472`), and an entry's only members are the
 # four LLM token tiers (`RateEntryCfg`, `crates/busbar-kernel/src/config/sections.rs:324`,
 # `deny_unknown_fields`). This plane declares `tool_calls` and `bytes`
-# (`crates/busbar-plane-mcp/src/meta.rs:33-52`); neither is a `models:` key and neither is one of the
+# (`crates/busbar-plane-mcp/src/tool_meta.rs:33-52`); neither is a `models:` key and neither is one of the
 # four tiers, so THERE IS NO CONFIGURATION THAT PRICES EITHER DECLARED CLASS. An empty map is
 # therefore the most a billing-ON mcp deployment can say today, and `h2-class-price.sh` is the leg
 # that says what that costs.

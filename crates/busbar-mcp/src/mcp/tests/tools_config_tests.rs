@@ -97,7 +97,7 @@ fn the_locked_section_shape_parses_into_the_values_it_declares() {
     assert_eq!(fs.tools_allow["read_file"].schema_hash, None);
     // LIST ⇒ ADDITIVE, deduped: the section attach plus the server's own, the shared name once.
     assert_eq!(
-        cfg.effective_hooks("filesystem"),
+        super::effective_hooks(&cfg, "filesystem"),
         vec!["mcp-sanitizer".to_string(), "dispatch-order".to_string()]
     );
     // SCALAR ⇒ OVERRIDE.
@@ -826,4 +826,18 @@ fn the_admin_write_path_refuses_an_unknown_ask_method_exactly_as_the_file_does()
         .validate_named_def(crate::mcp::PLANE_DECLARATION.config_section, "gh", &def)
         .expect_err("the API must reject exactly what the file rejects");
     assert!(err.contains("elicitation/created"), "{err}");
+}
+
+/// The engine's declaration and the plane's grammar name one section with one noun: the
+/// declaration keeps literals for the config-schema reader, and this pins them to the grammar's.
+#[test]
+fn the_declaration_names_the_grammars_section_and_noun() {
+    assert_eq!(
+        super::super::PLANE_DECLARATION.config_section,
+        crate::plane_config::SECTION
+    );
+    assert_eq!(
+        super::super::PLANE_DECLARATION.subject_noun,
+        crate::plane_config::SUBJECT_NOUN
+    );
 }

@@ -8698,7 +8698,7 @@ impl Gate for KindIsolationGate {
         // plane by replacing the file that holds it; the step list is read off the kernel's own
         // table, so the finding names the step the loop expected.
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-plane-mcp/src/plane.rs");
+        ov.remove("crates/busbar-plane-mcp/src/tool_plane.rs");
         report.push(prove_rows_red(
             cx,
             subject,

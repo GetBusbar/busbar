@@ -414,55 +414,11 @@ fn sse_frames(raw: &[u8]) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// Every `notifications/progress` frame in an SSE body, in arrival order.
-///
-/// Expressed over the SHARED classifier rather than over a method-name test of its own, so "which
-/// frames may reach busbar's caller" is decided in exactly one place — `super::peer`'s effect table
-/// — and this function cannot come to disagree with the transport about it.
-#[cfg_attr(any(not(test), not(feature = "test-support")), allow(dead_code))]
-pub(crate) fn progress_frames(raw: &[u8]) -> Vec<serde_json::Value> {
-    use super::peer::{NotificationEffect, ServerMessage};
-    sse_frames(raw)
-        .into_iter()
-        .filter(|frame| {
-            matches!(
-                super::peer::classify(frame),
-                Some(ServerMessage::Notification(n)) if n.effect() == NotificationEffect::RelayProgress
-            )
-        })
-        .collect()
-}
-
-/// The payload of the LAST `data:` field in an SSE body.
-///
-/// Last rather than first: a POST answered as a stream may carry progress notifications ahead of the
-/// response, and the response is what the stream was opened to deliver. Taking the first would
-/// deliver a notification and call it a result.
-///
-/// Multi-line `data:` fields are joined with `\n`, which is what the SSE grammar says they mean. A
-/// body with no `data:` at all yields empty, which the JSON-RPC parser then reports as malformed —
-/// the right layer for that complaint.
-fn last_sse_data(raw: &[u8]) -> Vec<u8> {
-    let text = String::from_utf8_lossy(raw);
-    let mut current: Option<Vec<String>> = None;
-    let mut last: Option<Vec<String>> = None;
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("data:") {
-            current
-                .get_or_insert_with(Vec::new)
-                .push(rest.strip_prefix(' ').unwrap_or(rest).to_string());
-        } else if line.is_empty() {
-            if let Some(done) = current.take() {
-                last = Some(done);
-            }
-        }
-    }
-    if let Some(done) = current.take() {
-        last = Some(done);
-    }
-    last.map(|parts| parts.join("\n").into_bytes())
-        .unwrap_or_default()
-}
+// Every `notifications/progress` frame in an SSE body, in arrival order, and the payload of the
+// LAST `data:` field: the plane's (`busbar_plane_mcp::call`), over the same shared classifier.
+use busbar_plane_mcp::call::last_sse_data;
+#[cfg(all(test, feature = "test-support"))]
+pub(crate) use busbar_plane_mcp::call::progress_frames;
 
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/transport_tests.rs"]

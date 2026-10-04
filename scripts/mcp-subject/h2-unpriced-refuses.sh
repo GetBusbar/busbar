@@ -36,7 +36,7 @@
 #            here instead of silent.
 #
 #   ARM 2 -- BILLING ON with a card that prices neither class the call hits. This plane declares
-#            `tool_calls` and `bytes` (`crates/busbar-plane-mcp/src/meta.rs:33-52`) and the card
+#            `tool_calls` and `bytes` (`crates/busbar-plane-mcp/src/tool_meta.rs:33-52`) and the card
 #            carries an entry for neither -- it cannot, since `rate_card:` keys are validated against
 #            `models:` (see h2-class-price.sh). So EVERY served mcp call on a billing-ON node hits
 #            unpriced classes, and #42 says every one of them must be refused rather than billed zero

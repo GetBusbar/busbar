@@ -143,14 +143,14 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // because the kernel never spells it (#49) — its pre-pass lifts exactly the sections the
         // registered planes declare, so a build without this plane refuses `mcp:` as unknown.
         owned_config_sections: &["mcp"],
-        // The classes the plane crate declares (`busbar_plane_mcp::meta`), by its own symbols.
+        // The classes the plane crate declares (`busbar_plane_mcp::tool_meta`), by its own symbols.
         billable_classes: &[
             BillableClass {
-                class: busbar_plane_mcp::meta::CLASS_TOOL_CALLS.as_str(),
+                class: busbar_plane_mcp::tool_meta::CLASS_TOOL_CALLS.as_str(),
                 family: "count",
             },
             BillableClass {
-                class: busbar_plane_mcp::meta::CLASS_BYTES.as_str(),
+                class: busbar_plane_mcp::tool_meta::CLASS_BYTES.as_str(),
                 family: "byte",
             },
         ],
@@ -158,7 +158,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // opens no session account, so `tools.fees.per_session` would charge nothing — refused.
         fee_units: &[PER_REQUEST],
         metric_families: &[],
-        record_kinds: busbar_plane_mcp::records::RECORD_KINDS,
+        record_kinds: busbar_plane_mcp::tool_records::RECORD_KINDS,
         required_config_sections: &[],
         // The pin and `verify_ttl:` are the kernel's to parse and judge; declared here by key.
         trust_keys: config::TRUST_KEYS,
@@ -466,14 +466,16 @@ fn mcp_parse_section(
     v: &serde_yaml::Value,
 ) -> Result<Box<dyn busbar_kernel::plane::config::PlaneCfg>, String> {
     serde_yaml::from_value::<config::ToolsCfg>(v.clone())
-        .map(|c| Box::new(c) as Box<dyn busbar_kernel::plane::config::PlaneCfg>)
+        .map(|c| {
+            Box::new(config::ToolsSectionCfg(c)) as Box<dyn busbar_kernel::plane::config::PlaneCfg>
+        })
         .map_err(|e| e.to_string())
 }
 
 /// [`busbar_kernel::plane::registry::PlaneDecl::default_section`] hook — the empty `tools:` registry, so an
 /// ABSENT section defaults to `ToolsCfg::default()` byte-identically to the pre-seam typed field.
 fn mcp_default_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
-    Box::<config::ToolsCfg>::default()
+    Box::<config::ToolsSectionCfg>::default()
 }
 
 /// PARSE THE `mcp:` ENDPOINT block through the MCP plane's own `Deserialize` — the
@@ -948,7 +950,7 @@ pub(crate) use busbar_plane_mcp::sanitize;
 pub(crate) mod session_serve;
 /// The plane's session-revision rules, reached by `session_serve` through this ledgered door.
 pub(crate) use busbar_plane_mcp::{
-    adapt, codec as plane_codec, revision, session as session_rules,
+    adapt, codec as plane_codec, revision, tool_sessions as session_rules,
 };
 pub(crate) mod sse;
 /// THE STDIO SERVE MODE: busbar as an MCP server on its own stdin/stdout — the same serve
@@ -1123,7 +1125,7 @@ impl std::fmt::Display for McpCfgError {
 /// `DEFAULT_MOUNT` is THE ONE PATH this endpoint is served at: the compile-time claim, read from the
 /// claim table rather than written a second time here, so the path validation accepts and the path
 /// claimed cannot disagree.
-use busbar_plane_mcp::{claims::DEFAULT_MOUNT, codec::protected_resource_metadata_path};
+use busbar_plane_mcp::{tool_claims::DEFAULT_MOUNT, codec::protected_resource_metadata_path};
 
 impl McpResource {
     /// Validate and derive. Every refusal is fail-closed at BOOT rather than at first request: an

@@ -71,6 +71,8 @@ use super::sanitize;
 /// made it a METHOD rather than a route, which is why `super::envelope::legacy_verb` can go on
 /// answering `405` without that being a statement that busbar cannot notify a client).
 pub(crate) use busbar_plane_mcp::codec::IMPLEMENTED_METHODS;
+// The pure halves of a relayed call's answer are the plane's (`busbar_plane_mcp::call`).
+use busbar_plane_mcp::call::{upstream_ask_field, upstream_failure_result};
 
 /// `resultType` on every result this server returns: `complete`, never `input_required`.
 ///
@@ -246,20 +248,14 @@ fn refuse_undeclared_tasks(
 /// `400`, because `MissingRequiredClientCapabilityError` fixes the status: "For HTTP, the response
 /// status code MUST be `400 Bad Request`."
 fn missing_tasks_capability(id: Option<serde_json::Value>) -> Response {
+    let refusal =
+        busbar_plane_mcp::call::missing_tasks_capability(&id.unwrap_or(serde_json::Value::Null));
     error(
         StatusCode::BAD_REQUEST,
-        id,
-        CODE_MISSING_CLIENT_CAPABILITY,
-        &format!(
-            "This request needs the `{}` extension, and it was not declared in \
-             `params._meta.io.modelcontextprotocol/clientCapabilities.extensions`. Declare it — \
-             per session or on this one request — and retry.",
-            super::tasks::TASKS_EXTENSION_ID
-        ),
-        Some(serde_json::json!({
-            "reason": "tasks_extension_not_declared",
-            "requiredCapabilities": super::tasks::required_tasks_capability(),
-        })),
+        refusal.id,
+        refusal.code,
+        &refusal.message,
+        refusal.data,
     )
 }
 
@@ -2174,26 +2170,6 @@ async fn tools_call(
     }
 }
 
-/// The tool-execution-error RESULT busbar answers with when the upstream leg failed.
-///
-/// `isError: true` with the failure in a text content block, which is the shape the specification
-/// names for a tool that ran and did not work, and the only shape a model ever reads. The text is
-/// BUSBAR-ATTRIBUTED and names the server, because the caller needs to know which of busbar's
-/// upstreams failed; it is not the upstream's own prose relayed as though it were busbar's, and it
-/// is markup-normalised on the way out by the same rule every other upstream-influenced string is.
-fn upstream_failure_result(server: &str, reason: &str) -> serde_json::Value {
-    serde_json::json!({
-        "resultType": "complete",
-        "isError": true,
-        "content": [{
-            "type": "text",
-            "text": sanitize::normalise(&format!(
-                "The MCP server `{server}` did not complete this tool call: {reason}"
-            )),
-        }],
-    })
-}
-
 /// CREATE a task for a `tools/call` that will be answered asynchronously.
 ///
 /// The ordering here is the whole of `sep-2663-durable-create-strong-consistency`, and it is
@@ -2426,25 +2402,6 @@ fn header_mismatch(id: Option<serde_json::Value>, message: &str) -> Response {
     )
 }
 
-/// Which MRTR ask field, if any, an upstream's supposedly-complete result still carries.
-///
-/// Named as a LIST rather than as a check on `resultType`, for the reason the call site gives: the
-/// discriminator is one field and the ask's CONTENT is in the other two, so a check that read only
-/// the discriminator would pass a result that still carried the upstream's `inputRequests`.
-///
-/// Returns the offending field so the refusal and the log can name it — an operator debugging this
-/// needs to know which of the three arrived, because it tells them whether their upstream is
-/// conformant, half-conformant, or something else entirely.
-fn upstream_ask_field(value: &serde_json::Value) -> Option<&'static str> {
-    let obj = value.as_object()?;
-    if obj.get("resultType").and_then(|v| v.as_str()) == Some("input_required") {
-        return Some("resultType");
-    }
-    ["inputRequests", "requestState"]
-        .into_iter()
-        .find(|field| obj.contains_key(*field))
-}
-
 /// THE ARGUMENTS A COMMITTED REWRITE PRODUCED, or the reason they cannot be used.
 ///
 /// Its own function so the fail-open it replaces can be driven by a test without arranging a host
@@ -2635,7 +2592,7 @@ fn charge_round(
 /// LEDGER ONE ANSWERED UPSTREAM `tools/call` under the plane's declared `tool_calls` class (#71).
 ///
 /// The plane's whole money obligation: one raw count, on the class it declares
-/// ([`busbar_plane_mcp::meta::CLASS_TOOL_CALLS`]), appended to the caller's budget chain through the
+/// ([`busbar_plane_mcp::tool_meta::CLASS_TOOL_CALLS`]), appended to the caller's budget chain through the
 /// SAME host `meter_ledger` seam the llm plane ledgers its tokens and a rerank its search units
 /// through. The card is never consulted here (#43), and the write is unconditional. The view prices
 /// the row with the MCP plane's own card (the lane is plane-qualified, see below) — the operator's
@@ -2660,7 +2617,7 @@ pub(super) fn ledger_tool_call(
     };
     let usage = busbar_contract::billing::Usage {
         usage_units: std::collections::BTreeMap::from([(
-            busbar_plane_mcp::meta::CLASS_TOOL_CALLS
+            busbar_plane_mcp::tool_meta::CLASS_TOOL_CALLS
                 .as_str()
                 .to_string(),
             1,

@@ -323,7 +323,8 @@ fn secret_refs_source() -> String {
     // `busbar_kernel::…` and the scan matches on that spelling. The impl is FOUND by its header
     // across the source tree rather than read from a spelled crate path, so this neutral test
     // names no plane crate — and a header that moved, vanished or was duplicated is still a panic.
-    let tools = impl_block_in_tree("impl busbar_kernel::plane::config::PlaneCfg for ToolsCfg");
+    let tools =
+        impl_block_in_tree("impl busbar_kernel::plane::config::PlaneCfg for ToolsSectionCfg");
     let agents = impl_block_in_tree("impl busbar_kernel::plane::config::PlaneCfg for AgentsCfg");
     let body = format!("{core}\n{tools}\n{agents}");
     assert!(

@@ -44,7 +44,6 @@
 
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use base64::Engine as _;
 
 use super::sse;
 // The kernel seams this file and `super::session_serve` both use, named in ONE line so the
@@ -637,31 +636,10 @@ fn request_log(
 ) -> Vec<crate::mcp::sse::LogRecord> {
     let target = name_source_of(method)
         .and_then(|source| envelope.get("params").and_then(|p| p.get(source)).cloned());
-    let status = response.status().as_u16();
     // The STATUS, not the body: the body has already been consumed into the response and re-reading
     // it here would mean buffering the answer twice. The status/code pair is one contract
     // (`error_response` builds both together), so the status is a faithful statement of the outcome.
-    let ok = response.status() == StatusCode::OK;
-    vec![
-        crate::mcp::sse::LogRecord {
-            level: "debug",
-            logger: "busbar.mcp.dispatch",
-            data: serde_json::json!({
-                "message": "dispatching MCP method",
-                "method": method,
-                "target": target,
-            }),
-        },
-        crate::mcp::sse::LogRecord {
-            level: if ok { "info" } else { "warning" },
-            logger: "busbar.mcp.dispatch",
-            data: serde_json::json!({
-                "message": if ok { "MCP method completed" } else { "MCP method refused" },
-                "method": method,
-                "httpStatus": status,
-            }),
-        },
-    ]
+    busbar_plane_mcp::framing::request_log(method, target, u32::from(response.status().as_u16()))
 }
 
 /// Which `params` member `Mcp-Name` mirrors for `method`, or `None` when the header is not required.
@@ -692,16 +670,7 @@ pub(super) fn decode_param_sentinel(value: &str) -> Option<String> {
 }
 
 fn decode_sentinel(value: &str) -> Option<String> {
-    let Some(inner) = value
-        .strip_prefix("=?base64?")
-        .and_then(|v| v.strip_suffix("?="))
-    else {
-        return Some(value.to_string());
-    };
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(inner)
-        .ok()?;
-    String::from_utf8(bytes).ok()
+    busbar_plane_mcp::checks::decode_sentinel(value)
 }
 
 /// A header's value as UTF-8, or `None` when absent or not UTF-8. A non-UTF-8 header value cannot
