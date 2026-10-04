@@ -265,7 +265,17 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
     fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
         let (key, lifted) = (self.key, self.lifted);
         match self.dest {
-            Dest::Endpoint => EndpointSection::deserialize(de)?.bank(lifted),
+            Dest::Endpoint => {
+                // An endpoint block is a section its plane owns, so it is kept as written too
+                // ([`DeployCfg::declared_raw`]): its plane's door opens with it beside its settings.
+                let section = serde_yaml::Value::deserialize(de)?;
+                if !section.is_null() {
+                    lifted.declared_raw.insert(key, section.clone());
+                }
+                EndpointSection::deserialize(section)
+                    .map_err(D::Error::custom)?
+                    .bank(lifted);
+            }
             Dest::OauthAs => Option::<serde_yaml::Value>::deserialize(de)?.bank(lifted),
             Dest::Tools => lift_plane::<ToolsSection, D>(key, de, lifted)?,
             Dest::Agents => lift_plane::<AgentsSection, D>(key, de, lifted)?,

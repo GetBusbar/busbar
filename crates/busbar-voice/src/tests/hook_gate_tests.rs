@@ -123,6 +123,7 @@ fn a_slot() -> Arc<dyn std::any::Any + Send + Sync> {
     let ctx = busbar_kernel::plane::registry::BuildCtx {
         endpoint_slot: None,
         agent_defs: &unit,
+        tool_defs: &unit,
         public_url: Some("https://voice.example"),
         prior: None,
     };

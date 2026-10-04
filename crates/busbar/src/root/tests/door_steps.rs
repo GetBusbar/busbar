@@ -305,8 +305,10 @@ fn provider(protocol: &str, style: Option<&str>) -> super::ProviderRoute {
     }
 }
 
-/// The routes `section`'s members resolve to over `providers`, or why the load is refused.
-fn resolve(
+/// The routes `section`'s members resolve to over `providers` for a plane stating `facts`, or why
+/// the load is refused.
+fn resolve_for(
+    facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     section: &str,
     providers: &[(&str, super::ProviderRoute)],
 ) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
@@ -325,11 +327,19 @@ fn resolve(
     let reach = super::DoorReach {
         providers: &providers,
         secrets: &secrets,
-        auths: &auths,
+        auths: std::sync::Arc::new(auths),
         conns,
         stream_ceiling_secs: 1,
     };
-    super::member_routes(&section, &DoorPools::of(&section), &styled(), &reach)
+    super::member_routes(&section, &DoorPools::of(&section), facts, &reach)
+}
+
+/// The routes `section`'s members resolve to over `providers`, or why the load is refused.
+fn resolve(
+    section: &str,
+    providers: &[(&str, super::ProviderRoute)],
+) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
+    resolve_for(&styled(), section, providers)
 }
 
 // The positive binding proof needs a bearer-serving auth plugin LINKED (the default distribution's
@@ -600,7 +610,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
     let reach = super::DoorReach {
         providers: &providers,
         secrets: &secrets,
-        auths: &auths,
+        auths: std::sync::Arc::new(auths),
         conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,
     };
@@ -662,4 +672,37 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         "grant_type=client_credentials&client_id=oracle-client-0001&client_secret=\
          oracle%3Asecret%3Awith%3Acolons&scope=https%3A%2F%2Fcognitiveservices.azure.com%2F.default"
     );
+}
+
+/// A REGISTRATION SECTION'S MEMBERS (ARCHITECT Q-L3B-ROUTES): where the plane's need states a
+/// member-target path (`settings.*.<key>`), each registration is a member reached at its own
+/// `<key>` on that need, its metering rows naming the registration, with no provider and no auth
+/// binding. A registration that states no target has no route; the reserved words are no member.
+#[test]
+fn a_registration_member_is_reached_at_its_own_target() {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        need_auths: vec![(DIRECTION_OUTBOUND, "")],
+        need_targets: vec!["settings.*.url"],
+        ..Default::default()
+    };
+    let routes = resolve_for(
+        &facts,
+        "fs: {url: \"http://127.0.0.1:7/rpc\"}\nlocal: {command: run}\nhooks: [h]\n",
+        &[],
+    )
+    .expect("the registrations resolve");
+    assert_eq!(routes.keys().collect::<Vec<_>>(), ["fs"]);
+    let fs = &routes["fs"];
+    assert_eq!(fs.need.0, 0);
+    assert_eq!(
+        fs.base_url, "http://127.0.0.1:7",
+        "its URL's origin; the plane spells the path"
+    );
+    assert_eq!(fs.provider, "fs");
+    assert!(fs.auth.is_none());
+    // A plane whose need states no member target reaches no registration.
+    let none = resolve_for(&styled(), "fs: {url: \"http://127.0.0.1:7/rpc\"}\n", &[])
+        .expect("nothing to resolve");
+    assert!(none.is_empty());
 }

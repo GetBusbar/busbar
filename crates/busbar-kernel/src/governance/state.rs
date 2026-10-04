@@ -390,6 +390,16 @@ impl GovState {
         Ok((binding, token.into(), access_key_id, secret_access_key))
     }
 
+    /// THE CALLER-REFERENCE KEY a door plane's units are lent their caller's opaque reference under
+    /// (`crate::auth::CallerRefKey`): derived from this node's token-signing material, so the same
+    /// principal has the same reference on every node sharing that material and across restarts.
+    /// `None` when signing is disabled (the node keeps no material, and no reference is lent).
+    #[must_use]
+    pub fn caller_ref_key(&self) -> Option<crate::auth::CallerRefKey> {
+        self.signing_material()
+            .map(|m| crate::auth::CallerRefKey::derive(&m.signer.secret_bytes()))
+    }
+
     /// The signing key id (`kid`) this node stamps into minted tokens, if signing is enabled.
     pub fn signing_kid(&self) -> Option<String> {
         self.signing_material().map(|m| m.signer.kid().to_string())

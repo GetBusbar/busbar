@@ -45,6 +45,7 @@ pub(super) fn linked(
         hot_planes,
         plane_doors: &[],
         secrets: &[],
+        plane_door_slots: &[],
         protocols: &[],
         path_ingress: &[],
         body_ingress: &[],
@@ -103,6 +104,7 @@ fn render(row: &PlaneDecl) -> String {
     let ctx = BuildCtx {
         endpoint_slot: None,
         agent_defs: &(),
+        tool_defs: &(),
         public_url: None,
         prior: None,
     };
