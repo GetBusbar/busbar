@@ -495,7 +495,7 @@ pub fn dropped_planes_of(
 }
 
 /// The door planes [`dropped_planes_of`] discovered, waiting for the dispatcher.
-static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::boot::Candidate>> =
+pub(crate) static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::boot::Candidate>> =
     std::sync::OnceLock::new();
 
 /// The door planes [`load_door_planes`] bound, held for the process.

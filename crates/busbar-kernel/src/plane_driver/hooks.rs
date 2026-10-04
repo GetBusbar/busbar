@@ -525,6 +525,8 @@ pub struct Projection {
     pub end_user: Option<String>,
     /// The body a rewrite left, when this projection answered one.
     pub rewritten: Option<Vec<u8>>,
+    /// The session the request continues, as the plane read it (`RequestView::session`).
+    pub session: Option<Vec<u8>>,
 }
 
 impl Projection {
@@ -568,7 +570,7 @@ impl Projection {
             prompt: prompt.then(|| self.prompt()),
             identity,
             signals: SignalBag::default(),
-            session: None,
+            session: self.session.as_deref(),
         }
     }
 
@@ -1129,6 +1131,15 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             turns,
             end_user: opt(o.end_user),
             rewritten: span(o.rewritten),
+            session: (v.session.fmt == busbar_contract::abi::mechanism::call::BLOB_OCTETS
+                && !v.session.ptr.is_null())
+            .then(|| {
+                let at = (v.session.ptr as usize).wrapping_sub(base);
+                bufs.arena
+                    .get(at..at.saturating_add(v.session.len))
+                    .map(<[u8]>::to_vec)
+                    .unwrap_or_default()
+            }),
         })
     }
 

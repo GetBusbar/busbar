@@ -109,6 +109,7 @@ async fn a_valid_reject_with_a_wrong_typed_sibling_rejects_under_on_error_reject
         ingress_protocol: "example-protocol",
         request_id: 1,
         key: None,
+        session: None,
         incremental: None,
     };
     assert!(
@@ -127,6 +128,7 @@ async fn a_totally_malformed_reply_applies_on_error() {
         ingress_protocol: "example-protocol",
         request_id: 1,
         key: None,
+        session: None,
         incremental: None,
     };
 
@@ -163,6 +165,7 @@ async fn a_malformed_reply_honors_a_non_reject_on_error() {
         ingress_protocol: "example-protocol",
         request_id: 1,
         key: None,
+        session: None,
         incremental: None,
     };
     assert!(
@@ -183,6 +186,7 @@ async fn an_empty_reply_still_abstains_even_under_on_error_reject() {
         ingress_protocol: "example-protocol",
         request_id: 1,
         key: None,
+        session: None,
         incremental: None,
     };
     for reply in [
@@ -223,6 +227,7 @@ async fn a_well_formed_reject_still_rejects() {
         ingress_protocol: "example-protocol",
         request_id: 1,
         key: None,
+        session: None,
         incremental: None,
     };
     match decide(&gates, &subject).await {
@@ -303,6 +308,7 @@ async fn an_invocation_is_projected_whole() {
             ingress_protocol: "example-protocol",
             request_id: 7,
             key: Some(&k),
+            session: None,
             incremental: None,
         },
     )
@@ -366,6 +372,7 @@ async fn a_grantless_gate_sees_shape_and_no_content() {
             ingress_protocol: "example-protocol",
             request_id: 1,
             key: Some(&key()),
+            session: None,
             incremental: None,
         },
     )
@@ -415,6 +422,7 @@ async fn a_reject_stops_the_request_with_a_clamped_status() {
                 ingress_protocol: "example-protocol",
                 request_id: 1,
                 key: None,
+                session: None,
                 incremental: None,
             },
         )
@@ -458,6 +466,7 @@ async fn a_broken_gate_applies_its_own_on_error() {
         ingress_protocol: "example-protocol",
         request_id: 1,
         key: None,
+        session: None,
         incremental: None,
     };
     assert!(
@@ -509,6 +518,7 @@ async fn no_attached_gate_builds_no_projection() {
             ingress_protocol: "example-protocol",
             request_id: 1,
             key: None,
+            session: None,
             incremental: None,
         },
     )
@@ -553,6 +563,7 @@ async fn incremental_scan_skips_a_piece_already_cleared_this_session() {
             ingress_protocol: "example-protocol",
             request_id: 1,
             key: None,
+            session: None,
             incremental: Some(IncrementalScan {
                 store: &store,
                 session,
@@ -586,6 +597,7 @@ async fn incremental_scan_skips_a_piece_already_cleared_this_session() {
             ingress_protocol: "example-protocol",
             request_id: 2,
             key: None,
+            session: None,
             incremental: Some(IncrementalScan {
                 store: &store,
                 session,
@@ -630,6 +642,7 @@ async fn a_rejected_piece_is_not_cached_and_is_rescreened() {
             ingress_protocol: "example-protocol",
             request_id: 1,
             key: None,
+            session: None,
             incremental: Some(IncrementalScan {
                 store: &store,
                 session,
@@ -659,6 +672,7 @@ async fn a_rejected_piece_is_not_cached_and_is_rescreened() {
             ingress_protocol: "example-protocol",
             request_id: 2,
             key: None,
+            session: None,
             incremental: Some(IncrementalScan {
                 store: &store,
                 session,
@@ -726,6 +740,7 @@ async fn incremental_scan_reclears_across_principal_and_generation() {
                 ingress_protocol: "example-protocol",
                 request_id: 1,
                 key: None,
+                session: None,
                 incremental: Some(IncrementalScan {
                     store,
                     session,
@@ -798,6 +813,7 @@ async fn a_gate_handed_content_leaves_exactly_one_access_amendment() {
             ingress_protocol: op,
             request_id: 1,
             key: Some(&k),
+            session: None,
             incremental: None,
         };
         assert!(matches!(
@@ -815,5 +831,129 @@ async fn a_gate_handed_content_leaves_exactly_one_access_amendment() {
     assert_eq!(
         rows[0].fields,
         vec!["content".to_string(), "identity".into()]
+    );
+}
+
+// ── The door path: the session the plane's `project` names (ARCHITECT RULING 2026-10-03) ──────
+
+use crate::hooks::gate::{decide_door, DoorSubject, ScanSubstrate};
+
+/// A gate that abstains and records the session each call's request view named.
+#[derive(Default)]
+struct SessionSpy {
+    seen: Mutex<Vec<Option<Vec<u8>>>>,
+}
+
+#[async_trait::async_trait]
+impl RoutingPolicy for SessionSpy {
+    async fn decide(
+        &self,
+        req: &RoutingRequest<'_>,
+        _candidates: &[Candidate<'_>],
+        _ctx: &RoutingContext<'_>,
+        _budget: std::time::Duration,
+    ) -> PolicyResult {
+        self.seen
+            .lock()
+            .unwrap()
+            .push(req.session.map(<[u8]>::to_vec));
+        Ok(RoutingDecision::Abstain)
+    }
+
+    fn name(&self) -> &'static str {
+        "session-spy"
+    }
+}
+
+/// What the a2a door's `project` answers for a `message/send`: the invoke document.
+const PROJECTED: &[u8] =
+    br#"{"tool":"message/send","arguments":{"message":{"parts":[{"text":"hi"}]}}}"#;
+
+/// THE DOOR PATH'S INCREMENTAL SCAN KEYS ON THE VIEW'S SESSION (ARCHITECT RULING 2026-10-03,
+/// Q-FOLD-A2A-2-PROJECT-POOL session half; predev's contextId-keyed scan is the baseline): the hook
+/// sees the session; a piece cleared under one session is not screened again under it; another
+/// session, no session, an empty session, another caller, a new hook generation and a node that
+/// did not opt in each screen it again.
+#[tokio::test]
+async fn the_door_paths_incremental_scan_keys_on_the_views_session() {
+    let store = SessionStore::new(64, None);
+    let spy = Arc::new(SessionSpy::default());
+    let gates = gate(
+        spy.clone(),
+        crate::config::PolicyOnError::Weighted,
+        true,
+        true,
+    );
+    let alice = key();
+    let bob = busbar_contract::records::VirtualKey {
+        id: "k-2".to_string(),
+        ..key()
+    };
+    let calls = || spy.seen.lock().unwrap().len();
+    let fire = |session: Option<&'static [u8]>,
+                who: &'static busbar_contract::records::VirtualKey,
+                generation: Option<u64>| {
+        let gates = &gates;
+        let store = &store;
+        async move {
+            let door = DoorSubject {
+                projected: PROJECTED,
+                container: "planner",
+                dialect: "a2a",
+                request_id: 1,
+                key: Some(who),
+                session,
+                scan: generation.map(|generation| ScanSubstrate {
+                    store,
+                    generation,
+                    now_ms: 0,
+                }),
+            };
+            matches!(decide_door(gates, &door).await, GateVerdict::Proceed)
+        }
+    };
+    let alice: &'static busbar_contract::records::VirtualKey = Box::leak(Box::new(alice));
+    let bob: &'static busbar_contract::records::VirtualKey = Box::leak(Box::new(bob));
+
+    assert!(fire(Some(b"ctx-1"), alice, Some(1)).await);
+    assert_eq!(calls(), 1, "a new session's piece is screened");
+    assert_eq!(
+        spy.seen.lock().unwrap()[0].as_deref(),
+        Some(&b"ctx-1"[..]),
+        "the hook sees the session the view names"
+    );
+    assert!(fire(Some(b"ctx-1"), alice, Some(1)).await);
+    assert_eq!(calls(), 1, "cleared under this session: not screened again");
+    assert!(fire(Some(b"ctx-2"), alice, Some(1)).await);
+    assert_eq!(calls(), 2, "another session screens it again");
+    assert!(fire(None, alice, Some(1)).await);
+    assert!(fire(None, alice, Some(1)).await);
+    assert_eq!(calls(), 4, "no session: screened whole, every time");
+    assert!(fire(Some(b""), alice, Some(1)).await);
+    assert_eq!(calls(), 5, "an empty session is no session");
+    assert_eq!(spy.seen.lock().unwrap()[4], None, "and the hook sees none");
+    assert!(fire(Some(b"ctx-1"), bob, Some(1)).await);
+    assert_eq!(
+        calls(),
+        6,
+        "another caller on the same session screens it again"
+    );
+    assert!(fire(Some(b"ctx-1"), alice, Some(2)).await);
+    assert_eq!(calls(), 7, "a new hook generation screens it again");
+    assert!(fire(Some(b"ctx-1"), alice, None).await);
+    assert_eq!(calls(), 8, "a node that did not opt in screens it whole");
+}
+
+/// The door path's session key is the engine's: a UTF-8 session keys exactly as its string did, so
+/// a clearance made on one path is the same slot on the other.
+#[test]
+fn an_octet_session_keys_as_its_string() {
+    assert_eq!(
+        IncrementalScan::derive_session_key_octets(b"ctx-1", "alice", 3),
+        IncrementalScan::derive_session_key("ctx-1", "alice", 3)
+    );
+    assert_ne!(
+        IncrementalScan::derive_session_key_octets(b"ctx-1", "alice", 3),
+        IncrementalScan::derive_session_key_octets(b"ctx-1\xff", "alice", 3)
     );
 }

@@ -849,7 +849,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let door_reach = root::door_steps::DoorReach {
         providers: &door_providers,
         secrets: &*app.secret_resolver,
-        auths: &door_auths,
+        auths: Arc::new(door_auths),
         conns: Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::PollConns>,
         stream_ceiling_secs: busbar_kernel::config::limits::installed().map_or(
             busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
@@ -862,6 +862,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         &root::dispatch::dispatcher(),
         &late_services,
         &deploy.door_sections(),
+        deploy.public_url.as_deref(),
         &door_reach,
     )
     .unwrap_or_else(|e| die(e));
@@ -927,6 +928,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     .then(|| root::boot::book(&app).unwrap_or_else(|e| die(e)));
     // THE DOOR PLANES' DATA ROUTES (`root::serve::data_routes`): each served plane's claims, as its
     // guest-list lines beside the kernel's own, onto the data router at its construction.
+    // Every config apply refreshes each served door plane onto the generation it installed
+    // (ARCHITECT Q-DEL-A2A-APPLY), bound on the handle once the routers are built.
+    let door_appliers = served.appliers();
     let doors = root::serve::data_routes(
         served,
         &data_chain,
@@ -941,6 +945,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         response_headers_cfg.server_timing,
     );
     credential_handle.set(std::sync::Arc::clone(&app_handle));
+    app_handle.on_apply(Box::new(move |app| door_appliers.apply(app)));
     // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,

@@ -29,8 +29,8 @@ use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, ProjectIn, ProjectOut, RecordWrite,
     RefusalIn, RefusalOut, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE,
     EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS,
-    PIECE_LAST, PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_PUT, UNITS_ESTIMATED, UNITS_REPORTED,
-    VERDICT_RETRY,
+    PIECE_LAST, PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_PUT, REFUSAL_ARRIVE, UNITS_ESTIMATED,
+    UNITS_REPORTED, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{ServeIn, ServeOut};
 use busbar_contract::caps::OpClassId;
@@ -210,6 +210,9 @@ unsafe fn bytes<'a>(b: Blob) -> &'a [u8] {
         std::slice::from_raw_parts(b.ptr, b.len)
     }
 }
+
+/// The words the double's `/refuse-words` arrival states for its refusal.
+const REFUSAL_WORDS: &[u8] = b"the body is not a document";
 
 unsafe fn text<'a>(s: AbiStr) -> &'a [u8] {
     if s.ptr.is_null() || s.len == 0 {
@@ -494,6 +497,13 @@ impl PlaneCalls for Double {
                     out.refusal_status = 404;
                     return Outcome::Refused;
                 }
+                b"/refuse-words" => {
+                    // The same refusal, stating why in its own words (`head.error`).
+                    out.refusal = 7;
+                    out.refusal_status = 400;
+                    out.head.error = AbiStr::over(REFUSAL_WORDS);
+                    return Outcome::Refused;
+                }
                 b"/short-twice" => vec![estimate(0); cap + 1],
                 b"/short" => vec![estimate(1), estimate(2)],
                 _ => vec![estimate(input.body.len as u64)],
@@ -523,19 +533,29 @@ impl PlaneCalls for Double {
         (!out.pool.ptr.is_null()).then(|| unsafe { text(out.pool) }.to_vec())
     }
 
+    fn arrived_refusal(&self, out: &ArriveOut) -> Option<Vec<u8>> {
+        (!out.head.error.ptr.is_null()).then(|| unsafe { text(out.head.error) }.to_vec())
+    }
+
     fn refusal(
         &self,
         input: &mut RefusalIn,
         out: &mut RefusalOut,
         grow: Grow<'_, RefusalIn, RefusalOut>,
     ) -> Outcome {
-        // The reason crosses beside its text: a refusal whose code names another reason is FAULT.
+        // The reason crosses beside its text: a refusal whose code names another reason is FAULT
+        // (the plane's own words for an arrival it refused are its text, not the kernel's).
         let named =
             busbar_contract::abi::plane::reason_of(input.reason).map(|r| r.as_str().as_bytes());
-        if named != Some(unsafe { text(input.text) }) {
+        if input.cause != REFUSAL_ARRIVE && named != Some(unsafe { text(input.text) }) {
             return Outcome::Fault;
         }
         let mut body = [
+            if input.cause == REFUSAL_ARRIVE {
+                b"words:".as_slice()
+            } else {
+                b"".as_slice()
+            },
             b"refused:".as_slice(),
             input.status.to_string().as_bytes(),
             b":",
@@ -1128,3 +1148,42 @@ fn a_misstated_work_section_refuses_the_instance() {
 
 #[path = "support/plane_driver_write_behind.rs"]
 mod write_behind;
+
+/// RED (abi/plane "A refused arrival"): an arrival the plane refused in its own words is rendered
+/// by the plane's `refusal` with those words as its text and cause REFUSAL_ARRIVE, at the status
+/// the plane stated; without words it is rendered in the kernel's (`a_refused_arrival_wears_...`).
+#[tokio::test]
+async fn a_refused_arrival_is_rendered_in_the_planes_own_words() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["ok"], &[]),
+        cases::Caller::default(),
+    );
+    let units = r.driver.unit(
+        &steps,
+        &far,
+        &caller,
+        cases::arrival("/refuse-words", b"x"),
+        0,
+    );
+    let outcome = cases::drive(&units).await;
+    assert!(
+        matches!(
+            outcome,
+            busbar_contract::caps::Outcome::Refused(
+                busbar_contract::caps::StepName::Decode,
+                busbar_contract::caps::ReasonCode::DecodeFailed
+            )
+        ),
+        "{outcome:?}"
+    );
+    assert!(far.sent().is_empty());
+    let rendered = units.take_rendered().expect("the refusal is rendered");
+    assert_eq!(rendered.status, 400);
+    let body = String::from_utf8_lossy(&rendered.body).into_owned();
+    assert!(
+        body.starts_with("words:refused:400:the body is not a document:7@"),
+        "{body}"
+    );
+}
