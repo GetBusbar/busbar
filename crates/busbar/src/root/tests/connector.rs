@@ -64,7 +64,7 @@ const IMDS: &str = "169.254.169.254";
 /// the catalog, and `security` (YAML, or empty for none).
 fn deployment(providers: &[(&str, &str, &[&str])], security: &str) -> RootCfg {
     let mut defs = std::collections::HashMap::new();
-    let mut yaml = String::from("models: {}\nproviders:");
+    let mut yaml = String::from("store: {module: memory}\nmodels: {}\nproviders:");
     yaml.push_str(if providers.is_empty() { " {}\n" } else { "\n" });
     for (name, url, carve) in providers {
         let def: busbar_kernel::config::ProviderDef =

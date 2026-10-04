@@ -137,7 +137,9 @@ fn red_a_refusal_names_its_position() {
     assert_eq!(d.position(&verbs(&["tools", "t9"])), None);
     assert_eq!(d.refusal(&verbs(&["tools", "t9"]), "r"), "tools.t9: r");
 
-    // Byte-identical to the library's own refusal for the same node (1.5.5's form).
+    // Byte-identical to the library's own refusal raised at the same node (1.5.5's form): a value of
+    // the wrong type, refused at that value. (An unknown field is raised at its KEY, a node no
+    // section path names, so it is not the comparison.)
     #[derive(Debug, serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     #[allow(dead_code)]
@@ -149,12 +151,12 @@ fn red_a_refusal_names_its_position() {
     struct Root {
         tools: std::collections::BTreeMap<String, Entry>,
     }
-    let text = "tools:\n  t1:\n    url: a\n    bogus: 1\n";
+    let text = "tools:\n  t1:\n    url: [1]\n";
     let library = serde_yaml::from_str::<Root>(text).expect_err("refused");
     assert_eq!(
         doc(text).refusal(
-            &verbs(&["tools", "t1"]),
-            "unknown field `bogus`, expected `url`"
+            &verbs(&["tools", "t1", "url"]),
+            "invalid type: sequence, expected a string"
         ),
         library.to_string()
     );
