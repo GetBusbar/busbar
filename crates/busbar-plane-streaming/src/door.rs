@@ -56,7 +56,7 @@ use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, InHead, OutHead, Outcome, Span, BLOB_ABSENT,
 };
 use busbar_contract::abi::mechanism::door::{
-    KindTailHead, Section, Statement, SECTION_DECLARING, SECTION_REQUIRED,
+    KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
@@ -100,7 +100,8 @@ pub const AUDIT_KIND: &str = "streaming_session";
 /// The one value a key's `session` grant names to open a live session here: the pool every session
 /// is served on.
 pub const SESSION_POOL: &str = "streaming-server";
-/// The section a document must carry when the plane is linked: the upstream destinations.
+/// The section the plane reads but does not own: the upstream destinations (core's grammar, as the
+/// llm door consumes it).
 pub const PROVIDERS_SECTION: &str = "providers";
 /// Where, inside `streams:`, the upstream a session dials is named.
 pub const EGRESS_TARGET: &str = "session.model";
@@ -128,7 +129,7 @@ const SECTIONS: &[Section] = &[
     },
     Section {
         name: abi_str(PROVIDERS_SECTION),
-        flags: SECTION_REQUIRED,
+        flags: SECTION_CONSUMED,
         _reserved: 0,
     },
 ];
