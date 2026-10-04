@@ -1156,6 +1156,17 @@ impl<K: Kind> Plugin<K> {
         self.inner.instance
     }
 
+    /// The host's connection table the instance's needs were declared on at bind; `None` when its
+    /// Statement declares no need or the bind lent none (the composition root holds its members'
+    /// auth bindings on it).
+    pub fn conn_table(&self) -> Option<Arc<dyn busbar_contract::conn::DeclaredConns>> {
+        self.inner
+            .wake
+            .conn
+            .get()
+            .map(|(_, table)| Arc::clone(table))
+    }
+
     /// `max_inflight`, as the host clamped it.
     pub fn max_inflight(&self) -> u32 {
         self.inner.cap

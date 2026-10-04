@@ -14,6 +14,11 @@
 //! |---|---|
 //! | `jwt-bearer` | `{scope?, subject?, max_response_bytes?}` |
 //! | `oauth-client-credentials` | `{token_url, scope, max_response_bytes?}` |
+//! | `oauth-token-exchange` | `{token_url, resource, subject_token_type?, max_response_bytes?}` |
+//!
+//! `oauth-token-exchange` (RFC 8693, ARCHITECT round 5 Q-L3B-EXCHANGE (B)) binds busbar's own
+//! subject token (the credential) and mints nothing at open: each request's scope (the call's
+//! extensions blob) is its own exchange, on demand, cached per scope ([`ExchangeBinding`]).
 //!
 //! THE REFUSALS (ARCHITECT ruling 2026-09-28): a binding that cannot open answers FAILED with one
 //! line per finding, each `credential: <text>` or `settings: <text>`. The kernel composes the 1.5.5
@@ -31,6 +36,49 @@ use crate::mint::{self, Minted, Minter};
 pub const JWT_BEARER: &str = "jwt-bearer";
 /// RFC 6749 §4.4.
 pub const OAUTH_CLIENT_CREDENTIALS: &str = "oauth-client-credentials";
+/// RFC 8693.
+pub const OAUTH_TOKEN_EXCHANGE: &str = "oauth-token-exchange";
+
+/// ONE BOUND STYLE, as a handle holds it: a minted style's token cell, or a token-exchange
+/// binding whose cells are per scope.
+#[derive(Clone)]
+pub enum Binding {
+    /// `jwt-bearer` / `oauth-client-credentials`: one cell, refreshed ahead of expiry.
+    Minted(Arc<Minted>),
+    /// `oauth-token-exchange`: one cell per requested scope, minted on demand.
+    Exchange(Arc<ExchangeBinding>),
+}
+
+/// AN `oauth-token-exchange` BINDING: the exchange material every scope shares, the key its scopes'
+/// cells are cached under, and the response cap.
+pub struct ExchangeBinding {
+    exchange: Arc<mint::token_exchange::Exchange>,
+    key: [u8; 32],
+    max_response_bytes: usize,
+}
+
+impl ExchangeBinding {
+    /// The cache key of this binding's cell for `scope`: SHA-256 over the binding's own key and the
+    /// scope, so two scopes never share a token and two bindings never share a scope's.
+    pub fn scope_key(&self, scope: &str) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(self.key);
+        h.update([0]);
+        h.update(scope.as_bytes());
+        h.finalize().into()
+    }
+
+    /// The cell for `scope` in `cache` (made, unminted, when absent).
+    pub fn cell(&self, scope: &str, cache: &dyn TokenCache) -> ([u8; 32], Arc<Minted>) {
+        let key = self.scope_key(scope);
+        let minter = Minter::TokenExchange(mint::token_exchange::Scoped::new(
+            Arc::clone(&self.exchange),
+            scope,
+        ));
+        (key, cache.cell(key, minter, self.max_response_bytes))
+    }
+}
 
 /// One finding that refuses a binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,8 +156,96 @@ pub fn cache_key(style: &str, credential: &[u8], settings: &[u8]) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// Bind `style` to `credential` under `settings` — `open_outbound`'s body. Never touches the
-/// network: a minted style's first mint runs on `tick`.
+/// Bind `style` to `credential` under `settings`, whichever this plugin serves — `open_outbound`'s
+/// body. Never touches the network.
+///
+/// # Errors
+///
+/// Every finding that refuses the binding.
+pub fn open(
+    style: &str,
+    credential: Option<&[u8]>,
+    settings: Option<&[u8]>,
+    cache: &dyn TokenCache,
+) -> Result<Binding, Vec<Refusal>> {
+    if style == OAUTH_TOKEN_EXCHANGE {
+        return open_token_exchange(credential, settings).map(|b| Binding::Exchange(Arc::new(b)));
+    }
+    open_binding(style, credential, settings, cache).map(Binding::Minted)
+}
+
+/// `oauth-token-exchange`: the keyless contradiction (the credential IS the subject token), then
+/// `token_url` and `resource` (the previous release required both: an exchange with no RFC 8707
+/// resource indicator mints a token spendable at any backend the authorization server serves), then
+/// the binding. `subject_token_type` defaults to an access token.
+fn open_token_exchange(
+    credential: Option<&[u8]>,
+    settings: Option<&[u8]>,
+) -> Result<ExchangeBinding, Vec<Refusal>> {
+    let m = object(settings).map_err(|r| vec![r])?;
+    let subject = match credential.map(std::str::from_utf8) {
+        None => None,
+        Some(Ok(s)) => Some(s),
+        Some(Err(_)) => {
+            return Err(vec![Refusal::Credential(
+                "the credential is not UTF-8".to_string(),
+            )])
+        }
+    };
+    let mut refusals = Vec::new();
+    if subject.is_none_or(|s| s.trim().is_empty()) {
+        refusals.push(Refusal::Settings(
+            "uses auth: oauth-token-exchange but declares no credential; that grant exchanges \
+             busbar's own subject token (the credential) for the upstream's, so there is nothing to \
+             exchange"
+                .to_string(),
+        ));
+    }
+    let token_url = text(&m, "token_url").map_err(|r| vec![r])?;
+    if token_url.is_none() {
+        refusals.push(Refusal::Settings(
+            "uses auth: oauth-token-exchange but has no `token_url` (the authorization server's \
+             token endpoint busbar's subject token is exchanged at)"
+                .to_string(),
+        ));
+    }
+    let resource = text(&m, "resource").map_err(|r| vec![r])?;
+    if resource.is_none() {
+        refusals.push(Refusal::Settings(
+            "uses auth: oauth-token-exchange but has no `resource` — the RFC 8707 resource \
+             indicator the exchanged token is audience-bound to. A token minted for one upstream \
+             must not be spendable at another."
+                .to_string(),
+        ));
+    }
+    let subject_token_type = text(&m, "subject_token_type")
+        .map_err(|r| vec![r])?
+        .unwrap_or_else(|| mint::token_exchange::ACCESS_TOKEN_TYPE.to_string());
+    let max = max_response_bytes(&m).map_err(|r| vec![r])?;
+    let (Some(subject), Some(token_url), Some(resource), true) =
+        (subject, token_url, resource, refusals.is_empty())
+    else {
+        return Err(refusals);
+    };
+    let key = cache_key(
+        OAUTH_TOKEN_EXCHANGE,
+        credential.unwrap_or_default(),
+        settings.unwrap_or_default(),
+    );
+    Ok(ExchangeBinding {
+        exchange: Arc::new(mint::token_exchange::build(
+            subject,
+            &token_url,
+            &subject_token_type,
+            &resource,
+        )),
+        key,
+        max_response_bytes: max,
+    })
+}
+
+/// Bind `style` to `credential` under `settings` — `open_outbound`'s body for a minted style.
+/// Never touches the network: a minted style's first mint runs on `tick`.
 ///
 /// # Errors
 ///

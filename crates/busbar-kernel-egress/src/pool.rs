@@ -38,6 +38,10 @@ pub struct Member {
     pub context_max: Option<u64>,
     /// The lane this member is priced on, as the trust unit sealed it.
     pub lane: Option<busbar_contract::LaneId>,
+    /// Through this pool the member is reached with the caller's own credential (the pool's
+    /// `upstream_credentials: passthrough`): its auth call is lent the caller's verified
+    /// credential, and nothing else is presented when the caller presented none.
+    pub passthrough: bool,
 }
 
 impl Member {
@@ -51,6 +55,7 @@ impl Member {
             attempt_timeout_ms: None,
             context_max: None,
             lane: None,
+            passthrough: false,
         }
     }
 }

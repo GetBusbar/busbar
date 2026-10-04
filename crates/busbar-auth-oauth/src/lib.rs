@@ -20,6 +20,14 @@
 //! * `outbound_ready` is the handle's `ready` fact for the health prober.
 //! * `tick` refreshes minted tokens ahead of expiry.
 //!
+//! `oauth-token-exchange` (RFC 8693; ARCHITECT round 5 Q-L3B-EXCHANGE (B), BUSBAR-1.6.0.md B.3 item
+//! 12) is the same mechanism minted ON DEMAND: its credential is busbar's own subject token, its
+//! settings `{token_url, resource, subject_token_type?}`, and the scope each exchange asks for is
+//! the per-call down-scope the request states in `fields`' extensions blob
+//! (`busbar_contract::abi::auth::EXT_SCOPE`). Each scope is its own exchange and its own cached token;
+//! a request that finds none usable waits (PENDING on its ticket) while the exchange runs on the
+//! instance's driver ticket, and fails (FAILED) when the exchange does.
+//!
 //! EACH STYLE MINTS THROUGH THE PLUGIN'S OWN NEED and refreshes ahead of expiry on `tick`
 //! ([`mint`]). The kernel holds no auth cache and does no per-plugin branching.
 //!
@@ -53,7 +61,7 @@ use std::ptr;
 use busbar_contract::abi::auth::{
     AuthTail, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut, IdentifyOut,
     OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StyleDecl, VerifyIn,
-    CANCEL_CONTINUES, CAP_OUTBOUND, LOGIN_KIND_NONE, MODE_OWN, POINT_HEAD,
+    CANCEL_CONTINUES, CAP_OUTBOUND, EXT_SCOPE, LOGIN_KIND_NONE, MODE_OWN, POINT_HEAD,
 };
 use busbar_contract::abi::host::conn::connector::{
     Need, DIRECTION_OUTBOUND, EGRESS_OPEN_WEB, KEEP_NAMED,
@@ -78,11 +86,12 @@ use crate::mint::Read;
 /// sensitive marking is a behaviour change not taken without the owner).
 const FIELD_FLAGS: u32 = 0;
 
-/// The styles this plugin serves. Neither carries [`busbar_contract::abi::auth::STYLE_CALLER_CREDENTIAL`]
+/// The styles this plugin serves. None carries [`busbar_contract::abi::auth::STYLE_CALLER_CREDENTIAL`]
 /// (an OAuth token is always minted from the operator's own credential).
-const STYLE_DECLS: [StyleDecl; 2] = [
+const STYLE_DECLS: [StyleDecl; 3] = [
     decl(style::JWT_BEARER),
     decl(style::OAUTH_CLIENT_CREDENTIALS),
+    decl(style::OAUTH_TOKEN_EXCHANGE),
 ];
 
 const fn decl(name: &'static str) -> StyleDecl {
@@ -423,14 +432,19 @@ impl Slot for OpenOutbound {
             envelope(&mut out.head, &env);
             return Outcome::Refused;
         };
-        let opened = style::open_binding(style, blob(&input.credential), blob(&input.settings), o);
+        let opened = style::open(style, blob(&input.credential), blob(&input.settings), o);
         let outcome = match opened {
-            Ok(cell) => {
+            Ok(style::Binding::Minted(cell)) => {
                 let fresh = !cell.is_ready();
                 out.handle = o.keep(cell);
                 if fresh {
                     o.mint_soon();
                 }
+                Outcome::Ready
+            }
+            // A token exchange mints nothing at open: each request's scope is its own exchange.
+            Ok(binding) => {
+                out.handle = o.keep_binding(binding);
                 Outcome::Ready
             }
             Err(refusals) => {
@@ -453,12 +467,57 @@ impl Slot for OutboundReady {
     type In = OutboundReadyIn;
     type Out = OutboundReadyOut;
     fn call(instance: *mut c_void, input: &OutboundReadyIn, out: &mut OutboundReadyOut) -> Outcome {
-        let Some(b) = inst(instance).and_then(|o| o.binding(input.handle)) else {
+        let Some(b) = inst(instance).and_then(|o| o.bound(input.handle)) else {
             return Outcome::Refused;
         };
-        out.ready = u32::from(b.is_ready());
+        // A token exchange is ready whenever asked: each request's exchange is its own.
+        out.ready = match b {
+            style::Binding::Minted(cell) => u32::from(cell.is_ready()),
+            style::Binding::Exchange(_) => 1,
+        };
         Outcome::Ready
     }
+}
+
+/// `fields` for an `oauth-token-exchange` binding: the scope the call states
+/// (`EXT_SCOPE` in its extensions blob; none = the empty scope) selects its cell. A usable token
+/// answers READY in place; a ticket whose exchange failed answers FAILED (the attempt fails); with no
+/// usable token the call is not ready: on a ticket it waits for the exchange it arms (PENDING,
+/// bounded by its deadline, woken when the exchange lands or fails), ticket-less it answers REFUSED
+/// (the host submits it again on a ticket).
+fn exchange_fields(
+    o: &Oauth,
+    x: &style::ExchangeBinding,
+    input: &FieldsIn,
+    out: &mut FieldsOut,
+    now: u64,
+) -> Outcome {
+    let ticket = input.head.ticket;
+    if !ticket.is_none() && o.exchange_failed(ticket) {
+        return Outcome::Failed;
+    }
+    let scope = blob(&input.head.extensions)
+        .and_then(|b| busbar_contract::abi::mechanism::extensions::get(b, EXT_SCOPE))
+        .map(String::from_utf8_lossy)
+        .unwrap_or_default();
+    let (key, cell) = x.cell(&scope, o);
+    // Parked BEFORE the read arms the exchange: an exchange that lands at once still finds it.
+    if !ticket.is_none() && !cell.usable(now) {
+        o.park_exchange(key, ticket);
+    }
+    cell.read(now, |r| match r {
+        Read::Header(h) => abi::write_fields(input, out, &[("authorization", h)], FIELD_FLAGS),
+        Read::Nothing => abi::write_fields(input, out, &[], FIELD_FLAGS),
+        Read::Wait if ticket.is_none() => {
+            o.mint_soon();
+            Outcome::Refused
+        }
+        Read::Wait => {
+            o.mint_soon();
+            out.head.wake_at_ns = input.head.deadline_ns;
+            Outcome::Pending
+        }
+    })
 }
 
 /// `fields`: THE ONE PER-REQUEST CALL. Only [`MODE_OWN`]: neither style serves the caller's
@@ -477,13 +536,17 @@ impl Slot for Fields {
         if input.mode != MODE_OWN {
             return Outcome::Refused;
         }
-        let Some(m) = o.binding(input.handle) else {
+        let Some(bound) = o.bound(input.handle) else {
             return Outcome::Refused;
         };
         let now = if input.request.timestamp == 0 {
             mint::now_epoch()
         } else {
             input.request.timestamp
+        };
+        let m = match bound {
+            style::Binding::Minted(m) => m,
+            style::Binding::Exchange(x) => return exchange_fields(o, &x, input, out, now),
         };
         m.read(now, |r| match r {
             Read::Header(h) => abi::write_fields(input, out, &[("authorization", h)], FIELD_FLAGS),

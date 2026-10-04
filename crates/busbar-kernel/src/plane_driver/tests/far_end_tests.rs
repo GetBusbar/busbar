@@ -358,6 +358,8 @@ struct Bearer {
     facts: Mutex<Vec<Facts>>,
     /// The point each call was made at and the body it lent.
     points: Mutex<Vec<(AuthPoint, Option<Vec<u8>>)>>,
+    /// The extensions blob each call lent.
+    extensions: Mutex<Vec<Vec<u8>>>,
 }
 struct Done(Fields);
 /// A submitted call that never answers.
@@ -406,6 +408,7 @@ impl OutboundAuth for Bearer {
             .unwrap()
             .push((r.method.clone(), r.authority.clone(), r.path.clone()));
         self.points.lock().unwrap().push((r.point, r.body.clone()));
+        self.extensions.lock().unwrap().push(r.extensions.clone());
         Some(Fields::Ready(vec![AuthField {
             name: b"authorization".to_vec(),
             value: b"Bearer sk-test".to_vec().into(),
@@ -470,6 +473,7 @@ fn rig(
                     provider: format!("p{k}"),
                     keep: super::ResponseKeep::default(),
                     rides: Vec::new(),
+                    anchors: Default::default(),
                     auth: Some(AuthBinding {
                         auth: auth.clone() as Arc<dyn OutboundAuth>,
                         handle: 1,
@@ -1113,6 +1117,48 @@ async fn trailers_are_handed_to_the_plane() {
     assert!(pieces.last().unwrap().last);
 }
 
+/// THE PER-CALL SCOPE (ARCHITECT round 5 Q-L3B-EXCHANGE (B)): a plane's attempt that states its
+/// scope in the host's own request field has that field taken out of the request before anything
+/// is encoded (the far end never hears it) and its value lent to the member's ONE auth call in the
+/// call's extensions blob; an attempt that states none lends none.
+#[tokio::test]
+async fn a_stated_scope_reaches_the_auth_call_and_never_the_wire() {
+    use busbar_contract::abi::auth::{EXT_SCOPE, SCOPE_REQUEST_FIELD};
+    use busbar_contract::abi::mechanism::extensions;
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    for scope in [Some("fs_read_file fs_write_file"), None] {
+        let far = r.egress.unit(route());
+        let _ = far.member(&t, 1).await;
+        let mut req = request();
+        if let Some(scope) = scope {
+            req.fields.push((
+                SCOPE_REQUEST_FIELD.as_bytes().to_vec(),
+                scope.as_bytes().to_vec(),
+            ));
+        }
+        assert!(far.send(&t, req).await);
+        let _ = drain(&far, &t).await;
+    }
+    let lent = r.auth.extensions.lock().unwrap().clone();
+    assert_eq!(lent.len(), 2);
+    assert_eq!(
+        extensions::get(&lent[0], EXT_SCOPE),
+        Some(&b"fs_read_file fs_write_file"[..])
+    );
+    assert!(lent[1].is_empty(), "no scope stated, no extensions lent");
+    for (_, head, _, _) in r.table.opened.lock().unwrap().iter() {
+        assert!(
+            head.iter().all(|(n, _)| n != SCOPE_REQUEST_FIELD),
+            "the host's field never reaches the wire: {head:?}"
+        );
+    }
+}
+
 /// PASSTHROUGH: a member configured `upstream_credentials: passthrough` has its one auth call carry
 /// the caller's own credential; a member that is not is never handed it.
 #[tokio::test]
@@ -1146,6 +1192,47 @@ async fn passthrough_hands_the_callers_credential_only_to_its_member() {
     );
     // The pick says so, and the plane is told: only the passthrough member relays.
     assert_eq!(relays, vec![false, true]);
+}
+
+/// PASSTHROUGH THROUGH A POOL: a member its pool reaches with the caller's own credential (the
+/// pool's `upstream_credentials: passthrough`) has its one auth call lent the caller's credential,
+/// though its binding is its provider's own; and a caller who presented none lends an empty one, so
+/// nothing is presented (never the operator's key), as 1.5.5's `present_caller` did.
+#[tokio::test]
+async fn a_passthrough_pool_member_is_lent_the_callers_credential_or_an_empty_one() {
+    let mut r = rig(
+        &[
+            ("a.test", Script::Answer(200, None, vec![b"ok"])),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    for member in &mut r.egress.pools.get_mut(POOL).unwrap().members {
+        member.passthrough = true;
+    }
+    let t = token();
+    for credential in [Some(b"caller-key".to_vec()), None] {
+        let far = r.egress.unit(UnitRoute {
+            caller_credential: credential.clone().map(Into::into),
+            ..route()
+        });
+        let Pick::Member {
+            name, passthrough, ..
+        } = far.member(&t, 1).await
+        else {
+            panic!("a member");
+        };
+        assert!(passthrough, "{name}: the plane is told the member relays");
+        assert!(far.send(&t, request()).await);
+        let _ = drain(&far, &t).await;
+    }
+    let lent = r.auth.callers.lock().unwrap().clone();
+    let presented: Vec<Option<Vec<u8>>> = lent.into_iter().collect();
+    assert_eq!(
+        presented,
+        vec![Some(b"caller-key".to_vec()), Some(Vec::new())]
+    );
 }
 
 /// AUTH POINTS: a member whose style signs the body (`HeadBody`) has its one auth call made at

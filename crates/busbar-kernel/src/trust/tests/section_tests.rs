@@ -148,6 +148,7 @@ fn a_good_entry_yields_its_pin_and_cadence() {
         Some(DeclaredPin {
             mechanism: "sealed_key".into(),
             root: true,
+            peer_key: false,
             key: Some("K".into()),
             fingerprint: None,
         })

@@ -29,6 +29,9 @@ pub struct UnitRecord {
 #[derive(Debug, Default)]
 pub struct UnitRecords {
     inner: Mutex<HashMap<u64, Arc<UnitRecord>>>,
+    /// The caller credential each unit lends its passthrough member (the caller-credential
+    /// lending), held while the unit runs and dropped (zeroised) at its end.
+    lent: Mutex<HashMap<u64, busbar_contract::redacted::Redacted<Vec<u8>>>>,
 }
 
 impl UnitRecords {
@@ -41,14 +44,38 @@ impl UnitRecords {
         self.lock().insert(unit, Arc::new(record));
     }
 
-    /// The unit `unit` ended.
+    /// The unit `unit` ended: its record goes, and the credential it lent.
     pub fn ended(&self, unit: u64) {
         self.lock().remove(&unit);
+        self.lent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&unit);
+    }
+
+    /// The caller of `unit` presented `credential`: lent, while the unit runs, to a passthrough
+    /// member's auth call made inside it (a request the plane makes on its own need included,
+    /// ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE).
+    pub fn lend(&self, unit: u64, credential: busbar_contract::redacted::Redacted<Vec<u8>>) {
+        self.lent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(unit, credential);
     }
 
     /// The record of `unit`, while it is in flight.
     #[must_use]
     pub fn get(&self, unit: u64) -> Option<Arc<UnitRecord>> {
         self.lock().get(&unit).cloned()
+    }
+}
+
+impl busbar_contract::conn::LendCredential for UnitRecords {
+    fn lent(&self, unit: u64) -> Option<busbar_contract::redacted::Redacted<Vec<u8>>> {
+        self.lent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&unit)
+            .cloned()
     }
 }

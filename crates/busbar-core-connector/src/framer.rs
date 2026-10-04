@@ -534,6 +534,11 @@ pub struct Established {
     pub agreed_protocol: Option<Vec<u8>>,
     /// The claim the connection resolved to.
     pub claim: Option<String>,
+    /// The far end's key pin, read off its verified leaf certificate on a secured dial; `None` =
+    /// no certificate (the transport pin, ARCHITECT 2026-10-03).
+    pub peer_key_pin: Option<String>,
+    /// Whether the handshake presented busbar's client identity.
+    pub client_identity: bool,
 }
 
 impl Established {

@@ -29,6 +29,9 @@ pub struct DeclaredPin {
     pub mechanism: String,
     /// Whether that mechanism is an authenticity root.
     pub root: bool,
+    /// Whether that mechanism's material is the far end's key (a pin of its certificate's
+    /// SubjectPublicKeyInfo), which the host seals into the registration's trust anchors.
+    pub peer_key: bool,
     /// The operator's out-of-band material, verbatim; `None` when absent or blank.
     pub key: Option<String>,
     /// The approved fingerprint, where the declaration allows one and the operator wrote it.
@@ -235,6 +238,7 @@ fn pin(
     Ok(Some(DeclaredPin {
         mechanism,
         root: declared.root,
+        peer_key: declared.peer_key,
         key: key.filter(|m| !m.trim().is_empty()),
         fingerprint,
     }))

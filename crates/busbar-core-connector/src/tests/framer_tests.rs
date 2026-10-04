@@ -126,6 +126,25 @@ fn locate_and_encode_answer() {
     assert_eq!(encode(&door, &[], b"body").unwrap(), b"body");
 }
 
+/// RED: a framer that offers protocols for a secured target is located: the host gives its offer a
+/// buffer (a framer answering short for want of one never located an https target).
+#[test]
+fn a_framer_offering_protocols_for_a_secured_target_is_located() {
+    let door = TestDoor::new(
+        "sec",
+        &["sec"],
+        &[],
+        Knobs {
+            secure_name: Some("localhost"),
+            offer: Some(b"\x02h2\x08http/1.1"),
+            ..Knobs::default()
+        },
+    );
+    let l = locate(&door, "127.0.0.1:443").expect("located");
+    assert_eq!(l.authority, "127.0.0.1:443");
+    assert!(l.secure);
+}
+
 /// RED: an ACCEPTED framing's head slots come out typed (method, target, an absent authority),
 /// never as field lines; the same request slots on a DIALLED framing are the other side's, and
 /// refused.

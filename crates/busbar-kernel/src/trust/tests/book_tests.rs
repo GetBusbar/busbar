@@ -14,6 +14,7 @@ fn entry(fingerprint: Option<&str>, ttl_ms: u64, backoff_ms: u64) -> TrustEntry 
         pin: fingerprint.map(|f| DeclaredPin {
             mechanism: "fingerprint".into(),
             root: false,
+            peer_key: false,
             key: None,
             fingerprint: Some(f.into()),
         }),

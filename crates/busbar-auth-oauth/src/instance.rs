@@ -16,6 +16,7 @@ use busbar_contract::abi::sdk::conn::Host;
 use crate::abi::{abi, Waker};
 use crate::mint::host_wire::HostWire;
 use crate::mint::{Minted, Minter, Report, Wire, MIN_SLEEP_SECS};
+use crate::style::Binding;
 
 /// The index of each diagnostic id in the Statement (`crate::DIAG_IDS`).
 pub(crate) mod diag {
@@ -93,9 +94,15 @@ pub(crate) struct Oauth {
     clock: Mutex<Option<(u64, Instant)>>,
     generation: AtomicU64,
     next_handle: AtomicU64,
-    handles: RwLock<HashMap<u64, (u64, Arc<Minted>)>>,
+    handles: RwLock<HashMap<u64, (u64, Binding)>>,
     cache: Mutex<HashMap<[u8; 32], Arc<Minted>>>,
     waiters: Mutex<Vec<Ticket>>,
+    /// The tickets waiting on each on-demand cell's exchange (a token-exchange scope), by its cache
+    /// key: woken when it lands, or failed when it fails.
+    exchange_waiters: Mutex<HashMap<[u8; 32], Vec<Ticket>>>,
+    /// The tickets whose exchange failed: their resumed call answers FAILED (the attempt fails, as
+    /// the previous release failed the call whose exchange the authorization server refused).
+    exchange_failed: Mutex<Vec<Ticket>>,
     /// `open_outbound`'s envelope and error.
     pub(crate) open_env: Mutex<EnvStore>,
     /// `tick`'s envelope.
@@ -140,6 +147,8 @@ impl Oauth {
             handles: RwLock::new(HashMap::new()),
             cache: Mutex::new(HashMap::new()),
             waiters: Mutex::new(Vec::new()),
+            exchange_waiters: Mutex::new(HashMap::new()),
+            exchange_failed: Mutex::new(Vec::new()),
             open_env: Mutex::default(),
             tick_env: Mutex::default(),
             drive_env: Mutex::default(),
@@ -153,22 +162,44 @@ impl Oauth {
 
     /// Keep `cell` under a new handle of the current generation.
     pub(crate) fn keep(&self, cell: Arc<Minted>) -> u64 {
+        self.keep_binding(Binding::Minted(cell))
+    }
+
+    /// Keep `binding` under a new handle of the current generation.
+    pub(crate) fn keep_binding(&self, binding: Binding) -> u64 {
         let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
         let generation = self.generation.load(Ordering::Acquire);
         self.handles
             .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(handle, (generation, cell));
+            .insert(handle, (generation, binding));
         handle
     }
 
-    /// The token cell behind `handle`.
-    pub(crate) fn binding(&self, handle: u64) -> Option<Arc<Minted>> {
+    /// The binding behind `handle`.
+    pub(crate) fn bound(&self, handle: u64) -> Option<Binding> {
         self.handles
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&handle)
             .map(|(_, b)| b.clone())
+    }
+
+    /// Park `ticket` until the exchange of the on-demand cell `key` lands (or fails).
+    pub(crate) fn park_exchange(&self, key: [u8; 32], ticket: Ticket) {
+        let mut w = lock(&self.exchange_waiters);
+        let waiting = w.entry(key).or_default();
+        if !waiting.contains(&ticket) {
+            waiting.push(ticket);
+        }
+    }
+
+    /// Whether `ticket`'s exchange failed (forgotten once read: the call it serves answers FAILED).
+    pub(crate) fn exchange_failed(&self, ticket: Ticket) -> bool {
+        let mut failed = lock(&self.exchange_failed);
+        let before = failed.len();
+        failed.retain(|t| *t != ticket);
+        failed.len() != before
     }
 
     /// `retire`: drop the handles opened at `generation`, then every token cell no handle holds.
@@ -191,6 +222,10 @@ impl Oauth {
     /// `cancel`: forget `ticket`.
     pub(crate) fn unpark(&self, ticket: Ticket) {
         lock(&self.waiters).retain(|t| *t != ticket);
+        for waiting in lock(&self.exchange_waiters).values_mut() {
+            waiting.retain(|t| *t != ticket);
+        }
+        lock(&self.exchange_failed).retain(|t| *t != ticket);
     }
 
     /// A mint is wanted now (a binding opened; a request waits on a token nothing has minted):
@@ -239,12 +274,19 @@ impl Oauth {
             (None, Some(h)) => Some(h),
             (None, None) => None,
         };
-        let cells: Vec<Arc<Minted>> = lock(&self.cache).values().cloned().collect();
+        let cells: Vec<([u8; 32], Arc<Minted>)> = lock(&self.cache)
+            .iter()
+            .map(|(k, c)| (*k, Arc::clone(c)))
+            .collect();
         let mut next = u64::MAX;
         let mut minted = false;
-        for cell in cells {
+        for (key, cell) in cells {
             let (due, report) = cell.tick(now_ns, wire);
             next = next.min(due);
+            if cell.on_demand() {
+                self.settle_exchange(key, &cell, report, env);
+                continue;
+            }
             match report {
                 Some(Report::Minted) => minted = true,
                 Some(Report::TokenInvalidBytes) => {
@@ -281,6 +323,60 @@ impl Oauth {
             }
         }
         (next != u64::MAX).then_some(next)
+    }
+
+    /// AN ON-DEMAND CELL'S TICK, settled: a landed exchange wakes the tickets waiting on it; a
+    /// failed one fails them (each is woken, and its resumed call answers FAILED), naming why in
+    /// the instance's log; a cell no request waits on, with nothing in flight and no token it would
+    /// present, is dropped from the cache (its scope's next request makes it again).
+    fn settle_exchange(
+        &self,
+        key: [u8; 32],
+        cell: &Minted,
+        report: Option<Report>,
+        env: &mut EnvStore,
+    ) {
+        let failure = match report {
+            None => None,
+            Some(Report::Minted | Report::TokenInvalidBytes) => Some(false),
+            Some(Report::EmptyToken) => {
+                env.push(
+                    diag::OAUTH_EMPTY_TOKEN,
+                    WARN,
+                    "the RFC 8693 exchange returned 200 with no usable `access_token`; the call is \
+                     refused rather than made unauthenticated"
+                        .to_string(),
+                );
+                Some(true)
+            }
+            Some(Report::MintFailed(e)) => {
+                env.push(
+                    diag::OAUTH_MINT_FAILED,
+                    WARN,
+                    format!("the RFC 8693 exchange failed; the call is refused error={e}"),
+                );
+                Some(true)
+            }
+        };
+        if let Some(failed) = failure {
+            let woken = lock(&self.exchange_waiters)
+                .remove(&key)
+                .unwrap_or_default();
+            if failed {
+                lock(&self.exchange_failed).extend(woken.iter().copied());
+            }
+            if let Some(w) = &self.waker {
+                for t in woken {
+                    w.wake(t);
+                }
+            }
+        }
+        let waited = lock(&self.exchange_waiters)
+            .get(&key)
+            .is_some_and(|w| !w.is_empty());
+        if !waited && cell.idle() && !cell.usable(crate::mint::now_epoch()) {
+            lock(&self.cache).remove(&key);
+        }
     }
 }
 
