@@ -244,11 +244,6 @@ fn the_five_ingress_doors_mount_audience_checked_across_the_http_and_ws_seams() 
                 RouteMethod::Post,
                 RouteAuth::Key
             ),
-            (
-                "/.well-known/oauth-protected-resource/v1/realtime".to_string(),
-                RouteMethod::Get,
-                RouteAuth::None
-            ),
         ],
         "the two one-shot HTTP doors mount, each RouteAuth::Key behind the plane's one audience"
     );
@@ -763,49 +758,9 @@ async fn a_failed_provider_dial_refunds_its_session_fee_exactly_once() {
         Some(fee_meter(&host)),
         1,
         None,
+        false,
     )
     .expect("the session opens");
     super::settle_undialed(proxy, 2);
     assert_each_failed_open_refunded_once(&host, 1, "a failed provider dial");
-/// THE CHALLENGE'S POINTER RESOLVES. A refused caller is sent to the admission's resource-metadata
-/// URL; the plane serves that document there, without a credential, naming the audience a token
-/// must carry.
-#[cfg(feature = "test-support")]
-#[tokio::test]
-async fn the_resource_metadata_the_challenge_points_at_is_served() {
-    let slot = slot_from_public_url(Some(PUBLIC_URL)).expect("a public_url ⇒ a dispatch slot");
-    let admission = crate::mount::voice_admission(slot.as_ref()).expect("a slot admits");
-    let path = admission
-        .resource_metadata
-        .strip_prefix(PUBLIC_URL)
-        .expect("the pointer is under the public URL")
-        .to_string();
-    let route = voice_routes(slot.as_ref())
-        .into_iter()
-        .find(|r| r.path == path && r.method == RouteMethod::Get)
-        .expect("the pointer's path is a route the plane serves");
-    assert_eq!(route.auth, RouteAuth::None, "readable without a credential");
-    let host = crate::testkit::fixture_host::FixtureHost::new().into_host();
-    let ctx = super::PlaneReqCtx {
-        path: path.clone(),
-        uri: axum::http::Uri::default(),
-        method: RouteMethod::Get,
-        headers: axum::http::HeaderMap::new(),
-        body: bytes::Bytes::new(),
-        path_params: Vec::new(),
-        caller_principal: None,
-        gov: None,
-        principal: None,
-        host,
-        engine: Arc::new(()),
-        slot: Arc::clone(&slot),
-    };
-    let resp = (route.handler)(ctx).await;
-    assert_eq!(resp.status(), axum::http::StatusCode::OK);
-    let body = http_body_util::BodyExt::collect(resp.into_body())
-        .await
-        .expect("body")
-        .to_bytes();
-    let doc: serde_json::Value = serde_json::from_slice(&body).expect("json");
-    assert_eq!(doc["resource"], admission.audience.as_str());
 }

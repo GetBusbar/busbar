@@ -44,7 +44,9 @@ use std::ptr;
 use std::sync::Mutex;
 
 use crate::piece::{self, Owed};
-use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND};
+use busbar_contract::abi::host::conn::connector::{
+    Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, KEEP_NAMED,
+};
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::door::{
     KindTailHead, Section, Statement, SECTION_DECLARING, SECTION_REQUIRED,
@@ -188,6 +190,10 @@ const fn need(direction: u32, transport: &'static str, auth: AbiStr, target: Abi
         keep_response_headers: ptr::null(),
         keep_response_headers_len: 0,
         timeout_ms: 0,
+        keep_mode: KEEP_NAMED,
+        _reserved: 0,
+        deny_response_headers: ptr::null(),
+        deny_response_headers_len: 0,
     }
 }
 

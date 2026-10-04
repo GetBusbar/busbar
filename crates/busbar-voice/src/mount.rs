@@ -49,7 +49,7 @@ use busbar_kernel::egress::engine::{send_bounded, EngineClient};
 use busbar_kernel::ingress::duplex_ws::{
     accept_gauntlet, install_ws_arrivals, WsAcceptFuture, WsArrival, WsArrivalSpec,
 };
-use busbar_kernel::ingress::{byte_duplex::serve_messages, protocol};
+use busbar_kernel::ingress::byte_duplex::serve_messages;
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use busbar_kernel::plane::observe::Counted;
 use busbar_kernel::plane::registry::{BuildCtx, PlaneBootCtx};
@@ -608,34 +608,7 @@ pub fn voice_routes(slot: &dyn Any) -> Vec<PlaneRouteSpec> {
             auth: RouteAuth::Key,
             handler: Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture { Box::pin(sdp_route(ctx)) }),
         },
-        // THE RFC 9728 DOCUMENT the refused caller's challenge points at: the one open route, read
-        // without a credential by the callers who do not have one yet.
-        PlaneRouteSpec {
-            path: METADATA_PATH.to_string(),
-            method: RouteMethod::Get,
-            auth: RouteAuth::None,
-            handler: Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
-                Box::pin(protected_resource_route(ctx))
-            }),
-        },
     ]
-}
-
-/// The protected-resource metadata document: the audience a token at this plane's doors must carry,
-/// as one reading of the public URL. No authorization server is named: the plane is configured with
-/// none.
-async fn protected_resource_route(ctx: PlaneReqCtx) -> axum::response::Response {
-    let Some(mount) = ctx.slot.downcast_ref::<VoiceMount>() else {
-        return refusal(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "the metadata route reached without its dispatch slot",
-        );
-    };
-    protocol::metadata(&protocol::Metadata {
-        resource: std::borrow::Cow::Borrowed(mount.audience.as_str()),
-        authorization_servers: &[],
-        scopes_supported: &[],
-    })
 }
 
 /// THE PLANE'S WS-ACCEPT ENTRY HOOK ([`crate::linked`]): installs [`voice_ws_arrivals`] into the
