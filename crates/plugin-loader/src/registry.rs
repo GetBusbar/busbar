@@ -29,56 +29,26 @@ use busbar_contract::abi::cold::ColdEntry;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// The OLDEST store payload schema this binary still speaks: v2, the 1.5.x credentials-generalized
-/// wire. v1 is genuinely unspeakable (its AWS-specific credential variants no longer exist), so the
-/// floor cannot go lower; see [`supported_abi`] for why it must not go higher.
-pub const STORE_ABI_FLOOR: u32 = 2;
-
-/// The per-kind PAYLOAD schema versions this binary supports — a CONTIGUOUS `[floor, max]` inclusive
-/// range of manifest `abi_version` values the engine can speak for `kind` (empty = unknown/unsupported
-/// kind, rejected at scan). This is the PAYLOAD axis (the manifest `abi_version`), NOT the transport
-/// axis: every kind exports the SAME six kind-neutral C symbols at `busbar_abi() == TRANSPORT_VERSION`;
-/// `kind` only selects which payload schema (and engine seam) the cdylib speaks. The range is its
-/// endpoints; contiguity is the contract (every value between is speakable), so an additive schema
-/// bump stays in range and an old plugin of the same kind keeps loading.
+/// The per-kind PAYLOAD schema versions this binary supports: the manifest `abi_version` values the
+/// engine can speak for `kind` (empty = unknown/unsupported kind, rejected at scan). This is the
+/// PAYLOAD axis (the manifest `abi_version`), NOT the transport axis.
+///
+/// ONE VERSION PER KIND (THE DESIGN §11.8, "No legacy loading"; ruling C21/ABI-o1): the loader
+/// accepts only the current version of each kind. A published 1.5.5 JSON-contract plugin states
+/// its kind's 1.5.5 version (store 2, auth 2, hook 1, export 2) and is refused at boot, naming the
+/// rebuild against the 1.6.0 SDK; a plugin built for a newer version than the host is refused too.
 pub fn supported_abi(kind: &str) -> &'static [u32] {
     match kind {
-        // A `kind: store` plugin speaks payload schema v2 (the 1.5.x wire every published first-party
-        // store — sqlite/postgres/mysql/valkey — was built against) up to the current `ABI_VERSION`.
-        // THE FLOOR MUST STAY 2: every request variant the 1.5.x engine sent still exists unchanged,
-        // and the only additions since are the eight neutral plane-record verbs, which `DynStore`
-        // already treats as inert when the plugin answers `STATUS_UNSUPPORTED` (exactly what the
-        // 1.5.x SDK returns for a variant it cannot decode). v3 and v4 changed the source contract a
-        // plugin is COMPILED against, not a byte on the wire, so a v2 artifact keeps behaving exactly
-        // as it did under 1.5.5. Raising this floor refuses every published store plugin at load.
-        "store" => &[STORE_ABI_FLOOR, busbar_contract::abi::cold::ABI_VERSION],
-        // A `kind: secret` plugin resolves a secret reference's settings to bytes.
-        "secret" => &[
-            busbar_contract::abi::cold::SECRET_ABI_VERSION,
-            busbar_contract::abi::cold::SECRET_ABI_VERSION,
-        ],
-        // A `kind: auth` plugin is a first-class identity provider (the engine's auth chain consumes
-        // `Box<dyn AuthModule>` via `open_auth`). Payload schema v1 (verify-only) OR v2 (adds the
-        // browser-login primitives). The FLOOR MUST STAY 1: the v2 wire additions are
-        // externally-tagged additive variants, so a v1 plugin that only speaks `Authenticate`/
-        // `Identity` still loads and works; v3 wraps the same answers in the observability
-        // envelope (#85), which the decoder reads beside the bare shape. `[1, AUTH_ABI_VERSION]` =
-        // `[1, 3]`.
-        "auth" => &[1, busbar_contract::abi::cold::AUTH_ABI_VERSION],
-        // A `kind: hook` plugin states its Statement and is opened through the hook axis
-        // (`hook_door::HookRows`) on the hook kind's memory ABI; one whose manifest states none is
-        // refused there. The payload schema range is the manifest's (C21 narrows it).
-        "hook" => &[1, busbar_contract::abi::hook::ABI_VERSION],
-        // A `kind: export` plugin is a telemetry sink the engine's observability seam feeds. 1.6.0
-        // (THE DESIGN §11.8, ABI-b6): the export kind speaks its MEMORY ABI, version
-        // `abi::export::ABI_VERSION` (3), and nothing older: a 1.5.5 JSON-contract sink (2) is
-        // refused at scan naming the rebuild. M6-COLD-DELETE: the not-yet-ported cold sinks state
-        // the same number (the cold `EXPORT_ABI_VERSION` is 3 too) and are told apart at open by
-        // their missing door (`export_axis`).
-        "export" => &[
-            busbar_contract::abi::export::ABI_VERSION,
-            busbar_contract::abi::export::ABI_VERSION,
-        ],
+        // ONE VERSION PER KIND (C21/ABI-o1, THE DESIGN §11.8): the 1.5.5 floors are deleted — each
+        // JSON-contract kind admits EXACTLY its current version (store 4, auth 3, secret 1), and the
+        // hook/export kinds their current memory-ABI version (hook 2, export 3). A published 1.5.5
+        // plugin (store 2, auth 2, hook 1, export 2) or a newer-than-host one is a hard refusal at
+        // boot naming the rebuild against the 1.6.0 SDK.
+        "store" => &[busbar_contract::abi::cold::ABI_VERSION],
+        "secret" => &[busbar_contract::abi::cold::SECRET_ABI_VERSION],
+        "auth" => &[busbar_contract::abi::cold::AUTH_ABI_VERSION],
+        "hook" => &[busbar_contract::abi::hook::ABI_VERSION],
+        "export" => &[busbar_contract::abi::export::ABI_VERSION],
         // A `kind: plane` plugin is a protocol plane delivered as a `cdylib` and driven over the
         // HOT-tier `#[repr(C)]` `PlaneDecl` vtable (`busbar_contract::abi::hot`) — NOT the six-symbol JSON
         // `call` wire the five cold kinds share. Its per-kind PAYLOAD axis is the AIRLOCK MINOR
