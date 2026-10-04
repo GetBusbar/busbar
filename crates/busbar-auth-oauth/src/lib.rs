@@ -28,11 +28,14 @@
 //! (AUTH-SPLIT): each module names the file it came from. The inbound operations (`verify`, the
 //! login pair) are not served and answer REFUSED (the tail declares only [`CAP_OUTBOUND`]).
 //!
-//! SEAM (KERNEL<>PLUGINS steps 20-21): `HostTables::conns` is now the connector table
-//! (`ESTABLISH`/`READ`/`WRITE`), and how a plugin makes ONE framed request/response exchange over a
-//! need through it (method, target, head, form body in; status and body pieces out) is not yet
-//! stated. Until it is, the token exchange runs over [`mint::Wire`], proven against a scripted
-//! need; no connector-backed `Wire` is built here.
+//! THE NEEDS ([`NEEDS`]; THE DESIGN §5, egress class `open-web`: "auth mint endpoints (`token_url`,
+//! `token_uri`)"): one outbound need per token endpoint, over the http transport, its target the
+//! binding's own setting (`target_from`), so the host declares it pinned to that endpoint when it
+//! opens the instance with the binding's settings. The token exchange is ONE framed request and its
+//! reply over that need, through the host's connector table (`mint::host_wire`), on the instance's
+//! driver ticket: started on `tick`, or at once when a binding opens or a request waits on a token
+//! nothing has minted yet (the driver ticket is woken and `drive` starts it), and carried on by the
+//! `drive`s its pending reads wake.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
@@ -52,7 +55,12 @@ use busbar_contract::abi::auth::{
     OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StyleDecl, VerifyIn,
     CANCEL_CONTINUES, CAP_OUTBOUND, LOGIN_KIND_NONE, MODE_OWN, POINT_HEAD,
 };
-use busbar_contract::abi::mechanism::call::{AbiStr, Envelope, InHead, OutHead, Outcome};
+use busbar_contract::abi::host::conn::connector::{
+    Need, DIRECTION_OUTBOUND, EGRESS_OPEN_WEB, KEEP_NAMED,
+};
+use busbar_contract::abi::mechanism::call::{
+    AbiStr, Blob, Envelope, InHead, OutHead, Outcome, BLOB_ABSENT,
+};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut,
@@ -104,6 +112,44 @@ const TAIL: &AuthTail = &AuthTail {
     credential_kinds_len: 0,
 };
 
+const NO_STR: AbiStr = AbiStr {
+    ptr: ptr::null(),
+    len: 0,
+};
+
+/// One token endpoint's need: outbound, `open-web`, over the http transport, its target the
+/// binding's setting `target_from` names. It reads no response field beyond the reply's code.
+const fn token_need(target_from: &'static str) -> Need {
+    Need {
+        direction: DIRECTION_OUTBOUND,
+        egress_class: EGRESS_OPEN_WEB,
+        transport: abi_str("http"),
+        auth: NO_STR,
+        target_from: abi_str(target_from),
+        trust_from: NO_STR,
+        details: Blob {
+            ptr: ptr::null(),
+            len: 0,
+            fmt: BLOB_ABSENT,
+            flags: 0,
+        },
+        keep_response_headers: ptr::null(),
+        keep_response_headers_len: 0,
+        timeout_ms: 0,
+        keep_mode: KEEP_NAMED,
+        _reserved: 0,
+        deny_response_headers: ptr::null(),
+        deny_response_headers_len: 0,
+    }
+}
+
+/// THE PLUGIN'S OWN NEEDS, in [`mint::need`] order: `oauth-client-credentials` POSTs to the
+/// binding's `token_url`, `jwt-bearer` to its `token_uri`.
+pub const NEEDS: &[Need] = &[
+    token_need("settings.token_url"),
+    token_need("settings.token_uri"),
+];
+
 /// The diagnostic ids, in [`instance::diag`] order: 1.5.5's catalog codes where the line had one.
 const DIAG_IDS: [AbiStr; 3] = [
     abi_str("BUSBAR-4014"),
@@ -117,6 +163,8 @@ busbar_contract::plugin_door! {
         kind_tail: ptr::from_ref(TAIL).cast::<KindTailHead>(),
         diag_ids: DIAG_IDS.as_ptr(),
         diag_ids_len: DIAG_IDS.len(),
+        needs: NEEDS.as_ptr(),
+        needs_len: NEEDS.len(),
         ..statement("busbar-auth-oauth", env!("CARGO_PKG_VERSION"), 1024)
     },
     lifecycle: {
@@ -196,7 +244,11 @@ impl Slot for Open {
             out.head.error = abi_str(SETTINGS_NOT_OBJECT);
             return Outcome::Refused;
         }
-        let o = Oauth::new(input.generation, abi::waker(input.host));
+        let o = Oauth::new(
+            input.generation,
+            abi::waker(input.host),
+            abi::host(input.host),
+        );
         out.instance = abi::into_instance(Box::new(o));
         Outcome::Ready
     }
@@ -249,19 +301,39 @@ impl Slot for Tick {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         env.clear();
-        out.next_tick_ns = o.tick(input.now_ns, &mut env);
+        out.next_tick_ns = o.tick(input.now_ns, input.head.ticket, &mut env);
         envelope(&mut out.head, &env);
         Outcome::Ready
     }
 }
 
-/// `drive`: no driver ticket is held.
+/// `drive`: the driver ticket was woken (a read of the token exchange that pended, or a mint wanted
+/// at once): the exchange goes on. It answers PENDING with `wake_at_ns` at the instant a cell is
+/// next due, so a token minted between ticks is refreshed ahead of its expiry on the host's timer
+/// (THE DESIGN §11: every call is Ready or Pending(wake); no plugin timer, no plugin thread).
 pub struct Drive;
 impl Slot for Drive {
     type In = DriveIn;
     type Out = OutHead;
-    fn call(_: *mut c_void, _: &DriveIn, _: &mut OutHead) -> Outcome {
-        Outcome::Ready
+    fn call(instance: *mut c_void, input: &DriveIn, out: &mut OutHead) -> Outcome {
+        let Some(o) = inst(instance) else {
+            return Outcome::Fault;
+        };
+        let mut env = o
+            .drive_env
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        env.clear();
+        let next = o.drive(input.head.ticket, &mut env);
+        envelope(out, &env);
+        match next {
+            // A ticket-less PENDING is FAULT: only a drive on the driver ticket sets a timer.
+            Some(at) if !input.head.ticket.is_none() => {
+                out.wake_at_ns = at;
+                Outcome::Pending
+            }
+            _ => Outcome::Ready,
+        }
     }
 }
 
@@ -354,7 +426,11 @@ impl Slot for OpenOutbound {
         let opened = style::open_binding(style, blob(&input.credential), blob(&input.settings), o);
         let outcome = match opened {
             Ok(cell) => {
+                let fresh = !cell.is_ready();
                 out.handle = o.keep(cell);
+                if fresh {
+                    o.mint_soon();
+                }
                 Outcome::Ready
             }
             Err(refusals) => {
@@ -386,7 +462,10 @@ impl Slot for OutboundReady {
 }
 
 /// `fields`: THE ONE PER-REQUEST CALL. Only [`MODE_OWN`]: neither style serves the caller's
-/// credential (ARCHITECT ruling 2026-09-29).
+/// credential (ARCHITECT ruling 2026-09-29). The cached bearer answers READY in place. With no token
+/// to present (nothing minted yet, or expired with its refresh failed) the call is not ready: on a
+/// ticket it answers PENDING and the ticket is woken when a mint lands; ticket-less it answers
+/// REFUSED, never PENDING (abi/auth: the host submits the same call on a ticket).
 pub struct Fields;
 impl Slot for Fields {
     type In = FieldsIn;
@@ -409,11 +488,10 @@ impl Slot for Fields {
         m.read(now, |r| match r {
             Read::Header(h) => abi::write_fields(input, out, &[("authorization", h)], FIELD_FLAGS),
             Read::Nothing => abi::write_fields(input, out, &[], FIELD_FLAGS),
-            Read::Wait if input.head.ticket.is_none() => {
-                abi::write_fields(input, out, &[], FIELD_FLAGS)
-            }
+            Read::Wait if input.head.ticket.is_none() => Outcome::Refused,
             Read::Wait => {
                 o.park(input.head.ticket);
+                o.mint_soon();
                 out.head.wake_at_ns = input.head.deadline_ns;
                 Outcome::Pending
             }

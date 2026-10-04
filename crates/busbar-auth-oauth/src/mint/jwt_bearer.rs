@@ -122,7 +122,11 @@ impl Signer {
             ("assertion", assertion.as_str()),
         ])
         .map_err(|e| format!("token request form could not be encoded: {e}"))?;
-        Ok(TokenRequest::form(self.token_uri.clone(), form))
+        Ok(TokenRequest::form(
+            super::need::TOKEN_URI,
+            self.token_uri.clone(),
+            form,
+        ))
     }
 }
 

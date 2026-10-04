@@ -311,6 +311,7 @@ dependencies = [
  "busbar-a2a",
  "busbar-auth-admin-tokens-plugin",
  "busbar-auth-header",
+ "busbar-auth-oauth",
  "busbar-auth-oidc",
  "busbar-auth-oidc-plugin",
  "busbar-contract",
@@ -459,6 +460,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "sha2",
+ "tokio",
 ]
 
 [[package]]

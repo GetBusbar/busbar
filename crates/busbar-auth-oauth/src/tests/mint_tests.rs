@@ -198,7 +198,11 @@ fn the_first_tick_mints_and_the_request_path_presents_it() {
     w.ok(r#"{"access_token":"tok-1","expires_in":3600}"#);
     let m = Minted::new(client_credentials(), DEFAULT_MAX_RESPONSE_BYTES);
     assert!(!m.is_ready());
-    assert_eq!(m.read(now_epoch(), |r| format!("{r:?}")), "Nothing");
+    assert_eq!(
+        m.read(now_epoch(), |r| format!("{r:?}")),
+        "Wait",
+        "nothing minted yet: not ready"
+    );
     let (due, report) = m.tick(1_000, Some(&w));
     assert_eq!(report, Some(Report::Minted));
     assert!(m.is_ready());

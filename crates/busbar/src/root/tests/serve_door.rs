@@ -221,7 +221,12 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         provider,
     )]));
     let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
-    let auths = OutboundAuths::new(Arc::clone(&dispatcher), crate::LINKED.auths, None);
+    let auths = OutboundAuths::new(
+        Arc::clone(&dispatcher),
+        crate::LINKED.auths,
+        None,
+        Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+    );
     let reach = DoorReach {
         providers: &providers,
         secrets: &secrets,

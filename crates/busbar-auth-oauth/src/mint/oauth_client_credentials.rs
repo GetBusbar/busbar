@@ -78,7 +78,11 @@ impl ClientCreds {
             ("scope", self.scope.as_str()),
         ])
         .map_err(|e| format!("token request form could not be encoded: {e}"))?;
-        Ok(TokenRequest::form(self.token_url.clone(), form))
+        Ok(TokenRequest::form(
+            super::need::TOKEN_URL,
+            self.token_url.clone(),
+            form,
+        ))
     }
 }
 
