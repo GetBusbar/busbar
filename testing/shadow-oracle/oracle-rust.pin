@@ -221,7 +221,7 @@
 # read rides along.
 #
 # 2026-10-04 (OWNER Q-STEP7-a D1 "the oracle baseline names its store"; ARCHITECT ruling on the mechanism):
-# moved 7b039b65795c -> 24e829e3a0bc (busbar-release `rel-qstore-d1`, PR #155 into main, cut from main 7d34f5b,
+# moved 7b039b65795c -> 4657608c7de5 (busbar-release `rel-qstore-d1`, PR #155 into main, cut from main 7d34f5b,
 # which carries 7b039b65795c). The engine names `store: {module: memory}` in every config it hands a binary at
 # run time (recorder/store_baseline.rs): the configs it writes and boots, a boot mutation's output, a capture
 # cell's config, the admin config-apply/validate bodies and `upgrade-config` (every script cell's config step).
@@ -232,6 +232,6 @@
 #
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=24e829e3a0bc9f35cff8b5a0b570a8654f04f300
+release_ref=4657608c7de58bde44ba042a856e03e535b3a4d4
 crate=busbar-release-oracle
 bin=busbar-oracle
