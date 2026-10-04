@@ -15,9 +15,9 @@ use busbar_contract::abi::mechanism::door::Door;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::transport::check::{check_framer, check_tail};
 use busbar_contract::abi::transport::{
-    slot, BeginIn, EmitIn, EncodeIn, FramePiece, FramerOut, FramerSink, IngestIn, LocateIn,
-    LocateOut, Ops, TransportTail, PIECE_END_OF_FRAME, ROLE_FRAMER, SIDE_DIAL, YIELD_ENDED,
-    YIELD_MORE,
+    slot, BeginIn, EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink, IngestIn,
+    LocateIn, LocateOut, Ops, RefuseIn, TransportTail, PIECE_END_OF_FRAME, ROLE_FRAMER, SIDE_DIAL,
+    YIELD_ENDED, YIELD_MORE,
 };
 use busbar_transport_stdio::door::{door, MAX_LINE_BYTES, STATEMENT};
 
@@ -288,5 +288,134 @@ fn a_stdio_target_is_never_located_and_an_envelope_is_its_body_as_one_line() {
     assert_ne!(
         call(ops().encode, h.inst, &mut i, &mut o, slot::ENCODE),
         Outcome::Ready
+    );
+}
+
+/// MIGRATED from the removed `mutation_hardening::encode_envelope_refuses_either_half...`: the same
+/// one-line check `emit` enforces, enforced again where a plane builds the frame, with each half
+/// exercised on its own — a body that ONLY carries an embedded newline (no trailing `\r`), and a
+/// body that ONLY ends in `\r` (no embedded newline). A mutant that turns the `||` into `&&`, or the
+/// trailing-`\r` `==` into `!=`, survives unless each half is driven alone.
+#[test]
+fn an_envelope_refuses_each_half_of_the_one_line_check_on_its_own() {
+    let mut h = Host::new(64, 8, 1);
+
+    let embedded_newline = b"one\ntwo";
+    let mut i: EncodeIn = z();
+    i.body = embedded_newline.as_ptr();
+    i.body_len = embedded_newline.len();
+    i.sink = h.sink();
+    let mut o: FramerOut = z();
+    assert_ne!(
+        call(ops().encode, h.inst, &mut i, &mut o, slot::ENCODE),
+        Outcome::Ready,
+        "an embedded newline alone must be refused"
+    );
+
+    let trailing_cr = b"just a trailing cr\r";
+    let mut i: EncodeIn = z();
+    i.body = trailing_cr.as_ptr();
+    i.body_len = trailing_cr.len();
+    i.sink = h.sink();
+    let mut o: FramerOut = z();
+    assert_ne!(
+        call(ops().encode, h.inst, &mut i, &mut o, slot::ENCODE),
+        Outcome::Ready,
+        "a trailing carriage return alone must be refused"
+    );
+
+    let clean = b"neither applies";
+    let mut i: EncodeIn = z();
+    i.body = clean.as_ptr();
+    i.body_len = clean.len();
+    i.sink = h.sink();
+    let mut o: FramerOut = z();
+    assert_eq!(
+        call(ops().encode, h.inst, &mut i, &mut o, slot::ENCODE),
+        Outcome::Ready,
+        "a body with neither must be accepted"
+    );
+    assert_eq!(&h.wire[..o.yielded.wire_len as usize], b"neither applies\n");
+}
+
+/// MIGRATED from the removed `battery::a_line_within_the_maximum_is_still_a_frame` and
+/// `mutation_hardening::a_line_of_exactly_the_maximum_is_still_a_frame`: a line of EXACTLY the
+/// ceiling (its newline stripped) is one whole frame, not a framing error. The boundary the `>` in
+/// `next_line` enforces has to be exact — `==` or `>=` in its place would refuse this same line,
+/// while `a_line_past_the_ceiling_fails_the_framing` pins the other side at ceiling + 1.
+#[test]
+fn a_line_of_exactly_the_ceiling_is_one_frame() {
+    let mut h = Host::new(64, MAX_LINE_BYTES + 8, 4);
+    let mut line = vec![b'z'; MAX_LINE_BYTES];
+    line.push(b'\n');
+    assert_eq!(h.ingest(&line, false), Outcome::Ready);
+    assert_eq!(h.frames, vec![vec![b'z'; MAX_LINE_BYTES]]);
+}
+
+/// MIGRATED from the removed `battery::a_line_of_whitespace_is_a_frame_but_an_empty_line_is_not`: a
+/// line of only spaces is a real, non-empty frame — which payloads are worth delivering is not this
+/// framer's judgement to make. NOTE a deliberate live change: the door frames an empty line as an
+/// EMPTY frame, where the removed in-process carrier dropped empty lines; the whitespace-is-a-frame
+/// intent carries over unchanged.
+#[test]
+fn a_line_of_only_spaces_is_a_frame_and_an_empty_line_is_an_empty_frame() {
+    let mut h = Host::new(64, 64, 8);
+    assert_eq!(h.ingest(b"\n   \nafter\n", false), Outcome::Ready);
+    assert_eq!(
+        h.frames,
+        vec![Vec::new(), b"   ".to_vec(), b"after".to_vec()],
+        "an empty line is an empty frame; a line of spaces is a frame of spaces"
+    );
+}
+
+/// ADDED for the removed `battery::half_close_peer_sees_clean_eof_and_can_still_be_written_to`: the
+/// far side's end on a line boundary is a CLEAN end of stream (`YIELD_ENDED`), not an error — and
+/// this side can still emit a line afterwards, because a half-close is one direction only.
+#[test]
+fn a_far_side_end_is_a_clean_eof_and_the_near_side_can_still_emit() {
+    let mut h = Host::new(64, 8, 2);
+    assert_eq!(h.ingest(b"bye\n", true), Outcome::Ready);
+    assert_eq!(h.frames, vec![b"bye".to_vec()]);
+    assert_eq!(
+        h.flags, YIELD_ENDED,
+        "the far side's clean end is YIELD_ENDED, not a framing error"
+    );
+    h.wire_log.clear();
+    assert_eq!(h.emit(b"still here", true), Outcome::Ready);
+    assert_eq!(
+        h.wire_log, b"still here\n",
+        "the near side can still send after the far side half-closes"
+    );
+}
+
+/// ADDED for the removed `battery::unit0_refusal_writes_then_closes`: a refusal's bytes go out as
+/// ONE line (the `refuse` slot), and `finish` then ends the framing (`YIELD_ENDED`) — the live-path
+/// shape of "write the refusal, then close the session".
+#[test]
+fn a_refusal_goes_out_as_one_line_then_finish_ends_the_framing() {
+    let mut h = Host::new(64, 8, 1);
+
+    let reason = b"refused: budget";
+    let mut i: RefuseIn = z();
+    i.framing = h.framing;
+    i.bytes = reason.as_ptr();
+    i.len = reason.len();
+    i.sink = h.sink();
+    let mut o: FramerOut = z();
+    let r = call(ops().refuse, h.inst, &mut i, &mut o, slot::REFUSE);
+    assert_eq!(h.take(r, &o), Outcome::Ready);
+    assert_eq!(h.wire_log, b"refused: budget\n", "the refusal is one line");
+
+    let mut i: FinishIn = z();
+    i.framing = h.framing;
+    i.sink = h.sink();
+    let mut o: FramerOut = z();
+    assert_eq!(
+        call(ops().finish, h.inst, &mut i, &mut o, slot::FINISH),
+        Outcome::Ready
+    );
+    assert_eq!(
+        o.yielded.flags, YIELD_ENDED,
+        "finish ends the framing after the refusal"
     );
 }

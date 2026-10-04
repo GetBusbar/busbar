@@ -54,16 +54,13 @@ mod transport;
 pub use carrier::exports;
 pub use carrier::StdioCarrier;
 pub use conn::StaticConfig;
-pub use transport::StdioTransport;
 
 /// THE TRANSPORT AXIS ENTRY (#3, #30): what the composition root folds for this wire — its key, the
 /// layers it declares, and how it is built. The root names none of them.
 pub mod linked {
     use std::sync::Arc;
 
-    use busbar_contract::transport::{Transport, TransportMeta, TransportSettings};
-
-    use crate::StdioTransport;
+    use busbar_contract::transport::{TransportMeta, TransportSettings};
 
     /// The row's registry key.
     pub const KEY: &str = <crate::StdioCarrier as TransportMeta>::KEY;
@@ -82,21 +79,15 @@ pub mod linked {
         Arc::new(crate::StdioCarrier::new())
     }
 
-    /// It opens its own streams, so it takes no lower layer and reads no setting.
-    #[must_use]
-    pub fn build(_: Option<Arc<dyn Transport>>, _: &TransportSettings) -> Arc<dyn Transport> {
-        Arc::new(StdioTransport::new())
-    }
-
     /// THE MEMORY-ABI DOOR the host's connector frames a program's pipes with (the `transport-door`
     /// axis): the line framer.
     pub use crate::door::door;
 }
 
 #[cfg(test)]
-#[path = "tests/battery.rs"]
-mod battery;
-
-#[cfg(test)]
 #[path = "tests/carrier_battery.rs"]
 mod carrier_battery;
+
+#[cfg(test)]
+#[path = "tests/mutation_hardening.rs"]
+mod mutation_hardening;

@@ -4257,9 +4257,14 @@ fn source_facts(rel: &str, dir: &str, text: &str) -> std::sync::Arc<SourceFacts>
     let live = (rel.starts_with(&format!("{dir}/tests/")) && rel.contains(CONFORMANCE_MARKER))
         .then(|| live_battery_entries(text).0);
     let shipped = is_shipped_source(rel);
+    // A door is reachable as its kind's entry either DROPPED-IN — `export_door!` exports the door
+    // symbol a dylib build loads — or LINKED, where the crate re-exports its own door entry for an
+    // in-process build to name (`pub use …::door::door`, the `linked` seam the tcp/stdio rows take).
+    // Either way the door IS the crate's one entry; a door built but neither exported nor re-exported
+    // is the incomplete case `:shape`/`:testkit` still flag.
     let exports = (rel.starts_with(&format!("{dir}/src/"))
         || rel.starts_with(&format!("{dir}/examples/")))
-        && exports_door(text);
+        && (exports_door(text) || links_door(text));
     let mut mods = None;
     let mut heads = Vec::new();
     let mut tails = 0;
@@ -4422,6 +4427,17 @@ fn exports_door(text: &str) -> bool {
     scan::production_lines(text)
         .into_iter()
         .any(|(_, code)| code.contains("export_door!(") && !code.contains("macro_rules!"))
+}
+
+/// Whether a file re-exports its own door entry as the LINKED kind entry: `pub use …::door::door`,
+/// the `linked` seam an in-process build names (as the tcp and stdio transport rows do). A linked
+/// door is reachable as the kind's entry exactly as an `export_door!` one is — it just adds no
+/// dynamic symbol — so it counts toward the door being EXPORTED (see [`exports_door`]'s caller).
+fn links_door(text: &str) -> bool {
+    scan::production_lines(text).into_iter().any(|(_, code)| {
+        let t = code.trim();
+        t.starts_with("pub use ") && t.contains("::door::door") && !t.contains("macro_rules!")
+    })
 }
 
 /// The SDK's door BUILDERS: the macros that build a kind's door table (`plugin_door!` for any kind,
