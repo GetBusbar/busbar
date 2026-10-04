@@ -1043,9 +1043,10 @@ extern "C" fn refusal(_: *mut c_void, input: *const c_void, out: *mut c_void) ->
     unsafe {
         let i = &*input.cast::<RefusalIn>();
         let o = &mut *out.cast::<RefusalOut>();
-        // The reason crosses beside its text: a refusal whose code names another reason is FAULT.
-        let named = busbar_contract::abi::plane::reason_of(i.reason).map(|r| r.as_str().as_bytes());
-        if named != Some(text(i.text)) {
+        // The reason crosses beside its text (`RefusalIn::text`, the kernel's own message: the
+        // reason's spelling, or the walk terminal's own words): a refusal whose code names no reason,
+        // or that carries no text, is FAULT.
+        if busbar_contract::abi::plane::reason_of(i.reason).is_none() || text(i.text).is_empty() {
             return RawOutcome::of(Outcome::Fault);
         }
         let mut body = [

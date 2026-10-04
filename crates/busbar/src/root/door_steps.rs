@@ -1133,7 +1133,10 @@ pub fn kernel_sections(
     });
     let yaml = |v: Value| serde_yaml::to_value(v).unwrap_or(serde_yaml::Value::Null);
     if !providers.is_empty() {
-        out.insert("providers", yaml(Value::Object(providers)));
+        out.insert(
+            busbar_contract::plugin::Kind::Transport.root(),
+            yaml(Value::Object(providers)),
+        );
     }
     if !models.is_empty() || !pools.is_empty() {
         out.insert(RESERVED_MODELS_KEY, yaml(Value::Object(models)));
