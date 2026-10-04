@@ -546,6 +546,13 @@ impl<'a, T: AbiOut> Out<'a, T> {
         self.put(pick, s);
     }
 
+    /// Point the field `pick` names at the rows of `buf`, a host buffer lent for this call; the
+    /// count is a field of its own, set beside it (a prompt view's `message_count`).
+    pub fn host_rows<E: Copy>(&mut self, pick: impl FnOnce(&T) -> &*const E, buf: &HostBuf<'_, E>) {
+        let p = buf.as_ptr().cast_const();
+        self.put(pick, p);
+    }
+
     /// Set the list `ptr`/`len` name to what `buf`, a host buffer lent for this call, holds.
     pub fn host_list<E: Copy>(
         &mut self,

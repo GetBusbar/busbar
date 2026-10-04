@@ -15,7 +15,8 @@
 //! * An ATTEMPT answer's verb and target come together, go to the far end and lie in the arena; a
 //!   verdict is known and rides only a READY answer.
 //! * `project`'s view points only into the host's buffers: its strings and body into the arena,
-//!   its signals at `signals_buf`.
+//!   its signals at `signals_buf`, its prompt turns at `messages_buf`; a rewritten body answers
+//!   only a call that carried a rewrite.
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
@@ -34,7 +35,7 @@ use super::{
     UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
-    signal, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
+    signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
     SIGNAL_TAG_BOOL, SIGNAL_TAG_STR, SIGNAL_TAG_U64,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome, MAX_TEXT};
@@ -56,6 +57,8 @@ pub const MAX_ROUTES: u64 = 1024;
 pub const MAX_SESSIONS: u64 = 1024;
 /// The most signals one `project` answer may carry.
 pub const MAX_SIGNALS: u64 = 64;
+/// The most prompt turns one `project` answer may carry.
+pub const MAX_TURNS: u64 = 65536;
 
 /// The capacities the host gave one call, from its `in` (`0` for a buffer the op has none of).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -354,11 +357,29 @@ fn in_arena(s: AbiStr, arena: *const u8, written: u64, field: &'static str) -> R
     range(offset as u64, s.len as u64, written, field)
 }
 
-/// `project`: the signals and the arena under the multi-buffer short-answer rule; the view's
-/// signals are the host's `signals_buf`, its known flags, its strings and the projected body inside
-/// the arena written, and every signal written a known id and tag whose value is valid.
-/// `signals` starts at the host's `signals_buf` and holds at least the signals written;
-/// `signals_cap` is that buffer's capacity; `arena` is the host's `arena_buf` and its capacity.
+/// The host buffers one `project` call lent, as its validator reads them.
+#[derive(Debug, Clone, Copy)]
+pub struct ProjectHost<'a> {
+    /// The host's `signals_buf`, holding at least the signals written.
+    pub signals: &'a [SignalEntry],
+    /// `signals_cap`.
+    pub signals_cap: u64,
+    /// The host's `messages_buf`, holding at least the turns written.
+    pub messages: &'a [MessageView],
+    /// `messages_cap`.
+    pub messages_cap: u64,
+    /// The host's `arena_buf` and `arena_cap`.
+    pub arena: (*const u8, u64),
+    /// The call carried a rewrite ([`super::ProjectIn::rewrite`] present).
+    pub rewrite: bool,
+}
+
+/// `project`: the signals, the prompt turns and the arena under the multi-buffer short-answer
+/// rule; the view's signals are the host's `signals_buf` and its prompt turns the host's
+/// `messages_buf`, its known flags, its strings (the view's, the prompt's, every turn's and the
+/// end user) and the projected and rewritten bodies inside the arena written, a rewritten body only
+/// for a call that carried a rewrite, no prompt body (the kernel lends the body itself), and every
+/// signal written a known id and tag whose value is valid.
 ///
 /// # Errors
 ///
@@ -366,19 +387,26 @@ fn in_arena(s: AbiStr, arena: *const u8, written: u64, field: &'static str) -> R
 pub fn check_project(
     outcome: Outcome,
     out: &ProjectOut,
-    signals: &[SignalEntry],
-    signals_cap: u64,
-    arena: (*const u8, u64),
+    host: &ProjectHost<'_>,
 ) -> Result<(), Fault> {
     let v = &out.view;
+    let p = &out.prompt;
+    let (signals, arena) = (host.signals, host.arena);
     let written = v.signals_len as u64;
     let dims = [
         Dim {
             written,
             needed: u64::from(out.signals_needed),
-            cap: signals_cap,
+            cap: host.signals_cap,
             max: MAX_SIGNALS,
             field: "project.signals",
+        },
+        Dim {
+            written: p.message_count,
+            needed: u64::from(out.messages_needed),
+            cap: host.messages_cap,
+            max: MAX_TURNS,
+            field: "project.messages",
         },
         Dim {
             written: out.arena_written,
@@ -392,6 +420,15 @@ pub fn check_project(
     if written != 0 && !core::ptr::eq(v.signals, signals.as_ptr()) {
         return Err(fault(Rule::Foreign, "project.view.signals"));
     }
+    if p.message_count != 0 && !core::ptr::eq(p.messages, host.messages.as_ptr()) {
+        return Err(fault(Rule::Foreign, "project.prompt.messages"));
+    }
+    if p.messages_len as u64 != p.message_count {
+        return Err(fault(Rule::Contradiction, "project.prompt.messages_len"));
+    }
+    if p.body.len != 0 || !p.body.ptr.is_null() {
+        return Err(fault(Rule::Foreign, "project.prompt.body"));
+    }
     bits(
         u64::from(v.flags),
         u64::from(REQUEST_HAS_MAX_TOKENS | REQUEST_HAS_TOOLS | REQUEST_STREAM),
@@ -404,12 +441,35 @@ pub fn check_project(
         out.arena_written,
         "project.view.ingress_dialect",
     )?;
+    in_arena(
+        p.system,
+        arena.0,
+        out.arena_written,
+        "project.prompt.system",
+    )?;
+    in_arena(out.end_user, arena.0, out.arena_written, "project.end_user")?;
     span(
         out.body.offset,
         out.body.len,
         out.arena_written,
         "project.body",
     )?;
+    span(
+        out.rewritten.offset,
+        out.rewritten.len,
+        out.arena_written,
+        "project.rewritten",
+    )?;
+    if out.rewritten.len != 0 && !host.rewrite {
+        return Err(fault(
+            Rule::Contradiction,
+            "project.rewritten_without_rewrite",
+        ));
+    }
+    for m in first(host.messages, p.message_count, "project.messages")? {
+        in_arena(m.role, arena.0, out.arena_written, "project.message.role")?;
+        in_arena(m.text, arena.0, out.arena_written, "project.message.text")?;
+    }
     for e in first(signals, written, "project.signals")? {
         code(
             u64::from(e.id),

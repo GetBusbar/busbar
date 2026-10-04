@@ -26,10 +26,11 @@ use std::time::{Duration, Instant};
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, RecordWrite, RefusalIn, RefusalOut,
-    UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_TO_FAR_END,
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_PUT, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, ProjectIn, ProjectOut, RecordWrite,
+    RefusalIn, RefusalOut, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE,
+    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS,
+    PIECE_LAST, PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_PUT, UNITS_ESTIMATED, UNITS_REPORTED,
+    VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{ServeIn, ServeOut};
 use busbar_contract::caps::OpClassId;
@@ -449,6 +450,17 @@ unsafe impl Send for SendIn {}
 impl PlaneCalls for Double {
     fn now_ns(&self) -> u64 {
         now_ns()
+    }
+
+    // The hook stage is dormant in these driver proofs (no plane binds hooks): `project` is the
+    // trait's required op, answered here as the no-projection pure op.
+    fn project(
+        &self,
+        _input: &mut ProjectIn,
+        _out: &mut ProjectOut,
+        _grow: Grow<'_, ProjectIn, ProjectOut>,
+    ) -> Outcome {
+        Outcome::Ready
     }
 
     fn arrive(

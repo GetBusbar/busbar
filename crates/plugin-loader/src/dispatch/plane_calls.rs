@@ -16,8 +16,8 @@ use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
 use busbar_contract::abi::mechanism::lifecycle::slot as life;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut, RefusalStatus,
-    ServeIn, ServeOut,
+    slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, ProjectIn, ProjectOut, RefusalIn, RefusalOut,
+    RefusalStatus, ServeIn, ServeOut,
 };
 use busbar_contract::plane_calls::{
     Answered, Grow, InstanceDecl, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
@@ -98,6 +98,15 @@ impl PlaneCalls for PlaneInstance {
         grow: Grow<'_, RefusalIn, RefusalOut>,
     ) -> Outcome {
         self.pure(slot::REFUSAL, input, out, grow)
+    }
+
+    fn project(
+        &self,
+        input: &mut ProjectIn,
+        out: &mut ProjectOut,
+        grow: Grow<'_, ProjectIn, ProjectOut>,
+    ) -> Outcome {
+        self.pure(slot::PROJECT, input, out, grow)
     }
 
     fn cancel(&self, ticket: Ticket) -> Option<u32> {

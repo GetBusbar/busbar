@@ -513,6 +513,37 @@ fn a_short_project_answer_is_recognised() {
         &i,
         &o
     )));
+    // A prompt with more turns than the host's buffer holds is a short answer too.
+    o.messages_needed = 3;
+    let a = answer(slot::PROJECT, Outcome::Failed, &i, &o);
+    assert_eq!(Plane::check(&a), Ok(()));
+    assert!(Plane::short(&a), "short on the prompt turns");
+}
+
+#[test]
+fn project_red_a_rewritten_body_for_a_call_that_carried_no_rewrite() {
+    let mut signals: [SignalEntry; 2] = z();
+    let mut arena = [0u8; 16];
+    let mut i = project_in(&mut signals, &mut arena);
+    let mut o: ProjectOut = z();
+    o.rewritten = span(0, 8);
+    o.arena_written = 8;
+    assert_eq!(
+        Plane::check(&answer(slot::PROJECT, Outcome::Ready, &i, &o)),
+        f(Rule::Contradiction, "project.rewritten_without_rewrite")
+    );
+    let rewrite = b"{}";
+    i.rewrite = busbar_contract::abi::mechanism::call::Blob {
+        ptr: rewrite.as_ptr(),
+        len: rewrite.len(),
+        fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+        flags: 0,
+    };
+    assert_eq!(
+        Plane::check(&answer(slot::PROJECT, Outcome::Ready, &i, &o)),
+        Ok(()),
+        "the same answer to a call that carried one"
+    );
 }
 
 // ── foreign sizes ──

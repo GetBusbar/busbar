@@ -1618,7 +1618,7 @@ fn build_invoke_rewrite_request<'a>(
         Some(Cow::Owned(system_pieces.join("\n")))
     };
     let prompt =
-        enforce_invoke_content_cap(busbar_contract::hooks::PromptProjection { system, messages });
+        crate::hooks::content_capped(busbar_contract::hooks::PromptProjection { system, messages });
     busbar_contract::hooks::RoutingRequest {
         request_id,
         // A rewrite over a plane payload has no LLM routing pool; the wire omits it for the rewrite
@@ -1636,34 +1636,6 @@ fn build_invoke_rewrite_request<'a>(
         prompt: Some(prompt),
         identity: None,
         signals: Default::default(),
-    }
-}
-
-/// Enforce the hook content ceiling on a built invoke projection, on SERIALIZED bytes and BEFORE the
-/// call — the same rule the LLM seam's `enforce_content_cap` applies: over-cap content is OMITTED
-/// WHOLE (the hook is sent an empty projection), never truncated mid-value.
-fn enforce_invoke_content_cap(
-    p: busbar_contract::hooks::PromptProjection<'_>,
-) -> busbar_contract::hooks::PromptProjection<'_> {
-    let cap = busbar_kernel::proxy::hook_content_max_bytes();
-    if cap == 0 {
-        // Explicitly UNLIMITED — the operator turned the ceiling off (`0 = unlimited`), exactly as the
-        // LLM seam's `enforce_content_cap` reads it. Without this a `0` ceiling would zero EVERY
-        // projection (`bytes <= 0` is false for any content), blinding a screening rewrite hook.
-        return p;
-    }
-    let bytes = p.system.as_deref().map(str::len).unwrap_or(0)
-        + p.messages
-            .iter()
-            .map(|(role, text)| role.len() + text.len())
-            .sum::<usize>();
-    if bytes <= cap {
-        return p;
-    }
-    metrics::counter!(busbar_kernel::metrics::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
-    busbar_contract::hooks::PromptProjection {
-        system: None,
-        messages: Vec::new(),
     }
 }
 

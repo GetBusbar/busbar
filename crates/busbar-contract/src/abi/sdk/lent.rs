@@ -305,6 +305,18 @@ impl<T: Scalar> HostBuf<'_, T> {
     }
 }
 
+impl HostBuf<'_, crate::abi::hook::MessageView> {
+    /// Write one prompt turn at the next index while there is room; count it either way. Answers
+    /// its index. `role` and `text` are spans the same call wrote into `arena`, the host's arena,
+    /// so the turn points only at host memory.
+    pub fn push_turn(&mut self, arena: &HostBuf<'_, u8>, role: Span, text: Span) -> usize {
+        self.push_row(crate::abi::hook::MessageView {
+            role: arena.str_at(role),
+            text: arena.str_at(text),
+        })
+    }
+}
+
 /// A signal value with no pointer in it: what a plugin writes into a host signal buffer by hand.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SignalScalar {
@@ -519,6 +531,7 @@ lend! {
         list(fields, fields_len) -> Field;
         buf(signals_buf, signals_cap) -> crate::abi::hook::SignalEntry;
         buf(arena_buf, arena_cap) -> u8;
+        buf(messages_buf, messages_cap) -> crate::abi::hook::MessageView;
     }
     // THE TRANSPORT KIND (`abi::transport`).
     FramerSink {

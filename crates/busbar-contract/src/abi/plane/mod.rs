@@ -38,7 +38,9 @@
 //! [`OnPieceOut::target`]), then its dialect fields and body. Far-end pieces come back
 //! [`FROM_FAR_END`], and the plane's answer may carry a `VERDICT_*` beside the walk's status table.
 //! When a hook is bound, [`slot::PROJECT`] (pure, once per unit) writes the hook kind's own request
-//! view. A duplex session's unsolicited output reaches the kernel through the instance's one driver
+//! view, its prompt view and the body's end user; a request-stage hook's rewrite comes back to it
+//! as [`ProjectIn::rewrite`], which the plane applies to the body ([`ProjectOut::rewritten`]) and
+//! re-projects. A duplex session's unsolicited output reaches the kernel through the instance's one driver
 //! ticket: `drive` ([`PlaneDriveIn`], [`PlaneDriveOut`]) names the ready sessions.
 //!
 //! WHAT CROSSES AND WHEN:
@@ -203,7 +205,7 @@
 
 pub mod check;
 
-use super::hook::{RequestView, SignalEntry};
+use super::hook::{MessageView, PromptView, RequestView, SignalEntry};
 use super::mechanism::call::{AbiStr, Blob, Field, InHead, Op, OutHead, Span};
 pub use super::mechanism::check::SPAN_ABSENT;
 use super::mechanism::check::{contract, OpContract};
@@ -1397,7 +1399,8 @@ pub struct RefusalIn {
     pub reason: u32,
     /// The refusal text: the kernel's own message for the refusal (for a limit, it names the
     /// bucket that blocked); never secret material. With [`REFUSAL_ARRIVE`]: the refused arrival's
-    /// `head.error`, byte for byte.
+    /// `head.error`, byte for byte. With [`REFUSAL_GATE`]: the vetoing hook's own message, as the
+    /// kernel's hook engine sanitised it.
     pub text: AbiStr,
     /// HOST buffer for the rendered body.
     pub reply_buf: *mut u8,
@@ -1557,6 +1560,19 @@ pub struct ProjectIn {
     pub arena_buf: *mut u8,
     /// Its capacity.
     pub arena_cap: usize,
+    /// A request-stage hook's rewrite (the hook's own rewrite bytes, which the kernel never
+    /// parses): the plane applies it to `body` in its own dialect, answers the rewritten body in
+    /// [`ProjectOut::rewritten`] and projects THAT body. [`Blob::ABSENT`] on the unit's first
+    /// `project`.
+    pub rewrite: Blob,
+    /// HOST buffer for the prompt view's turns ([`PromptView::messages`]).
+    pub messages_buf: *mut MessageView,
+    /// Its capacity.
+    pub messages_cap: usize,
+    /// The unit, as the kernel minted it ([`ArriveIn::unit`]): a plane that applies a rewrite
+    /// keeps the rewritten body as its unit's request, so every attempt it writes from then on is
+    /// written from it.
+    pub unit: u64,
 }
 
 /// `project`'s `out`: the hook kind's own [`RequestView`], its plane-derived fields written by the
@@ -1580,6 +1596,22 @@ pub struct ProjectOut {
     pub arena_written: u64,
     /// Short answer: the bytes `arena_buf` needs.
     pub arena_needed: u64,
+    /// The prompt view: `system` and every turn's strings in the arena, the turns at
+    /// `messages_buf` (`message_count` of them). `body` stays [`Blob::ABSENT`]: the body a hook
+    /// sees is the one the kernel keeps, which it lends itself.
+    pub prompt: PromptView,
+    /// The body's end user (OLD `CallerIdentity::user`), in whichever field the plane's dialect
+    /// spells it, in the arena; NULL = none. The kernel shows it only to a hook granted `user`.
+    pub end_user: AbiStr,
+    /// The rewritten body, in the arena, when [`ProjectIn::rewrite`] was given and the plane
+    /// applied it: the body the kernel keeps and re-pushes on every attempt from now on. Empty
+    /// (or [`SPAN_ABSENT`]) = not applied, and the unit proceeds with the body it had (1.5.5:
+    /// a rewrite that cannot be applied leaves the request unmodified).
+    pub rewritten: Span,
+    /// Short answer: the turns `messages_buf` needs.
+    pub messages_needed: u32,
+    /// Alignment padding.
+    pub _reserved2: u32,
 }
 
 // THE SDK's VIEW OF THE PLANE TABLE (`abi::sdk::door`): each kind op's `in`/`out`, stated next to
