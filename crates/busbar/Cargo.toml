@@ -305,9 +305,12 @@ llm-on-driver = ["proto-llm", "dep:busbar-plane-llm"]
 # section 12, "The switch"; deleted when the mcp fold completes). Never in `default`. On, the
 # plane's memory-ABI door (`busbar_plane_mcp::plane_door::door`) is a `plane-door` row, bound
 # through the loader's one load beside every dropped-in plane door, the same table as its
-# dropped-in cdylib (`mcp_door`; #2, #30; THE DESIGN section 11.4). It carries `plane-mcp`, whose
-# row stays linked and answers every arrival the serve path does not hand the door.
-mcp-on-driver = ["plane-mcp", "dep:busbar-plane-mcp"]
+# dropped-in cdylib (`mcp_door`; #2, #30; THE DESIGN section 11.4). It does NOT carry `plane-mcp`:
+# the door claims every mcp route and owns the `tools:` and `mcp:` sections, and a key a linked row
+# registers keeps that row (the boot's registry fold), so a build that links both serves mcp
+# through `busbar-mcp` alone. The driver path is the default set with `plane-mcp` swapped for this
+# switch (`--no-default-features --features <default without plane-mcp>,mcp-on-driver`).
+mcp-on-driver = ["dep:busbar-plane-mcp"]
 # THE REQUEST-LOG FILE SINK, DEFAULT ON: the `busbar-export-file` crate on the export axis. Off, the
 # module resolves only when a signed tarball of the sink is dropped into `plugins/`.
 export-file = ["dep:busbar-export-file"]
