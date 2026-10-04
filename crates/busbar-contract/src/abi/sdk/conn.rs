@@ -81,7 +81,8 @@ unsafe impl Send for Host {}
 unsafe impl Sync for Host {}
 
 impl Host {
-    /// The tables `tables` names.
+    /// The tables `tables` names: what `open` was handed (`OpenIn::host`), for a kind whose SDK
+    /// wrapper is not yet in this crate (the auth kind's outbound mint reaches its need through it).
     #[must_use]
     pub const fn of(tables: &HostTables) -> Self {
         Self {

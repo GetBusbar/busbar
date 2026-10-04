@@ -953,12 +953,18 @@ type Serving = (
 /// THE AUTH PLUGINS A MEMBER'S STYLE MAY BE SERVED BY (THE DESIGN §6 step 3: the auth plugin that
 /// serves the style opens the binding): the build's linked `auths` rows, then the plugins
 /// directory's `kind: auth` rows (compiled-in = dropped-in), each loaded through the loader's one
-/// load on the process's dispatcher. The first whose tail states the style serves it; its instance
-/// is opened once and serves every binding of every style it states.
+/// load on the process's dispatcher, its declared needs on the process's connection table (THE
+/// DESIGN §5: an auth plugin that mints reaches its token endpoint through its own need). The first
+/// whose tail states the style serves it. Its instance is opened once and serves every binding of
+/// every style it states; a plugin whose needs take their target from its settings (`target_from`)
+/// is opened once per binding's settings instead, so each need is declared pinned to that binding's
+/// endpoint (PB-100). Every instance opened runs its tick schedule on its driver ticket (§6.5: a
+/// minted credential refreshes ahead of expiry on `tick`).
 pub struct OutboundAuths {
     dispatcher: Arc<crate::root::loader::dispatch::Dispatcher>,
     linked: Vec<busbar_kernel::preflight::LinkedAuth>,
     dropped: Option<&'static crate::root::loader::PluginRegistry>,
+    conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
     opened:
         Mutex<HashMap<String, Arc<crate::root::loader::dispatch::auth_outbound::OutboundInstance>>>,
 }
@@ -976,29 +982,45 @@ impl std::fmt::Debug for OutboundAuths {
 
 impl OutboundAuths {
     /// The auth rows `linked` (the build's) and `dropped` (the plugins directory's), loaded on
-    /// `dispatcher`.
+    /// `dispatcher`, their needs declared on `conns` (the process's connector; `None`: no need is
+    /// granted, and a style that mints mints nothing).
     #[must_use]
     pub fn new(
         dispatcher: Arc<crate::root::loader::dispatch::Dispatcher>,
         linked: &[busbar_kernel::preflight::LinkedAuth],
         dropped: Option<&'static crate::root::loader::PluginRegistry>,
+        conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
     ) -> Self {
         Self {
             dispatcher,
             linked: linked.to_vec(),
             dropped,
+            conns,
             opened: Mutex::new(HashMap::new()),
         }
     }
 
-    /// The bind one auth row is loaded under.
+    /// The bind one auth row is loaded under: its needs on the connection table, its diagnostics
+    /// (a mint that failed and will retry) in its own log file under the configured `plugins.logs`
+    /// (THE DESIGN #85).
     fn bind(&self, name: &str) -> crate::root::loader::dispatch::Bind {
+        use crate::root::loader::dispatch::{EnvelopeSink, NoSink};
+        let sink: Arc<dyn EnvelopeSink> = crate::root::boot::plugin_logs()
+            .sink(
+                name,
+                busbar_contract::abi::mechanism::KindCode::Auth,
+                Arc::new(NoSink),
+            )
+            .map_or_else(
+                |_| Arc::new(NoSink) as Arc<dyn EnvelopeSink>,
+                |s| Arc::new(s) as Arc<dyn EnvelopeSink>,
+            );
         crate::root::loader::dispatch::Bind {
             instance: Arc::from(name),
             max_inflight_cap: 64,
-            sink: Arc::new(crate::root::loader::dispatch::NoSink),
+            sink,
             dispatcher: self.dispatcher.adopter(),
-            conns: None,
+            conns: self.conns.clone(),
         }
     }
 
@@ -1035,28 +1057,49 @@ impl OutboundAuths {
         rows
     }
 
-    /// The auth plugin serving `style`, its instance opened (once per plugin); `None` when no row
-    /// states it.
+    /// The auth plugin serving `style` for a binding under `settings`, its instance opened (once
+    /// per plugin, or once per binding's settings for a plugin whose needs take their target from
+    /// them) and its tick schedule running; `None` when no row states it.
     ///
     /// # Errors
     ///
     /// The serving plugin would not open for its outbound styles.
-    pub fn serving(&self, style: &str) -> Result<Option<Serving>, String> {
+    pub fn serving(
+        &self,
+        style: &str,
+        settings: &serde_json::Value,
+    ) -> Result<Option<Serving>, String> {
         use crate::root::loader::dispatch::auth_outbound::{serves_style, OutboundInstance};
         for (name, plugin) in self.rows() {
             let Some(decl) = serves_style(&plugin, style) else {
                 continue;
             };
+            let per_binding = plugin.targets_from_settings();
+            let settings = if per_binding {
+                serde_json::to_vec(settings).map_err(|e| e.to_string())?
+            } else {
+                b"{}".to_vec()
+            };
+            let key = if per_binding {
+                format!("{name}\0{}", String::from_utf8_lossy(&settings))
+            } else {
+                name
+            };
             let mut opened = self.opened.lock().unwrap_or_else(|p| p.into_inner());
-            let instance = match opened.get(&name) {
+            let instance = match opened.get(&key) {
                 Some(instance) => Arc::clone(instance),
                 None => {
-                    let instance = Arc::new(OutboundInstance::open(
+                    let instance = Arc::new(OutboundInstance::open_with(
                         plugin,
                         Arc::clone(&self.dispatcher),
                         0,
+                        &settings,
                     )?);
-                    opened.insert(name, Arc::clone(&instance));
+                    // ITS TICK SCHEDULE, on the runtime the composition runs on.
+                    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                        runtime.spawn(Arc::clone(&instance).ticks());
+                    }
+                    opened.insert(key, Arc::clone(&instance));
                     instance
                 }
             };
@@ -1206,14 +1249,15 @@ pub fn member_routes(
                 .resolve(&r.provider.credential)
                 .map_err(|e| format!("provider '{}' credential: {e}", r.name))?
         };
-        let (auth, decl) = reach.auths.serving(&r.style)?.ok_or_else(|| {
+        let settings = r.provider.style_params();
+        let (auth, decl) = reach.auths.serving(&r.style, &settings)?.ok_or_else(|| {
             format!(
                 "member '{}': no linked or dropped-in auth plugin serves the style '{}'",
                 r.entry, r.style
             )
         })?;
         let handle = auth
-            .open_outbound(&r.style, &credential, &r.provider.style_params())
+            .open_outbound(&r.style, &credential, &settings)
             .map_err(|e| format!("provider '{}' {e}", r.name))?;
         let need = dialled
             .get(&r.entry)
