@@ -433,7 +433,9 @@ transport-tcp = "transport transport-door"
 # sink's outbound `http` need is served compiled-in; the wire the registry folds keeps its build.
 transport-http = "transport connector-door"
 transport-sse = "transport"
-transport-ws = "transport"
+# The ws framer's door, opened on the same one Connector (ARCHITECT Q-L5B-WS-DOOR 2026-10-03,
+# packaging Part 0, as the http door): the streaming door's inbound and outbound ws needs bind.
+transport-ws = "transport connector-door"
 transport-grpc = "transport"
 transport-stdio = "transport"
 plane-decisions-door = "plane-door"
