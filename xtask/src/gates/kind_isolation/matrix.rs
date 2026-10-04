@@ -2776,7 +2776,7 @@ fn fixture_subject(kind: &str) -> String {
 /// The transport crate the plane-in-a-wire cases plant into, spelled once ([`WIRE_PLANT`]).
 macro_rules! wire_plant_name {
     () => {
-        "busbar-transport-planted"
+        "busbar-transport-wireplant"
     };
 }
 
@@ -3014,55 +3014,14 @@ pub fn selftest<'a>(
         ))),
     }
 
-    const LOADER_PACKAGE: &str = "busbar-plugin-loader";
     // …and on the LOADER'S side of the auth ABI: a plugin-tooling file whose path names `auth`
-    // reading the field and the contract's `Decision` type is green; the same file's crate writing
-    // the decisions plane's key in an auth file is still a `× plane` cell.
-    let loader = super::census(cx).ok().and_then(|cs| {
-        cs.into_iter()
-            .find(|c| c.kind == Some(auth_words::LOADER_KIND) && c.name == LOADER_PACKAGE)
-            .map(|c| (c.name, c.dir))
-    });
-    match loader {
-        Some((name, dir)) => {
-            let field = || {
-                plant(
-                    cx,
-                    &format!("{dir}/src/planted_auth_verdict.rs"),
-                    "use busbar_contract::auth_calls::Decision;\n\
-                     pub fn read(out: &Out) -> Decision {\n    let decision = out.decision;\n    \
-                     if decision == 0 { Decision::Continue } else { Decision::Stop }\n}\n",
-                )
-            };
-            report.push(prove_rows_green(
-                cx,
-                gate,
-                "the loader's auth file naming the auth ABI's `decision` and `Decision` is no \
-                 decisions-plane cell",
-                &[ROW_MATRIX],
-                field(),
-            ));
-            let mut plane = field();
-            plane.set(
-                format!("{dir}/src/planted_auth_key.rs"),
-                "pub const KEY: &str = \"decision\";\n".to_string(),
-            );
-            report.push(prove_rows_red(
-                cx,
-                gate,
-                "the loader's auth file writing the `decision` key is still a `× plane` cell",
-                &[ROW_MATRIX],
-                plane,
-                &[&format!("{name} \u{d7} plane")],
-            ));
-        }
-        None => report.push(crate::gates::CasePlan::from(super::unplantable(
-            "the loader crate to plant its auth `decision` in",
-            &[ROW_MATRIX],
-            &["decision"],
-            format!("the census holds no plugin-tooling `{LOADER_PACKAGE}`"),
-        ))),
-    }
+    // reading the field and the contract's `Decision` type is masked; the same file's crate writing
+    // the decisions plane's key in an auth file still counts as a `× plane` reference. This is a
+    // COUNT property inside a LISTED cell — `busbar-plugin-loader × plane` carries a `[[cell]]` row
+    // (owner 2026-10-03, count→presence), so presence reads it green whatever is written there and
+    // the selftest battery cannot see the mask bite. It is proven on the cell itself in
+    // `tests::the_loader_masks_the_auth_abi_decision_field_but_counts_the_decisions_plane_key`. The
+    // RED half of the same rule on an UNLISTED cell is the auth-crate twin above (`{name} × plane`).
 
     // THE DIALECT ID-PREFIX LITERAL (ARCHITECT ruling 2026-10-02 on #324): a dialect module's
     // native item-id prefix (`ws`) is the provider's word; a real transport `ws` still counts.
@@ -3695,6 +3654,10 @@ pub fn selftest<'a>(
     // A CLASS PART 0 DOES NOT ALLOW IS STILL REFUSED (ARCHITECT 2026-10-02, KI-ZERO Q1). The spec
     // lists `cleanliness -> kernel` without a row; it does not list `cleanliness -> plane`, so a
     // cleanliness crate naming a plane with no `[[cell]]` row is a new cross-kind edge, refused.
+    // The subject is `busbar-core-connector`, the cleanliness crate whose `× plane` cell has NO
+    // `[[cell]]` row: presence can only see this refusal where a row does not already list the cell.
+    // `busbar-core-oauth2` names planes by design (a listed `× plane` cell, count→presence owner
+    // 2026-10-03), so the same plant there is green — a listed edge, not a refusal.
     report.push(prove_rows_red(
         cx,
         gate,
@@ -3702,10 +3665,10 @@ pub fn selftest<'a>(
         &[ROW_MATRIX],
         plant(
             cx,
-            "crates/busbar-core-oauth2/src/leak.rs",
+            "crates/busbar-core-connector/src/leak.rs",
             "// busbar_plane_mcp is not this crate's to name.\n",
         ),
-        &["unlisted-cell", "busbar-core-oauth2 \u{d7} plane"],
+        &["unlisted-cell", "busbar-core-connector \u{d7} plane"],
     ));
 
     // TWO ROWS FOR ONE CELL. The maps would keep the last, so which row binds would be decided by
@@ -4551,6 +4514,47 @@ mod tests {
         matrix
             .get(&(krate.to_string(), kind))
             .map_or(0, |c| c.count)
+    }
+
+    /// THE LOADER'S SIDE OF THE AUTH ABI, measured on the cell. The count→presence ruling (owner
+    /// 2026-10-03) made `busbar-plugin-loader × plane` a LISTED `[[cell]]`, which the selftest
+    /// battery reads green whatever is written there — so this mask, like the dialect wire-key span
+    /// above, is a COUNT property presence cannot observe and is proven here instead. A plugin-tooling
+    /// file whose PATH names `auth`, reading the ABI `decision` field and the contract's `Decision`
+    /// type, adds nothing to the cell; the same crate writing the decisions plane's registry key
+    /// `"decision"` as a bare literal is one more `× plane` hit. The RED half on an UNLISTED cell is
+    /// the auth-crate selftest twin (`<auth crate> × plane`, `unlisted-cell`).
+    #[test]
+    fn the_loader_masks_the_auth_abi_decision_field_but_counts_the_decisions_plane_key() {
+        const LOADER_DIR: &str = "crates/plugin-loader";
+        let field = || {
+            let mut ov = crate::ctx::Overlay::new();
+            ov.set(
+                format!("{LOADER_DIR}/src/planted_auth_verdict.rs"),
+                "use busbar_contract::auth_calls::Decision;\n\
+                 pub fn read(out: &Out) -> Decision {\n    let decision = out.decision;\n    \
+                 if decision == 0 { Decision::Continue } else { Decision::Stop }\n}\n"
+                    .to_string(),
+            );
+            ov
+        };
+        let base = cell_count(crate::ctx::Overlay::new(), "busbar-plugin-loader", "plane");
+        assert_eq!(
+            cell_count(field(), "busbar-plugin-loader", "plane"),
+            base,
+            "the auth ABI `decision`/`Decision`, in a file whose path names `auth`, is the ABI \
+             word masked — not a decisions-plane cell"
+        );
+        let mut key = field();
+        key.set(
+            format!("{LOADER_DIR}/src/planted_auth_key.rs"),
+            "pub const KEY: &str = \"decision\";\n".to_string(),
+        );
+        assert!(
+            cell_count(key, "busbar-plugin-loader", "plane") > base,
+            "the decisions plane's registry key `\"decision\"` written as a bare literal still \
+             counts, auth-named file or not"
+        );
     }
 
     /// THE DIALECT WIRE-KEY SPAN (ARCHITECT ruling 2026-10-02, DF-MAP), measured on the cell: a

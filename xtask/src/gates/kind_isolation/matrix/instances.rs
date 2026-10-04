@@ -1003,46 +1003,47 @@ pub fn selftest<'a>(
         ],
     ));
 
-    // THE OPENAPI LOCATION in core-admin: `"in": "header"` (customer bytes) is the HTTP word and
-    // leaves core-admin × auth where it was; a bare `"header"` instance literal in the same crate
-    // still raises it.
-    const ADMIN: &str = "crates/busbar-core-admin";
-    let openapi = || {
-        let mut ov = super::plant(
-            cx,
-            &format!("{ADMIN}/src/planted_openapi.json"),
-            "{\n  \"parameters\": [\n    {\n      \"in\": \"header\",\n      \"name\": \
-             \"If-Match\"\n    }\n  ],\n  \"adminToken\": {\"type\": \"apiKey\", \"in\": \
-             \"header\", \"name\": \"x\"}\n}\n",
-        );
-        const AUTH_HEADER: &str = "crates/busbar-auth-header/Cargo.toml";
-        if !cx.exists(AUTH_HEADER) {
-            ov.set(
-                AUTH_HEADER,
-                "[package]\nname = \"busbar-auth-header\"\nversion = \"0.0.0\"\n".to_string(),
-            );
-        }
-        ov
-    };
+    // THE OPENAPI LOCATION: `"in": "header"` (customer bytes) is the HTTP word and leaves the cell
+    // where it was; a bare `"header"` instance literal in the same crate still raises it. Presence
+    // cannot observe this on `busbar-core-admin` any more — that cell is a LISTED `[[instance]]` row
+    // (owner 2026-10-03, count→presence), so a `header` reference there is green whatever it is, and
+    // a listed cell has no count for a `header` literal to ratchet. The MASK is a scanner property,
+    // not an admin one (the rule reads any OpenAPI `"in"` location), so it is proven where presence
+    // CAN see a green→red transition: the unlisted fixture crate's `× auth` cell. The openapi-only
+    // plant keeps that cell at zero (masked) and GREEN; the same plant plus one bare `module ==
+    // "header"` makes it an `unlisted-instance` the ledger does not list — RED.
+    let openapi: &[(&str, &str)] = &[(
+        "planted_openapi.json",
+        "{\n  \"parameters\": [\n    {\n      \"in\": \"header\",\n      \"name\": \
+         \"If-Match\"\n    }\n  ],\n  \"adminToken\": {\"type\": \"apiKey\", \"in\": \
+         \"header\", \"name\": \"x\"}\n}\n",
+    )];
     report.push(prove_rows_green(
         cx,
         gate,
-        "an OpenAPI `\"in\": \"header\"` location in core-admin is no auth instance",
+        "an OpenAPI `\"in\": \"header\"` location is no auth instance (the HTTP word is masked)",
         &[ROW_MATRIX],
-        openapi(),
+        super::fixture_files(openapi),
     ));
-    let mut bare = openapi();
-    bare.set(
-        format!("{ADMIN}/src/planted_header_pick.rs"),
-        "pub fn pick(module: &str) -> bool {\n    module == \"header\"\n}\n".to_string(),
-    );
+    let bare: Vec<(&str, &str)> = openapi
+        .iter()
+        .copied()
+        .chain(std::iter::once((
+            "planted_header_pick.rs",
+            "pub fn pick(module: &str) -> bool {\n    module == \"header\"\n}\n",
+        )))
+        .collect();
     report.push(prove_rows_red(
         cx,
         gate,
-        "a bare `header` instance literal in core-admin still raises core-admin × auth",
+        "a bare `header` instance literal still raises the fixture's × auth cell beside the masked OpenAPI word",
         &[ROW_MATRIX],
-        bare,
-        &["instance-ratchet", "busbar-core-admin \u{d7} auth"],
+        super::fixture_files(&bare),
+        &[
+            "unlisted-instance",
+            &super::fixture_subject("auth"),
+            "planted_header_pick.rs",
+        ],
     ));
 
     // A CRATE IS NEVER MEASURED AGAINST ITS OWN NAME — the store instance writing its own id is
