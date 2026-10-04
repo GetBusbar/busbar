@@ -105,6 +105,12 @@ fn every_recorded_llm_refusal_wears_the_status_the_driver_chooses() {
     ] {
         cells.push((cell.into(), d, ReasonCode::BodyTooLarge));
     }
+    // A model no rate prices, under a configured rate card: 400.
+    cells.push((
+        "http.crosscut__unknown-path__openai-suffix".into(),
+        "openai",
+        ReasonCode::NoRate,
+    ));
     let mut wrong = Vec::new();
     for (cell, d, reason) in &cells {
         let chosen = config.status(dialect(d), *reason);

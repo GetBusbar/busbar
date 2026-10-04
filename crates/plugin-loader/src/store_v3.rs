@@ -28,7 +28,7 @@
 
 use std::future::Future;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,7 +36,7 @@ use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
-    slot as life, OpenIn, OpenOut, ReleaseIn, LIFECYCLE_SLOTS,
+    slot as life, OpenIn, OpenOut, ReleaseIn, ValidateIn, LIFECYCLE_SLOTS,
 };
 use busbar_contract::abi::sdk::store::{Cap, Cell, Dimension, Grant, ReserveRefused};
 use busbar_contract::abi::store::{
@@ -57,7 +57,7 @@ use busbar_contract::records::{
     PlaneRecordRef, PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta,
     UsageLedger, VirtualKey,
 };
-use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
+use busbar_contract::store_calls::{OpIdMint, StoreCall, StoreCalls, StoreFailure};
 
 use crate::dispatch::kinds::store::{Store, StoreFacts};
 use crate::dispatch::{in_head, now_ns, out_head, Dispatcher, Frame, InFrame, OutFrame, Plugin};
@@ -78,9 +78,8 @@ pub struct LoadedStore {
     dispatcher: Arc<Dispatcher>,
     facts: StoreFacts,
     next_worker: AtomicU32,
-    /// The op ids this handle mints for the bridge's `op_id`-carrying 1.5.5 writes.
-    node: u64,
-    counter: AtomicU64,
+    /// The node's one `op_id` allocator, for the bridge's `op_id`-carrying 1.5.5 writes.
+    mint: OpIdMint,
 }
 
 impl std::fmt::Debug for LoadedStore {
@@ -94,8 +93,8 @@ impl std::fmt::Debug for LoadedStore {
 
 impl LoadedStore {
     /// Open `plugin` on the operator's `settings` (the section's JSON), on
-    /// `dispatcher`. `node` is this node's id: the high half of every `op_id` the synchronous
-    /// bridge mints for the 1.5.5 op set's additive writes.
+    /// `dispatcher`. `mint` is the node's one `op_id` allocator: every `op_id` the synchronous
+    /// bridge mints for the 1.5.5 op set's additive writes comes from it.
     ///
     /// # Errors
     /// The store's refusal of its settings, in 1.5.5's words
@@ -104,7 +103,7 @@ impl LoadedStore {
         plugin: Plugin<Store>,
         dispatcher: Arc<Dispatcher>,
         settings: &[u8],
-        node: u64,
+        mint: OpIdMint,
     ) -> Result<Self, String> {
         let facts = *plugin
             .context::<StoreFacts>()
@@ -132,14 +131,40 @@ impl LoadedStore {
         if c.outcome != Outcome::Ready {
             return Err(c.open_failure(plugin.name()));
         }
+        // DISCOVERY AT BOOT: a store door that states `ready` is awaited before it is served.
+        plugin.ready(&dispatcher, crate::dispatch::ready::READY_DEADLINE)?;
         Ok(Self {
             plugin,
             dispatcher,
             facts,
             next_worker: AtomicU32::new(0),
-            node,
-            counter: AtomicU64::new(0),
+            mint,
         })
+    }
+
+    /// The store's own check of `settings`: it PARSES them and never opens a store. `Ok`, or its
+    /// refusal's text, verbatim.
+    ///
+    /// # Errors
+    /// The store's refusal of its settings.
+    pub fn validate(plugin: &Plugin<Store>, settings: &[u8]) -> Result<(), String> {
+        let mut v = Frame::new(
+            ValidateIn {
+                head: in_head(),
+                settings: octets(settings),
+                // The dispatcher lends the reason buffer at the crossing.
+                err_buf: std::ptr::null_mut(),
+                err_cap: 0,
+            },
+            out_head(),
+        );
+        let c = plugin.call(life::VALIDATE, &mut v);
+        match (c.outcome, c.error) {
+            (Outcome::Ready, _) => Ok(()),
+            // The store's own words reach the operator VERBATIM (1.5.5 printed the plugin's text).
+            (_, Some(e)) if !e.is_empty() => Err(String::from_utf8_lossy(&e).into_owned()),
+            (o, _) => Err(format!("the store's validate answered {o:?}")),
+        }
     }
 
     /// What the store states in its tail.
@@ -159,7 +184,7 @@ impl LoadedStore {
 
     /// A fresh `op_id` for one of the bridge's additive writes.
     fn mint(&self) -> OpId {
-        OpId::from_parts(self.node, self.counter.fetch_add(1, Ordering::Relaxed) + 1)
+        (self.mint)()
     }
 
     fn release(&self, lease: u64) {
@@ -1700,6 +1725,65 @@ fn zeroing(v: Vec<u8>) -> Zeroing {
     Zeroing(v)
 }
 
+/// THE STORE AXIS over the process's ONE dispatcher (WIRE-STORE Q8/Q9): the composition root
+/// builds it with its dispatcher, its `plugins.logs`, its one connection table and the kernel's
+/// `op_id` allocator, and installs it in the kernel, which opens its governance store through it.
+/// A compiled-in row is loaded by [`load_linked`](crate::dispatch::load_linked), a dropped-in
+/// plugin by [`load_dropped_bytes`](crate::dispatch::load_dropped_bytes) against its stated
+/// Statement; both are opened as a [`LoadedStore`].
+pub struct DoorStoreAxis {
+    /// The process's one dispatcher.
+    pub dispatcher: Arc<Dispatcher>,
+    /// Where each store instance's plugin log goes.
+    pub logs: crate::dispatch::PluginLogConfig,
+    /// The host's one connection table ([`crate::dispatch::Bind::conns`]).
+    pub conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+    /// The node's one `op_id` allocator.
+    pub mint: OpIdMint,
+}
+
+impl busbar_contract::store_calls::StoreAxis for DoorStoreAxis {
+    fn open(
+        &self,
+        door: busbar_contract::store_calls::StoreDoor,
+        label: &str,
+        settings: &[u8],
+    ) -> Result<busbar_contract::store_calls::OpenedStore, String> {
+        use busbar_contract::abi::mechanism::KindCode;
+        use busbar_contract::store_calls::StoreDoor;
+        let sink = self
+            .logs
+            .sink(label, KindCode::Store, Arc::new(crate::dispatch::NoSink))?;
+        let bind = crate::dispatch::Bind {
+            instance: Arc::from(label),
+            max_inflight_cap: u32::MAX,
+            sink: Arc::new(sink),
+            dispatcher: self.dispatcher.adopter(),
+            conns: self.conns.clone(),
+        };
+        let plugin = match door {
+            StoreDoor::Linked(door) => crate::dispatch::LinkedRow::of(door)
+                .and_then(|row| crate::dispatch::load_linked::<Store>(&row, bind)),
+            StoreDoor::Dropped {
+                file,
+                bytes,
+                stated,
+            } => crate::dispatch::load_dropped_bytes::<Store>(&bytes, &file, &stated, bind),
+        }
+        .map_err(|e| e.to_string())?;
+        let store = Arc::new(LoadedStore::open(
+            plugin,
+            Arc::clone(&self.dispatcher),
+            settings,
+            self.mint,
+        )?);
+        Ok(busbar_contract::store_calls::OpenedStore {
+            records: store.clone(),
+            calls: Some(store),
+        })
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/store_v3_tests.rs"]
 mod tests;
@@ -1709,9 +1793,33 @@ mod tests;
 mod conformance_tests;
 
 #[cfg(test)]
+#[path = "tests/store_v3_crossing_conformance_tests.rs"]
+mod crossing_conformance_tests;
+
+#[cfg(test)]
 #[path = "tests/store_v3_deadline_tests.rs"]
 mod deadline_tests;
 
 #[cfg(test)]
 #[path = "tests/store_v3_miscount_tests.rs"]
 mod miscount_tests;
+
+#[cfg(test)]
+#[path = "tests/store_v3_opid_tests.rs"]
+mod opid_tests;
+
+#[cfg(test)]
+#[path = "tests/store_v3_validate_tests.rs"]
+mod validate_tests;
+
+#[cfg(test)]
+#[path = "tests/store_v3_wrap.rs"]
+pub(crate) mod wrap;
+
+#[cfg(test)]
+#[path = "tests/store_v3_pend_tests.rs"]
+mod pend_tests;
+
+#[cfg(test)]
+#[path = "tests/store_v3_axis_tests.rs"]
+mod axis_tests;

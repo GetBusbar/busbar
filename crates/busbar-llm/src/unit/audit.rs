@@ -61,7 +61,10 @@ use axum::response::Response;
 use busbar_contract::caps::{step::Audit, OpClassId, Pass, SeatVerdict};
 use busbar_contract::records::PlaneRequestCtx;
 use busbar_contract::FinishClass;
-use busbar_kernel::{door, plane_host::EngineHost};
+use busbar_kernel::{
+    door,
+    plane_host::{AdmitHandle, EngineHost},
+};
 
 /// BYTES THAT HAVE PASSED THROUGH THIS FILE — the only shape in which a response moves between the
 /// steps, and the only shape in which one leaves the plane.
@@ -217,7 +220,7 @@ pub fn finish_admitted_via_audit(
     started: Instant,
     charged_at: u64,
     resp: Response,
-    charged: bool,
+    charged: Option<&AdmitHandle>,
 ) -> Response {
     host.finish_admitted(gov, proto, pool, started, charged_at, resp, charged)
 }
@@ -307,7 +310,8 @@ impl Audited {
 /// plane is a plugin on the neutral ABI and does not depend on the kernel. So the context is the
 /// plane's and the provisional end is the response itself, while the token and the sealed answer
 /// are the kernel's own vocabulary, named at `busbar-caps` where a plugin may name it.
-pub type AuditStep = for<'a> fn(&Pass<Audit>, &AuditCtx<'a>, Served, bool) -> Audited;
+pub type AuditStep =
+    for<'a, 'b> fn(&Pass<Audit>, &AuditCtx<'a>, Served, Option<&'b AdmitHandle>) -> Audited;
 
 /// How the plane says a unit ended.
 ///
@@ -347,7 +351,12 @@ fn reported_finish(resp: &Response) -> Option<FinishClass> {
 /// `charged` is the door's own answer, carried through Route unchanged: an admission that
 /// fail-opened without charging must not refund, because the refund is a decrement of a shared
 /// window and there is nothing of this unit's in it.
-pub fn audit(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>, resp: Served, charged: bool) -> Audited {
+pub fn audit(
+    unit_token: &Pass<Audit>,
+    ctx: &AuditCtx<'_>,
+    resp: Served,
+    charged: Option<&AdmitHandle>,
+) -> Audited {
     let facts = door::admitted_facts(
         ctx.op_class,
         reported_finish(resp.as_response()),
@@ -365,6 +374,17 @@ pub fn audit(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>, resp: Served, charged
         )),
         decision: SeatVerdict::proceed(unit_token, facts),
     }
+}
+
+/// Seal the end of a unit that PASSED the door and whose CALLER WENT AWAY before any answer.
+///
+/// The facts are the charged door's own reading of an end with nothing rendered, and nothing is
+/// finished: no response was given, so no request is counted, no request-log link is sent, and the
+/// flat fee the door charged stays charged. The non-2xx refund is owed for a request that produced
+/// no usable result for a caller still there to receive one; a caller that left is not that, and
+/// 1.5.5's dropped request never reached the refund either (spec §7 F13, the four cancel rules).
+pub fn audit_abandoned(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>) -> SeatVerdict<Audit> {
+    SeatVerdict::proceed(unit_token, door::admitted_facts(ctx.op_class, None, false))
 }
 
 /// Seal the end of a unit that never passed the door. Nothing was charged, so nothing is refunded.

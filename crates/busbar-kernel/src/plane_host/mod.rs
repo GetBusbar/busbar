@@ -472,7 +472,8 @@ pub async fn synthesize_completion_over(
     model: &str,
     body: bytes::Bytes,
     max_body_bytes: usize,
-) -> Result<busbar_kernel::plane_host::HostCompletion, String> {
+) -> Result<busbar_kernel::plane_host::HostCompletion, busbar_kernel::plane_host::CompletionRefusal>
+{
     // FRESH headers, not the inbound request's: the caller's own headers carry affinity keys and
     // per-request parameters addressed to the caller's request, and replaying them onto a leg the
     // caller did not compose would let one exchange steer another.
@@ -486,9 +487,9 @@ pub async fn synthesize_completion_over(
     // LLM routing tables and RELOCATED into the LLM plane; core reaches it through the neutral
     // resolved-completion seam, threading `App`/`GovCtx` back opaquely as [`ArrivalCtx`]. `None` is
     // the all-planes-off deletion configuration: with no LLM plane installed there is no chat dialect
-    // to drive, and the caller gets that as an error rather than a hard-coded protocol identity.
+    // to drive, and the caller gets that as a neutral refusal it words in its own vocabulary.
     let Some(synth) = busbar_kernel::ingress::arrival::completion_ingress() else {
-        return Err("no default chat protocol is installed".to_string());
+        return Err(busbar_kernel::plane_host::CompletionRefusal::NotInstalled);
     };
     let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(
         crate::ingress::arrival_host::ArrivalPayload {
@@ -507,7 +508,7 @@ pub async fn synthesize_completion_over(
     let status = response.status().as_u16();
     let body = axum::body::to_bytes(response.into_body(), max_body_bytes)
         .await
-        .map_err(|e| format!("the sampling completion's body could not be read: {e}"))?;
+        .map_err(|e| busbar_kernel::plane_host::CompletionRefusal::BodyUnread(e.to_string()))?;
     Ok(busbar_kernel::plane_host::HostCompletion { status, body })
 }
 
@@ -719,7 +720,7 @@ impl busbar_kernel::plane_host::JournalHost for EngineHostImpl {
     fn audit_emit(&self, action: &str, resource: &str, outcome: &str, principal: &str) {
         // Hostless: the admin-audit engine reads `store::now` + the global ring and needs no `HostCtx`.
         // A plain forward to the UNCHANGED core engine.
-        crate::plane::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
+        crate::audit::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
     }
 
     fn audit_record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
@@ -1247,8 +1248,11 @@ impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
         started: std::time::Instant,
         charged_at: u64,
         resp: axum::response::Response,
-        charged: bool,
+        charged: Option<&busbar_kernel::plane_host::AdmitHandle>,
     ) -> axum::response::Response {
+        // The handle is the grant `admission_check`/`admission_door` wrapped: its charge is what a
+        // non-2xx end refunds.
+        let grant = charged.and_then(|h| h.0.downcast_ref::<crate::governance::AdmitGrant>());
         crate::ingress::finish_admitted(
             &self.app,
             gov,
@@ -1257,7 +1261,7 @@ impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
             started,
             charged_at,
             resp,
-            charged,
+            grant.map(crate::governance::AdmitGrant::charge),
         )
     }
 
@@ -1300,7 +1304,10 @@ impl busbar_kernel::plane_host::CompletionHost for EngineHostImpl {
         model: &str,
         body: bytes::Bytes,
         max_body_bytes: usize,
-    ) -> Result<busbar_kernel::plane_host::HostCompletion, String> {
+    ) -> Result<
+        busbar_kernel::plane_host::HostCompletion,
+        busbar_kernel::plane_host::CompletionRefusal,
+    > {
         // The veneer keeps the `ingress::operation_resolved` + `handlers::chat` + `proxy::LazyBody`
         // reaches in core; it only `.await`s the native async fn, so no `HostCtx` crosses the
         // `.await` and the future stays `Send`.
@@ -1752,19 +1759,6 @@ impl<'a> HostDispatch<'a> {
         self.app
     }
 
-    /// Borrow a [`HostState`] over this guard's `app` + arena. The raw `HostCtx` materialized from it
-    /// (see [`with_host`](Self::with_host)) is `!Send` and valid only while the returned borrow lives.
-    #[must_use]
-    pub fn host_state(&self) -> HostState<'_> {
-        HostState {
-            app: self.app,
-            scope: &self.scope,
-            emitter: None,
-            caller: None,
-            destinations: None,
-        }
-    }
-
     /// Run `f` SYNCHRONOUSLY with a materialized [`HostCtx`] + the host `&PlaneHostVtable` — the
     /// between-awaits seam a plane call rides. The `HostState` backing the `HostCtx` is stack-pinned
     /// for exactly the duration of `f` (the [`recover`] invariant); the pointer must not escape it. A
@@ -1812,19 +1806,6 @@ impl SendHostDispatch {
         &self.app
     }
 
-    /// Borrow a [`HostState`] over the owned `app` + arena — the materialization seam, called INSIDE
-    /// the blocking closure so the raw `HostCtx` never crosses the `spawn_blocking` boundary.
-    #[must_use]
-    pub fn host_state(&self) -> HostState<'_> {
-        HostState {
-            app: &self.app,
-            scope: &self.scope,
-            emitter: None,
-            caller: None,
-            destinations: None,
-        }
-    }
-
     /// Run `f` synchronously with a materialized [`HostCtx`] + host vtable, INSIDE the blocking body.
     /// The [`HostGeneration`] opens HERE (on the blocking thread the closure actually runs on —
     /// `HostGeneration` is thread-local, so opening it back on the async task's thread in
@@ -1835,84 +1816,13 @@ impl SendHostDispatch {
     }
 }
 
-/// A `Send + 'static` route to a host whose lifecycle arena is a [`DurableScope`] the DETACHED runner
-/// owns — the create_task settle path (`mcp::tasks::Runner`). Unlike [`SendHostDispatch`] its arena is
-/// NOT reclaimed at request-future drop: the breaker probe-hold `into_task_dispatch` handed off rides
-/// here and releases only when THIS guard drops WITH the runner (normal end OR a `tasks/cancel` abort),
-/// the v4-arena-bug guard. A `HostState` materialized over `durable.arena()` drives the exact same host
-/// `breaker_settle` seam the per-request path does, so the runner's detached leg can settle the durable
-/// admission through the vtable with no change to the breaker path.
-///
-/// ADDITIVE and UNUSED by the breaker inversion: the guard is REACHABLE at the durable site (the runner
-/// carries one), but `tasks::run` does not yet call settle — the durable scope's drop still reclaims the
-/// probe, exactly as before. Phase-2 CLUSTER-1 flips the detached leg to `settle` through this route.
-pub struct DurableHostDispatch {
-    app: Arc<App>,
-    /// The durable arena holding the handed-off breaker probe-hold; drops (and reclaims) with the guard.
-    durable: DurableScope,
-    /// The durable admission's id — what the detached leg settles by. [`AdmissionId::NONE`] when no
-    /// settling admission was handed off (a degenerate route that won nothing to re-home).
-    admission: busbar_contract::abi::hot::AdmissionId,
-}
-
-impl DurableHostDispatch {
-    /// Open a durable host route owning `app` and the runner's `durable` scope, keyed by the durable
-    /// `admission` id the detached leg settles.
-    #[must_use]
-    pub fn new(
-        app: Arc<App>,
-        durable: DurableScope,
-        admission: busbar_contract::abi::hot::AdmissionId,
-    ) -> Self {
-        DurableHostDispatch {
-            app,
-            durable,
-            admission,
-        }
-    }
-
-    /// The durable admission id the detached leg settles (or [`AdmissionId::NONE`]).
-    #[must_use]
-    pub fn admission(&self) -> busbar_contract::abi::hot::AdmissionId {
-        self.admission
-    }
-
-    /// The durable arena (reclaimed with this guard at task end).
-    #[must_use]
-    pub fn durable(&self) -> &DurableScope {
-        &self.durable
-    }
-
-    /// The live engine snapshot the task was admitted on.
-    #[must_use]
-    pub fn app(&self) -> &App {
-        &self.app
-    }
-
-    /// Borrow a [`HostState`] over the owned `app` + the DURABLE arena — the materialization seam the
-    /// detached leg calls to reach `breaker_settle` for the durable admission.
-    #[must_use]
-    pub fn host_state(&self) -> HostState<'_> {
-        HostState {
-            app: &self.app,
-            scope: self.durable.arena(),
-            emitter: None,
-            caller: None,
-            destinations: None,
-        }
-    }
-
-    /// Run `f` synchronously with a materialized [`HostCtx`] + host vtable over the durable arena. A
-    /// fresh [`HostGeneration`] opens for exactly this call (on this thread) and drops when it
-    /// returns, so a `HostCtx` from a prior/foreign call is refused rather than dereferenced.
-    pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
-        mint(None, None, None, &self.app, self.durable.arena(), f)
-    }
-}
-
 #[cfg(test)]
 #[path = "tests/mod_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/residual_tests.rs"]
+mod residual_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 // THE NEUTRAL LLM-RUNTIME BUILD CARRIER (1.6.0 money-path Phase 3-4 C): the single-compiled `PlaneBuildInput`
@@ -2051,6 +1961,17 @@ pub struct HostCompletion {
     pub status: u16,
     /// The pipeline's response body bytes (bounded by the `max_body_bytes` the caller passed).
     pub body: bytes::Bytes,
+}
+
+/// Why the host produced no completion. NEUTRAL: the kernel names the fact, and the plane that asked
+/// words the refusal in its own vocabulary (lean-core: no plane word is a kernel literal).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompletionRefusal {
+    /// No plane installed the resolved-completion ingress, so there is no dialect to drive.
+    NotInstalled,
+    /// The pipeline answered, but its body could not be read within `max_body_bytes`; carries the
+    /// read error's text.
+    BodyUnread(String),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -2673,13 +2594,16 @@ pub trait TelemetryHost: Send + Sync {
     fn pool_label<'a>(&self, model: &'a str) -> &'a str;
 }
 
+/// The audit action of a residual row ([`JournalHost::settle_residual`]): counts reported, never billed.
+pub const USAGE_RESIDUAL_ACTION: &str = "usage.residual";
+
 /// The JOURNAL slice: the durable admin-audit / call-log emits a plane writes as a side effect of the
 /// mutation it records. All fire-and-forget (a store miss never fails the recorded action). Split off
 /// `EngineHost` as a supertrait.
 pub trait JournalHost: Send + Sync {
     /// Emit ONE hostless admin-audit record `(action, resource, outcome, principal)` to the shared
     /// admin audit log. Fire-and-forget, loudly: a store write failure NEVER fails the mutation it
-    /// records. Identical to `busbar_kernel::plane::auditlog::emit_admin_hostless_now` — this seam needs
+    /// records. Identical to `busbar_kernel::audit::auditlog::emit_admin_hostless_now` — this seam needs
     /// no `HostCtx`, so it is a plain forward to that engine (which stays unchanged in core).
     fn audit_emit(&self, action: &str, resource: &str, outcome: &str, principal: &str);
 
@@ -2692,6 +2616,28 @@ pub trait JournalHost: Send + Sync {
     ///
     /// WEDGE 3 (App-retype): the neutral home of the engine's `AUDIT.record_by(...)` reach.
     fn audit_record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str);
+
+    /// THE SETTLE STEP'S RESIDUAL ROW (MONEY LAW, owner 2026-10-02; ARCHITECT ruling 2026-10-02): a
+    /// usage count no billing class records is WARNed where the reader found it, never billed, and
+    /// recorded here as ONE `usage.residual` row per non-empty `residual` map on the DURABLE
+    /// PER-PRINCIPAL journal stream ([`crate::residual_log`]): store-backed, hash-chained per
+    /// `principal`, replayed at boot, never evicted. NOT the admin audit ring
+    /// ([`audit_record`](Self::audit_record)), which is operator-rate and bounded in RAM. The row names
+    /// every unit and its count, the plane, the dialect that reported them, the serving lane and the
+    /// request id, outcome `unbilled`; `principal` is the caller the units settled against. An empty
+    /// map writes nothing. The row is the kernel's, so a plane hands the counts over and never spells
+    /// the row itself.
+    fn settle_residual(
+        &self,
+        residual: &std::collections::BTreeMap<String, u64>,
+        plane: &str,
+        dialect: &str,
+        lane: &str,
+        request_id: u64,
+        principal: &str,
+    ) {
+        crate::residual_log::emit(residual, plane, dialect, lane, request_id, principal);
+    }
 
     /// Emit ONE per-call record through the durable MCP call-log engine. The transient `HostCtx` the
     /// chain seam needs is minted INTERNALLY (a fresh per-call arena over the live engine — the append
@@ -3182,8 +3128,9 @@ pub trait AdmissionHost: Send + Sync {
 
     /// POST-ADMISSION finish through the host: emit the per-request metric family + request-log
     /// webhook and, on a NON-2xx outcome, REFUND the flat per-request fee IFF it actually landed at
-    /// admission (`charged`). Identical to `busbar_kernel::ingress::finish_admitted` over the bound
-    /// snapshot + `gov` scope.
+    /// admission (`charged`: the admission's own handle, `None` when nothing was charged) — from
+    /// exactly the cells that admission's charge reached. Identical to
+    /// `busbar_kernel::ingress::finish_admitted` over the bound snapshot + `gov` scope.
     #[allow(clippy::too_many_arguments)]
     fn finish_admitted(
         &self,
@@ -3193,7 +3140,7 @@ pub trait AdmissionHost: Send + Sync {
         started: std::time::Instant,
         charged_at: u64,
         resp: axum::response::Response,
-        charged: bool,
+        charged: Option<&AdmitHandle>,
     ) -> axum::response::Response;
 
     /// NOT-CHARGED (pre-charge turn-away) finish through the host: emit metrics + the webhook with NO
@@ -3229,8 +3176,9 @@ pub trait CompletionHost: Send + Sync {
     /// ingress pipeline (governance → pools → breaker/failover → metering → request log) under `gov`,
     /// on the operator's declared `model`, and return the raw wire outcome. The dialect the request is
     /// driven as is NEUTRAL to this seam: the host resolves it from the registry's residual-default
-    /// chat protocol (`None` — no chat dialect installed — surfaces as an error, not a hard-coded
-    /// identity), so MCP's `sampling/complete` bridge names no LLM dialect to reach a completion.
+    /// chat protocol (`None` — no chat dialect installed — surfaces as
+    /// [`CompletionRefusal::NotInstalled`], not a hard-coded identity), so MCP's `sampling/complete`
+    /// bridge names no LLM dialect to reach a completion, and words the refusal itself.
     ///
     /// The ONE async method beside [`IdentityHost::identity_admit`] — but simpler:
     /// the host drives a NATIVE core async fn (no C-ABI slot, no `spawn_blocking`), so this only
@@ -3242,7 +3190,7 @@ pub trait CompletionHost: Send + Sync {
         model: &str,
         body: bytes::Bytes,
         max_body_bytes: usize,
-    ) -> Result<HostCompletion, String>;
+    ) -> Result<HostCompletion, CompletionRefusal>;
 }
 
 /// The neutral HOST seam a plane calls to reach the engine's host-owned capabilities.

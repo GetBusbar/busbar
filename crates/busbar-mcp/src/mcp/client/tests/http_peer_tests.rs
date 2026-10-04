@@ -49,7 +49,10 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 const SERVER: &str = "upstream-under-test";
 
+/// The leg every send here runs on, over the root's seam bindings: a hop needs the hostless-egress
+/// driver the composition root installs, and no `TestApp` is built in this file to install it.
 fn leg(pool: &McpConnectionPool) -> WireLeg<'_> {
+    crate::testkit::install_test_seams();
     WireLeg {
         pool,
         policy: SsrfPolicy {

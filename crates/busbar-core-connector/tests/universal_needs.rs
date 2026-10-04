@@ -179,23 +179,6 @@ impl busbar_core_connector::framer::FramerDoor for DroppedDoor {
     }
 }
 
-/// The transport door example `name` beside this test binary, admitted and opened through the one
-/// dispatcher. A missing artifact is a failure, never a skip.
-fn dropped_door(name: &str) -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
-    let exe = std::env::current_exe().expect("the test binary has a path");
-    let examples = exe
-        .parent()
-        .and_then(|d| d.parent())
-        .expect("target/<profile>")
-        .join("examples");
-    let file = busbar_plugin_loader::plugin_library_filename(name);
-    let path = [examples.join(&file), examples.join("deps").join(&file)]
-        .into_iter()
-        .find(|p| p.exists())
-        .unwrap_or_else(|| panic!("the {name} door ({file}) is not built beside the test binary"));
-    open_door(&path).expect("the door is admitted")
-}
-
 /// The libraries beside this test binary: uplifted, under `deps/`, or an example `cdylib`.
 fn libraries_beside_the_test() -> Vec<std::path::PathBuf> {
     let Some(profile) = std::env::current_exe()
@@ -397,6 +380,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
         c.write(
             &payload,
             true,
+            false,
             &mut std::task::Context::from_waker(std::task::Waker::noop()),
         )
         .expect("the write is taken");
@@ -459,7 +443,8 @@ fn head_through_the_table(response: &'static str) -> (Pieces, Option<Vec<u8>>) {
         std::sync::Arc::new(|_| {}),
     );
     let owner = InstanceId(1);
-    c.declare_over(owner, NeedId(0), scheme);
+    c.declare_over(owner, NeedId(0), scheme)
+        .expect("a served scheme declares");
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -591,10 +576,18 @@ fn the_head_words_reach_the_framer_byte_for_byte() {
     );
 }
 
-/// The dropped-in door that composes over the socket framer: the request/response framer the head
-/// tests drive, by its example's name (the one place this file names it).
+/// The dropped-in door that composes over ONE socket framer: the request/response framer the head
+/// tests drive, found among the libraries beside this test binary by what it states (one layer in
+/// its `composes_over`), as [`layer_door`] finds its layer. It is a pinned plugin repo's cdylib,
+/// which is in no graph of this workspace: the hop's `build:dlopen-cdylibs` builds it (and the
+/// framer door it composes over) from the pinned checkout busbar's root resolves, into this target dir
+/// (spec P5). A missing door is a failure, never a skip.
 fn composing_door() -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
-    dropped_door("http_door")
+    libraries_beside_the_test()
+        .into_iter()
+        .filter_map(|p| open_door(&p))
+        .find(|d| d.facts().composes_over.len() == 1)
+        .expect("a door composing over one socket framer is built beside the test binary")
 }
 
 /// A response template with its version written as the door's own scheme, upper-cased (`{V}`), so
@@ -664,7 +657,8 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
         std::sync::Arc::new(|_| {}),
     );
     let owner = InstanceId(1);
-    c.declare_over(owner, NeedId(1), raw);
+    c.declare_over(owner, NeedId(1), raw)
+        .expect("a served scheme declares");
     assert!(
         !c.framed(owner, NeedId(1)),
         "the socket framer is a raw stream"
@@ -677,7 +671,8 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
         let (far, mut seen) =
             serve_once(respond(scheme, "{V} 200 OK\r\ncontent-length: 0\r\n\r\n")).await;
         let declared = format!("{scheme}://{far}");
-        c.declare_need_to(owner, NeedId(0), scheme, 0, &declared);
+        c.declare_need_to(owner, NeedId(0), scheme, 0, &declared)
+            .expect("a served scheme declares");
         assert!(c.framed(owner, NeedId(0)), "the composing door is framed");
         let fields: [(&str, &[u8]); 1] = [("x-a", b"1")];
         let desc = OpenDesc {

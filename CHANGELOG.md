@@ -867,6 +867,27 @@ each dialect translates, field by field, is listed in the generated
   split of the cache-write tokens (additive: billed counts are unchanged).
 - A buffered OpenAI chat response carries its citations as nested `url_citation` annotations, the
   shape the published Chat Completions schema defines.
+- On a same-dialect route the caller receives every upstream response header except hop-by-hop
+  fields, Content-Length, Content-Encoding and the dialect's tenant- and credential-derived headers;
+  1.5.5 relayed only Content-Type and the dialect's request-id headers.
+- A same-dialect request reaches the upstream as the caller's own bytes. Where busbar edits a
+  member it governs (the mapped `model`, the `stream_options.include_usage` it asks for to meter a
+  stream, a `prompt: rw` hook's rewrite), the member is edited in place; key order, spacing and
+  number spelling stay the caller's. 1.5.5 re-serialized such a body with its keys sorted.
+- A request translated between LLM dialects no longer carries an empty text block in place of a
+  content block the target dialect cannot represent, and an answer translated back no longer
+  delivers one; the block is dropped with a warning and an audit row naming its wire path.
+- A request translated between LLM dialects no longer has a value substituted for one the target
+  dialect cannot carry: an image whose format Bedrock Converse does not accept is dropped instead
+  of relabelled `png`, and a Gemini `thinkingBudget: -1` ("the model decides") is dropped on a
+  target with no such setting instead of sent as the `medium` effort; each drop is warned and
+  audited by its wire path. A wrong-typed Gemini `thinkingBudget` or Anthropic image `media_type` is
+  answered with the caller's own 400 error instead of being translated.
+- What a dialect's reader cannot carry across a translation (an unknown image detail or effort
+  word, a tool-choice form or modality with no counterpart, extra choices or candidates, a Bedrock-only
+  answer member, a Responses answer's request echoes) is now audited like a writer's drop, and every
+  drop names the caller's own wire path, never an internal name.
+- 1.6.0 Changed: a streamed answer the client cancels after its first byte keeps its charge. It is billed for what streamed and its request-budget unit is no longer given back; 1.5.5 gave the unit back. A mid-stream cut is not a refund.
 
 ### Fixed
 

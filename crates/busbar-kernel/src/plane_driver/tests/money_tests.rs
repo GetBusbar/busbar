@@ -99,6 +99,19 @@ struct Rig {
     posted: Arc<Posted>,
     cost: Arc<CostModel>,
     key: Arc<VirtualKey>,
+    /// The unit 1 the rig opened, before any admission charged it.
+    unit: UnitMoney,
+}
+
+/// Admit unit 1 through the real admission (its fee charged), and re-open it carrying that charge,
+/// as the composition root opens a unit it has admitted.
+fn admit(r: &Rig) {
+    let grant = (r.gov.try_admit(&r.cost, &r.key, "", NOW)).expect("admitted, the fee charged");
+    let unit = UnitMoney {
+        charge: grant.charge().clone(),
+        ..r.unit.clone()
+    };
+    r.money.open(UnitKey::new(1), unit);
 }
 
 fn rig(budget_cents: Option<u64>, fee: i64, mode: ExhaustionMode) -> Rig {
@@ -110,29 +123,29 @@ fn rig_with(budget_cents: Option<u64>, fee: i64, mode: ExhaustionMode, rule: Fee
     let posted = Arc::new(Posted::default());
     let money = PlaneMoney::new(gov.clone(), posted.clone());
     let (cost, key) = (cost(budget_cents, fee), key());
-    money.open(
-        UnitKey::new(1),
-        UnitMoney {
-            key: key.clone(),
-            cost: cost.clone(),
-            pool: String::new(),
-            model: "m".into(),
-            classes: Arc::from(vec![
-                "input".to_string(),
-                "output".to_string(),
-                busbar_contract::plane::PER_REQUEST.to_string(),
-            ]),
-            arrived: NOW,
-            mode,
-            fee: rule,
-        },
-    );
+    let unit = UnitMoney {
+        key: key.clone(),
+        cost: cost.clone(),
+        pool: String::new(),
+        model: "m".into(),
+        classes: Arc::from(vec![
+            "input".to_string(),
+            "output".to_string(),
+            busbar_contract::plane::PER_REQUEST.to_string(),
+        ]),
+        arrived: NOW,
+        mode,
+        fee: rule,
+        charge: Default::default(),
+    };
+    money.open(UnitKey::new(1), unit.clone());
     Rig {
         gov,
         money,
         posted,
         cost,
         key,
+        unit,
     }
 }
 
@@ -212,9 +225,7 @@ fn a_cancel_bill_is_ledgered_and_the_end_adds_nothing() {
 #[test]
 fn an_undelivered_end_refunds_the_flat_fee() {
     let r = rig(None, 5, ExhaustionMode::FinishUnit);
-    r.gov
-        .try_admit(&r.cost, &r.key, "", NOW)
-        .expect("admitted, the fee charged");
+    admit(&r);
     assert_eq!(usage(&r).1, 5);
     r.money.settle_end(UnitKey::new(1), 503);
     assert_eq!(usage(&r).1, 0, "1.5.5's non-2xx refund of the request fee");
@@ -223,7 +234,7 @@ fn an_undelivered_end_refunds_the_flat_fee() {
 #[test]
 fn a_delivered_end_keeps_the_flat_fee() {
     let r = rig(None, 5, ExhaustionMode::FinishUnit);
-    r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted");
+    admit(&r);
     r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(usage(&r).1, 5);
 }
@@ -249,7 +260,7 @@ fn fee_reported(amount: u64) -> UnitCount {
 #[test]
 fn a_plane_that_reports_no_fee_unit_has_its_fee_refunded() {
     let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
-    r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted");
+    admit(&r);
     let _ = r.money.checkpoint(&ctx(1), &[fee_reported(0)]);
     r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(usage(&r).1, 0, "the plane decides: no fee unit, no fee");
@@ -260,7 +271,7 @@ fn a_plane_that_reports_no_fee_unit_has_its_fee_refunded() {
 #[test]
 fn a_plane_that_reports_its_fee_unit_keeps_the_fee() {
     let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
-    r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted");
+    admit(&r);
     let _ = r.money.checkpoint(&ctx(1), &[fee_reported(1)]);
     r.money.settle_end(UnitKey::new(1), 503);
     assert_eq!(usage(&r).1, 5, "the plane reported its fee unit");
@@ -272,7 +283,7 @@ fn a_plane_that_reports_its_fee_unit_keeps_the_fee() {
 #[test]
 fn a_fee_unit_count_is_never_ledgered_as_usage() {
     let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
-    r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted");
+    admit(&r);
     let report = [
         UnitCount {
             class: INPUT,
@@ -586,7 +597,7 @@ fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
 #[test]
 fn a_cancelled_undelivered_unit_is_refunded_once_and_an_abandoned_one_never() {
     let r = rig(None, 5, ExhaustionMode::FinishUnit);
-    r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted");
+    admit(&r);
     r.money.cancelled(
         &ctx(1),
         &CancelBill {
@@ -603,7 +614,7 @@ fn a_cancelled_undelivered_unit_is_refunded_once_and_an_abandoned_one_never() {
     assert_eq!(usage(&r).1, 0, "and once");
 
     let r = rig(None, 5, ExhaustionMode::FinishUnit);
-    r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted");
+    admit(&r);
     r.money.abandoned(&ctx(1), Ended::AlreadySettled);
     assert_eq!(
         usage(&r).1,
@@ -656,8 +667,17 @@ fn a_cancel_bill_carries_the_floor_counts_and_never_an_estimate() {
 #[test]
 fn a_fee_unit_floor_count_keeps_the_fee() {
     let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
-    r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted");
+    admit(&r);
     let _ = r.money.checkpoint(&ctx(1), &[floor(FEE_UNIT, 1)]);
     r.money.settle_end(UnitKey::new(1), 503);
     assert_eq!(usage(&r).1, 5, "a floor fee unit keeps the fee");
+}
+
+/// THE SESSION MONEY GUARD (ARCHITECT 2026-09-30: K6's refusing session defaults stand until
+/// K6-4). The production money seam states no session money yet, so it refuses every duplex
+/// session at its open, as `Unpriced`: no session runs unbilled. K6-4 turns this test over.
+#[test]
+fn the_production_money_seam_refuses_a_session_until_its_money_is_stated() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+    assert_eq!(r.money.session_opened(&ctx(1)), Err(ReasonCode::Unpriced));
 }

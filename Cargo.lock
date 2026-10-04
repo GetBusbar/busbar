@@ -95,9 +95,9 @@ checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "arc-swap"
@@ -289,15 +289,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "block-buffer"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdd35008169921d80bc60d3d0ab416eecb028c4cd653352907921d95084790be"
-dependencies = [
- "hybrid-array",
-]
-
-[[package]]
 name = "borrow-or-share"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -336,7 +327,6 @@ dependencies = [
  "busbar-kernel",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
- "busbar-kernel-budget",
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
@@ -345,9 +335,12 @@ dependencies = [
  "busbar-llm",
  "busbar-mcp",
  "busbar-plane-decisions",
+ "busbar-plane-llm",
  "busbar-plane-streaming",
  "busbar-plugin-example-plane",
  "busbar-plugin-loader",
+ "busbar-secret-env",
+ "busbar-secret-file",
  "busbar-store-memory",
  "busbar-transport-http",
  "busbar-transport-stdio",
@@ -364,6 +357,7 @@ dependencies = [
  "hex",
  "http-body",
  "http-body-util",
+ "idna_adapter",
  "metrics",
  "opentelemetry-proto",
  "prost",
@@ -371,7 +365,7 @@ dependencies = [
  "reqwest",
  "serde_json",
  "serde_yaml_ng",
- "sha2 0.11.0",
+ "sha2",
  "socket2",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
@@ -400,20 +394,20 @@ dependencies = [
  "futures",
  "getrandom 0.3.4",
  "hex",
- "hmac",
  "http",
  "http-body-util",
  "indexmap",
  "prost",
  "rcgen",
  "reqwest",
+ "ring",
  "rustls",
  "rustls-pki-types",
  "schemars",
  "serde",
  "serde_json",
  "serde_yaml_ng",
- "sha2 0.11.0",
+ "sha2",
  "tokio",
  "tonic",
  "tonic-types",
@@ -426,17 +420,44 @@ dependencies = [
 [[package]]
 name = "busbar-auth-admin-tokens"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=47cb5047e4c9a73341c613c09a056b4a4bb8eb99#47cb5047e4c9a73341c613c09a056b4a4bb8eb99"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=648b6683d0b9274c02a20f6da17146ba1b85f74c#648b6683d0b9274c02a20f6da17146ba1b85f74c"
 dependencies = [
  "busbar-contract",
+ "serde_json",
 ]
 
 [[package]]
 name = "busbar-auth-admin-tokens-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=47cb5047e4c9a73341c613c09a056b4a4bb8eb99#47cb5047e4c9a73341c613c09a056b4a4bb8eb99"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=648b6683d0b9274c02a20f6da17146ba1b85f74c#648b6683d0b9274c02a20f6da17146ba1b85f74c"
 dependencies = [
  "busbar-auth-admin-tokens",
+ "busbar-contract",
+]
+
+[[package]]
+name = "busbar-auth-header"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "busbar-auth-oauth"
+version = "1.6.0"
+dependencies = [
+ "base64 0.22.1",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "http",
+ "ring",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2",
 ]
 
 [[package]]
@@ -467,20 +488,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-auth-sigv4"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "hex",
+ "ring",
+ "serde",
+ "serde_json",
+ "zeroize",
+]
+
+[[package]]
+name = "busbar-auth-webhook-signature"
+version = "1.6.0"
+dependencies = [
+ "base64 0.22.1",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "ring",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "busbar-contract"
 version = "1.6.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "futures",
  "hex",
  "http",
  "indexmap",
  "jsonschema",
+ "libc",
  "memchr",
  "serde",
  "serde_json",
  "serde_yaml_ng",
- "sha2 0.11.0",
+ "sha2",
  "smallvec",
  "tracing",
  "tracing-core",
@@ -523,6 +571,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-plugin-loader",
+ "busbar-transport-tcp-plugin",
  "crc32fast",
  "dimpl",
  "futures",
@@ -533,7 +582,7 @@ dependencies = [
  "rustls-pki-types",
  "rustls-webpki",
  "serde_json",
- "sha2 0.11.0",
+ "sha2",
  "socket2",
  "tokio",
  "tokio-rustls",
@@ -558,6 +607,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
  "tokio",
  "tracing",
 ]
@@ -584,7 +634,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=02f463307f9820faedda131467dcfaa83b25df78#02f463307f9820faedda131467dcfaa83b25df78"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=b10cd35eaec72969ac2b40dea379194d655daca9#b10cd35eaec72969ac2b40dea379194d655daca9"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -596,15 +646,16 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=02f463307f9820faedda131467dcfaa83b25df78#02f463307f9820faedda131467dcfaa83b25df78"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=b10cd35eaec72969ac2b40dea379194d655daca9#b10cd35eaec72969ac2b40dea379194d655daca9"
 dependencies = [
+ "busbar-contract",
  "busbar-export-otlp",
 ]
 
 [[package]]
 name = "busbar-export-prometheus"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f#0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=1df4b10d12764fef89966b9c9bd007f5d481f6ed#1df4b10d12764fef89966b9c9bd007f5d481f6ed"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -614,8 +665,9 @@ dependencies = [
 [[package]]
 name = "busbar-export-prometheus-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f#0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=1df4b10d12764fef89966b9c9bd007f5d481f6ed#1df4b10d12764fef89966b9c9bd007f5d481f6ed"
 dependencies = [
+ "busbar-contract",
  "busbar-export-prometheus",
 ]
 
@@ -652,9 +704,9 @@ dependencies = [
 name = "busbar-hooks-ranking"
 version = "1.6.0"
 dependencies = [
- "async-trait",
  "busbar-contract",
- "tokio",
+ "busbar-plugin-loader",
+ "serde_json",
 ]
 
 [[package]]
@@ -677,10 +729,13 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
+ "busbar-kernel-scope",
  "busbar-kernel-wal",
  "busbar-llm",
  "busbar-mcp",
  "busbar-plugin-loader",
+ "busbar-secret-env",
+ "busbar-secret-file",
  "busbar-store-memory",
  "bytes",
  "crc32fast",
@@ -689,7 +744,6 @@ dependencies = [
  "futures",
  "getrandom 0.3.4",
  "hex",
- "hmac",
  "http",
  "http-body",
  "http-body-util",
@@ -713,7 +767,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "serde_yaml_ng",
- "sha2 0.11.0",
+ "sha2",
  "sonic-rs",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
@@ -735,8 +789,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "ed25519-dalek",
- "serde_json",
- "sha2 0.11.0",
+ "ring",
  "zeroize",
 ]
 
@@ -746,14 +799,6 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "httpdate",
-]
-
-[[package]]
-name = "busbar-kernel-budget"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "busbar-kernel-ledger",
 ]
 
 [[package]]
@@ -772,10 +817,9 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "hex",
- "hmac",
  "ring",
  "serde",
- "sha2 0.11.0",
+ "sha2",
  "tracing",
 ]
 
@@ -784,9 +828,9 @@ name = "busbar-kernel-ledger"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-kernel-budget",
+ "ring",
  "serde",
- "sha2 0.11.0",
+ "sha2",
 ]
 
 [[package]]
@@ -801,7 +845,8 @@ name = "busbar-kernel-wal"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "sha2 0.11.0",
+ "ring",
+ "sha2",
 ]
 
 [[package]]
@@ -817,17 +862,16 @@ dependencies = [
  "bytes",
  "crc32fast",
  "futures",
- "hmac",
  "http",
  "http-body-util",
  "hyper",
  "metrics",
  "proptest",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "serde_yaml_ng",
- "sha2 0.11.0",
  "smallvec",
  "sonic-rs",
  "tikv-jemallocator",
@@ -850,7 +894,6 @@ dependencies = [
  "busbar-kernel",
  "busbar-llm",
  "busbar-plane-mcp",
- "busbar-plugin-loader",
  "bytes",
  "futures",
  "getrandom 0.3.4",
@@ -860,13 +903,14 @@ dependencies = [
  "indexmap",
  "rcgen",
  "reqwest",
+ "ring",
  "rmcp",
  "schemars",
  "serde",
  "serde_json",
  "serde_urlencoded",
  "serde_yaml_ng",
- "sha2 0.11.0",
+ "sha2",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -896,6 +940,7 @@ name = "busbar-plane-llm"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-plugin-loader",
  "bytes",
  "getrandom 0.3.4",
  "serde",
@@ -937,19 +982,21 @@ dependencies = [
 name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
- "async-trait",
  "busbar-auth-admin-tokens-plugin",
  "busbar-auth-oidc-plugin",
  "busbar-contract",
  "busbar-export-file-plugin",
+ "busbar-export-otlp",
  "busbar-export-otlp-plugin",
+ "busbar-export-prometheus",
  "busbar-export-prometheus-plugin",
  "busbar-export-webhook-plugin",
- "busbar-hook-test-plugin",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-plugin-example-plane",
+ "busbar-secret-env",
  "busbar-store-memory",
+ "busbar-transport-tcp",
  "busbar-transport-tcp-plugin",
  "ed25519-dalek",
  "flate2",
@@ -963,11 +1010,28 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "tar",
  "tokio",
  "tracing",
  "tungstenite",
+]
+
+[[package]]
+name = "busbar-secret-env"
+version = "1.0.0"
+source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=495318c9fa50c42b28705208fd02e83e3f363312#495318c9fa50c42b28705208fd02e83e3f363312"
+dependencies = [
+ "busbar-contract",
+ "serde_json",
+]
+
+[[package]]
+name = "busbar-secret-file"
+version = "1.0.0"
+source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=479c833a108bc5d94e03f754b0a1b5f9ea97c0e3#479c833a108bc5d94e03f754b0a1b5f9ea97c0e3"
+dependencies = [
+ "busbar-contract",
+ "serde_json",
 ]
 
 [[package]]
@@ -982,7 +1046,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=17cfd311eb8f72340dc323f9947f0055a8b537bd#17cfd311eb8f72340dc323f9947f0055a8b537bd"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=9e6bf2cdbe77e51968dd6e8df6a1eabe96c0a1c4#9e6bf2cdbe77e51968dd6e8df6a1eabe96c0a1c4"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -1030,12 +1094,10 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=1c6a67f010728c96fe9041e41817fb69c8e4fd05#1c6a67f010728c96fe9041e41817fb69c8e4fd05"
 dependencies = [
  "busbar-contract",
- "busbar-plugin-loader",
- "busbar-transport-ws",
  "futures",
- "libloading",
  "serde_json",
  "tokio",
  "tokio-tungstenite",
@@ -1107,9 +1169,9 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "chacha20"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
@@ -1183,22 +1245,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
-name = "cmov"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
-
-[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
-
-[[package]]
-name = "const-oid"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
 name = "core-foundation-sys"
@@ -1307,24 +1357,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crypto-common"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453"
-dependencies = [
- "hybrid-array",
-]
-
-[[package]]
-name = "ctutils"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e"
-dependencies = [
- "cmov",
-]
-
-[[package]]
 name = "curve25519-dalek"
 version = "4.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1333,7 +1365,7 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "curve25519-dalek-derive",
- "digest 0.10.7",
+ "digest",
  "fiat-crypto",
  "rustc_version",
  "subtle",
@@ -1363,7 +1395,7 @@ version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
- "const-oid 0.9.6",
+ "const-oid",
  "zeroize",
 ]
 
@@ -1393,20 +1425,8 @@ version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
- "block-buffer 0.10.4",
- "crypto-common 0.1.7",
-]
-
-[[package]]
-name = "digest"
-version = "0.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
-dependencies = [
- "block-buffer 0.12.0",
- "const-oid 0.10.2",
- "crypto-common 0.2.2",
- "ctutils",
+ "block-buffer",
+ "crypto-common",
 ]
 
 [[package]]
@@ -1460,7 +1480,7 @@ dependencies = [
  "curve25519-dalek",
  "ed25519",
  "serde",
- "sha2 0.10.9",
+ "sha2",
  "subtle",
  "zeroize",
 ]
@@ -1860,15 +1880,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
-name = "hmac"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
-dependencies = [
- "digest 0.11.3",
-]
-
-[[package]]
 name = "http"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1912,15 +1923,6 @@ name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
-
-[[package]]
-name = "hybrid-array"
-version = "0.4.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9155a582abd142abc056962c29e3ce5ff2ad5469f4246b537ed42c5deba857da"
-dependencies = [
- "typenum",
-]
 
 [[package]]
 name = "hyper"
@@ -2021,88 +2023,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "icu_collections"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2984d1cd16c883d7935b9e07e44071dca8d917fd52ecc02c04d5fa0b5a3f191c"
-dependencies = [
- "displaydoc",
- "potential_utf",
- "utf8_iter",
- "yoke",
- "zerofrom",
- "zerovec",
-]
-
-[[package]]
-name = "icu_locale_core"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92219b62b3e2b4d88ac5119f8904c10f8f61bf7e95b640d25ba3075e6cac2c29"
-dependencies = [
- "displaydoc",
- "litemap",
- "tinystr",
- "writeable",
- "zerovec",
-]
-
-[[package]]
-name = "icu_normalizer"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c56e5ee99d6e3d33bd91c5d85458b6005a22140021cc324cea84dd0e72cff3b4"
-dependencies = [
- "icu_collections",
- "icu_normalizer_data",
- "icu_properties",
- "icu_provider",
- "smallvec",
- "zerovec",
-]
-
-[[package]]
-name = "icu_normalizer_data"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da3be0ae77ea334f4da67c12f149704f19f81d1adf7c51cf482943e84a2bad38"
-
-[[package]]
-name = "icu_properties"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bee3b67d0ea5c2cca5003417989af8996f8604e34fb9ddf96208a033901e70de"
-dependencies = [
- "icu_collections",
- "icu_locale_core",
- "icu_properties_data",
- "icu_provider",
- "zerotrie",
- "zerovec",
-]
-
-[[package]]
-name = "icu_properties_data"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e2bbb201e0c04f7b4b3e14382af113e17ba4f63e2c9d2ee626b720cbce54a14"
-
-[[package]]
-name = "icu_provider"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "139c4cf31c8b5f33d7e199446eff9c1e02decfc2f0eec2c8d71f65befa45b421"
-dependencies = [
- "displaydoc",
- "icu_locale_core",
- "writeable",
- "yoke",
- "zerofrom",
- "zerotrie",
- "zerovec",
-]
-
-[[package]]
 name = "idna"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2115,12 +2035,22 @@ dependencies = [
 
 [[package]]
 name = "idna_adapter"
-version = "1.2.2"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
+checksum = "279259b0ac81c89d11c290495fdcfa96ea3643b7df311c138b6fe8ca5237f0f8"
 dependencies = [
- "icu_normalizer",
- "icu_properties",
+ "idna_mapping",
+ "unicode-bidi",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "idna_mapping"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11c13906586a4b339310541a274dd927aff6fcbb5b8e3af90634c4b31681c792"
+dependencies = [
+ "unicode-joining-type",
 ]
 
 [[package]]
@@ -2267,12 +2197,6 @@ name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
-
-[[package]]
-name = "litemap"
-version = "0.8.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "lock_api"
@@ -2571,7 +2495,7 @@ dependencies = [
  "http-body",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2",
 ]
 
 [[package]]
@@ -2775,15 +2699,6 @@ name = "portable-atomic"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
-
-[[package]]
-name = "potential_utf"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0103b1cef7ec0cf76490e969665504990193874ea05c85ff9bab8b911d0a0564"
-dependencies = [
- "zerovec",
-]
 
 [[package]]
 name = "powerfmt"
@@ -3356,9 +3271,9 @@ dependencies = [
 
 [[package]]
 name = "rkyv"
-version = "0.8.16"
+version = "0.8.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73389e0c99e664f919275ab5b5b0471391fe9a8de61e1dff9b1eaf56a90f16e3"
+checksum = "d9776093b7ca170454ab1406954f7b7d97a57c51dc6c0642957fb2ef25c2d399"
 dependencies = [
  "bytes",
  "hashbrown 0.17.1",
@@ -3374,13 +3289,13 @@ dependencies = [
 
 [[package]]
 name = "rkyv_derive"
-version = "0.8.16"
+version = "0.8.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d2ed0b54125315fb36bd021e82d314d1c126548f871634b483f46b31d13cac6"
+checksum = "1c25ef604ac7dd839d44d64648952ea23c97866f124ff671b0ed2cf3ad9bb06e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -3646,7 +3561,7 @@ checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
- "digest 0.10.7",
+ "digest",
 ]
 
 [[package]]
@@ -3657,18 +3572,7 @@ checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
- "digest 0.10.7",
-]
-
-[[package]]
-name = "sha2"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.3.0",
- "digest 0.11.3",
+ "digest",
 ]
 
 [[package]]
@@ -3793,12 +3697,6 @@ dependencies = [
  "base64ct",
  "der",
 ]
-
-[[package]]
-name = "stable_deref_trait"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "strum"
@@ -3980,16 +3878,6 @@ checksum = "71c652a3727a9cbb9a02f707f530b618ce00d0ccd762009c8c23bd191df3c17d"
 dependencies = [
  "num-conv",
  "time-core",
-]
-
-[[package]]
-name = "tinystr"
-version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8323304221c2a851516f22236c5722a72eaa19749016521d6dff0824447d96d"
-dependencies = [
- "displaydoc",
- "zerovec",
 ]
 
 [[package]]
@@ -4322,6 +4210,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dbc4bc3a9f746d862c45cb89d705aa10f187bb96c76001afab07a0d35ce60142"
 
 [[package]]
+name = "unicode-bidi"
+version = "0.3.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5"
+
+[[package]]
 name = "unicode-general-category"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4332,6 +4226,21 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-joining-type"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8d00a78170970967fdb83f9d49b92f959ab2bb829186b113e4f4604ad98e180"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unsafe-libyaml"
@@ -4721,12 +4630,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
-name = "writeable"
-version = "0.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
-
-[[package]]
 name = "ws-conformance-subject"
 version = "0.0.0"
 dependencies = [
@@ -4783,29 +4686,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "yoke"
-version = "0.8.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abe8c5fda708d9ca3df187cae8bfb9ceda00dd96231bed36e445a1a48e66f9ca"
-dependencies = [
- "stable_deref_trait",
- "yoke-derive",
- "zerofrom",
-]
-
-[[package]]
-name = "yoke-derive"
-version = "0.8.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de844c262c8848816172cef550288e7dc6c7b7814b4ee56b3e1553f275f1858e"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
- "synstructure",
-]
-
-[[package]]
 name = "zerocopy"
 version = "0.8.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4826,64 +4706,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "zerofrom"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ec05a11813ea801ff6d75110ad09cd0824ddba17dfe17128ea0d5f68e6c5272"
-dependencies = [
- "zerofrom-derive",
-]
-
-[[package]]
-name = "zerofrom-derive"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11532158c46691caf0f2593ea8358fed6bbf68a0315e80aae9bd41fbade684a1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
- "synstructure",
-]
-
-[[package]]
 name = "zeroize"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
-
-[[package]]
-name = "zerotrie"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f9152d31db0792fa83f70fb2f83148effb5c1f5b8c7686c3459e361d9bc20bf"
-dependencies = [
- "displaydoc",
- "yoke",
- "zerofrom",
-]
-
-[[package]]
-name = "zerovec"
-version = "0.11.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90f911cbc359ab6af17377d242225f4d75119aec87ea711a880987b18cd7b239"
-dependencies = [
- "yoke",
- "zerofrom",
- "zerovec-derive",
-]
-
-[[package]]
-name = "zerovec-derive"
-version = "0.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "625dc425cab0dca6dc3c3319506e6593dcb08a9f387ea3b284dbd52a92c40555"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
 
 [[package]]
 name = "zmij"

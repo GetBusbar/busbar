@@ -15,7 +15,6 @@ use std::sync::Arc;
 
 use busbar_contract::transport::trust::EgressTrust;
 use busbar_contract::transport::wire::{ConnectionSecurity, RawIo, SecuredIoFut};
-use sha2::Digest as _;
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
 use crate::tls::install_crypto_provider;
@@ -85,6 +84,38 @@ pub fn need_client_config(need: &str, trust: &EgressTrust) -> Result<rustls::Cli
     build_client_config(trust).map_err(|e| format!("need `{need}`: {e}; refusing to boot"))
 }
 
+/// The client config for a need whose `trust_from` names an operator CA (`pem`, the PEM the need's
+/// settings hold): the public roots with every certificate of `pem` added on top as an extra trust
+/// anchor (spec section 5, the host connector: "an extra trusted root added on top of the public
+/// roots, as in 1.5.5"). Never a replacement for the public roots, and chain and name validation
+/// stay on.
+///
+/// # Errors
+///
+/// `pem` holds no certificate, a section that does not parse, or a certificate the TLS stack will
+/// not take as a trust anchor. Never a silent fallback to the public roots alone: the need is
+/// refused, as an mTLS identity that fails to parse is.
+pub fn operator_ca_config(pem: &[u8]) -> Result<rustls::ClientConfig, String> {
+    use rustls::pki_types::pem::PemObject as _;
+    let certs = rustls_pki_types::CertificateDer::pem_slice_iter(pem)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("the operator CA does not parse: {e}"))?;
+    if certs.is_empty() {
+        return Err("the operator CA holds no certificate".into());
+    }
+    let mut anchors = rustls::RootCertStore::empty();
+    for cert in &certs {
+        anchors
+            .add(cert.clone())
+            .map_err(|e| format!("the operator CA is not a usable trust anchor: {e}"))?;
+    }
+    let trust = EgressTrust {
+        extra_anchors: certs.into_iter().map(|c| c.to_vec()).collect(),
+        ..EgressTrust::default()
+    };
+    build_client_config(&trust).map_err(|e| e.to_string())
+}
+
 /// The verifier half of the client config, before the client-auth choice: platform roots plus any
 /// extra anchors, and — when the host pinned any keys — an SPKI-pin check layered over the ordinary
 /// chain verification.
@@ -147,11 +178,11 @@ impl rustls::client::danger::ServerCertVerifier for PinnedKeyVerifier {
         let key_info = subject_public_key_info(end_entity.as_ref()).ok_or_else(|| {
             rustls::Error::General("peer certificate carries no readable key".into())
         })?;
-        let digest = sha2::Sha256::digest(key_info);
+        let digest = ::ring::digest::digest(&::ring::digest::SHA256, key_info);
         if self
             .pins
             .iter()
-            .any(|pin| pin.as_slice() == digest.as_slice())
+            .any(|pin| pin.as_slice() == digest.as_ref())
         {
             Ok(verified)
         } else {

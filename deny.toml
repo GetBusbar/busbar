@@ -1,5 +1,5 @@
-# cargo-deny policy for busbar. Run locally with `cargo deny check`, and in CI
-# via the removed security.yml. This file mechanically enforces the
+# cargo-deny policy for busbar. Run locally with `cargo deny check`; in CI the predev hop
+# (busbar-release) runs it as a build-test row. This file mechanically enforces the
 # supply-chain discipline that Cargo.toml already applies by hand (single TLS/HTTP
 # stack, no unmaintained/unsafe deps, license hygiene) so a future PR cannot
 # silently regress it.
@@ -52,17 +52,59 @@ name = "busbar"
 allow = ["Apache-2.0"]
 
 [bans]
-# Enforce the "single stack" goal documented throughout Cargo.toml: duplicate major
-# versions of the same crate (e.g. two reqwest majors, two rustls backends) are a
-# warning to investigate, since they bloat the binary and double the audit surface.
-multiple-versions = "warn"
+# Enforce the "single stack" goal documented throughout Cargo.toml: a second version of a crate
+# (two reqwest majors, two RustCrypto lines, two base64s) bloats the binary and doubles the audit
+# surface, so a NEW duplicate fails. The ones that cannot collapse today are listed in `skip`,
+# each with the parent that forces it.
+multiple-versions = "deny"
 # A crate pulled in via wildcard (`*`) version is unpinnable and a supply-chain risk.
 wildcards = "deny"
 # ...but the workspace's OWN member crates (busbar-api, busbar-auth-*, busbar-hooks-ranking) are
 # path dependencies with no version — that isn't a supply-chain wildcard, it's the workspace
 # referencing itself. Allow those; external wildcards are still denied.
 allow-wildcard-paths = true
-deny = []
+# ONE protocol = ONE library, ONE crypto backend = ring (BUSBAR-1.6.0.md, Libraries): the stacks
+# busbar does NOT use, named so a dependency that drags one in fails here instead of landing.
+deny = [
+    { crate = "openssl", reason = "TLS is rustls; no OpenSSL" },
+    { crate = "openssl-sys", reason = "TLS is rustls; no OpenSSL (C)" },
+    { crate = "native-tls", reason = "TLS is rustls; no platform TLS" },
+    { crate = "aws-lc-rs", reason = "ONE crypto backend = ring" },
+    { crate = "aws-lc-sys", reason = "ONE crypto backend = ring (and a C/cmake build)" },
+    # cargo-deny matches `name@version` as an exact or PARTIAL version (`0` = every 0.x), not a
+    # range, so the older lines are listed one by one.
+    { crate = "hyper@0", reason = "HTTP is hyper 1" },
+    { crate = "rustls@0.20", reason = "TLS is rustls 0.23" },
+    { crate = "rustls@0.21", reason = "TLS is rustls 0.23" },
+    { crate = "rustls@0.22", reason = "TLS is rustls 0.23" },
+    { crate = "ring@0.16", reason = "the crypto backend is ring 0.17" },
+    { crate = "serde_yaml", reason = "unmaintained; YAML is serde_yaml_ng" },
+    # ONE Ed25519 = ed25519-dalek 2 (ARCHITECT ruling 2026-10-02, DEPS-AUDIT cut #9 REFUSED). Plugin
+    # signatures, the audit-chain seal, token and card signing and the operator signature verify
+    # through dalek's `verify_strict`, which refuses small-order keys and signatures. ring has no
+    # such check, and ring plus a hand-written weak-key blocklist would be home-made crypto in a
+    # security-critical verifier; five crates do not pay for that, nor for churning the
+    # plugin-facing `busbar_plugin_loader::sign::{SigningKey, VerifyingKey}`. So dalek stays, at ONE
+    # version (2.x; `multiple-versions = "deny"` refuses a second), busbar code never calls
+    # ring's Ed25519, and no other Ed25519 crate may enter.
+    { crate = "ed25519-dalek@1", reason = "ONE Ed25519: ed25519-dalek 2" },
+    { crate = "ed25519-dalek@0", reason = "ONE Ed25519: ed25519-dalek 2" },
+    { crate = "ed25519-compact", reason = "ONE Ed25519: ed25519-dalek 2" },
+    { crate = "ed25519-zebra", reason = "ONE Ed25519: ed25519-dalek 2" },
+    { crate = "ed25519-consensus", reason = "ONE Ed25519: ed25519-dalek 2" },
+]
+# THE ACCEPTED DUPLICATES: each version here is one a parent forces and busbar cannot collapse.
+skip = [
+    { crate = "getrandom@0.2", reason = "ring 0.17 pins getrandom 0.2" },
+    { crate = "getrandom@0.4", reason = "uuid (a2a-lf) and tempfile (build) are on getrandom 0.4" },
+    { crate = "r-efi@5", reason = "follows getrandom 0.3; UEFI only, never built on linux/macOS" },
+    { crate = "windows-sys@0.52", reason = "follows ring's getrandom 0.2; windows only" },
+    { crate = "syn@2", reason = "compile time only; the ecosystem is mid-migration to syn 3" },
+    { crate = "hashbrown@0.15", reason = "petgraph (prost-build), build time only" },
+    { crate = "hashbrown@0.16", reason = "metrics-util (metrics-exporter-prometheus)" },
+    { crate = "foldhash@0.1", reason = "follows hashbrown 0.15 (petgraph, build time only)" },
+    { crate = "base64@0.23", reason = "pem 4 via rcgen's `pem` feature, which only the tests enable" },
+]
 
 [sources]
 # Only allow crates from crates.io. A dependency sourced from an arbitrary git repo
@@ -80,6 +122,9 @@ allow-git = [
     "https://github.com/GetBusbar/busbar-export-webhook",
     "https://github.com/GetBusbar/busbar-auth-oidc",
     "https://github.com/GetBusbar/busbar-auth-admin-tokens",
+    "https://github.com/GetBusbar/busbar-transport-ws",
+    "https://github.com/GetBusbar/busbar-secret-env",
+    "https://github.com/GetBusbar/busbar-secret-file",
     "https://github.com/GetBusbar/busbar-transport-tcp",
     "https://github.com/GetBusbar/busbar-transport-http",
 ]

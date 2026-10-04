@@ -150,7 +150,10 @@ mod audit;
 /// impl ([`SharedBook`]). Split out for `structure-lint`; a private child module, as `replay` is, its
 /// items re-exported so no caller's path changes.
 mod book;
-pub use book::{MoneyBook, PostingStamp, Settled, Settling, SharedBook};
+pub use book::{MoneyBook, PostingStamp, Settled, Settling};
+// The pass-through has one caller, the plane node, so it is built where the node is.
+#[cfg(linked_axis_node)]
+pub use book::SharedBook;
 
 /// How many sealed checkpoints a node holds in memory: the latest 1,024, oldest evicted first
 /// (architect ruling 2026-09-26, "checkpoint retention"). The journal holds every one.
@@ -2144,7 +2147,7 @@ pub struct NodeBook {
 /// deployment and not a silent data loss — there was nowhere the records were ever going.
 ///
 /// **A DEPLOYMENT WITH A STORE DOES NOT COME THROUGH HERE.** It is composed by the binary's
-/// `compose_boot_book`, which takes the CONFIGURED data directory and the configured store's
+/// `root::boot::compose_book`, which takes the CONFIGURED data directory and the configured store's
 /// shipper and seals the opening before it hands the book back. This constructor hard-codes both
 /// answers, which is correct only because the one caller that reaches it has already established
 /// that there is no store to make either decision against.
@@ -2299,12 +2302,22 @@ pub fn build_with_cards(
     // AND THE DATED RATE-CARD HISTORY IS REBUILT FROM THE CHAIN FIRST (#79, OWNER RULING Q14), so a
     // replayed posting prices at the card in force when it arrived — never at the boot card.
     let chain = durability.journal.replay();
+    let mut refused_corrections = Vec::new();
     if let Some(cards) = cards {
         let records = match (&cfg.data_dir, &chain) {
             (Some(_), Ok(Ok(records))) => Some(records.as_slice()),
             _ => None,
         };
-        cards.rebuild_from_chain(&mut durability, records);
+        // A boot card the journal will not take refuses the boot (MONEY-AUDIT D-6).
+        refused_corrections =
+            cards
+                .rebuild_from_chain(&mut durability, records)
+                .map_err(|lost| {
+                    OpenError::Io(std::io::Error::other(format!(
+                        "the journal could not make the boot's rate card durable at step {}",
+                        lost.step().as_str()
+                    )))
+                })?;
     }
     let pinned = (durability.history)();
     let view = pinned.as_ref().map(PinnedHistory::view);
@@ -2401,6 +2414,13 @@ pub fn build_with_cards(
             .iter()
             .cloned()
             .map(JournalDisagreement::Unreadable),
+    );
+    // A signed rate correction the dated history's rebuild refused: its base is not on the rebuilt
+    // history, so it is reported here rather than rebuilt over a card nobody signed (#79).
+    findings.extend(
+        refused_corrections
+            .into_iter()
+            .map(JournalDisagreement::CorrectionRefused),
     );
     findings.extend(durability.reconcile_with_journal());
     findings.dedup();

@@ -17,6 +17,13 @@ pub fn admitted_at_zero(admit_token: &Grant<Admittance>, principal: PrincipalId)
     Admission::Own(Hold::open(admit_token, principal, 0))
 }
 
+/// A unit's arrival hold: the hold it carries into the in-flight table before it reaches the door.
+/// It reserves nothing, since a unit refused at the gate spent nothing, and it opens only with the
+/// admittance grant the kernel lends for this call.
+pub fn arrival_hold(principal: PrincipalId, admit_token: &Grant<Admittance>) -> Hold {
+    Hold::open(admit_token, principal, 0)
+}
+
 /// THE NODE'S ONE UNIT-KEY ALLOCATOR, from 1. A unit's identity is the kernel's to mint: a plane
 /// that needs a key for a table it keeps (a served session's open calls) takes it from here.
 #[derive(Debug, Default)]
@@ -28,6 +35,56 @@ impl UnitKeyMint {
         let n = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         busbar_contract::ids::UnitKey::new(n + 1)
     }
+}
+
+/// THE NODE'S ONE `op_id` ALLOCATOR, the mint every store handle is handed: every store write's
+/// `op_id` on this process. The node half is drawn ONCE per process from the OS CSPRNG (never `0`),
+/// so a restarted process never re-issues an id an earlier boot wrote: the store's durable dedupe
+/// would answer it as that write's replay and apply nothing (the store kind's dedupe outlives the process). The counter is one
+/// process-global from 1.
+pub fn op_id() -> busbar_contract::abi::store::OpId {
+    static IDS: std::sync::LazyLock<OpIds> = std::sync::LazyLock::new(|| OpIds::boot(boot_node()));
+    IDS.mint()
+}
+
+/// One boot's `op_id`s: its node half and its counter.
+#[derive(Debug)]
+pub(crate) struct OpIds {
+    node: u64,
+    counter: std::sync::atomic::AtomicU64,
+}
+
+impl OpIds {
+    /// A boot whose node half is `node`, counting from 1.
+    pub(crate) fn boot(node: u64) -> Self {
+        Self {
+            node,
+            counter: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// The next id of this boot.
+    pub(crate) fn mint(&self) -> busbar_contract::abi::store::OpId {
+        let n = self
+            .counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        busbar_contract::abi::store::OpId::from_parts(self.node, n + 1)
+    }
+}
+
+/// This boot's node half: a non-zero draw of the OS CSPRNG. No entropy source is a refused boot,
+/// never a guessable id (a clock can roll back onto an earlier boot's).
+fn boot_node() -> u64 {
+    for _ in 0..8 {
+        let mut b = [0u8; 8];
+        if getrandom::fill(&mut b).is_ok() {
+            let n = u64::from_le_bytes(b);
+            if n != 0 {
+                return n;
+            }
+        }
+    }
+    panic!("the OS entropy source answered nothing usable; a store op_id cannot be minted")
 }
 
 /// The door's admission answer, in the ADMIT step's terms: the verdict, whether the charge landed,
@@ -351,3 +408,7 @@ mod door_tests;
 #[cfg(test)]
 #[path = "tests/door_destination_tests.rs"]
 mod door_destination_tests;
+
+#[cfg(test)]
+#[path = "tests/door_op_id_tests.rs"]
+mod door_op_id_tests;

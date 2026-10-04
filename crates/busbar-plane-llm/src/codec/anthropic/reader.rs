@@ -5,10 +5,12 @@ use crate::codec::keys;
 impl ProtocolReader for AnthropicReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        // An unreadable billed count yields NO recovered usage, never a zero one (#42): the caller
-        // then bills its conservative floor estimate for the truncated body instead of $0.
+        // The whole usage table, as the buffered read takes it: a truncated turn that ran web
+        // searches ledgers them exactly as its complete twin does. An unreadable billed count
+        // yields NO recovered usage, never a zero one (#42): the caller then bills its
+        // conservative floor estimate for the truncated body instead of $0.
         Some(
-            crate::codec::usage_count::read_usage(COUNT_LABEL, Some(&v), &USAGE[..4])
+            crate::codec::usage_count::read_usage(COUNT_LABEL, Some(&v), USAGE)
                 .ok()?
                 .to_token_usage(),
         )
@@ -187,6 +189,50 @@ impl ProtocolReader for AnthropicReader {
         Box::new(self.clone())
     }
 
+    fn request_map(&self) -> crate::codec::carry::Table {
+        super::map::REQUEST
+    }
+
+    fn parked(&self) -> &'static [crate::codec::drops::Parked] {
+        super::PARKED
+    }
+
+    fn request_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::REQUEST_BLOCKS
+    }
+
+    fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::RESPONSE_BLOCKS
+    }
+
+    fn response_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::RESPONSE_PATHS,
+            code: super::RESPONSE_CODE,
+            drops: super::RESPONSE_DROPS,
+        })
+    }
+
+    fn stream_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::STREAM_PATHS,
+            code: super::STREAM_CODE,
+            drops: super::STREAM_DROPS,
+        })
+    }
+
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        super::IR_BLOCK_KINDS
+    }
+
+    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
+        super::REQUEST_CODE_NAMES
+    }
+
+    fn unread(&self) -> &'static [&'static str] {
+        super::UNREAD
+    }
+
     /// IR-18: a `signature_delta` on the Anthropic wire is Claude's.
     fn stream_signature_origin(
         &self,
@@ -221,9 +267,7 @@ impl ProtocolReader for AnthropicReader {
                     refusal: false,
                 });
             } else if let Some(arr) = system_val.as_array() {
-                for block_val in arr {
-                    system_blocks.push(read_block(block_val)?);
-                }
+                system_blocks.extend(read_blocks(arr)?);
             }
         }
 
@@ -237,10 +281,10 @@ impl ProtocolReader for AnthropicReader {
         // preserving their position relative to any top-level `system` field already read above.
         let mut messages: Vec<crate::codec::ir::IrMessage> = Vec::new();
         // Positions (post system-filter, matching `write_request`'s indexing) of any raw content
-        // block whose type `read_block` cannot model (e.g. `document`) — parked here so an
-        // Anthropic-to-Anthropic hop that goes through the IR (not the byte-verbatim same-protocol
-        // passthrough) can splice the ORIGINAL block back rather than losing it to the degrade-to-
-        // empty-Text placeholder `read_block` already applies for shape-preservation.
+        // block the IR does not hold whole — parked here so an Anthropic-to-Anthropic hop that
+        // goes through the IR (not the byte-verbatim same-protocol relay) splices the ORIGINAL
+        // block back at its position. A block the IR does not read at all has nothing standing
+        // in for it (design F3 "Drops": never a substitution).
         let mut unmodeled_blocks: Vec<serde_json::Value> = Vec::new();
         if let Some(messages_val) = obj.get(keys::MESSAGES) {
             // EDGE-VALIDATE the top-level `messages` TYPE: a PRESENT-but-wrong-typed `messages`
@@ -710,7 +754,12 @@ impl ProtocolReader for AnthropicReader {
         let content_val = obj.get(keys::CONTENT).ok_or_else(ir_parse_error)?;
         let mut content: Vec<crate::codec::ir::IrBlock> = Vec::new();
         if let Some(arr) = content_val.as_array() {
-            for block_val in arr {
+            // A block kind the reader does not model is dropped, never answered as an empty text
+            // block; a translate attempt names it (`RESPONSE_BLOCKS`).
+            for block_val in arr
+                .iter()
+                .filter(|b| super::RESPONSE_BLOCKS.iter().all(|g| g.models(b)))
+            {
                 content.push(read_block(block_val)?);
             }
         }

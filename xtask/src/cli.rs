@@ -32,18 +32,24 @@ usage:
   cargo xtask loc --selftest
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed|move} | --check
+  cargo xtask proof-manifest --version <v> --out <file> [--sha S] [--run-id ID] [--run-url U] [--staged-json F] [--reports-dir D] [--hits-dir D] [--repo-root D] [--run-cargo|--run-parity|--run-composability] [--mark ID=STATUS]... [--index] [--print]
+  cargo xtask proof-manifest --selftest
+  cargo xtask proof-manifest --check [<manifest.json>...]   (the public-safety guard; no args = docs/proof/*.json)
+  cargo xtask proof-manifest --check-selftest
   cargo xtask loom [<test args>]   (the loom model of the config swap; a run of zero models is red)
   cargo xtask txn-fence   (the transaction compile fence: passes only when the fence fails to compile, for its three reasons)
   cargo xtask audit-verify --range <range.json> --keys <keys.json> [--head <head.json>]
+  cargo xtask plugin-gates <depwall|netban|cdeps|imports|parity|bothways|declares|selftest> <args...>
   cargo xtask conformance check --suite <id>|all|--musts [--sha <sha>] [--manifest <path>] [--format=tsv]
   cargo xtask conformance check --selftest
+  cargo xtask method-inventory (--write | --check | --selftest)
+  cargo xtask pin-missing-cells [--write]
   cargo xtask conformance record --suite <id>|--all [--recording <dir>] [--out <dir>]
   cargo xtask dialect wire [--write | --diff] <dialect|all>
   cargo xtask dialect wire --diff-files <old.wire.json> <new.wire.json>
   cargo xtask dialect compile
   cargo xtask readme-assets [<outdir>]   (redraw the README SVGs from assets/readme/data.json + install.json)
   cargo xtask install-sizes [--check]    (re-measure the image sizes from the registries into assets/readme/install.json)
-  cargo xtask [--root <worktree>] ship \"<PR title>\" [--body <file>]   (lane-* only: merge predev, pre-flight, push, PR, auto-merge)
   cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64,512] [--secs N] [--streams N] [--trend <file>]";
 
 /// The environment variable the legacy release-gate scripts write their ledger through.
@@ -60,6 +66,7 @@ const LEGACY_LEDGER_ENV: &str = "LEDGER";
 pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "ledger",
     "audit-verify",
+    "plugin-gates",
     "conformance",
     "loc",
     "root",
@@ -70,6 +77,9 @@ pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "readme-assets",
     "install-sizes",
     "ship",
+    "proof-manifest",
+    "method-inventory",
+    "pin-missing-cells",
     "txn-fence",
     "loom",
 ];
@@ -132,9 +142,6 @@ pub fn main(args: &[String]) -> i32 {
             Ok(cx) => crate::perf_ab::main(cx.root(), &args[1..]),
             Err(code) => code,
         },
-        // THE LANE'S SHIP (BUSBAR-1.6.0.md Part 6, the PR flow). Not a gate: it pushes a branch and
-        // opens its PR into predev; CI on that PR is the proof.
-        Some("ship") => crate::ship::main(&args[1..]),
         Some("perf-ab-mock") => crate::perf_ab::mock_main(&args[1..]),
         // THE DIALECT MAPPING COMPILER (`dialect compile`). Not a gate: it WRITES the table files;
         // the gate that refuses their drift is `dialect-map`. THE WIRE LOCKS (`dialect wire`). Not a
@@ -161,6 +168,28 @@ pub fn main(args: &[String]) -> i32 {
         // THE OUT-OF-PROCESS AUDIT-CHAIN VERIFIER (#82(c), TODO 597). Not a gate: it checks bodies a
         // node published, by the published recipe pages alone, and reads no tree.
         Some("audit-verify") => crate::audit_verify::main(&args[1..]),
+        // THE BUILD PROOF DASHBOARD'S COLLATOR (`docs/proof/README.md`). Not a gate: it WRITES
+        // `docs/proof/<version>.json` (and, with `--index`, `index.json`) from the verdicts of
+        // gates it runs or reads, and owns no row set of its own.
+        Some("proof-manifest") => match open_ctx() {
+            Ok(cx) => crate::proof_manifest::main(cx.root(), &args[1..]),
+            Err(code) => code,
+        },
+        // THE PLUGIN FLEET'S GATES (depwall, netban, cdeps, imports, parity, bothways, declares,
+        // selftest): pure functions over cargo metadata, nm output and the two lockfiles. Not a gate.
+        Some("plugin-gates") => crate::fleet::plugin_gates::main(&args[1..]),
+        // THE METHOD-INVENTORY GENERATOR and THE MISSING-QUEUE PINNER. Neither is a gate: a human
+        // runs them and reads the diff. `method-inventory` WRITES `qa/method-inventory.json` from
+        // the pinned rmcp and a2a-pb sources; `pin-missing-cells` rewrites
+        // `qa/method-coverage.missing`. `crates/busbar/tests/method_coverage.rs` is the gate.
+        Some("method-inventory") => match open_ctx() {
+            Ok(cx) => crate::method_inventory::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
+        Some("pin-missing-cells") => match open_ctx() {
+            Ok(cx) => crate::pin_missing_cells::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
         // THE TRANSACTION COMPILE FENCE. Not a gate: it COMPILES busbar-kernel under a cfg and
         // passes only when that build fails for its three named reasons.
         Some("txn-fence") => crate::txn_fence::main(&args[1..]),
@@ -415,8 +444,8 @@ fn gate(args: &[String]) -> i32 {
     // a check that repairs what it is checking has not checked anything, and a caller that wanted
     // both would be asking a gate to make itself pass.
     if cx.env().write {
-        // `kind-isolation --write` RE-PINS ITS EXACT COUNTS DOWNWARD — the `[[cell]]`, `[[dep]]`
-        // and `[[face]]` numbers — and refuses WHOLESALE if any would rise. It answers through the
+        // `kind-isolation --write` RE-PINS ITS EXACT COUNTS DOWNWARD — the `[[dep]]`
+        // and `[[face]]` edge numbers — and refuses WHOLESALE if any would rise. It answers through the
         // ledger rather than through a `Result<String, _>` like its two neighbours, and that is
         // deliberate: the arm is a GATE RUN whose owed set is its own row, so `execute` reconciles
         // it exactly as it reconciles a judging run, and the refusal arrives as a FAIL row a
@@ -444,6 +473,7 @@ fn gate(args: &[String]) -> i32 {
                 | "plugin-closure-deps"
                 | "c1-literals"
                 | "door-only"
+                | "plane-secret-blindness"
                 | "linked-dropped-features"
         ) {
             let verdict = gates::execute(gate.as_ref(), &cx);
@@ -452,12 +482,6 @@ fn gate(args: &[String]) -> i32 {
         }
         let written = match reg.name {
             "design-bindings" => crate::gates::design_bindings::DesignBindingsGate::write(&cx),
-            // The construction gate's write arm RE-PINS ITS CEILINGS TO WHAT THEY MEASURE, and
-            // only downward — see `gates::construction::ceilings`. It is the same derivation the
-            // `ceiling-slack` row reports, so the arm that repairs and the arm that judges cannot
-            // disagree about what the tree measures; what the flag changes is whether the answer
-            // is printed or committed.
-            "construction" => crate::gates::construction::ceilings::rewrite(&cx),
             "abi-header" => crate::gates::abi_header::write(&cx),
             _ => {
                 eprintln!("xtask gate {name}: this gate has nothing to write");

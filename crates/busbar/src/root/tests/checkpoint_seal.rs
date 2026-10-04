@@ -5,7 +5,8 @@
 //! audit keyset bound to the ledger's sign and verify seams, and each seal refusal in its own words.
 
 use super::*;
-use busbar_contract::caps::KernelSeal;
+// All but the signing key are used only by the `root-admin` test below.
+#[cfg_attr(not(feature = "root-admin"), allow(unused_imports))]
 use busbar_kernel_audit::{
     AuditInputs, AuditSigningKey, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage,
     What,
@@ -17,7 +18,7 @@ use busbar_kernel_ledger::{
 use busbar_kernel_wal::NullShipper;
 
 fn token() -> Grant<DurableWrite> {
-    Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel())
+    busbar_kernel::test_support::tokens::grant::<DurableWrite>()
 }
 
 fn node(cfg: &DurabilityConfig) -> Durability {
@@ -464,8 +465,7 @@ fn verify_names_a_tampered_retained_audit_record() {
                 },
                 wall: 1_700_000_000,
                 mono: unit,
-                origin: busbar_contract::caps::Origin::seal(
-                    &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+                origin: busbar_kernel::test_support::tokens::origin(
                     busbar_contract::caps::OriginKind::Client,
                 ),
                 outcome: OutcomeFacts {
@@ -486,9 +486,7 @@ fn verify_names_a_tampered_retained_audit_record() {
                 controls: Controls::default(),
                 correlation_label: None,
             };
-            let pass = busbar_contract::caps::Pass::mint(
-                &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
-            );
+            let pass = busbar_kernel::test_support::tokens::pass();
             durability.seal_unit(inputs, pass, &token).expect("sealed");
         }
     }

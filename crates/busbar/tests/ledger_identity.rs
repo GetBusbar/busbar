@@ -55,9 +55,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use busbar_contract::caps::{
-    Consumption, Grant, KernelSeal, MeterClassId, QuantitySource, Usage, UsageLine,
-};
+use busbar_contract::caps::{Consumption, MeterClassId, QuantitySource, Usage, UsageLine};
 use busbar_kernel_ledger::cost::{price, History, LaneClass, Posting, RateCard, STANDARD_TIER_BP};
 
 // The binary has no library target, so the composition root's identity check is reached the only
@@ -532,7 +530,7 @@ fn card() -> RateCard {
 
 /// One delivered response's usage report, as the mock fixes it.
 fn one_response() -> Usage {
-    let token = Grant::<Consumption>::mint(&KernelSeal::acquire_for_kernel());
+    let token = busbar_kernel::test_support::tokens::grant::<Consumption>();
     Usage::report(
         &token,
         [("input", IN_TOK), ("output", OUT_TOK)]
@@ -875,6 +873,8 @@ fn write_configs(dir: &Path) {
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
+advanced:
+  allow_destinations: ["127.0.0.1"]
 admin_require_mtls: false
 identity-providers:
   admin-tokens:

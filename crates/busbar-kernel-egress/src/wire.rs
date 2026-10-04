@@ -4,8 +4,8 @@
 //! The client-facing answers this unit can produce, and the literal words in them.
 //!
 //! Every string in this module is the one the previous release put on the wire. They are gathered
-//! here, once, so a terminal cannot quietly reword itself: the walk and the four exhaustion
-//! terminals all build their answer from these constants, and the tests assert the constants
+//! here, once, so a terminal cannot quietly reword itself: the walk and its exhaustion terminals
+//! all build their answer from these constants, and the tests assert the constants
 //! rather than a paraphrase.
 //!
 //! What this unit produces is a DESCRIPTION of the answer — a status, a kind, a detail and a
@@ -19,11 +19,11 @@ pub const KIND_OVERLOADED: &str = "overloaded";
 /// The kind a body that could not be read carries.
 pub const KIND_INVALID_REQUEST: &str = "invalid_request_error";
 
-/// The kind an internal failure before any send carries.
-pub const KIND_API_ERROR: &str = "api_error";
-
 /// The words a shed says when the pool is exhausted.
 pub const DETAIL_OVERLOADED: &str = "The service is temporarily overloaded. Please retry shortly.";
+
+/// The kind an internal failure before any send carries.
+pub const KIND_API_ERROR: &str = "api_error";
 
 /// The words a shed says when the walk deadline passed before an attempt could start.
 pub const DETAIL_REQUEST_TIMEOUT: &str = "The request timed out. Please retry shortly.";
@@ -44,11 +44,11 @@ pub const DETAIL_RESTRICT_NO_LANE: &str =
 /// The status every shed above carries.
 pub const STATUS_SERVICE_UNAVAILABLE: u16 = 503;
 
-/// The status a body that could not be read carries.
-pub const STATUS_BAD_REQUEST: u16 = 400;
-
 /// The status an internal failure before any send carries.
 pub const STATUS_INTERNAL_ERROR: u16 = 500;
+
+/// The status a body that could not be read carries.
+pub const STATUS_BAD_REQUEST: u16 = 400;
 
 /// A refusal this unit produced, in the words the previous release used.
 ///
@@ -132,6 +132,19 @@ impl Shed {
         )
     }
 
+    /// Nothing could be sent and nothing was recorded against the member: the dispatch could not
+    /// be made durable. 1.5.5's own internal failures before a dispatch answered exactly this
+    /// (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1514-1526`, `:1621-1631`).
+    #[must_use]
+    pub fn internal() -> Self {
+        Self::of(
+            STATUS_INTERNAL_ERROR,
+            KIND_API_ERROR,
+            DETAIL_INTERNAL_ERROR,
+            false,
+        )
+    }
+
     /// The request body was not the shape its content type claimed.
     #[must_use]
     pub fn invalid_body() -> Self {
@@ -142,64 +155,4 @@ impl Shed {
             false,
         )
     }
-
-    /// The attempt could not be assembled. Nothing was sent and nothing was recorded.
-    #[must_use]
-    pub fn internal() -> Self {
-        Self::of(
-            STATUS_INTERNAL_ERROR,
-            KIND_API_ERROR,
-            DETAIL_INTERNAL_ERROR,
-            false,
-        )
-    }
-}
-
-/// What one leg of a route came back with.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RouteOutcome {
-    /// An upstream answered and its frames were relayed under the hold.
-    Delivered(Delivered),
-    /// Nothing was delivered; this is the refusal the client sees.
-    Refused(Shed),
-}
-
-impl RouteOutcome {
-    /// The refusal, where the leg produced one.
-    #[must_use]
-    pub fn shed(&self) -> Option<&Shed> {
-        match self {
-            Self::Refused(s) => Some(s),
-            Self::Delivered(_) => None,
-        }
-    }
-
-    /// Whether an upstream answered.
-    #[must_use]
-    pub fn is_delivered(&self) -> bool {
-        matches!(self, Self::Delivered(_))
-    }
-}
-
-/// A delivered answer: which member served it, what the transport made of it, and how many frames
-/// were relayed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Delivered {
-    /// Which member of the verified set served the request.
-    pub destination: crate::ports::DestinationId,
-    /// Which pool cell the attempt was recorded against.
-    pub pool: String,
-    /// The transport's own reading of the first relayed frame, where it carries one.
-    pub status: Option<busbar_contract::transport::wire::WireStatusClass>,
-    /// How many response frames were relayed to the client.
-    pub frames: usize,
-    /// The plane's reading of how the answer ended.
-    pub finish: Option<busbar_contract::FinishClass>,
-    /// Whether the answer came off a degraded path (a spill, a queued permit, or the one
-    /// documented breaker bypass) rather than the ordered walk.
-    pub degraded: bool,
-    /// The upstream's own refusal, relayed as-is — the number AND the numbering that spelled it,
-    /// because a relayed `14` that does not say it is gRPC's is a number a reader can only guess
-    /// at. Only a degraded caller asks for this; the walk fails over instead.
-    pub relayed_error: Option<busbar_contract::transport::wire::WireStatus>,
 }

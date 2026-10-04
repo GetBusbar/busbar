@@ -30,15 +30,14 @@ path = "src/lib.rs"
 
 [features]
 # Test-only hooks a dependent's tests need to reach the node's one amendment journal (an in-memory
-# edit, to prove the on-demand verify sees it). Never enabled by a shipped build.
+# edit, to prove the on-demand verify sees it), and `test_support::observe` (the crate-private
+# head-history step) for the kernel's minting tests. Enabled only from dev-dependencies (the kernel's
+# and the binary's); never by a shipped build.
 test-support = []
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
-sha2 = { workspace = true }
+# The chain digest (SHA-256), on ring (the one crypto backend).
+ring = { workspace = true }
 ed25519-dalek = { workspace = true }
 zeroize = { workspace = true }
-
-[dev-dependencies]
-# The published bodies are JSON; the tests parse them rather than trusting the renderer.
-serde_json = { workspace = true }

@@ -306,3 +306,164 @@ fn a_failed_open_writes_its_reason_into_the_lent_buffer_cut_on_a_char_boundary()
     );
     assert_eq!(out.err_len, 0);
 }
+
+/// THE LOGIN LISTS: `begin_login`'s scopes and `complete_login`'s submitted fields lend each
+/// element, stop at their length, and read as EMPTY for a zero length or a NULL pointer, as
+/// `verify`'s carriers do.
+#[test]
+fn the_login_lists_lend_within_bounds_and_empty_when_null_or_zero() {
+    use crate::abi::auth::{BeginLoginIn, CompleteLoginIn, NamedValue};
+    let scopes = [
+        AbiStr {
+            ptr: b"openid".as_ptr(),
+            len: 6,
+        },
+        AbiStr {
+            ptr: b"email".as_ptr(),
+            len: 5,
+        },
+    ];
+    let mut b: BeginLoginIn = zeroed();
+    b.scopes = scopes.as_ptr();
+    b.scopes_len = scopes.len();
+    let list = lend(&b).scopes();
+    assert_eq!(list.len(), 2);
+    let got: Vec<&[u8]> = list.iter().map(|s| s.bytes()).collect();
+    assert_eq!(got, [&b"openid"[..], &b"email"[..]]);
+    assert!(list.get(2).is_none(), "nothing past the length");
+    b.scopes_len = 0;
+    assert!(lend(&b).scopes().is_empty(), "a zero length is empty");
+    b.scopes = ptr::null();
+    b.scopes_len = 2;
+    assert!(
+        lend(&b).scopes().is_empty(),
+        "a NULL list is empty whatever its length"
+    );
+
+    let fields = [NamedValue {
+        name: AbiStr {
+            ptr: b"username".as_ptr(),
+            len: 8,
+        },
+        value: Blob {
+            ptr: b"alice".as_ptr(),
+            len: 5,
+            fmt: 0,
+            flags: 0,
+        },
+    }];
+    let mut c: CompleteLoginIn = zeroed();
+    c.submitted = fields.as_ptr();
+    c.submitted_len = 1;
+    let list = lend(&c).submitted();
+    assert_eq!(list.len(), 1);
+    let one = list.get(0).expect("one field");
+    assert_eq!(one.field(|f| &f.name).bytes(), b"username");
+    assert_eq!(one.field(|f| &f.value).bytes(), b"alice");
+    assert!(list.get(1).is_none(), "nothing past the length");
+    c.submitted_len = 0;
+    assert!(lend(&c).submitted().is_empty(), "a zero length is empty");
+    c.submitted = ptr::null();
+    c.submitted_len = 3;
+    assert!(
+        lend(&c).submitted().is_empty(),
+        "a NULL list is empty whatever its length"
+    );
+}
+
+fn text(s: &'static str) -> AbiStr {
+    AbiStr {
+        ptr: s.as_ptr(),
+        len: s.len(),
+    }
+}
+
+/// THE EXPORT KIND, without `unsafe`: `scrape`'s snapshot is read family by family, sample by
+/// sample, label by label, and its exposition written into the host buffer (a too-small one
+/// reporting what it needed); `check`'s instances and `serve`'s headers are read as lists.
+#[test]
+fn an_export_scrape_check_and_serve_lend_their_lists_and_buffer() {
+    use crate::abi::export::{
+        CheckIn, CheckInstance, ScrapeFamily, ScrapeIn, ScrapeLabel, ScrapeSample, ServeIn,
+        SCRAPE_KIND_COUNTER,
+    };
+    let labels = [ScrapeLabel {
+        key: text("pool"),
+        value: text("a"),
+    }];
+    let samples = [ScrapeSample {
+        name: text("busbar_requests_total"),
+        labels: labels.as_ptr(),
+        labels_len: labels.len(),
+        value: text("3"),
+    }];
+    let families = [ScrapeFamily {
+        name: text("busbar_requests_total"),
+        help: AbiStr {
+            ptr: ptr::null(),
+            len: 0,
+        },
+        unit: AbiStr {
+            ptr: ptr::null(),
+            len: 0,
+        },
+        kind: SCRAPE_KIND_COUNTER,
+        _reserved: [0; 7],
+        samples: samples.as_ptr(),
+        samples_len: samples.len(),
+    }];
+    let mut out = [0u8; 4];
+    let mut s: ScrapeIn = zeroed();
+    s.families = families.as_ptr();
+    s.families_len = families.len();
+    s.buf = out.as_mut_ptr();
+    s.cap = out.len();
+    let lent = lend(&s);
+    let family = lent.families().get(0).expect("one family");
+    assert_eq!(family.field(|f| &f.name).bytes(), b"busbar_requests_total");
+    assert_eq!(family.kind, SCRAPE_KIND_COUNTER);
+    let sample = family.samples().get(0).expect("one sample");
+    assert_eq!(sample.field(|s| &s.value).bytes(), b"3");
+    let label = sample.labels().get(0).expect("one label");
+    assert_eq!(
+        (
+            label.field(|l| &l.key).bytes(),
+            label.field(|l| &l.value).bytes()
+        ),
+        (&b"pool"[..], &b"a"[..])
+    );
+    let mut buf = lent.buf();
+    assert_eq!(buf.extend(b"ok"), 0, "written from the start");
+    assert_eq!(
+        buf.extend(b"too long"),
+        2,
+        "then after it, as far as there is room"
+    );
+    assert_eq!(&out[..4], b"okto");
+
+    let instances = [CheckInstance {
+        name: text("metrics"),
+        settings: Blob {
+            ptr: ptr::null(),
+            len: 0,
+            fmt: BLOB_ABSENT,
+            flags: 0,
+        },
+    }];
+    let mut c: CheckIn = zeroed();
+    c.instances = instances.as_ptr();
+    c.instances_len = instances.len();
+    let names: Vec<&[u8]> = lend(&c)
+        .instances()
+        .iter()
+        .map(|i| i.field(|i| &i.name).bytes())
+        .collect();
+    assert_eq!(names, vec![&b"metrics"[..]]);
+
+    let headers = [text("accept"), text("text/plain")];
+    let mut v: ServeIn = zeroed();
+    v.headers = headers.as_ptr();
+    v.headers_len = headers.len();
+    let pairs: Vec<&[u8]> = lend(&v).headers().iter().map(|h| h.bytes()).collect();
+    assert_eq!(pairs, vec![&b"accept"[..], &b"text/plain"[..]]);
+}

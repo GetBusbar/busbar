@@ -248,6 +248,7 @@ fn blank_meta() -> FrameMeta {
         status: None,
         status_code: None,
         retry_after_secs: None,
+        text: false,
     }
 }
 
@@ -276,6 +277,7 @@ impl FramerOut for Produced<'_> {
         if meta.retry_after_secs.is_none() {
             meta.retry_after_secs = piece.retry_after_secs;
         }
+        meta.text |= piece.text;
         if piece.end_of_frame {
             let (bytes, mut meta) = self
                 .partial
@@ -808,7 +810,7 @@ impl Transport for WireTransport {
                 (Some(framer), Some(state)) => {
                     let mut partial = HashMap::new();
                     let mut produced = Produced::new(self.stack.row.status_namespace, &mut partial);
-                    framer.emit(state, stream, bytes.as_slice(), true, &mut produced)?;
+                    framer.emit(state, stream, bytes.as_slice(), true, false, &mut produced)?;
                     let sent = produced.sent;
                     self.stack.send(&held, &sent).await?;
                 }

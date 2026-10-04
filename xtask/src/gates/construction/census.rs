@@ -1,10 +1,10 @@
 //! `ceiling-census` — THE RATCHET ON THE RATCHETS.
 //!
-//! `owed()` is derived from the SAME `Cfg` the rules read. Delete
-//! `[rules.loc-ceilings.kernel_files.arena]` and both the check and the obligation to run it vanish
-//! in one edit — measured: 112 rows became 111 and nothing complained, and the kernel's
-//! arena/masking LOC ceiling simply stopped being measured. `rules.legacy-reach.prefixes.*` and
-//! `gate.plane_crates` have the same shape, and so does every `[gate.plugin_kinds]` glob: narrow
+//! `owed()` is derived from the SAME `Cfg` the rules read. Delete a
+//! `[rules.legacy-reach.prefixes.*]` table and both the check and the obligation to run it vanish
+//! in one edit — measured on the (since deleted) kernel-file LOC tables: 112 rows became 111 and
+//! nothing complained. `gate.plane_crates` has the same shape, and so does every
+//! `[gate.plugin_kinds]` glob: narrow
 //! `crates/busbar-plane-*` to `crates/busbar-plane-llm` and the key is still present, still
 //! cross-checked by `kind-isolation:truths`, and four crates quietly stop being scanned.
 //!
@@ -24,6 +24,14 @@ pub const ROW_CENSUS: &str = "ceiling-census";
 
 const TITLE: &str = "every rule table, plane crate and kind glob is still counted";
 
+/// CENSUS PINS WHOSE SUBJECT THIS CODE NO LONGER COUNTS, by name. A base that still carries one is
+/// not a floor that went down: the subject left the gate in a reviewed code change, not in a data
+/// edit. Each entry is a deletion the owner ruled, and the list never names a live subject.
+///
+/// * `loc_ceilings_kernel_files` — the `[rules.loc-ceilings.kernel_files]` LOC tables. Size is
+///   not a CI check (owner 2026-10-02); the tables and their rows are deleted.
+const RETIRED_PINS: &[&str] = &["loc_ceilings_kernel_files"];
+
 /// One census subject: what is counted, where its floor is pinned, and how many there are today.
 struct Subject {
     pin_key: &'static str,
@@ -35,10 +43,10 @@ struct Subject {
 /// direction of this work and must not need a ceremony; removing one is the manoeuvre. So
 /// `actual < pinned` is RED and `actual > pinned` is fine.
 ///
-/// AND THE FLOOR ITSELF IS PINNED AGAINST THE BASE, which is the half that makes it hold. Lowering
-/// a floor is not something `ceiling-rose` sees — that row watches numbers going UP — so without
-/// this, deleting a rule table and dropping its census number in the same edit would be exactly as
-/// silent as deleting the table alone was. A census floor lower than it was at the base is RED.
+/// AND THE FLOOR ITSELF IS PINNED AGAINST THE BASE, which is the half that makes it hold. Without
+/// it, deleting a rule table and dropping its census number in the same edit would be exactly as
+/// silent as deleting the table alone was. A census floor lower than it was at the base is RED —
+/// unless its key is on [`RETIRED_PINS`], the named list of subjects this code no longer counts.
 pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
     let Some(census) = cfg.doc.table("gate.census") else {
         return vec![plain(
@@ -59,11 +67,6 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
 
     let plane_crates = cfg.plane_crates().unwrap_or_default();
     let subjects = [
-        Subject {
-            pin_key: "loc_ceilings_kernel_files",
-            what: "[rules.loc-ceilings.kernel_files] entries",
-            actual: cfg.doc.children("rules.loc-ceilings.kernel_files").len(),
-        },
         Subject {
             pin_key: "legacy_reach_prefixes",
             what: "[rules.legacy-reach.prefixes] entries",
@@ -203,8 +206,8 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
 /// EVERY CENSUS FLOOR THAT WENT DOWN, or was deleted outright, since the base.
 ///
 /// This is the half that makes the census hold. Without it, "delete the rule table AND drop its
-/// census number" is one edit and is exactly as silent as deleting the table alone was — because
-/// `ceiling-rose`, the only other thing reading these numbers, watches for numbers going UP.
+/// census number" is one edit and is exactly as silent as deleting the table alone was. A key on
+/// [`RETIRED_PINS`] is skipped: its subject left the code, not the data.
 ///
 /// A floor the base carried and this tree does not is scored as a drop to 0, not skipped: deleting
 /// the KEY is the cheapest way to lower it.
@@ -225,14 +228,15 @@ fn lowered_floors(
     let now = census_pins(now_doc);
     census_pins(base_doc)
         .into_iter()
+        .filter(|(k, _)| !RETIRED_PINS.contains(&k.as_str()))
         .filter_map(|(k, before)| {
             let after = now.get(&k).copied().unwrap_or(0);
             let excused = moved.get(&k).copied().unwrap_or(0);
             (after < before && before - after > excused).then(|| {
                 format!(
                     "[gate.census] {k}: the floor itself went {before} -> {after} since the base \
-                     {short}. `ceiling-rose` watches numbers going UP; lowering a census floor is \
-                     how a deleted rule table would be made to look accounted for"
+                     {short}. Lowering a census floor is how a deleted rule table would be made to \
+                     look accounted for"
                 )
             })
         })
@@ -366,8 +370,7 @@ mod tests {
     }
 
     /// A pin outside `[gate.census]` is not a census pin: the base comparison must not start
-    /// scoring every other integer in the ceilings file, which is `ceiling-rose`'s job and has the
-    /// opposite direction.
+    /// scoring every other integer in the ceilings file.
     #[test]
     fn an_integer_outside_the_census_table_is_not_a_census_pin() {
         let pins = census_pins(
@@ -381,9 +384,8 @@ mod tests {
         crate::toml_doc::parse_str(s).expect("the fixture parses")
     }
 
-    /// THE SECOND HALF OF THE ATTACK. Deleting `[rules.loc-ceilings.kernel_files.arena]` is caught
-    /// by the floor; deleting it AND dropping the floor from 9 to 8 in the same edit is caught only
-    /// here. `ceiling-rose` cannot: it watches numbers going up.
+    /// THE SECOND HALF OF THE ATTACK. Deleting a `[rules.legacy-reach.prefixes.*]` table is caught
+    /// by the floor; deleting it AND dropping the floor in the same edit is caught only here.
     #[test]
     fn a_census_floor_that_went_down_is_red() {
         let out = lowered_floors(
@@ -422,5 +424,25 @@ mod tests {
         let grown =
             format!("{DOC}egress_auth = 0\n").replace("plane_crates = 4", "plane_crates = 9");
         assert!(lowered_floors(&doc(&grown), &doc(DOC), "abc1234", &BTreeMap::new()).is_empty());
+    }
+
+    /// A RETIRED PIN IS NOT A LOWERED FLOOR. The base still carries `loc_ceilings_kernel_files`
+    /// (the LOC tables the owner deleted); the tree does not. That is the one key the comparison
+    /// skips, and a live key dropped in the same edit is still red.
+    #[test]
+    fn a_retired_pin_leaving_is_not_a_lowered_floor_and_a_live_one_still_is() {
+        let base = DOC.replace(
+            "[gate.census]\nplane_crates = 4\n",
+            "[gate.census]\nplane_crates = 4\nloc_ceilings_kernel_files = 8\n",
+        );
+        assert!(lowered_floors(&doc(DOC), &doc(&base), "abc1234", &BTreeMap::new()).is_empty());
+        let out = lowered_floors(
+            &doc(&DOC.replace("plane_crates = 4", "plane_crates = 3")),
+            &doc(&base),
+            "abc1234",
+            &BTreeMap::new(),
+        );
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].contains("plane_crates"), "{out:?}");
     }
 }

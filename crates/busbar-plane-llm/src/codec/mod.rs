@@ -139,6 +139,10 @@ pub mod dialect;
 /// The plane's own coded diagnostics, and the slice the composition root installs.
 pub mod diagnostics;
 
+/// The one drop path of a translate attempt: drop + warn + the path for the seam's audit, and the
+/// walkers that name what a dialect does not map.
+pub mod drops;
+
 /// The AWS event-stream framing codec the signing dialect streams in.
 pub mod eventstream;
 
@@ -147,6 +151,9 @@ pub mod hex;
 
 /// The plane's own depth-guarded JSON seam.
 pub mod json;
+
+/// Byte-level member splices: how a relayed body's governed members are edited.
+pub mod json_splice;
 
 /// The cross-dialect translate pipeline (`TranslateCodec`).
 pub mod translate;
@@ -249,6 +256,9 @@ pub fn decl_of(name: &str) -> Option<&'static busbar_contract::protocol::Protoco
 #[cfg(test)]
 #[path = "tests/test_host.rs"]
 pub(crate) mod test_host;
+#[cfg(test)]
+#[path = "tests/usage_census.rs"]
+pub(crate) mod usage_census;
 #[cfg(test)]
 pub(crate) use test_host::ensure_test_protocols_registered;
 

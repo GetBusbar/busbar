@@ -4,8 +4,5 @@
 //! The batteries.
 
 mod amend_tests;
-mod digest_framing_tests;
 mod journal_tests;
-mod published_recipe_tests;
 mod record_tests;
-mod sign_tests;

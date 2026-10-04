@@ -116,6 +116,7 @@ fn sink(
         key: key.clone(),
         pool: std::sync::Arc::from("p"),
         charged_at,
+        request_id: 0,
         admit: None,
     }
 }
@@ -146,9 +147,9 @@ fn accrued(
 
 /// A kernel seal for the length of one test.
 fn tokens() -> (KernelSeal, Pass<Meter>, Grant<Consumption>) {
-    let seal = KernelSeal::acquire_for_kernel();
-    let unit = Pass::mint(&seal);
-    let usage = Grant::<Consumption>::mint(&seal);
+    let seal = busbar_kernel::test_support::tokens::seal();
+    let unit = busbar_kernel::test_support::tokens::pass();
+    let usage = busbar_kernel::test_support::tokens::grant::<Consumption>();
     (seal, unit, usage)
 }
 

@@ -11,24 +11,37 @@
 //!   the request carries more messages than its settings allow, ABSTAIN otherwise.
 //! * [`broken`] (`hook_broken_door`) — the same plugin whose `decide` answers two verbs at once
 //!   (PREFER and REJECT), which `check_decide` refuses: the host must answer FAULT.
+//! * [`untailed`] (linked only) — the conforming plugin whose Statement states no hook tail, which
+//!   the host refuses at load (ARCHITECT Q-SO8).
+//! * [`panicking`] (linked only) — the same plugin whose `decide` PANICS: the SDK's door catches
+//!   it and answers FAULT, which the hook axis answers as broken, never a verdict (PB-81).
 //!
+//! Both built doors state their tail ([`TAIL`]): a gate that asks for neither view.
 //! Every other hook op is REFUSED. The settings are `{"reject_over_messages": <n>}`.
 #![allow(dead_code)]
 
 use std::marker::PhantomData;
 
 use busbar_contract::abi::hook::{
-    cancel, DecideIn, DecideOut, VERB_ABSTAIN, VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT,
+    cancel, DecideIn, DecideOut, Tail, CLASS_GATE, PROMPT_NO, USER_NO, VERB_ABSTAIN,
+    VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT,
 };
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::sdk::door::{AbiIn, AbiOut};
 use busbar_contract::abi::sdk::life::{settings_object, Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
 
+/// The fixture's hook tail: a gate that asks for neither the prompt nor the user view.
+pub const TAIL: &Tail = &busbar_contract::abi::sdk::hook::tail(CLASS_GATE, PROMPT_NO, USER_NO);
+
 /// The conforming door's Statement name.
 pub const NAME: &str = "both-ways-hook";
 /// The broken door's Statement name.
 pub const BROKEN_NAME: &str = "both-ways-hook-broken";
+/// The untailed door's Statement name.
+pub const UNTAILED_NAME: &str = "both-ways-hook-untailed";
+/// The panicking door's Statement name.
+pub const PANICKING_NAME: &str = "both-ways-hook-panicking";
 
 /// The status a rejected request is answered with.
 pub const REJECT_STATUS: u16 = 429;
@@ -106,6 +119,19 @@ impl SafeSlot for DecideBroken {
     }
 }
 
+/// `decide`, PANICKING: the slot body panics before it answers.
+pub struct DecidePanics;
+
+impl SafeSlot for DecidePanics {
+    type In = DecideIn;
+    type Out = DecideOut;
+    type State = Held<Gate>;
+
+    fn call(_: Instance<'_, Held<Gate>>, _: Lent<'_, DecideIn>, _: Out<'_, DecideOut>) -> Outcome {
+        panic!("the panicking hook fixture's decide panics")
+    }
+}
+
 /// Any other hook op: REFUSED.
 pub struct Refuse<I, O>(PhantomData<(I, O)>);
 
@@ -119,12 +145,13 @@ impl<I: AbiIn, O: AbiOut> SafeSlot for Refuse<I, O> {
     }
 }
 
-/// The hook table's kind ops with `decide` named `$decide`; every other op [`Refuse`]s.
+/// The hook table's kind ops with `decide` named `$decide` over the Statement `$statement`; every
+/// other op [`Refuse`]s. `hook_door!(name, decide)` states the name with [`TAIL`].
 macro_rules! hook_door {
-    ($name:expr, $decide:ty) => {
+    (@statement $statement:expr, $decide:ty) => {
         busbar_contract::plugin_door! {
             ops: busbar_contract::abi::hook::Ops,
-            statement: busbar_contract::abi::sdk::door::statement($name, "1.6.0", 8),
+            statement: $statement,
             lifecycle: life(super::Gate),
             kind_ops: {
                 decide: busbar_contract::abi::sdk::Safe<$decide>,
@@ -155,6 +182,15 @@ macro_rules! hook_door {
             },
         }
     };
+    ($name:expr, $decide:ty) => {
+        hook_door!(
+            @statement busbar_contract::abi::sdk::hook::statement_with_tail(
+                busbar_contract::abi::sdk::door::statement($name, "1.6.0", 8),
+                super::TAIL,
+            ),
+            $decide
+        );
+    };
 }
 
 /// The conforming hook plugin's door.
@@ -165,4 +201,17 @@ pub mod conforming {
 /// The broken hook plugin's door.
 pub mod broken {
     hook_door!(super::BROKEN_NAME, super::DecideBroken);
+}
+
+/// The conforming plugin with NO hook tail: refused at load.
+pub mod untailed {
+    hook_door!(
+        @statement busbar_contract::abi::sdk::door::statement(super::UNTAILED_NAME, "1.6.0", 8),
+        super::Decide
+    );
+}
+
+/// The conforming plugin whose `decide` panics.
+pub mod panicking {
+    hook_door!(super::PANICKING_NAME, super::DecidePanics);
 }

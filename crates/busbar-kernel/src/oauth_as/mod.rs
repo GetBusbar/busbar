@@ -3,21 +3,17 @@
 
 //! BUSBAR AS AN OAUTH 2.1 AUTHORIZATION SERVER (`oauth_as:`), off unless configured.
 //!
-//! ## 1.6.0: split into this config carrier and the sibling `busbar-core-oauth2` crate
+//! ## 1.6.0: this module is the seam; the plane and its config are in `busbar-core-oauth2`
 //!
 //! The plane's RUNTIME (`AsPlane`, its routes, the consent screen, the CIMD fetch, the DCR policy
 //! ceiling, the AS's own ES256 signer) now lives in `busbar-core-oauth2`, a sibling crate that depends
-//! on busbar-core ONE-WAY. This module keeps only [`config`] (`OauthAsCfg`/`AsIdentity`) and
-//! [`seam`] (the small fn-pointer pair core's `router`/`appbuild` call through to reach the plane
-//! without naming it).
+//! on busbar-core ONE-WAY. This module keeps only [`seam`] (the small fn-pointer set core's
+//! `router`/`appbuild`/`config` call through to reach the plane without naming it).
 //!
-//! [`config`] stays here — not because the plane's code was hard to move, but because
-//! `busbar-core`'s OWN `DeployConfig` and its validated twin embed `OauthAsCfg`/`AsIdentity` BY
-//! VALUE for the single-document config pipeline (`config::prepass`'s `LiftableSection`,
-//! `config::resolve`), and `config_validate::secret_refs` exhaustively destructures `AsIdentity`
-//! (no `..`) to walk its one secret-bearing field. Moving those types to `busbar-core-oauth2` would need
-//! core to name them back to parse and validate its own config — the exact reverse edge Cargo
-//! refuses. See `busbar-core-oauth2`'s own crate doc for the plane half of this split.
+//! The `oauth_as:` config types (`OauthAsCfg`/`AsIdentity`) live in `busbar-core-oauth2` too. The
+//! kernel's `DeployCfg` and `RootCfg` carry the block as an OPAQUE value and hand it to its owner
+//! through [`seam::AsPlaneSeam::check`] (parse, validate, list its secret references); the kernel
+//! never names those types (ARCHITECT ruling 2026-10-03, D4).
 //!
 //! ## What this plane is for
 //!
@@ -83,15 +79,8 @@
 //!   the same resolve-then-pin, the same unconditional cloud-metadata refusal and the same
 //!   re-guarded redirect chain as every other guarded fetch in the tree.
 
-// `pub`, not `pub(crate)`: `busbar-core-oauth2` (the sibling plane crate the rest of this module moved
-// to) reaches `AsIdentity`/`OauthAsCfg`/`AsCfgError` and `AsIdentity::from_cfg` from outside this
-// crate, and its own tests destructure `AsIdentity` exhaustively the same way
-// `config_validate::secret_refs` does. Widened at the extraction's demand, not by design intent.
-pub mod config;
 pub mod seam;
 
-// THE GATING PROOF and THE FLOW moved to `busbar-core-oauth2` with the plane they prove
-// (`src/tests/mount_tests.rs` / `src/tests/flow_tests.rs`) — both need `AsPlane`/`routes::mount`
-// directly, which core can no longer name. `config`'s own tests (`AsIdentity::from_cfg`, the
-// secret-ref walk) stay colocated with `config` — wired from `config.rs` itself (`#[path =
-// "tests/config_tests.rs"] mod config_tests;`), unchanged by this move.
+// THE CONFIG (`OauthAsCfg`/`AsIdentity`) and its tests live in `busbar-core-oauth2` with the plane that
+// reads them: the kernel carries the `oauth_as:` block as an opaque value and asks its owner, through
+// [`seam::AsPlaneSeam::check`], to validate it.

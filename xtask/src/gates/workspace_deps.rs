@@ -9,7 +9,7 @@
 //! a property everyone believed, asserted nowhere, checked by nothing. Moving that property into a
 //! table without a lint relocates the defect instead of removing it.
 //!
-//! Eight rules, eight ledger rows. The Python returned one flat list of failure strings, which
+//! Nine rules, nine ledger rows. The Python returned one flat list of failure strings, which
 //! meant a floor and the rule it protects were indistinguishable in the output and a floor could be
 //! deleted with the self-test still green:
 //!
@@ -34,11 +34,12 @@
 //! 6. `workspace-deps:member-floor` — at least [`MIN_MEMBERS`] member manifests were inspected.
 //! 7. `workspace-deps:inherited-floor` — at least [`MIN_INHERITED`] inheriting declarations were
 //!    seen. Either the table is not actually in use or the walk is broken; both are RED.
-//! 8. `workspace-deps:discovery` — the `crates/` tree still holds at least
-//!    [`MIN_CRATE_MANIFESTS`] manifests. Rules 6 and 7 are counted off the DECLARED member list, so
-//!    a `crates/` layout change that the root manifest was edited to match would leave them both
-//!    satisfied; this row walks the directory itself, through [`WalkSpec::min_files`], so an
+//! 8. `workspace-deps:discovery` — the `crates/` walk finds a `Cargo.toml` for EVERY declared
+//!    `crates/` member, and names any it missed (ARCHITECT 2026-10-02: exact, not a floor). Rules 6
+//!    and 7 are counted off the DECLARED member list; this row walks the directory itself, so an
 //!    emptied or moved `crates/` cannot read as a clean tree.
+//! 9. `workspace-deps:test-support-dev-only` — no release feature set can reach a `test-support`
+//!    feature (ARCHITECT RULING Q-GG3). See [`test_support_scan`] for the exact semantics.
 //!
 //! Every count has a floor because "for each X, assert Y" is vacuously true when X is empty, and a
 //! discovery step that finds nothing is RED, never a pass.
@@ -51,7 +52,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
+use crate::ctx::{Ctx, Overlay, WalkSpec};
 use crate::gates::{prove_green, prove_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::toml_lite;
@@ -64,6 +65,11 @@ pub const ROW_SET_EQUALITY: &str = "workspace-deps:set-equality";
 pub const ROW_MEMBER_FLOOR: &str = "workspace-deps:member-floor";
 pub const ROW_INHERITED_FLOOR: &str = "workspace-deps:inherited-floor";
 pub const ROW_DISCOVERY: &str = "workspace-deps:discovery";
+pub const ROW_TEST_SUPPORT: &str = "workspace-deps:test-support-dev-only";
+
+/// The feature ARCHITECT RULING Q-GG3 confines to test builds: a crate may expose it, OFF by
+/// default, and it may be turned on ONLY from a `[dev-dependencies]` edge.
+pub const TEST_SUPPORT: &str = "test-support";
 
 /// Floors. Deliberately well under today's counts (~50 members, ~200 inherited declarations, 49
 /// manifests under `crates/`) so ordinary work never trips them, but far enough above zero that a
@@ -71,13 +77,6 @@ pub const ROW_DISCOVERY: &str = "workspace-deps:discovery";
 /// one is a reviewable source edit.
 pub const MIN_MEMBERS: usize = 8;
 pub const MIN_INHERITED: usize = 40;
-/// 30, not 40. The crate fold's planned end state is 35 crates under `crates/`, 34 if
-/// `busbar-core-connsec` folds, and the architecture's crate roster names 33 — at 40 this row went RED at 39 crates, i.e. at
-/// fold #10, against a planned shrink. The floor guards against a BLIND walk (a moved or emptied
-/// `crates/`, a filter that stopped matching), which finds a handful or nothing; it is not a
-/// ratchet on the roster. 30 sits three under the smallest roster variant, so no planned fold
-/// trips it, while any walk that loses more than a sixth of the smallest roster is still RED.
-pub const MIN_CRATE_MANIFESTS: usize = 30;
 
 const SECTIONS: &[&str] = &["dependencies", "dev-dependencies", "build-dependencies"];
 
@@ -233,6 +232,230 @@ fn dep_entries(doc: &toml_lite::Document) -> Vec<(String, String, DepSpec)> {
     out
 }
 
+// ── rule 9: `test-support` is enabled from dev edges only ──────────────────────────────────────────
+//
+// WHAT "THE RELEASE FEATURE SET" MEANS HERE, TRANSITIVELY. Under `resolver = "2"` a dev-dependency's
+// features are never unified into a non-test build, so a `features = ["test-support"]` on a
+// `[dev-dependencies]` edge cannot reach a release binary. Every OTHER way a manifest can turn a
+// `test-support` feature on can:
+//
+// * a normal or build edge (any target form, inline, dotted-key or `[dependencies.x]` sub-table);
+// * an entry in `[workspace.dependencies]`, which every inheriting edge — normal ones included —
+//   receives;
+// * a `[features]` entry OTHER than the crate's own `test-support` (`default`, or any named feature,
+//   which a default, a non-dev edge or a `--features` on the release command line can switch on).
+//
+// The one sanctioned forward is the crate's OWN `test-support` feature naming another crate's
+// (`test-support = ["busbar-kernel/test-support"]`). That is sound by induction, not by trust: the
+// forwarder is itself a `test-support` feature, so this same rule holds it to dev edges and other
+// `test-support` features, and the chain bottoms out in a dev edge or in nothing. Refusing every
+// other enabling site is what makes the closure hold without computing it.
+//
+// WHY A TEXT SCAN AND NOT `toml_lite`. The shared reader keeps the first line of a multi-line value,
+// so a `{ path = "..", features = [\n "test-support",\n] }` edge would be read with no features at
+// all — the blind spot this rule exists to close. This scan reads every quoted string in the
+// manifest and attributes it to its section and top-level key, so no spelling can hide one.
+
+/// Where a manifest table sits, for the purpose of rule 9.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TestSupportSection {
+    /// `[dev-dependencies]`, its per-target form, or a `[dev-dependencies.x]` sub-table.
+    Dev,
+    /// `[dependencies]` / `[build-dependencies]`, their per-target forms and sub-tables.
+    NonDev,
+    /// `[workspace.dependencies]` or a `[workspace.dependencies.x]` sub-table.
+    WorkspaceTable,
+    /// `[features]`.
+    Features,
+    /// Anything else (`[package]`, `[[test]]`'s `required-features`, `[lib]`, metadata): nothing
+    /// there ENABLES a feature.
+    Other,
+}
+
+fn test_support_section(section: &str) -> TestSupportSection {
+    // Cargo still accepts the legacy underscore spellings in older editions; a rule blind to
+    // `[build_dependencies]` is a rule with a documented bypass.
+    let s = section.replace("_dependencies", "-dependencies");
+    if s == "workspace.dependencies" || s.starts_with("workspace.dependencies.") {
+        return TestSupportSection::WorkspaceTable;
+    }
+    if s == "features" {
+        return TestSupportSection::Features;
+    }
+    let table = if is_dep_section(&s) {
+        Some(s.as_str())
+    } else {
+        s.rsplit_once('.')
+            .map(|(prefix, _)| prefix)
+            .filter(|p| is_dep_section(p))
+    };
+    match table {
+        Some(t) if t == "dev-dependencies" || t.ends_with(".dev-dependencies") => {
+            TestSupportSection::Dev
+        }
+        Some(_) => TestSupportSection::NonDev,
+        None => TestSupportSection::Other,
+    }
+}
+
+/// `test-support`, `dep/test-support` or `dep?/test-support`.
+fn names_test_support(lit: &str) -> bool {
+    lit == TEST_SUPPORT || lit.rsplit_once('/').is_some_and(|(_, f)| f == TEST_SUPPORT)
+}
+
+/// A `[table]` or `[[array-of-tables]]` header line. An array continuation line starts with a
+/// quote or a bracket, never a bare letter, so the first character after the brackets decides.
+fn header_name(trimmed: &str) -> Option<String> {
+    let line = trimmed.split_once('#').map_or(trimmed, |(h, _)| h).trim();
+    let inner = line.strip_prefix('[')?.strip_suffix(']')?;
+    let inner = inner
+        .strip_prefix('[')
+        .and_then(|i| i.strip_suffix(']'))
+        .unwrap_or(inner)
+        .trim();
+    inner
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic())
+        .then(|| inner.to_string())
+}
+
+/// What one manifest says about `test-support`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct TestSupportScan {
+    /// Enabling sites on a `[dev-dependencies]` edge.
+    dev_edges: usize,
+    /// Forwards inside the crate's own `test-support` feature.
+    forwards: usize,
+    /// Every enabling site that can reach a release build, as FAIL text.
+    offenders: Vec<String>,
+}
+
+impl TestSupportScan {
+    fn absorb(&mut self, other: TestSupportScan) {
+        self.dev_edges += other.dev_edges;
+        self.forwards += other.forwards;
+        self.offenders.extend(other.offenders);
+    }
+}
+
+/// RULE 9 OVER ONE MANIFEST'S TEXT: every quoted string naming a `test-support` feature, attributed
+/// to the table and top-level key it sits under, and judged by where that is.
+fn test_support_scan(rel: &str, text: &str) -> TestSupportScan {
+    let mut out = TestSupportScan::default();
+    let mut section = String::new();
+    // The top-level key whose value is open (it stays open across the lines of a multi-line value).
+    let mut key = String::new();
+    let mut depth = 0i32;
+    // Inside a `"""` or `'''` string that did not close on its own line.
+    let mut open_multiline: Option<&'static str> = None;
+
+    for (idx, raw) in text.lines().enumerate() {
+        let line_no = idx + 1;
+        if let Some(delim) = open_multiline {
+            if raw.contains(delim) {
+                open_multiline = None;
+            }
+            continue;
+        }
+        let trimmed = raw.trim();
+        if let Some(name) = header_name(trimmed) {
+            section = name;
+            key.clear();
+            depth = 0;
+            continue;
+        }
+
+        let chars: Vec<char> = trimmed.chars().collect();
+        let mut at_key = depth == 0;
+        let mut key_buf = String::new();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            match c {
+                '#' => break,
+                '"' | '\'' => {
+                    let triple: &'static str = if c == '"' { "\"\"\"" } else { "'''" };
+                    if chars[i..].starts_with(&[c, c, c]) {
+                        // Prose (`description = """…"""`); it enables nothing, so it is skipped.
+                        let rest: String = chars[i + 3..].iter().collect();
+                        match rest.find(triple) {
+                            Some(end) => {
+                                i += 3 + rest[..end].chars().count() + 3;
+                                continue;
+                            }
+                            None => {
+                                open_multiline = Some(triple);
+                                break;
+                            }
+                        }
+                    }
+                    let mut lit = String::new();
+                    i += 1;
+                    while i < chars.len() && chars[i] != c {
+                        if c == '"' && chars[i] == '\\' && i + 1 < chars.len() {
+                            i += 1;
+                        }
+                        lit.push(chars[i]);
+                        i += 1;
+                    }
+                    if at_key {
+                        key_buf.push_str(&lit);
+                    } else if names_test_support(&lit) {
+                        judge_test_support(&mut out, rel, line_no, &section, &key, &lit);
+                    }
+                }
+                '=' if at_key => {
+                    key = key_buf
+                        .split('.')
+                        .next()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                    at_key = false;
+                }
+                '[' | '{' => depth += 1,
+                ']' | '}' => depth -= 1,
+                _ if at_key => key_buf.push(c),
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+    out
+}
+
+fn judge_test_support(
+    out: &mut TestSupportScan,
+    rel: &str,
+    line_no: usize,
+    section: &str,
+    key: &str,
+    lit: &str,
+) {
+    match test_support_section(section) {
+        TestSupportSection::Dev => out.dev_edges += 1,
+        TestSupportSection::Features if key == TEST_SUPPORT => out.forwards += 1,
+        TestSupportSection::Features => out.offenders.push(format!(
+            "{rel}:{line_no}: [features] `{key}` enables `{lit}`. Only a crate's own \
+             `{TEST_SUPPORT}` feature may forward to another `{TEST_SUPPORT}`: `{key}` can be on \
+             in a release build (a default, a non-dev edge, a `--features` flag), and it would \
+             carry the test surface with it."
+        )),
+        TestSupportSection::NonDev => out.offenders.push(format!(
+            "{rel}:{line_no}: [{section}] `{key}` enables `{lit}` on a non-dev edge. A \
+             `{TEST_SUPPORT}` feature is enabled ONLY from [dev-dependencies] (ARCHITECT RULING \
+             Q-GG3); on a normal or build edge it is in the release feature set."
+        )),
+        TestSupportSection::WorkspaceTable => out.offenders.push(format!(
+            "{rel}:{line_no}: [{section}] `{key}` enables `{lit}` in the workspace table, so every \
+             member that inherits it — normal and build edges included — gets it. Put the feature \
+             on the [dev-dependencies] declaration instead."
+        )),
+        TestSupportSection::Other => {}
+    }
+}
+
 /// Staging counter, so two manifests parsed in the same process (or two tests in the same run)
 /// never collide on a scratch file name.
 static STAGE_SEQ: AtomicUsize = AtomicUsize::new(0);
@@ -272,12 +495,28 @@ fn read_manifest(cx: &Ctx, rel: &str) -> Result<toml_lite::Document, String> {
     Ok(doc)
 }
 
-/// The `crates/` walk, with its floor. Separate from the declared member list on purpose: the two
+/// The `crates/` walk, held to the member list. Separate from the survey on purpose: the two
 /// instruments fail for different reasons and must be able to fail apart.
+///
+/// EXACT, NOT A FLOOR (ARCHITECT 2026-10-02). Every `[workspace.members]` entry under `crates/`
+/// must be a `Cargo.toml` this walk found, and a member it missed is RED by name. A number fought
+/// the roster (spec #39 ends the repo at 15 crates); the member list is right at any size, and an
+/// extraction strikes the member line with the crate, so it is never a miss.
 fn rule_discovery(cx: &Ctx) -> Row {
-    let spec = WalkSpec::new(["crates"])
-        .ext("toml")
-        .min_files(MIN_CRATE_MANIFESTS);
+    let declared: Vec<String> = match cx.read("Cargo.toml") {
+        Ok(root) => crate::manifest::workspace_members(&root)
+            .into_iter()
+            .filter(|m| m.starts_with("crates/"))
+            .collect(),
+        Err(e) => {
+            return Row::fail(
+                ROW_DISCOVERY,
+                "the crates/ manifest walk has no member list to be held to",
+                format!("the workspace root manifest is unreadable ({e})"),
+            )
+        }
+    };
+    let spec = WalkSpec::new(["crates"]).ext("toml").min_files(1);
     let files = match cx.walk(&spec) {
         Ok(f) => f,
         Err(e) => {
@@ -288,28 +527,36 @@ fn rule_discovery(cx: &Ctx) -> Row {
             )
         }
     };
-    let manifests: Vec<String> = files
+    let found: BTreeSet<String> = files
         .iter()
         .map(|f| f.rel_str())
-        .filter(|p| p.ends_with("/Cargo.toml"))
+        .filter_map(|p| p.strip_suffix("/Cargo.toml").map(str::to_string))
         .collect();
-    if manifests.len() < MIN_CRATE_MANIFESTS {
+    let missed: Vec<&str> = declared
+        .iter()
+        .map(String::as_str)
+        .filter(|m| !found.contains(*m))
+        .collect();
+    if !missed.is_empty() {
         return Row::fail(
             ROW_DISCOVERY,
-            "the crates/ manifest walk collapsed below its floor",
+            "the crates/ manifest walk missed declared members",
             format!(
-                "only {} Cargo.toml file(s) under crates/ (floor {MIN_CRATE_MANIFESTS}). A walk \
-                 that finds almost nothing passes almost everything.",
-                manifests.len()
+                "{} declared crates/ member(s) the walk did not find a Cargo.toml for: {}. A walk \
+                 that misses a member passes everything about it.",
+                missed.len(),
+                missed.join(", ")
             ),
         );
     }
     Row::pass(
         ROW_DISCOVERY,
-        "the crates/ tree still holds the manifests this gate is a gate over",
+        "the crates/ walk found every declared crates/ member",
         format!(
-            "{} Cargo.toml file(s) under crates/ (floor {MIN_CRATE_MANIFESTS})",
-            manifests.len()
+            "{} Cargo.toml file(s) under crates/, every one of the {} declared crates/ member(s) \
+             among them",
+            found.len(),
+            declared.len()
         ),
     )
 }
@@ -324,6 +571,8 @@ struct Survey {
     inherited_count: usize,
     version_offenders: Vec<String>,
     inherit_target_offenders: Vec<String>,
+    /// Rule 9, over the root manifest and every inspected member.
+    test_support: TestSupportScan,
 }
 
 fn survey(cx: &Ctx, root: &toml_lite::Document) -> Survey {
@@ -346,7 +595,20 @@ fn survey(cx: &Ctx, root: &toml_lite::Document) -> Survey {
         inherited_count: 0,
         version_offenders: Vec::new(),
         inherit_target_offenders: Vec::new(),
+        test_support: TestSupportScan::default(),
     };
+
+    // The root's `[workspace.dependencies]` is an enabling site too: every inheriting edge, normal
+    // ones included, receives the features written there.
+    match cx.read("Cargo.toml") {
+        Ok(text) => s
+            .test_support
+            .absorb(test_support_scan("Cargo.toml", &text)),
+        Err(e) => s.test_support.offenders.push(format!(
+            "Cargo.toml: the root manifest could not be read for its workspace table ({e}), so \
+             no inherited `{TEST_SUPPORT}` could be ruled out."
+        )),
+    }
 
     for member in s.declared.clone() {
         let rel = format!("{member}/Cargo.toml");
@@ -361,6 +623,13 @@ fn survey(cx: &Ctx, root: &toml_lite::Document) -> Survey {
             }
         };
         s.inspected.push(member.clone());
+        match cx.read(&rel) {
+            Ok(text) => s.test_support.absorb(test_support_scan(&rel, &text)),
+            Err(e) => s.test_support.offenders.push(format!(
+                "{rel}: parsed but could not be re-read for its `{TEST_SUPPORT}` edges ({e}); an \
+                 unread manifest is UNCHECKED, not clean."
+            )),
+        }
 
         for (label, name, spec) in dep_entries(&doc) {
             if spec.is_path_or_git() {
@@ -466,6 +735,7 @@ impl Gate for WorkspaceDepsGate {
             ROW_MEMBER_FLOOR.to_string(),
             ROW_INHERITED_FLOOR.to_string(),
             ROW_DISCOVERY.to_string(),
+            ROW_TEST_SUPPORT.to_string(),
         ]
     }
 
@@ -641,6 +911,28 @@ impl Gate for WorkspaceDepsGate {
             )
         });
 
+        let ts = &s.test_support;
+        rows.push(if ts.offenders.is_empty() {
+            Row::pass(
+                ROW_TEST_SUPPORT,
+                "no release feature set reaches a `test-support` feature: every site enabling one \
+                 is a dev-dependency edge or a crate's own `test-support`",
+                format!(
+                    "{} dev-dependency edge(s), {} forward(s) inside a crate's own `{TEST_SUPPORT}`, \
+                     across the root manifest and {} member(s)",
+                    ts.dev_edges,
+                    ts.forwards,
+                    s.inspected.len()
+                ),
+            )
+        } else {
+            Row::fail(
+                ROW_TEST_SUPPORT,
+                "a `test-support` feature is enabled from outside a dev-dependency edge",
+                ts.offenders.join(" | "),
+            )
+        });
+
         Verdict::of(rows)
     }
 
@@ -674,7 +966,7 @@ impl Gate for WorkspaceDepsGate {
             ov,
             &["crates/busbar-plane-llm", "no [workspace] members entry"],
         ));
-        for plant in plants(cx) {
+        for plant in plants() {
             report.push(plant.case(cx, self));
         }
         report
@@ -691,8 +983,8 @@ impl Gate for WorkspaceDepsGate {
     /// member. That list is derived from the plant itself, not written out again, because a member
     /// left off it is a member the Python reads out of the REAL repository, and the probe would
     /// then grade a tree nobody planted.
-    fn parity_probes(&self, cx: &Ctx) -> Vec<crate::gates::ParityProbe> {
-        plants(cx)
+    fn parity_probes(&self, _cx: &Ctx) -> Vec<crate::gates::ParityProbe> {
+        plants()
             .into_iter()
             .map(|p| {
                 let probe = crate::gates::ParityProbe::red(
@@ -705,14 +997,9 @@ impl Gate for WorkspaceDepsGate {
                     Some(w) => probe.named_by(w),
                     // The one rule with no legacy counterpart at all. The Python walks the DECLARED
                     // member list and never looks at `crates/`, so a layout change the root
-                    // manifest was edited to match is invisible to it — there is no denominator
-                    // floor to fall below because there is no denominator.
+                    // manifest was edited to match is invisible to it.
                     None => probe.diverges(crate::gates::Divergence::LegacyGreen {
-                        reason: "the legacy walks the declared member list and never reads \
-                                 `crates/`, so a directory that moved out from under the workspace \
-                                 is not something it can see. This gate's walk carries a floor, and \
-                                 a scan that collapsed is a named failure rather than a clean tree."
-                            .to_string(),
+                        reason: legacy_blind_reason(p.rule).to_string(),
                     }),
                 }
             })
@@ -737,6 +1024,23 @@ fn legacy_wording(rule: &str) -> Option<&'static str> {
         ROW_MEMBER_FLOOR => Some("member manifests were discovered (floor 8)"),
         ROW_INHERITED_FLOOR => Some("inherited declarations were found (floor 40)"),
         _ => None,
+    }
+}
+
+/// Why the legacy script is green on a rule it never had.
+fn legacy_blind_reason(rule: &str) -> &'static str {
+    match rule {
+        ROW_TEST_SUPPORT => {
+            "the legacy only ever compared version requirements against the workspace table; it \
+             never read a `features` list, so a `test-support` feature switched on from a normal \
+             edge or a non-test feature (ARCHITECT RULING Q-GG3) is not something it can see."
+        }
+        _ => {
+            "the legacy walks the declared member list and never reads `crates/`, so a directory \
+             that moved out from under the workspace is not something it can see. This gate's walk \
+             is held to the member list, and a member it missed is a named failure rather than a \
+             clean tree."
+        }
     }
 }
 
@@ -801,8 +1105,8 @@ fn planted(
     }
 }
 
-/// The nine planted violations, one per rule this gate enforces.
-fn plants(cx: &Ctx) -> Vec<Plant> {
+/// The planted violations, at least one per rule this gate enforces.
+fn plants() -> Vec<Plant> {
     let mut out = Vec::new();
 
     // Rule 2, three plants, because "dependencies" is three tables plus their per-target forms and
@@ -927,26 +1231,70 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
         &[],
     ));
 
-    // Rule 8, alone: a workspace whose declared members are all present and clean, over a `crates/`
-    // tree that has collapsed. Rules 1-7 read the ROOT MANIFEST's member list, so they are all
-    // green here and only the directory walk can name this.
+    // Rule 8: a declared `crates/` member the directory walk does not find. The member is declared
+    // and its manifest withdrawn, so the walk has nothing at that path; the row names the member,
+    // not a count (ARCHITECT 2026-10-02: exact, not a floor).
     //
     // THE LEGACY SCRIPT CANNOT SEE THIS ONE. It never looks at `crates/` — it walks the declared
-    // member list and nothing else — so the plant is invisible to it by construction. The probe
-    // stays: a rule the Rust gate enforces and the Python never did is a finding to report at the
-    // call-site switch, not a probe to drop so the run comes out quiet.
-    if let Ok(real) = cx.walk(&WalkSpec::new(["crates"]).ext("toml")) {
-        let removed: Vec<String> = real.iter().skip(2).map(SourceFile::rel_str).collect();
-        let refs: Vec<&str> = removed.iter().map(String::as_str).collect();
-        out.push(planted(
-            "the crates/ manifest walk collapsed",
-            ROW_DISCOVERY,
-            &["walk over [crates]"],
-            &clean_members(),
-            &clean_table(),
-            &refs,
-        ));
-    }
+    // member list and nothing else. The probe stays: a rule the Rust gate enforces and the Python
+    // never did is a finding to report at the call-site switch, not a probe to drop so the run
+    // comes out quiet.
+    let mut missed = clean_members();
+    missed.push((
+        "crates/ws-plant-missed".to_string(),
+        member_body(CLEAN_DEPS, ""),
+    ));
+    out.push(planted(
+        "the crates/ manifest walk missed a declared member",
+        ROW_DISCOVERY,
+        &["crates/ws-plant-missed"],
+        &missed,
+        &clean_table(),
+        &["crates/ws-plant-missed/Cargo.toml"],
+    ));
+
+    // Rule 9, twice: the two ways a release build can reach a `test-support` feature. Every other
+    // rule is green on both (the edges are path dependencies, which the inheritance arms excuse).
+    //
+    // A NORMAL EDGE turning it on — the shape ARCHITECT RULING Q-GG3 forbids by name.
+    let mut normal_edge = clean_members();
+    normal_edge[2].1 = member_body(
+        CLEAN_DEPS,
+        "m3 = { path = \"../m3\", features = [\"test-support\"] }",
+    );
+    normal_edge[3].1 = format!(
+        "{}\n\n[features]\ntest-support = []",
+        member_body(CLEAN_DEPS, "")
+    );
+    out.push(planted(
+        "a normal dependency edge enables another crate's test-support",
+        ROW_TEST_SUPPORT,
+        &["ws-plant/m2/Cargo.toml", "non-dev edge", "m3"],
+        &normal_edge,
+        &clean_table(),
+        &[],
+    ));
+
+    // A NON-TEST FEATURE forwarding to it, beside a sanctioned dev edge: the dev edge alone is
+    // green, and `default -> fixtures -> m3/test-support` puts it in every release build anyway.
+    let mut forwarded = clean_members();
+    forwarded[2].1 = format!(
+        "{}\n\n[dev-dependencies]\nm3 = {{ path = \"../m3\", features = [\"test-support\"] }}\n\n\
+         [features]\ndefault = [\"fixtures\"]\nfixtures = [\"m3/test-support\"]",
+        member_body(CLEAN_DEPS, "m3 = { path = \"../m3\" }")
+    );
+    forwarded[3].1 = format!(
+        "{}\n\n[features]\ntest-support = []",
+        member_body(CLEAN_DEPS, "")
+    );
+    out.push(planted(
+        "a non-test feature forwards to another crate's test-support",
+        ROW_TEST_SUPPORT,
+        &["[features] `fixtures`", "m3/test-support"],
+        &forwarded,
+        &clean_table(),
+        &[],
+    ));
 
     out
 }
@@ -961,6 +1309,7 @@ fn unproven(why: &str) -> Vec<Row> {
         (ROW_SET_EQUALITY, "the member set is unproven"),
         (ROW_MEMBER_FLOOR, "the member count is unknown"),
         (ROW_INHERITED_FLOOR, "the inherited count is unknown"),
+        (ROW_TEST_SUPPORT, "the test-support edges are unproven"),
     ]
     .iter()
     .map(|(id, title)| Row::fail(*id, *title, why))
@@ -1159,75 +1508,129 @@ mod tests {
         );
     }
 
-    /// The directory floor is the third one, and it is counted off a different instrument than the
-    /// other two — so it too needs a fixture the other seven rules pass.
+    /// THE WALK READS EXACTLY THE DECLARED MEMBERS (ARCHITECT 2026-10-02). The `crates/` walk is
+    /// held to the root manifest's own member list rather than to a number: a declared `crates/`
+    /// member the walk did not find is RED by name, the real tree is green, and an extraction
+    /// (manifest AND member line gone) is not a miss, however few crates are left.
+    const MISSED: &str = "crates/busbar-kernel-scope";
+
     #[test]
-    fn the_crates_walk_floor_rejects_alone() {
-        let real = cx()
-            .walk(&WalkSpec::new(["crates"]).ext("toml"))
-            .expect("the real crates/ walk");
-        let mut ov = plant(&clean_members(), &clean_table());
-        for f in real.iter().skip(2) {
-            ov.remove(&f.rel);
+    fn a_crates_walk_that_misses_a_declared_member_is_red_naming_it() {
+        let mut ov = Overlay::new();
+        ov.remove(format!("{MISSED}/Cargo.toml"));
+        let row = rule_discovery(&cx().with_overlay(ov));
+        assert_ne!(row.status, crate::ledger::Status::Pass, "{row:?}");
+        assert!(row.detail.contains(MISSED), "the miss is named: {row:?}");
+
+        let real = rule_discovery(&cx());
+        assert_eq!(real.status, crate::ledger::Status::Pass, "{real:?}");
+    }
+
+    #[test]
+    fn an_extracted_crate_is_not_a_missed_member() {
+        let root = cx().read("Cargo.toml").expect("the root manifest reads");
+        let line = format!("    \"{MISSED}\",\n");
+        assert!(root.contains(&line), "the root declares {MISSED}");
+        let mut ov = Overlay::new();
+        ov.remove(format!("{MISSED}/Cargo.toml"));
+        ov.set("Cargo.toml", root.replace(&line, ""));
+        let row = rule_discovery(&cx().with_overlay(ov));
+        assert_eq!(row.status, crate::ledger::Status::Pass, "{row:?}");
+    }
+
+    /// Every shape ARCHITECT RULING Q-GG3 sanctions, in one manifest: dev edges in all three
+    /// spellings (inline, per-target, sub-table), a crate's own `test-support` forwarding across a
+    /// multi-line array, and the places the word appears without enabling anything (a comment, a
+    /// `[[test]]`'s `required-features`, prose).
+    #[test]
+    fn the_sanctioned_test_support_shapes_are_green() {
+        let text = "[package]\nname = \"ok\"\ndescription = \"\"\"\nturns on \"test-support\" = [\n\"\"\"\n\n\
+                    [[test]]\nname = \"t\"\nrequired-features = [\"runtime\", \"test-support\"]\n\n\
+                    [features]\n# default = [\"test-support\"] is a comment\ntest-support = [\n    \
+                    \"busbar-kernel/test-support\",\n    \"dep:reqwest\",\n    \"a?/test-support\",\n]\n\n\
+                    [dev-dependencies]\nbusbar-kernel = { path = \"../busbar-kernel\", features = [\"test-support\"] }\n\n\
+                    [target.'cfg(unix)'.dev-dependencies]\nb = { path = \"../b\", features = [\n    \"test-support\",\n] }\n\n\
+                    [dev-dependencies.c]\npath = \"../c\"\nfeatures = [\"test-support\"]\n";
+        let scan = test_support_scan("ok/Cargo.toml", text);
+        assert_eq!(scan.offenders, Vec::<String>::new());
+        assert_eq!((scan.dev_edges, scan.forwards), (3, 2), "{scan:?}");
+    }
+
+    /// Every spelling of an enabling site a release build can reach is RED, one manifest each, so a
+    /// spelling the scan went blind to fails on its own line.
+    #[test]
+    fn every_release_reachable_enabling_site_is_red() {
+        let cases = [
+            ("normal inline", "[dependencies]\nk = { path = \"../k\", features = [\"test-support\"] }\n"),
+            ("normal multi-line", "[dependencies]\nk = { path = \"../k\", features = [\n  \"x\",\n  \"test-support\",\n] }\n"),
+            ("normal dotted key", "[dependencies]\nk.path = \"../k\"\nk.features = [\"test-support\"]\n"),
+            ("normal sub-table", "[dependencies.k]\npath = \"../k\"\nfeatures = [\"test-support\"]\n"),
+            ("build edge", "[build-dependencies]\nk = { path = \"../k\", features = [\"test-support\"] }\n"),
+            ("legacy underscore", "[build_dependencies]\nk = { path = \"../k\", features = [\"test-support\"] }\n"),
+            ("per-target normal", "[target.'cfg(unix)'.dependencies]\nk = { path = \"../k\", features = [\"test-support\"] }\n"),
+            ("workspace table", "[workspace.dependencies]\nk = { path = \"crates/k\", features = [\"test-support\"] }\n"),
+            ("default on itself", "[features]\ndefault = [\"test-support\"]\ntest-support = []\n"),
+            ("named feature forwards", "[features]\nfixtures = [\"k/test-support\"]\n"),
+            ("weak forward", "[features]\nfixtures = [\"k?/test-support\"]\n"),
+        ];
+        for (label, text) in cases {
+            let scan = test_support_scan("bad/Cargo.toml", text);
+            assert_eq!(scan.offenders.len(), 1, "{label}: {scan:?}");
+            assert!(
+                scan.offenders[0].starts_with("bad/Cargo.toml:"),
+                "{label}: the finding names its manifest and line: {scan:?}"
+            );
         }
+    }
+
+    /// THE RED ARM, through the whole gate: a normal edge enabling `test-support` reds this row and
+    /// nothing else, and the same edge moved to `[dev-dependencies]` (with the target's own
+    /// `test-support` forwarding on) is green.
+    #[test]
+    fn a_non_dev_test_support_edge_reds_only_its_row() {
+        let mut bad = clean_members();
+        bad[2].1 = member_body(
+            CLEAN_DEPS,
+            "m3 = { path = \"../m3\", features = [\"test-support\"] }",
+        );
         assert_eq!(
-            failed_ids(ov),
-            vec![ROW_DISCOVERY.to_string()],
-            "an emptied crates/ must be named by the walk and by nothing else"
+            failed_ids(plant(&bad, &clean_table())),
+            vec![ROW_TEST_SUPPORT.to_string()]
+        );
+
+        let mut good = clean_members();
+        good[2].1 = format!(
+            "{}\n\n[dev-dependencies]\nm3 = {{ path = \"../m3\", features = [\"test-support\"] }}",
+            member_body(CLEAN_DEPS, "")
+        );
+        good[3].1 = format!(
+            "{}\n\n[features]\ntest-support = [\"m4/test-support\"]\n\n\
+             [dev-dependencies]\nm4 = {{ path = \"../m4\", features = [\"test-support\"] }}",
+            member_body(CLEAN_DEPS, "")
+        );
+        assert_eq!(
+            failed_ids(plant(&good, &clean_table())),
+            Vec::<String>::new()
         );
     }
 
-    /// The real `crates/` walk thinned to exactly `n` manifests, every other file removed.
-    fn crates_walk_holding(n: usize) -> Ctx {
-        let cx = cx();
-        let real = cx
-            .walk(&WalkSpec::new(["crates"]).ext("toml"))
-            .expect("the real crates/ walk");
-        // `crates/` also holds `.toml` files that are not manifests (kernel data, the LLM dialect
-        // mapping files): keep at most the first `n` manifests and remove every other `.toml`.
-        let mut ov = Overlay::new();
-        let mut kept = 0;
-        for f in &real {
-            if f.rel.ends_with("Cargo.toml") && kept < n {
-                kept += 1;
-            } else {
-                ov.remove(&f.rel);
-            }
-        }
-        cx.with_overlay(ov)
-    }
-
-    /// ITEM F0. The floor is a guard against a BLIND walk, not a ratchet on the roster: the fold's
-    /// planned end state (34 crates, and the 33 / 32 roster variants) must pass it, and a walk that
-    /// finds a handful must not. At 40 the floor errored at 39 crates, i.e. at fold #10.
-    ///
-    /// RE-MEASURED after the codec fold (owner ruling R7, 2026-09-27, #39): `busbar-llm-codec` and
-    /// `busbar-voice-codec` dissolved, taking two manifests out of `crates/` with them (36 -> 34
-    /// `.toml` files, the real walk this fixture truncates FROM). The sample set moves down with
-    /// it, one for one — it was never a ratchet on the roster, only a range of healthy sizes this
-    /// rule must not redden on.
-    ///
-    /// RE-MEASURED after the kernel's operator credential moved out: `crates/busbar-kernel/data/operator_credential.toml`
-    /// left the kernel for the root legacy table, so the real walk holds 33 `.toml` files, and the
-    /// sample set moves down with it, one for one (still clear of the floor of 30).
+    /// The scan is not blind on the real tree: today's manifests carry dev edges AND forwards, and a
+    /// reader that saw neither would pass the row over nothing.
     #[test]
-    fn the_crates_walk_floor_admits_the_fold_end_state_and_rejects_a_collapse() {
-        for n in [33, 32, 31] {
-            let row = rule_discovery(&crates_walk_holding(n));
-            assert_eq!(
-                row.status,
-                crate::ledger::Status::Pass,
-                "a crates/ of {n} manifests is a planned fold end state, not a collapse: {row:?}"
-            );
-        }
-        for n in [0, 5, 20] {
-            let row = rule_discovery(&crates_walk_holding(n));
-            assert_ne!(
-                row.status,
-                crate::ledger::Status::Pass,
-                "a crates/ walk that found {n} manifests is a collapse and must be RED"
-            );
-        }
+    fn the_real_tree_has_sanctioned_test_support_sites() {
+        let cx = cx();
+        let root = read_manifest(&cx, "Cargo.toml").expect("root manifest");
+        let s = survey(&cx, &root);
+        assert!(
+            s.test_support.offenders.is_empty(),
+            "{:?}",
+            s.test_support.offenders
+        );
+        assert!(
+            s.test_support.dev_edges > 0 && s.test_support.forwards > 0,
+            "{:?}",
+            s.test_support
+        );
     }
 
     #[test]

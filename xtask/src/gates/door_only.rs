@@ -200,11 +200,35 @@ impl Gate for DoorOnlyGate {
     }
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
+        // THE PLUGIN THE PLANT NAMES IS ONE THE WORKSPACE HOLDS. The plant named
+        // `busbar_transport_tcp` until that transport left for its own repo (66853bf6e1); the scan
+        // only knows the plugin crates that are members, so a path into a departed one is no
+        // finding and the red arm proved nothing. The plugins leave this tree one by one, so the
+        // plant takes whichever plugin member the census holds first.
+        let plugin: &'static str = match one_abi::members(cx).map(|ms| {
+            ms.into_iter()
+                .find(|m| one_abi::is_plugin_crate(&m.name))
+                .map(|m| m.name.replace('-', "_"))
+        }) {
+            Ok(Some(ident)) => Box::leak(ident.into_boxed_str()),
+            Ok(None) => {
+                let mut report = Report::new();
+                report.note_infra_failure(
+                    "door-only selftest: the workspace holds no plugin crate to plant a path into",
+                );
+                return report;
+            }
+            Err(e) => {
+                let mut report = Report::new();
+                report.note_infra_failure(format!("door-only selftest: {e}"));
+                return report;
+            }
+        };
         let file = "crates/busbar-kernel/src/planted_door_only.rs";
         let mut path = Overlay::new();
         path.set(
             file,
-            "pub fn planted() { busbar_transport_tcp::carrier::Planted::go(); }\n",
+            format!("pub fn planted() {{ {plugin}::carrier::Planted::go(); }}\n"),
         );
         let mut seam = Overlay::new();
         seam.set(
@@ -214,7 +238,7 @@ impl Gate for DoorOnlyGate {
         let mut door = Overlay::new();
         door.set(
             file,
-            "pub const ROW: fn() = busbar_transport_tcp::door;\npub static NAME: &str = \"x\";\n",
+            format!("pub const ROW: fn() = {plugin}::door;\npub static NAME: &str = \"x\";\n"),
         );
         let mut report = one_abi::selftest(
             cx,
@@ -225,7 +249,7 @@ impl Gate for DoorOnlyGate {
                     ROW_PATH,
                     "the kernel naming a plugin's Rust item is RED, naming the crate",
                     path,
-                    vec![file, "busbar_transport_tcp"],
+                    vec![file, plugin],
                 ),
                 (
                     ROW_SEAM,

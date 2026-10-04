@@ -18,6 +18,8 @@ use crate::diagnostics::{
     KEYS_IN_CHAIN_PASSTHROUGH_CONFLICT,
 };
 use crate::state::App;
+use busbar_contract::abi::auth::FACT_CACHEABLE;
+use busbar_contract::auth_calls::{AuthCalls, Verified, VerifyAnswer, VerifyRequest};
 use busbar_kernel_identity::{
     egress_auth::sigv4::SIGV4_ALGORITHM,
     ingress_sigv4::{
@@ -140,17 +142,137 @@ pub struct AuthMiddleware {
     /// matched) a NON-EMPTY chain denies (fail-closed). An EMPTY chain admits unconditionally — the
     /// open front door (`chain: []`, the old none/passthrough). No `AuthMode` — the front-door policy
     /// is the chain shape, the egress policy is `upstream_creds`.
-    /// Each entry is `(provider NAME, module)` — the name is the `identity-providers:` key this
-    /// chain position referenced, and is what a successful `Identify` reports as
-    /// [`ChainVerdict::Identified::module`].
-    chain: Vec<(String, Box<dyn AuthModule>)>,
-    /// Whether ANY chain module is a loaded PLUGIN — i.e. whether running this chain can perform
-    /// blocking work (an FFI/IPC `transport_call`, and behind it whatever the module does: an HTTPS
-    /// JWKS fetch, a token-introspection round-trip, a directory lookup). Decided once at build
-    /// time because it decides how the request path calls the chain: see
-    /// [`AuthMiddleware::run_chain_on_request_path`]. In-process modules are microsecond compares
-    /// and are called inline; a plugin chain is offloaded off the reactor.
-    has_plugin_module: bool,
+    /// Each entry is the provider NAME — the `identity-providers:` key this chain position
+    /// referenced, and what a successful `Identify` reports as [`ChainVerdict::Identified::module`]
+    /// — and the `kind: auth` instance the auth axis opened for it ([`ChainEntry`]).
+    chain: Vec<ChainEntry>,
+}
+
+/// ONE DATA-PLANE CHAIN POSITION (AUTH-CHAIN-SWITCH; THE DESIGN 11.6, "Auth is on the memory ABI"):
+/// the provider name and the `kind: auth` instance the auth axis opened for it
+/// ([`crate::preflight::auth_axis`]), called through the contract's [`AuthCalls`] — ONE `verify`
+/// per request per position, the candidate credential lent.
+struct ChainEntry {
+    /// The provider name from the configuration.
+    provider: String,
+    /// The opened instance.
+    calls: std::sync::Arc<dyn AuthCalls>,
+    /// The instance's name as its Statement (or its cold module) states it, for the plugin
+    /// catalogue ([`AuthMiddleware::chain_names`]).
+    name: String,
+    /// M6-COLD-DELETE: a 1.5.5-shaped module behind the cold adapter (`ColdAuth`) — a plugin still
+    /// on the COLD auth lane, or an in-process test stand-in. The kernel caches its verdicts when it
+    /// states [`FACT_CACHEABLE`], as 1.5.5 cached a `cacheable()` module. A memory-ABI door caches
+    /// inside itself (THE DESIGN 11.11 R3): the kernel keeps no verdict of it.
+    cold: bool,
+    /// M6-COLD-DELETE: a cold-lane PLUGIN, whose `verify` is a synchronous call that may do blocking
+    /// I/O (the shipped OIDC module's JWKS fetch): the request path OFFLOADS it, bounded
+    /// ([`AUTH_OFFLOAD_MAX_INFLIGHT`]). A memory-ABI door is awaited on the dispatcher (no thread
+    /// parked); an in-process stand-in cannot block.
+    offload: bool,
+}
+
+impl ChainEntry {
+    /// Whether the kernel's credential cache holds this position's verdicts: a cold module that
+    /// states itself cacheable ([`ChainEntry::cold`]).
+    fn cacheable(&self) -> bool {
+        self.cold && self.calls.facts() & FACT_CACHEABLE != 0
+    }
+}
+
+/// A position's `verify` answer as the chain walks it. FAIL-CLOSED: an answer with no verdict
+/// (FAILED, FAULT, REFUSED, a timeout, a second short answer) and an overloaded verifier are a
+/// `Reject`, as 1.5.5 rejected on a module failure and denied on a saturated offload (its 401).
+fn chain_verdict_of(answer: VerifyAnswer) -> AuthVerdict {
+    match answer.verified {
+        Verified::Identity(id) => AuthVerdict::Identify(Principal {
+            id: id.subject,
+            name: id.name,
+            roles: id.groups,
+            ttl_secs: id.ttl_secs,
+        }),
+        Verified::Pass => AuthVerdict::Pass,
+        Verified::Reject | Verified::Failed | Verified::Overloaded => AuthVerdict::Reject,
+    }
+}
+
+/// How a chain run reaches each position's verifier.
+#[derive(Debug, Clone, Copy)]
+enum Reach {
+    /// On the caller's own thread, for a SYNC caller (`run_chain`, `run_chain_cached`): each
+    /// position on the spot, and a door that must wait awaited where the caller polls.
+    Inline,
+    /// On the request path: a cold plugin offloaded and bounded, a door submitted and awaited.
+    RequestPath,
+}
+
+/// THE REQUEST'S HEAD as the data-plane chain lends it to each position's `verify` at the `Head`
+/// point (THE DESIGN, "Auth points and guest lists"): the method, the authority off the `host`
+/// line, the path and query as received, and the field lines as presented (lower-cased names, in
+/// order). The chain adds the candidate credential and the clock per call. Empty (`default`) where
+/// the caller holds no request head (the stdio identity bind): the candidate alone is lent.
+#[derive(Debug, Clone, Default)]
+pub struct ChainHead {
+    lines: Vec<(String, busbar_contract::redacted::Redacted<Vec<u8>>)>,
+    method: String,
+    authority: String,
+    path: String,
+    query: Option<String>,
+}
+
+impl ChainHead {
+    /// The head of `req`.
+    pub fn of(req: &Request<Body>) -> Self {
+        Self::of_parts(
+            req.method().as_str(),
+            req.uri()
+                .path_and_query()
+                .map_or_else(|| req.uri().path(), |pq| pq.as_str()),
+            req.headers(),
+        )
+    }
+
+    /// The head of a request's `method`, `target` (path, then `?query`) and `headers`.
+    pub fn of_parts(method: &str, target: &str, headers: &HeaderMap) -> Self {
+        let (path, query) = match target.split_once('?') {
+            Some((path, query)) => (path, Some(query.to_string())),
+            None => (target, None),
+        };
+        let authority = headers
+            .get(axum::http::header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        Self {
+            lines: headers
+                .iter()
+                .map(|(n, v)| {
+                    let value = busbar_contract::redacted::Redacted::new(v.as_bytes().to_vec());
+                    (n.as_str().to_string(), value)
+                })
+                .collect(),
+            method: method.to_string(),
+            authority: authority.to_string(),
+            path: path.to_string(),
+            query,
+        }
+    }
+
+    /// One position's `verify` request: this head at `Head`, `candidate` lent as the credential,
+    /// stamped `now`.
+    fn request(&self, candidate: Option<&str>, now: u64) -> VerifyRequest {
+        VerifyRequest {
+            point: busbar_contract::abi::auth::AuthPoint::Head,
+            credential: candidate
+                .map(|c| busbar_contract::redacted::Redacted::new(c.as_bytes().to_vec())),
+            lines: self.lines.clone(),
+            method: self.method.clone(),
+            authority: self.authority.clone(),
+            path: self.path.clone(),
+            query: self.query.clone(),
+            timestamp: now,
+            ..Default::default()
+        }
+    }
 }
 
 /// The bound on CONCURRENT offloaded auth-chain calls. `spawn_blocking` on its own is not a fix: a
@@ -201,41 +323,67 @@ static ADMIN_OFFLOAD_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
 /// this snapshot was built from named it (an admin-API chain swap reuses this value). Held behind an
 /// `Arc` on the `App` snapshot.
 pub struct AdminAuthChain {
-    pub modules: std::collections::HashMap<String, Box<dyn AuthModule>>,
-    /// Whether ANY resolved admin module is a loaded plugin — i.e. whether running the admin chain
-    /// can block (FFI/JWKS/introspection). Decided once at build; gates the off-reactor offload.
-    pub has_plugin: bool,
+    /// The resolved EXTERNAL admin modules, keyed by provider name: each a `kind: auth` instance the
+    /// auth axis opened on the one dispatcher (L2-AUTH-4, ARCHITECT 2026-10-03): a door is awaited,
+    /// a cold-lane plugin (M6-COLD-DELETE) is offloaded off the reactor ([`AdminModule::cold`]).
+    pub modules: std::collections::HashMap<String, AdminModule>,
     /// The operator credential, as the auth axis answers it, and the providers it answers for: a
     /// provider is the operator credential by its module, never by its name ([`Operator`]).
     pub operator: Operator,
 }
 
+/// ONE EXTERNAL ADMIN MODULE: the instance the auth axis opened for an `admin_auth:` provider.
+pub struct AdminModule {
+    /// The opened instance.
+    pub calls: std::sync::Arc<dyn AuthCalls>,
+    /// M6-COLD-DELETE: a 1.5.5-shaped module behind the cold adapter (a cold-lane plugin, or an
+    /// in-process test stand-in). Its `verify` is a synchronous call that may block, so an awaited
+    /// admin walk offloads it, bounded ([`ADMIN_OFFLOAD_MAX_INFLIGHT`]), and the admin chain caches
+    /// its verdicts as 1.5.5 did. A memory-ABI door is awaited on the dispatcher and caches inside
+    /// itself (THE DESIGN 11.11 R3): the kernel keeps no verdict of it.
+    pub cold: bool,
+}
+
+impl AdminModule {
+    /// An in-process 1.5.5-shaped module (a test stand-in) as an external admin module: behind the
+    /// cold adapter, offloaded and cached as a cold plugin is.
+    pub fn cold(module: Box<dyn AuthModule>) -> Self {
+        Self {
+            calls: std::sync::Arc::new(busbar_plugin_loader::auth_axis::ColdAuth::new(module)),
+            cold: true,
+        }
+    }
+}
+
 pub use busbar_kernel_identity::{
     caller_ref::CallerRefKey,
     egress_auth::sigv4::uri_encode_path,
-    operator::{Operator, OperatorCredential},
+    operator::{AdminUnavailable, Operator, OperatorCredential},
 };
 
-/// Open the operator credential from `registry`: the row answering
-/// [`crate::config::operator_provider`], over the operator token's SHA-256 hex `digest` (the
-/// plaintext never crosses the seam), answering for every provider the effective `providers`
-/// back with its module ([`Operator::backed`]).
+/// Open the operator credential from `registry` through this build's auth axis: the row answering
+/// [`crate::config::operator_provider`], opened on its door over the operator token's SHA-256 hex
+/// `digest` (the plaintext never crosses the seam), answering for every provider the effective
+/// `providers` back with its module ([`Operator::backed`]).
 pub fn open_operator(
-    registry: &busbar_plugin_loader::PluginRegistry,
+    registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
     digest: Option<String>,
     providers: &crate::config::IdentityProviders,
 ) -> Result<Operator, String> {
     let op = crate::config::operator_provider();
-    let answered = registry.answers(op, "auth");
+    let axis = crate::preflight::auth_axis(registry.clone());
+    let answered = axis.as_ref().is_some_and(|axis| axis.answers(op));
     let defs = providers.iter().map(|(n, d)| (n.as_str(), d.module.trim()));
-    Operator::open(op, defs, answered, digest, |d| registry.open_auth(op, d))
+    Operator::open(op, defs, answered, digest, |d| {
+        let axis = axis.ok_or_else(|| format!("no `kind: auth` plugin answers to '{op}'"))?;
+        axis.open(op, op, &serde_json::Value::String(d.to_string()))
+    })
 }
 
 impl fmt::Debug for AdminAuthChain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AdminAuthChain")
             .field("modules", &self.modules.keys().collect::<Vec<_>>())
-            .field("has_plugin", &self.has_plugin)
             .finish()
     }
 }
@@ -248,7 +396,6 @@ impl AdminAuthChain {
     pub fn empty() -> Self {
         Self {
             modules: std::collections::HashMap::new(),
-            has_plugin: false,
             operator: Operator::new(crate::config::operator_provider()),
         }
     }
@@ -263,13 +410,13 @@ impl AdminAuthChain {
     /// silently-dropped module. Runs at boot AND reload (inside `build_app_from_config`).
     pub fn build(
         cfg: &AuthCfg,
-        registry: &busbar_plugin_loader::PluginRegistry,
+        registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
-        let mut modules: std::collections::HashMap<String, Box<dyn AuthModule>> =
+        let mut modules: std::collections::HashMap<String, AdminModule> =
             std::collections::HashMap::new();
-        let mut has_plugin = false;
         let op = crate::config::operator_provider();
+        let mut axis: Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
         for entry in &cfg.admin_auth {
             match entry.module.as_str() {
                 // The operator credential is opened beside the chain ([`open_operator`]).
@@ -283,24 +430,46 @@ impl AdminAuthChain {
                     let resolved =
                         crate::config::secret::resolve_settings(&entry.settings, secret_resolver)
                             .map_err(|e| format!("identity-providers.{name} settings: {e}"))?;
-                    let cfg_json = serde_json::Value::Object(resolved).to_string();
-                    let module = registry.open_auth(other, &cfg_json).map_err(|e| {
+                    let refused = |e: String| {
                         format!(
                             "auth.admin_auth provider '{name}' (module '{other}') could not be \
                              loaded as a `kind: auth` plugin: {e}"
                         )
-                    })?;
+                    };
+                    // ON THE AUTH AXIS (L2-AUTH-4): the build's rows over the one dispatcher, the
+                    // axis the data-plane chain and the operator credential open through.
+                    let axis = match &axis {
+                        Some(axis) => axis.clone(),
+                        None => {
+                            let opened =
+                                crate::preflight::auth_axis(registry.clone()).ok_or_else(|| {
+                                    refused(format!("no `kind: auth` plugin answers to '{other}'"))
+                                })?;
+                            axis.insert(opened).clone()
+                        }
+                    };
+                    // The row's lane, refused in the registry's own words when it names no auth
+                    // row; a name only a door's Statement alias answers is the axis's (a door).
+                    let cold = match registry.auth_row_is_cold(other) {
+                        Ok(cold) => cold,
+                        Err(_) if axis.answers(other) => false,
+                        Err(e) => return Err(refused(e)),
+                    };
+                    // The host label is unique per opened instance: the admin chain's provider,
+                    // apart from a data-plane provider of the same name.
+                    let label = format!("admin_auth.{name}");
+                    let calls = axis
+                        .open(other, &label, &serde_json::Value::Object(resolved))
+                        .map_err(refused)?;
                     // KEYED BY PROVIDER NAME (1.5.3): `run_admin_chain` dispatches by the same name
                     // `admin_chain` lists and `role_bindings.<name>` binds, so two named providers
                     // sharing one module stay distinct admin identities.
-                    modules.insert(name.to_string(), module);
-                    has_plugin = true;
+                    modules.insert(name.to_string(), AdminModule { calls, cold });
                 }
             }
         }
         Ok(Self {
             modules,
-            has_plugin,
             operator: Operator::new(op),
         })
     }
@@ -318,27 +487,42 @@ impl fmt::Debug for AuthMiddleware {
 impl AuthMiddleware {
     /// Build the auth chain by RESOLVING the configured module entries against the plugin
     /// `registry`. The built-in `keys` (signed-key verifier) is engine-handled: virtual keys
-    /// authenticate on the governance path, not through a boxed module, so its entry sets a flag
-    /// rather than a module. Any OTHER name is resolved as a `kind: auth` PLUGIN via
-    /// [`PluginRegistry::open_auth`] (the exact trust/load pipeline store & secret plugins use) and
-    /// boxed into the chain. FAIL-CLOSED: a configured auth module that cannot be loaded (missing
-    /// tarball, wrong kind, untrusted under the running policy, or a `dlopen`/ABI failure) is a
-    /// HARD boot error — never a silently-dropped module that would leave the front door open.
-    /// `--validate`/`plugins_preflight` catches most of these manifest-only, so this is the
-    /// belt-and-suspenders load-time gate. An EMPTY chain is the open front door (none/passthrough).
+    /// authenticate on the governance path, not through a chain position, so its entry sets a flag
+    /// rather than a position. Any OTHER name is a `kind: auth` PLUGIN, opened on this build's AUTH
+    /// AXIS ([`crate::preflight::auth_axis`]: the composition root's rows over the process's one
+    /// dispatcher, AUTH-CHAIN-SWITCH) — a memory-ABI door, linked or dropped in, and, until M6, a
+    /// plugin still on the cold lane (`ColdAuth`). FAIL-CLOSED: a configured auth module that cannot
+    /// be loaded (missing tarball, wrong kind, untrusted under the running policy, a load or ABI
+    /// failure, an `open` that refused) is a HARD boot error — never a silently-dropped module that
+    /// would leave the front door open. `--validate`/`plugins_preflight` catches most of these
+    /// manifest-only, so this is the belt-and-suspenders load-time gate. An EMPTY chain is the open
+    /// front door (none/passthrough).
     ///
-    /// The plugin's config JSON is its chain entry's opaque `settings:` map (verbatim, exactly like
-    /// a store/secret plugin's `settings:`). The chain module's RUNTIME identity is `module.name()`
-    /// (the name the loaded plugin reports over the ABI), which is what `role_bindings.<module>` and
-    /// `auth.modules.<module>` caps key off — not the config alias.
+    /// The plugin's settings are its chain entry's opaque `settings:` map (verbatim, exactly like a
+    /// store/secret plugin's `settings:`), its secret-refs resolved first. The position's RUNTIME
+    /// identity is the provider NAME, which is what `role_bindings.<module>` and the scope caps key
+    /// off; the instance is opened under it as its host label.
     pub fn new(
         cfg: &AuthCfg,
-        registry: &busbar_plugin_loader::PluginRegistry,
+        registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
         let mut keys_in_chain = false;
-        let mut has_plugin_module = false;
-        let mut chain: Vec<(String, Box<dyn AuthModule>)> = Vec::new();
+        let mut chain: Vec<ChainEntry> = Vec::new();
+        // An in-process TEST stand-in, as a chain position: the cold adapter over the module,
+        // answered on the caller's thread (it cannot block), never cached.
+        #[cfg(any(test, feature = "test-support"))]
+        let stand_in = |provider: &str, module: Box<dyn AuthModule>| {
+            let calls = busbar_plugin_loader::auth_axis::ColdAuth::new(module);
+            ChainEntry {
+                provider: provider.to_string(),
+                name: calls.name().to_string(),
+                calls: std::sync::Arc::new(calls),
+                cold: true,
+                offload: false,
+            }
+        };
+        let mut axis: Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
         for entry in &cfg.chain {
             match entry.module.as_str() {
                 crate::config::KEYS_MODULE => {
@@ -349,7 +533,7 @@ impl AuthMiddleware {
                 // governance re-key is e2e-testable. Compiled out of release binaries entirely.
                 #[cfg(any(test, feature = "test-support"))]
                 "test-groups-module" => {
-                    chain.push((entry.name.clone(), Box::new(TestGroupsModule)))
+                    chain.push(stand_in(&entry.name, Box::new(TestGroupsModule)));
                 }
                 // TEST-ONLY stand-in for a real OIDC auth plugin: it verifies (here, pretends to
                 // verify) an issuer's signature and identifies the bearer. It is deliberately
@@ -359,12 +543,8 @@ impl AuthMiddleware {
                 // that does not: a keys-only chain refuses a foreign token anyway, for a different
                 // reason, and every assertion about the plane boundary passes vacuously.
                 #[cfg(any(test, feature = "test-support"))]
-                "test-idp-module" => chain.push((entry.name.clone(), Box::new(TestIdpModule))),
+                "test-idp-module" => chain.push(stand_in(&entry.name, Box::new(TestIdpModule))),
                 other => {
-                    // A `kind: auth` PLUGIN: resolve + open over the signed hybrid ABI (same trust
-                    // posture, same loader as store/secret). The `settings:` map is the plugin's
-                    // opaque config, pushed verbatim. FAIL-CLOSED — surface the load error so boot
-                    // (or an apply/reload) aborts rather than silently dropping the module.
                     // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret
                     // store BEFORE the settings cross the ABI (ADR-0010). FAIL-CLOSED: an
                     // unresolvable ref aborts the chain build rather than handing the plugin a
@@ -372,15 +552,39 @@ impl AuthMiddleware {
                     let resolved =
                         crate::config::secret::resolve_settings(&entry.settings, secret_resolver)
                             .map_err(|e| format!("auth.chain module '{other}' settings: {e}"))?;
-                    let cfg_json = serde_json::Value::Object(resolved).to_string();
-                    let module = registry.open_auth(other, &cfg_json).map_err(|e| {
+                    let refused = |e: String| {
                         format!(
                             "auth.chain module '{other}' could not be loaded as a `kind: auth` \
                              plugin: {e}"
                         )
-                    })?;
-                    chain.push((entry.name.clone(), module));
-                    has_plugin_module = true;
+                    };
+                    let axis = match &axis {
+                        Some(axis) => axis.clone(),
+                        None => {
+                            let opened =
+                                crate::preflight::auth_axis(registry.clone()).ok_or_else(|| {
+                                    refused(format!("no `kind: auth` plugin answers to '{other}'"))
+                                })?;
+                            axis.insert(opened).clone()
+                        }
+                    };
+                    // The row's lane, refused in the registry's own words when it names no auth
+                    // row; a name only a door's Statement alias answers is the axis's (a door).
+                    let cold = match registry.auth_row_is_cold(other) {
+                        Ok(cold) => cold,
+                        Err(_) if axis.answers(other) => false,
+                        Err(e) => return Err(refused(e)),
+                    };
+                    let calls = axis
+                        .open(other, &entry.name, &serde_json::Value::Object(resolved))
+                        .map_err(refused)?;
+                    chain.push(ChainEntry {
+                        provider: entry.name.clone(),
+                        name: calls.name().to_string(),
+                        calls,
+                        cold,
+                        offload: cold,
+                    });
                 }
             }
         }
@@ -395,7 +599,6 @@ impl AuthMiddleware {
         Ok(Self {
             keys_in_chain,
             chain,
-            has_plugin_module,
         })
     }
 
@@ -407,17 +610,17 @@ impl AuthMiddleware {
     pub fn new_builtin(cfg: &AuthCfg) -> Self {
         Self::new(
             cfg,
-            &busbar_plugin_loader::PluginRegistry::empty(),
+            &std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
             &crate::config::secret::SecretResolver::builtins_only(),
         )
         .expect("builtin-only auth chain never fails to construct")
     }
 
-    /// The ordered names of the auth chain's modules (`module.name()` for each). For the Admin API
+    /// The ordered names of the auth chain's positions (each instance's stated name). For the Admin API
     /// v1 plugin catalog — reporting which compiled-in/external auth modules are ACTIVE (in the
     /// chain). Never a secret: a module name is a plugin identifier, not a credential.
-    pub fn chain_names(&self) -> Vec<&'static str> {
-        self.chain.iter().map(|(_, m)| m.name()).collect()
+    pub fn chain_names(&self) -> Vec<String> {
+        self.chain.iter().map(|e| e.name.clone()).collect()
     }
 
     /// Whether the front door is OPEN — no boxed module AND no keys arm, so every request is
@@ -468,10 +671,39 @@ impl AuthMiddleware {
         now: u64,
         expected_aud: Option<&str>,
     ) -> ChainVerdict {
-        // The OPEN front door: no boxed chain modules AND no built-in `keys` engine arm → admit
-        // anonymously. `keys_in_chain` (an engine arm, not a boxed module) keeps the door CLOSED
-        // even though `self.chain` may be empty, so `chain:[keys]` runs the keys arm below rather
-        // than short-circuiting to `Open`.
+        // A SYNC caller: every position on this thread (`Reach::Inline`). Nothing the walk awaits
+        // is pending unless a door must wait, and then this thread waits for it, as the caller
+        // asked by calling synchronously.
+        futures::executor::block_on(self.walk(
+            &ChainHead::default(),
+            candidate,
+            cache,
+            gov,
+            now,
+            expected_aud,
+            Reach::Inline,
+        ))
+    }
+
+    /// THE CHAIN WALK, one `verify` per position per request (THE DESIGN 11.6): config order, the
+    /// first `Identify` admits, a `Reject` denies, all-`Pass` on a non-empty chain denies, and the
+    /// `keys` engine arm runs after every position. `head` is what each position is lent beside the
+    /// candidate; `reach` how each is called.
+    #[allow(clippy::too_many_arguments)]
+    async fn walk(
+        &self,
+        head: &ChainHead,
+        candidate: Option<&str>,
+        cache: Option<&crate::auth_cache::CredentialCache>,
+        gov: Option<&crate::governance::GovState>,
+        now: u64,
+        expected_aud: Option<&str>,
+        reach: Reach,
+    ) -> ChainVerdict {
+        // The OPEN front door: no chain position AND no built-in `keys` engine arm → admit
+        // anonymously. `keys_in_chain` (an engine arm, not a position) keeps the door CLOSED even
+        // though `self.chain` may be empty, so `chain:[keys]` runs the keys arm below rather than
+        // short-circuiting to `Open`.
         if self.chain.is_empty() && !self.keys_in_chain {
             return ChainVerdict::Open;
         }
@@ -482,16 +714,17 @@ impl AuthMiddleware {
         // unauthenticated traffic causes no admissions at all. A cache HIT is never re-`put`: doing
         // so would refresh its TTL and quietly extend the revocation window — see `was_hit` below.
         let mut pending_pass: Vec<&str> = Vec::new();
-        // The FLUSH GENERATION as of BEFORE the first module is consulted. Every `put` below carries
-        // it, so an admin cache flush that lands anywhere inside this chain run drops every verdict
-        // the run computed — the run's verdicts all predate the flush. Without this, an
+        // The FLUSH GENERATION as of BEFORE the first position is consulted. Every `put` below
+        // carries it, so an admin cache flush that lands anywhere inside this chain run drops every
+        // verdict the run computed — the run's verdicts all predate the flush. Without this, an
         // authentication in flight across `POST /admin/auth/cache/flush` re-inserted its PRE-flush
         // allow verdict after the flush returned `200 {"flushed": N}`, and the "instant revocation"
         // the endpoint documents revoked nothing for up to an hour. See `auth_cache::CacheGeneration`.
         let cache_gen = cache.map(crate::auth_cache::CredentialCache::generation);
-        for (provider, module) in &self.chain {
+        for entry in &self.chain {
+            let provider = &entry.provider;
             let cache_here = match (cache, candidate) {
-                (Some(c), Some(cred)) if module.cacheable() => Some((c, cred)),
+                (Some(c), Some(cred)) if entry.cacheable() => Some((c, cred)),
                 _ => None,
             };
             // CACHE KEY is the PROVIDER NAME, not the plugin's self-reported name (1.5.3): two named
@@ -503,7 +736,7 @@ impl AuthMiddleware {
             let outcome = match cache_hit {
                 Some(hit) => hit,
                 None => {
-                    let o = module.authenticate(candidate);
+                    let o = judge(entry, head.request(candidate, now), reach).await;
                     if cache_here.is_some() && matches!(o, AuthVerdict::Pass) {
                         pending_pass.push(provider.as_str());
                     }
@@ -548,13 +781,13 @@ impl AuthMiddleware {
                 AuthVerdict::Pass => {}
             }
         }
-        // The built-in `keys` ENGINE ARM — a sibling to the boxed plugin modules above, run AFTER
-        // them (a plugin that positively identified already returned). It is NOT a `Box<dyn
-        // AuthModule>` on purpose: the module ABI ([`AuthVerdict`]) can only `Identify(Principal)`,
-        // never hand back a resolved `VirtualKey`, so vkey resolution lives here where it can.
-        // CACHE-EXEMPT: the arm never consults or writes the `CredentialCache` (revocation today is
-        // per-request `verify_token` + a short denylist sync; caching a vkey verdict would widen the
-        // revocation window to the cache TTL).
+        // The built-in `keys` ENGINE ARM — a sibling to the plugin positions above, run AFTER them
+        // (a plugin that positively identified already returned). It is NOT a chain position on
+        // purpose: an auth verdict can only `Identify` a principal, never hand back a resolved
+        // `VirtualKey`, so vkey resolution lives here where it can. CACHE-EXEMPT: the arm never
+        // consults or writes the `CredentialCache` (revocation today is per-request `verify_token`
+        // + a short denylist sync; caching a vkey verdict would widen the revocation window to the
+        // cache TTL).
         if self.keys_in_chain {
             return keys_arm_verdict(gov, candidate, now, expected_aud);
         }
@@ -564,124 +797,41 @@ impl AuthMiddleware {
     /// THE REQUEST-PATH ENTRY POINT for the data-plane auth chain — the one place `auth_middleware`
     /// calls it, and the reason it is not just `run_chain_cached`.
     ///
-    /// A chain module can be a loaded PLUGIN, and a plugin's `authenticate` is a synchronous FFI
-    /// call that may do real I/O — the shipped OIDC module fetches JWKS over blocking HTTPS with a
-    /// 10s timeout, and any introspection/directory module is a network round-trip. Called inline,
-    /// that runs on a Tokio worker thread inside an `async fn`: a slow IdP parks a worker per
-    /// in-flight request, and once every worker is parked NOTHING in the process is polled — not
-    /// other requests, not the admin plane, not `/healthz` (which is exempt from this chain but
-    /// still needs a worker to run at all). The node then fails its liveness probe and is killed, on
-    /// account of an identity provider that most of the stalled traffic never even used.
-    ///
-    /// So a plugin chain is OFFLOADED to the blocking pool, and BOUNDED there
+    /// Each position is called on the auth kind's memory ABI (AUTH-CHAIN-SWITCH): a door's `verify`
+    /// is SUBMITTED on a dispatcher ticket and awaited through its reply's waker, so no thread is
+    /// parked however long the plugin waits. M6-COLD-DELETE: a position still on the COLD lane is
+    /// a synchronous call that may do real I/O — the shipped OIDC module fetches JWKS over blocking
+    /// HTTPS with a 10s timeout. Called inline, that runs on a Tokio worker thread inside an `async
+    /// fn`: a slow IdP parks a worker per in-flight request, and once every worker is parked NOTHING
+    /// in the process is polled — not other requests, not the admin plane, not `/healthz`. So a
+    /// cold position is OFFLOADED to the blocking pool, and BOUNDED there
     /// ([`AUTH_OFFLOAD_MAX_INFLIGHT`]) so a wedged plugin cannot drain the pool the rest of the
-    /// engine shares. An all-in-process chain (or an empty one) is called inline: those modules are
-    /// microsecond constant-time compares, and paying a `spawn_blocking` hop per request to protect
-    /// against work that cannot block would be a pure regression.
+    /// engine shares ([`offload_cold`]).
     ///
-    /// FAIL-CLOSED at every failure: a panicking plugin (join error) and an offload that cannot be
-    /// started are both `Denied`, never an admit.
+    /// `head` is the request's head each position is lent beside the candidate ([`ChainHead`]).
+    /// FAIL-CLOSED at every failure: a panicking plugin (join error), an offload that cannot be
+    /// started, and a door that answers no verdict are all `Denied`, never an admit.
     pub async fn run_chain_on_request_path(
         auth: &std::sync::Arc<AuthMiddleware>,
         cache: &std::sync::Arc<crate::auth_cache::CredentialCache>,
         candidate: Option<String>,
+        head: ChainHead,
         gov: Option<std::sync::Arc<crate::governance::GovState>>,
         expected_aud: Option<String>,
     ) -> ChainVerdict {
-        // Open ONLY when there are no boxed modules AND no `keys` engine arm (see `run_chain_cached`).
-        if auth.chain.is_empty() && !auth.keys_in_chain {
-            return ChainVerdict::Open;
-        }
-        if !auth.has_plugin_module {
-            // All-in-process (boxed test module and/or the keys arm): no plugin can block, so run
-            // inline. The keys arm needs the governance handle to verify a busbar-signed key.
-            //
-            // blocking-ffi-lint: allow — NO PLUGIN IS IN THE CHAIN on this arm, so `run_chain_cached`
-            // has nothing to make an FFI call into. `has_plugin_module` is set `true` at exactly one
-            // place — `AuthMiddleware::new`'s `other =>` arm (this file, the `has_plugin_module =
-            // true;` immediately after `registry.open_auth`) — and every other arm either sets
-            // `keys_in_chain` (the engine-side signed-key verifier, a constant-time compare) or
-            // pushes the `#[cfg(test)]` in-process stand-in. So `!has_plugin_module` means the chain
-            // holds no dlopened module at all.
-            return auth.run_chain_cached(
-                candidate.as_deref(),
-                Some(cache),
-                gov.as_deref(),
-                busbar_kernel::store::now(),
-                expected_aud.as_deref(),
-            );
-        }
-        // Warn-once transition latch: a saturated auth offload persists per request until the wedged
-        // plugin recovers, and the data plane is high-cadence, so warn on the TRANSITION into the
-        // saturated state and hold subsequent denials at debug. Reset when a permit is acquired again.
-        static AUTH_OFFLOAD_SATURATED_WARNED: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
-        let permit = match tokio::time::timeout(AUTH_OFFLOAD_WAIT, AUTH_OFFLOAD_PERMITS.acquire())
-            .await
-        {
-            Ok(Ok(p)) => {
-                AUTH_OFFLOAD_SATURATED_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
-                p
-            }
-            // Timed out waiting, or the semaphore was closed. Either way the chain never ran, so
-            // the credential is unverified — deny.
-            _ => {
-                if !AUTH_OFFLOAD_SATURATED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                    diag_warn!(
-                        AUTH_OFFLOAD_SATURATED,
-                        "auth chain offload could not be started within {AUTH_OFFLOAD_WAIT:?} \
-                     ({AUTH_OFFLOAD_MAX_INFLIGHT} already in flight); an auth plugin is not \
-                     returning. Denying (fail-closed) rather than admitting unverified."
-                    );
-                } else {
-                    diag_debug!(
-                        AUTH_OFFLOAD_SATURATED,
-                        "auth chain offload could not be started within {AUTH_OFFLOAD_WAIT:?} \
-                     ({AUTH_OFFLOAD_MAX_INFLIGHT} already in flight); an auth plugin is not \
-                     returning. Denying (fail-closed) rather than admitting unverified."
-                    );
-                }
-                return ChainVerdict::Denied;
-            }
-        };
-        let (auth, cache) = (auth.clone(), cache.clone());
-        // Captured HERE, before the blocking hop, not inside the closure: the clock the chain
-        // reasons about should be the instant the request reached this decision, not whenever the
-        // offload happened to get scheduled onto a blocking-pool thread.
+        // Captured once, before the first position: the clock the chain reasons about is the
+        // instant the request reached this decision, not whenever a position got scheduled.
         let now = busbar_kernel::store::now();
-        let joined = tokio::task::spawn_blocking(move || {
-            let verdict = auth.run_chain_cached(
-                candidate.as_deref(),
-                Some(&cache),
-                gov.as_deref(),
-                now,
-                expected_aud.as_deref(),
-            );
-            // The permit is released when the blocking work is DONE, not when the awaiting future
-            // is dropped — a cancelled request must not hand its slot to another request while the
-            // plugin thread it started is still wedged.
-            drop(permit);
-            verdict
-        })
-        .await;
-        // Warn-once transition latch on the panic path: a panicking chain recurs per request until
-        // the plugin bug is fixed. Warn on the transition; hold the rest at debug; reset on a clean join.
-        static AUTH_CHAIN_PANICKED_WARNED: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
-        match joined {
-            Ok(verdict) => {
-                AUTH_CHAIN_PANICKED_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
-                verdict
-            }
-            Err(e) => {
-                if !AUTH_CHAIN_PANICKED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                    diag_warn!(AUTH_CHAIN_PANICKED, error = %e, "auth chain panicked; denying (fail-closed)");
-                } else {
-                    diag_debug!(AUTH_CHAIN_PANICKED, error = %e, "auth chain panicked; denying (fail-closed)");
-                }
-                ChainVerdict::Denied
-            }
-        }
+        auth.walk(
+            &head,
+            candidate.as_deref(),
+            Some(cache),
+            gov.as_deref(),
+            now,
+            expected_aud.as_deref(),
+            Reach::RequestPath,
+        )
+        .await
     }
 
     /// Constant-time string comparison — the single timing-safe primitive, now provided by the
@@ -742,6 +892,87 @@ impl AuthMiddleware {
     #[allow(dead_code)]
     pub fn validate_token(&self, token: Option<&str>) -> bool {
         !matches!(self.run_chain(token), ChainVerdict::Denied)
+    }
+}
+
+/// ONE POSITION'S VERDICT over `request` (its candidate lent), reached as `reach` says.
+async fn judge(entry: &ChainEntry, request: VerifyRequest, reach: Reach) -> AuthVerdict {
+    match reach {
+        // A sync caller: on the spot; a door that must wait answers REFUSED there, and is
+        // submitted and awaited where the caller polls.
+        Reach::Inline => match entry.calls.verify_now(&request) {
+            Some(answer) => chain_verdict_of(answer),
+            None => chain_verdict_of(Box::into_pin(entry.calls.verify(request)).await),
+        },
+        Reach::RequestPath if entry.offload => offload_cold(entry.calls.clone(), request).await,
+        // A door (or an in-process stand-in): ONE submitted `verify`, awaited.
+        Reach::RequestPath => chain_verdict_of(Box::into_pin(entry.calls.verify(request)).await),
+    }
+}
+
+/// M6-COLD-DELETE: a COLD position's `verify` on the blocking pool, bounded by
+/// [`AUTH_OFFLOAD_PERMITS`]. FAIL-CLOSED: an offload that cannot be started within
+/// [`AUTH_OFFLOAD_WAIT`] and a panicking plugin are a `Reject` (the chain denies), never an admit.
+async fn offload_cold(calls: std::sync::Arc<dyn AuthCalls>, request: VerifyRequest) -> AuthVerdict {
+    // Warn-once transition latch: a saturated auth offload persists per request until the wedged
+    // plugin recovers, and the data plane is high-cadence, so warn on the TRANSITION into the
+    // saturated state and hold subsequent denials at debug. Reset when a permit is acquired again.
+    static AUTH_OFFLOAD_SATURATED_WARNED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    let permit = match tokio::time::timeout(AUTH_OFFLOAD_WAIT, AUTH_OFFLOAD_PERMITS.acquire()).await
+    {
+        Ok(Ok(p)) => {
+            AUTH_OFFLOAD_SATURATED_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+            p
+        }
+        // Timed out waiting, or the semaphore was closed. Either way the position never ran, so
+        // the credential is unverified — deny.
+        _ => {
+            if !AUTH_OFFLOAD_SATURATED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                diag_warn!(
+                    AUTH_OFFLOAD_SATURATED,
+                    "auth chain offload could not be started within {AUTH_OFFLOAD_WAIT:?} \
+                     ({AUTH_OFFLOAD_MAX_INFLIGHT} already in flight); an auth plugin is not \
+                     returning. Denying (fail-closed) rather than admitting unverified."
+                );
+            } else {
+                diag_debug!(
+                    AUTH_OFFLOAD_SATURATED,
+                    "auth chain offload could not be started within {AUTH_OFFLOAD_WAIT:?} \
+                     ({AUTH_OFFLOAD_MAX_INFLIGHT} already in flight); an auth plugin is not \
+                     returning. Denying (fail-closed) rather than admitting unverified."
+                );
+            }
+            return AuthVerdict::Reject;
+        }
+    };
+    let joined = tokio::task::spawn_blocking(move || {
+        let answer = calls.verify_now(&request);
+        // The permit is released when the blocking work is DONE, not when the awaiting future is
+        // dropped — a cancelled request must not hand its slot to another request while the plugin
+        // thread it started is still wedged.
+        drop(permit);
+        answer
+    })
+    .await;
+    // Warn-once transition latch on the panic path: a panicking plugin recurs per request until its
+    // bug is fixed. Warn on the transition; hold the rest at debug; reset on a clean join.
+    static AUTH_CHAIN_PANICKED_WARNED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    match joined {
+        Ok(answer) => {
+            AUTH_CHAIN_PANICKED_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+            // A cold position answers on the spot; no answer is a failure, fail-closed.
+            answer.map_or(AuthVerdict::Reject, chain_verdict_of)
+        }
+        Err(e) => {
+            if !AUTH_CHAIN_PANICKED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                diag_warn!(AUTH_CHAIN_PANICKED, error = %e, "auth chain panicked; denying (fail-closed)");
+            } else {
+                diag_debug!(AUTH_CHAIN_PANICKED, error = %e, "auth chain panicked; denying (fail-closed)");
+            }
+            AuthVerdict::Reject
+        }
     }
 }
 
@@ -968,20 +1199,32 @@ impl AuthModule for TestIdpModule {
     }
 }
 
-/// Execute the ADMIN auth chain (`admin_auth:`) over the extracted admin credential carriers.
-/// Mirrors `AuthMiddleware::run_chain` (first Identify admits, Reject denies, all-Pass denies,
-/// empty chain = the explicit open posture) but takes BOTH carriers — the operator credential
-/// legitimately arrives as `Authorization: Bearer` or `X-Admin-Token`, and both are put to its
-/// module on every call ([`OperatorCredential::judge`]). Unknown names are skipped with a loud log
-/// (config_validate rejects them at boot).
-fn run_admin_chain(
+/// One admin chain's answer: the chain verdict and the identifying module's scope ceiling, or the
+/// chain could not be judged.
+type AdminChainAnswer =
+    Result<(ChainVerdict, Option<busbar_contract::authz::Scope>), AdminUnavailable>;
+
+/// Execute the ADMIN auth chain (`admin_auth:`) over one request (`method`, `target`, `headers`).
+/// Mirrors `AuthMiddleware::run_chain` (first Identify admits, Reject denies, all-Pass denies, empty
+/// chain = the explicit open posture). The operator credential is judged on the request's head
+/// ([`admin_head`]) through its door ([`OperatorCredential::judge`]; the both-carriers fold is the
+/// plugin's); an external cold admin module takes `bearer.or(header)` of the [`admin_carriers`].
+/// Unknown names are skipped with a loud log (config_validate rejects them at boot). `probe`: the
+/// operator credential is the synchronous probe (`verify_now`) and a cold admin module runs inline
+/// (the sync [`admin_door`]); else its verify is AWAITED and a blocking cold admin module is
+/// offloaded (the middleware).
+async fn run_admin_chain(
     app: &crate::state::App,
-    bearer: Option<&str>,
-    header: Option<&str>,
-) -> (ChainVerdict, Option<busbar_contract::authz::Scope>) {
+    method: &str,
+    target: &str,
+    headers: &HeaderMap,
+    probe: bool,
+) -> AdminChainAnswer {
     if app.admin_chain.is_empty() {
-        return (ChainVerdict::Open, None);
+        return Ok((ChainVerdict::Open, None));
     }
+    let carriers = admin_carriers(headers);
+    let (bearer, header) = (carriers.0.as_deref(), carriers.1.as_deref());
     // One composite credential string for the cache key: an admin credential legitimately rides
     // two carriers, and both participate in the identity of "what was presented".
     let composite = match (bearer, header) {
@@ -1013,63 +1256,91 @@ fn run_admin_chain(
         // The operator credential is NEVER cached (caching a microsecond compare only widens the
         // rotation window); external admin modules are the cache's case.
         let operator = app.admin_modules.operator.is(name);
-        let cacheable = !operator;
+        // A door caches inside itself (THE DESIGN 11.11 R3): only a cold module's verdict is the
+        // kernel's to cache, as 1.5.5 cached every external admin module.
+        let cacheable = !operator && app.admin_modules.modules.get(name).is_none_or(|m| m.cold);
         if let Some(cred) = composite.as_deref().filter(|_| cacheable) {
             if let Some(outcome) = app.credential_cache.get(name, cred, now) {
                 match outcome {
                     AuthVerdict::Identify(principal) => {
                         let cap = module_admin_scope_cap(app, name);
-                        return (
+                        return Ok((
                             ChainVerdict::Identified {
                                 module: name.clone(),
                                 principal,
                                 resolved: None,
                             },
                             cap,
-                        );
+                        ));
                     }
-                    AuthVerdict::Reject => return (ChainVerdict::Denied, None),
+                    AuthVerdict::Reject => return Ok((ChainVerdict::Denied, None)),
                     AuthVerdict::Pass => continue,
                 }
             }
         }
-        let modules = &app.admin_modules.modules;
         let outcome = match name.as_str() {
             // TEST-ONLY external-module stand-in: lets the e2e suite exercise group-mapped,
             // NON-full principals (unreachable with the operator credential alone). Credential grammar:
             // `grp:<group>` identifies as a principal carrying exactly that group. Compiled out
             // of release binaries entirely.
             #[cfg(any(test, feature = "test-support"))]
-            "test-scope-module" => match bearer.or(header).and_then(|t| t.strip_prefix("grp:")) {
-                Some(group) => {
-                    let mut p = Principal::from_id(format!("test:{group}"));
-                    p.roles = vec![group.to_string()];
-                    AuthVerdict::Identify(p)
-                }
-                // Not my credential shape — defer to the next module (the PAM contract).
-                None => AuthVerdict::Pass,
-            },
-            // The operator credential (its module, resolved on the auth axis by the provider key),
-            // or an EXTERNAL `kind: auth` admin plugin, resolved at load into `app.admin_modules`
-            // (keyed by config name — the same `name` this loop iterates). A name with no resolved
-            // module (impossible after a successful boot — the build fails closed on an unresolvable
-            // name) falls through to `Pass`, loudly.
-            other => match operator {
-                true => app.admin_modules.operator.judge(bearer, header),
-                false => modules
-                    .get(other)
-                    .map(|m| m.authenticate(bearer.or(header))),
+            "test-scope-module" => Some(
+                match bearer.or(header).and_then(|t| t.strip_prefix("grp:")) {
+                    Some(group) => {
+                        let mut p = Principal::from_id(format!("test:{group}"));
+                        p.roles = vec![group.to_string()];
+                        AuthVerdict::Identify(p)
+                    }
+                    // Not my credential shape — the next module is tried (the PAM contract).
+                    None => AuthVerdict::Pass,
+                },
+            ),
+            // The operator credential (its row, opened through the auth axis by the provider key),
+            // judged on the request's head through its door: an overloaded verifier or one that
+            // answered no verdict means the chain cannot be judged.
+            _ if operator => {
+                let operator = &app.admin_modules.operator;
+                let mut head = admin_head(method, target, headers, now);
+                // The Bearer is the candidate the host extracted: lent as the credential, beside
+                // the lines the plugin reads its carriers from.
+                head.credential =
+                    bearer.map(|b| busbar_contract::redacted::Redacted::new(b.as_bytes().to_vec()));
+                let judged = match probe {
+                    true => operator.probe(&head),
+                    false => operator.judge(head).await,
+                };
+                judged.map(|j| j.verdict()).transpose()?
             }
-            .unwrap_or_else(|| {
-                diag_error!(
-                    ADMIN_MODULE_UNRESOLVED,
-                    module = other,
-                    "admin_auth names a module with no resolved plugin; skipping (boot resolves \
-                     every non-builtin admin module, fail-closed)"
-                );
-                AuthVerdict::Pass
-            }),
-        };
+            // An EXTERNAL `kind: auth` admin plugin, resolved at load into `app.admin_modules`
+            // (keyed by config name — the same `name` this loop iterates).
+            other => {
+                // The external module is lent the request's head and the candidate 1.5.5 handed
+                // it (`bearer.or(header)`).
+                let mut request = admin_head(method, target, headers, now);
+                request.credential = bearer
+                    .or(header)
+                    .map(|c| busbar_contract::redacted::Redacted::new(c.as_bytes().to_vec()));
+                match external_admin_module(app, other, request, probe).await {
+                    Ok(v) => v,
+                    // Its offload could not start or finish in time, it panicked, or a probe could
+                    // not answer on the spot: fail closed.
+                    Err(AdminModuleFailure::Denied) => return Ok((ChainVerdict::Denied, None)),
+                    // A door that is overloaded or answered no verdict: the ruled 503.
+                    Err(AdminModuleFailure::Unavailable(why)) => return Err(why),
+                }
+            }
+        }
+        // A name with no resolved module (impossible after a successful boot — the build fails
+        // closed on an unresolvable name) is a `Pass`, loudly.
+        .unwrap_or_else(|| {
+            diag_error!(
+                ADMIN_MODULE_UNRESOLVED,
+                module = name.as_str(),
+                "admin_auth names a module with no resolved plugin; skipping (boot resolves \
+                 every non-builtin admin module, fail-closed)"
+            );
+            AuthVerdict::Pass
+        });
         // A `Pass` is only BUFFERED here. `Reject` is never cached at all (`auth_cache::put` drops
         // it) and short-circuits below, so the only outcome that commits anything is `Identify`.
         if cacheable && composite.is_some() && matches!(outcome, AuthVerdict::Pass) {
@@ -1104,42 +1375,71 @@ fn run_admin_chain(
                 // module's admin-scope ceiling for the authorization step. There is no per-module
                 // role filter: the nested bindings table IS the allowlist.
                 let cap = module_admin_scope_cap(app, name);
-                return (
+                return Ok((
                     ChainVerdict::Identified {
                         module: name.clone(),
                         principal,
                         resolved: None,
                     },
                     cap,
-                );
+                ));
             }
-            AuthVerdict::Reject => return (ChainVerdict::Denied, None),
+            AuthVerdict::Reject => return Ok((ChainVerdict::Denied, None)),
             AuthVerdict::Pass => {}
         }
     }
-    (ChainVerdict::Denied, None)
+    Ok((ChainVerdict::Denied, None))
 }
 
-/// Run the admin chain, OFFLOADING it off the reactor when it names an external `kind: auth` admin
-/// plugin (`admin_modules.has_plugin`) — a plugin's `authenticate` is a synchronous FFI call that
-/// can do blocking JWKS/introspection I/O, and called inline on a Tokio worker inside this middleware
-/// a slow admin IdP would park a worker per in-flight admin request until `/healthz` (exempt, but
-/// still needing a worker to run) and every other route stall and the node fails its liveness probe.
-///
-/// So a plugin admin chain is bounded by its OWN [`ADMIN_OFFLOAD_PERMITS`] budget (separate from the
-/// data plane's) and run on the blocking pool. An operator-credential-only chain (no plugin) is
-/// microsecond constant-time compares and runs INLINE. FAIL-CLOSED at every failure: a permit that
-/// cannot be acquired in time, a chain that does not finish in time, and a panicking plugin (join
-/// error) are all `Denied`, never an admit.
-async fn admin_door_maybe_offloaded(
-    app: &std::sync::Arc<crate::state::App>,
-    bearer: Option<String>,
-    header: Option<String>,
-) -> AdminDoor {
-    if !app.admin_modules.has_plugin {
-        // No blocking admin plugin: run inline (the operator credential + any compiled-in test
-        // stand-in).
-        return admin_door(app, bearer.as_deref(), header.as_deref());
+/// Why an external admin module answered no verdict the walk can use.
+enum AdminModuleFailure {
+    /// Its offload could not start or finish in time, it panicked, or a probe could not answer on
+    /// the spot: the chain denies, fail-closed, as 1.5.5 denied.
+    Denied,
+    /// A door that is overloaded or answered no verdict: the chain cannot be judged (the ruled 503,
+    /// ARCHITECT 2026-09-30 AUTH-DOOR Q1, kept for the admin chain 2026-10-03).
+    Unavailable(AdminUnavailable),
+}
+
+/// An external admin module's `verify` answer as the admin walk reads it: a verdict, or the chain
+/// cannot be judged. A cold module never answers `Overloaded` or `Failed` (its failure is a Reject,
+/// as 1.5.5's was); only a door does.
+fn admin_verdict_of(answer: VerifyAnswer) -> Result<AuthVerdict, AdminModuleFailure> {
+    match answer.verified {
+        Verified::Overloaded => Err(AdminModuleFailure::Unavailable(
+            AdminUnavailable::Overloaded,
+        )),
+        Verified::Failed => Err(AdminModuleFailure::Unavailable(AdminUnavailable::Outage)),
+        _ => Ok(chain_verdict_of(answer)),
+    }
+}
+
+/// One EXTERNAL admin module's verdict over `request` (its candidate lent); `None` when no module is
+/// resolved under `name`. Awaited, a COLD module's `verify` — a synchronous FFI call that can do
+/// blocking JWKS/introspection I/O — runs on the blocking pool under its OWN
+/// [`ADMIN_OFFLOAD_PERMITS`] budget (separate from the data plane's), so a slow admin IdP never parks
+/// a reactor worker; a DOOR is submitted on the dispatcher and awaited. `probe` (the sync
+/// [`admin_door`]): each answers on the spot (`verify_now`), and a door that must wait cannot, so the
+/// probe fails closed. FAIL-CLOSED: a permit that cannot be acquired in time, a call that does not
+/// finish in time, and a panicking plugin (join error) are all `Denied`, never an admit.
+async fn external_admin_module(
+    app: &crate::state::App,
+    name: &str,
+    request: VerifyRequest,
+    probe: bool,
+) -> Result<Option<AuthVerdict>, AdminModuleFailure> {
+    let Some(module) = app.admin_modules.modules.get(name) else {
+        return Ok(None);
+    };
+    if probe {
+        return match module.calls.verify_now(&request) {
+            Some(answer) => admin_verdict_of(answer).map(Some),
+            None => Err(AdminModuleFailure::Denied),
+        };
+    }
+    if !module.cold {
+        let answer = Box::into_pin(module.calls.verify(request)).await;
+        return admin_verdict_of(answer).map(Some);
     }
     // Warn-once transition latch: a saturated admin offload persists per request until the wedged
     // plugin recovers. Warn on the transition; hold the rest at debug; reset on a fresh permit.
@@ -1168,26 +1468,29 @@ async fn admin_door_maybe_offloaded(
                      returning. Denying (fail-closed) rather than admitting unverified."
                 );
             }
-            return AdminDoor::Denied;
+            return Err(AdminModuleFailure::Denied);
         }
     };
-    let app = app.clone();
+    let calls = module.calls.clone();
     let joined = tokio::task::spawn_blocking(move || {
-        let verdict = admin_door(&app, bearer.as_deref(), header.as_deref());
+        // A cold module answers on the spot; no answer is a failure, fail-closed as 1.5.5's Reject.
+        let verdict = calls
+            .verify_now(&request)
+            .map_or(AuthVerdict::Reject, chain_verdict_of);
         // Release the permit when the blocking work is DONE, not when the awaiting future is dropped
         // — a request that timed out (below) must not hand its slot to another while the plugin
         // thread it started is still wedged.
         drop(permit);
         verdict
     });
-    // Warn-once transition latch: a stalled/panicking admin chain recurs per request until the
+    // Warn-once transition latch: a stalled/panicking admin module recurs per request until the
     // plugin recovers. Warn on the transition; hold the rest at debug; reset on a clean completion.
     static ADMIN_CHAIN_STALLED_WARNED: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
     match tokio::time::timeout(ADMIN_OFFLOAD_WAIT, joined).await {
         Ok(Ok(v)) => {
             ADMIN_CHAIN_STALLED_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
-            v
+            Ok(Some(v))
         }
         // Join error (the plugin panicked) or a timeout waiting for it: fail closed. The wedged
         // blocking task keeps its permit until it eventually finishes, bounding the leak.
@@ -1205,9 +1508,16 @@ async fn admin_door_maybe_offloaded(
                  denying (fail-closed)."
                 );
             }
-            AdminDoor::Denied
+            Err(AdminModuleFailure::Denied)
         }
     }
+}
+
+/// The 503 an admin chain that could not be judged answers, in the frozen v1 envelope
+/// (`{error:{code:"unavailable"}}`).
+fn admin_unavailable_response(why: AdminUnavailable) -> Response {
+    let e = crate::admin::v1::contract::AdminError::Unavailable(why.message().to_string());
+    crate::admin::v1::json::err_json(&e)
 }
 
 /// The ADMIN-SCOPE CEILING for an identifying module (`max_admin_scope:`): the operator credential
@@ -1238,8 +1548,7 @@ fn module_admin_scope_cap(
 /// rejected instead of applied (restart remains the backstop).
 pub fn dry_run_admin_scope(
     app: &crate::state::App,
-    bearer: Option<&str>,
-    header: Option<&str>,
+    headers: &HeaderMap,
 ) -> busbar_contract::authz::Grants {
     // An EMPTY admin chain is the anonymous, full-authority OPEN posture — a property of the CHAIN,
     // not a grant THIS caller earned. Letting it fall through (`run_admin_chain` → `Open` → the
@@ -1258,7 +1567,7 @@ pub fn dry_run_admin_scope(
         );
         return busbar_contract::authz::Grants::default();
     }
-    match admin_door(app, bearer, header) {
+    match admin_door(app, "GET", "/", headers) {
         AdminDoor::Identified(_, grants) => grants,
         // `Open` is unreachable past the early return above, and is no earned grant if reached.
         AdminDoor::Open | AdminDoor::Denied => busbar_contract::authz::Grants::default(),
@@ -1280,10 +1589,53 @@ pub enum AdminDoor {
     Denied,
 }
 
-/// Judge `bearer`/`header` (the [`admin_carriers`]) on `app`'s live admin chain. See [`AdminDoor`].
-pub fn admin_door(app: &App, bearer: Option<&str>, header: Option<&str>) -> AdminDoor {
-    let (verdict, cap) = run_admin_chain(app, bearer, header);
-    match verdict {
+/// THE REQUEST'S HEAD at `Head`, as the operator credential's door reads it: the request's
+/// `method`, its `target` (path, then `?query`), its authority off the `host` line, and its field
+/// lines as presented (lower-cased names, in order), stamped `now` (wall-clock seconds). The style
+/// names its credential lines; the kernel hands the lines through and names none (THE DESIGN, "Auth
+/// points and guest lists").
+fn admin_head(
+    method: &str,
+    target: &str,
+    headers: &HeaderMap,
+    now: u64,
+) -> busbar_contract::auth_calls::VerifyRequest {
+    let (path, query) = match target.split_once('?') {
+        Some((path, query)) => (path, Some(query.to_string())),
+        None => (target, None),
+    };
+    let authority = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    busbar_contract::auth_calls::VerifyRequest {
+        point: busbar_contract::abi::auth::AuthPoint::Head,
+        lines: (headers.iter())
+            .map(|(n, v)| {
+                let value = busbar_contract::redacted::Redacted::new(v.as_bytes().to_vec());
+                (n.as_str().to_string(), value)
+            })
+            .collect(),
+        method: method.to_string(),
+        authority: authority.to_string(),
+        path: path.to_string(),
+        query,
+        timestamp: now,
+        ..Default::default()
+    }
+}
+
+/// THE ADMIN DOOR'S VERDICT of one request (`method`, `target`, `headers`) on `app`'s live admin
+/// chain, or the chain could not be judged. `probe`: see [`run_admin_chain`].
+async fn judge_admin_door(
+    app: &App,
+    method: &str,
+    target: &str,
+    headers: &HeaderMap,
+    probe: bool,
+) -> Result<AdminDoor, AdminUnavailable> {
+    let (verdict, cap) = run_admin_chain(app, method, target, headers, probe).await?;
+    Ok(match verdict {
         ChainVerdict::Open => AdminDoor::Open,
         ChainVerdict::Denied => AdminDoor::Denied,
         ChainVerdict::Identified {
@@ -1292,6 +1644,20 @@ pub fn admin_door(app: &App, bearer: Option<&str>, header: Option<&str>) -> Admi
             let grants = admin_scope_for(app, Some(&module), Some(&principal));
             AdminDoor::Identified(principal, cap.map_or(grants, |c| grants.capped_by(c)))
         }
+    })
+}
+
+/// Judge one request (`method`, `target`, `headers`) on `app`'s live admin chain, SYNCHRONOUSLY: the
+/// operator credential through its door's on-the-spot `verify_now`, a cold admin module inline. A
+/// chain that cannot be judged on the spot (the verifier overloaded, pending or down) is `Denied`:
+/// the probe fails closed. See [`AdminDoor`]; the middleware awaits the same verdict instead.
+pub fn admin_door(app: &App, method: &str, target: &str, headers: &HeaderMap) -> AdminDoor {
+    let judged = std::pin::pin!(judge_admin_door(app, method, target, headers, true));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    match std::future::Future::poll(judged, &mut cx) {
+        std::task::Poll::Ready(Ok(door)) => door,
+        // Never pending: the probe crosses on the spot and a cold module runs inline.
+        std::task::Poll::Ready(Err(_)) | std::task::Poll::Pending => AdminDoor::Denied,
     }
 }
 
@@ -1539,6 +1905,40 @@ pub(crate) async fn auth_middleware(
     // check and the governance virtual-key lookup, so every scheme is validated identically and in
     // constant time. Replaces the previous Bearer-only `bearer_token`.
     let client_token: Option<String> = AuthMiddleware::extract_client_token(&req);
+    // RFC 9449 SENDER CONSTRAINT, on the data plane only (`auth::dpop`). A request that is neither
+    // a DPoP presentation nor a bound bearer is `Unconstrained` and nothing below changes for it.
+    let mut dpop_proven = false;
+    let client_token = if is_admin {
+        client_token
+    } else {
+        match dpop::judge(
+            &app,
+            req.method(),
+            &path,
+            req.headers(),
+            client_token.as_deref(),
+        )
+        .await
+        {
+            dpop::SenderConstraint::Unconstrained => client_token,
+            dpop::SenderConstraint::Proven(token) => {
+                dpop_proven = true;
+                Some(token)
+            }
+            dpop::SenderConstraint::Refused => {
+                return Err(match app.planes.admission_for(&path) {
+                    Some(adm) => challenge::refuse(
+                        challenge::ChallengeError::InvalidToken,
+                        &adm.resource_metadata,
+                        "A DPoP-bound access token needs its DPoP proof (RFC 9449), and this one \
+                         did not verify.",
+                        None,
+                    ),
+                    None => unauthorized_response(&app, &path),
+                });
+            }
+        }
+    };
     // EVERY CREDENTIAL CARRIER THE CONFIGURED GATE READS — the data-plane carriers (whichever one
     // carried this request's token, and the SigV4 signature on `Authorization`), and the admin
     // carriers when an admin chain is configured — with the caller's token as a ref. Handed on with
@@ -1546,6 +1946,9 @@ pub(crate) async fn auth_middleware(
     let mut consumed = ConsumedCredentials::carrying(&CLIENT_TOKEN_CARRIERS);
     if !app.admin_chain.is_empty() {
         consumed.carry(&ADMIN_TOKEN_CARRIERS);
+    }
+    if dpop_proven {
+        consumed.carry(&[dpop::DPOP_HEADER]);
     }
     consumed.caller = client_token.clone().map(CallerCredential);
 
@@ -1571,23 +1974,30 @@ pub(crate) async fn auth_middleware(
     // the endpoint's required scope (WHAT) — the matrix, checked here at the one chokepoint
     // every /admin path crosses, over the two admin carriers (`admin_carriers`).
     if is_admin {
-        let (admin_bearer, admin_header_token) = admin_carriers(req.headers());
+        let target = req.uri().path_and_query().map_or("/", |t| t.as_str());
+        let judged = judge_admin_door(&app, req.method().as_str(), target, req.headers(), false);
+        // The admin door AWAITS a pending verify; it never answers 503 for pending I/O. An
+        // overloaded verifier or one that answered no verdict is 503 `unavailable`, never a bad
+        // credential's 401 (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1).
+        let door = match judged.await {
+            Ok(door) => door,
+            Err(why) => return Err(admin_unavailable_response(why)),
+        };
         req.extensions_mut().insert(consumed);
         // AUTHORIZATION rides the door's verdict: the principal's admin scope (module-intrinsic for
         // the operator token; `role_bindings:` for group-carrying principals, unmapped groups grant
         // nothing), CAPPED by the identifying module's `max_admin_scope:` ceiling. An identified
         // principal with NO grant is 403, never 401 — authenticated but not authorized.
-        let (principal, scope) =
-            match admin_door_maybe_offloaded(&app, admin_bearer, admin_header_token).await {
-                AdminDoor::Identified(principal, grants) => (Some(principal), grants),
-                // The explicit `admin_auth: []` OPEN posture (dev): anonymous, full authority —
-                // symmetric with the data plane's empty chain. The default config never lands here.
-                AdminDoor::Open => (None, admin_scope_for(&app, None, None)),
-                // The ADMIN plane 401 speaks the frozen v1 envelope ({error:{code:"unauthorized"}})
-                // — tooling branches on the SAME `code` seam as every other admin error, never a
-                // protocol-shaped body (that shaping is for the DATA plane, whose SDKs parse it).
-                AdminDoor::Denied => return Err(admin_unauthorized_response()),
-            };
+        let (principal, scope) = match door {
+            AdminDoor::Identified(principal, grants) => (Some(principal), grants),
+            // The explicit `admin_auth: []` OPEN posture (dev): anonymous, full authority —
+            // symmetric with the data plane's empty chain. The default config never lands here.
+            AdminDoor::Open => (None, admin_scope_for(&app, None, None)),
+            // The ADMIN plane 401 speaks the frozen v1 envelope ({error:{code:"unauthorized"}})
+            // — tooling branches on the SAME `code` seam as every other admin error, never a
+            // protocol-shaped body (that shaping is for the DATA plane, whose SDKs parse it).
+            AdminDoor::Denied => return Err(admin_unauthorized_response()),
+        };
         let required = crate::admin::v1::contract::required_scope(req.method(), &path);
         if !scope.allows(required) {
             // Denied authorization is AUDITED (a credential probing beyond its scope is exactly what
@@ -1832,6 +2242,7 @@ pub(crate) async fn auth_middleware(
             &app.auth,
             &app.credential_cache,
             client_token.clone(),
+            ChainHead::of(&req),
             app.governance.clone(),
             admission.as_ref().map(|a| a.audience.clone()),
         )
@@ -2172,23 +2583,58 @@ fn verify_sigv4_ingress_credential(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl AuthMiddleware {
-    /// Build an `AuthMiddleware` directly over a chain, declaring whether it should be treated as
-    /// containing a PLUGIN module. Tests need this because the real constructor only sets
-    /// `has_plugin_module` by actually `dlopen`ing a signed cdylib, and the property under test
-    /// (that a blocking module does not run on the reactor) is about ANY blocking module.
-    /// `chain` entries are `(provider NAME, module)`: the name is the `identity-providers:` key that
-    /// chain position referenced, and is what a successful `Identify` reports as
-    /// [`ChainVerdict::Identified::module`].
-    pub fn from_chain_for_test(
-        chain: Vec<(String, Box<dyn AuthModule>)>,
-        has_plugin_module: bool,
-    ) -> Self {
+    /// Build an `AuthMiddleware` directly over `chain`: each `(provider NAME, instance)` an instance
+    /// the auth axis opened on the memory ABI (a door: awaited on the request path, never cached by
+    /// the kernel). For a dependent crate's test that opens a door over settings a chain entry's
+    /// `settings:` map cannot spell.
+    pub fn from_doors_for_test(chain: Vec<(String, std::sync::Arc<dyn AuthCalls>)>) -> Self {
+        let chain = chain
+            .into_iter()
+            .map(|(provider, calls)| ChainEntry {
+                provider,
+                name: calls.name().to_string(),
+                calls,
+                cold: false,
+                offload: false,
+            })
+            .collect();
         Self {
             keys_in_chain: false,
             chain,
-            has_plugin_module,
+        }
+    }
+}
+
+#[cfg(test)]
+impl AuthMiddleware {
+    /// Build an `AuthMiddleware` directly over a chain of in-process modules (each behind the cold
+    /// adapter, its verdicts cached when it says it is cacheable), declaring whether each should be
+    /// treated as a cold-lane PLUGIN (offloaded off the reactor on the request path). Tests need
+    /// this because the real constructor only marks a position for offload by actually loading a
+    /// cold-lane plugin, and the property under test (that a blocking module does not run on the
+    /// reactor) is about ANY blocking module. `chain` entries
+    /// are `(provider NAME, module)`: the name is the `identity-providers:` key that chain position
+    /// referenced, and is what a successful `Identify` reports as
+    /// [`ChainVerdict::Identified::module`].
+    pub fn from_chain_for_test(chain: Vec<(String, Box<dyn AuthModule>)>, offload: bool) -> Self {
+        let chain = chain
+            .into_iter()
+            .map(|(provider, module)| {
+                let calls = busbar_plugin_loader::auth_axis::ColdAuth::new(module);
+                ChainEntry {
+                    provider,
+                    name: calls.name().to_string(),
+                    calls: std::sync::Arc::new(calls),
+                    cold: true,
+                    offload,
+                }
+            })
+            .collect();
+        Self {
+            keys_in_chain: false,
+            chain,
         }
     }
 }
@@ -2202,6 +2648,10 @@ pub use caller_credential::{present_caller, CallerCredential, ConsumedCredential
 /// the operator-IdP deployment shape, where an auth plugin verifies the signature and core still has
 /// to decide whether the token was minted for THIS resource.
 pub mod audience;
+
+/// RFC 9449 DPoP at the resource: `Authorization: DPoP` with its proof, verified through the
+/// authorization-server seam, and a DPoP-bound token refused as a bearer.
+pub mod dpop;
 
 /// The RFC 6750 `WWW-Authenticate` challenge, for ingresses that are OAuth 2.1 resource servers.
 /// Relocated to the neutral substrate (`busbar_kernel::auth::challenge`) — pure `axum::http` +

@@ -168,14 +168,20 @@ fn cache_control_breakpoints_clamped_to_four_on_anthropic_egress() {
         lane_caps: Default::default(),
     };
 
-    // The cache_control over-cap drop was reclassified benign-recurring (per-request cross-protocol
-    // seam) and now emits at `diag_debug!` (BUSBAR-7081), so capture at DEBUG to preserve the
-    // cap/dropped-count content coverage rather than assert on a level the diagnostic no longer uses.
-    let cap = WarnCapture::capturing_debug();
+    // The over-cap drop goes through the one drop path (`codec::drops`): a WARN (BUSBAR-7081) on a
+    // translate attempt.
+    let seam = crate::codec::drops::Seam {
+        direction: crate::codec::drops::Direction::Request,
+        ingress: "bedrock",
+        egress: "anthropic",
+    };
+    let cap = WarnCapture::default();
     let subscriber = cap.clone();
     let mut req = ir;
     tracing::subscriber::with_default(subscriber, || {
-        crate::codec::chat_handle::chat_prepare_for_egress(&mut req, &prep)
+        crate::codec::drops::scope(seam, || {
+            crate::codec::chat_handle::chat_prepare_for_egress(&mut req, &prep)
+        })
     });
     let clamped = req;
 

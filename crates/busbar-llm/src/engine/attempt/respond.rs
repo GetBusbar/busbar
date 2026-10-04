@@ -205,6 +205,9 @@ async fn deliver_buffered(
         // twin further down is on the other side of that return and still borrows it.
         ingress_request_body,
         &tap,
+        hop.resolved_gov_key
+            .map(|k| k.id.as_str())
+            .unwrap_or("anonymous"),
     ))
     .await;
     // The buffered tap has already finished by the time this returns — a non-stream body is

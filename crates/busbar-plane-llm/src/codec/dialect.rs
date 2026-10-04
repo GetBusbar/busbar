@@ -39,13 +39,16 @@ pub const PROVIDER_SIGNAL_CONTEXT_LENGTH: &str = "context_length";
 /// * SAME-PROTOCOL (including a pool-alias route that re-serializes rather than forwarding bytes):
 ///   the writer reads it back and re-emits `name` on each message, so a participant name no longer
 ///   disappears the moment a route rewrites the model. That was a real same-protocol loss.
-/// * CROSS-PROTOCOL: `extra` is cleared at the seam and `ir/variant.rs` names this key in its
-///   dropped-keys warn, so the loss is signalled instead of silent.
+/// * CROSS-PROTOCOL: `extra` is cleared at the seam and the one drop path (`codec::drops`) names
+///   [`MESSAGE_NAMES_PATH`], so the loss is warned and audited instead of silent.
 ///
 /// Value shape: an object keyed by the message's index in `IrRequest.messages` (as a decimal string)
 /// → the name. Keyed by index rather than positional array so a request where only message 7 has a
 /// name costs one entry, and so the writer's lookup cannot be thrown off by a `null` hole.
 pub const MESSAGE_NAMES_SENTINEL: &str = "__busbar_message_names";
+
+/// The wire path [`MESSAGE_NAMES_SENTINEL`] holds, as a translate attempt's drop names it.
+pub const MESSAGE_NAMES_PATH: &str = "messages[].name";
 
 /// File extension → media type, the rows two or more dialects read alike. Each dialect lists which
 /// of these groups it recognises, beside its own rows: documents (OpenAI Chat, Bedrock) and images
@@ -86,10 +89,18 @@ pub enum DropWarn {
 /// reports, so the log and the seam's audit agree.
 pub fn warn_dropped<'a>(dropped: impl IntoIterator<Item = &'a str>, warn: &DropWarn) {
     for name in dropped {
+        let path = crate::codec::drops::caller_path(name);
         match warn {
-            DropWarn::Control(message) => tracing::warn!(control = name, "{}", message),
+            DropWarn::Control(message) => {
+                tracing::warn!(control = name, path = %path, "{}", message);
+            }
             DropWarn::Parameter(template) => {
-                tracing::warn!(parameter = name, "{}", template.replace("{slot}", name));
+                tracing::warn!(
+                    parameter = name,
+                    path = %path,
+                    "{}",
+                    template.replace("{slot}", name)
+                );
             }
         }
     }
@@ -539,7 +550,7 @@ pub fn strip_top_level_usage_member(json: &str) -> Option<String> {
 
 /// Given `bytes` and the index of an opening `"`, return the index ONE PAST the matching closing
 /// quote, honoring `\`-escapes. `None` if the string is unterminated.
-fn scan_json_string_end(bytes: &[u8], open_quote: usize) -> Option<usize> {
+pub(crate) fn scan_json_string_end(bytes: &[u8], open_quote: usize) -> Option<usize> {
     debug_assert_eq!(bytes[open_quote], b'"');
     let n = bytes.len();
     let mut i = open_quote + 1;
@@ -556,7 +567,7 @@ fn scan_json_string_end(bytes: &[u8], open_quote: usize) -> Option<usize> {
 /// Given `bytes` and the index of the first byte of a JSON value (after any whitespace), return the
 /// index ONE PAST the value, respecting nested objects/arrays and strings. `None` if the value is
 /// malformed/unterminated. Leading whitespace before the value is tolerated.
-fn scan_json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
+pub(crate) fn scan_json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
     let n = bytes.len();
     let mut i = start;
     while i < n && bytes[i].is_ascii_whitespace() {
@@ -621,35 +632,30 @@ fn scan_json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
 // re-includes of the dialect sources into `busbar-core` be deleted: the externally-linked crate's
 // `&DECL` is now the SAME `ProtocolDecl` type (this one), so core no longer needs a re-compiled copy.
 
-/// Signal the RESPONSE-side provider metadata that an egress dialect carries and no ingress dialect
-/// can express, so it does not vanish from a translated response with nothing in the logs. WHICH
-/// fields are present, and the SHAPE of the lookup, are the egress dialect's own knowledge — declared
-/// on `ProtocolDecl::vendor_response_metadata` and read here by name so the substrate spells no
-/// dialect. A dialect with no such vendor-scoped artifact declares `None` and reports nothing. Called
-/// ONLY from the cross-protocol response seam, so a same-protocol route never logs a word about them.
-pub fn warn_untranslatable_response_metadata(
-    egress: &str,
-    ingress: &str,
-    body: &serde_json::Value,
-) {
+/// Drop the RESPONSE-side provider metadata that an egress dialect carries and no ingress dialect
+/// can express, on the open translate attempt (`codec::drops`), so it does not vanish from a
+/// translated response with nothing said. WHICH fields are present, and the SHAPE of the lookup,
+/// are the egress dialect's own knowledge — declared on `ProtocolDecl::vendor_response_metadata`
+/// (each named by its wire path) and read here by name so the substrate spells no dialect. A
+/// dialect with no such vendor-scoped artifact declares `None` and reports nothing. Called ONLY from
+/// the cross-protocol response seam, so a same-protocol route never logs a word about them.
+pub fn drop_untranslatable_response_metadata(egress: &str, body: &serde_json::Value) {
     let present: Vec<&str> = crate::codec::decl_of(egress)
         .and_then(|d| d.vendor_response_metadata)
         .map(|report| report(body))
         .unwrap_or_default();
-    if present.is_empty() {
-        return;
+    for path in present {
+        crate::codec::drops::note(crate::codec::drops::Dropped::new(
+            path,
+            &crate::codec::diagnostics::PROTO_DROP_PROVIDER_METADATA,
+            "dropping response-side provider metadata on the cross-protocol seam: the field \
+             named here is a vendor-scoped artifact (a guardrail assessment is an AWS account \
+             resource; a harm-category rating uses Google's own vocabulary) and the caller's \
+             protocol has no shape to receive it. If this metadata is compliance evidence, route \
+             the request to a same-protocol lane, where the upstream body reaches the client \
+             verbatim",
+        ));
     }
-    busbar_contract::diag_debug!(
-        crate::codec::diagnostics::PROTO_DROP_PROVIDER_METADATA,
-        egress = %egress,
-        ingress = %ingress,
-        fields = %present.join(","),
-        "dropping response-side provider metadata on the cross-protocol seam: the field(s) named \
-         here are vendor-scoped artifacts (a guardrail assessment is an AWS account resource; a \
-         harm-category rating uses Google's own vocabulary) and the caller's protocol has no shape \
-         to receive them. If this metadata is compliance evidence, route the request to a \
-         same-protocol lane, where the upstream body reaches the client verbatim"
-    );
 }
 
 #[cfg(test)]

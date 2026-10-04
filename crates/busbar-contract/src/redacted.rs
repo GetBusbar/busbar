@@ -148,8 +148,7 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
 /// follow when comparing a caller-supplied credential against configured secret material — compare
 /// raw only when the material's length is not itself sensitive.
 pub fn sha256_hex(data: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    hex::encode(Sha256::digest(data))
+    hex::encode(crate::abi::sdk::digest::sha256(data))
 }
 
 #[cfg(test)]

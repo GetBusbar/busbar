@@ -70,6 +70,7 @@ use super::{
     config_transaction, err_json, err_json_cond, if_match_version, respond, stale_if_match,
     with_config_etag, Outcome,
 };
+use crate::admin_state::AppAdmin as _;
 use crate::v1::named_def_views::SETTINGS_KEY;
 use busbar_kernel::admin::v1::contract::taxonomy::Cond;
 use busbar_kernel::admin::v1::contract::AdminError;
@@ -616,13 +617,7 @@ async fn apply(
         }
     };
     audit::AUDIT.record_by(&action, &resource, audit::OUTCOME_APPLIED, &actor);
-    installed.versions.record(
-        installed.config_version,
-        &actor,
-        &format!("{action} {resource}"),
-        &installed.hook_registry,
-        &installed.global_hooks,
-    );
+    installed.record_version(&actor, &format!("{action} {resource}"));
     let version = installed.config_version;
     if removes {
         // 204 still carries the NEW config-plane ETag, so a scripted chain needs no re-read. A

@@ -16,13 +16,6 @@
 
 use serde::Serialize;
 
-// SCHEMA-ONLY response views for the ad-hoc-`json!` endpoints (keys, config mutations, hook
-// schema/status, version detail/diff, list envelopes). Compiled ONLY under the CI-only
-// `openapi-schema` feature — never in the shipped binary — so `openapi_doc()` can emit a typed
-// `$ref` for every operation. See the module doc.
-#[cfg(feature = "openapi-schema")]
-pub mod schema;
-
 // The per-endpoint error DECLARATION `openapi.json` is a projection of. Always compiled:
 // the generator reads it under `openapi-schema`, the class-level drift test reads it under `test`,
 // and the emission recorder tags responses with it in a test build.
@@ -859,7 +852,7 @@ pub struct PluginRollbackView {
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct AuthView {
     /// Ordered auth-chain module names (`[]` = open front door).
-    pub chain: Vec<&'static str>,
+    pub chain: Vec<String>,
     /// `"own"` (busbar signs egress with its configured key) or `"passthrough"` (forward the caller's
     /// credential upstream).
     pub upstream_credentials: &'static str,

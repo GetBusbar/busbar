@@ -74,9 +74,9 @@ pub(super) async fn forward_once(
     // degraded path has no `cands` in scope, so the caller passes the already-resolved override here
     // (mirrors the hot path's `effective_reasoning`).
     reasoning_override: Option<bool>,
-    // The collected client headers (from `RequestCtx::forwarded_client_headers`), forwarded on a
+    // The collected client headers (from `RequestCtx::forwarded_client`), forwarded on a
     // same-dialect hop only, mirroring the hot path.
-    client_fwd: &[(axum::http::HeaderName, axum::http::HeaderValue)],
+    client_fwd: &crate::engine::select::ClientFwd,
 ) -> Result<Response, ()> {
     // App-retype WEDGE 3: this degraded-path dispatch's upstream-failure/failover telemetry and every
     // other host reach drive through the threaded `host: &Arc<dyn EngineHost>` — no per-call mint.
@@ -293,10 +293,14 @@ pub(super) async fn forward_once(
     // Busbar is invisible to upstreams (mirrors the main forward path): a same-dialect hop forwards
     // every collected client header; a translated hop none.
     if ingress_protocol == egress_name {
-        busbar_kernel::proxy::apply_client_headers(&mut egress_headers, client_fwd);
+        busbar_kernel::proxy::apply_client_headers(&mut egress_headers, &client_fwd.headers);
     }
     // The precomputed egress `http::Uri` (mirrors the main forward path): hand-assembled request,
     // no builder machinery, no per-request compose + WHATWG parse.
+    // The provider's tenant selectors (mirrors the main forward path).
+    for (name, value) in &EngineTables::new(rt).lanes()[i].tenant_headers {
+        egress_headers.insert(name.clone(), value.clone());
+    }
     let hreq = crate::engine::egress_request(target.uri.clone(), egress_headers, payload);
     // TIMEOUT RE-PROVISION (mirrors the main forward path EXACTLY — the re-audit caught this
     // path keeping the pre-fix shape, the F1 hole's second home): ONE deadline per attempt.
@@ -623,6 +627,7 @@ pub(super) async fn forward_once(
                     true, // degraded path: selects the "degraded"-labeled warn strings
                     None,
                     &TapCell::new(),
+                    "anonymous",
                 )
                 .await);
             }

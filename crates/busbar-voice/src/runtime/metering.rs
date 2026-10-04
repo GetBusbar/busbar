@@ -104,9 +104,17 @@ impl SessionMetering {
         self.account.report_turn(&plane_counts(usage, counters))
     }
 
-    /// The session's open failed after its account counted it: the kernel gives the session fee
-    /// back (Q17-6), since a session that never opened charges nothing.
-    pub fn refund_open(self) {
+    /// The session is SERVED: its provider leg is up (a socket session) or its one-shot pass
+    /// answered success (a mint, an SDP broker). The session fee the kernel counted at the open is
+    /// final; marking it again changes nothing.
+    pub fn served(&self) {
+        self.account.served();
+    }
+
+    /// The session's open failed after its account counted it — its mint, SDP broker, provider dial
+    /// or durable open: the kernel gives the session fee back (TODO 17(b), ARCHITECT R4), exactly
+    /// once, since a session that never opened charges nothing. A no-op once the session served.
+    pub fn refund_open(&self) {
         self.account.refund_open();
     }
 }

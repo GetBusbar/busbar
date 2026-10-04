@@ -886,7 +886,7 @@ async fn admin_usage_over_an_unpriced_class_answers_named_409() {
 /// plugin acks by default); `GET .../schema` proxies the plugin's `describe` self-description
 /// envelope, extracting the `schema` member (single nest). The retired socket/webhook mock is gone —
 /// the plugin IS the transport now. (A NACK/wrong-version ack rejecting the commit is covered at the
-/// DlopenPolicy configure unit level.)
+/// hook seam's configure unit level.)
 #[tokio::test]
 async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
     busbar_kernel::metrics::init();
@@ -1697,12 +1697,15 @@ async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
     busbar_kernel::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
+    // The test app first: it hands this binary's operator words in, so the provider key read next
+    // is the one the linked row answers (read before, it is the kernel's test-build stand-in).
+    let test_app = crate::new_test_app();
     let ops: busbar_kernel::config::IdentityProviderCfg = serde_yaml::from_str(&format!(
         "module: {}",
         busbar_kernel::config::operator_provider()
     ))
     .expect("a provider definition");
-    let app = crate::new_test_app()
+    let app = test_app
         .governance(gov)
         .identity_provider("ops", ops)
         .build();
@@ -7483,7 +7486,8 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
     let hook_env = busbar_kernel::hooks::HookEnv::new(
         std::sync::Arc::new(registry),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    );
+    )
+    .expect("the registry's hook axis");
     let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
     let client = reqwest::Client::new();
 
@@ -7627,7 +7631,8 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
     let hook_env = busbar_kernel::hooks::HookEnv::new(
         std::sync::Arc::new(registry),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    );
+    )
+    .expect("the registry's hook axis");
     let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
     let client = reqwest::Client::new();
 
@@ -7875,7 +7880,8 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     let hook_env = busbar_kernel::hooks::HookEnv::new(
         std::sync::Arc::new(registry),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    );
+    )
+    .expect("the registry's hook axis");
     let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
     let client = reqwest::Client::new();
 
@@ -7910,7 +7916,8 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     let hook_env2 = busbar_kernel::hooks::HookEnv::new(
         std::sync::Arc::new(registry2),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    );
+    )
+    .expect("the registry's hook axis");
     let (addr2, handle2) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env2).await;
     let got2: serde_json::Value = client
         .get(format!(
@@ -7979,7 +7986,8 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     let bad_hook_env = busbar_kernel::hooks::HookEnv::new(
         std::sync::Arc::new(bad_registry),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    );
+    )
+    .expect("the registry's hook axis");
     let (bad_addr, bad_handle) =
         serve_with_plugins_dir_and_hook_env(bad_dir.clone(), bad_hook_env).await;
     let got_bad: serde_json::Value = client
@@ -13318,7 +13326,7 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
         drive().await;
     }
 
-    let witnessed = busbar_kernel::admin::v1::contract::taxonomy::observed::snapshot();
+    let witnessed = crate::witness::snapshot();
     // Every (operation, ErrKind) the suite has actually produced, and every (operation, ErrKind,
     // Cond) TRIPLE for the emissions that named their condition. Keyed on the NEUTRAL string form the
     // process-wide substrate ledger stores (so a witness produced through EITHER copy of busbar-core —
@@ -13845,10 +13853,11 @@ async fn limit_zero_does_not_produce_a_self_referential_cursor() {
 fn linked_export_axis() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let (name, alias, _, entry) = busbar_export_prometheus::linked::EXPORT;
-        busbar_kernel::test_support::export_axis::install_export_axis_with(vec![
-            busbar_plugin_loader::LinkedPlugin::first_party("export", name, alias, entry),
-        ]);
+        busbar_kernel::test_support::export_axis::install_first_party_door(
+            busbar_export_prometheus::NAME,
+            busbar_export_prometheus::ALIAS,
+            busbar_export_prometheus::door::door,
+        );
     });
 }
 

@@ -29,13 +29,31 @@
 ///
 /// Atomic rather than `Cell` because the streaming hop counts from inside the transport's chunk
 /// sink, which is `Send`; the counts are read once, after the relay returns, on the same thread.
+///
+/// AND WHETHER THE HOP LEFT AT ALL: [`HopBytes::left`] is set by the relay at the one line past
+/// which a hop is on its way to the backend (every pre-socket gate passed, the request framed and
+/// built), so the charge is settled on the relay's own knowledge rather than inferred from which
+/// refusal came back — an `Unframable` is raised both before the send and on reading the answer.
 #[derive(Debug, Default)]
 pub(crate) struct HopBytes {
     sent: std::sync::atomic::AtomicU64,
     received: std::sync::atomic::AtomicU64,
+    left: std::sync::atomic::AtomicBool,
 }
 
 impl HopBytes {
+    /// The hop is past every pre-socket gate and goes to the transport. Visible to
+    /// [`super::relay`], whose preamble is the one place that line is.
+    pub(super) fn mark_left(&self) {
+        self.left.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether the hop went to the transport: a hop that did is billed whatever the backend then
+    /// answered; one that did not was refused before the socket and ledgers nothing.
+    pub(crate) fn left(&self) -> bool {
+        self.left.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Visible to [`super::relay`], which is the only caller: the transport-return sites where a
     /// hop's byte count is known are all in that module.
     pub(super) fn add_sent(&self, n: usize) {

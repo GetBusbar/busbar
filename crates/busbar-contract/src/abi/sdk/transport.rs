@@ -472,7 +472,15 @@ bridges! {
             out: *const WireFramerOut) {
             let (given, mut out) = (bytes(buf, len)?, host_out(out)?);
             t.inner
-                .emit(framing, StreamId(stream), given, end_of_frame == 1, &mut out)
+                .emit(
+                    framing,
+                    StreamId(stream),
+                    given,
+                    end_of_frame == 1,
+                    // The condemned HOT lane carries no text bit (`qa/abi-freeze.toml`).
+                    false,
+                    &mut out,
+                )
                 .map_err(WireOutcome::of_error)
         }
         fn encode_envelope(t; fields: *const WireField, fields_len: usize, body: *const u8,

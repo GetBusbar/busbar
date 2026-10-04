@@ -4,7 +4,6 @@ use super::*;
 // re-forks the policy. `tracing::instrument`'s `level = <path>` form rejects a leading `crate`
 // keyword segment (it parses a bare `Ident`/`Path`, and `crate` is not one), so the constant is
 // imported here and referenced unqualified at each instrument site instead.
-use axum::http::HeaderName;
 use busbar_contract::records::VirtualKey;
 use busbar_kernel::observability::HOTPATH_LEVEL;
 // The single neutral translate entrypoint (G6 step 4): the non-stream cross-protocol response arm
@@ -67,7 +66,7 @@ mod test_forward_entry {
             usage_sink,
             // No inbound `HeaderMap` on this bytes-only test entry ⇒ nothing to forward. The
             // production ingress path collects the real client headers.
-            Vec::new(),
+            Default::default(),
         )
         .await
     }
@@ -88,7 +87,7 @@ mod test_forward_entry {
         usage_sink: Option<UsageSink>,
         // The collected client headers a same-dialect egress forwards. A test entry that exercises
         // the forwarding path passes a collected set; every other test passes an empty Vec.
-        client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
+        client_fwd: crate::engine::select::ClientFwd,
     ) -> Response {
         // Mint the neutral host/rt the production path threads (see the module note).
         let host = busbar_kernel::test_support::engine_host(app);
@@ -172,7 +171,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
     usage_sink: Option<UsageSink>,
     // The client headers a same-dialect egress forwards (captured at ingress by the neutral
     // `busbar_kernel::proxy::collect_client_headers`), threaded to the egress assembly site.
-    client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
+    client_fwd: crate::engine::select::ClientFwd,
 ) -> impl std::future::Future<Output = Response> + 'a {
     use tracing::Instrument;
     let span = tracing::span!(
@@ -323,8 +322,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // `busbar_kernel::proxy::collect_client_headers` (every one but the per-connection mechanics and
     // the dialect-governed names). Stored on `RequestCtx` below so BOTH the hot path here and the
     // degraded exhaustion paths read the same set for the whole failover walk.
-    client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
+    client_fwd: crate::engine::select::ClientFwd,
 ) -> Response {
+    // The sink carries this request's correlation id from here on, so every accrual it settles
+    // names the request on its residual audit row (`UsageSink::request_id`).
+    let usage_sink = usage_sink.map(|sink| UsageSink { request_id, ..sink });
     // Stage profiler: PREPARE spans all pre-dispatch bookkeeping (op-support filter, wants_stream +
     // affinity derivation, failover/breaker config) up to the failover loop. Zero cost when
     // `BUSBAR_PROFILE` is unset — `start` returns `None` and takes no `Instant`.
@@ -346,8 +348,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // `v` is the PRISTINE parsed request body (parsed once by the caller), unmutated until the first
     // hop consumes it. Capture the caller's stream intent from the ingress body BEFORE any rewrite
     // or cross-protocol translation touches `v` (see `read_stream_intent`).
-    let (wants_stream, client_include_usage, client_has_stream_options) =
-        read_stream_intent(v.as_ref(), op);
+    let (wants_stream, client_include_usage) = read_stream_intent(v.as_ref(), op);
 
     // ── GLOBAL REWRITE (transform) PASS ── fire the global + pool `prompt: rw` gates before dispatch
     // and before the routing decision, so both see the rewritten body (see `run_rewrite_pass`).
@@ -433,7 +434,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         op,
         wants_stream,
         client_include_usage,
-        client_has_stream_options,
         gemini_json_array,
         breaker_cfg,
         max_cap,
@@ -474,25 +474,15 @@ fn fire_global_taps(
     }
     // SELECTION: this tap fires for THIS caller iff its `groups:` scope admits the caller.
     let fires = |groups: &[String]| host.caller_in_hook_groups(caller_group, groups);
-    let ctx = busbar_contract::hooks::RoutingContext {
-        pool: pool_name,
-        budget_remaining: None,
-        // Taps observe request shape; the budget-chain projection is a routing-policy signal
-        // (decide_policy_order), not a tap payload.
-        budget: &[],
-    };
-    // THE ONE READ for this seam, done once and shared by both projections. A body the reader
-    // refuses yields the zeroed shape here rather than failing anything: request-stage taps are
-    // fire-and-forget observation, and the gate/rewrite seams — which read the same IR — are where
-    // an unreadable request is actually rejected.
+    // THE ONE READ for this seam, done once and shared by both projections, over the content the
+    // reader can read; request-stage taps are fire-and-forget observation.
     let facts = crate::engine::hooks::read_hook_facts(
         body,
         raw_body,
         content_type,
         ingress_protocol,
         Some(operation),
-    )
-    .unwrap_or(crate::engine::hooks::HookFacts::Absent);
+    );
     let build_proj = |with_prompt: bool| {
         let req = build_rewrite_request(
             &facts,
@@ -503,14 +493,8 @@ fn fire_global_taps(
             with_prompt,
             request_id,
         );
-        busbar_plane_llm::codec::json::to_vec(&busbar_kernel::hooks::wire::build(
-            busbar_kernel::hooks::wire::OP_NOTIFY,
-            &req,
-            &[],
-            &ctx,
-        ))
-        .ok()
-        .map(std::sync::Arc::new)
+        // The tap's fixed view; the prompt view rides it only for a `prompt: ro` tap.
+        busbar_contract::abi::host::hook::NotifyFrame::build(&req, None, with_prompt)
     };
     // Shape-only is needed whenever any FIRING tap lacks the prompt grant; the prompt projection only
     // when at least one FIRING tap holds `prompt: ro`. Build each at most once. A tap filtered out by
@@ -523,17 +507,16 @@ fn fire_global_taps(
         .tap_hooks()
         .iter()
         .any(|(_, send_prompt, _, groups)| !*send_prompt && fires(groups));
-    let shape_proj = if any_shape { build_proj(false) } else { None };
-    let prompt_proj = if any_prompt { build_proj(true) } else { None };
+    let shape_proj = any_shape.then(|| build_proj(false));
+    let prompt_proj = any_prompt.then(|| build_proj(true));
     for (timeout, send_prompt, hook, groups) in host.tap_hooks() {
         // SELECTION: skip a tap whose `groups:` scope does not admit this caller.
         if !fires(groups) {
             continue;
         }
-        // A granted tap prefers the prompt projection; fall back to shape-only if it failed to
-        // serialize (never over-share, always safe).
+        // A granted tap is handed the prompt view; every other tap the shape-only one.
         let proj = if *send_prompt {
-            prompt_proj.clone().or_else(|| shape_proj.clone())
+            prompt_proj.clone()
         } else {
             shape_proj.clone()
         };
@@ -546,7 +529,7 @@ fn fire_global_taps(
             let policy = hook.clone();
             let budget = *timeout;
             crate::engine::hooks::spawn_bounded_tap(
-                async move { policy.notify(&proj, budget).await },
+                async move { policy.notify(proj, budget).await },
             );
         }
     }
@@ -680,7 +663,6 @@ async fn run_failover_loop(
     op: Op,
     wants_stream: bool,
     client_include_usage: bool,
-    client_has_stream_options: bool,
     gemini_json_array: bool,
     breaker_cfg: std::sync::Arc<busbar_kernel::store::BreakerCfg>,
     max_cap: usize,
@@ -780,7 +762,6 @@ async fn run_failover_loop(
             op,
             wants_stream,
             client_include_usage,
-            client_has_stream_options,
             gemini_json_array,
             caller_token,
             upstream_creds,
@@ -965,9 +946,9 @@ fn filter_candidates_for_op(
 }
 
 /// The caller's stream intent, read off the ingress head projection BEFORE any rewrite touches
-/// `v`: `(wants_stream, client_include_usage, client_has_stream_options)`. Byte-identical to the
-/// inline reads; `probe()` answers without materializing the DOM in the common case.
-fn read_stream_intent(v: Option<&LazyBody>, op: Op) -> (bool, bool, bool) {
+/// `v`: `(wants_stream, client_include_usage)`. Byte-identical to the inline reads; `probe()`
+/// answers without materializing the DOM in the common case.
+fn read_stream_intent(v: Option<&LazyBody>, op: Op) -> (bool, bool) {
     let wants_stream = v.map(|l| op.wants_stream(l.probe())).unwrap_or(false);
     let client_include_usage = wants_stream
         && v.map(|l| {
@@ -977,19 +958,12 @@ fn read_stream_intent(v: Option<&LazyBody>, op: Op) -> (bool, bool, bool) {
                 .unwrap_or(false)
         })
         .unwrap_or(false);
-    let client_has_stream_options = wants_stream
-        && v.map(|l| l.probe().get("stream_options").is_some())
-            .unwrap_or(false);
-    (
-        wants_stream,
-        client_include_usage,
-        client_has_stream_options,
-    )
+    (wants_stream, client_include_usage)
 }
 
 /// The GLOBAL rewrite (transform) pass: fire the global then pool `prompt: rw` gates over the DOM,
-/// re-serialize the retained `body` bytes when a rewrite commits (so the pristine short-circuit and
-/// failover re-parse see the effective request), and reject fail-closed. Pure extraction; ZERO COST
+/// write a committed rewrite back into the retained `body` bytes as splices of what it changed (so
+/// the same-dialect relay and failover re-parse see the effective request), and reject fail-closed. Pure extraction; ZERO COST
 /// when no rewrite hook is configured. `Err` is the ingress-native gate rejection.
 // `result_large_err`: `Err` is the plane's own finished `Response`, returned as-is (see `assemble.rs`).
 #[allow(clippy::too_many_arguments, clippy::result_large_err)]
@@ -1050,6 +1024,9 @@ async fn run_rewrite_pass(
                     "request rewrite could not be applied".to_string(),
                 ));
             };
+            // The body as the caller sent it, kept so a committed rewrite is written back as
+            // splices of exactly what it changed (see below).
+            let before = parsed.clone();
             let mut applied = match apply_global_rewrites(
                 &**host,
                 host.rewrite_hooks(),
@@ -1080,13 +1057,18 @@ async fn run_rewrite_pass(
                 Ok(a) => a,
                 Err((status, message)) => return Err(reject(status, message)),
             };
-            // A committed rewrite makes the RETAINED bytes stale: the same-protocol pristine
-            // short-circuit re-emits them verbatim, and failover hops 2+ re-parse them — either
-            // path would silently discard the rewrite. Re-serialize the rewritten body as the new
-            // retained bytes so every downstream reader of `body` sees the effective request.
-            // Cost only on the rewrite path (a no-op request never reaches this serialize).
-            if applied {
-                match busbar_plane_llm::codec::json::to_vec(parsed) {
+            // A committed rewrite makes the RETAINED bytes stale: the same-protocol relay sends
+            // them, and failover hops 2+ re-parse them — either path would silently discard the
+            // rewrite. Write the rewrite back into the retained bytes as splices of exactly the
+            // members and elements it changed, so every untouched block keeps the caller's bytes
+            // (DIALECT-FIDELITY-DESIGN F6); a body the splice cannot read is written whole. Cost
+            // only on the rewrite path (a no-op request never reaches this write-back).
+            if applied && before != *parsed {
+                let spliced =
+                    busbar_plane_llm::codec::json_splice::diff(&body[..], &before, parsed)
+                        .map(Ok)
+                        .unwrap_or_else(|| busbar_plane_llm::codec::json::to_vec(parsed));
+                match spliced {
                     Ok(bytes) => *body = Bytes::from(bytes),
                     // A `prompt: rw` rewrite is a TRUSTED, possibly security-critical transform. If it
                     // cannot be serialized into the retained bytes, the first hop carries it but every
@@ -1179,7 +1161,7 @@ fn prepare_failover_ctx(
     cands: &mut Vec<WeightedLane>,
     pool_name: &str,
     request_id: u64,
-    client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
+    client_fwd: crate::engine::select::ClientFwd,
 ) -> (
     RequestCtx,
     std::sync::Arc<busbar_kernel::store::BreakerCfg>,
@@ -1200,7 +1182,7 @@ fn prepare_failover_ctx(
     let breaker_cfg: std::sync::Arc<busbar_kernel::store::BreakerCfg> =
         resolve_breaker_cfg(rt, pool_name);
     let mut request_ctx = RequestCtx::new(deadline_secs, request_id);
-    request_ctx.forwarded_client_headers = client_fwd;
+    request_ctx.forwarded_client = client_fwd;
     if let Some(excl) = pool_failover.and_then(|f| f.exclusions.as_ref()) {
         cands.retain(|wl| {
             !excl
@@ -1839,17 +1821,18 @@ fn fire_routing_tap(
     }
 }
 
-/// Derive the FRESH per-hop request DOM. `head_pristine` consumes the hop-1 body (re-emit verbatim,
-/// no DOM); an opaque (non-JSON) body has nothing to re-parse; otherwise consume the carried DOM on
-/// hop 1 or re-parse the retained pristine bytes on failover hops. `Err(())` is the (infallible in
-/// practice) parse failure the caller turns into a pre-dispatch 500.
+/// Derive the FRESH per-hop request DOM. A `relay` (same-dialect) hop needs none: it sends the
+/// retained bytes with the governed member splices only; an opaque (non-JSON) body has nothing to
+/// re-parse; otherwise consume the carried DOM on hop 1 or re-parse the retained bytes on failover
+/// hops. `Err(())` is the (infallible in practice) parse failure the caller turns into a
+/// pre-dispatch 500.
 fn derive_hop_body(
     v: &mut Option<LazyBody>,
     body: &Bytes,
     body_is_json: bool,
-    head_pristine: bool,
+    relay: bool,
 ) -> Result<Option<Value>, ()> {
-    if head_pristine {
+    if relay {
         *v = None;
         Ok(None)
     } else if !body_is_json {
@@ -1899,7 +1882,6 @@ async fn dispatch_hop(
     pool_name: &str,
     cands: &[WeightedLane],
     body: &Bytes,
-    head_pristine: bool,
     body_is_json: bool,
     req_content_type: &str,
     ingress_protocol: &str,
@@ -1907,7 +1889,6 @@ async fn dispatch_hop(
     op: Op,
     wants_stream: bool,
     client_include_usage: bool,
-    client_has_stream_options: bool,
     gemini_json_array: bool,
     caller_token: Option<&crate::engine::CallerCredential>,
     upstream_creds: busbar_contract::config::UpstreamCreds,
@@ -1929,7 +1910,6 @@ async fn dispatch_hop(
             pool_cell: pool_name,
             cands,
             body,
-            pristine: head_pristine,
             body_is_json,
             req_content_type,
             ingress_protocol,
@@ -1937,14 +1917,13 @@ async fn dispatch_hop(
             op,
             wants_stream,
             client_include_usage,
-            client_has_stream_options,
             gemini_json_array,
             caller_token,
             upstream_creds,
             resolved_gov_key,
             remaining_secs: request_ctx.remaining(now()),
             breaker_cfg,
-            client_fwd: &request_ctx.forwarded_client_headers,
+            client_fwd: &request_ctx.forwarded_client,
             chosen_policy_name,
             metric_pool,
             degraded: false,
@@ -2012,7 +1991,6 @@ async fn run_hop(
     op: Op,
     wants_stream: bool,
     client_include_usage: bool,
-    client_has_stream_options: bool,
     gemini_json_array: bool,
     caller_token: Option<&crate::engine::CallerCredential>,
     upstream_creds: busbar_contract::config::UpstreamCreds,
@@ -2026,16 +2004,12 @@ async fn run_hop(
     usage_sink: &mut Option<UsageSink>,
     last_failure: &mut Option<&'static str>,
 ) -> Option<Response> {
-    // REQUEST SHORT-CIRCUIT WITHOUT A DOM: hop 1 of a SAME-protocol JSON dispatch whose head
-    // projection PROVES no same-proto invalidator fires re-emits the retained bytes verbatim —
-    // byte-identical to the translate seam's own pristine short-circuit — without materializing
-    // the `Value` tree. `head_provably_pristine` is one-sided; any doubt falls through.
-    let head_pristine = ingress_protocol == egress_name
-        && v.as_ref()
-            .is_some_and(|l| head_provably_pristine(rt, i, l.probe()));
+    // A SAME-protocol hop never needs the `Value` tree: it relays the retained bytes with the
+    // governed member splices only (`xchg::attempt::relay_request`), so no DOM is materialized.
+    let relay = ingress_protocol == egress_name;
     // Derive a FRESH per-hop body (see `derive_hop_body`); each failover hop translates from the
     // ORIGINAL request, never a previous hop's egress-shaped body.
-    let hop_v: Option<Value> = match derive_hop_body(v, body, body_is_json, head_pristine) {
+    let hop_v: Option<Value> = match derive_hop_body(v, body, body_is_json, relay) {
         Ok(hv) => hv,
         // `body` already validated/parsed once successfully; this is infallible. Pre-dispatch bail
         // (no breaker outcome): release any probe this pick won, owner-checked, so a recovering lane
@@ -2063,7 +2037,6 @@ async fn run_hop(
         pool_name,
         cands,
         body,
-        head_pristine,
         body_is_json,
         req_content_type,
         ingress_protocol,
@@ -2071,7 +2044,6 @@ async fn run_hop(
         op,
         wants_stream,
         client_include_usage,
-        client_has_stream_options,
         gemini_json_array,
         caller_token,
         upstream_creds,

@@ -9,8 +9,9 @@
 //!
 //! Its framer entries are every linked memory-ABI transport door, opened on the process's one
 //! dispatcher; the connector builds the rest (`busbar_core_connector::process`): its dial judge is
-//! the kernel's one destination judge, so every name a need dials is resolved and pinned inside the
-//! kernel at 1.5.5's refusal timing. The root hands it the deployment's values only.
+//! the deployment's one destination guard ([`dest_judge`]), so every name a need dials is resolved,
+//! judged and pinned by that guard at 1.5.5's refusal timing. The root hands it the deployment's
+//! values only.
 
 use std::sync::{Arc, OnceLock};
 
@@ -18,6 +19,9 @@ use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_core_connector::framer::FramerDoor;
 use busbar_core_connector::registry::Entry;
 use busbar_core_connector::{process, Connector};
+use busbar_kernel::config::{Destinations, RootCfg};
+use busbar_kernel::host_services::DestJudge;
+use busbar_kernel::plane_host::egress_trust::{install_egress_trust_host, GuardedEgressTrust};
 
 use crate::root::loader::dispatch::{
     kinds::transport::Transport as TransportKind, load_linked, LinkedRow,
@@ -68,26 +72,55 @@ pub fn entries(doors: &[(&str, DoorFn)]) -> Result<Vec<Entry>, String> {
         .collect()
 }
 
-/// THE BOOT PATH'S STEP: build the one Connector over every linked transport door, judged under
-/// the deployment's metadata rules (`blocked`, `allowed`, `allow_all`) with the node's own ports
-/// read off its `listens`, and install it. A connector that cannot be built refuses the boot, as an
-/// unsealed composition does.
+/// THE DEPLOYMENT'S ONE DESTINATION GUARD (OWNER ruling DESTINATION GUARD), built at boot from
+/// `cfg`'s `advanced` keys and the 1.5.5 keys that still load. Once [`install_egress_trust`] puts
+/// it behind the egress-trust capability it hears every config commit: its metadata lists
+/// (`security.*`, `providers.<p>.allow_metadata_hosts`) are re-read at each one, as 1.5.5 re-read
+/// them at every reload. An allowlist entry the guard cannot read refuses the boot, naming it.
+pub fn dest_judge(cfg: &RootCfg) -> Arc<process::GuardJudge> {
+    guard_for(&cfg.destinations()).unwrap_or_else(|refusal| {
+        eprintln!("busbar: config errors:\n  - {refusal}");
+        std::process::exit(2);
+    })
+}
+
+/// The one guard `d` states, or the refusal naming its bad allowlist entry (`--validate`).
+///
+/// # Errors
+///
+/// An `advanced.allow_destinations` entry the guard cannot read.
+pub fn guard_for(d: &Destinations) -> Result<Arc<process::GuardJudge>, String> {
+    process::dest_judge(d)
+}
+
+/// Install the deployment's one destination guard behind the egress-trust capability (ARCHITECT
+/// ruling (C), DEST-GUARD), once, at boot, before any kernel pooled client dials and before the boot
+/// build commits: every config commit is raised to it there.
+pub fn install_egress_trust(dest: Arc<dyn DestJudge>) {
+    install_egress_trust_host(Arc::new(GuardedEgressTrust(dest)));
+}
+
+/// THE BOOT PATH'S STEP: build the one Connector over every linked transport door, its dials
+/// judged by `dest` (the deployment's one guard) with the node's own ports read off its
+/// `listens`, and install it. A connector that cannot be built refuses the boot, as an unsealed
+/// composition does.
 pub fn boot(
     doors: &[(&str, DoorFn)],
-    blocked: &[String],
-    allowed: &[String],
-    allow_all: bool,
+    dest: Arc<dyn DestJudge>,
     listens: &[&str],
 ) -> &'static Arc<Connector> {
+    // The process's one runtime is the reactor a socket a plugin opens from a dispatcher worker
+    // registers on (`busbar_core_connector::io`).
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        busbar_core_connector::io::install_process_reactor(handle);
+    }
     let built = process::build(
         || entries(doors),
-        blocked,
-        allowed,
-        allow_all,
+        dest,
         &process::own_ports(listens),
-        // No plugin reads a connection through a ticket yet; the kind that first does
-        // (inbound listening) routes its wakes through the dispatcher here.
-        Arc::new(|_| {}),
+        // A plugin reading a connection through a ticket (an export sink's delivery parked on its
+        // collector's reply) is woken through the process's one dispatcher.
+        crate::root::dispatch::dispatcher().conn_waker(),
     );
     let connector = built.unwrap_or_else(|refusal| {
         eprintln!("busbar: the connector did not build: {refusal}");

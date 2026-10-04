@@ -144,10 +144,12 @@ pub trait MoneyBook: Send + Sync {
 /// and the `Posted` it settles reach the ledger's one book-moving function unaltered, so the postings
 /// on the chain are the same bytes in the same order they are today. It exists so exit arms name a
 /// seam instead of a book, not so the book behaves differently.
+#[cfg(linked_axis_node)]
 pub struct SharedBook {
     pub(super) durability: std::sync::Arc<std::sync::Mutex<Durability>>,
 }
 
+#[cfg(linked_axis_node)]
 impl SharedBook {
     /// A pass-through over a book the caller already opened and shares.
     #[must_use]
@@ -156,12 +158,14 @@ impl SharedBook {
     }
 }
 
+#[cfg(linked_axis_node)]
 impl std::fmt::Debug for SharedBook {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SharedBook").finish_non_exhaustive()
     }
 }
 
+#[cfg(linked_axis_node)]
 impl MoneyBook for SharedBook {
     fn settle_posted(
         &self,

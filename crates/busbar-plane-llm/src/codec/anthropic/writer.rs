@@ -284,11 +284,13 @@ impl ProtocolWriter for AnthropicWriter {
             // `tools == []` and `tool_choice` still set. Drop with a warn rather than a guaranteed
             // 400 — this is the SAME guard the parallelism carry just below already applies.
             if !out.contains_key(keys::TOOLS) {
-                tracing::warn!(
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::TOOL_CHOICE,
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [],
                     "dropping tool_choice on Anthropic egress: Anthropic rejects a tool_choice with \
                      no tools array (likely because the hosted tools that carried it were stripped \
-                     on the cross-protocol seam)"
-                );
+                     on the cross-protocol seam)");
             } else {
                 let mut tc_val = write_anthropic_tool_choice(tc);
                 if let (Some(parallel), Some(map)) =
@@ -355,12 +357,13 @@ impl ProtocolWriter for AnthropicWriter {
                         );
                     }
                     None => {
-                        tracing::warn!(
-                            parameter = keys::RESPONSE_FORMAT,
+                        crate::codec::drops::writer_drop!(
+                            crate::codec::drops::RESPONSE_FORMAT,
+                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                            [parameter = keys::RESPONSE_FORMAT, ],
                             "dropping schema-less JSON mode on Anthropic egress: structured outputs \
                              require a JSON schema and the Messages API has no schema-less JSON mode \
-                             (lossy-by-target)"
-                        );
+                             (lossy-by-target)");
                     }
                 }
             }
@@ -437,14 +440,17 @@ impl ProtocolWriter for AnthropicWriter {
         // alongside thinking, so when the ask IS emitted those knobs are omitted (warned) below.
         let mut thinking_emitted = false;
         match req.reasoning {
-            // Reasoning switched OFF (IR-09, ANT-09) — matched FIRST: `to_budget` would read it as a
-            // zero budget and drop it, losing the caller's "off" on a reasoning-by-default model.
+            // Reasoning switched OFF (IR-09, ANT-09) — matched FIRST: it has no budget, and the
+            // caller's "off" must reach a reasoning-by-default model.
             // Not an emitted thinking ask, so the sampling knobs below stay.
             // A lane whose model cannot switch thinking off (`LaneCaps::thinking_always_on`)
             // rejects `{type:"disabled"}`: the ask is omitted with a warn and the
             // model thinks at its default.
             Some(crate::codec::ir::IrReasoningAsk::Off) if caps.thinking_always_on => {
-                tracing::warn!(
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::REASONING,
+                    &crate::codec::diagnostics::IR_DROP_REASONING,
+                    [],
                     "omitting reasoning OFF on Anthropic egress: this lane's model cannot switch \
                      thinking off (thinking_always_on) and rejects thinking.type \"disabled\""
                 );
@@ -476,7 +482,19 @@ impl ProtocolWriter for AnthropicWriter {
                 );
                 thinking_emitted = true;
             }
-            // A numeric ask on every lane, and EVERY ask on a lane without adaptive thinking
+            // "The model decides" on a lane without adaptive thinking: `budget_tokens` has no
+            // "model decides" value, so the ask is DROPPED (design F3: never a table entry put in
+            // its place) and the model runs at its default.
+            Some(crate::codec::ir::IrReasoningAsk::Dynamic) => {
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::REASONING,
+                    &crate::codec::diagnostics::IR_DROP_REASONING,
+                    [],
+                    "dropping a \"model decides\" reasoning ask on Anthropic egress: this lane does \
+                     not declare adaptive thinking and budget_tokens has no dynamic form"
+                );
+            }
+            // A numeric ask on every lane, and every word ask on a lane without adaptive thinking
             // (`LaneCaps::anthropic_adaptive_thinking` false — the pre-capability default, and the
             // only on-mode Haiku 4.5 / Sonnet 4.5 / Opus 4.5 and older accept): `budget_tokens`, a
             // word projected through the operator's effort table.
@@ -484,35 +502,31 @@ impl ProtocolWriter for AnthropicWriter {
                 let table = req
                     .reasoning_budgets
                     .unwrap_or(crate::codec::ir::REASONING_BUDGET_DEFAULTS);
-                if matches!(ask, crate::codec::ir::IrReasoningAsk::Dynamic) {
-                    tracing::warn!(
-                        "gemini dynamic thinking (-1) has no Anthropic analog on this lane; \
-                         projecting as the 'medium' effort budget"
-                    );
-                }
-                let want = ask.to_budget(table);
-                let cap = req.max_tokens.map(|mt| mt.saturating_sub(1024));
-                let budget = cap.map_or(want, |c| want.min(c));
-                if budget >= 1024 {
-                    if budget != want {
-                        tracing::warn!(
-                            requested_budget = want,
-                            clamped_budget = budget,
-                            max_tokens = ?req.max_tokens,
-                            "thinking budget clamped to fit under max_tokens"
+                // `Off` and `Dynamic` are matched above; every other ask has a table entry.
+                if let Some(want) = ask.to_budget(table) {
+                    let cap = req.max_tokens.map(|mt| mt.saturating_sub(1024));
+                    let budget = cap.map_or(want, |c| want.min(c));
+                    if budget >= 1024 {
+                        if budget != want {
+                            crate::codec::drops::writer_drop!(
+                                crate::codec::drops::REASONING,
+                                &crate::codec::diagnostics::IR_DROP_REASONING,
+                                [requested_budget = want, clamped_budget = budget, max_tokens = ?req.max_tokens, ],
+                                "thinking budget clamped to fit under max_tokens");
+                        }
+                        out.insert(
+                            keys::THINKING.to_string(),
+                            serde_json::json!({(keys::TYPE): keys::ENABLED, (keys::BUDGET_TOKENS): budget}),
                         );
+                        thinking_emitted = true;
+                    } else {
+                        crate::codec::drops::writer_drop!(
+                            crate::codec::drops::REASONING,
+                            &crate::codec::diagnostics::IR_DROP_REASONING,
+                            [max_tokens = ?req.max_tokens, ],
+                            "dropping reasoning ask on Anthropic egress: max_tokens leaves no room for \
+                             the 1024-token thinking minimum");
                     }
-                    out.insert(
-                        keys::THINKING.to_string(),
-                        serde_json::json!({(keys::TYPE): keys::ENABLED, (keys::BUDGET_TOKENS): budget}),
-                    );
-                    thinking_emitted = true;
-                } else {
-                    tracing::warn!(
-                        max_tokens = ?req.max_tokens,
-                        "dropping reasoning ask on Anthropic egress: max_tokens leaves no room for \
-                         the 1024-token thinking minimum"
-                    );
                 }
             }
             None => {}
@@ -535,11 +549,12 @@ impl ProtocolWriter for AnthropicWriter {
             {
                 let ty = tc.get(keys::TYPE).and_then(|t| t.as_str());
                 if ty == Some(keys::ANY) || ty == Some(keys::TOOL) {
-                    tracing::warn!(
-                        tool_choice = ?ty,
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::TOOL_CHOICE,
+                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                        [tool_choice = ?ty, ],
                         "downgrading forced/targeted tool_choice to 'auto' on Anthropic egress: \
-                         not compatible with thinking"
-                    );
+                         not compatible with thinking");
                     tc.insert(keys::TYPE.to_string(), serde_json::json!(keys::AUTO));
                     tc.remove(keys::NAME); // `name` is only valid on `{type:"tool"}`
                 }
@@ -1034,7 +1049,10 @@ impl ProtocolWriter for AnthropicWriter {
             .filter_map(|block| match block {
                 crate::codec::ir::IrBlock::Image { .. }
                 | crate::codec::ir::IrBlock::Media { .. } => {
-                    tracing::warn!(
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::IMAGE,
+                        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                        [],
                         "dropping image/attachment output block on Anthropic response egress: an \
                          Anthropic assistant message has no image or document response block"
                     );

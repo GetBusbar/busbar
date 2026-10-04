@@ -101,6 +101,9 @@ impl Dispatched {
                 opened.outcome
             ));
         }
+        // DISCOVERY AT BOOT (ARCHITECT 2026-10-02): a door that states `ready` is awaited here,
+        // after its `open` and before any listener binds; its refusal refuses the boot.
+        plugin.ready(dispatcher(), super::loader::dispatch::ready::READY_DEADLINE)?;
         let facts = DoorFacts {
             name: plugin.name().to_owned(),
             claims: stated.claims,
@@ -209,7 +212,9 @@ impl busbar_contract::Transport for RootWire {
         stream: busbar_contract::StreamId,
         bytes: busbar_contract::ScratchBytes<'a>,
     ) -> busbar_contract::Fut<'a, usize> {
-        self.0.write(conn, stream, bytes)
+        // The kernel's write carries no text bit yet: it takes FrameMeta::text from the plane's
+        // PIECE_OUT_TEXT after SERVE-WIRE's P1; until then every write here is binary.
+        self.0.write(conn, stream, bytes, false)
     }
 
     fn encode_envelope<'a>(

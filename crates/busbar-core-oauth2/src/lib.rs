@@ -19,11 +19,10 @@
 //! * [`testkit`] — the `TestAppOauthExt` extension trait, the plane's `busbar_kernel::test_support`
 //!   fixture builder, kept here so busbar-core names no plane type in its own fixtures.
 //!
-//! `busbar_kernel::oauth_as::config` (`OauthAsCfg`/`AsIdentity`) STAYS in core — `DeployConfig` and
-//! its validated twin embed those types by value for the single-document config pipeline, and
-//! `config_validate::secret_refs` exhaustively destructures `AsIdentity`. Moving them here would
-//! need core to name them back, which is the cycle Cargo refuses. See that module's doc for the
-//! full rationale.
+//! * [`config`] — the `oauth_as:` block (`OauthAsCfg`/`AsIdentity`), its boot refusals and its
+//!   secret-reference walk. The kernel carries the block as an OPAQUE value (`DeployCfg::oauth_as`)
+//!   and hands it to this crate through the seam's `check` (parse, validate, list secret
+//!   references) and `build`; it never names these types (ARCHITECT ruling 2026-10-03, D4).
 //!
 //! ## The seam
 //!
@@ -37,6 +36,7 @@
 //! `oauth-as` (the underlying crate) is a normal dependency and costs nothing until configured.
 
 pub mod cimd;
+pub mod config;
 pub mod consent;
 pub mod plane;
 pub mod policy;
@@ -56,6 +56,12 @@ pub mod testkit;
 // + callback flow, so they were never one file's own test), so they are wired here instead, at the
 // crate root — the direct analogue of the old `oauth_as/mod.rs` wiring.
 #[cfg(test)]
+#[path = "tests/config_tests.rs"]
+mod config_tests;
+#[cfg(test)]
+#[path = "tests/fapi2_tests.rs"]
+mod fapi2_tests;
+#[cfg(test)]
 #[path = "tests/flow_tests.rs"]
 mod flow_tests;
 #[cfg(test)]
@@ -72,8 +78,10 @@ mod mount_tests;
 pub fn install() {
     busbar_kernel::oauth_as::seam::install_as_plane_seam(
         busbar_kernel::oauth_as::seam::AsPlaneSeam {
+            check: config::seam_check,
             build: plane::seam_build,
             mount: routes::seam_mount,
+            verify_dpop: plane::seam_verify_dpop,
         },
     );
 }

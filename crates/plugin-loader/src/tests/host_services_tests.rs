@@ -32,6 +32,8 @@ struct Provider {
     scoped: Mutex<Vec<(String, &'static str, Vec<u8>)>>,
     /// How many `random.fill`s reached the provider.
     filled: AtomicUsize,
+    /// Every `records.secret` read that reached the provider, as `kind:id`.
+    secrets: Mutex<Vec<String>>,
 }
 
 impl Provider {
@@ -83,9 +85,29 @@ impl HostServices for Provider {
         Ran::Later
     }
 
-    /// Not served by the double: refused, as the loader refuses a slot with no service.
-    fn records_list(&self, _: &Caller, _: RecordsList, _: Later) -> Ran {
-        Ran::Now(Stored::refused(UNIMPLEMENTED))
+    /// [`LISTED`] after `after`, key then value per record, one span each, at once.
+    fn records_list(&self, c: &Caller, list: RecordsList, _: Later) -> Ran {
+        self.saw(c, "records.list", list.kind.as_bytes());
+        let mut stored = Stored::ready(0);
+        for (k, v) in LISTED
+            .iter()
+            .filter(|(k, _)| list.after.as_deref().is_none_or(|a| *k > a))
+        {
+            let at = stored.bytes.len() as u32;
+            stored.bytes.extend_from_slice(k);
+            stored.bytes.extend_from_slice(v);
+            stored.spans.push(ItemSpan {
+                key: Span {
+                    offset: at,
+                    len: k.len() as u32,
+                },
+                value: Span {
+                    offset: at + k.len() as u32,
+                    len: v.len() as u32,
+                },
+            });
+        }
+        Ran::Now(stored)
     }
 
     fn records_claim(&self, c: &Caller, kind: &str, _key: &[u8], ttl: u64, _l: Later) -> Ran {
@@ -112,6 +134,15 @@ impl HostServices for Provider {
         Stored::ready(0)
     }
 
+    /// Answers the payload's length as the verdict, and the counterparty as the bytes.
+    fn trust_verify(&self, c: &Caller, cp: &str, payload: &[u8], sigs: &[u8]) -> Stored {
+        self.saw(c, "trust.verify", &[payload, b"|", sigs].concat());
+        Stored {
+            bytes: cp.as_bytes().to_vec(),
+            ..Stored::ready(payload.len() as u64)
+        }
+    }
+
     fn entitlement_check(&self, c: &Caller, unit: Option<u64>, target: &str) -> Stored {
         let arg = format!("{unit:?} {target}");
         self.saw(c, "entitlement.check", arg.as_bytes());
@@ -126,7 +157,23 @@ impl HostServices for Provider {
             ..Stored::ready(0)
         }
     }
+
+    /// The credential double: `<kind>:<id>` live, its secret `s3cr3t`, answered at once.
+    fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran {
+        self.secrets.lock().unwrap().push(format!("{kind}:{id}"));
+        let mut stored = Stored::ready(svc::SECRET_LIVE);
+        stored.bytes = b"s3cr3t".to_vec();
+        stored.spans = vec![ItemSpan {
+            key: Span { offset: 0, len: 0 },
+            value: Span { offset: 0, len: 6 },
+        }];
+        later(stored);
+        Ran::Later
+    }
 }
+
+/// The records the double's `records.list` holds, in key order.
+const LISTED: [(&[u8], &[u8]); 2] = [(b"p/1", b"a"), (b"p/2", b"b")];
 
 /// The route half: records every wake.
 struct Route {
@@ -309,6 +356,8 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.hook_call,
         HOST_SLOTS.random_fill,
         HOST_SLOTS.need_admit,
+        HOST_SLOTS.trust_verify,
+        HOST_SLOTS.records_secret,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
     for (service, f) in (0..SERVICES).zip(slots) {
@@ -332,7 +381,12 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
             );
         } else if !matches!(
             service,
-            op::CLOCK_NOW | op::SIGN | op::TRUST_DUE | op::ENTITLEMENT_CHECK | op::RANDOM_FILL
+            op::CLOCK_NOW
+                | op::SIGN
+                | op::TRUST_DUE
+                | op::ENTITLEMENT_CHECK
+                | op::RANDOM_FILL
+                | op::TRUST_VERIFY
         ) {
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), UNIMPLEMENTED, "service {service}");
@@ -442,23 +496,9 @@ fn dest_judge_writes_the_judged_addresses_under_the_short_buffer_rule() {
 /// once).
 #[test]
 fn the_sdk_dest_judge_pends_and_its_reissue_reads_the_stored_verdict() {
-    use busbar_contract::abi::mechanism::ticket::HostTables;
-    use busbar_contract::abi::sdk::Services;
     let d = double();
-    let tables = HostTables {
-        size: size_of::<HostTables>() as u32,
-        _reserved: 0,
-        ctx: d.ctx,
-        wake: None,
-        conns: std::ptr::null(),
-        services: &HOST_SLOTS,
-    };
-    let s = Services::of(&tables).expect("the table is handed");
-    let handle = CompletionHandle {
-        ticket: TICKET,
-        seq: 2,
-        _reserved: 0,
-    };
+    let s = sdk(&d);
+    let handle = ticketed(2);
     let url = "https://api.example.com/v1";
     let (mut buf, mut spans) = ([0u8; 32], [NO_SPAN; 2]);
     assert!(s
@@ -477,6 +517,104 @@ fn the_sdk_dest_judge_pends_and_its_reissue_reads_the_stored_verdict() {
         (DEST_ALLOWED, "198.51.100.7".to_owned())
     );
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 1);
+}
+
+/// The SDK's services over this table, as `open` hands them to the double's instance.
+fn sdk(d: &Double) -> busbar_contract::abi::sdk::Services {
+    use busbar_contract::abi::mechanism::ticket::HostTables;
+    let tables = HostTables {
+        size: size_of::<HostTables>() as u32,
+        _reserved: 0,
+        ctx: d.ctx,
+        wake: None,
+        conns: std::ptr::null(),
+        services: &HOST_SLOTS,
+    };
+    busbar_contract::abi::sdk::Services::of(&tables).expect("the table is handed")
+}
+
+/// The handle of a ticketed op's `seq`th service call.
+const fn ticketed(seq: u32) -> CompletionHandle {
+    CompletionHandle {
+        ticket: TICKET,
+        seq,
+        _reserved: 0,
+    }
+}
+
+/// THE SDK'S RECORDS WRAPPERS over this table (K-RECORDS): `records.get` reads the value the
+/// kernel answered for the caller; `records.list` its rows, and the next page after a key it
+/// answered (an `after` the plugin left absent reaches the kernel as none); `records.claim` the
+/// kernel's won or taken, and a claim with no time to live never leaves the plugin.
+#[test]
+fn the_sdk_records_wrappers_reach_the_kernel_as_their_caller() {
+    use std::task::Poll;
+    let d = double();
+    let s = sdk(&d);
+    let mut buf = [0u8; 16];
+    assert_eq!(
+        s.records_get(ticketed(0), "approval", b"k1", &mut buf),
+        Poll::Ready(Ok(Some(&b"=v"[..])))
+    );
+    let (mut buf, mut spans) = ([0u8; 16], [NO_SPAN; 4]);
+    let Poll::Ready(Ok(all)) = s.records_list(
+        ticketed(1),
+        "task",
+        b"",
+        None,
+        0,
+        (&mut buf[..], &mut spans[..]),
+    ) else {
+        panic!("every record");
+    };
+    assert!(all.records().eq(LISTED));
+    let after = all.records().next().expect("a record").0.to_vec();
+    let (mut buf, mut spans) = ([0u8; 16], [NO_SPAN; 4]);
+    let Poll::Ready(Ok(rest)) = s.records_list(
+        ticketed(2),
+        "task",
+        b"",
+        Some(after.as_slice()),
+        0,
+        (&mut buf[..], &mut spans[..]),
+    ) else {
+        panic!("the records after the first");
+    };
+    assert!(rest.records().eq(LISTED[1..].iter().copied()));
+    assert_eq!(
+        s.records_claim(ticketed(3), "approval", b"k1", 0),
+        Poll::Ready(Err(busbar_contract::abi::sdk::ServiceError::Declined(
+            Outcome::Refused
+        )))
+    );
+    assert_eq!(
+        s.records_claim(ticketed(4), "approval", b"k1", 1),
+        Poll::Ready(Ok(true))
+    );
+    assert_eq!(
+        s.records_claim(ticketed(5), "approval", b"k1", 2),
+        Poll::Ready(Ok(false))
+    );
+    let seen: Vec<_> = d
+        .route
+        .provider
+        .scoped
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(who, what, _)| (who.clone(), *what))
+        .collect();
+    let me = || "double".to_string();
+    assert_eq!(
+        seen,
+        [
+            (me(), "records.get"),
+            (me(), "records.list"),
+            (me(), "records.list"),
+            (me(), "records.claim"),
+            (me(), "records.claim"),
+        ]
+    );
 }
 
 // ── the mechanism, kind-neutral ──────────────────────────────────────────────────────────────
@@ -692,6 +830,68 @@ fn sign_and_trust_due_reach_the_kernel_without_a_ticket() {
     );
 }
 
+fn blob(b: &[u8]) -> busbar_contract::abi::mechanism::call::Blob {
+    busbar_contract::abi::mechanism::call::Blob {
+        ptr: b.as_ptr(),
+        len: b.len(),
+        fmt: 0,
+        flags: 0,
+    }
+}
+
+/// `trust.verify` reaches the kernel from a ticketless op as its caller, with the counterparty,
+/// payload and signatures it named; the kernel's bytes land in the caller's buffer.
+#[test]
+fn trust_verify_reaches_the_kernel_without_a_ticket_and_answers_into_the_callers_buffer() {
+    let d = double();
+    let mut buf = [0u8; 8];
+    let i = TrustVerifyIn {
+        head: head(
+            op::TRUST_VERIFY,
+            Ticket::NONE,
+            0,
+            size_of::<TrustVerifyIn>(),
+        ),
+        counterparty: text("peer"),
+        payload: blob(b"doc"),
+        signatures: blob(b"[]"),
+        into: bufs(&mut buf, &mut []),
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.trust_verify.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!((o.value, o.len), (3, 4));
+    assert_eq!(&buf[..4], b"peer");
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().as_slice(),
+        &[("double".to_string(), "trust.verify", b"doc|[]".to_vec())]
+    );
+}
+
+/// RED: a signatures blob that names a length with no bytes is FAULT, and never reaches the kernel.
+#[test]
+fn trust_verify_with_a_null_blob_of_a_length_is_fault() {
+    let d = double();
+    let mut i = TrustVerifyIn {
+        head: head(
+            op::TRUST_VERIFY,
+            Ticket::NONE,
+            0,
+            size_of::<TrustVerifyIn>(),
+        ),
+        counterparty: text("peer"),
+        payload: blob(b"doc"),
+        signatures: blob(b""),
+        into: bufs(&mut [], &mut []),
+    };
+    i.signatures.ptr = std::ptr::null();
+    i.signatures.len = 2;
+    let mut o = blank();
+    let ret = HOST_SLOTS.trust_verify.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Fault);
+    assert!(d.route.provider.scoped.lock().unwrap().is_empty());
+}
+
 fn entitlement_in(target: &'static str) -> EntitlementCheckIn {
     EntitlementCheckIn {
         head: head(
@@ -840,5 +1040,80 @@ fn a_recycled_ticket_drops_its_stored_service_results() {
         runs.load(Ordering::SeqCst),
         3,
         "the recycled ticket's old handle runs afresh: no earlier result is read back"
+    );
+}
+
+fn secret_in(
+    kind: &'static str,
+    id: &'static str,
+    buf: &mut [u8],
+    spans: &mut [ItemSpan],
+) -> RecordsSecretIn {
+    RecordsSecretIn {
+        head: head(op::RECORDS_SECRET, TICKET, 0, size_of::<RecordsSecretIn>()),
+        kind: text(kind),
+        id: text(id),
+        into: bufs(buf, spans),
+    }
+}
+
+fn call_secret(ctx: HostCtx, i: &RecordsSecretIn) -> (RawOutcome, ServiceOut) {
+    let mut o = blank();
+    let ret = HOST_SLOTS.records_secret.unwrap()(ctx, std::ptr::from_ref(i).cast(), &mut o);
+    (ret, o)
+}
+
+/// THE DECLARED NEED (ARCHITECT ruling B): `records.secret` serves an instance only the credential
+/// kinds its Statement declares. An undeclared kind, and a caller that declares none (any non-auth
+/// instance), are REFUSED before the kernel reads anything; a declared kind reaches the kernel and
+/// its secret lands in the caller's buffers; ticketless it is refused as any may-pend service is.
+/// RED: before the slot, `records.secret` was no slot at all.
+#[test]
+fn records_secret_serves_only_a_declared_kind() {
+    let d = double();
+    let (mut buf, mut spans) = (
+        [0u8; 16],
+        [ItemSpan {
+            key: Span { offset: 0, len: 0 },
+            value: Span { offset: 0, len: 0 },
+        }; 1],
+    );
+    // A caller that declares no credential kind.
+    let i = secret_in("sigv4", "AKID", &mut buf, &mut spans);
+    let (ret, o) = call_secret(d.ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), UNDECLARED_KIND);
+    assert!(d.route.provider.secrets.lock().unwrap().is_empty());
+
+    // A caller that declares `sigv4`.
+    let wake: &'static InstanceWake = Box::leak(Box::default());
+    let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
+    assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
+    assert!(wake.credential_kinds.set(vec!["sigv4".to_string()]).is_ok());
+    let reader = HostCtx {
+        ptr: std::ptr::from_ref(wake).cast_mut().cast(),
+    };
+    let other = secret_in("bearer", "AKID", &mut buf, &mut spans);
+    let (ret, o) = call_secret(reader, &other);
+    assert_eq!(ret.outcome(), Outcome::Refused, "an undeclared kind");
+    assert_eq!(error(&o), UNDECLARED_KIND);
+    assert!(d.route.provider.secrets.lock().unwrap().is_empty());
+
+    let mut ticketless = secret_in("sigv4", "AKID", &mut buf, &mut spans);
+    ticketless.head.handle.ticket = Ticket::NONE;
+    let (ret, o) = call_secret(reader, &ticketless);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), UNTICKETED);
+    assert!(d.route.provider.secrets.lock().unwrap().is_empty());
+
+    let i = secret_in("sigv4", "AKID", &mut buf, &mut spans);
+    let (ret, o) = call_secret(reader, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!(o.value, svc::SECRET_LIVE);
+    assert!(svc::check_records_secret(&i, ret, &o).is_ok());
+    assert_eq!(&buf[..6], b"s3cr3t");
+    assert_eq!(
+        d.route.provider.secrets.lock().unwrap().as_slice(),
+        &["sigv4:AKID".to_string()]
     );
 }

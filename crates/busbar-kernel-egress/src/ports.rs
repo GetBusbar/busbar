@@ -3,10 +3,9 @@
 
 //! The seams this unit is bound to, and nothing behind them.
 //!
-//! The egress unit owns the pool, the walk and the attempt. It does NOT own the breaker's state
-//! machine, the credential that decorates an outbound request, the durable record that has to land
-//! before a dial, or the concurrency permits the pool hands out. Each of those is another unit's,
-//! and each enters here as one small trait.
+//! The egress unit owns the pool and the walk. It does NOT own the breaker's state machine, the
+//! durable record that has to land before a dial, or the concurrency permits the pool hands out.
+//! Each of those is another unit's, and each enters here as one small trait.
 //!
 //! Every trait in this module is marked `// contract:` at its definition. That marker means the
 //! same thing everywhere it appears in this crate: the shape is settled and the walk is written
@@ -224,7 +223,7 @@ pub trait Breaker: Send + Sync {
 
     /// A non-success answer judged and recorded: [`Self::classify`], then [`Self::observe`] of the
     /// outcome it names on `pool`'s cell. Returns the classification and whether the record was a
-    /// fresh trip. The walk's attempt and the plane driver's far end both judge an answer here.
+    /// fresh trip. The attempt the walk's caller runs judges every answer here.
     fn judge(
         &self,
         pool: &str,
@@ -237,6 +236,15 @@ pub trait Breaker: Send + Sync {
         let tripped = self.observe(pool, destination, classified.outcome, now, token);
         (classified, tripped)
     }
+
+    /// Side-effect-free: whether the breaker suppresses `destination` in ANY cell — the health
+    /// prober's `dead`-mode trigger (1.5.5 `lane_needs_probe`).
+    fn suppressing(&self, destination: DestinationId, now: u64) -> bool;
+
+    /// A health probe's answer, already classified, recorded on EVERY cell of `destination`: a
+    /// probe tests the shared upstream, so a success recovers a suppressed member everywhere and a
+    /// client fault records nothing (1.5.5 `health.rs`).
+    fn probed(&self, destination: DestinationId, outcome: Outcome, now: u64, token: &Pass<Route>);
 
     /// Release a probe that was won but never dispatched. Owner-checked against the epoch that was
     /// captured at the win, so a late release cannot revert a newer probe.
@@ -305,51 +313,6 @@ pub trait Capacity: Send + Sync {
         destinations: &'a [DestinationId],
     ) -> BoxFut<'a, Option<(DestinationId, Permit)>>;
 }
-
-// ── the egress-auth seam ────────────────────────────────────────────────────────────────────────
-
-/// `// contract:` the egress-auth unit, as the attempt needs it.
-///
-/// The plane names the scheme and never holds the credential; this unit hands the encoded request
-/// to the scheme's own unit, which decorates it and substitutes every secret slot itself. The
-/// decoration comes back as fields to set and, where the scheme signs one, a body signature — the
-/// caller then re-runs the lane cross-check on the decorated result, which is the whole reason the
-/// decoration is a separate step and not something the plane did on the way out.
-pub trait EgressAuth: Send + Sync {
-    /// Decorate one outbound request for one verified destination.
-    ///
-    /// # Errors
-    /// Returns the scheme's own refusal when the request cannot be decorated — an unresolvable
-    /// secret, an unknown scheme. The attempt treats that as a failure to assemble: nothing was
-    /// sent and nothing is recorded against the destination.
-    fn decorate(&self, request: &mut OutboundRequest<'_>) -> Result<(), DecorationRefused>;
-}
-
-/// The outbound request as the decoration sees it: the envelope the plane built, the body it
-/// encoded, and the scheme it named.
-#[derive(Debug)]
-pub struct OutboundRequest<'u> {
-    /// The transport-level envelope, as fields the decoration may add to.
-    pub fields: Vec<(String, Vec<u8>)>,
-    /// The body bytes the plane encoded.
-    pub body: &'u [u8],
-    /// Which scheme decorates it.
-    pub scheme: busbar_contract::SchemeKey,
-    /// The signature the scheme wrote over the body, where it signs one.
-    pub body_signature: Option<Vec<u8>>,
-}
-
-/// The egress-auth unit declined to decorate the request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DecorationRefused;
-
-impl std::fmt::Display for DecorationRefused {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the outbound request could not be decorated")
-    }
-}
-
-impl std::error::Error for DecorationRefused {}
 
 // ── the journal seam ────────────────────────────────────────────────────────────────────────────
 

@@ -11,9 +11,9 @@ use std::sync::Arc;
 use crate::auth::{open_operator, AuthMiddleware};
 use crate::diagnostics::{
     diag_error, diag_warn, DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT,
-    GOVERNANCE_STORE_EPHEMERAL, OAUTH_AS_EPHEMERAL_SIGNING_KEY, OPEN_RELAY_NO_AUTH,
-    PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED,
-    STATEFUL_PLANE_EPHEMERAL_STORE, STORE_SECRET_REF_UNRESOLVED,
+    GOVERNANCE_STORE_EPHEMERAL, OPEN_RELAY_NO_AUTH, PLUGINS_FETCH_RELOAD_MISS,
+    PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED, STATEFUL_PLANE_EPHEMERAL_STORE,
+    STORE_SECRET_REF_UNRESOLVED,
 };
 use crate::preflight::{
     build_secret_resolver, plugin_fetch_downloader, plugins_preflight, resolve_admin_token,
@@ -477,9 +477,40 @@ pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 pub struct InstalledLimits {
     guard: limits::InstallGuard,
     rates: ResolvedRates,
-    /// The lists this configuration's provider URLs are judged by when dialled, published at the
-    /// commit for the same reason the rates are: a rejected apply must not leave them in force.
-    dial: crate::net_guard::DialDenylist,
+    /// The rates this build STAGED with the holder (made durable before the caller persists):
+    /// withdrawn if this handle is dropped unkept, published by [`InstalledLimits::keep`].
+    staged: StagedRates,
+    /// The destinations this configuration states, raised to the destination judge at the commit
+    /// for the same reason the rates are: its metadata lists are re-read at every commit, and a
+    /// rejected apply must not leave them in force.
+    destinations: config::Destinations,
+}
+
+/// The rates one build staged ([`crate::rate_apply::rates_staged`]). Dropped while still armed —
+/// the config change never committed — the holder is told to withdraw them.
+struct StagedRates {
+    armed: bool,
+}
+
+impl Drop for StagedRates {
+    fn drop(&mut self) {
+        if self.armed {
+            crate::rate_apply::rates_withdrawn();
+        }
+    }
+}
+
+impl ResolvedRates {
+    /// The neutral view the seam carries.
+    fn raw(&self) -> crate::rate_apply::RawRates<'_> {
+        crate::rate_apply::RawRates {
+            lanes: &self.lanes,
+            units: &self.units,
+            flat_minor: self.flat_minor,
+            present: self.present,
+            plane_fees: &self.plane_fees,
+        }
+    }
 }
 
 /// The rates one build resolved, held (owned) until the build's commit raises them.
@@ -496,16 +527,16 @@ impl InstalledLimits {
     /// raise the rate-apply seam with the rates this build resolved — the one moment the
     /// configuration they came from is the one in force.
     pub fn keep(self) {
-        let InstalledLimits { guard, rates, dial } = self;
+        let InstalledLimits {
+            guard,
+            rates,
+            mut staged,
+            destinations,
+        } = self;
         guard.commit();
-        crate::egress::engine::process_dial_table().publish(dial);
-        crate::rate_apply::rates_applied(&crate::rate_apply::RawRates {
-            lanes: &rates.lanes,
-            units: &rates.units,
-            flat_minor: rates.flat_minor,
-            present: rates.present,
-            plane_fees: &rates.plane_fees,
-        });
+        crate::plane_host::egress_trust::destinations_applied(&destinations);
+        staged.armed = false;
+        crate::rate_apply::rates_applied(&rates.raw());
     }
 }
 
@@ -535,6 +566,7 @@ pub fn build_app_from_config(
     // for process-wide limits the same way it holds for everything else, including when it is the
     // PERSIST that refused.
     let limits_guard = limits::InstallGuard::install(&cfg.limits);
+    let destinations = cfg.destinations();
     // The config version this App will carry — computed ONCE up front because hook-transport
     // resolution stamps it into every socket configure preamble (the preamble's
     // settings_version must be the REAL version of the settings it delivers, not a hardcoded 0).
@@ -682,20 +714,6 @@ pub fn build_app_from_config(
         present: cfg.rate_card.is_some(),
         plane_fees: cfg.plane_fees.clone(),
     };
-    // THE DIAL TABLE: the lists the validator judged each provider URL by, keyed by the host the
-    // URL names, so the egress client judges every address that host resolves to by the same rule
-    // when it dials. Published at the commit (`InstalledLimits::keep`), beside the rates.
-    let dial = crate::net_guard::DialDenylist::new(
-        &cfg.blocked_metadata_hosts,
-        &cfg.allow_metadata_hosts,
-        cfg.allow_all_metadata,
-        cfg.providers.values().flat_map(|p| {
-            std::iter::once(p.base_url.as_str())
-                .chain(p.token_url.as_deref())
-                .map(move |url| (url, p.allow_metadata_hosts.as_slice()))
-        }),
-    );
-
     let mut sorted_models: Vec<_> = cfg.models.into_iter().collect();
     sorted_models.sort_by(|a, b| a.0.cmp(&b.0));
     for (model, mc) in sorted_models {
@@ -845,6 +863,8 @@ pub fn build_app_from_config(
             base_url,
             path: provider_cfg.path.clone(),
             path_base: provider_cfg.path_base.clone(),
+            organization: provider_cfg.organization.clone(),
+            project: provider_cfg.project.clone(),
             upstream_model: ld.upstream_model.clone(),
             api_key: busbar_contract::redacted::Redacted::new(api_key),
             auth_style: auth_style_of(provider_cfg.auth),
@@ -1064,10 +1084,11 @@ pub fn build_app_from_config(
         h2_prior_knowledge,
     };
 
-    // The hook plugin-resolution environment: the validated registry + shared projectors. Every hook
-    // `plugin:` ref opens a `DlopenPolicy` through this. Built once and cloned into each resolver and
-    // onto `App` (for the control-plane reads + scrape).
-    let hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone());
+    // The hook plugin-resolution environment: the validated registry and the root's hook axis over
+    // it. Every hook `plugin:` ref opens through the axis. Built once and cloned into each resolver
+    // and onto `App` (for the control-plane reads + scrape). A 1.5.5 JSON hook plugin in the
+    // registry refuses the build here, naming the rebuild.
+    let hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone())?;
 
     // FAIL-CLOSED: resolve every hook's SecretRef settings ONCE, up front, so an unresolvable
     // hook secret aborts boot/reload here — matching the store path (above) and the auth chain
@@ -1236,11 +1257,19 @@ pub fn build_app_from_config(
                 .map_err(|e| format!("store '{}' settings: {e}", g.module))?,
         };
         let cfg_json = serde_json::Value::Object(resolved).to_string();
-        let store: Arc<dyn governance::RecordStore> = Arc::from(
-            plugin_registry
-                .open_store(&g.module, &cfg_json)
-                .map_err(|e| format!("store '{}' plugin load failed: {e}", g.module))?,
-        );
+        // The configured store's DOOR (a linked row's, or a dropped-in plugin's verified bytes),
+        // loaded through the root's one dispatcher and opened through the store v3 table, on the
+        // store axis the composition root installed (WIRE-STORE Q8/Q9). Compiled in or dropped
+        // in, one path.
+        let load_failed = |e: String| format!("store '{}' plugin load failed: {e}", g.module);
+        let door = plugin_registry.store_door(&g.module).map_err(load_failed)?;
+        let axis = crate::preflight::root_rows()
+            .store_axis
+            .ok_or_else(|| load_failed("no store axis is installed".to_string()))?;
+        let store: Arc<dyn governance::RecordStore> = axis()
+            .open(door, &g.module, cfg_json.as_bytes())
+            .map_err(load_failed)?
+            .records;
         // The operator ADMIN credential: the operator-credential entry's `token:` secret ref.
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
@@ -1665,23 +1694,25 @@ pub fn build_app_from_config(
     // separately where it could disagree with them.
     let oauth_as_plane = match cfg.oauth_as.as_ref() {
         None => None,
-        Some(identity) => {
-            let key_material = match identity.signing_key() {
-                None => {
-                    diag_warn!(
-                        OAUTH_AS_EPHEMERAL_SIGNING_KEY,
-                        "oauth_as: no signing_key configured, so an EPHEMERAL ES256 key was \
-                         generated. Every token this deployment issues stops verifying when the \
-                         process restarts. Set `oauth_as.signing_key` for anything but a trial."
-                    );
-                    None
-                }
-                Some(reference) => Some(
+        Some(checked) => {
+            // The block is OPAQUE here: its owner (the plane crate, through the seam) names the
+            // secret references it carries, and the kernel resolves each one. A block with no
+            // `signing_key` resolves nothing, and the owner generates an ephemeral key and says so.
+            let seam = crate::oauth_as::seam::seam().ok_or_else(|| {
+                "oauth_as: configured, but the authorization-server plane (busbar-core-oauth2) is not \
+                 linked into this binary"
+                    .to_string()
+            })?;
+            let secrets = checked
+                .secret_refs
+                .iter()
+                .map(|(path, reference)| {
                     secret_resolver
                         .resolve_string(reference)
-                        .map_err(|e| format!("oauth_as.signing_key: {e}"))?,
-                ),
-            };
+                        .map(|value| (path.clone(), value))
+                        .map_err(|e| format!("{path}: {e}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             // busbar's OWN protected resource is a container plane's ingress canonical URI, read back
             // through that plane's `admission` seam — a `PlaneAdmission::audience` IS that canonical
             // URI — so appbuild names no plane-owned resource type. Empty when the `tools:` section is
@@ -1706,16 +1737,7 @@ pub fn build_app_from_config(
             // act this call site used to perform inline (`Storage::sweep_expired` is the only thing
             // that reclaims anything in `oauth-as`, and it runs when it is called and never
             // otherwise; spawned once per generation).
-            let seam = crate::oauth_as::seam::seam().ok_or_else(|| {
-                "oauth_as: configured, but the authorization-server plane (busbar-core-oauth2) is not \
-                 linked into this binary"
-                    .to_string()
-            })?;
-            Some((seam.build)(
-                identity,
-                key_material.as_deref(),
-                protected_resources,
-            )?)
+            Some((seam.build)(&checked.block, secrets, protected_resources)?)
         }
     };
 
@@ -1879,9 +1901,9 @@ pub fn build_app_from_config(
         // plane's `build` (through its own carried-gates field, off `BuildCtx::prior`), so `App`
         // carries no dedicated field for them either.
         // History + rate windows are Arc-shared across applies (process-lifetime state).
-        versions: prior.map_or_else(
-            || Arc::new(admin::versions::VersionLog::new()),
-            |p| p.versions.clone(),
+        admin: prior.map_or_else(
+            || Arc::new(admin::seam::AdminSlot::default()),
+            |p| p.admin.clone(),
         ),
         mutation_limiter: prior.map_or_else(
             || Arc::new(ratelimit::MutationLimiter::new()),
@@ -1995,7 +2017,7 @@ pub fn build_app_from_config(
         mint_policy: std::sync::Arc::new(governance::mint_policy::MintPolicy::from_auth(
             cfg.auth.as_ref(),
         )),
-        // Arc-shared like `versions`/`mutation_limiter`: a REBUILD carries the SAME counter forward
+        // Arc-shared like `admin`/`mutation_limiter`: a REBUILD carries the SAME counter forward
         // (ids stay monotonic across a config reload) while a fresh boot seeds it once from OS
         // entropy (see `state::seed_request_id_counter`) so restarts don't restamp `0, 1, 2, …`.
         request_id_counter: prior.map_or_else(
@@ -2024,6 +2046,19 @@ pub fn build_app_from_config(
             retain(&app);
         }
     }
+    // THE CARD GOES ON THE JOURNAL BEFORE THE CONFIG CHANGE IS SAVED (MONEY-AUDIT D-6, ARCHITECT
+    // ruling 2026-10-02): the LAST fallible step of the build, so every caller's persist runs only
+    // after the holder made the rates durable. A journal that refuses them refuses the whole change:
+    // nothing is persisted, nothing is swapped, the old configuration and the old card both stay.
+    // From here the handle is armed: dropped unkept (a persist or swap that failed), the holder
+    // withdraws the staged card.
+    crate::rate_apply::rates_staged(&resolved_rates.raw()).map_err(|why| {
+        format!(
+            "the rate card could not be made durable, so the configuration change was refused \
+             and nothing was changed: {why}"
+        )
+    })?;
+    let staged = StagedRates { armed: true };
     // The build reached its end without a single fallible step refusing — but the build is not the
     // whole apply. The guard travels OUT, uncommitted, so the limits survive only if the caller's
     // own persist-and-swap lands (see `InstalledLimits`). Every earlier `return Err` / `?` drops it
@@ -2034,7 +2069,8 @@ pub fn build_app_from_config(
         InstalledLimits {
             guard: limits_guard,
             rates: resolved_rates,
-            dial,
+            staged,
+            destinations,
         },
     ))
 }

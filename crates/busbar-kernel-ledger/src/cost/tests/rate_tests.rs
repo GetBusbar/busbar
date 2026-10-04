@@ -5,10 +5,7 @@
 //! and the pin that makes a posting immune to a later card edit.
 
 use super::*;
-use crate::cost::{
-    nano_rate, price, Author, CardEntryDraft, History, HistorySeq, LaneClass, Posting, RateCard,
-    STANDARD_TIER_BP,
-};
+use crate::cost::{nano_rate, History, LaneClass, RateCard, STANDARD_TIER_BP};
 
 /// The conversion rounds to NEAREST, half away from zero — it does not truncate. Fifteen
 /// ten-thousandths of a micro-unit is one and a half nano-units and must become two; fourteen is
@@ -169,63 +166,6 @@ fn fee_line_unit_price_is_cents_lifted_to_nano_units() {
     assert_eq!(c.fee_unit_price_nanos() % crate::cost::NANOS_PER_CENT, 0);
 }
 
-/// **AN EDIT PRICES WHAT HAPPENS AFTER IT, NOT WHAT HAPPENED BEFORE IT.**
-///
-/// The card that used to be pinned for the life of a hold is now an entry of the history, and the
-/// pin is the instant the unit arrived. An operator who halves a rate appends a second entry
-/// effective from the moment of the edit; the unit that arrived before it still resolves to entry
-/// zero and still prices at the old rate, at every snapshot, forever. That is the whole of the
-/// behaviour change registered for this release, stated as one case.
-#[test]
-fn an_appended_entry_prices_later_instants_and_moves_nothing_earlier() {
-    let at_boot = RateCard::from_micro_rates([(LaneClass::new("m", INPUT), 10.0)], 0);
-    let corrected = RateCard::from_micro_rates([(LaneClass::new("m", INPUT), 5.0)], 0);
-
-    let mut history = History::opening(at_boot, 0);
-    assert_eq!(history.head(), Some(HistorySeq(0)));
-    let second = history.append(CardEntryDraft {
-        effective_from: 5_000,
-        effective_until: None,
-        card: corrected,
-        appended_at: 5_000,
-        author: Author::Config { policy_epoch: 1 },
-    });
-    assert_eq!(
-        second,
-        HistorySeq(1),
-        "the seq is dense and assigned on append"
-    );
-
-    let report = usage(&[(INPUT, 1_000_000)]);
-    let before = Posting::from_usage("m", &report, 0, STANDARD_TIER_BP, 4_999, 4_999);
-    let after = Posting::from_usage("m", &report, 0, STANDARD_TIER_BP, 5_000, 5_000);
-
-    let view = history.current();
-    let earlier = price(&view, &before).expect("entry zero covers it");
-    let later = price(&view, &after).expect("entry one covers it");
-    assert_eq!(earlier.card_seq, HistorySeq(0));
-    assert_eq!(
-        minor(&earlier),
-        1000,
-        "the unit that arrived first did not move"
-    );
-    assert_eq!(later.card_seq, HistorySeq(1));
-    assert_eq!(
-        minor(&later),
-        500,
-        "the unit that arrived after pays the new rate"
-    );
-
-    // And the older snapshot still answers the older way for BOTH instants, which is what makes an
-    // invoice cut against it reproducible.
-    let at_zero = history.snapshot(HistorySeq(0));
-    assert_eq!(
-        minor(&price(&at_zero, &after).expect("entry zero is open-ended")),
-        1000,
-        "a snapshot taken before the edit cannot see the edit"
-    );
-}
-
 /// ITEM 22: A RATE THE CARD CANNOT HOLD IS NOT A RATE OF ZERO.
 ///
 /// `0.0004` micro-units a unit is below the half-nano-unit quantum; `$0.10/GB` priced per byte is
@@ -282,62 +222,6 @@ fn a_sub_quantum_rate_is_unpriced_on_the_card_and_refuses_never_priced_at_zero()
     assert_eq!(crate::cost::representable_nano_rate(f64::MAX), None);
 }
 
-/// **ITEM 434 — TWO FOLDS, TWO NOUNS, AND THE DOC SAYS WHICH.** `nanos_sum`'s doc claimed it was
-/// the only multiply-and-sum on the money path while the settlement lookup, the read and the
-/// kernel's projection each carried their own, already drifted on overflow (at phase start the
-/// lookup billed the four classes below as `73,786,976,294,838,206,460,000,000,000,000,000,000`
-/// nano-units where the read refused). The spend fold is now `Tally`'s alone, CHECKED; `nanos_sum`
-/// sizes reservations and SATURATES. Asserted on both sides, and on the doc that names them.
-#[test]
-fn the_spend_fold_refuses_an_overflow_and_the_sizing_fold_pins_it() {
-    // SIZING: a reservation past the ceiling pins there (it can only reserve too much).
-    assert_eq!(crate::cost::nanos_sum([(u64::MAX, u64::MAX); 4]), u128::MAX);
-
-    // SPEND: the settlement lookup and the read are one fold, and both REFUSE.
-    let card = card4("m", [1e15; 4], 0);
-    let history = History::opening(card, 0);
-    let counts = [
-        (INPUT, u64::MAX),
-        (OUTPUT, u64::MAX),
-        (CACHE_READ, u64::MAX),
-        (CACHE_WRITE, u64::MAX),
-    ];
-    let posting = Posting::from_usage("m", &usage(&counts), 0, STANDARD_TIER_BP, 0, 0);
-    assert_eq!(
-        price(&history.current(), &posting),
-        Err(crate::cost::Unpriceable::Overflow),
-        "the settlement lookup's figure is the spend fold's: an overflow refuses"
-    );
-    let entry = counts
-        .iter()
-        .fold(crate::cost::LedgerEntry::new("m", 0), |e, (c, q)| {
-            e.with_whole(*c, *q)
-        });
-    assert_eq!(
-        crate::cost::price_exact(&[entry], &history.current()),
-        Err(crate::cost::MoneyError::Overflow),
-        "the read refuses the same consumption"
-    );
-
-    // THE DOC: `nanos_sum` must not claim to be the only fold, and must name the spend fold.
-    let src = include_str!("../rate.rs");
-    let at = src
-        .find("pub fn nanos_sum")
-        .expect("nanos_sum is defined in rate.rs");
-    let doc_start = src[..at]
-        .rfind("\n\n")
-        .expect("the doc block starts after a blank line");
-    let doc = &src[doc_start..at];
-    assert!(
-        !doc.contains("THE ONLY MULTIPLY-AND-SUM"),
-        "nanos_sum's doc claims to be the only fold; the spend fold is Tally's"
-    );
-    assert!(
-        doc.contains("Tally") && doc.contains("RESERVATION"),
-        "nanos_sum's doc must name Tally as the spend fold and itself as the reservation fold"
-    );
-}
-
 /// A LANE'S RATES PRICE NO USAGE REPORT: a report is a spend, and every spend is `Tally`'s.
 ///
 /// The lane's own report-sizing fold is gone. It summed a report at the lane's rates saturating,
@@ -383,5 +267,155 @@ fn a_report_is_priced_by_the_spend_fold_and_a_silent_class_refuses() {
     assert!(
         !src.contains("pub fn nanos(&self"),
         "a lane's rates carry no report-sizing fold beside the spend fold"
+    );
+}
+
+/// **A CORRECTED CARD IS THE CARD WITH THE NAMED CELLS SET** (#79): every other lane,
+/// class and plane card and the unnamed fee stay; a named fee replaces the fee; a cell on a plane
+/// with no present card, or naming no lane, has nowhere to land.
+#[test]
+fn a_corrected_card_keeps_everything_it_does_not_name() {
+    use crate::cost::TierRates;
+    let tiers = |input, output| TierRates {
+        input,
+        output,
+        cache_read: 0.0,
+        cache_write: 0.0,
+    };
+    let card = RateCard::from_config(
+        Some([
+            ("gpt", tiers(2.0, 8.0)),
+            ("claude", tiers(3.0, 15.0)),
+            ("plane-b\u{1f}search", tiers(5.0, 6.0)),
+        ]),
+        3,
+    );
+    let nanos = |card: &RateCard, lane: &str, class: &str| {
+        card.lane_rates(lane)
+            .filter(|r| r.class_priced(class))
+            .map(|r| r.nanos_per_unit(class))
+    };
+
+    let corrected = card
+        .corrected([(LaneClass::new("gpt", "input"), 1_000)], None)
+        .expect("the flat card is present");
+    assert_eq!(nanos(&corrected, "gpt", "input"), Some(1_000));
+    assert_eq!(nanos(&corrected, "gpt", "output"), Some(8_000));
+    assert_eq!(nanos(&corrected, "claude", "output"), Some(15_000));
+    assert_eq!(
+        nanos(&corrected, "plane-b\u{1f}search", "input"),
+        Some(5_000)
+    );
+    assert_eq!(corrected.fee(), 3, "a fee it does not name is kept");
+
+    let corrected = card
+        .corrected(
+            [(LaneClass::new("plane-b\u{1f}search", "input"), 9_000)],
+            Some(7),
+        )
+        .expect("plane-b's card is present");
+    assert_eq!(
+        nanos(&corrected, "plane-b\u{1f}search", "input"),
+        Some(9_000)
+    );
+    assert_eq!(
+        nanos(&corrected, "plane-b\u{1f}search", "output"),
+        Some(6_000)
+    );
+    assert_eq!(
+        nanos(&corrected, "gpt", "input"),
+        Some(2_000),
+        "the flat card is untouched"
+    );
+    assert_eq!(corrected.fee(), 7, "a named fee replaces the fee");
+
+    assert!(
+        card.corrected([(LaneClass::new("plane-c\u{1f}hop", "bytes"), 1)], None)
+            .is_none(),
+        "a plane with no card of its own has billing off; a correction cannot switch it on"
+    );
+    assert!(
+        RateCard::absent(3)
+            .corrected([(LaneClass::new("gpt", "input"), 1)], None)
+            .is_none(),
+        "an absent flat card has nowhere for a cell to land"
+    );
+    assert!(
+        card.corrected([(LaneClass::new("plane-b\u{1f}", "input"), 1)], None)
+            .is_none(),
+        "a cell naming no lane"
+    );
+    assert_eq!(
+        RateCard::absent(3)
+            .corrected(std::iter::empty(), Some(5))
+            .map(|c| (c.fee(), c.pricing_enabled())),
+        Some((5, false)),
+        "a fee alone corrects an absent card's fee and leaves billing off"
+    );
+}
+
+/// **A CORRECTED CELL IS NO LONGER A REFUSED ONE** (#79, #42). A card that could not represent
+/// its configured `gpt`/`input` leaves that cell UNPRICED and lists it in `refused_cells`; a
+/// signed correction that prices the cell takes it off the list, on the flat card and on a plane's
+/// own card alike, and leaves every refused cell it did not name on it.
+#[test]
+fn a_correction_that_prices_a_refused_cell_takes_it_off_the_refused_list() {
+    use crate::cost::TierRates;
+    let unrepresentable = 0.0001;
+    let card = RateCard::from_config(
+        Some([
+            (
+                "gpt",
+                TierRates {
+                    input: unrepresentable,
+                    output: unrepresentable,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            ),
+            (
+                "plane-b\u{1f}search",
+                TierRates {
+                    input: unrepresentable,
+                    output: 1.0,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            ),
+        ]),
+        0,
+    );
+    let plane_refused = |card: &RateCard| {
+        card.plane_lane("plane-b\u{1f}search")
+            .0
+            .refused_cells()
+            .to_vec()
+    };
+    assert_eq!(
+        card.refused_cells(),
+        [
+            LaneClass::new("gpt", "input"),
+            LaneClass::new("gpt", "output")
+        ]
+    );
+    assert_eq!(plane_refused(&card), [LaneClass::new("search", "input")]);
+
+    let corrected = card
+        .corrected(
+            [
+                (LaneClass::new("gpt", "input"), 1_000),
+                (LaneClass::new("plane-b\u{1f}search", "input"), 9_000),
+            ],
+            None,
+        )
+        .expect("both cards are present");
+    assert_eq!(
+        corrected.refused_cells(),
+        [LaneClass::new("gpt", "output")],
+        "the corrected cell is priced, so it is not refused; the cell it did not name still is"
+    );
+    assert!(
+        plane_refused(&corrected).is_empty(),
+        "the plane's corrected cell is not refused either"
     );
 }

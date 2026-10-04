@@ -3,6 +3,7 @@ name = "ws-conformance-subject"
 version = "0.0.0"
 publish = false
 edition = "2021"
+license = "Apache-2.0"
 rust-version = "1.97"
 description = "Autobahn|Testsuite subject: busbar's ws door framed by the connector's own listener, echoing on loopback."
 
@@ -18,7 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 busbar-contract = { path = "../../../crates/busbar-contract" }
-busbar-transport-ws = { path = "../../../crates/busbar-transport-ws" }
+busbar-transport-ws = { workspace = true }
 # The root's transport doors (`crates/busbar/src/root/doors.rs`, mounted by path): the ws door
 # admitted through the one dispatcher, opened, and handed to the connector as its framer table.
 busbar-core-connector = { path = "../../../crates/busbar-core-connector" }

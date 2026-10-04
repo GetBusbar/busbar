@@ -54,6 +54,12 @@ pub struct Dialect {
     /// never pass, because busbar's upstream credential and configuration replace them (OWNER HARD
     /// RULE 2026-10-02, "BUSBAR IS INVISIBLE TO UPSTREAMS", governed fields (1) and (2)).
     pub governed_headers: &'static [&'static str],
+    /// The request URL query parameters busbar GOVERNS for this dialect: its credential parameters.
+    /// A same-dialect route forwards every other caller parameter unchanged; these never pass.
+    pub governed_query: &'static [&'static str],
+    /// The tenant selectors this dialect's far end reads, as `(config key, header)`: busbar sets
+    /// each from the provider's config (`organization`, `project`) on every upstream request.
+    pub tenant_headers: &'static [(&'static str, &'static str)],
     /// The response headers busbar GOVERNS for this dialect (lower-case): what the far end derives
     /// from busbar's own credential and tenant (the operator's organization or project id). A
     /// same-dialect answer relays every other upstream header; these never reach the caller.
@@ -74,6 +80,11 @@ const MODEL_IN_PATH: Location = Location::Arrival(ArrivalLocation::PathSegment(0
 
 /// What the two dialects of one vendor govern: its credential headers (a bearer, and the key header
 /// a re-hosted deployment of it reads) and its two tenant selectors.
+/// The tenant selectors of the two dialects of one vendor, by provider config key.
+const OPENAI_TENANT: &[(&str, &str)] = &[
+    ("organization", "openai-organization"),
+    ("project", "openai-project"),
+];
 /// What the two dialects of one vendor govern on an answer: the operator's tenant ids it echoes.
 const OPENAI_GOVERNED_RESPONSE: &[&str] = &["openai-organization", "openai-project"];
 
@@ -98,6 +109,8 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "api-key",
         egress_scheme: "bearer",
         governed_headers: &["authorization", "x-api-key"],
+        governed_query: &[],
+        tenant_headers: &[],
         governed_response_headers: &["anthropic-organization-id"],
     },
     Dialect {
@@ -116,6 +129,8 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "bearer",
         egress_scheme: "bearer",
         governed_headers: OPENAI_GOVERNED,
+        governed_query: &[],
+        tenant_headers: OPENAI_TENANT,
         governed_response_headers: OPENAI_GOVERNED_RESPONSE,
     },
     Dialect {
@@ -131,6 +146,8 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "api-key",
         egress_scheme: "bearer",
         governed_headers: &["authorization", "x-goog-api-key", "x-goog-user-project"],
+        governed_query: &["key"],
+        tenant_headers: &[],
         governed_response_headers: &[],
     },
     Dialect {
@@ -151,6 +168,8 @@ pub const DIALECTS: &[Dialect] = &[
             "x-amz-content-sha256",
             "x-amz-security-token",
         ],
+        governed_query: &[],
+        tenant_headers: &[],
         governed_response_headers: &[],
     },
     Dialect {
@@ -165,6 +184,8 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "bearer",
         egress_scheme: "bearer",
         governed_headers: OPENAI_GOVERNED,
+        governed_query: &[],
+        tenant_headers: OPENAI_TENANT,
         governed_response_headers: OPENAI_GOVERNED_RESPONSE,
     },
     Dialect {
@@ -180,6 +201,8 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "bearer",
         egress_scheme: "bearer",
         governed_headers: &["authorization"],
+        governed_query: &[],
+        tenant_headers: &[],
         governed_response_headers: &[],
     },
 ];

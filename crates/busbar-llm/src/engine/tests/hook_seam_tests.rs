@@ -8,6 +8,7 @@ use crate::test_support::{chat, LaneSpec, TestApp};
 use busbar_contract::hooks::{
     Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
 };
+use busbar_kernel::config::PolicyOnError;
 use busbar_kernel::hooks::{ResolvedPolicy, REQUIRED_HOOK_UNAVAILABLE_STATUS};
 use std::sync::Mutex as StdMutex;
 
@@ -92,12 +93,12 @@ async fn run(
             seen: seen.clone(),
             reject,
         }),
-        on_error: busbar_kernel::config::PolicyOnError::default(),
+        on_error: PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt,
         send_user,
-        on_empty: busbar_kernel::config::PolicyOnError::Reject,
+        on_empty: PolicyOnError::Reject,
     };
     let cands = vec![WeightedLane {
         reasoning: None,
@@ -173,12 +174,12 @@ async fn global_gate_reject_short_circuits_the_request() {
             seen: Arc::new(StdMutex::new(None)),
             reject: Some((451, "blocked by global policy".to_string())),
         }),
-        on_error: busbar_kernel::config::PolicyOnError::default(),
+        on_error: PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: false,
-        on_empty: busbar_kernel::config::PolicyOnError::Reject,
+        on_empty: PolicyOnError::Reject,
     };
     // Inject the global gate (Arc refcount is 1 right after build()).
     Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
@@ -229,12 +230,12 @@ async fn global_gate_abstain_does_not_reject() {
             seen: Arc::new(StdMutex::new(None)),
             reject: None, // abstain
         }),
-        on_error: busbar_kernel::config::PolicyOnError::default(),
+        on_error: PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: false,
-        on_empty: busbar_kernel::config::PolicyOnError::Reject,
+        on_empty: PolicyOnError::Reject,
     };
     Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
 
@@ -307,12 +308,12 @@ impl RoutingPolicy for CannedGate {
 fn canned_gate(canned: Canned, name: &'static str) -> ResolvedPolicy {
     ResolvedPolicy::Policy {
         policy: Arc::new(CannedGate { canned, name }),
-        on_error: busbar_kernel::config::PolicyOnError::default(),
+        on_error: PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: false,
-        on_empty: busbar_kernel::config::PolicyOnError::Reject,
+        on_empty: PolicyOnError::Reject,
     }
 }
 
@@ -419,7 +420,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     let mut rc = RequestCtx::new(60, 1);
     rc.active_restricts.push(RestrictConstraint {
         tags_any: vec!["baa".to_string()],
-        on_empty: busbar_kernel::config::PolicyOnError::Reject,
+        on_empty: PolicyOnError::Reject,
         name: "baa-gate",
     });
     let out = rc.enforce_restricts(&rt, "fb", cands.clone()).unwrap();
@@ -433,7 +434,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     let mut rc_reject = RequestCtx::new(60, 1);
     rc_reject.active_restricts.push(RestrictConstraint {
         tags_any: vec!["hipaa".to_string()],
-        on_empty: busbar_kernel::config::PolicyOnError::Reject,
+        on_empty: PolicyOnError::Reject,
         name: "hipaa-gate",
     });
     assert!(
@@ -447,7 +448,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     let mut rc_weighted = RequestCtx::new(60, 1);
     rc_weighted.active_restricts.push(RestrictConstraint {
         tags_any: vec!["hipaa".to_string()],
-        on_empty: busbar_kernel::config::PolicyOnError::Weighted,
+        on_empty: PolicyOnError::Weighted,
         name: "hipaa-advisory",
     });
     let out = rc_weighted
@@ -627,8 +628,13 @@ impl busbar_contract::hooks::RoutingPolicy for CaptureTap {
     fn name(&self) -> &'static str {
         "capture-tap"
     }
-    async fn notify(&self, projection: &[u8], _budget: std::time::Duration) {
-        *self.last.lock().unwrap() = Some(projection.to_vec());
+    async fn notify(
+        &self,
+        tap: std::sync::Arc<busbar_contract::abi::host::hook::NotifyFrame>,
+        _budget: std::time::Duration,
+    ) {
+        let projection = serde_json::to_vec(&tap.projection_json()).expect("the tap's JSON");
+        *self.last.lock().unwrap() = Some(projection);
     }
 }
 
@@ -1131,7 +1137,7 @@ async fn on_error_fallback_hook_fires_and_decides() {
         .build();
     let gate = ResolvedPolicy::Policy {
         policy: Arc::new(ErroringPolicy),
-        on_error: busbar_kernel::config::PolicyOnError::Weighted,
+        on_error: PolicyOnError::Weighted,
         on_error_chain: vec![busbar_kernel::hooks::FallbackHook {
             policy: Arc::new(CannedGate {
                 canned: Canned::Reject(451, "fallback says no"),
@@ -1140,12 +1146,12 @@ async fn on_error_fallback_hook_fires_and_decides() {
             timeout: std::time::Duration::from_millis(500),
             send_prompt: false,
             send_user: false,
-            on_empty: busbar_kernel::config::PolicyOnError::Reject,
+            on_empty: PolicyOnError::Reject,
         }],
         timeout: std::time::Duration::from_millis(50),
         send_prompt: false,
         send_user: false,
-        on_empty: busbar_kernel::config::PolicyOnError::Reject,
+        on_empty: PolicyOnError::Reject,
     };
     Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
     let resp = fire(app, 1).await;
@@ -1171,18 +1177,18 @@ async fn on_error_chain_exhausted_applies_terminal() {
         .build();
     let gate = ResolvedPolicy::Policy {
         policy: Arc::new(ErroringPolicy),
-        on_error: busbar_kernel::config::PolicyOnError::Reject,
+        on_error: PolicyOnError::Reject,
         on_error_chain: vec![busbar_kernel::hooks::FallbackHook {
             policy: Arc::new(ErroringPolicy), // the fallback fails too
             timeout: std::time::Duration::from_millis(50),
             send_prompt: false,
             send_user: false,
-            on_empty: busbar_kernel::config::PolicyOnError::Reject,
+            on_empty: PolicyOnError::Reject,
         }],
         timeout: std::time::Duration::from_millis(50),
         send_prompt: false,
         send_user: false,
-        on_empty: busbar_kernel::config::PolicyOnError::Reject,
+        on_empty: PolicyOnError::Reject,
     };
     Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
     let resp = fire(app, 1).await;
@@ -1215,12 +1221,12 @@ async fn on_error_reject_terminal_short_circuits_before_a_live_lane_ever_dispatc
         .build();
     let gate = ResolvedPolicy::Policy {
         policy: Arc::new(ErroringPolicy),
-        on_error: busbar_kernel::config::PolicyOnError::Reject,
+        on_error: PolicyOnError::Reject,
         on_error_chain: vec![],
         timeout: std::time::Duration::from_millis(50),
         send_prompt: false,
         send_user: false,
-        on_empty: busbar_kernel::config::PolicyOnError::Reject,
+        on_empty: PolicyOnError::Reject,
     };
     Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
     let resp = fire(app, 1).await;
@@ -1707,12 +1713,12 @@ async fn send_user_projects_governance_key_identity() {
             seen: seen.clone(),
             reject: None,
         }),
-        on_error: busbar_kernel::config::PolicyOnError::default(),
+        on_error: PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: true,
-        on_empty: busbar_kernel::config::PolicyOnError::Reject,
+        on_empty: PolicyOnError::Reject,
     };
     let cands = vec![WeightedLane {
         reasoning: None,
@@ -1773,12 +1779,12 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
             seen: seen.clone(),
             reject: None,
         }),
-        on_error: busbar_kernel::config::PolicyOnError::default(),
+        on_error: PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: true,
-        on_empty: busbar_kernel::config::PolicyOnError::Reject,
+        on_empty: PolicyOnError::Reject,
     };
     let cands = vec![WeightedLane {
         reasoning: None,
@@ -1885,12 +1891,12 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
             seen: seen.clone(),
             reject: None,
         }),
-        on_error: busbar_kernel::config::PolicyOnError::default(),
+        on_error: PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: true,
-        on_empty: busbar_kernel::config::PolicyOnError::Reject,
+        on_empty: PolicyOnError::Reject,
     };
     let cands = vec![WeightedLane {
         reasoning: None,
@@ -1958,12 +1964,12 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
             seen: seen.clone(),
             reject: None,
         }),
-        on_error: busbar_kernel::config::PolicyOnError::default(),
+        on_error: PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: true,
-        on_empty: busbar_kernel::config::PolicyOnError::Reject,
+        on_empty: PolicyOnError::Reject,
     };
     let mut rt = pool_runtime_with(&[(0, &[])], Vec::new());
     rt.policy = Some(policy);
@@ -2017,7 +2023,7 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         ),
         None,
         // No client beta/version headers under test here.
-        Vec::new(),
+        Default::default(),
     )
     .await;
     let captured = seen.lock().unwrap().clone().expect("pool policy ran");
@@ -2103,12 +2109,12 @@ async fn reject_rides_the_full_forward_path() {
                         seen: seen.clone(),
                         reject: Some((451, "PII detected".to_string())),
                     }),
-                    on_error: busbar_kernel::config::PolicyOnError::default(),
+                    on_error: PolicyOnError::default(),
                     on_error_chain: Vec::new(),
                     timeout: std::time::Duration::from_millis(500),
                     send_prompt: false,
                     send_user: false,
-                    on_empty: busbar_kernel::config::PolicyOnError::Reject,
+                    on_empty: PolicyOnError::Reject,
                 }),
                 gates: Vec::new(),
                 rewrite_hooks: Vec::new(),
@@ -2299,12 +2305,12 @@ async fn same_request_id_joins_gate_decision_and_completion_tap() {
                     seen: seen.clone(),
                     reject: None,
                 }),
-                on_error: busbar_kernel::config::PolicyOnError::default(),
+                on_error: PolicyOnError::default(),
                 on_error_chain: Vec::new(),
                 timeout: std::time::Duration::from_millis(500),
                 send_prompt: false,
                 send_user: false,
-                on_empty: busbar_kernel::config::PolicyOnError::Reject,
+                on_empty: PolicyOnError::Reject,
             },
         )];
     }
@@ -2451,4 +2457,88 @@ async fn request_id_is_recorded_as_native_u64_tracing_field() {
         "the tracing span field and the response tap must agree on the same request's id"
     );
     lane.shutdown().await;
+}
+
+/// THE 1.5.5 HOOK SEAM, RESTORED: a valid-JSON request carrying content the reader does not model
+/// (a role and a block type it has never heard of) reaches a content gate, which sees the turns
+/// busbar CAN read, and is forwarded to the upstream byte for byte. Unreadable content contributes
+/// nothing; it never refuses the request (DIALECT-FIDELITY-DESIGN F2: the reader is a tap). RED arm:
+/// 1.6.0 before this answered the request with a 400 ("request body could not be read as a valid
+/// request for this endpoint"), a regression against 1.5.5's raw-body projection.
+#[tokio::test]
+async fn unreadable_content_reaches_the_gate_and_is_forwarded() {
+    crate::testkit::install_test_seams();
+    let state = Arc::new(crate::test_support::MockServerState::new());
+    state.push(crate::test_support::MockResponse::Ok {
+        status: StatusCode::OK,
+        body: serde_json::json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "hi"}],
+            "model": "m0",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        }),
+    });
+    let server = crate::test_support::MockServer::new(state.clone()).await;
+    let mut app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto_codec::PROTO_ANTHROPIC,
+            &server.base_url(),
+        ))
+        .pool("p", &[(0, 1)])
+        .build();
+    let seen = Arc::new(StdMutex::new(None));
+    let gate = ResolvedPolicy::Policy {
+        policy: Arc::new(CapturingPolicy {
+            seen: seen.clone(),
+            reject: None,
+        }),
+        on_error: PolicyOnError::default(),
+        on_error_chain: Vec::new(),
+        timeout: std::time::Duration::from_millis(500),
+        send_prompt: true,
+        send_user: false,
+        on_empty: PolicyOnError::Reject,
+    };
+    Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
+    let body = r#"{"model":"m0","max_tokens":10,"messages":[{"role":"wizard","content":"cast"},{"role":"user","content":[{"type":"text","text":"READABLE"},{"type":"never_heard_of","x":1}]}]}"#;
+    let resp = forward_with_pool(
+        &app,
+        lanes(1),
+        bytes::Bytes::from_static(body.as_bytes()),
+        None,
+        "p",
+        None,
+        "anthropic",
+        crate::test_support::CHAT,
+        None,
+    )
+    .await;
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "never refused for content it cannot read"
+    );
+    let upstream = state
+        .get_last_request_body()
+        .expect("the upstream received the request");
+    assert_eq!(
+        String::from_utf8_lossy(&upstream),
+        body,
+        "forwarded byte for byte"
+    );
+    let captured = seen.lock().unwrap().clone().expect("the gate ran");
+    let (_, turns) = captured.prompt.expect("the gate was handed the prompt");
+    assert!(
+        turns
+            .iter()
+            .any(|(r, t)| r == "user" && t.contains("READABLE")),
+        "the gate sees what busbar can read: {turns:?}"
+    );
+    assert!(
+        turns.iter().all(|(r, _)| r != "wizard" && !r.is_empty()),
+        "an unreadable turn contributes nothing: {turns:?}"
+    );
+    server.shutdown().await;
 }

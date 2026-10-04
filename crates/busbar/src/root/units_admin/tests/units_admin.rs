@@ -337,7 +337,7 @@ fn a_header_count_larger_than_the_frame_is_refused_not_reserved() {
 /// the core-admin handler, not by this step.
 #[test]
 fn the_audit_doors_carry_no_credential_into_the_sealed_facts() {
-    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_kernel::test_support::tokens::seal();
     let binding = AdminBinding::new(Arc::new(RefusingDispatch), open_door());
 
     for completed in [true, false] {
@@ -355,9 +355,9 @@ fn the_audit_doors_carry_no_credential_into_the_sealed_facts() {
             admin_listener: true,
             kernel_verb_only: true,
         };
-        let decode_token: Pass<Decode> = Pass::mint(&seal);
+        let decode_token: Pass<Decode> = busbar_kernel::test_support::tokens::pass();
         let _ = decode(&binding, &decode_token, &ctx).into_result(&seal);
-        let verify_token: Pass<Verify> = Pass::mint(&seal);
+        let verify_token: Pass<Verify> = busbar_kernel::test_support::tokens::pass();
         let _ = verify(
             &binding,
             &verify_token,
@@ -366,7 +366,7 @@ fn the_audit_doors_carry_no_credential_into_the_sealed_facts() {
         )
         .into_result(&seal);
 
-        let audit_token: Pass<Audit> = Pass::mint(&seal);
+        let audit_token: Pass<Audit> = busbar_kernel::test_support::tokens::pass();
         let facts = if completed {
             audit(&binding, &audit_token, &ctx, &Outcome::Completed).into_result(&seal)
         } else {
@@ -407,7 +407,7 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
         }
     }
 
-    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_kernel::test_support::tokens::seal();
     let admin = crate::root::kernel::new_kernel().admin_token();
 
     let under = |path: &str, sealed: Sealed| -> Result<(), ReasonCode> {
@@ -426,12 +426,12 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
             admin_listener: true,
             kernel_verb_only: true,
         };
-        let decode_token: Pass<Decode> = Pass::mint(&seal);
+        let decode_token: Pass<Decode> = busbar_kernel::test_support::tokens::pass();
         decode(&binding, &decode_token, &ctx)
             .into_result(&seal)
             .expect("the plane's table declares this operation");
         binding.units.set_granted(key, VerbScope::Full);
-        let token: Pass<Route> = Pass::mint(&seal);
+        let token: Pass<Route> = busbar_kernel::test_support::tokens::pass();
         let outcome = route(
             &binding,
             Arc::new(crate::root::kernel::RefusingStore),
@@ -817,7 +817,12 @@ fn the_replay_encoder_carries_an_identity_and_never_a_secret() {
     let admin = crate::root::kernel::new_kernel().admin_token();
     let outcome = busbar_core_admin::MintedKeyOutcome {
         id: "vk_1".to_string(),
-        secret: busbar_contract::caps::SecretOnce::mint(&admin, 42, UnitKey::new(1), "body.secret"),
+        secret: busbar_core_admin::test_support::secret_once(
+            &admin,
+            42,
+            UnitKey::new(1),
+            "body.secret",
+        ),
         expires_at: None,
     };
     let bytes = PackedReplay.encode(&outcome);
@@ -1134,10 +1139,10 @@ fn a_bound_unit(
         admin_listener: true,
         kernel_verb_only: true,
     };
-    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_kernel::test_support::tokens::seal();
     // Decode is what puts the verb in the table. A cell that called `set_verb` itself would be
     // asserting over a row the loop never wrote.
-    let _ = decode(&binding, &Pass::mint(&seal), &ctx);
+    let _ = decode(&binding, &busbar_kernel::test_support::tokens::pass(), &ctx);
     (binding, ctx, seal)
 }
 
@@ -1221,7 +1226,7 @@ fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
     // The step's own answer, for the unit that got through.
     let (binding, ctx, seal) = a_bound_unit(a_request());
     assert!(ctx.admin_listener, "the fixture is on the admin listener");
-    let record = arrival(&binding, &Pass::mint(&seal), &ctx)
+    let record = arrival(&binding, &busbar_kernel::test_support::tokens::pass(), &ctx)
         .into_result(&seal)
         .expect("an admin unit is never refused at the gate");
     assert_eq!(record.transport_chain, vec![ADMIN_TRANSPORT]);
@@ -1254,9 +1259,14 @@ fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere
         binding.units.verb(ctx.key).is_none(),
         "the fixture must be a path the table never resolved"
     );
-    let refusal = verify(&binding, &Pass::mint(&seal), &ctx, &principal)
-        .into_result(&seal)
-        .expect_err("a verb that resolved to nothing has nowhere to go");
+    let refusal = verify(
+        &binding,
+        &busbar_kernel::test_support::tokens::pass(),
+        &ctx,
+        &principal,
+    )
+    .into_result(&seal)
+    .expect_err("a verb that resolved to nothing has nowhere to go");
     assert_eq!(refusal.reason(), ReasonCode::NoDestination);
 
     // A real operation: it proceeds, and it proceeds to nowhere PRICED.
@@ -1265,9 +1275,14 @@ fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere
         binding.units.verb(ctx.key).is_some(),
         "the fixture must be a path the table did resolve"
     );
-    let destinations = verify(&binding, &Pass::mint(&seal), &ctx, &principal)
-        .into_result(&seal)
-        .expect("a resolved verb has somewhere to go");
+    let destinations = verify(
+        &binding,
+        &busbar_kernel::test_support::tokens::pass(),
+        &ctx,
+        &principal,
+    )
+    .into_result(&seal)
+    .expect("a resolved verb has somewhere to go");
     assert!(
         destinations.is_empty(),
         "an admin unit that sealed a destination would sit on the priced axis"
@@ -1301,9 +1316,14 @@ fn the_audit_doors_seal_the_resolved_class_and_append_to_no_ring() {
     binding
         .units
         .set_principal(ctx.key, PrincipalId::new(AN_IDENTIFIED_OPERATOR));
-    let facts = audit(&binding, &Pass::mint(&seal), &ctx, &Outcome::Completed)
-        .into_result(&seal)
-        .expect("the door seals a completed mutation");
+    let facts = audit(
+        &binding,
+        &busbar_kernel::test_support::tokens::pass(),
+        &ctx,
+        &Outcome::Completed,
+    )
+    .into_result(&seal)
+    .expect("the door seals a completed mutation");
     assert_eq!(facts.op_class, resolved.op_class());
     assert_eq!(facts.finish, busbar_contract::FinishClass::Complete);
 
@@ -1314,9 +1334,14 @@ fn the_audit_doors_seal_the_resolved_class_and_append_to_no_ring() {
         .verb(ctx.key)
         .expect("the audit listing is a row the table names");
     assert!(read.read_only, "the fixture must be a read");
-    let facts = audit(&binding, &Pass::mint(&seal), &ctx, &Outcome::Completed)
-        .into_result(&seal)
-        .expect("the door seals a read");
+    let facts = audit(
+        &binding,
+        &busbar_kernel::test_support::tokens::pass(),
+        &ctx,
+        &Outcome::Completed,
+    )
+    .into_result(&seal)
+    .expect("the door seals a read");
     assert_eq!(facts.op_class, read.op_class());
     assert_ne!(
         facts.op_class,
@@ -1334,7 +1359,7 @@ fn the_audit_doors_seal_the_resolved_class_and_append_to_no_ring() {
         }
         let facts = audit_refused(
             &binding,
-            &Pass::mint(&seal),
+            &busbar_kernel::test_support::tokens::pass(),
             &ctx,
             &Refusal::new(ReasonCode::OverBudget),
         )
@@ -1418,7 +1443,13 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
         },
     );
     let before = the_one_rings_rows_by(WHO).len();
-    let _ = audit(&binding, &Pass::mint(&seal), &ctx, &Outcome::Completed).into_result(&seal);
+    let _ = audit(
+        &binding,
+        &busbar_kernel::test_support::tokens::pass(),
+        &ctx,
+        &Outcome::Completed,
+    )
+    .into_result(&seal);
     let rows = the_one_rings_rows_by(WHO);
     assert_eq!(rows.len(), before + 1, "one unit, one entry");
     assert_eq!(rows[0].action, resolved.verb);
@@ -1442,7 +1473,13 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
     );
     binding.units.set_principal(ctx.key, PrincipalId::new(WHO));
     let before = the_one_rings_rows_by(WHO).len();
-    let _ = audit(&binding, &Pass::mint(&seal), &ctx, &Outcome::Completed).into_result(&seal);
+    let _ = audit(
+        &binding,
+        &busbar_kernel::test_support::tokens::pass(),
+        &ctx,
+        &Outcome::Completed,
+    )
+    .into_result(&seal);
     assert_eq!(
         the_one_rings_rows_by(WHO).len(),
         before,
@@ -1462,7 +1499,13 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
     );
     binding.units.set_principal(ctx.key, PrincipalId::new(WHO));
     let before = the_one_rings_rows_by(WHO).len();
-    let _ = audit(&binding, &Pass::mint(&seal), &ctx, &Outcome::Completed).into_result(&seal);
+    let _ = audit(
+        &binding,
+        &busbar_kernel::test_support::tokens::pass(),
+        &ctx,
+        &Outcome::Completed,
+    )
+    .into_result(&seal);
     assert_eq!(
         the_one_rings_rows_by(WHO).len(),
         before,
@@ -1476,7 +1519,7 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
     let before = the_one_rings_rows_by(WHO).len();
     let _ = audit_refused(
         &binding,
-        &Pass::mint(&seal),
+        &busbar_kernel::test_support::tokens::pass(),
         &ctx,
         &Refusal::new(ReasonCode::OverBudget),
     )
@@ -1572,7 +1615,7 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
         }
     }
 
-    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_kernel::test_support::tokens::seal();
     let admin = crate::root::kernel::new_kernel().admin_token();
 
     // The posture a fleet that has run its ceremony has, so the gates admit and what is left is
@@ -1627,12 +1670,12 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             admin_listener: true,
             kernel_verb_only: true,
         };
-        decode(&binding, &Pass::mint(&seal), &ctx)
+        decode(&binding, &busbar_kernel::test_support::tokens::pass(), &ctx)
             .into_result(&seal)
             .unwrap_or_else(|_| panic!("{path} is a row the plane's table declares"));
         binding.units.set_granted(key, VerbScope::Full);
 
-        let token: Pass<Route> = Pass::mint(&seal);
+        let token: Pass<Route> = busbar_kernel::test_support::tokens::pass();
         let outcome = route(
             &binding,
             Arc::clone(&store) as Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
@@ -1865,7 +1908,7 @@ fn the_refused_door_seals_the_refusal_that_happened() {
 
     let facts = audit_refused(
         &binding,
-        &Pass::mint(&seal),
+        &busbar_kernel::test_support::tokens::pass(),
         &ctx,
         &Refusal::new(ReasonCode::Unauthenticated),
     )
@@ -2417,19 +2460,18 @@ impl LegacyRowsRead for RowsThatLose {
 #[cfg(feature = "root-admin")]
 fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: u64) {
     use busbar_contract::caps::{
-        Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, PrincipalId,
-        QuantitySource, Usage, UsageLine, WriteMoney,
+        Admittance, Consumption, Hold, MeterClassId, PrincipalId, QuantitySource, Usage, UsageLine,
+        WriteMoney,
     };
     use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
-    let seal = KernelSeal::acquire_for_kernel();
     let key = TotalsKey::new(
         BucketId::new(bucket),
         CapDimension::NanoUnits,
         BucketScope::All,
     );
     let usage = Usage::report(
-        &Grant::<Consumption>::mint(&seal),
+        &busbar_kernel::test_support::tokens::grant::<Consumption>(),
         vec![UsageLine {
             class: MeterClassId::new("nano_units"),
             quantity: nanos,
@@ -2439,7 +2481,7 @@ fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: 
     )
     .expect("one line");
 
-    let token = busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal);
+    let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
     let mut durability = units.durability.lock().unwrap_or_else(|p| p.into_inner());
     durability.ledger.record_hold_opened(&key, A_DAY, nanos);
     durability
@@ -2456,13 +2498,13 @@ fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: 
                 },
             },
             Hold::open(
-                &Grant::<Admittance>::mint(&seal),
+                &busbar_kernel::test_support::tokens::grant::<Admittance>(),
                 PrincipalId::new(bucket),
                 nanos,
             ),
             u128::from(nanos),
             &usage,
-            &Grant::<WriteMoney>::mint(&seal),
+            &busbar_kernel::test_support::tokens::grant::<WriteMoney>(),
         )
         .expect("the memory-buffered journal takes it");
 }
@@ -2576,16 +2618,15 @@ fn the_reconciliation_names_a_row_this_nodes_dual_write_lost() {
 #[cfg(feature = "root-admin")]
 fn post_a_refused_counts_row_on(units: &crate::root::kernel::ProductionUnits, bucket: &str) {
     use crate::root::durability::{PostingStamp, Settling, UnitCounts};
-    use busbar_contract::caps::{Grant, KernelSeal, PrincipalId};
+    use busbar_contract::caps::PrincipalId;
     use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
-    let seal = KernelSeal::acquire_for_kernel();
     let key = TotalsKey::new(
         BucketId::new(bucket),
         CapDimension::NanoUnits,
         BucketScope::All,
     );
-    let token = Grant::<busbar_contract::caps::DurableWrite>::mint(&seal);
+    let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
     let mut classes = std::collections::BTreeMap::new();
     classes.insert("cache_read".to_string(), 10_000_000u64);
     let counts = UnitCounts {
@@ -2697,8 +2738,7 @@ fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
 
     let units =
         crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
-    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
-    let token = busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal);
+    let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
     let marker = busbar_kernel_ledger::migration::MigrationMarker {
         checkpoint_seq: 0,
         node: 0,
@@ -2780,8 +2820,7 @@ fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
 fn the_checkpoints_read_serves_whether_each_seal_verifies_against_the_audit_keyset() {
     let units =
         crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
-    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
-    let token = busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal);
+    let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
     {
         let mut durability = units.durability.lock().expect("durability lock");
         durability.record = busbar_kernel_audit::AuditChain::new()
@@ -2909,7 +2948,7 @@ fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_usage_r
 #[test]
 fn a_read_only_credential_reaches_every_view_and_still_no_mutation() {
     let binding = AdminBinding::new(Arc::new(RefusingDispatch), open_door());
-    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_kernel::test_support::tokens::seal();
 
     let decide = |path: &str, method: &str, granted: VerbScope| -> bool {
         let key = UnitKey::new(1);
@@ -2924,7 +2963,7 @@ fn a_read_only_credential_reaches_every_view_and_still_no_mutation() {
             admin_listener: true,
             kernel_verb_only: true,
         };
-        let token: Pass<Approve> = Pass::mint(&seal);
+        let token: Pass<Approve> = busbar_kernel::test_support::tokens::pass();
         let decision = approve(
             &binding,
             Some(granted),
@@ -3133,13 +3172,13 @@ impl AuditView for SealedChain {
 /// The audit step's pass, as the loop lends it at that step — one mint for every chain test here.
 #[cfg(feature = "root-admin")]
 fn an_audit_pass() -> busbar_contract::caps::Pass<busbar_contract::caps::Audit> {
-    busbar_contract::caps::Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel())
+    busbar_kernel::test_support::tokens::pass()
 }
 
 /// Seal three records onto a signing chain, and publish the key's public half.
 #[cfg(feature = "root-admin")]
 fn a_sealed_chain() -> SealedChain {
-    use busbar_contract::caps::{KernelSeal, Origin, OriginKind, Outcome as UnitOutcome, UnitKey};
+    use busbar_contract::caps::{OriginKind, Outcome as UnitOutcome, UnitKey};
     use busbar_kernel_audit::{
         Audit as _, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage,
         What,
@@ -3167,7 +3206,7 @@ fn a_sealed_chain() -> SealedChain {
                 },
                 wall: 1_700_000_000 + unit,
                 mono: unit * 1_000,
-                origin: Origin::seal(&KernelSeal::acquire_for_kernel(), OriginKind::Client),
+                origin: busbar_kernel::test_support::tokens::origin(OriginKind::Client),
                 outcome: OutcomeFacts {
                     unit_end: UnitOutcome::Completed,
                     step: None,
@@ -3599,9 +3638,7 @@ fn a_memory_book() -> Arc<Mutex<crate::root::durability::Durability>> {
 fn a_journal_over(book: &Arc<Mutex<crate::root::durability::Durability>>) -> AmendmentJournal {
     AmendmentJournal::new(
         Arc::clone(book),
-        Grant::<busbar_contract::caps::DurableWrite>::mint(
-            &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
-        ),
+        busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
     )
 }
 
@@ -3653,8 +3690,8 @@ fn replayed_amendments(durability: &crate::root::durability::Durability) -> Vec<
 #[cfg(test)]
 fn a_correction_body() -> Vec<u8> {
     signed_correction(serde_json::json!({
-        "effective_from": 4_000,
-        "effective_until": 9_000,
+        "effective_from": 0,
+        "effective_until": 86_400_000,
         "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
         "reason": "vendor corrected the March price sheet",
         "operator_fingerprint": a_test_operator_fingerprint(),
@@ -3685,8 +3722,8 @@ fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothin
     assert_eq!(answer.status, 200);
     let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("the answer is JSON");
     assert_eq!(doc["history_seq"], 1);
-    assert_eq!(doc["effective_from"], 4_000);
-    assert_eq!(doc["effective_until"], 9_000);
+    assert_eq!(doc["effective_from"], 0);
+    assert_eq!(doc["effective_until"], 86_400_000);
     assert_eq!(doc["amended_at"], 6_000);
     assert_eq!(doc["operator_fingerprint"], a_test_operator_fingerprint());
     assert!(
@@ -3758,8 +3795,8 @@ fn amend_rate_history_refuses_a_correction_that_names_a_currency() {
     ] {
         let history = a_seeded_history();
         let body = signed_correction(serde_json::json!({
-            "effective_from": 4_000,
-            "effective_until": 9_000,
+            "effective_from": 0,
+            "effective_until": 86_400_000,
             "currency": named,
             "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
             "reason": "vendor corrected the March price sheet",
@@ -3793,8 +3830,8 @@ fn amend_rate_history_refuses_a_correction_that_names_a_currency() {
 #[test]
 fn the_canonical_amend_payload_names_no_currency() {
     let body = serde_json::json!({
-        "effective_from": 4_000,
-        "effective_until": 9_000,
+        "effective_from": 0,
+        "effective_until": 86_400_000,
         "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
         "reason": "vendor corrected the March price sheet",
     });
@@ -3832,8 +3869,8 @@ fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
     for fee in [-1_i64, -5, i64::MIN] {
         let history = a_seeded_history();
         let body = signed_correction(serde_json::json!({
-            "effective_from": 4_000,
-            "effective_until": 9_000,
+            "effective_from": 0,
+            "effective_until": 86_400_000,
             "per_request_fee": fee,
             "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
             "reason": "vendor corrected the March price sheet",
@@ -3853,8 +3890,8 @@ fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
     for fee in [5_i64, 0] {
         let history = a_seeded_history();
         let body = signed_correction(serde_json::json!({
-            "effective_from": 4_000,
-            "effective_until": 9_000,
+            "effective_from": 0,
+            "effective_until": 86_400_000,
             "per_request_fee": fee,
             "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
             "reason": "vendor corrected the March price sheet",
@@ -3870,6 +3907,295 @@ fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
             .expect("the correction prices its window");
         assert_eq!(card.fee(), fee, "the sealed fee is the signed fee");
     }
+}
+
+/// A history whose opening card prices two flat lanes, a flat fee of 3 and the `plane-b` plane's own
+/// card — the shape a correction of one cell must leave standing everywhere it does not name.
+#[cfg(test)]
+fn a_full_card_history() -> crate::root::kernel::RootHistory {
+    use busbar_kernel_ledger::cost::TierRates;
+    let history = crate::root::kernel::RootHistory::default();
+    let card = busbar_kernel_ledger::cost::RateCard::from_config(
+        Some([
+            (
+                "gpt",
+                TierRates {
+                    input: 2.0,
+                    output: 8.0,
+                    cache_read: 0.5,
+                    cache_write: 2.5,
+                },
+            ),
+            (
+                "claude",
+                TierRates {
+                    input: 3.0,
+                    output: 15.0,
+                    cache_read: 0.3,
+                    cache_write: 3.75,
+                },
+            ),
+            (
+                "plane-b\u{1f}search",
+                TierRates {
+                    input: 5.0,
+                    output: 6.0,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            ),
+        ]),
+        3,
+    );
+    history.apply(card, 1_000);
+    history
+}
+
+/// The nano-units one row prices at, at `at`, on `history`'s head.
+#[cfg(test)]
+fn priced_at(
+    history: &crate::root::kernel::RootHistory,
+    lane: &str,
+    class: &str,
+    count: u64,
+    fee_count: u64,
+    at: u64,
+) -> Result<u128, busbar_kernel_ledger::cost::MoneyError> {
+    use busbar_kernel_ledger::cost::{nanos_of_exact, whole, Tally, STANDARD_TIER_BP};
+    let pinned = history.pin().expect("a history");
+    let mut tally = Tally::in_view(pinned.view());
+    tally.row(
+        lane,
+        at,
+        STANDARD_TIER_BP,
+        [(class, whole(count))],
+        whole(fee_count),
+    )?;
+    nanos_of_exact(tally.exact()?)
+}
+
+/// **A CORRECTION OF ONE CELL REPRICES THAT CELL AND NOTHING ELSE** (#79 "a
+/// correction reprices exactly its window", #42 "never a silent 0", #44).
+///
+/// THE DEFECT THIS CLOSES. The corrected card was built from the cells the body named ALONE, with
+/// the fee defaulting to 0, and it out-ranked the whole card for its window: correcting `gpt`/`input`
+/// priced every request's fee at 0, refused `gpt`/`output` and every `claude` class (a served unit
+/// turned into a refusal), and priced every `plane-b` row at 0 (no plane card on the correction). The
+/// corrected card is now the card in force with the named cell set.
+#[test]
+fn a_correction_of_one_cell_keeps_every_other_price_and_the_fee() {
+    let history = a_full_card_history();
+    let inside = 5_000;
+    let outside = 100_000_000;
+    // The configured figures, read outside the window, before and after.
+    let configured = |history: &crate::root::kernel::RootHistory, lane: &str, class: &str| {
+        priced_at(history, lane, class, 1_000, 1, outside).expect("the configured card prices it")
+    };
+    let gpt_output = configured(&history, "gpt", "output");
+    let claude_input = configured(&history, "claude", "input");
+    let plane_b_input = configured(&history, "plane-b\u{1f}search", "input");
+
+    amend_through_a_journal(&history, &a_correction_body(), 6, a_sealed_operator())
+        .expect("the correction applies");
+
+    // THE NAMED CELL MOVES: 1,000 units at 1 micro-unit (1,000 nano-units) plus the fee of 3 minor
+    // units (30,000,000 nano-units).
+    assert_eq!(
+        priced_at(&history, "gpt", "input", 1_000, 1, inside).expect("the corrected cell prices"),
+        1_000_000 + 30_000_000,
+        "the corrected rate and the configured fee"
+    );
+    // EVERY OTHER CELL, THE FEE AND THE OTHER PLANE ARE PRICED AS CONFIGURED INSIDE THE WINDOW.
+    for (lane, class, want) in [
+        ("gpt", "output", gpt_output),
+        ("claude", "input", claude_input),
+        ("plane-b\u{1f}search", "input", plane_b_input),
+    ] {
+        assert_eq!(
+            priced_at(&history, lane, class, 1_000, 1, inside),
+            Ok(want),
+            "{lane}/{class} inside the corrected window prices at the configured card, fee included"
+        );
+    }
+    assert_eq!(
+        configured(&history, "gpt", "input"),
+        2_000_000 + 30_000_000,
+        "outside the window the configured card still prices the corrected cell"
+    );
+}
+
+/// **A CORRECTION NAMING A FEE MOVES THE FEE AND KEEPS EVERY RATE** (D-1), and one naming a cell on a
+/// plane prices that plane's card, not the flat card.
+#[test]
+fn a_fee_or_plane_correction_moves_only_what_it_names() {
+    let history = a_full_card_history();
+    let body = signed_correction(serde_json::json!({
+        "effective_from": 0,
+        "effective_until": 86_400_000,
+        "per_request_fee": 7,
+        "rates": [ { "lane": "plane-b\u{1f}search", "class": "input", "micro_per_unit": 9.0 } ],
+        "reason": "vendor corrected the March price sheet",
+        "operator_fingerprint": a_test_operator_fingerprint(),
+    }));
+    amend_through_a_journal(&history, &body, 6, a_sealed_operator())
+        .expect("the correction applies");
+    assert_eq!(
+        priced_at(&history, "gpt", "output", 1_000, 1, 5_000),
+        Ok(8_000_000 + 70_000_000),
+        "gpt/output keeps its configured rate; the fee is the corrected 7"
+    );
+    assert_eq!(
+        priced_at(&history, "plane-b\u{1f}search", "input", 1_000, 0, 5_000),
+        Ok(9_000_000),
+        "the plane's own cell is corrected"
+    );
+    assert_eq!(
+        priced_at(&history, "plane-b\u{1f}search", "output", 1_000, 0, 5_000),
+        Ok(6_000_000),
+        "the plane's other cell is kept"
+    );
+}
+
+/// **A CORRECTION NO SINGLE CARD PRICES IS REFUSED, AND APPENDS NOTHING** (D-1). A config apply at
+/// 6,000 resolves part of `[0, 86,400,000)`; correcting the card in force at 0 for the whole
+/// window would silently revert that apply for the rest of it. A cell on a plane whose billing is
+/// off has no card to land on: correcting it would switch the plane's billing on and refuse every
+/// class the correction is silent about.
+#[test]
+fn a_correction_across_a_card_boundary_or_onto_an_absent_plane_is_refused() {
+    let history = a_full_card_history();
+    history.apply(a_card_at(4.0, 0), 6_000);
+    let before = history.len();
+    let refused = amend_through_a_journal(&history, &a_correction_body(), 7, a_sealed_operator());
+    assert!(
+        matches!(refused, Err(busbar_core_admin::GovernanceError::Validation)),
+        "{refused:?}"
+    );
+    assert_eq!(
+        history.len(),
+        before,
+        "a refused correction appends nothing"
+    );
+
+    let history = a_full_card_history();
+    let body = signed_correction(serde_json::json!({
+        "effective_from": 0,
+        "effective_until": 86_400_000,
+        "rates": [ { "lane": "plane-c\u{1f}hop", "class": "bytes", "micro_per_unit": 1.0 } ],
+        "reason": "vendor corrected the March price sheet",
+        "operator_fingerprint": a_test_operator_fingerprint(),
+    }));
+    let refused = amend_through_a_journal(&history, &body, 6, a_sealed_operator());
+    assert!(
+        matches!(refused, Err(busbar_core_admin::GovernanceError::Validation)),
+        "{refused:?}"
+    );
+    assert_eq!(history.len(), 1, "a refused correction appends nothing");
+}
+
+/// One UTC day and one hour, in milliseconds: a metering row is one day per price era (#32).
+#[cfg(test)]
+const DAY_MS: u64 = 86_400_000;
+#[cfg(test)]
+const HOUR_MS: u64 = 3_600_000;
+
+/// A signed correction of `gpt`/`input` over `[from, until)`.
+#[cfg(test)]
+fn a_window_correction(from: u64, until: Option<u64>) -> Vec<u8> {
+    signed_correction(serde_json::json!({
+        "effective_from": from,
+        "effective_until": until,
+        "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
+        "reason": "vendor corrected the March price sheet",
+        "operator_fingerprint": a_test_operator_fingerprint(),
+    }))
+}
+
+/// Run one correction over `history` arriving at `arrival_ms`, answering the effect's result and how
+/// many amendment records its journal took.
+#[cfg(test)]
+fn amend_at(
+    history: &crate::root::kernel::RootHistory,
+    body: &[u8],
+    arrival_ms: u64,
+) -> (Result<Vec<u8>, busbar_core_admin::GovernanceError>, usize) {
+    let book = a_memory_book();
+    let result = amend_rate_history_effect(
+        history,
+        Some(&a_journal_over(&book)),
+        body,
+        arrival_ms / 1_000,
+        a_sealed_operator(),
+        &an_attribution(),
+    );
+    let records = replayed_amendments(&book.lock().unwrap()).len();
+    (result, records)
+}
+
+/// **A RETROACTIVE RATE CORRECTION THAT WOULD CUT INSIDE A STORED ROW IS REFUSED** (OWNER
+/// ruling #32, 2026-09-29: "a retroactive RATE correction that would cut inside a stored row is
+/// refused").
+///
+/// A metering row is one UTC day per price era, priced at its own first instant. Before this
+/// refusal a correction `[day 1 12:00, 18:00)` answered 200 and repriced nothing (the day-1 row
+/// resolves at 00:00, outside the window); `[day 1 00:00, 06:00)` repriced the WHOLE day; and a
+/// window over a midnight (`[day 2 12:00, day 3 06:00)`, signed on day 2) priced every unit after
+/// 06:00 on day 3 at the correction, because they accrue into the day-3 row of the card the window
+/// interrupts, which resolves at day 3 00:00 — inside the window. Each is refused now, and nothing
+/// is recorded or appended.
+#[test]
+fn a_correction_that_would_cut_inside_a_stored_row_is_refused() {
+    let arrival = 2 * DAY_MS + 10 * HOUR_MS;
+    for (from, until) in [
+        (DAY_MS + 12 * HOUR_MS, Some(DAY_MS + 18 * HOUR_MS)),
+        (DAY_MS, Some(DAY_MS + 6 * HOUR_MS)),
+        (DAY_MS + 12 * HOUR_MS, None),
+        (2 * DAY_MS + 12 * HOUR_MS, Some(3 * DAY_MS + 6 * HOUR_MS)),
+    ] {
+        let history = a_seeded_history();
+        let (result, records) = amend_at(&history, &a_window_correction(from, until), arrival);
+        assert!(
+            matches!(result, Err(busbar_core_admin::GovernanceError::Validation)),
+            "[{from}, {until:?}) cuts inside a row and must be refused: {result:?}"
+        );
+        assert_eq!(history.len(), 1, "[{from}, {until:?}): nothing appended");
+        assert_eq!(records, 0, "[{from}, {until:?}): nothing recorded");
+    }
+}
+
+/// THE CONTROLS FOR #32: a correction whose boundaries every row already splits at applies — whole
+/// UTC days, an open end, a future window inside one day, and the instant a config apply started a
+/// new price era (every unit from it on accrued under that era).
+#[test]
+fn a_correction_on_row_boundaries_applies() {
+    let arrival = 2 * DAY_MS + 10 * HOUR_MS;
+    for (from, until) in [
+        (DAY_MS, Some(2 * DAY_MS)),
+        (DAY_MS, None),
+        (0, Some(3 * DAY_MS)),
+        (2 * DAY_MS + 12 * HOUR_MS, Some(2 * DAY_MS + 18 * HOUR_MS)),
+    ] {
+        let history = a_seeded_history();
+        let (result, records) = amend_at(&history, &a_window_correction(from, until), arrival);
+        assert!(
+            result.is_ok(),
+            "[{from}, {until:?}) cuts no row: {result:?}"
+        );
+        assert_eq!((history.len(), records), (2, 1), "[{from}, {until:?})");
+    }
+
+    let era = DAY_MS + 12 * HOUR_MS;
+    let history = a_seeded_history();
+    history.apply(a_card_at(4.0, 0), era);
+    let (result, _) = amend_at(
+        &history,
+        &a_window_correction(era, Some(2 * DAY_MS)),
+        arrival,
+    );
+    assert!(
+        result.is_ok(),
+        "a correction from the instant a config apply opened an era cuts no row: {result:?}"
+    );
 }
 
 /// A scratch data directory, removed on drop.
@@ -3914,8 +4240,8 @@ impl Drop for AmendScratch {
 #[cfg(test)]
 fn a_priced_correction(fee: i64, micro: serde_json::Value) -> Vec<u8> {
     signed_correction(serde_json::json!({
-        "effective_from": 4_000,
-        "effective_until": 9_000,
+        "effective_from": 0,
+        "effective_until": 86_400_000,
         "per_request_fee": fee,
         "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": micro } ],
         "reason": "vendor corrected the March price sheet",
@@ -3953,8 +4279,8 @@ fn a_sealed_amendment_survives_a_restart_with_its_figures() {
     let records = replayed_amendments(&restarted.lock().unwrap());
     assert_eq!(records.len(), 1, "the amendment survived the restart");
     let record = &records[0];
-    assert_eq!(record.effective_from, 4_000);
-    assert_eq!(record.effective_until, Some(9_000));
+    assert_eq!(record.effective_from, 0);
+    assert_eq!(record.effective_until, Some(86_400_000));
     assert_eq!(record.amended_at_ms, 6_000);
     assert_eq!(record.sealed_fee, 5);
     assert_eq!(
@@ -4286,8 +4612,8 @@ fn amend_rate_history_admits_a_correction_signed_by_the_sealed_operator_key() {
 fn amend_rate_history_refuses_a_correction_from_an_unknown_operator_fingerprint() {
     let history = a_seeded_history();
     let body = signed_correction(serde_json::json!({
-        "effective_from": 4_000,
-        "effective_until": 9_000,
+        "effective_from": 0,
+        "effective_until": 86_400_000,
         "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
         "reason": "vendor corrected the March price sheet",
         "operator_fingerprint": "a-fingerprint-that-names-no-sealed-key",
@@ -4597,12 +4923,24 @@ fn a_rate_card_added_after_a_posting_moves_what_the_totals_view_reports() {
     // arrived at, appended long after the line was booked.
     view.history
         .amend(
-            a_card_at(4.0, 0),
-            A_LINE_MS - 1_000,
-            Some(A_LINE_MS + 1_000),
-            A_LINE_MS + 60_000,
-            "op-1".to_string(),
-            [9u8; 32],
+            &crate::root::kernel::Correction {
+                effective_from: A_LINE_MS,
+                effective_until: Some(A_LINE_MS + 86_400_000),
+                appended_at: A_LINE_MS + 60_000,
+                author: busbar_kernel_ledger::cost::Author::Amend {
+                    operator_fingerprint: "op-1".to_string(),
+                    reason_hash: [9u8; 32],
+                },
+                cells: vec![(
+                    busbar_kernel_ledger::cost::LaneClass::new(
+                        A_LANE,
+                        busbar_kernel_ledger::cost::CLASS_INPUT,
+                    ),
+                    4_000,
+                )],
+                fee: Some(0),
+            },
+            |_, _| Ok::<(), ()>(()),
         )
         .expect("the fixture has an opening entry to correct");
 
@@ -4855,12 +5193,9 @@ fn settle_late_unit_with_fees(
     fee_count: u64,
 ) {
     use crate::root::durability::{PostingStamp, Settling, UnitCounts};
-    use busbar_contract::caps::{
-        DurableWrite, Grant, HoldAccrual, KernelSeal, Posted, PrincipalId, WriteMoney,
-    };
-    let seal = KernelSeal::acquire_for_kernel();
-    let ledger = Grant::<WriteMoney>::mint(&seal);
-    let token = Grant::<DurableWrite>::mint(&seal);
+    use busbar_contract::caps::{DurableWrite, HoldAccrual, Posted, PrincipalId, WriteMoney};
+    let ledger = busbar_kernel::test_support::tokens::grant::<WriteMoney>();
+    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
     let posted = Posted::settle_late(
         HoldAccrual::after_terminal(PrincipalId::new(bucket), amount, &ledger),
         &ledger,
@@ -4973,9 +5308,9 @@ fn a_book_with_one_recorded_unit(
     lane: &str,
 ) -> (crate::root::durability::NodeBook, String) {
     use crate::root::durability::{PostingStamp, Settling, UnitCounts};
-    use busbar_contract::caps::{DurableWrite, KernelSeal, PrincipalId};
+    use busbar_contract::caps::{DurableWrite, PrincipalId};
     let book = crate::root::durability::node_book();
-    let token = Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel());
+    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
     let key = busbar_kernel_ledger::totals::TotalsKey::new(
         busbar_kernel_ledger::totals::BucketId::new(principal),
         busbar_kernel_ledger::totals::CapDimension::NanoUnits,
@@ -5031,7 +5366,7 @@ fn adjust_through_route(
     granted: VerbScope,
     body: serde_json::Value,
 ) -> Result<AdminAnswer, ReasonCode> {
-    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_kernel::test_support::tokens::seal();
     let admin = crate::root::kernel::new_kernel().admin_token();
     let key = UnitKey::new(a_fresh_unit());
     let mut request = a_request();
@@ -5047,15 +5382,19 @@ fn adjust_through_route(
         admin_listener: true,
         kernel_verb_only: true,
     };
-    decode(binding, &Pass::<Decode>::mint(&seal), &ctx)
-        .into_result(&seal)
-        .expect("the plane's table declares adjust");
+    decode(
+        binding,
+        &busbar_kernel::test_support::tokens::pass::<Decode>(),
+        &ctx,
+    )
+    .into_result(&seal)
+    .expect("the plane's table declares adjust");
     binding.units.set_granted(key, granted);
     let outcome = route(
         binding,
         Arc::new(crate::root::kernel::RefusingStore),
         &admin,
-        &Pass::<Route>::mint(&seal),
+        &busbar_kernel::test_support::tokens::pass::<Route>(),
         &ctx,
     )
     .into_result(&seal);
@@ -5360,9 +5699,7 @@ fn an_idempotency_key_on_a_durable_node_journals_exactly_one_claim() {
         let book = Arc::new(Mutex::new(boot()));
         let journal: Arc<dyn ClaimJournal> = Arc::new(RootClaimJournal::new(
             Arc::clone(&book),
-            Grant::<busbar_contract::caps::DurableWrite>::mint(
-                &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
-            ),
+            busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
         ));
         let cache: IdempotencyCache<Vec<u8>> = IdempotencyCache::with_journal(journal);
         let key = ("admin".to_string(), "create_key:idem-271".to_string());

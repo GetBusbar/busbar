@@ -26,7 +26,7 @@ use crate::abi::host::service::{
     op, ClockNowIn, ClockReading, HostSlots, NeedAdmitIn, ServiceFn, ServiceHead, ServiceOut,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
-use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket};
+use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket, WakeFn};
 
 /// Why a connector service answered without its result.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +68,7 @@ pub type Answer<T> = Poll<Result<T, ConnFailure>>;
 #[derive(Debug, Clone, Copy)]
 pub struct Host {
     ctx: HostCtx,
+    wake: Option<WakeFn>,
     conns: *const ConnectorSlots,
     services: *const HostSlots,
 }
@@ -82,11 +83,21 @@ unsafe impl Sync for Host {}
 impl Host {
     /// The tables `tables` names.
     #[must_use]
-    pub(crate) const fn of(tables: &HostTables) -> Self {
+    pub const fn of(tables: &HostTables) -> Self {
         Self {
             ctx: tables.ctx,
+            wake: tables.wake,
             conns: tables.conns,
             services: tables.services,
+        }
+    }
+
+    /// WAKE `ticket` (the host's `wake`, `abi::mechanism::ticket`): from any thread, never blocks,
+    /// never fails; the host re-invokes the op that answered PENDING on it with `FLAG_RESUME`. A
+    /// wake for a stale ticket is dropped; tables with no wake make it a no-op.
+    pub fn wake(&self, ticket: Ticket) {
+        if let Some(wake) = self.wake {
+            wake(self.ctx, ticket);
         }
     }
 

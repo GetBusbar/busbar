@@ -147,3 +147,25 @@ fn a_version_2_payload_edit_is_an_altered_whole_frame() {
     assert!(crate::record::checked_header(&frame).is_some());
     assert!(FrameError::DigestMismatch.is_altered_whole_frame(crate::record::FRAME_VERSION));
 }
+
+/// THE ON-DISK DIGESTS ARE SHA-256, BYTE FOR BYTE. The frame digest, the header check and the
+/// journal's body digest moved from RustCrypto `sha2` to ring (ONE crypto backend = ring). Every
+/// segment already on disk was written with the old one, so a frame the new code writes must carry
+/// exactly the bytes RustCrypto computes over the same regions: the digest (header bytes 64..96)
+/// over the header up to it plus the payload area, and the 4-byte check (34..38) over bytes 0..34.
+#[test]
+fn the_frame_digest_and_header_check_are_sha256_byte_for_byte() {
+    use sha2::Digest as _;
+    let body: Vec<u8> = (0..1000u32).map(|i| (i * 7 % 256) as u8).collect();
+    for frame in Record::new(5, 11, body).encode() {
+        let mut h = sha2::Sha256::new();
+        h.update(&frame[0..64]);
+        h.update(&frame[FRAME_HEADER_BYTES..]);
+        let digest: [u8; 32] = h.finalize().into();
+        assert_eq!(frame[64..96], digest);
+        let check: [u8; 32] = sha2::Sha256::digest(&frame[0..34]).into();
+        assert_eq!(frame[34..38], check[0..4]);
+    }
+    let witness: [u8; 32] = sha2::Sha256::digest(b"abc").into();
+    assert_eq!(crate::journal::body_digest(b"abc"), witness);
+}

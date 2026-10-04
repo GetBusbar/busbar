@@ -101,10 +101,9 @@ impl<'a> StageShape<'a> {
     }
 }
 
-/// Fire one STAGE's taps (candidate/routing/response) fire-and-forget: serialize the shape-only
-/// projection + stage object ONCE, then spawn one detached task per tap. A tap can never delay,
-/// reorder, or fail the request; a serialization failure silently skips the fire (observation is
-/// best-effort). ZERO COST when the stage has no taps (first-line empty check).
+/// Fire one STAGE's taps (candidate/routing/response) fire-and-forget: build the shape-only tap
+/// view + stage ONCE, then spawn one detached task per tap. A tap can never delay, reorder, or
+/// fail the request. ZERO COST when the stage has no taps (first-line empty check).
 ///
 /// WEDGE 2e: the neutral, host-taking twin of core's `proxy_vocab::fire_stage_taps`. The caller passes
 /// the stage's tap slice (in wedge 3, one of `host.tap_hooks_response()`/`_routing()`/`_candidate()`)
@@ -128,33 +127,25 @@ pub fn fire_stage_taps(
     if taps.is_empty() {
         return;
     }
-    let hook_req = crate::hooks::wire::HookRequest {
-        op: crate::hooks::wire::OP_NOTIFY,
-        request: crate::hooks::wire::HookReqProjection {
-            request_id: shape.request_id,
-            pool: shape.pool,
-            ingress_protocol: shape.ingress_protocol,
-            message_count: shape.message_count,
-            has_tools: shape.has_tools,
-            total_chars: shape.total_chars,
-            max_tokens: shape.max_tokens,
-            stream: shape.stream,
-            system: None,
-            messages: None,
-            user: None,
-            signals,
-        },
-        candidates: Vec::new(),
-        context: crate::hooks::wire::HookContext {
-            budget: &[],
-            budget_remaining: None,
-        },
-        stage: Some(stage),
+    // The stage's tap view, built ONCE (shape only: a stage tap never sees the prompt) and shared
+    // by every tap this stage fires.
+    let req = busbar_contract::hooks::RoutingRequest {
+        request_id: shape.request_id,
+        pool: shape.pool,
+        ingress_protocol: shape.ingress_protocol,
+        requested_model: None,
+        message_count: shape.message_count,
+        tool_count: 0,
+        has_tools: shape.has_tools,
+        total_chars: shape.total_chars,
+        system_chars: 0,
+        max_tokens: shape.max_tokens,
+        stream: shape.stream,
+        prompt: None,
+        identity: None,
+        signals,
     };
-    let Ok(bytes) = crate::json::to_vec(&hook_req) else {
-        return;
-    };
-    let bytes = std::sync::Arc::new(bytes);
+    let tap = busbar_contract::abi::host::hook::NotifyFrame::build(&req, Some(&stage), false);
     for (timeout, _send_prompt, hook, groups) in taps {
         // SELECTION: skip a stage tap whose `groups:` scope does not admit this caller. The host seam
         // performs the SAME self+ancestors registry walk core's `caller_in_hook_groups` free fn does.
@@ -163,8 +154,8 @@ pub fn fire_stage_taps(
         }
         let policy = hook.clone();
         let budget = *timeout;
-        let proj = bytes.clone();
-        spawn_bounded_tap(async move { policy.notify(&proj, budget).await });
+        let tap = tap.clone();
+        spawn_bounded_tap(async move { policy.notify(tap, budget).await });
     }
 }
 

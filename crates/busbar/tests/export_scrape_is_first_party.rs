@@ -22,6 +22,10 @@
 // The config below serves `providers:`/`models:`, so the build must link the plane that takes body
 // ingress — the linked table's answer, never a feature name.
 #![cfg(linked_axis_body_ingress)]
+// The config names `module: prometheus`, the linked scrape sink on the export-doors axis: a build
+// that links no export door (the single-plane rows link only the exports axis) refuses that module at
+// boot ("unknown exporter 'prometheus'"), which is correct product behaviour, not what this measures.
+#![cfg(linked_axis_export_doors)]
 
 mod common;
 
@@ -65,7 +69,7 @@ fn free_port() -> u16 {
 
 /// `lib` packed UNSIGNED as a third-party `kind: export` tarball.
 fn write_third_party(dir: &Path, lib: &[u8]) {
-    let bytes = common::plugins::pack("export", THIRD_PARTY, lib, "acme");
+    let bytes = common::plugins::pack_stated("export", THIRD_PARTY, lib, "acme");
     std::fs::write(dir.join("plugins").join("tp.tar.gz"), bytes).unwrap();
 }
 
@@ -92,6 +96,8 @@ fn write_configs(dir: &Path, data_port: u16, first_party: bool, third_party: boo
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
+advanced:
+  allow_destinations: ["127.0.0.1"]
 admin_require_mtls: false
 auth:
   chain: []

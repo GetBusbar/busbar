@@ -24,9 +24,6 @@ fn test_secret() -> String {
 /// so a test can present a genuinely-valid signature. Mirrors the receiver's own signing math (which
 /// is the point — a valid signer and the verifier must agree).
 fn sign(secret: &str, id: &str, ts: &str, body: &[u8]) -> String {
-    use hmac::digest::KeyInit;
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
     let key = base64::engine::general_purpose::STANDARD
         .decode(secret.strip_prefix("whsec_").unwrap())
         .unwrap();
@@ -36,9 +33,8 @@ fn sign(secret: &str, id: &str, ts: &str, body: &[u8]) -> String {
     signed.extend_from_slice(ts.as_bytes());
     signed.push(b'.');
     signed.extend_from_slice(body);
-    let mut mac = <Hmac<Sha256>>::new_from_slice(&key).unwrap();
-    mac.update(&signed);
-    let sig = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key);
+    let sig = base64::engine::general_purpose::STANDARD.encode(ring::hmac::sign(&key, &signed));
     format!("v1,{sig}")
 }
 
@@ -269,5 +265,18 @@ fn reject_http_statuses_are_honest() {
     assert_eq!(
         WebhookReject::SignatureMismatch.http_status(),
         StatusCode::UNAUTHORIZED
+    );
+}
+
+/// The webhook HMAC moved from RustCrypto `hmac` to ring (ONE crypto backend = ring). The signature
+/// is computed by the SENDER, so the bytes must be bit-identical: RFC 4231 test case 2.
+#[test]
+fn the_webhook_hmac_is_rfc_4231_on_ring() {
+    assert_eq!(
+        hmac_sha256(b"Jefe", b"what do ya want for nothing?")
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
+        "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
     );
 }

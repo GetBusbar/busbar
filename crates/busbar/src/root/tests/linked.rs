@@ -23,6 +23,9 @@
 //! one function, the equality tests below go red for the same reason that arm is unequal.
 
 use super::*;
+use crate::root::boot::dropped_planes;
+#[cfg(linked_egress)]
+use crate::root::boot::HostEgressCarrier;
 use crate::root::loader::sign::{DiagnosticDecl, SigningKey, TrustPolicy};
 use crate::root::loader::PluginRegistry;
 use crate::root::test_plugins;
@@ -41,6 +44,7 @@ pub(super) fn linked(
         planes,
         hot_planes,
         plane_doors: &[],
+        secrets: &[],
         protocols: &[],
         path_ingress: &[],
         body_ingress: &[],
@@ -52,8 +56,9 @@ pub(super) fn linked(
         stdio_serve: &[],
         cli_help: &[],
         exports: &[],
+        export_doors: &[],
         stores: &[],
-        hooks: &[],
+        hook_doors: &[],
         auths: &[],
         gauntlet_one_shot: &[],
         gauntlet_session: &[],
@@ -867,9 +872,15 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
 #[test]
 fn every_linked_export_row_answers_its_module_ahead_of_a_dropped_in_spelling() {
     let release = test_plugins::key(7);
-    for &(name, alias, ..) in crate::LINKED.exports {
+    let linked = crate::LINKED
+        .exports
+        .iter()
+        .map(|&(name, alias, ..)| (name, alias));
+    let doors = crate::LINKED.export_doors.iter().map(|d| (d.name, d.alias));
+    for (name, alias) in linked.chain(doors) {
         let scan = || export_row_registry(alias, "k9e-dropped", alias, "busbar", &release, vec![]);
-        let rows = linked_exports(crate::LINKED.exports).expect("the linked export rows");
+        let rows = linked_exports(crate::LINKED.exports, crate::LINKED.export_doors)
+            .expect("the linked export rows");
         let both = scan().link(rows).expect("the linked door admits them");
         let answering = |r: &PluginRegistry| r.resolve(alias).map(|p| p.manifest.name.clone());
         assert_eq!(answering(&both).as_deref(), Some(name), "{alias}");
@@ -1191,8 +1202,8 @@ async fn the_collector_policy_carries_octets_to_a_loopback_collector_and_nothing
 /// cold-kind axis (`root::linked::register_stores` -> `preflight::install_linked_rows`), which
 /// registers them through `PluginRegistry::link` like any dropped-in row: the default
 /// `governance.store` is the one row that declares itself the default, an ephemeral in-process store
-/// that opens, and each built-in strategy spelling is an alias of the one hook row, opening the
-/// policy of that name.
+/// that opens; the hook table is the linked ranking DOOR, whose Statement claims each built-in
+/// strategy word (the root's hook axis binds it).
 ///
 /// RED by deleting the `store-memory` / `hooks-ranking` rows of `[package.metadata.busbar.linked]`:
 /// the tables carry no default store (and no ranking row) to hand the kernel.
@@ -1218,21 +1229,30 @@ fn the_default_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
         busbar_kernel::config::STRATEGY_LEAST_BUSY,
         busbar_kernel::config::STRATEGY_USAGE,
     ];
-    let hooks: Vec<_> = crate::LINKED.hooks.iter().map(|h| h.1).collect();
-    let want: &[&[&str]] = if cfg!(linked_axis_hooks) {
-        &[&strategies]
+    // Each linked hook door's claimed hook words (its Statement's `MARK_WORD_HOOK` marks).
+    let words: Vec<Vec<String>> = crate::LINKED
+        .hook_doors
+        .iter()
+        .map(|door| {
+            let stated =
+                crate::root::loader::dispatch::rendering_of(*door).expect("the door states");
+            busbar_contract::abi::mechanism::rendering::read(&stated)
+                .expect("the rendering reads")
+                .mark_words
+                .into_iter()
+                .filter(|(class, _)| {
+                    *class == busbar_contract::abi::mechanism::door::MARK_WORD_HOOK
+                })
+                .map(|(_, word)| word)
+                .collect()
+        })
+        .collect();
+    let want: Vec<Vec<String>> = if cfg!(linked_axis_hooks) {
+        vec![strategies.iter().map(|s| s.to_string()).collect()]
     } else {
-        &[]
+        Vec::new()
     };
-    assert_eq!(
-        hooks, want,
-        "the ranking row answers to every strategy spelling"
-    );
-    for (_, aliases, open) in crate::LINKED.hooks {
-        for spelling in *aliases {
-            assert_eq!(open(spelling).map(|p| p.name()), Some(*spelling));
-        }
-    }
+    assert_eq!(words, want, "the ranking door claims every strategy word");
 }
 
 /// STORE-DEFAULT — THE DEFAULT GOVERNANCE STORE IS THE LINKED ROW THAT DECLARES ITSELF THE DEFAULT.
@@ -1248,8 +1268,11 @@ fn the_default_store_is_the_row_that_declares_it() {
     fn open(_: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
         Err("never opened".into())
     }
-    const PLAIN: LinkedStore = ("acme-plain", false, false, open);
-    const CLAIMS: LinkedStore = ("acme-default", true, true, open);
+    extern "C" fn door() -> *const busbar_contract::abi::mechanism::door::Door {
+        std::ptr::null()
+    }
+    const PLAIN: LinkedStore = ("acme-plain", false, false, open, door);
+    const CLAIMS: LinkedStore = ("acme-default", true, true, open, door);
     assert_eq!(
         super::default_store(&[PLAIN, CLAIMS]),
         Ok(Some("acme-default"))
@@ -1279,9 +1302,12 @@ fn two_rows_declaring_the_default_refuse_boot() {
     fn open(_: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
         Err("never opened".into())
     }
-    const A: LinkedStore = ("acme-a", true, true, open);
-    const B: LinkedStore = ("acme-b", false, true, open);
-    const C: LinkedStore = ("acme-c", false, false, open);
+    extern "C" fn door() -> *const busbar_contract::abi::mechanism::door::Door {
+        std::ptr::null()
+    }
+    const A: LinkedStore = ("acme-a", true, true, open, door);
+    const B: LinkedStore = ("acme-b", false, true, open, door);
+    const C: LinkedStore = ("acme-c", false, false, open, door);
     assert_eq!(
         super::default_store(&[A, C, B]),
         Err(
@@ -1291,4 +1317,39 @@ fn two_rows_declaring_the_default_refuse_boot() {
         )
     );
     assert_eq!(super::default_store(&[A, C]), Ok(Some("acme-a")));
+}
+
+/// WIRE-SECRET (THE DESIGN, "Plugins"; TODO step 28) — THE SECRET AXIS IS THE ROOT'S, OVER THE ONE
+/// DISPATCHER. `env` and `file` are the linked secret plugins the root's axis answers for, by the
+/// module alias their Statements declare; a reference resolves through the secret kind table on
+/// `root::dispatch`'s dispatcher, on one shared instance, and the refusal text is the plugin's own
+/// (1.5.5's). A module no plugin answers is refused.
+///
+/// RED by dropping a door from the linked table: `file` stops being linked.
+#[test]
+fn the_secret_axis_resolves_the_linked_sources_over_the_one_dispatcher() {
+    use busbar_contract::secret::SecretAxis;
+    let axis = super::link_secrets(crate::LINKED.secrets).expect("the linked secret doors state");
+    assert!(axis.linked("env") && axis.linked("file") && !axis.answers("vault"));
+    let env = axis.shared("env").expect("env opens");
+    assert!(
+        std::sync::Arc::ptr_eq(&env, &axis.shared("env").expect("env opens")),
+        "one shared instance per linked plugin"
+    );
+    let var = "BUSBAR_WIRE_SECRET_ROOT_AXIS";
+    std::env::set_var(var, "hunter2");
+    let got = env
+        .resolve(format!(r#"{{"key":"{var}"}}"#).as_bytes())
+        .expect("a set variable resolves");
+    assert_eq!(got.expose_secret().as_slice(), b"hunter2");
+    std::env::remove_var(var);
+    let refused = env
+        .resolve(br#"{"key":"BUSBAR_WIRE_SECRET_ROOT_UNSET"}"#)
+        .unwrap_err();
+    assert_eq!(
+        refused.text,
+        "secret env:BUSBAR_WIRE_SECRET_ROOT_UNSET cannot resolve: environment variable \
+         'BUSBAR_WIRE_SECRET_ROOT_UNSET' is unset"
+    );
+    assert!(axis.shared("vault").is_err());
 }

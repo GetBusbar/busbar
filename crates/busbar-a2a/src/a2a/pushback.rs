@@ -119,12 +119,8 @@ fn secret() -> Option<&'static [u8; 32]> {
 
 /// The MAC over one task id.
 fn mac_of(secret: &[u8; 32], task_id: &str) -> String {
-    use hmac::digest::KeyInit as _;
-    use hmac::Mac as _;
-    let mut mac = <hmac::Hmac<sha2::Sha256>>::new_from_slice(secret)
-        .expect("HMAC-SHA256 accepts a 32-byte key");
-    mac.update(task_id.as_bytes());
-    hex::encode(mac.finalize().into_bytes())
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret);
+    hex::encode(ring::hmac::sign(&key, task_id.as_bytes()).as_ref())
 }
 
 /// A MINTED CAPABILITY for one task. Opaque to the backend, and a `String` here only because it is

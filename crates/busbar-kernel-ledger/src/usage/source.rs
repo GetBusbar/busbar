@@ -3,7 +3,7 @@
 
 //! The closed set of places a quantity may come from, and the one conversion this unit adds to it.
 //!
-//! The set itself lives in `busbar-caps`, beside the usage report that carries it, because three
+//! The set itself lives in `busbar-contract`, beside the usage report that carries it, because three
 //! crates read a source: this unit writes it, the ledger settles against it, and the audit record
 //! carries it into the journal. It was spelled three different ways before — seven arms here, four
 //! in the audit crate, none in the capability crate — which meant the independent recompute and the
@@ -24,7 +24,7 @@ pub use busbar_contract::ClassDirection as Direction;
 /// Every source is named. No wildcard arm: under one, a source added to the set later would be
 /// metered as its own raw measurement without anybody deciding that it should be — the reading
 /// that costs money silently, and the failure mode this set already drifted into once. Naming the
-/// pass-through sources means adding one to `busbar-caps` stops this build until its conversion is
+/// pass-through sources means adding one to `busbar-contract` stops this build until its conversion is
 /// written down.
 pub fn quantity_from_raw(source: &QuantitySource, raw: u64) -> u64 {
     match source {

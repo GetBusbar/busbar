@@ -45,7 +45,9 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("cli-help", "cli_help", "CLI_HELP"),
     ("exports", "exports", "EXPORT"),
     ("stores", "stores", "STORE"),
-    ("hooks", "hooks", "HOOK"),
+    // The hook axis: each linked `kind: hook` row's door (`plugin_door!`), the same door its
+    // dropped-in build exports.
+    ("hooks", "hook_doors", "door"),
     // The node axis: a plane whose units a composition root's node drives is handed that node.
     ("node", "node", "install_node"),
     // The unified kernel loop (#28): the key a plane is flipped onto its one-shot or session runner
@@ -71,12 +73,34 @@ const TRANSPORT_AXIS: &str = "transport";
 /// the host's sockets by the connector.
 pub(crate) const DOOR_AXIS: &str = "transport-door";
 
+/// Beside `transport`, for a wire whose row keeps its own `build`: the row's entry ALSO exports its
+/// memory-ABI `door`, which the root's one Connector opens as a framer entry, so a plugin's need over
+/// this scheme is served on the connector (an export sink's outbound `http`, `BUSBAR-1.6.0.md` Part 2
+/// #50) while the wire the registry folds is unchanged.
+pub(crate) const CONNECTOR_DOOR_AXIS: &str = "connector-door";
+
+/// The plane door axis (#2, THE DESIGN §11.4): the row's entry exports its plane kind's memory-ABI
+/// `door`, and the root hands it to the loader beside every dropped-in plane door
+/// (`crate::root::boot::dropped_planes_of`), so a compiled-in plane is bound through the same table
+/// as a dropped-in one. It needs no `plane` beside it: the door states the plane.
+pub(crate) const PLANE_DOOR_AXIS: &str = "plane-door";
+/// The export axis on the export kind's MEMORY ABI: each row's crate states its plugin `NAME`,
+/// `ALIAS` and manifest `DECLARES`, and its entry module exports its `door` (`plugin_door!`), the
+/// same door its `cdylib` exports — admitted through the one registration as a door row.
+pub(crate) const EXPORT_DOOR_AXIS: &str = "export-doors";
+
 /// The claims axis: each row's entry exports the pure plane the boot seal registers (`PLANE`) and
 /// the claims it declares (`CLAIMS`); rides on `plane`.
 const CLAIMS_AXIS: &str = "claims";
 
-/// The auth axis (#2 rule (1), #40): each row's entry exports the SDK boundary every `kind: auth`
-/// plugin exports (`BUSBAR_COLD_ENTRY`), registered under the key its `linked-name` row states.
+/// The secret axis (THE DESIGN, "Plugins": env and file secrets are ordinary plugins, linked in the default
+/// build): each row's entry exports its memory-ABI `door`.
+const SECRET_AXIS: &str = "secret-doors";
+
+/// The auth axis (#2 rule (1), #40): each row's entry (its crate root) exports, at `door::door`, the
+/// memory-ABI door every `kind: auth` plugin exports (the same door its dropped-in build exports as
+/// `busbar_plugin_door`: THE DESIGN, compiled-in = dropped-in), registered under the key its
+/// `linked-name` row states.
 const AUTH_AXIS: &str = "auths";
 
 /// The `value` of `key` under the `[table]` header, when the table and the row exist. The optional
@@ -241,7 +265,11 @@ pub(crate) fn linked_source(
                     || axis == "hot-plane"
                     || axis == TRANSPORT_AXIS
                     || axis == DOOR_AXIS
+                    || axis == CONNECTOR_DOOR_AXIS
+                    || axis == PLANE_DOOR_AXIS
                     || axis == AUTH_AXIS
+                    || axis == SECRET_AXIS
+                    || axis == EXPORT_DOOR_AXIS
                     || axis == CLAIMS_AXIS
                     || AXES.iter().any(|(a, _, _)| a == axis)
                     || SEAMS.iter().any(|(a, _)| a == axis),
@@ -319,7 +347,14 @@ pub(crate) fn linked_source(
     }
     out.push_str("],\n");
     out.push_str("    plane_doors: &[");
-    for e in on_axis("plane-door") {
+    for e in on_axis(PLANE_DOOR_AXIS) {
+        out.push_str(&format!("{e}::door, "));
+    }
+    out.push_str("],\n");
+    // THE SECRET AXIS: each linked secret plugin's memory-ABI door, loaded through the one loader
+    // (`crate::root::linked::secret_rows`).
+    out.push_str("    secrets: &[");
+    for e in on_axis(SECRET_AXIS) {
         out.push_str(&format!("{e}::door, "));
     }
     out.push_str("],\n");
@@ -357,7 +392,18 @@ pub(crate) fn linked_source(
                          `[package.metadata.busbar.linked-name]` row naming its registry key"
                     )
                 });
-            out.push_str(&format!("({name:?}, &{entry}::BUSBAR_COLD_ENTRY), "));
+            out.push_str(&format!("({name:?}, {entry}::door::door), "));
+        }
+    }
+    out.push_str("],\n");
+    out.push_str("    export_doors: &[");
+    for ((entry, list), (_, krate)) in linked.iter().zip(&on) {
+        if list.iter().any(|a| a == EXPORT_DOOR_AXIS) {
+            let c = ident(krate);
+            out.push_str(&format!(
+                "crate::root::linked::LinkedDoorExport {{ name: {c}::NAME, alias: {c}::ALIAS, \
+                 declares: {c}::DECLARES, door: {entry}::door }}, "
+            ));
         }
     }
     out.push_str("],\n");
@@ -389,7 +435,7 @@ pub(crate) fn linked_source(
         .iter()
         .filter(|(_, a)| a.iter().any(|x| x == TRANSPORT_AXIS))
     {
-        if axes.iter().any(|x| x == DOOR_AXIS) {
+        if axes.iter().any(|x| x == DOOR_AXIS || x == CONNECTOR_DOOR_AXIS) {
             out.push_str(&format!("({e}::KEY, {e}::door), "));
         }
     }

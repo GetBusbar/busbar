@@ -17,9 +17,9 @@
 //! ([`crate::egress::refuse_second_lookup_message`]), byte-identical to the reqwest resolver's.
 //!
 //! The pooled posture's arm is [`EgressResolver::Judged`]: the name is resolved once per new
-//! connection and EVERY address it answered with is judged by the dial table ([`DialTable`], the
-//! configuration-time metadata denylist asked of an address) before `HttpConnector` sees any of
-//! them. A refused answer is a resolver error, so the dial fails as a connect failure and nothing
+//! connection and EVERY address it answered with is judged by the deployment's one destination
+//! guard (OWNER ruling DESTINATION GUARD: the connector's, installed by the root and asked through
+//! `plane_host::egress_trust::egress_trust_host`, the root-installed egress-trust seam) before `HttpConnector` sees any of them. A refused answer is a resolver error, so the dial fails as a connect failure and nothing
 //! is connected; an admitted answer is handed on whole, and the `Uri` keeps the name for SNI, the
 //! certificate check and `Host`. A pooled connection was therefore dialled to an address this arm
 //! judged, which is what makes reusing it safe.
@@ -32,44 +32,46 @@ use std::task::{Context, Poll};
 
 use hyper_util::client::legacy::connect::dns::{GaiAddrs, GaiFuture, GaiResolver, Name};
 
-use crate::net_guard::{AddressRefusal, DialTable};
+use busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
+
+use crate::host_services::DestJudge;
+use crate::plane_host::egress_trust::{egress_trust_host, EgressTrustHost, PassThroughEgressTrust};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// THE PROCESS'S DIAL TABLE: the one the composition root publishes each committed configuration
-/// into (`InstalledLimits::keep`). Before the first commit it holds the built-in metadata list and
-/// no carve-outs.
-pub fn process_dial_table() -> DialTable {
-    static PROCESS: std::sync::OnceLock<DialTable> = std::sync::OnceLock::new();
-    PROCESS.get_or_init(DialTable::default).clone()
-}
-
-/// Judge one resolution's answer, refusing it whole. The refusal ([`AddressRefusal`]) is the
+/// Judge one resolution's answer, refusing it whole, by `judge` (a test's own) or the
+/// deployment's destination guard behind the root-installed egress-trust seam. The engine never
+/// decides: with no seam installed the answer is refused (fail closed). The refusal is the
 /// resolver's error, so `HttpConnector` reports the dial as a connect failure caused by it: not a
 /// timeout, so a plane fails it over as it does a refused connection.
 fn judged(
-    table: &DialTable,
+    judge: Option<&Arc<dyn DestJudge>>,
     host: &str,
     addrs: Vec<SocketAddr>,
 ) -> Result<ResolvedAddrs, BoxError> {
     let ips: Vec<IpAddr> = addrs.iter().map(SocketAddr::ip).collect();
-    table
-        .judge(host, &ips)
-        .map_err(|refusal: AddressRefusal| Box::new(refusal) as BoxError)?;
+    let answer = match (judge, egress_trust_host()) {
+        (Some(j), _) => j.judge_answer(host, &ips, EGRESS_PROVIDER),
+        (None, Some(seam)) => seam.judge_answer(host, &ips, EGRESS_PROVIDER),
+        (None, None) => PassThroughEgressTrust.judge_answer(host, &ips, EGRESS_PROVIDER),
+    };
+    answer.map_err(|refusal| Box::new(refusal) as BoxError)?;
     Ok(ResolvedAddrs::Listed(addrs.into_iter()))
 }
 
-/// The dial posture a pooled client is built with: the process table over the system resolver.
-/// A test scopes its own table and names over the clients built inside
-/// `egress::fixtures::with_scoped_dial`, so a
-/// plane's runtime built in that scope judges by the test's lists without touching the process
-/// table another test reads.
-pub(crate) fn pooled_dial() -> (DialTable, Option<Arc<dyn ResolveNames>>) {
+/// The judge and the name lookup a pooled client dials by; `None` = the process's own.
+type PooledDial = (Option<Arc<dyn DestJudge>>, Option<Arc<dyn ResolveNames>>);
+
+/// The dial posture a pooled client is built with: the installed guard (`None`, read through the
+/// egress-trust seam at each dial) over the system resolver. A test scopes its own judge and names over the
+/// clients built inside `egress::fixtures::with_scoped_dial`, so a plane's runtime built in that
+/// scope judges by the test's judge without touching the process's.
+pub(crate) fn pooled_dial() -> PooledDial {
     #[cfg(any(test, feature = "test-support"))]
-    if let Some((table, names)) = crate::egress::fixtures::scoped_dial() {
-        return (table, Some(names));
+    if let Some((judge, names)) = crate::egress::fixtures::scoped_dial() {
+        return (Some(judge), Some(names));
     }
-    (process_dial_table(), None)
+    (None, None)
 }
 
 /// A caller-supplied name resolver — the test seam (a counting resolver is how "the engine
@@ -96,13 +98,14 @@ pub enum EgressResolver {
     Pinned { host: Arc<str>, addr: IpAddr },
     /// Caller-supplied (tests).
     Custom(Arc<dyn ResolveNames>),
-    /// THE POOLED POSTURE: `names` answers, `table` judges every answered address, and only an
-    /// admitted answer reaches the connector. An IP-literal host never reaches a resolver
+    /// THE POOLED POSTURE: `names` answers, the destination guard (`judge`, or the process's
+    /// installed one when `None`) judges every answered address, and only an admitted answer
+    /// reaches the connector. An IP-literal host never reaches a resolver
     /// (`HttpConnector` short-circuits it); a literal cannot resolve elsewhere, and it was judged as
     /// a literal when the configuration was applied.
     Judged {
         names: Box<EgressResolver>,
-        table: DialTable,
+        judge: Option<Arc<dyn DestJudge>>,
     },
 }
 
@@ -144,7 +147,7 @@ pub enum ResolveFuture {
     Judged {
         names: Box<ResolveFuture>,
         host: Box<str>,
-        table: DialTable,
+        judge: Option<Arc<dyn DestJudge>>,
     },
 }
 
@@ -164,9 +167,11 @@ impl Future for ResolveFuture {
                 .as_mut()
                 .poll(cx)
                 .map(|r| r.map(|addrs| ResolvedAddrs::Listed(addrs.into_iter()))),
-            ResolveFuture::Judged { names, host, table } => {
+            ResolveFuture::Judged { names, host, judge } => {
                 let answered = std::task::ready!(Pin::new(names.as_mut()).poll(cx));
-                Poll::Ready(answered.and_then(|addrs| judged(table, host, addrs.collect())))
+                Poll::Ready(
+                    answered.and_then(|addrs| judged(judge.as_ref(), host, addrs.collect())),
+                )
             }
         }
     }
@@ -204,10 +209,10 @@ impl tower::Service<Name> for EgressResolver {
                 }
             }
             EgressResolver::Custom(r) => ResolveFuture::Custom(r.resolve(name.as_str())),
-            EgressResolver::Judged { names, table } => ResolveFuture::Judged {
+            EgressResolver::Judged { names, judge } => ResolveFuture::Judged {
                 host: name.as_str().into(),
                 names: Box::new(tower::Service::call(names.as_mut(), name)),
-                table: table.clone(),
+                judge: judge.clone(),
             },
         }
     }

@@ -46,6 +46,19 @@ pub(super) async fn build(
     else {
         return Err(internal_error(hop.ingress_protocol));
     };
+    // Busbar is invisible to upstreams: a same-dialect hop carries the caller's own URL query, the
+    // plane's dialect data deciding which parameters go. `None` (the common case) keeps the
+    // boot-built target untouched.
+    let with_query: Option<axum::http::Uri> = (hop.ingress_protocol == hop.egress_name)
+        .then_some(hop.client_fwd.query.as_deref())
+        .flatten()
+        .and_then(|q| {
+            let pq = target.uri.path_and_query()?.as_str();
+            let joined = crate::engine::xchg::attempt::with_caller_query(hop.egress_name, pq, q)?;
+            let mut parts = target.uri.clone().into_parts();
+            parts.path_and_query = Some(joined.parse().ok()?);
+            axum::http::Uri::from_parts(parts).ok()
+        });
     let _cb_auth = busbar_kernel::profile::start(busbar_kernel::profile::Stage::CbAuth);
     // The SigV4 timestamp is taken here, inside the attempt, per attempt (the five-minute-skew rule).
     let signing_ctx = busbar_kernel::proto::SigningContext {
@@ -127,9 +140,15 @@ pub(super) async fn build(
     // collected (none of them governed), the client's value winning over busbar's native defaults.
     // A translated hop forwards none: no header maps between dialects.
     if hop.ingress_protocol == hop.egress_name {
-        busbar_kernel::proxy::apply_client_headers(&mut egress_headers, hop.client_fwd);
+        busbar_kernel::proxy::apply_client_headers(&mut egress_headers, &hop.client_fwd.headers);
     }
-    let hreq = crate::engine::egress_request(target.uri.clone(), egress_headers, payload);
+    // The provider's tenant selectors, from busbar's config: set on every upstream request, never
+    // the caller's (theirs are governed and were not collected).
+    for (name, value) in &hop.lane_row().tenant_headers {
+        egress_headers.insert(name.clone(), value.clone());
+    }
+    let uri = with_query.unwrap_or_else(|| target.uri.clone());
+    let hreq = crate::engine::egress_request(uri, egress_headers, payload);
     drop(_cb_reqwest);
     Ok(hreq)
 }
@@ -144,20 +163,15 @@ fn internal_error(ingress_protocol: &str) -> Response {
     )
 }
 
-/// The egress payload bytes for this hop: the retained bytes verbatim on a pristine same-protocol
-/// hop, else the shared cross-protocol request-shaping seam (read → clear-extra → write, shim-key
-/// strip, model rewrite, serialize). A maximum-size body runs the same pure call on the blocking
+/// The egress payload bytes for this hop, from the shared request-shaping seam: within one dialect
+/// the retained bytes with the governed member splices only, across dialects read → clear-extra →
+/// write, shim-key strip, model rewrite, serialize. A maximum-size body runs the same pure call on the blocking
 /// pool so a single-threaded worker is not head-of-line-blocked for hundreds of milliseconds.
 ///
 /// (`result_large_err`: same reason as `build` — the `Err` is a finished response that only travels
 /// upward to the client.)
 #[allow(clippy::result_large_err)]
 async fn translate(hop: &Hop<'_>, hop_v: Option<Value>) -> Result<Bytes, Response> {
-    if hop.pristine {
-        // `Bytes::clone` is a refcount bump; the exact bytes the translate seam's own pristine
-        // short-circuit would emit.
-        return Ok(hop.body.clone());
-    }
     let reasoning = effective_reasoning(hop.cands, hop.lane, hop.lane_row().reasoning);
     let caller_key_id = hop
         .resolved_gov_key
@@ -206,11 +220,8 @@ async fn translate(hop: &Hop<'_>, hop_v: Option<Value>) -> Result<Bytes, Respons
 /// decodes off the upstream stream, but an OpenAI Chat Completions upstream only emits that usage
 /// (in a trailing chunk) when the request carried `stream_options.include_usage: true`. A client
 /// that did not opt in would otherwise leave the upstream silent on tokens and busbar would bill
-/// ZERO — so the flag is forced on every streaming request to such an egress, on every path.
-///
-/// Two gates keep the pristine same-protocol passthrough parse-free: a client that already opted in
-/// needs no injection at all; a body with no top-level `stream_options` takes the byte-splice
-/// injector. Only the rare body that carries a non-opted-in `stream_options` pays the DOM injector.
+/// ZERO — so the flag is forced on every streaming request to such an egress, on every path. It is
+/// the governed METERING edit, a byte splice over the body being sent (every other byte stays).
 /// The client-facing trailing chunk is then gated on the client's OWN opt-in at the framing seam, so
 /// this never leaks an unsolicited usage chunk to an opted-out client.
 ///
@@ -230,12 +241,7 @@ fn inject_stream_usage(hop: &Hop<'_>, payload: Bytes) -> Result<Bytes, Response>
     {
         return Ok(payload);
     }
-    let injected = if hop.client_has_stream_options {
-        try_inject_openai_stream_include_usage(payload)
-    } else {
-        try_inject_openai_stream_include_usage_pristine(payload)
-    };
-    injected.map_err(|_unmeterable| {
+    try_inject_openai_stream_include_usage(payload).map_err(|_unmeterable| {
         ingress_error(
             hop.ingress_protocol,
             StatusCode::BAD_REQUEST,
@@ -258,21 +264,6 @@ pub(crate) fn try_inject_openai_stream_include_usage(payload: Bytes) -> Result<B
 #[cfg(test)]
 pub(crate) fn inject_openai_stream_include_usage(payload: Bytes) -> Bytes {
     try_inject_openai_stream_include_usage(payload).unwrap_or_else(|verbatim| verbatim)
-}
-
-#[cfg(test)]
-pub(crate) fn inject_openai_stream_include_usage_pristine(payload: Bytes) -> Bytes {
-    try_inject_openai_stream_include_usage_pristine(payload).unwrap_or_else(|verbatim| verbatim)
-}
-
-/// The same ask without a parse when the bytes provably carry no `stream_options` (the plane's
-/// `xchg::attempt::try_inject_stream_include_usage_pristine`).
-pub(crate) fn try_inject_openai_stream_include_usage_pristine(
-    payload: Bytes,
-) -> Result<Bytes, Bytes> {
-    crate::engine::xchg::attempt::try_inject_stream_include_usage_pristine(payload.to_vec())
-        .map(Bytes::from)
-        .map_err(Bytes::from)
 }
 
 #[cfg(test)]

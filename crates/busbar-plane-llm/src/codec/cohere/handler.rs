@@ -132,8 +132,10 @@ pub fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
     let texts = match &r.input {
         EmbInput::Text(v) => v.clone(),
         other => {
-            tracing::warn!(
-                dropped = 1,
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::member(keys::INPUT),
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [dropped = 1,],
                 "Cohere embeddings input is text-only here; dropping a non-text embeddings \
                  input ({other:?} kind) with no analog"
             );

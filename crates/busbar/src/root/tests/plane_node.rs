@@ -607,6 +607,7 @@ async fn drive(rig: &Rig, fixture: Fixture) -> Response {
         operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: fixture.body(),
         path: None,
     };
@@ -680,7 +681,6 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     // settle path onto a real journal, come back off it in the order they were written — which
     // is the ordering the record is FOR, and which does not exist if the second field is the
     // first one copied.
-    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
@@ -694,7 +694,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     let who = PrincipalId::new("acct:node");
     for arrived in [Arrived::at(EPOCH * 1_000, 7), Arrived::at(EPOCH * 1_000, 8)] {
         let ledger_token =
-            busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal);
+            busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::WriteMoney>();
         let accrual =
             busbar_contract::caps::HoldAccrual::after_terminal(who.clone(), 0, &ledger_token);
         let posted = busbar_contract::caps::Posted::settle_late(accrual, &ledger_token);
@@ -703,7 +703,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
             &who,
             arrived,
             None,
-            &busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal),
+            &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
             posted,
         )
         .expect("the memory-buffered journal takes it");
@@ -767,6 +767,7 @@ async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in(
         operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: Fixture::BufferedOk.body(),
         path: None,
     };
@@ -1078,7 +1079,6 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         "this plane's door opens the kernel's hold at zero; the spend is the governance ledger's"
     );
 
-    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
@@ -1094,7 +1094,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         &who,
         Arrived::at(EPOCH * 1_000, 0),
         None,
-        &busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal),
+        &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
         posted,
     )
     .expect("the memory-buffered journal takes it");
@@ -1102,7 +1102,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
 
     let durability = book.lock().unwrap_or_else(|p| p.into_inner());
     let window =
-        busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_DAY, EPOCH);
+        busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_DAY, EPOCH);
     let figures = durability.ledger.book().get(&balance(&who), window);
     assert_eq!(figures.overdraft_carried_out, 0);
     let replayed = durability
@@ -1250,7 +1250,7 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     site.audited(
         UnitKey::new(51),
         facts,
-        Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel()),
+        busbar_kernel::test_support::tokens::pass(),
     );
     let before = records();
     site.post(&ctx(51), ended);
@@ -1362,6 +1362,7 @@ async fn drive_keeping_the_unit(
         operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: fixture.body(),
         path: None,
     };
@@ -1520,6 +1521,48 @@ async fn the_loop_leaves_the_money_where_the_shipped_plane_leaves_it() {
     let post_door = leg_loop(Fixture::UnknownModel).await;
     assert_eq!(field(&post_door, "ledger_requests"), "1");
     assert_eq!(field(&post_door, "metering_rows"), "");
+}
+
+/// A CALLER THAT HANGS UP MID-DISPATCH KEEPS ITS FEE CHARGED (MONEY-AUDIT C-F1, spec §7 F13).
+///
+/// The upstream answers its headers and then holds its body, so the route step is parked on the
+/// read; the caller's answer future is dropped there, which is a client going away. The loop's
+/// guard ends the unit as `ClientGone` with nothing rendered. 1.5.5's dropped request never reached
+/// the non-2xx refund, so the flat fee the door charged stays on the key's bucket.
+/// RED: the abandoned end was finished as a 503 no client saw, and the non-2xx arm refunded it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_caller_that_hangs_up_mid_dispatch_keeps_its_flat_fee_charged() {
+    let rig = rig_billed(Fixture::BufferedOk).await;
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    // Popped next: the queue is a stack, so the last push is the first reply.
+    rig.upstream.push(MockResponse::Gated {
+        status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        body: serde_json::json!({"error": {"message": "still answering", "type": "server_error"}}),
+        started: Arc::clone(&started),
+        release: Arc::clone(&release),
+    });
+    tokio::select! {
+        _ = drive(&rig, Fixture::BufferedOk) => {
+            panic!("the upstream holds its body, so the unit cannot have answered");
+        }
+        // The route step is reading the held body: the caller goes away here, and the answer
+        // future is dropped with the unit inside its one await.
+        () = started.notified() => {}
+    }
+    release.notify_one();
+    let observed = observe(&rig, Response::new(axum::body::Body::empty())).await;
+    rig.server.shutdown().await;
+    assert_eq!(
+        field(&observed, "ledger_requests"),
+        "1",
+        "the door drew the admission slot"
+    );
+    assert_eq!(
+        field(&observed, "ledger_spend_cents"),
+        FEE_CENTS.to_string(),
+        "a caller that went away mid-dispatch is refunded nothing: the flat fee stays charged"
+    );
 }
 
 /// W3.c / DECISIONS #42 + #43: BILLING OFF (no `rate_card:`) ⇒ SERVE FREE, WRITE THE COUNTS, READ 0,
@@ -1714,6 +1757,7 @@ async fn leg_loop_path(fixture: Fixture, proto: &'static str) -> Observed {
         operation: facts.operation,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: path_body(proto),
         path: Some(facts),
     };
@@ -1851,6 +1895,7 @@ async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_i
                 operation: busbar_contract::operation::OpVerb::CHAT,
                 caller_token: None,
                 headers: json_headers(),
+                query: None,
                 body: path_body(proto),
                 path: Some(nameless(proto)),
             };
@@ -1915,6 +1960,7 @@ async fn the_url_facts_ride_the_unit_and_not_the_thread() {
         operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: path_body(proto),
         path,
     };
@@ -2101,6 +2147,7 @@ async fn leg_loop_decode(
         operation,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body,
         path: None,
     };
@@ -2301,6 +2348,7 @@ async fn leg_loop_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx) 
         operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: Fixture::BufferedOk.body(),
         path: None,
     };
@@ -2418,6 +2466,7 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
                         operation: busbar_contract::operation::OpVerb::CHAT,
                         caller_token: None,
                         headers: json_headers(),
+                        query: None,
                         body: Fixture::BufferedOk.body(),
                         path: None,
                     },
@@ -2500,6 +2549,7 @@ async fn leg_loop_seated(
         operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: Fixture::BufferedOk.body(),
         path: None,
     };
@@ -2630,6 +2680,7 @@ async fn drive_counting(rig: &Rig, fixture: Fixture) -> (Response, Option<u64>) 
         operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: fixture.body(),
         path: None,
     };
@@ -2830,6 +2881,7 @@ async fn native_run_via_loop(
         operation,
         caller_token: None,
         headers: headers.clone(),
+        query: None,
         body,
         path: None,
     };
@@ -3830,7 +3882,7 @@ fn an_unpriced_class_on_a_present_card_leaves_a_durable_counts_row_and_the_read_
     let durability = node.durability.lock().expect("unpoisoned");
     let key = balance(&PrincipalId::new("vk_refused"));
     let window =
-        busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_DAY, at.secs());
+        busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_DAY, at.secs());
     assert_eq!(
         durability.ledger.book().get(&key, window).settled,
         0,
@@ -4098,6 +4150,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         operation: busbar_contract::operation::OpVerb::RERANK,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: Bytes::from_static(br#"{"query":"which is fastest","documents":["a","b","c"]}"#),
         path: Some(PathFacts {
             operation: busbar_contract::operation::OpVerb::RERANK,
@@ -4191,7 +4244,10 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         .store()
         .get_usage(
             &key.id,
-            busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_TOTAL, EPOCH),
+            busbar_kernel::governance::budget_window(
+                busbar_kernel::governance::WINDOW_TOTAL,
+                EPOCH,
+            ),
         )
         .expect("the governance ledger reads");
     let classes = ledger
@@ -4290,7 +4346,7 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
                 cache_write: 0.0,
             },
         )];
-        holder.apply_rates(
+        let _ = holder.apply_rates(
             &busbar_kernel::rate_apply::RawRates {
                 lanes: &lanes,
                 units: &[],
@@ -4558,7 +4614,7 @@ fn a_class_no_plane_declared_is_refused_and_keeps_its_counts() {
     let durability = node.durability.lock().expect("unpoisoned");
     let key = balance(&PrincipalId::new("vk_undeclared"));
     let window =
-        busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_DAY, at.secs());
+        busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_DAY, at.secs());
     assert_eq!(durability.ledger.book().get(&key, window).settled, 0);
     assert!(durability.settled_read(&key, window).is_err());
     drop(durability);

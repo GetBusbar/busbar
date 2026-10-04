@@ -698,3 +698,118 @@ fn the_production_probe_carries_a_real_resolution_failure_up_to_the_verb_layer()
         "the probe must report the real resolver's failure, naming the host: {err}"
     );
 }
+
+// ══ THE BILLED BYTES OF A HOP THAT DIES MID-ANSWER ═══════════════════════════════════════════════
+
+/// **A BUFFERED HOP RESET AFTER N RESPONSE BYTES BILLS ITS REQUEST + N (Q35).** A real backend reads
+/// the whole request, answers a head promising 1,000 body bytes, sends 300 and closes. The hop fails
+/// (the answer is incomplete, so nothing is relayed), but the request crossed the wire and so did the
+/// 300 bytes busbar received: those are the hop's payload bytes, both ways — the rule the streaming
+/// leg already applies to a cut stream. Before, the buffered leg threw the partial body away and
+/// billed 0.
+#[test]
+fn a_buffered_hop_that_dies_mid_answer_bills_its_request_and_the_bytes_received() {
+    const PROMISED: usize = 1_000;
+    const DELIVERED: usize = 300;
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind loopback");
+    let port = listener.local_addr().expect("local addr").port();
+    let request_len = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&request_len);
+    std::thread::spawn(move || {
+        let Ok((stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut reader = BufReader::new(&stream);
+        let mut length = 0usize;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':') {
+                if name.eq_ignore_ascii_case("content-length") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+        }
+        let mut body = vec![0u8; length];
+        let _ = reader.read_exact(&mut body);
+        observed.store(body.len(), Ordering::SeqCst);
+        let mut w = &stream;
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {PROMISED}\r\n\r\n"
+        );
+        let _ = w.write_all(head.as_bytes());
+        let _ = w.write_all(&[b'x'; DELIVERED]);
+        let _ = w.flush();
+        std::thread::sleep(Duration::from_millis(100));
+    });
+
+    struct Loopback;
+    impl Resolver for Loopback {
+        fn resolve(&self, _host: &str) -> Result<Vec<IpAddr>, String> {
+            Ok(vec![LOOPBACK])
+        }
+    }
+    struct Live(ReqwestTransport);
+    impl crate::a2a::relay::RelaySeam for Live {
+        fn resolver(&self) -> &dyn Resolver {
+            &Loopback
+        }
+        fn transport(&self) -> &dyn crate::a2a::relay::RelayTransport {
+            &self.0
+        }
+    }
+    struct AlwaysDelegable;
+    impl crate::a2a::relay::DelegationGate for AlwaysDelegable {
+        fn still_delegable(
+            &self,
+            _agent_id: &str,
+            _admitted: u64,
+        ) -> Result<(), crate::a2a::relay::NotDelegable> {
+            Ok(())
+        }
+    }
+
+    let policy = FetchPolicy {
+        allow_private: true,
+        ..FetchPolicy::default()
+    };
+    let seam = Live(ReqwestTransport::new(&policy));
+    let backend = format!("http://127.0.0.1:{port}/");
+    let envelope = br#"{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"role":"user","parts":[{"kind":"text","text":"PLAN"}]}}}"#;
+    let bytes = crate::a2a::relay::HopBytes::default();
+    let out = crate::a2a::relay::relay(
+        &crate::a2a::relay::RelayCall {
+            admitted_generation: 0,
+            agent_id: "planner",
+            backend_url: &backend,
+            lease: None,
+            gate: &AlwaysDelegable,
+            body: envelope,
+            rpc_id: &serde_json::json!(1),
+            policy: &policy,
+            a2a_version: "0.3",
+            framing: crate::a2a::relay::default_framing(),
+            breakers: None,
+            host: None,
+            host_scope: None,
+            admission: busbar_contract::abi::hot::AdmissionId::NONE,
+            bytes: Some(&bytes),
+        },
+        &seam,
+        1_000,
+    );
+    assert!(
+        matches!(out, Err(crate::a2a::relay::RelayRefusal::Transport { .. })),
+        "an answer cut short is a transport failure, never relayed: {out:?}"
+    );
+    let sent = request_len.load(Ordering::SeqCst);
+    assert!(sent > 0, "the backend read the request body");
+    assert_eq!(
+        (bytes.sent(), bytes.received()),
+        (sent as u64, DELIVERED as u64),
+        "the hop bills the request it carried and the {DELIVERED} bytes that arrived before the \
+         reset"
+    );
+}

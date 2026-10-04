@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 65,
    "oracle-family": 5,
-   "test": 458
+   "test": 457
   }
  },
  "dropped_since_last_write": [],
@@ -3016,7 +3016,7 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "next_refresh_never_sleeps_past_a_live_token_expiry",
+     "ref": "crates/busbar-kernel/src/egress_auth/tests/bearer_token_tests.rs::next_refresh_never_sleeps_past_a_live_token_expiry",
      "proves": "REFRESH_SKEW_SECS and MIN_SLEEP_SECS",
      "source": "curated",
      "status": "mapped"
@@ -3051,14 +3051,14 @@
     },
     {
      "kind": "test",
-     "ref": "token_response_tolerates_expires_in_as_number_string_or_absent",
+     "ref": "crates/busbar-kernel/src/egress_auth/tests/oauth_client_credentials_tests.rs::token_response_tolerates_expires_in_as_number_string_or_absent",
      "proves": "expires_in defaults to 3600",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:next_refresh_never_sleeps_past_a_live_token_expiry, test:headers_for_emits_nothing_before_first_mint, test:is_ready_false_before_first_mint_true_after, test:cached_token_new_omits_header_for_bytes_invalid_in_a_header_value, test:headers_for_reflects_prebuilt_header_after_a_refresh, test:token_response_tolerates_expires_in_as_number_string_or_absent"
+   "verdict_detail": "test:crates/busbar-kernel/src/egress_auth/tests/bearer_token_tests.rs::next_refresh_never_sleeps_past_a_live_token_expiry, test:headers_for_emits_nothing_before_first_mint, test:is_ready_false_before_first_mint_true_after, test:cached_token_new_omits_header_for_bytes_invalid_in_a_header_value, test:headers_for_reflects_prebuilt_header_after_a_refresh, test:crates/busbar-kernel/src/egress_auth/tests/oauth_client_credentials_tests.rs::token_response_tolerates_expires_in_as_number_string_or_absent"
   },
   {
    "id": "PB-65",
@@ -3863,21 +3863,21 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline",
-     "proves": "the MAX_INFLIGHT_HOOK_CALLS cap",
+     "ref": "the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_resolve_one",
+     "proves": "a saturated hook fails on the caller's deadline, never waits out the wedge, and serves again once its calls drain",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
      "ref": "dlopen_slow_gate_hits_the_deadline",
-     "proves": "call_bounded cuts a slow gate at its budget",
+     "proves": "the call budget cuts a slow gate off promptly, an error on_error decides (R1: one of the two 1.5.5 timeout tests)",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "dlopen_plugin_panic_is_fail_closed_err",
+     "ref": "a_panicking_hook_is_broken_through_the_axis_never_a_verdict",
      "proves": "a panicking plugin is a fail-closed error",
      "source": "curated",
      "status": "mapped"
@@ -3891,7 +3891,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline, test:dlopen_slow_gate_hits_the_deadline, test:dlopen_plugin_panic_is_fail_closed_err, lint:xtask/src/gates/blocking_ffi.rs"
+   "verdict_detail": "test:the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_resolve_one, test:dlopen_slow_gate_hits_the_deadline, test:a_panicking_hook_is_broken_through_the_axis_never_a_verdict, lint:xtask/src/gates/blocking_ffi.rs"
   },
   {
    "id": "PB-82",
@@ -4475,15 +4475,8 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "head_pristine_matches_translate_output",
-     "proves": "head_provably_pristine re-emits the retained bytes",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "non_object_body_is_head_pristine",
-     "proves": "a non-object body is pristine",
+     "ref": "a_same_dialect_hop_is_the_callers_bytes_with_governed_splices",
+     "proves": "a same-dialect hop is the caller's bytes with the governed splices only",
      "source": "curated",
      "status": "mapped"
     },
@@ -4524,7 +4517,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:head_pristine_matches_translate_output, test:non_object_body_is_head_pristine, test:pristine_same_proto_is_byte_identical_body_model, test:pristine_same_proto_is_byte_identical_url_model, test:claude_on_vertex_drops_model_and_injects_anthropic_version, test:invalidator_3_model_rewrite_forces_non_pristine, test:invalidator_4_same_proto_model_shim_strip_forces_non_pristine"
+   "verdict_detail": "test:a_same_dialect_hop_is_the_callers_bytes_with_governed_splices, test:pristine_same_proto_is_byte_identical_body_model, test:pristine_same_proto_is_byte_identical_url_model, test:claude_on_vertex_drops_model_and_injects_anthropic_version, test:invalidator_3_model_rewrite_forces_non_pristine, test:invalidator_4_same_proto_model_shim_strip_forces_non_pristine"
   },
   {
    "id": "PB-98",

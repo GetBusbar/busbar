@@ -536,6 +536,8 @@ pub struct LaneSpec {
     context_max: Option<usize>,
     path: Option<String>,
     path_base: Option<String>,
+    organization: Option<String>,
+    project: Option<String>,
     auth: Option<String>,
     health: Option<crate::config::HealthCfg>,
     default_max_tokens: Option<u32>,
@@ -571,6 +573,8 @@ impl LaneSpec {
             context_max: None,
             path: None,
             path_base: None,
+            organization: None,
+            project: None,
             auth: None,
             health: None,
             default_max_tokens: None,
@@ -587,6 +591,12 @@ impl LaneSpec {
             client_fault: 0,
             sem: None,
         }
+    }
+    /// The provider's configured tenant (`organization`, `project`).
+    pub fn tenant(mut self, organization: &str, project: &str) -> Self {
+        self.organization = Some(organization.into());
+        self.project = Some(project.into());
+        self
     }
     pub fn provider(mut self, p: &str) -> Self {
         self.provider = p.into();
@@ -689,6 +699,8 @@ impl LaneSpec {
             base_url: self.base_url.trim_end_matches('/').to_string(),
             path: self.path.clone(),
             path_base: self.path_base.clone(),
+            organization: self.organization.clone(),
+            project: self.project.clone(),
             upstream_model: self.upstream_model.clone(),
             api_key: busbar_contract::redacted::Redacted::new(self.api_key.clone()),
             auth_style,
@@ -822,7 +834,7 @@ pub struct TestApp {
     admin_chain: Option<Vec<String>>,
     /// Resolved external admin auth modules for the built App (1.5.2 admin-plane OIDC). `None` = the
     /// empty chain (the operator credential alone, runs inline). A test that needs the OFFLOAD path populates
-    /// this with a boxed test module and `has_plugin: true`.
+    /// this with a boxed test module.
     admin_modules: Option<crate::auth::AdminAuthChain>,
     /// Resolved hosted-login methods (1.5.2). `None` = empty (no hosted login). A test that
     /// drives `GET /auth/token` populates this with a test login module.
@@ -957,6 +969,27 @@ impl Default for TestApp {
 }
 
 #[allow(dead_code)]
+/// THE ROOT'S EGRESS BINDING, IN A TEST BINARY. In production the composition root (`busbar`'s
+/// `register_seams`) installs the core-backed hostless-egress driver once, before any plane
+/// dispatches. A plane's own test binary has no `main`, and a plane names no core type, so the
+/// fixture that stands in for the composition root does the same install — idempotent (`OnceLock`,
+/// the first driver wins), and gated on the neutral egress-seam capability the driver itself lives
+/// behind, so a build with no plane that drives egress installs nothing.
+pub fn install_root_egress() {
+    #[cfg(feature = "egress-seam")]
+    busbar_kernel::egress::seam::install_hostless_egress(&crate::egress::seam::CoreHostlessEgress);
+}
+
+/// THE ROOT'S `register_seams`, IN A TEST BINARY: the hostless-egress driver
+/// ([`install_root_egress`]) and the parse-time section list (the test fold,
+/// [`crate::plane::config::default_plane_sections`]), each first-wins. A plane's test-kit calls this
+/// where the composition root would have bound them, so a plane test that drives a wire leg without
+/// building a [`TestApp`] runs on the same bindings a shipped binary does.
+pub fn install_root_seams() {
+    install_root_egress();
+    crate::plane::config::install_plane_sections(crate::plane::config::default_plane_sections);
+}
+
 impl TestApp {
     /// LAW 7: build the App with exactly these plane sections configured (`[]` = a 1.5.5 config).
     pub fn plane_sections(mut self, sections: &[&'static str]) -> Self {
@@ -965,16 +998,9 @@ impl TestApp {
     }
 
     pub fn new() -> Self {
-        // THE TEST-SIDE BOOT BINDING. In production the composition root (`busbar`'s `main`) installs
-        // the core-backed hostless-egress driver once, before any plane dispatches. A plane's own test
-        // binary has no `main`, and a plane names no core type, so the fixture that stands in for the
-        // composition root does the same install here — idempotent (`OnceLock`, the first driver
-        // wins), and gated on the neutral egress-seam capability the driver itself lives behind, so a
-        // build with no plane that drives egress installs nothing.
-        #[cfg(feature = "egress-seam")]
-        busbar_kernel::egress::seam::install_hostless_egress(
-            &crate::egress::seam::CoreHostlessEgress,
-        );
+        // THE TEST-SIDE BOOT BINDING: the fixture that stands in for the composition root binds the
+        // hostless-egress driver the root binds at boot (see [`install_root_egress`]).
+        install_root_egress();
         Self {
             plane_durable_store: None,
             upstream_credentials: crate::auth::UpstreamCreds::Own,
@@ -1277,15 +1303,16 @@ impl TestApp {
     }
 
     /// Inject a resolved external admin auth module under `name` (the config module name that both
-    /// `admin_chain` and `role_bindings.<name>` key off), marking the chain as plugin-backed so the
-    /// admin auth middleware OFFLOADS it off the reactor — the seam the 1.5.2 admin-plane OIDC
-    /// offload test drives. `has_plugin` is forced true.
+    /// `admin_chain` and `role_bindings.<name>` key off): an external module, so the admin auth
+    /// middleware OFFLOADS its call off the reactor — the seam the 1.5.2 admin-plane OIDC offload
+    /// test drives.
     pub fn admin_module(mut self, name: &str, module: Box<dyn crate::auth::AuthModule>) -> Self {
         let chain = self
             .admin_modules
             .get_or_insert_with(crate::auth::AdminAuthChain::empty);
-        chain.has_plugin = true;
-        chain.modules.insert(name.to_string(), module);
+        chain
+            .modules
+            .insert(name.to_string(), crate::auth::AdminModule::cold(module));
         self
     }
 
@@ -1788,6 +1815,7 @@ impl TestApp {
                 std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
                 std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
             )
+            .expect("an empty registry's hook axis")
         });
         // THE PER-PLANE CONTAINER GATES, RESOLVED THE WAY PRODUCTION RESOLVES THEM, from the registry
         // and env this fixture was given. The per-container hook SPECS arrive KEYED by plane decl key
@@ -1912,7 +1940,7 @@ impl TestApp {
             base_group_names: self.base_group_names,
             identity_providers: self.identity_providers.clone(),
             export_defs: self.export_defs,
-            versions: std::sync::Arc::new(crate::admin::versions::VersionLog::new()),
+            admin: std::sync::Arc::new(crate::admin::seam::AdminSlot::default()),
             mutation_limiter: std::sync::Arc::new(crate::ratelimit::MutationLimiter::new()),
             idempotency_cache: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
@@ -1929,7 +1957,8 @@ impl TestApp {
                     .admin_modules
                     .unwrap_or_else(crate::auth::AdminAuthChain::empty);
                 let digest = self.governance.as_ref().and_then(|g| g.admin_token_hash());
-                let reg = crate::preflight::linked().expect("the linked registry");
+                let reg =
+                    std::sync::Arc::new(crate::preflight::linked().expect("the linked registry"));
                 chain.operator = crate::auth::open_operator(&reg, digest, &self.identity_providers)
                     .expect("the linked operator credential opens");
                 std::sync::Arc::new(chain)
@@ -2001,8 +2030,7 @@ impl TestApp {
             boot_route_paths,
         });
         // Mirror main's boot-version floor so rollback tests have a v0 to restore.
-        app.versions
-            .record(0, "system", "boot", &app.hook_registry, &app.global_hooks);
+        crate::admin::seam::record_boot(&app);
         // Mirror main's durable-MCP-trust boot block: attach the plane sinks BEFORE the app is handed
         // to a caller.
         if let Some(durable) = plane_durable_store {
@@ -2017,7 +2045,7 @@ impl TestApp {
         // once cut over) would stay empty. This funnel guarantees every live-server audit test's
         // `record_by` feeds the seam. Idempotent + re-entrancy-guarded (this is itself on the shared
         // global app's build path).
-        crate::plane::auditlog::ensure_global_audit_stream_registered();
+        crate::audit::auditlog::ensure_global_audit_stream_registered();
         (app, store)
     }
 }
@@ -2030,27 +2058,98 @@ impl TestApp {
 /// refreshed when `[lib]` is a ROOT build target, e.g. `cargo build --all-targets`) and the raw
 /// `<profile_dir>/deps/<name>` compiler output (refreshed on every build that recompiles the lib) —
 /// a scoped `cargo test` / `cargo build` never uplifts, so checking only `profile_dir` silently found
-/// nothing and every hook test quietly no-op'd. `None` when neither exists. The fixture is named by
-/// DATA — `[package.metadata.busbar] test-fixtures` in this crate's Cargo.toml, exported by build.rs —
-/// so no source names the plugin. The one lookup the hook tests, the admin suite and the root's
-/// `hook_path` bench share.
+/// nothing and every hook test quietly no-op'd. When NEITHER exists — a scoped
+/// `cargo test -p busbar-kernel` never builds another package's cdylib — the fixture is BUILT here,
+/// once per process, into its own `<target>/fixture-build` directory (its own build lock, so it never
+/// waits on the build that is running these tests); `None` only when that build fails. Before this, a
+/// scoped run skipped all 37 hook-plugin tests silently off CI and failed them all under `CI`. The
+/// fixture is named by DATA — `[package.metadata.busbar] test-fixtures` in this crate's Cargo.toml,
+/// exported by build.rs — so no source names the plugin. The one lookup the hook tests, the admin
+/// suite and the root's `hook_path` bench share.
 pub fn hook_fixture_cdylib() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let profile_dir = exe.parent()?.parent()?;
     let name = busbar_plugin_loader::plugin_library_filename(env!("BUSBAR_FIXTURE_HOOK"));
-    [
-        profile_dir.join(&name),
-        profile_dir.join("deps").join(&name),
-    ]
-    .into_iter()
-    .filter_map(|p| {
-        std::fs::metadata(&p)
-            .and_then(|m| m.modified())
-            .ok()
-            .map(|mtime| (p, mtime))
-    })
-    .max_by_key(|(_, mtime)| *mtime)
-    .map(|(p, _)| p)
+    let newest = |dirs: &[std::path::PathBuf]| {
+        dirs.iter()
+            .map(|d| d.join(&name))
+            .filter_map(|p| {
+                std::fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .map(|mtime| (p, mtime))
+            })
+            .max_by_key(|(_, mtime)| *mtime)
+            .map(|(p, _)| p)
+    };
+    if let Some(found) = newest(&[profile_dir.to_path_buf(), profile_dir.join("deps")]) {
+        return Some(found);
+    }
+    static BUILT: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let profile = profile_dir.file_name()?.to_str()?.to_string();
+            let target = profile_dir.parent()?.join("fixture-build");
+            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| env!("CARGO").into());
+            let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            let mut cmd = std::process::Command::new(cargo);
+            cmd.current_dir(&workspace)
+                .args([
+                    "build",
+                    "--locked",
+                    "-p",
+                    env!("BUSBAR_FIXTURE_HOOK_PACKAGE"),
+                ])
+                .arg("--target-dir")
+                .arg(&target);
+            if profile == "release" {
+                cmd.arg("--release");
+            }
+            let status = cmd.status().ok()?;
+            if !status.success() {
+                return None;
+            }
+            let dir = target.join(&profile);
+            newest(&[dir.clone(), dir.join("deps")])
+        })
+        .clone()
+}
+
+/// The hook fixture's Statement rendering, as a signed manifest states it (lowercase hex): what
+/// the dropped-in door admits the fixture against.
+pub fn hook_fixture_statement(cdylib: &std::path::Path) -> String {
+    let rendering = busbar_plugin_loader::dispatch::rendering_of_library(cdylib)
+        .expect("the hook fixture loads")
+        .expect("the hook fixture exports its door");
+    hex::encode(rendering)
+}
+
+/// THE STAND-IN HOOK AXIS: `preflight::RootInstall`'s `hook_axis` in a test build (a test build has
+/// no root). The loader's hook rows over `registry` — the rows the root's axis answers with — on a
+/// dispatcher of their own, of the root's no-boot shape (`root::dispatch::dispatcher`: one worker,
+/// the default budgets).
+///
+/// ONE DISPATCHER PER REGISTRY, NOT ONE PER TEST BINARY. A test binary is many deployments at once,
+/// and the hook fixture's `sleep_ms` cells (the slow-gate deadline tests, the in-flight cap) wedge
+/// their worker past the call budget ON PURPOSE: the watchdog then replaces that worker and settles
+/// every op it held as FAULT (`dispatch::watchdog`, the design's rule for a wedged crossing). On one
+/// shared single-worker dispatcher the NEXT test's ops queued behind that wedge and answered FAULT
+/// (`dlopen_decide_order_and_abstain` red under `cargo test -p busbar-kernel`, green alone and
+/// under nextest's process per test). A registry is one deployment's, so its own dispatcher is the
+/// root's one dispatcher as that deployment sees it, and a wedge stays inside the test that made it.
+///
+/// # Errors
+/// As the root's: a `kind: hook` row that will not state itself.
+pub fn hook_axis_stand_in(
+    registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String> {
+    use busbar_plugin_loader::dispatch::{DispatchConfig, Dispatcher};
+    let rows = busbar_plugin_loader::hook_door::HookRows::new(
+        crate::preflight::STAND_IN_HOOK_DOORS,
+        Some(registry.as_ref()),
+        std::sync::Arc::new(Dispatcher::new(DispatchConfig::default())),
+    )?;
+    Ok(std::sync::Arc::new(rows))
 }
 
 /// Build a [`crate::hooks::HookEnv`] whose registry loads the hermetic `busbar-hook-test-plugin`
@@ -2089,6 +2188,7 @@ pub fn test_hook_env_with_schema(
         candidate
     };
     let lib = std::fs::read(&cdylib).expect("read hook cdylib");
+    let stated = hook_fixture_statement(&cdylib);
     // A monotonic counter, NOT a clock read: two threads can read the same nanosecond, and a
     // colliding fixture path means one test scans a tarball another is still writing.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2102,6 +2202,7 @@ pub fn test_hook_env_with_schema(
         let mut m = fixture_manifest(&format!("busbar-hook-test-plugin-{i}"), alias, "hook", &lib);
         m.needs = needs.clone();
         m.settings_schema = settings_schema.map(str::to_string);
+        m.statement = Some(stated.clone());
         let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();
         std::fs::write(dir.join(format!("hook{i}.tar.gz")), tarball).unwrap();
     }
@@ -2112,10 +2213,13 @@ pub fn test_hook_env_with_schema(
     };
     let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("scan");
     let _ = std::fs::remove_dir_all(&dir);
-    Some(crate::hooks::HookEnv::new(
-        std::sync::Arc::new(registry),
-        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-    ))
+    Some(
+        crate::hooks::HookEnv::new(
+            std::sync::Arc::new(registry),
+            std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+        )
+        .expect("the fixture registry's hook axis"),
+    )
 }
 
 /// As [`test_hook_env`], but ALSO packs a second tarball under `wrong_kind_alias` whose manifest
@@ -2139,6 +2243,7 @@ pub fn test_hook_env_with_wrong_kind_plugin(
         return None;
     };
     let lib = std::fs::read(&cdylib).expect("read hook cdylib");
+    let stated = hook_fixture_statement(&cdylib);
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
         "busbar-test-hook-env-wrongkind-{}-{}",
@@ -2148,12 +2253,10 @@ pub fn test_hook_env_with_wrong_kind_plugin(
     std::fs::create_dir_all(&dir).unwrap();
     let manifest_for =
         |name: &str, alias: &str, kind: &str| fixture_manifest(name, alias, kind, &lib);
-    let hook_tarball = busbar_plugin_loader::tarball::package(
-        &manifest_for("busbar-hook-test-plugin-real", hook_alias, "hook"),
-        "lib.so",
-        &lib,
-    )
-    .unwrap();
+    let mut hook_manifest = manifest_for("busbar-hook-test-plugin-real", hook_alias, "hook");
+    hook_manifest.statement = Some(stated);
+    let hook_tarball =
+        busbar_plugin_loader::tarball::package(&hook_manifest, "lib.so", &lib).unwrap();
     std::fs::write(dir.join("real-hook.tar.gz"), hook_tarball).unwrap();
     // `kind: "secret"` is arbitrary — any non-"hook" kind proves the resolves-to-wrong-kind arm;
     // "secret" is a real ABI kind this cdylib's manifest can validate under without needing a
@@ -2176,10 +2279,13 @@ pub fn test_hook_env_with_wrong_kind_plugin(
     };
     let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("scan");
     let _ = std::fs::remove_dir_all(&dir);
-    Some(crate::hooks::HookEnv::new(
-        std::sync::Arc::new(registry),
-        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-    ))
+    Some(
+        crate::hooks::HookEnv::new(
+            std::sync::Arc::new(registry),
+            std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+        )
+        .expect("the fixture registry's hook axis"),
+    )
 }
 
 /// THE METRICS RECORDER HARNESS: sum every exposition sample of `name` whose label set contains
@@ -2224,8 +2330,15 @@ pub fn scratch_dir(name: &str) -> std::path::PathBuf {
 
 pub mod warn_capture;
 
+/// The kernel's own test-only mint (ARCHITECT ruling B): the seal is acquired here and minted tokens
+/// are handed to a dependent crate's tests, which never name the seal or a constructor.
+pub mod tokens;
+
 /// The export axis a test binary's configurations resolve against (K9b).
 pub mod export_axis;
+/// The stand-in secret axis a test build installs in place of the root's.
+pub mod secrets;
+pub use secrets::SecretsStandIn;
 
 /// The durable store double (R-FIX3): plane records that outlive the handle that wrote them, for the
 /// restart and fleet properties of a plane's trust state. Linked only.
@@ -2282,25 +2395,25 @@ impl Drop for EnvVarGuard {
 }
 
 /// TEST REGISTRY ROW — link the operator credential's auth row into this test binary's auth axis,
-/// as the composition root links it into the shipped one: `entry` is the SDK boundary
-/// (`BUSBAR_COLD_ENTRY`) of whichever auth plugin the test binary links for the purpose, registered
+/// as the composition root links it into the shipped one: `door` is the memory-ABI door of whichever
+/// auth plugin the test binary links for the purpose, registered
 /// under the operator words this build answers to: with no root, the kind-neutral `stand-in` double
 /// that `test-support` turns on (BUSBAR-1.6.0.md:175, "Kernel tests use kind-neutral doubles"). The
 /// first install stands (the axis is process-wide). A test crate names that plugin only in its
-/// manifest; its build script turns the manifest row into the `entry` it hands here.
-pub fn install_operator_auth_row(entry: AuthBoundary) {
+/// manifest; its build script turns the manifest row into the `door` it hands here.
+pub fn install_operator_auth_row(door: AuthDoor) {
     let words = OperatorWords {
         provider: crate::config::operator_provider(),
         principal_id: crate::config::operator_principal_id(),
     };
-    install_operator_auth_row_as(words, entry)
+    install_operator_auth_row_as(words, door)
 }
 
-/// `install_operator_auth_row_as(words, entry)`: [`install_operator_auth_row`] under a test binary's
+/// `install_operator_auth_row_as(words, door)`: [`install_operator_auth_row`] under a test binary's
 /// OWN operator words — a binary that links the operator plugin the composition root links, and pins
 /// the root's bytes, hands in the root's words as the root does. The first install stands.
 pub use busbar_kernel_identity::operator::{
-    install_row as install_operator_auth_row_as, AuthBoundary, OperatorWords,
+    install_row as install_operator_auth_row_as, AuthDoor, OperatorWords,
 };
 
 /// The SigV4 helpers a test signs an inbound request with, named once here because the
@@ -2400,6 +2513,26 @@ pub fn trust_policy(
         min_versions: &cfg.min_versions,
         first_party_floors: &cfg.first_party_floors,
         binary_version: env!("CARGO_PKG_VERSION"),
+    })
+}
+
+/// A test build's store axis (it has no composition root): the loader's axis over a dispatcher of
+/// the test process's own, minting `op_id`s from the kernel's one allocator.
+pub fn store_axis_stand_in() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis> {
+    use busbar_plugin_loader::{
+        dispatch::{DispatchConfig, Dispatcher, PluginLogConfig},
+        store_v3::DoorStoreAxis,
+    };
+    static ONE: std::sync::OnceLock<std::sync::Arc<Dispatcher>> = std::sync::OnceLock::new();
+    let dispatcher =
+        ONE.get_or_init(|| std::sync::Arc::new(Dispatcher::new(DispatchConfig::default())));
+    let none = Default::default();
+    std::sync::Arc::new(DoorStoreAxis {
+        dispatcher: std::sync::Arc::clone(dispatcher),
+        logs: PluginLogConfig::from_words(None, None, &none, None, None)
+            .expect("the plugins.logs defaults resolve"),
+        conns: None,
+        mint: crate::door::op_id,
     })
 }
 

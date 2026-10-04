@@ -38,8 +38,8 @@ use busbar_contract::abi::mechanism::door::{
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn as MechCancelIn, CancelOut as MechCancelOut, DriveIn as MechDriveIn,
     GenIn as MechGenIn, OpenIn as MechOpenIn, OpenOut as MechOpenOut, OpsHead as MechOpsHead,
-    RefreshIn as MechRefreshIn, ReleaseIn as MechReleaseIn, TickIn as MechTickIn,
-    TickOut as MechTickOut, ValidateIn as MechValidateIn,
+    ReadyIn as MechReadyIn, RefreshIn as MechRefreshIn, ReleaseIn as MechReleaseIn,
+    TickIn as MechTickIn, TickOut as MechTickOut, ValidateIn as MechValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::{
     CompletionHandle as MechCompletionHandle, HostCtx as MechHostCtx, HostTables as MechHostTables,
@@ -62,11 +62,12 @@ use busbar_contract::abi::hook::{
     BudgetBucketState as HookBudgetBucketState, CandidateDynamic as HookCandidateDynamic,
     CandidateStatic as HookCandidateStatic, ConfigureIn as HookConfigureIn,
     ConfigureOut as HookConfigureOut, DecideIn as HookDecideIn, DecideOut as HookDecideOut,
-    DescribeOut as HookDescribeOut, NotifyIn as HookNotifyIn, Ops as HookOps,
-    PromptView as HookPromptView, RequestView as HookRequestView, Route as HookRoute,
-    ServeIn as HookServeIn, ServeOut as HookServeOut, SignalEntry as HookSignalEntry,
-    SignalValue as HookSignalValue, StageView as HookStageView, StatusOut as HookStatusOut,
-    Tail as HookTail, TransformOut as HookTransformOut, UserView as HookUserView,
+    DescribeOut as HookDescribeOut, MessageView as HookMessageView, NotifyIn as HookNotifyIn,
+    Ops as HookOps, PromptView as HookPromptView, RequestView as HookRequestView,
+    Route as HookRoute, ServeIn as HookServeIn, ServeOut as HookServeOut,
+    SignalEntry as HookSignalEntry, SignalValue as HookSignalValue, StageView as HookStageView,
+    StatusOut as HookStatusOut, Tail as HookTail, TransformOut as HookTransformOut,
+    UserView as HookUserView,
 };
 use busbar_contract::abi::secret::{
     Ops as SecretOps, ResolveIn as SecretResolveIn, ResolveOut as SecretResolveOut,
@@ -79,7 +80,8 @@ use busbar_contract::abi::auth::{
     IdentityOut as AuthIdentityOut, LoginField as AuthLoginField, NamedValue as AuthNamedValue,
     OpenOutboundIn as AuthOpenOutboundIn, OpenOutboundOut as AuthOpenOutboundOut,
     OutboundReadyIn as AuthOutboundReadyIn, OutboundReadyOut as AuthOutboundReadyOut,
-    RequestFacts as AuthRequestFacts, StyleDecl as AuthStyleDecl, VerifyIn as AuthVerifyIn,
+    RequestFacts as AuthRequestFacts, StripName as AuthStripName, StyleDecl as AuthStyleDecl,
+    VerifyIn as AuthVerifyIn,
 };
 // THE PLANE AND TRANSPORT KINDS and THE HOST CONNECTOR: aliased, so the hot lane's names cannot collide.
 use busbar_contract::abi::host::conn::connector as hconn;
@@ -987,7 +989,8 @@ fn compute_layout() -> String {
             kind,
             kind_abi,
             statement,
-            ops
+            ops,
+            ready
         ]
     );
     record!(
@@ -1084,6 +1087,7 @@ fn compute_layout() -> String {
     record!(s, MechCancelIn, [head, ticket]);
     record!(s, MechCancelOut, [head, disposition, _reserved]);
     record!(s, MechReleaseIn, [head, lease]);
+    record!(s, MechReadyIn, [head, host]);
     record!(s, StoreHostBuf, [ptr, cap]);
     record!(s, StoreHostBlobs, [items, items_cap, bytes]);
     record!(
@@ -1271,26 +1275,28 @@ fn compute_layout() -> String {
             fields
         ]
     );
-    record!(s, AuthStyleDecl, [name, flags, _reserved]);
+    record!(s, AuthStyleDecl, [name, flags, points]);
     record!(
         s,
         AuthTail,
-        [head, caps, facts, login_kind, _reserved, styles, styles_len]
+        [
+            head,
+            caps,
+            facts,
+            login_kind,
+            inbound_points,
+            styles,
+            styles_len,
+            operator_principal,
+            credential_kinds,
+            credential_kinds_len
+        ]
     );
     record!(s, AuthNamedValue, [name, value]);
     record!(
         s,
         AuthRequestFacts,
-        [
-            method,
-            authority,
-            canonical_path,
-            query,
-            timestamp,
-            body_hash,
-            body_hash_present,
-            _reserved
-        ]
+        [method, authority, canonical_path, query, timestamp]
     );
     record!(
         s,
@@ -1301,19 +1307,46 @@ fn compute_layout() -> String {
         s,
         AuthIdentityOut,
         [
-            subject, key_id, key_name, user, provider, name, claims, claims_fmt, flags, ttl_secs,
-            groups_len, _reserved
+            subject,
+            key_id,
+            key_name,
+            user,
+            provider,
+            name,
+            claims,
+            claims_fmt,
+            flags,
+            ttl_secs,
+            groups_len,
+            _reserved,
+            replay_key,
+            replay_ttl_secs,
+            credential
+        ]
+    );
+    record!(s, AuthStripName, [name, place, _reserved]);
+    record!(
+        s,
+        AuthVerifyIn,
+        [
+            head, credential, lines, lines_len, request, out_buf, point, _reserved, conn, unit,
+            peer, body, strip, strip_cap, _reserved2
         ]
     );
     record!(
         s,
-        AuthVerifyIn,
-        [head, credential, carrier, carrier_len, request, out_buf]
-    );
-    record!(
-        s,
         AuthIdentifyOut,
-        [head, verdict, needed_groups, needed_bytes, identity]
+        [
+            head,
+            verdict,
+            needed_groups,
+            needed_bytes,
+            identity,
+            decision,
+            strip_len,
+            needed_strip,
+            _reserved
+        ]
     );
     record!(
         s,
@@ -1345,7 +1378,8 @@ fn compute_layout() -> String {
             code_verifier,
             submitted,
             submitted_len,
-            out_buf
+            out_buf,
+            nonce
         ]
     );
     record!(s, AuthOpenOutboundIn, [head, style, credential, settings]);
@@ -1360,16 +1394,19 @@ fn compute_layout() -> String {
             head,
             handle,
             mode,
-            _reserved,
+            point,
             request,
             caller_credential,
             field_buf,
             field_buf_cap,
             fields,
             fields_cap,
-            _reserved2,
+            _reserved,
             headers,
-            headers_len
+            headers_len,
+            conn,
+            unit,
+            body
         ]
     );
     record!(
@@ -1577,7 +1614,7 @@ fn compute_layout() -> String {
             bytes,
             len,
             end_of_frame,
-            _reserved,
+            flags,
             sink,
             deadline_ns
         ]
@@ -1887,7 +1924,11 @@ fn compute_layout() -> String {
             details,
             keep_response_headers,
             keep_response_headers_len,
-            timeout_ms
+            timeout_ms,
+            keep_mode,
+            _reserved,
+            deny_response_headers,
+            deny_response_headers_len
         ]
     );
     record!(
@@ -2015,10 +2056,18 @@ fn compute_layout() -> String {
             content_scan,
             hook_call,
             random_fill,
-            need_admit
+            need_admit,
+            trust_verify,
+            records_secret
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
+    record!(
+        s,
+        hsvc::TrustVerifyIn,
+        [head, counterparty, payload, signatures, into]
+    );
+    record!(s, hsvc::RecordsSecretIn, [head, kind, id, into]);
 
     // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
     record!(s, SecretOps, [head, resolve]);
@@ -2081,7 +2130,12 @@ fn compute_layout() -> String {
             _reserved
         ]
     );
-    record!(s, HookPromptView, [system, message_count, body]);
+    record!(
+        s,
+        HookPromptView,
+        [system, message_count, body, messages, messages_len]
+    );
+    record!(s, HookMessageView, [role, text]);
     record!(s, HookUserView, [key_id, key_name, user]);
     record!(
         s,
@@ -2177,7 +2231,19 @@ fn compute_layout() -> String {
             _reserved2
         ]
     );
-    record!(s, HookNotifyIn, [head, stage]);
+    record!(
+        s,
+        HookNotifyIn,
+        [
+            head,
+            stage,
+            signals,
+            signals_len,
+            prompt,
+            present,
+            _reserved
+        ]
+    );
     record!(s, HookConfigureIn, [head, version, settings, name]);
     record!(s, HookConfigureOut, [head, acked_version]);
     record!(s, HookStatusOut, [head, status]);

@@ -55,7 +55,7 @@
 //! neighbours) — every one of them is a COUNT or a RANGE, never a price: what it is worth is the
 //! money plane's business.
 
-use busbar_kernel::plane_host::EngineHost;
+use busbar_kernel::plane_host::{CompletionRefusal, EngineHost};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -404,7 +404,8 @@ async fn complete(
     // plane-side. This bridge names NO LLM dialect — the host owns which chat protocol drives.
     let completion = host
         .synthesize_completion(gov, &cfg.model, bytes, MAX_COMPLETION_BYTES)
-        .await?;
+        .await
+        .map_err(refusal_text)?;
     let status = completion.status;
     let body = completion.body;
     let value: serde_json::Value = serde_json::from_slice(&body).map_err(|_| {
@@ -462,9 +463,21 @@ pub(crate) fn completion_server() -> Option<busbar_contract::plane::ServedOpClas
     .map(|(_, served)| served)
 }
 
-/// The refusal a sampling ask gets when no registered plane serves its class — byte for byte what
-/// the host's completion seam answers when no plane installed one.
+/// The refusal a sampling ask gets when no registered plane serves its class, and when the host's
+/// completion seam answers [`CompletionRefusal::NotInstalled`]. Its one home: the kernel names the
+/// fact and this plane words it (lean-core).
 pub(crate) const NO_COMPLETION_SERVER: &str = "no default chat protocol is installed";
+
+/// The host's neutral completion refusal, in this plane's words — the bytes the host seam used to
+/// return as text.
+pub(crate) fn refusal_text(refusal: CompletionRefusal) -> String {
+    match refusal {
+        CompletionRefusal::NotInstalled => NO_COMPLETION_SERVER.to_string(),
+        CompletionRefusal::BodyUnread(e) => {
+            format!("the sampling completion's body could not be read: {e}")
+        }
+    }
+}
 
 /// The cap on one completion's response body. Generous — a completion is text the operator's own
 /// `max_tokens` already bounds — and present because a read with no bound is a promise about a

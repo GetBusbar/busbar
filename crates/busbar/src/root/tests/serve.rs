@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::HashMap;
-
 use busbar_contract::abi::host::service as svc;
 use busbar_contract::abi::mechanism::call::Outcome;
 
@@ -40,11 +38,17 @@ impl HostServices for Judges {
     fn trust_due(&self, _: &Caller) -> Stored {
         Stored::ready(7)
     }
+    fn trust_verify(&self, _: &Caller, _: &str, _: &[u8], _: &[u8]) -> Stored {
+        Stored::ready(10)
+    }
     fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
         Stored::ready(8)
     }
     fn random_fill(&self, _: u64) -> Stored {
         Stored::ready(9)
+    }
+    fn records_secret(&self, _: &str, _: &str, _: Later) -> Ran {
+        Ran::Now(Stored::ready(11))
     }
 }
 
@@ -109,6 +113,8 @@ fn every_service(s: &LateServices) -> Vec<Stored> {
         s.trust_due(&caller),
         s.entitlement_check(&caller, None, "model:m"),
         s.random_fill(16),
+        s.trust_verify(&caller, "peer", b"payload", b"[]"),
+        now(s.records_secret("sigv4", "AKID", Box::new(|_| {}))),
     ]
 }
 
@@ -123,18 +129,17 @@ fn every_service_is_the_installed_services_answer() {
     let after = every_service(&late);
     assert!(after.iter().all(|s| s.outcome == Outcome::Ready));
     let values: Vec<u64> = after.iter().map(|s| s.value).collect();
-    assert_eq!(values, (2..=9).collect::<Vec<u64>>());
+    assert_eq!(values, (2..=11).collect::<Vec<u64>>());
 }
 
 fn kernel(blocked: &[&str], allow_all: bool) -> KernelServices {
-    let blocked: Vec<String> = blocked.iter().map(|h| (*h).to_string()).collect();
-    KernelServices::new(
-        HashMap::from([(
-            DEFAULT_EGRESS_CLASS,
-            default_egress_rules(&blocked, &[], allow_all),
-        )]),
-        Arc::new(SystemResolver),
-    )
+    let d = busbar_kernel::config::Destinations {
+        block_private_addresses: true,
+        blocked: blocked.iter().map(|h| (*h).to_string()).collect(),
+        allow_all_metadata: allow_all,
+        ..Default::default()
+    };
+    kernel_services(crate::root::connector::guard_for(&d).expect("the guard"))
 }
 
 fn verdict(s: &dyn HostServices, dest: &str, class: u32) -> Stored {
@@ -144,10 +149,12 @@ fn verdict(s: &dyn HostServices, dest: &str, class: u32) -> Stored {
     }
 }
 
-/// The default egress class is the deployment's `security` section: the metadata denylist with the
-/// operator's additions and override; a class the kernel did not map is refused.
+/// `dest.judge` asks the deployment's one destination guard: the metadata denylist with the
+/// operator's additions and override, private addresses refused by default, plaintext to a public
+/// host judged by its host (the default class takes its target's scheme); a class the guard does
+/// not know is refused.
 #[test]
-fn the_default_egress_class_is_the_deployments_security_stance() {
+fn dest_judge_asks_the_deployments_one_guard() {
     let late = LateServices::new();
     late.install(Arc::new(kernel(&["metadata.corp.example"], false)))
         .expect("the install");
@@ -164,14 +171,26 @@ fn the_default_egress_class_is_the_deployments_security_stance() {
     assert_eq!(judged("https://10.0.0.7/"), svc::DEST_INTERNAL);
     assert_eq!(judged("http://93.184.216.34/"), svc::DEST_ALLOWED);
     assert_eq!(
-        verdict(late.as_ref(), "https://93.184.216.34/", 9).outcome,
-        busbar_contract::abi::mechanism::call::Outcome::Refused,
-        "an unmapped class is refused"
+        verdict(late.as_ref(), "https://93.184.216.34/", 9).value,
+        svc::DEST_NO_HOST,
+        "a class the guard does not know dials nothing"
     );
-    // `allow_all_metadata` is 1.5.5's nuclear override: the metadata guard is fully disabled, the
-    // operator's additions and the metadata address alike; with it off the address stays refused.
+    // `allow_all_metadata` is 1.5.5's nuclear override: for a provider dial the metadata guard is
+    // fully disabled, the operator's additions and the metadata address alike; every other class
+    // still refuses; with it off the address stays refused.
     let open = kernel(&["metadata.corp.example"], true);
-    let admitted = |dest| verdict(&open, dest, DEFAULT_EGRESS_CLASS).value;
+    let provider = busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
+    let admitted = |dest| verdict(&open, dest, provider).value;
+    assert_eq!(
+        verdict(
+            &open,
+            "https://169.254.169.254/latest/meta-data/",
+            DEFAULT_EGRESS_CLASS
+        )
+        .value,
+        svc::DEST_METADATA,
+        "allow_all_metadata speaks for provider dials only"
+    );
     assert_eq!(
         admitted("https://metadata.corp.example/"),
         svc::DEST_ALLOWED
@@ -265,4 +284,139 @@ async fn an_ingress_head_the_wire_cannot_carry_is_a_plane_fault() {
         refusal_status(ReasonCode::PlanePanic)
     );
     assert!(response.headers().is_empty());
+}
+
+// ── the late attach (ARCHITECT S7-TICK 2026-10-01, ruling A) ─────────────────────────────────────
+
+/// The composed kernel services are kept whole for the plane driver, installed once.
+#[test]
+fn the_composed_kernel_services_are_kept_for_the_driver() {
+    let late = LateServices::new();
+    assert!(late.kernel().is_none(), "nothing before the compose");
+    let composed = Arc::new(kernel(&[], false));
+    late.install_kernel(Arc::clone(&composed))
+        .expect("the install");
+    assert!(Arc::ptr_eq(&late.kernel().expect("kept"), &composed));
+    assert!(late.is_installed());
+    assert_eq!(
+        late.install_kernel(Arc::new(kernel(&[], false))),
+        Err(AlreadyInstalled)
+    );
+}
+
+/// A signer that signs every domain: the key id `kid`, the bytes back as the signature.
+struct Signs;
+
+impl SignKey for Signs {
+    fn sign(&self, _: &str, data: &[u8]) -> Option<(String, Vec<u8>)> {
+        Some(("kid".to_string(), data.to_vec()))
+    }
+}
+
+fn plane(section: &'static str, record_kinds: &'static [&'static str]) -> PlaneDeclaration {
+    PlaneDeclaration {
+        key: section,
+        fallback: false,
+        config_section: section,
+        scope_kinds: &[],
+        subject_noun: section,
+        admin_noun: section,
+        audit_kind: section,
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        owned_config_sections: &[],
+        billable_classes: &[],
+        fee_units: &[],
+        metric_families: &[],
+        record_kinds,
+        required_config_sections: &[],
+        trust_keys: &[],
+        served_op_classes: &[],
+    }
+}
+
+/// The unprefixed demotion rows belong to the ONE plane declaring the demotion record kind.
+#[test]
+fn the_demotion_owner_is_the_one_plane_declaring_the_demotion_kind() {
+    let (owner, other) = (plane("owner", &[KIND_DEMOTION]), plane("other", &["call"]));
+    let twin = plane("twin", &[KIND_DEMOTION]);
+    assert_eq!(demotion_owner(&[&other, &owner]), Some("owner"));
+    assert_eq!(demotion_owner(&[&other]), None);
+    assert_eq!(demotion_owner(&[&owner, &twin]), None, "two owners: none");
+}
+
+/// Before the attach an admitted instance's `sign` is REFUSED and its trust state changes are not
+/// written down; after it, `sign` is READY under the instance's prefix and a cleared quarantine
+/// is written through the pool before it answers. A second attach changes nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
+    use busbar_kernel::host_services::{InstanceFacts, Signing};
+    use busbar_kernel::trust::reverify::Policy;
+    use busbar_kernel::trust::section::TrustEntry;
+    let late = LateServices::new();
+    late.install_kernel(Arc::new(kernel(&[], false)))
+        .expect("the install");
+    let k = late.kernel().expect("kept");
+    let entry = TrustEntry {
+        pin: None,
+        policy: Policy {
+            ttl_ms: 0,
+            recovery_backoff_ms: 0,
+        },
+    };
+    let facts = InstanceFacts {
+        signing: Some(Signing {
+            domain: "cards".to_string(),
+            kid_prefix: "k:".to_string(),
+        }),
+        trust: vec![("peer".to_string(), entry)],
+        ..InstanceFacts::default()
+    };
+    k.admit("owner", facts).expect("admitted");
+    let caller = Caller {
+        instance: Arc::from("owner"),
+        plugin: Arc::from("the-plugin"),
+        kind: busbar_contract::abi::mechanism::KindCode::Plane,
+    };
+    let sight = |hash| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        match late.trust_sight(
+            &caller,
+            "peer",
+            hash,
+            Box::new(move |s| tx.send(s).unwrap()),
+        ) {
+            Ran::Now(s) => (s.value, false),
+            Ran::Later => (
+                rx.recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap()
+                    .value,
+                true,
+            ),
+        }
+    };
+    assert_eq!(late.sign(&caller, b"data").outcome, Outcome::Refused);
+    assert_eq!(sight("h1"), (svc::TRUST_NEW, false));
+    assert_eq!(sight("h2"), (svc::TRUST_DRIFTED, false), "not written down");
+    let demotions = Arc::new(DemotionRecord::default());
+    attach(
+        &late,
+        Some(Arc::new(Signs)),
+        &demotions,
+        &[&plane("owner", &[KIND_DEMOTION])],
+    );
+    let signed = late.sign(&caller, b"data");
+    assert_eq!(
+        (signed.outcome, signed.bytes),
+        (Outcome::Ready, b"k:kiddata".to_vec())
+    );
+    assert_eq!(
+        sight("h1"),
+        (svc::TRUST_SAME, true),
+        "the clearing is written first"
+    );
+    assert!(
+        !k.attach_signer(Arc::new(Signs)),
+        "a second attach is refused"
+    );
 }

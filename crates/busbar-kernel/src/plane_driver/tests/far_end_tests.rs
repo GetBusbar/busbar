@@ -146,7 +146,14 @@ impl Conns for Table {
         self.bytes.lock().unwrap().insert(id, bytes);
         Ok(ConnId(id))
     }
-    fn write(&self, _: InstanceId, _: ConnId, b: &[u8], _: bool) -> Result<usize, ConnError> {
+    fn write(
+        &self,
+        _: InstanceId,
+        _: ConnId,
+        b: &[u8],
+        _: bool,
+        _: bool,
+    ) -> Result<usize, ConnError> {
         Ok(b.len())
     }
     fn read(&self, _: InstanceId, _: ConnId, _: Ticket, _: &mut [u8]) -> Result<Piece, ConnError> {
@@ -198,6 +205,8 @@ impl PollConns for Table {
 #[derive(Default)]
 struct Book {
     observed: Mutex<Vec<(DestinationId, Outcome)>>,
+    /// Every health probe's answer, as the far end told it; a success ends a cooldown.
+    probed: Mutex<Vec<(DestinationId, Outcome)>>,
     cooldown: Mutex<HashMap<DestinationId, u64>>,
     spent: AtomicU64,
     refunded: AtomicU64,
@@ -253,6 +262,15 @@ impl Breaker for Book {
     fn observe(&self, _: &str, d: DestinationId, o: Outcome, _: u64, _: &Pass<Route>) -> bool {
         self.observed.lock().unwrap().push((d, o));
         false
+    }
+    fn suppressing(&self, d: DestinationId, _: u64) -> bool {
+        self.cooldown.lock().unwrap().contains_key(&d)
+    }
+    fn probed(&self, d: DestinationId, o: Outcome, _: u64, _: &Pass<Route>) {
+        if o == Outcome::Success {
+            self.cooldown.lock().unwrap().remove(&d);
+        }
+        self.probed.lock().unwrap().push((d, o));
     }
     fn release_probe(&self, _: &str, _: DestinationId, _: u64, _: u64) {}
     fn spend_budget(&self, _: DestinationId) -> bool {
@@ -327,7 +345,11 @@ struct Bearer {
     callers: Mutex<Vec<Option<Vec<u8>>>>,
     /// Never answers on the spot, and its submitted call never answers at all.
     stall: std::sync::atomic::AtomicBool,
+    /// Refuses to field the attempt.
+    refuse: std::sync::atomic::AtomicBool,
     facts: Mutex<Vec<Facts>>,
+    /// The point each call was made at and the body it lent.
+    points: Mutex<Vec<(AuthPoint, Option<Vec<u8>>)>>,
 }
 struct Done(Fields);
 /// A submitted call that never answers.
@@ -363,6 +385,9 @@ impl OutboundAuth for Bearer {
         if self.stall.load(Ordering::SeqCst) {
             return None;
         }
+        if self.refuse.load(Ordering::SeqCst) {
+            return Some(Fields::Refused);
+        }
         self.callers.lock().unwrap().push(
             r.caller_credential
                 .as_ref()
@@ -372,6 +397,7 @@ impl OutboundAuth for Bearer {
             .lock()
             .unwrap()
             .push((r.method.clone(), r.authority.clone(), r.path.clone()));
+        self.points.lock().unwrap().push((r.point, r.body.clone()));
         Some(Fields::Ready(vec![AuthField {
             name: b"authorization".to_vec(),
             value: b"Bearer sk-test".to_vec().into(),
@@ -436,6 +462,12 @@ fn rig(
                         auth: auth.clone() as Arc<dyn OutboundAuth>,
                         handle: 1,
                         style_flags: 0,
+                        // m1's style signs the body (`HeadBody`); every other is over the head.
+                        points: if k == 1 {
+                            AuthPoints::HEAD_BODY
+                        } else {
+                            AuthPoints::HEAD
+                        },
                         passthrough: k == 1,
                     }),
                 },
@@ -625,11 +657,17 @@ async fn a_529_fails_over_with_its_retry_after() {
     );
 }
 
-/// STEP 24, member-401: a withdrawn credential takes the member down (HardDown), and fails over.
+/// STEP 24, member-401 (1.5.5 `route.failover|fb|member-401`: ONE egress, the 401 to the caller,
+/// the member hard-down in every pool): a rejected key takes the member down (HardDown) and the
+/// answer is relayed to the plane, whose verdict renders it — it is NOT failed over, so the next
+/// member is never tried and no fallback pool is spilled into.
 #[tokio::test]
-async fn a_401_takes_the_member_down_and_fails_over() {
+async fn a_401_takes_the_member_down_and_is_relayed_to_the_plane() {
     let r = rig(
-        &[("a.test", Script::Answer(401, None, vec![b"no"]))],
+        &[
+            ("a.test", Script::Answer(401, None, vec![b"no"])),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+        ],
         OnExhausted::Status503,
         None,
     );
@@ -645,10 +683,61 @@ async fn a_401_takes_the_member_down_and_fails_over() {
         }
     );
     assert!(far.send(&t, request()).await);
-    assert!(far.next(&t).await.expect("a piece").fail_over);
+    let p = far.next(&t).await.expect("a piece");
+    assert!(!p.fail_over, "a hard-down is the plane's to render: {p:?}");
+    assert_eq!(p.status, Some((401, 2)));
+    assert_eq!(p.bytes, b"no", "the answer reaches the plane as it came");
     assert_eq!(
         *r.book.observed.lock().unwrap(),
         vec![(DestinationId::new(1), Outcome::HardDown)]
+    );
+    assert_eq!(
+        r.table.opened.lock().unwrap().len(),
+        1,
+        "one egress: the next member is never dialled"
+    );
+}
+
+/// A PASSTHROUGH member's 401 is the caller's own key failing (1.5.5's attempt classifier): nothing
+/// is recorded against the member, and the answer is relayed to the plane as it came.
+#[tokio::test]
+async fn a_passthrough_members_401_records_nothing_and_is_relayed() {
+    // m0 (own credential) is overloaded and fails over; m1 is the rig's passthrough member.
+    let r = rig(
+        &[
+            ("a.test", Script::Answer(529, None, vec![b"busy"])),
+            ("b.test", Script::Answer(401, None, vec![b"your key"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        caller_credential: Some(b"caller-key".to_vec().into()),
+        ..route()
+    });
+    let Pick::Member { passthrough, .. } = far.member(&t, 1).await else {
+        panic!("a member")
+    };
+    assert!(!passthrough);
+    assert!(far.send(&t, request()).await);
+    assert!(far.next(&t).await.expect("a piece").fail_over);
+    let Pick::Member { passthrough, .. } = far.member(&t, 2).await else {
+        panic!("a second member")
+    };
+    assert!(passthrough);
+    assert!(far.send(&t, request()).await);
+    let p = far.next(&t).await.expect("a piece");
+    assert!(!p.fail_over, "{p:?}");
+    assert_eq!(p.status, Some((401, 2)));
+    assert_eq!(p.bytes, b"your key");
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![(
+            DestinationId::new(1),
+            Outcome::Transient { retry_after: None }
+        )],
+        "the passthrough member's rejected key records nothing"
     );
 }
 
@@ -897,6 +986,29 @@ async fn a_stalled_auth_call_is_bounded_by_the_attempt_cap() {
     assert!(r.book.observed.lock().unwrap().is_empty());
 }
 
+/// A request whose auth fields cannot be assembled is never sent and records nothing against the
+/// member: the binding's refusal is not the destination's fault (the push attempt's
+/// could-not-be-assembled case, on the far end's one assembly step).
+#[tokio::test]
+async fn an_attempt_whose_auth_refuses_records_nothing_against_the_member() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    r.auth.refuse.store(true, Ordering::SeqCst);
+    let t = token();
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(!far.send(&t, request()).await);
+    assert_eq!(r.auth.calls.load(Ordering::SeqCst), 1, "the one auth call");
+    assert!(r.table.opened.lock().unwrap().is_empty(), "nothing dialled");
+    assert!(
+        r.book.observed.lock().unwrap().is_empty(),
+        "nothing recorded against the member"
+    );
+}
+
 /// The head the framer encodes carries the auth values: it wipes them when it drops.
 #[test]
 fn the_head_wipes_its_auth_values() {
@@ -984,6 +1096,36 @@ async fn passthrough_hands_the_callers_credential_only_to_its_member() {
     assert_eq!(relays, vec![false, true]);
 }
 
+/// AUTH POINTS: a member whose style signs the body (`HeadBody`) has its one auth call made at
+/// `HeadBody` with the whole body, the bytes the framer sends; a member whose style is over the
+/// head is called at `Head` and lent no body.
+#[tokio::test]
+async fn a_body_signing_style_is_called_at_head_body_with_the_whole_body() {
+    // m0's style is over the head, m1's signs the body (the rig's binding for member 1).
+    let r = rig(
+        &[
+            ("a.test", Script::Answer(503, None, vec![b"x"])),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    for n in 1..=2 {
+        let _ = far.member(&t, n).await;
+        assert!(far.send(&t, request()).await);
+        let _ = drain(&far, &t).await;
+    }
+    assert_eq!(
+        *r.auth.points.lock().unwrap(),
+        vec![
+            (AuthPoint::Head, None),
+            (AuthPoint::HeadBody, Some(request().body)),
+        ]
+    );
+}
+
 /// THE ERROR-BODY CAP (1.5.5's `limits.upstream_error_body_max_bytes`): a relayed failure's body is
 /// handed to the plane up to the cap, the piece that overruns it is cut there and ends the answer,
 /// and the connection closes; a success's body passes whole.
@@ -1062,15 +1204,19 @@ async fn a_context_length_refusal_excludes_only_admissible_smaller_windows() {
     assert!(far.next(&t).await.expect("a piece").fail_over);
     let w = far.lock();
     assert!(
-        w.ctx.is_excluded(DestinationId::new(1)),
+        w.walk.ctx().is_excluded(DestinationId::new(1)),
         "the member that refused"
     );
     assert!(
-        !w.ctx.is_excluded(DestinationId::new(2)),
+        !w.walk.ctx().is_excluded(DestinationId::new(2)),
         "a blocklisted member is not the exclusion's to record"
     );
     assert!(
-        !w.ctx.is_excluded(DestinationId::new(3)),
+        !w.walk.ctx().is_excluded(DestinationId::new(3)),
         "a larger window stays in the walk"
     );
 }
+
+#[allow(unsafe_code)]
+#[path = "probe_unit_tests.rs"]
+mod probe_unit;

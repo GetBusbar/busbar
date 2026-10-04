@@ -18,8 +18,8 @@
 
 use crate::ctx::{Change, Ctx, Overlay};
 use crate::gates::structure_lint::{
-    axis, census, choke_points, corpus, fn_scoped, hybrid, inline_tests, oversized, plane_dups,
-    plane_store, roots, StructureLintGate, Tables,
+    axis, census, choke_points, corpus, fn_scoped, hybrid, inline_tests, plane_dups, plane_store,
+    roots, StructureLintGate, Tables,
 };
 use crate::gates::{prove_rows_green, prove_rows_red, Gate, Report};
 use crate::ledger::Verdict;
@@ -359,70 +359,6 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         &[hybrid::ROW_HYBRID],
         ov,
         &["HYBRID", "plane.rs"],
-    ));
-
-    let mut ov = Overlay::new();
-    ov.set(
-        format!("{}/planted_monster.rs", roots::CORE),
-        "pub fn f() {}\n".repeat(oversized::MAX_LINES_IMPL + 1),
-    );
-    report.push(debt_free_case(
-        cx,
-        gate,
-        "a file over the cap that is not pre-existing debt is a finding",
-        &[oversized::ROW_OVERSIZED],
-        without_existing(&existing.oversized),
-        ov,
-        &["OVERSIZED", "planted_monster.rs"],
-    ));
-
-    // A GRANDFATHERED FILE STAYS GREEN, which is the half of the rule an exception list can get
-    // wrong in the expensive direction.
-    if let Some(first) = t.grandfathered.first() {
-        let mut ov = without_existing(&existing.oversized);
-        ov.set(
-            first,
-            format!(
-                "// grandfathered, still over the cap\n{}",
-                "pub fn f() {}\n".repeat(oversized::MAX_LINES_IMPL + 1)
-            ),
-        );
-        report.push(green_case(
-            cx,
-            gate,
-            "a grandfathered file over the cap is tracked debt, not a fresh violation",
-            &[oversized::ROW_OVERSIZED],
-            ov,
-        ));
-    }
-
-    // THE LIST IS A RATCHET (item 222): three ways it can stop being one, planted together in ONE
-    // table so one run proves all three — the case must name every one of them, so a rule that
-    // stopped firing cannot hide behind the other two. The real list is green on the row.
-    let mut broken = t.clone();
-    let under_cap = format!("{}/lib.rs", roots::CORE);
-    broken.grandfathered = vec![
-        "crates/the-oversized-file-that-moved/src/lib.rs".to_string(),
-        under_cap.clone(),
-    ];
-    while broken.grandfathered.len() <= oversized::GRANDFATHERED_CEILING {
-        let n = broken.grandfathered.len();
-        broken
-            .grandfathered
-            .push(format!("{}/planted_new_monster_{n}.rs", roots::CORE));
-    }
-    report.push(table_case(
-        cx,
-        "a grandfathered entry naming no file or an under-cap file, or a list past its ceiling, is refused",
-        &[oversized::ROW_GRANDFATHERED],
-        broken,
-        &[
-            "GRANDFATHER-MISSING",
-            "the-oversized-file-that-moved",
-            "GRANDFATHER-RETIRED",
-            &under_cap,
-            "GRANDFATHER-LIST-GREW",
-        ],
     ));
 
     // ── invariant 3 ──────────────────────────────────────────────────────────────────────────────

@@ -1134,27 +1134,19 @@ fn test_stream_decode_surfaces_midstream_exception() {
     );
 }
 
-/// `bedrock_image_block` must never emit `format: ""`. An exact `"image/"`
-/// media_type (empty subtype) once slipped past the `strip_prefix(...).unwrap_or("png")` fallback
-/// — `strip_prefix` returns `Some("")`, not `None` — producing a `format: ""` block outside
-/// Bedrock's `ImageFormat` union that the SDK rejects with a ValidationException. It must fall
-/// back to `png`, like a missing/unprefixed media_type.
+/// `bedrock_image_block` must never emit `format: ""`, and never relabel an image as a format it
+/// is not (design F3: never a substitution). An exact `"image/"` media_type (empty subtype), or one
+/// with no `image/` prefix, has no member of Bedrock's `ImageFormat` union: the block is dropped.
 #[test]
-fn test_bedrock_image_block_empty_subtype_falls_back_to_png() {
+fn test_bedrock_image_block_empty_subtype_is_dropped() {
     // Exact `"image/"` prefix with an empty subtype.
-    let block = bedrock_image_block(&crate::codec::ir::IrImageSource::Base64 {
-        media_type: "image/".to_string(),
-        data: ("QQ==").to_string(),
-    })
-    .expect("base64 image must emit a block");
-    assert_eq!(
-        block.pointer("/format").and_then(|f| f.as_str()),
-        Some("png"),
-        "empty subtype must fall back to png, never an empty `format`; got {block}"
-    );
-    assert_eq!(
-        block.pointer("/source/bytes").and_then(|b| b.as_str()),
-        Some("QQ==")
+    assert!(
+        bedrock_image_block(&crate::codec::ir::IrImageSource::Base64 {
+            media_type: "image/".to_string(),
+            data: ("QQ==").to_string(),
+        })
+        .is_none(),
+        "an empty subtype has no Converse format: dropped, never png"
     );
 
     // A real subtype is preserved verbatim.
@@ -1168,15 +1160,14 @@ fn test_bedrock_image_block_empty_subtype_falls_back_to_png() {
         Some("jpeg")
     );
 
-    // A media_type with no `image/` prefix also falls back to png (unchanged behavior).
-    let bare = bedrock_image_block(&crate::codec::ir::IrImageSource::Base64 {
-        media_type: "png".to_string(),
-        data: ("QQ==").to_string(),
-    })
-    .expect("bare png must emit a block");
-    assert_eq!(
-        bare.pointer("/format").and_then(|f| f.as_str()),
-        Some("png")
+    // A media_type with no `image/` prefix is not a well-formed image media type: dropped too.
+    assert!(
+        bedrock_image_block(&crate::codec::ir::IrImageSource::Base64 {
+            media_type: "png".to_string(),
+            data: ("QQ==").to_string(),
+        })
+        .is_none(),
+        "a bare media_type is dropped, never relabelled"
     );
 
     // The URL sentinel is still dropped (no corrupt block).
@@ -5836,33 +5827,28 @@ fn test_tool_choice_none_warns_and_omits() {
     );
 }
 
-/// Warn path: a malformed image media_type (an empty subtype) is coerced to `format: "png"`
-/// and a `tracing::warn!` fires. The observable coercion is asserted here; the warn rides the same
-/// fallback branch.
+/// Warn path: a malformed image media_type (an empty subtype, an unprefixed word) or one outside
+/// Bedrock's `ImageFormat` union (`image/bmp`) is DROPPED with the writer's warn, never coerced to
+/// `format: "png"` (design F3: never a substitution).
 #[test]
-fn test_malformed_media_type_warns_and_falls_back_to_png() {
-    // Empty subtype (`image/`) takes the fallback branch that warns.
-    let block = bedrock_image_block(&crate::codec::ir::IrImageSource::Base64 {
-        media_type: "image/".to_string(),
-        data: ("QQ==").to_string(),
-    })
-    .expect("base64 image must emit a block");
-    assert_eq!(
-        block.pointer("/format").and_then(|v| v.as_str()),
-        Some("png"),
-        "an empty subtype must coerce to png (warn-and-degrade); got {block}"
-    );
-    // A bare, unprefixed media_type also takes the warning fallback.
-    let bare = bedrock_image_block(&crate::codec::ir::IrImageSource::Base64 {
-        media_type: "garbage".to_string(),
-        data: ("QQ==").to_string(),
-    })
-    .expect("bare media_type must emit a block");
-    assert_eq!(
-        bare.pointer("/format").and_then(|v| v.as_str()),
-        Some("png"),
-    );
-    // A well-formed subtype does NOT take the fallback (no coercion, no warn).
+fn test_malformed_media_type_warns_and_drops() {
+    for mt in ["image/", "garbage", "image/bmp", "image/svg+xml"] {
+        let cap = busbar_contract::testkit::WarnCapture::default();
+        let block = tracing::subscriber::with_default(cap.clone(), || {
+            bedrock_image_block(&crate::codec::ir::IrImageSource::Base64 {
+                media_type: mt.to_string(),
+                data: ("QQ==").to_string(),
+            })
+        });
+        assert!(block.is_none(), "{mt:?} must be dropped, got {block:?}");
+        assert_eq!(
+            cap.count("dropping image block on Bedrock egress"),
+            1,
+            "{mt:?}: one warn: {:?}",
+            cap.messages()
+        );
+    }
+    // A well-formed subtype is carried (no drop, no warn).
     let jpeg = bedrock_image_block(&crate::codec::ir::IrImageSource::Base64 {
         media_type: "image/jpeg".to_string(),
         data: ("QQ==").to_string(),
@@ -6590,14 +6576,14 @@ fn streaming_metadata_metrics_is_always_present_and_never_overwrites_upstream() 
     );
     // Upstream-supplied: kept.
     let mut data = serde_json::json!({"usage": {}, "metrics": {"latencyMs": 31}});
-    framing.inject_streaming_metrics(ET_METADATA, &mut data, Some(std::time::Instant::now()));
+    framing.inject_streaming_metrics(ET_METADATA, &mut data, Some(0));
     assert_eq!(
         data.pointer("/metrics/latencyMs").and_then(|v| v.as_u64()),
         Some(31)
     );
     // Only the metadata frame is touched.
     let mut other = serde_json::json!({"stopReason": "end_turn"});
-    framing.inject_streaming_metrics(ET_MESSAGE_STOP, &mut other, Some(std::time::Instant::now()));
+    framing.inject_streaming_metrics(ET_MESSAGE_STOP, &mut other, Some(0));
     assert!(other.get("metrics").is_none());
 }
 
@@ -6707,4 +6693,39 @@ fn status_word_golden() {
         assert_eq!(name, word, "class={class:?}");
         assert_eq!(message, word, "an absent signal falls back to the name");
     }
+}
+
+/// DF-MAP gap 2: the tier that SERVED a Converse answer (`serviceTier.type`) is read into the usage
+/// attribution, buffered and streamed, and written back on a Converse answer. RED arm: the reader
+/// never read it, so the served tier was lost.
+#[test]
+fn the_served_tier_is_read_and_written() {
+    let answer = serde_json::json!({
+        "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+        "stopReason": "end_turn",
+        "usage": {"inputTokens": 3, "outputTokens": 1, "totalTokens": 4},
+        "serviceTier": {"type": "priority"}
+    });
+    let resp = BedrockReader.read_response(&answer).expect("reads");
+    assert_eq!(resp.usage.detail.service_tier.as_deref(), Some("priority"));
+    let writer = BedrockWriter;
+    let written = writer.write_response(&resp);
+    assert_eq!(written["serviceTier"]["type"], "priority");
+
+    let mut state = crate::codec::ir::StreamDecodeState::default();
+    let events: Vec<_> = [
+        serde_json::json!({"type": "messageStop", "stopReason": "end_turn"}),
+        serde_json::json!({"type": "metadata", "usage": {"inputTokens": 3, "outputTokens": 1},
+            "serviceTier": {"type": "flex"}}),
+    ]
+    .into_iter()
+    .flat_map(|data| BedrockReader.read_response_events("", &data, &mut state))
+    .collect();
+    let tier = events.iter().find_map(|e| match e {
+        crate::codec::ir::IrStreamEvent::MessageDelta { usage, .. } => {
+            usage.detail.service_tier.clone()
+        }
+        _ => None,
+    });
+    assert_eq!(tier.as_deref(), Some("flex"));
 }

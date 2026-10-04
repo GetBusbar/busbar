@@ -238,14 +238,15 @@ pub fn clamp_stop(stop: &[String], cap: usize, proto: &'static str) -> Vec<Strin
     // `stop.len() > cap` is guaranteed by the early return above, so this cannot underflow;
     // `saturating_sub` would only imply a doubt that isn't there.
     let dropped = provided - cap;
-    ::tracing::debug!(diag = %crate::codec::diagnostics::IR_TRUNCATE_STOP_SEQUENCES.banner(),
-        proto,
-        cap,
-        provided,
-        dropped,
-        "truncating stop sequences to {proto}'s documented cap of {cap}; the request carried \
-         {provided}, so {dropped} were dropped"
-    );
+    // A cap keeps its behaviour and always warns, through the one drop path.
+    crate::codec::drops::note(crate::codec::drops::Dropped::slot(
+        "stop",
+        &crate::codec::diagnostics::IR_TRUNCATE_STOP_SEQUENCES,
+        format!(
+            "truncating stop sequences to {proto}'s documented cap of {cap}; the request carried \
+             {provided}, so {dropped} were dropped"
+        ),
+    ));
     stop[..cap].to_vec()
 }
 
@@ -406,6 +407,24 @@ pub struct IrSafetyVerdict {
     pub blocked: bool,
 }
 
+impl IrSafetyVerdict {
+    /// A `{"<category>": true|false, …}` map (the OpenAI family's moderation `categories`) as one
+    /// flagged, non-blocking verdict per category that is `true`.
+    pub fn flagged_categories(categories: Option<&Value>) -> Vec<IrSafetyVerdict> {
+        categories
+            .and_then(|c| c.as_object())
+            .into_iter()
+            .flatten()
+            .filter(|(_, on)| on.as_bool() == Some(true))
+            .map(|(category, _)| IrSafetyVerdict {
+                category: category.clone(),
+                flagged: true,
+                blocked: false,
+            })
+            .collect()
+    }
+}
+
 /// Audio the model produced in its answer (ARCHITECT ruling 2026-10-02, DF-MAP item 3).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct IrAudioOutput {
@@ -465,16 +484,19 @@ pub enum IrReasoningAsk {
     Effort(IrReasoningEffort),
     /// A numeric thinking-token budget (Anthropic `budget_tokens`, Gemini `thinkingBudget`).
     Budget(u32),
-    /// Gemini's `thinkingBudget: -1` — "the model decides". Projected back to Gemini as -1
-    /// verbatim; projected to protocols with no dynamic concept as the `medium` table entry
-    /// (with a warn), since "model decides" has no closer analog than the middle of the road.
+    /// Gemini's `thinkingBudget: -1` — "the model decides" (Anthropic adaptive thinking with no
+    /// effort word, Cohere `thinking:{type:"enabled"}` with no budget). Carried where the far end
+    /// has a "model decides" form (Gemini -1, Cohere's budget-less enable, an adaptive Claude lane);
+    /// anywhere else it is DROPPED on the one drop path (design F3: never a substitution), so the
+    /// model runs at its own default. [`Self::to_budget`] / [`Self::to_effort`] have no table entry
+    /// for it.
     Dynamic,
     /// Reasoning explicitly switched OFF (IR-09): Anthropic / Cohere `thinking:{type:"disabled"}`,
     /// OpenAI Chat / Responses effort `"none"`, Gemini `thinkingBudget: 0`. DIFFERENT from `None`
     /// on [`IrRequest::reasoning`] ("the caller never said"): a reasoning-by-default model keeps
-    /// thinking when nothing is said and stops when this is said. A writer MUST match `Off` before
-    /// projecting through [`Self::to_budget`]/[`Self::to_effort`] — those return the smallest
-    /// value for it (0 / `Minimal`), which as an ENABLE ask would invert the caller's meaning.
+    /// thinking when nothing is said and stops when this is said. [`Self::to_budget`] /
+    /// [`Self::to_effort`] have no table entry for it: as an ENABLE ask the smallest value would
+    /// invert the caller's meaning.
     Off,
 }
 
@@ -498,32 +520,30 @@ pub const REASONING_BUDGET_DEFAULTS: [u32; 4] = [1024, 4096, 8192, 16384];
 
 impl IrReasoningAsk {
     /// Project the ask to a NUMERIC budget using the effort table ([minimal, low, medium, high]).
-    pub fn to_budget(self, table: [u32; 4]) -> u32 {
+    /// `None` for an ask with no table entry (`Dynamic`, `Off`): the writer carries those in its
+    /// own form or drops them (design F3), it never substitutes a table entry.
+    pub fn to_budget(self, table: [u32; 4]) -> Option<u32> {
         match self {
-            IrReasoningAsk::Budget(n) => n,
-            IrReasoningAsk::Effort(IrReasoningEffort::Minimal) => table[0],
-            IrReasoningAsk::Effort(IrReasoningEffort::Low) => table[1],
-            IrReasoningAsk::Effort(IrReasoningEffort::Medium) => table[2],
+            IrReasoningAsk::Budget(n) => Some(n),
+            IrReasoningAsk::Effort(IrReasoningEffort::Minimal) => Some(table[0]),
+            IrReasoningAsk::Effort(IrReasoningEffort::Low) => Some(table[1]),
+            IrReasoningAsk::Effort(IrReasoningEffort::Medium) => Some(table[2]),
             // The table has no row above `high`: the two words above it take its top budget.
             IrReasoningAsk::Effort(
                 IrReasoningEffort::High | IrReasoningEffort::XHigh | IrReasoningEffort::Max,
-            ) => table[3],
-            IrReasoningAsk::Dynamic => table[2],
-            // Never an enable ask — see the variant doc; writers match `Off` first.
-            IrReasoningAsk::Off => 0,
+            ) => Some(table[3]),
+            IrReasoningAsk::Dynamic | IrReasoningAsk::Off => None,
         }
     }
 
     /// Project the ask to a WORD using the same table as bucket thresholds (a numeric budget maps
     /// to the largest effort whose table entry it reaches), so word→number→word round-trips
-    /// degrade predictably.
-    pub fn to_effort(self, table: [u32; 4]) -> IrReasoningEffort {
+    /// degrade predictably. `None` for an ask with no word (`Dynamic`, `Off`), as [`Self::to_budget`].
+    pub fn to_effort(self, table: [u32; 4]) -> Option<IrReasoningEffort> {
         match self {
-            IrReasoningAsk::Effort(e) => e,
-            IrReasoningAsk::Dynamic => IrReasoningEffort::Medium,
-            // Never an enable ask — see the variant doc; writers match `Off` first.
-            IrReasoningAsk::Off => IrReasoningEffort::Minimal,
-            IrReasoningAsk::Budget(n) => {
+            IrReasoningAsk::Effort(e) => Some(e),
+            IrReasoningAsk::Dynamic | IrReasoningAsk::Off => None,
+            IrReasoningAsk::Budget(n) => Some({
                 if n >= table[3] {
                     IrReasoningEffort::High
                 } else if n >= table[2] {
@@ -533,7 +553,7 @@ impl IrReasoningAsk {
                 } else {
                     IrReasoningEffort::Minimal
                 }
-            }
+            }),
         }
     }
 }
@@ -781,6 +801,20 @@ pub struct IrSearchResultParts<'a> {
 }
 
 impl IrBlock {
+    /// The block's IR kind, as a dropped block is named (`codec::drops::Member::Block`): `text`,
+    /// `thinking`, `tool_use`, `tool_result`, `image`, or the attachment's media kind.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            IrBlock::Text { .. } => "text",
+            IrBlock::Thinking { .. } => "thinking",
+            IrBlock::ToolUse { .. } => "tool_use",
+            IrBlock::ToolResult { .. } | IrBlock::Json(_) => "tool_result",
+            IrBlock::Image { .. } => "image",
+            IrBlock::Media { kind, .. } => kind.as_str(),
+            IrBlock::HostedToolRecord { .. } => "hosted_tool",
+        }
+    }
+
     /// THE SEARCH-RESULT SLOT (ARCHITECT 2026-10-02, DF-MAP-2): one caller-supplied RAG passage —
     /// Anthropic `search_result`, Converse `searchResult` — modelled as a `Text` block a model of
     /// any dialect can read (a `title — source` header line, then the passage), carrying ONE
@@ -1364,6 +1398,11 @@ pub struct IrUsageDetail {
     /// `billable_tokens` ignores this field like every other on the struct, so populating it can
     /// never change what busbar bills.
     pub usage_identity_note: Option<UsageIdentityNote>,
+    /// Counts the reader found that no billing class records (Bedrock's guardrail policy units),
+    /// keyed by the provider's own count name. Never billed: [`IrUsage::to_token_usage`] carries
+    /// them onto [`busbar_contract::billing::TokenUsage::residual_units`], which no billed-usage
+    /// builder reads.
+    pub residual_units: std::collections::BTreeMap<String, u64>,
     /// The tokens split by modality (OpenAI `*_tokens_details.{text,image,audio}_tokens`, Gemini
     /// `*TokensDetails[].{modality,tokenCount}`). PRESENTATION ONLY (ARCHITECT ruling 2026-10-02,
     /// DF-MAP item 4, MONEY LAW): it creates no meter class, feeds no ledger, and changes no billed
@@ -1438,10 +1477,11 @@ impl IrUsage {
     /// counts an operator is invoiced on. So `billed_input_tokens`/`billed_output_tokens`, when
     /// present, WIN over the raw totals for the reserved input/output tiers — a DELIBERATE,
     /// tested per-dialect ledgered-count change (no other dialect populates these, so every other
-    /// provider projects byte-identically to before). The Cohere OPEN buckets
-    /// (`billed_classifications` → `classifications`, `search_units` → `search`) are attribution
-    /// that will ride `usage_units` once the ledger population lands (a designed later-milestone
-    /// residual); today they remain on `IrUsageDetail` and are re-emitted by the Cohere writer.
+    /// provider projects byte-identically to before). Cohere's billed `search_units` is the open
+    /// class `search_units` (see `open_units`). Its billed `classifications` has no meter class the
+    /// LLM plane declares: the Cohere reader WARNs it as a residual and it is ledgered nowhere
+    /// (MONEY-AUDIT A-F1; the residual audit row is escalated, A-F4/STR-5/STR-8). Both stay on
+    /// `IrUsageDetail` and are re-emitted by the Cohere writer.
     ///
     /// THE BILLED INPUT IS NETTED AGAINST THE CACHE READ, for the same reason the raw total is.
     /// The billed-wins exception above was written when Cohere reported no cache accounting at all,
@@ -1475,10 +1515,54 @@ impl IrUsage {
                 .unwrap_or(self.output_tokens),
             cache_read: self.cache_read_input_tokens,
             cache_creation: self.cache_creation_input_tokens,
+            open_units: self.open_units(),
+            residual_units: self.residual_units(),
             ..Default::default()
         }
     }
+
+    /// THE SEPARATELY BILLED COUNTS, by the meter class each lands in (MONEY-AUDIT A-F1; owner
+    /// 2026-10-02: every billed count lands in an existing class by the provider's own semantics,
+    /// and the plane reports units, never a price). Anthropic bills each server-side web search
+    /// (`usage.server_tool_use.web_search_requests`) as one search, so the count is the declared
+    /// open class `search_units` (a rerank's billed searches, item 134) that a rate card prices per
+    /// lane under `units:`. Cohere's chat `billed_units.search_units` is that same class by name and
+    /// meaning (the units a rerank bills). A zero count is not carried: a zero search is no hit on
+    /// the class.
+    fn open_units(&self) -> std::collections::BTreeMap<String, u64> {
+        let searches = (self.detail.web_search_requests.unwrap_or(0))
+            .saturating_add(self.detail.search_units.unwrap_or(0));
+        (searches != 0)
+            .then(|| {
+                (
+                    crate::codec::ir::rerank::SEARCH_UNITS_CLASS.to_string(),
+                    searches,
+                )
+            })
+            .into_iter()
+            .collect()
+    }
+
+    /// THE RESIDUALS this usage reports, never billed (MONEY LAW, owner 2026-10-02): every count
+    /// the reader carried on [`IrUsageDetail::residual_units`], plus the provider-stated total above
+    /// the itemized sum ([`IrUsageDetail::usage_identity_note`] with a positive `unaccounted`) as
+    /// `<identity>.stated_total_gap`. A total BELOW its terms is no unbilled count, so it adds
+    /// nothing here; its note and WARN still say so.
+    fn residual_units(&self) -> std::collections::BTreeMap<String, u64> {
+        let mut residual = self.detail.residual_units.clone();
+        if let Some(note) = &self.detail.usage_identity_note {
+            let gap = u64::try_from(note.unaccounted).unwrap_or(0);
+            if gap > 0 {
+                let identity = note.identity;
+                residual.insert(format!("{identity}.{STATED_TOTAL_GAP}"), gap);
+            }
+        }
+        residual
+    }
 }
+
+/// The residual key suffix for a provider-stated total above its itemized sum.
+const STATED_TOTAL_GAP: &str = "stated_total_gap";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum IrBlockMeta {
@@ -1561,6 +1645,9 @@ pub enum IrDelta {
 /// the text/thinking blocks are open, and which OpenAI tool_call indices have been opened.
 #[derive(Debug, Clone, Default)]
 pub struct StreamDecodeState {
+    /// The far-end wire paths this stream already dropped on a TRANSLATE attempt, each warned once;
+    /// read for the audit at the stream's end (`codec::drops::read_stream_frame`).
+    pub dropped: Vec<String>,
     pub started: bool,
     pub text_block_open: bool,
     /// The IR block index the Gemini reader assigned to the text block, by order of FIRST appearance

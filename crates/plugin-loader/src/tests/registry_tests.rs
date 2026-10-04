@@ -427,7 +427,7 @@ fn open_store_refuses_non_store_kind() {
     m.kind = "hook".into();
     // Stamp the hook-supported ABI version so the scan admits it and the KIND gate (not the
     // ABI gate) is what rejects.
-    m.abi_version = busbar_contract::abi::cold::hook::HOOK_ABI_VERSION;
+    m.abi_version = busbar_contract::abi::hook::ABI_VERSION;
     let m = sign(&release, m, b"hook lib");
     write_tarball(&dir, "hook.tar.gz", &m, b"hook lib");
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
@@ -491,12 +491,13 @@ fn open_auth_refuses_non_auth_kind() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Kind gating: a non-hook plugin resolves but cannot serve as a routing hook. Mirrors
-/// `open_store_refuses_non_store_kind`: a store-kind manifest passes phase 1/2/3 and is then
-/// handed to `open_hook`, which must reject on the KIND gate before ever attempting to load it
-/// (the dummy projectors below are never invoked - the kind check short-circuits first).
+/// Kind gating: a non-hook plugin resolves but cannot serve as a hook. Mirrors
+/// `open_store_refuses_non_store_kind`: a store-kind manifest passes phase 1/2/3, and the hook axis
+/// over the registry holds no row for it, so opening it as a hook is refused naming the module,
+/// before anything is loaded.
 #[test]
-fn open_hook_refuses_non_hook_kind() {
+fn the_hook_axis_refuses_a_non_hook_kind() {
+    use busbar_contract::hook_calls::HookAxis;
     let release = key(1);
     let dir = tmpdir("hookkind");
     let m = sign(
@@ -506,19 +507,24 @@ fn open_hook_refuses_non_hook_kind() {
     );
     write_tarball(&dir, "gamma.tar.gz", &m, b"store lib");
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
-    let projectors = std::sync::Arc::new(crate::hook::HookProjectors {
-        decide: Box::new(|_req, _cands, _ctx| serde_json::Value::Null),
-        transform: Box::new(|_req| serde_json::Value::Null),
-        normalize: Box::new(|_v, _cands| unreachable!("kind gate must short-circuit first")),
-        transform_outcome: Box::new(|_v| unreachable!("kind gate must short-circuit first")),
-        status: Box::new(|_v| None),
-        describe_schema: Box::new(|_v| None),
-    });
-    let err = reg
-        .open_hook("gamma", "{}", "gamma", projectors)
+    assert!(reg.resolve("gamma").is_some(), "the store row resolves");
+    let dispatcher = std::sync::Arc::new(crate::dispatch::Dispatcher::new(
+        crate::dispatch::DispatchConfig::default(),
+    ));
+    let rows = crate::hook_door::HookRows::new(&[], Some(&reg), dispatcher).expect("the axis");
+    let err = rows
+        .open(
+            "gamma",
+            "gamma",
+            &serde_json::json!({}),
+            std::time::Duration::from_secs(1),
+        )
         .map(|_| ())
         .unwrap_err();
-    assert!(err.contains("kind 'store'"), "got {err}");
+    assert!(
+        err.contains("no `kind: hook` plugin answers to 'gamma'"),
+        "got {err}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -845,21 +851,40 @@ fn auth_supported_abi_reads_the_shared_const() {
     );
 }
 
-/// The export range reads the shared `EXPORT_ABI_VERSION` const on both endpoints, so a bump
-/// propagates automatically instead of drifting from the SDK's declared version. `kind: export`
-/// is a recognized kind with a non-empty supported range.
+/// The export range is the export kind's MEMORY ABI version on both endpoints (THE DESIGN §11.8,
+/// ABI-b6): a bump propagates instead of drifting, and `kind: export` is a recognized kind with a
+/// non-empty supported range.
 #[test]
 fn export_supported_abi_reads_the_shared_const() {
-    // The CEILING is the shared const, so the window and the SDK's declared version cannot drift
-    // apart. The FLOOR is deliberately NOT the ceiling: 2 is the 1.5.3 stream vocabulary, and
-    // DECISIONS #85 moved the ceiling to 3 (the response became `{result, metrics[], diagnostics[]}`)
-    // by WIDENING the window rather than moving it, so a sink built against the bare v2 response
-    // keeps loading — the loader reads whichever shape a plugin speaks, decided once at load.
-    assert_eq!(
-        supported_abi("export"),
-        &[2, busbar_contract::abi::cold::export::EXPORT_ABI_VERSION]
-    );
+    let v = busbar_contract::abi::export::ABI_VERSION;
+    assert_eq!(supported_abi("export"), &[v, v]);
     assert!(!supported_abi("export").is_empty());
+}
+
+/// OLD-ABI RED (ABI-b6, the export half): a 1.5.5 export plugin — its manifest stating the 1.5.5
+/// JSON contract's `abi_version` 2 — is refused at scan, and the refusal names the rebuild.
+#[test]
+fn a_1_5_5_export_plugin_is_refused_naming_the_rebuild() {
+    let release = key(1);
+    let dir = tmpdir("export-1-5-5");
+    let mut m = manifest("busbar-export-old", "old-sink", "busbar");
+    m.kind = "export".into();
+    m.abi_version = 2; // the 1.5.5 JSON contract every published export plugin was built against
+    let m = sign(&release, m, b"a 1.5.5 sink");
+    write_tarball(&dir, "old-sink.tar.gz", &m, b"a 1.5.5 sink");
+    let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(
+        errs[0].contains("abi_version 2 is not supported for kind 'export'"),
+        "{}",
+        errs[0]
+    );
+    assert!(
+        errs[0].contains(crate::dispatch::load::REBUILD),
+        "the refusal names the rebuild: {}",
+        errs[0]
+    );
 }
 
 // ── The FIRST-PARTY replay, end to end over the real scan ──────────────────────────────────────

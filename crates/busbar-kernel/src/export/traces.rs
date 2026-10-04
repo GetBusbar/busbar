@@ -39,7 +39,7 @@ pub fn layer<S: Subscriber + for<'a> LookupSpan<'a>>(floor: LevelFilter) -> Opti
     };
     let filter = tracing_subscriber::filter::filter_fn(wanted).with_max_level_hint(floor);
     let producer = Producer(deliver).with_filter(filter);
-    super::plugin::AXIS.get().map(|_| producer)
+    super::plugin::axis().map(|_| producer)
 }
 
 /// Hand one closed span's record to every opened sink subscribed to `traces`, built to that sink's

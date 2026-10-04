@@ -222,11 +222,14 @@ impl ProtocolReader for CohereReader {
                                         // non-text block in the system array has no representation and
                                         // is dropped. Keep the drop, but surface it: a silent loss of
                                         // a system instruction block is otherwise invisible.
-                                        tracing::warn!(
-                                            block_type = bo
-                                                .get(keys::TYPE)
-                                                .and_then(|t| t.as_str())
-                                                .unwrap_or("<missing>"),
+                                        let block_type = bo
+                                            .get(keys::TYPE)
+                                            .and_then(|t| t.as_str())
+                                            .unwrap_or("<missing>");
+                                        crate::codec::drops::writer_drop!(
+                                            crate::codec::drops::wire("messages[].content[]"),
+                                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                                            [block_type,],
                                             "dropping non-text block in cohere system array (cohere \
                                              system is text-only)"
                                         );
@@ -1227,6 +1230,50 @@ impl ProtocolReader for CohereReader {
         Box::new(self.clone())
     }
 
+    fn request_map(&self) -> crate::codec::carry::Table {
+        super::map::REQUEST
+    }
+
+    fn parked(&self) -> &'static [crate::codec::drops::Parked] {
+        super::PARKED
+    }
+
+    fn request_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::REQUEST_BLOCKS
+    }
+
+    fn response_blocks(&self) -> &'static [crate::codec::drops::Blocks] {
+        super::RESPONSE_BLOCKS
+    }
+
+    fn response_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::RESPONSE_PATHS,
+            code: super::RESPONSE_CODE,
+            drops: super::RESPONSE_DROPS,
+        })
+    }
+
+    fn stream_carried(&self) -> Option<crate::codec::drops::Carried> {
+        Some(crate::codec::drops::Carried {
+            map: super::map::STREAM_PATHS,
+            code: super::STREAM_CODE,
+            drops: super::STREAM_DROPS,
+        })
+    }
+
+    fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
+        super::IR_BLOCK_KINDS
+    }
+
+    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
+        super::REQUEST_CODE_NAMES
+    }
+
+    fn unread(&self) -> &'static [&'static str] {
+        super::UNREAD
+    }
+
     fn read_response(
         &self,
         body: &serde_json::Value,
@@ -1425,7 +1472,14 @@ impl ProtocolReader for CohereReader {
 /// COHERE'S USAGE COUNTS, AS DATA. The raw `tokens` bucket gives the totals; `cached_tokens` is
 /// the cache hit, a slice INSIDE `tokens.input_tokens` (so it is subtracted there and carried as
 /// the cache read); `billed_units` is the provider-metered bucket — its token counts, its
-/// `search_units` and its `classifications` — carried as attribution beside the totals.
+/// `search_units` and its `classifications`.
+///
+/// WHERE EACH COUNT IS LEDGERED (MONEY-AUDIT A-F1; the census over the pinned wire lock,
+/// `testing/llm-conformance/wire/cohere.wire.json`, is `usage_census_tests`): the billed token
+/// counts win the reserved input/output classes over the raw ones (`IrUsage::to_token_usage`), the
+/// cache hit is the cache read, `search_units` is the open class `search_units`.
+/// `classifications` is a residual: no meter class the LLM plane declares carries it, so
+/// [`read_cohere_usage`] WARNs it and nothing is ledgered for it.
 const USAGE: &[UsageCount] = &[
     (
         CountSlot::Input,
@@ -1455,11 +1509,23 @@ const USAGE: &[UsageCount] = &[
     ),
 ];
 
-/// A Cohere `usage` / `meta` object (`None` when absent) → the IR usage, through [`USAGE`].
+/// A Cohere `usage` / `meta` object (`None` when absent) → the IR usage, through [`USAGE`]. A
+/// billed `classifications` count is a RESIDUAL — a unit Cohere bills that no meter class the LLM
+/// plane declares carries — so it is WARNed, never ledgered and never folded into another class
+/// (MONEY-AUDIT A-F1; its audit row is escalated, A-F4/STR-5/STR-8).
 fn read_cohere_usage(
     usage: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
-    crate::codec::usage_count::read_usage(VENDOR_NAME, usage, USAGE)
+    let read = crate::codec::usage_count::read_usage(VENDOR_NAME, usage, USAGE)?;
+    if let Some(units) = read.detail.billed_classifications.filter(|n| *n != 0) {
+        tracing::warn!(
+            protocol = VENDOR_NAME,
+            field = "billed_units.classifications",
+            units,
+            "usage residual: Cohere billed classification units that no meter class carries;              they are not ledgered (MONEY-AUDIT A-F1)"
+        );
+    }
+    Ok(read)
 }
 
 #[cfg(test)]

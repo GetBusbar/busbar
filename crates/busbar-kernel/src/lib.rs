@@ -135,6 +135,7 @@ pub mod grammar;
 pub mod guest;
 pub mod inflight;
 pub mod plane_driver;
+pub mod probe;
 pub mod pump;
 pub mod recovery;
 pub mod registry;
@@ -224,11 +225,11 @@ pub use busbar_kernel_wal::durable;
 // whether or not a plane needing the seam is built. See the module header.
 pub mod egress;
 pub mod egress_auth;
+/// THE EGRESS GRANT GATE: may busbar spend its own outbound credential on a subject for this
+/// caller? Authorization, so it lives in `busbar-kernel-scope` (Part 2 #36); re-exported here for
+/// the planes that already reach the kernel.
+pub use busbar_kernel_scope::egress as egress_grant;
 pub mod endpoints;
-// The narrow, `pub` re-export facade a plane's own extracted engine reaches DOWN into core through
-// once it lives in its own plane crate (1.6.0 money-path relocation, Phase 0). Pure visibility lift
-// — see the module.
-pub mod engine_facade;
 pub mod export;
 pub mod failover;
 pub mod governance;
@@ -259,6 +260,10 @@ pub mod operation {
     pub use busbar_contract::operation::*;
 }
 
+// The kernel member crates' minting tests (ARCHITECT ruling A): minting is legal only here.
+#[cfg(test)]
+#[path = "tests/members/mod.rs"]
+mod member_tests;
 #[cfg(test)]
 #[path = "tests/operation_tests.rs"]
 mod operation_tests;
@@ -282,6 +287,9 @@ pub mod proxy;
 /// de-vocab): it is core's own auth-middleware infrastructure — gating every request in
 /// `auth_middleware` before any handler runs — not part of the admin HTTP API service.
 pub mod ratelimit;
+/// THE DURABLE PER-PRINCIPAL RESIDUAL LOG: one hash-chained `usage.residual` row per settle that
+/// carried usage counts no billing class records (MONEY LAW). See the module header.
+pub mod residual_log;
 // THE NEUTRAL PER-SESSION SUBSTRATE relocated DOWN to busbar-substrate (std-only, money-safe, zero
 // busbar deps). Core re-exports it so `crate::session::{SessionStore, SessionKey, OwnerKey}` — the
 // gate's screen-cache tenant, the appbuild session_store construction and the App field — are
@@ -299,7 +307,6 @@ pub(crate) mod taxonomy;
 // ── W4.b P2: substrate ENGINE absorbed INTO busbar-kernel; busbar-substrate deleted. The neutral
 // engine modules that had no kernel counterpart land here at their historical `busbar_kernel::` paths.
 pub mod admin_verbs;
-pub mod admin_witness;
 pub mod api;
 pub mod detached;
 pub mod plane_routes;
@@ -342,6 +349,11 @@ pub mod router;
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+// busbar-contract's capability tests that mint a token: a token constructor is spelled only inside
+// this crate's src (construction `token-sealed`), so they live here.
+#[cfg(test)]
+#[path = "tests/caps_tests/mod.rs"]
+mod caps_tests;
 
 pub use appbuild::{
     build_app_from_config, inert_durable_keys_banner, load_config_from_disk, open_relay_banner,

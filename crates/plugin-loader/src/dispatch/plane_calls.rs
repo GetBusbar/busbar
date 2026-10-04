@@ -20,7 +20,7 @@ use busbar_contract::abi::plane::{
     ServeIn, ServeOut,
 };
 use busbar_contract::plane_calls::{
-    Answered, Grow, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
+    Answered, Grow, InstanceDecl, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
 };
 
 use super::kinds::plane::Plane;
@@ -112,6 +112,39 @@ impl PlaneCalls for PlaneInstance {
 
     fn drop_client(&self, ticket: Ticket) {
         self.dispatcher.drop_client(ticket);
+    }
+
+    fn declared(&self) -> InstanceDecl {
+        self.plugin.declared()
+    }
+
+    fn driver(&self) -> Option<Ticket> {
+        self.dispatcher.driver(&self.plugin, self.worker)
+    }
+
+    fn ready(&self) -> Pin<Box<dyn Future<Output = Vec<u64>> + Send>> {
+        let inst = self.plugin.inner.clone();
+        Box::pin(async move {
+            if inst.is_open() {
+                inst.driven.take().await
+            } else {
+                Vec::new()
+            }
+        })
+    }
+
+    fn tick(
+        &self,
+        driver: Ticket,
+        now_ns: u64,
+    ) -> Pin<Box<dyn Future<Output = Option<u64>> + Send>> {
+        let reply = self.dispatcher.tick(&self.plugin, driver, now_ns);
+        Box::pin(async move {
+            let done = reply.await;
+            matches!(done.outcome, Outcome::Ready | Outcome::Pending)
+                .then(|| done.frame.map(|f| f.out.next_tick_ns))
+                .flatten()
+        })
     }
 
     fn on_piece(

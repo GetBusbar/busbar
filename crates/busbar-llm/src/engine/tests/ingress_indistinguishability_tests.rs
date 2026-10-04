@@ -543,6 +543,7 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
+        request_id: 0,
         admit: None,
     });
 
@@ -746,6 +747,7 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
+        request_id: 0,
         admit: None,
     });
 
@@ -892,6 +894,7 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
+        request_id: 0,
         admit: None,
     });
 
@@ -1032,6 +1035,7 @@ async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
+        request_id: 0,
         admit: None,
     });
 
@@ -1203,6 +1207,7 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at: 1_700_000_000,
+        request_id: 0,
         admit: None,
     });
 
@@ -1505,6 +1510,7 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
+        request_id: 0,
         admit: None,
     });
 
@@ -3774,6 +3780,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
+        request_id: 0,
         admit: None,
     });
 
@@ -3910,6 +3917,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
+        request_id: 0,
         admit: None,
     });
 
@@ -4026,6 +4034,7 @@ async fn test_cancel_drop_bills_streamed_tokens_on_aborted_translate() {
         key: std::sync::Arc::new(key.clone()),
         pool: std::sync::Arc::from(""),
         charged_at,
+        request_id: 0,
         admit: None,
     });
 

@@ -26,14 +26,16 @@ fn reason(settings: &str) -> String {
 
 /// The store witness: a store that never opens, so no other slot is ever reached.
 pub mod store {
+    use busbar_contract::abi::sdk::conn::Host;
     use busbar_contract::abi::sdk::store::{
-        Cap, CapsRefused, Cell, Grant, OpResult, ReserveRefused, StoreSlots, Tail,
+        Cap, CapsRefused, Cell, Grant, Op, OpResult, ReserveRefused, Scanned, Step, StoreSlots,
+        Tail,
     };
     use busbar_contract::abi::store::OpId;
     use busbar_contract::kinds::{Head, RecordBytes};
     use busbar_contract::records::{
-        AuditRecord, MeteringDelta, MeteringRow, PlaneRecordRef, RecordStore, RecordStoreResult,
-        UsageDelta, UsageLedger, VirtualKey,
+        AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
+        PlaneSelector, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
     };
 
     /// Its Statement name: the name the host knows it by.
@@ -42,30 +44,6 @@ pub mod store {
     /// A store that never opens.
     pub struct NeverOpens;
 
-    /// Every slot but `open`: unreachable, since no instance ever exists.
-    macro_rules! never {
-        ($($name:ident(&self $(, $a:ident: $t:ty)*) -> $r:ty;)*) => {$(
-            fn $name(&self $(, $a: $t)*) -> $r {
-                $(let _ = $a;)*
-                unreachable!("the open-reason store never opens")
-            }
-        )*};
-    }
-
-    impl RecordStore for NeverOpens {
-        never! {
-            put_key(&self, key: &VirtualKey) -> RecordStoreResult<()>;
-            get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>>;
-            list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>>;
-            delete_key(&self, id: &str) -> RecordStoreResult<()>;
-            get_usage(&self, bucket: &str, window_start: u64) -> RecordStoreResult<UsageLedger>;
-            put_usage(&self, bucket: &str, window_start: u64, ledger: &UsageLedger)
-                -> RecordStoreResult<()>;
-            add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()>;
-            list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>>;
-        }
-    }
-
     impl StoreSlots for NeverOpens {
         const TAIL: Tail = Tail {
             ephemeral: true,
@@ -73,49 +51,327 @@ pub mod store {
             fork_refusal: true,
         };
 
-        fn open(settings: &[u8]) -> Result<Self, String> {
+        fn validate(_: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn open(settings: &[u8], _: Option<Host>) -> Result<Self, String> {
             Err(super::reason(&String::from_utf8_lossy(settings)))
         }
-
-        never! {
-            add_usage_op(&self, op: OpId, bucket: &str, window_start: u64, delta: &UsageDelta)
-                -> OpResult<()>;
-            add_metering_op(&self, op: OpId, delta: &MeteringDelta) -> OpResult<()>;
-            append_audit_op(&self, op: OpId, entry: &AuditRecord) -> OpResult<()>;
-            append_plane_record_op(&self, op: OpId, record: PlaneRecordRef<'_>) -> OpResult<()>;
-            append_batch(&self, op: OpId, stream: &str, records: &[RecordBytes]) -> OpResult<Head>;
-            heads(&self) -> Result<Vec<(String, Head)>, String>;
-            session_put(&self, session: u64, node: &str, principal: &str) -> Result<(), String>;
-            session_remove(&self, session: u64) -> Result<(), String>;
-            sessions_for(&self, principal: &str) -> Result<Vec<(u64, String)>, String>;
-            record_put(&self, schema: &str, key: &[u8], value: &[u8])
-                -> Result<(), String>;
-            record_get(&self, schema: &str, key: &[u8]) -> Result<Option<RecordBytes>, String>;
-            record_scan(&self, schema: &str, prefix: &[u8], limit: u32)
-                -> Result<Vec<(Vec<u8>, RecordBytes)>, String>;
-            add_usage_batch(&self, op: OpId, cells: &[(&str, u64, UsageDelta)]) -> OpResult<()>;
-            add_metering_batch(&self, op: OpId, deltas: &[MeteringDelta]) -> OpResult<()>;
-            append_audit_batch(&self, op: OpId, entries: &[AuditRecord]) -> OpResult<()>;
-            window_caps(&self, op: OpId, caps: &[Cap<'_>]) -> Result<(), CapsRefused>;
+        fn add_usage_op(
+            &self,
+            _: &mut Op<'_>,
+            _: OpId,
+            _: &str,
+            _: u64,
+            _: &UsageDelta,
+        ) -> Step<OpResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn add_metering_op(
+            &self,
+            _: &mut Op<'_>,
+            _: OpId,
+            _: &MeteringDelta,
+        ) -> Step<OpResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn append_audit_op(&self, _: &mut Op<'_>, _: OpId, _: &AuditRecord) -> Step<OpResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn append_plane_record_op(
+            &self,
+            _: &mut Op<'_>,
+            _: OpId,
+            _: PlaneRecordRef<'_>,
+        ) -> Step<OpResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn append_batch(
+            &self,
+            _: &mut Op<'_>,
+            _: OpId,
+            _: &str,
+            _: &[RecordBytes],
+        ) -> Step<OpResult<Head>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn heads(&self, _: &mut Op<'_>) -> Step<Result<Vec<(String, Head)>, String>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn session_put(
+            &self,
+            _: &mut Op<'_>,
+            _: u64,
+            _: &str,
+            _: &str,
+        ) -> Step<Result<(), String>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn session_remove(&self, _: &mut Op<'_>, _: u64) -> Step<Result<(), String>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn sessions_for(
+            &self,
+            _: &mut Op<'_>,
+            _: &str,
+        ) -> Step<Result<Vec<(u64, String)>, String>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn record_put(
+            &self,
+            _: &mut Op<'_>,
+            _: &str,
+            _: &[u8],
+            _: &[u8],
+        ) -> Step<Result<(), String>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn record_get(
+            &self,
+            _: &mut Op<'_>,
+            _: &str,
+            _: &[u8],
+        ) -> Step<Result<Option<RecordBytes>, String>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn record_scan(
+            &self,
+            _: &mut Op<'_>,
+            _: &str,
+            _: &[u8],
+            _: u32,
+        ) -> Step<Result<Scanned, String>> {
+            unreachable!("the open-reason store never opens")
         }
         fn reserve<'c>(
             &self,
-            op: OpId,
-            epoch: u64,
-            cells: impl Iterator<Item = Cell<'c>> + Clone,
-            grants: &mut impl Extend<Grant>,
-        ) -> Result<(), ReserveRefused> {
-            let _ = (op, epoch, cells, grants);
+            _: &mut Op<'_>,
+            _: OpId,
+            _: u64,
+            _: impl Iterator<Item = Cell<'c>> + Clone,
+            _: &mut impl Extend<Grant>,
+        ) -> Step<Result<(), ReserveRefused>> {
             unreachable!("the open-reason store never opens")
         }
         fn slice_release(
             &self,
-            op: OpId,
-            epoch: u64,
-            items: impl Iterator<Item = (u64, u64)> + Clone,
-            released: &mut impl Extend<u64>,
-        ) -> OpResult<()> {
-            let _ = (op, epoch, items, released);
+            _: &mut Op<'_>,
+            _: OpId,
+            _: u64,
+            _: impl Iterator<Item = (u64, u64)> + Clone,
+            _: &mut impl Extend<u64>,
+        ) -> Step<OpResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn add_usage_batch(
+            &self,
+            _: &mut Op<'_>,
+            _: OpId,
+            _: &[(&str, u64, UsageDelta)],
+        ) -> Step<OpResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn add_metering_batch(
+            &self,
+            _: &mut Op<'_>,
+            _: OpId,
+            _: &[MeteringDelta],
+        ) -> Step<OpResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn append_audit_batch(
+            &self,
+            _: &mut Op<'_>,
+            _: OpId,
+            _: &[AuditRecord],
+        ) -> Step<OpResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn window_caps(
+            &self,
+            _: &mut Op<'_>,
+            _: OpId,
+            _: &[Cap<'_>],
+        ) -> Step<Result<(), CapsRefused>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn put_key(&self, _: &mut Op<'_>, _: &VirtualKey) -> Step<RecordStoreResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn get_key(&self, _: &mut Op<'_>, _: &str) -> Step<RecordStoreResult<Option<VirtualKey>>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn list_keys(&self, _: &mut Op<'_>) -> Step<RecordStoreResult<Vec<VirtualKey>>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn delete_key(&self, _: &mut Op<'_>, _: &str) -> Step<RecordStoreResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn scrub_key(&self, _: &mut Op<'_>, _: &str) -> Step<RecordStoreResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn list_keys_since(
+            &self,
+            _: &mut Op<'_>,
+            _: u64,
+        ) -> Step<RecordStoreResult<Vec<VirtualKey>>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn get_usage(
+            &self,
+            _: &mut Op<'_>,
+            _: &str,
+            _: u64,
+        ) -> Step<RecordStoreResult<UsageLedger>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn put_usage(
+            &self,
+            _: &mut Op<'_>,
+            _: &str,
+            _: u64,
+            _: &UsageLedger,
+        ) -> Step<RecordStoreResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn list_metering(
+            &self,
+            _: &mut Op<'_>,
+            _: u64,
+        ) -> Step<RecordStoreResult<Vec<MeteringRow>>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn purge_windows_before(&self, _: &mut Op<'_>, _: u64) -> Step<RecordStoreResult<u64>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn purge_metering_before(&self, _: &mut Op<'_>, _: &str) -> Step<RecordStoreResult<u64>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn put_credential(
+            &self,
+            _: &mut Op<'_>,
+            _: &CredentialSecret,
+        ) -> Step<RecordStoreResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn put_key_with_credential(
+            &self,
+            _: &mut Op<'_>,
+            _: &VirtualKey,
+            _: &CredentialSecret,
+        ) -> Step<RecordStoreResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn list_credentials(
+            &self,
+            _: &mut Op<'_>,
+            _: &str,
+        ) -> Step<RecordStoreResult<Vec<CredentialMeta>>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn lookup_credential_secret(
+            &self,
+            _: &mut Op<'_>,
+            _: &str,
+            _: &str,
+        ) -> Step<RecordStoreResult<Option<CredentialSecret>>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn revoke_credential(
+            &self,
+            _: &mut Op<'_>,
+            _: &str,
+            _: &str,
+        ) -> Step<RecordStoreResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn list_credentials_since(
+            &self,
+            _: &mut Op<'_>,
+            _: u64,
+        ) -> Step<RecordStoreResult<Vec<CredentialSecret>>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn list_audit(&self, _: &mut Op<'_>) -> Step<RecordStoreResult<Vec<AuditRecord>>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn add_denylist(&self, _: &mut Op<'_>, _: &str, _: &str) -> Step<RecordStoreResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn list_denylist(&self, _: &mut Op<'_>) -> Step<RecordStoreResult<Vec<String>>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn list_audit_tail(
+            &self,
+            _: &mut Op<'_>,
+            _: u64,
+        ) -> Step<RecordStoreResult<Vec<AuditRecord>>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn upsert_plane_record(
+            &self,
+            _: &mut Op<'_>,
+            _: PlaneRecordRef<'_>,
+        ) -> Step<RecordStoreResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn get_plane_record(
+            &self,
+            _: &mut Op<'_>,
+            _: &str,
+            _: &str,
+        ) -> Step<RecordStoreResult<Option<Vec<u8>>>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn list_plane_records(
+            &self,
+            _: &mut Op<'_>,
+            _: &str,
+            _: &PlaneSelector<'_>,
+        ) -> Step<RecordStoreResult<Vec<Vec<u8>>>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn list_plane_record_parents(
+            &self,
+            _: &mut Op<'_>,
+            _: &str,
+        ) -> Step<RecordStoreResult<Vec<String>>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn purge_plane_records_before(
+            &self,
+            _: &mut Op<'_>,
+            _: &str,
+            _: u64,
+        ) -> Step<RecordStoreResult<u64>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn delete_plane_record(
+            &self,
+            _: &mut Op<'_>,
+            _: &str,
+            _: &str,
+        ) -> Step<RecordStoreResult<()>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn redeem_plane_token(
+            &self,
+            _: &mut Op<'_>,
+            _: &str,
+            _: &str,
+            _: u64,
+            _: u64,
+        ) -> Step<RecordStoreResult<bool>> {
+            unreachable!("the open-reason store never opens")
+        }
+        fn plane_token_live(
+            &self,
+            _: &mut Op<'_>,
+            _: &str,
+            _: &str,
+            _: u64,
+            _: u64,
+        ) -> Step<RecordStoreResult<bool>> {
             unreachable!("the open-reason store never opens")
         }
     }

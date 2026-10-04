@@ -26,9 +26,9 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, EMIT_DONE, EMIT_TO_FAR_END,
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, VERDICT_RETRY,
+    FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, CLAIM_PROBE, EMIT_DONE,
+    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS,
+    PIECE_LAST, PIECE_OUT_TEXT, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, ReasonCode, Route};
@@ -39,6 +39,7 @@ use tokio::sync::watch;
 use super::cancel::{Buried, CancelBill, Checkpoint};
 use super::{blob, BufferCaps, HeadFields, PlaneDriver, UnitState, NO_FIELD, NO_SPAN, ZERO_UNIT};
 use crate::host_records::Acked;
+use crate::slice::takes_lease;
 use crate::teller::UnitCtx;
 
 /// One piece of the far end's reply.
@@ -171,6 +172,8 @@ pub(crate) struct PieceBufs {
     pub(crate) dialect: u32,
     /// The caller's opaque reference, lent on every piece (empty = none).
     pub(crate) caller_ref: Vec<u8>,
+    /// A duplex session's stream, lent on every piece (`0` = a request unit).
+    stream: u64,
     /// The far end's kept response head fields, lent on the answer's first piece.
     head: FieldList,
     /// Whether the current attempt's member relays the caller's own credential.
@@ -193,6 +196,7 @@ impl PieceBufs {
             claim: 0,
             dialect: 0,
             caller_ref: Vec::new(),
+            stream: 0,
             head: FieldList::default(),
             passthrough: false,
         };
@@ -266,7 +270,7 @@ impl Piece {
 }
 
 /// An `on_piece` frame of `unit` over `bufs`. Built and handed to the dispatcher in one breath, so
-/// no raw pointer is ever held across an await. A request unit has no session stream.
+/// no raw pointer is ever held across an await.
 fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) {
     let bytes = match p.src {
         Src::Body => &bufs.body[..],
@@ -295,6 +299,7 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
         unit,
         from: p.from,
         flags: p.flags,
+        stream: bufs.stream,
         bytes: blob(bytes),
         status_code: p.status.0,
         status_class: p.status.1,
@@ -394,6 +399,9 @@ impl Answer {
 enum Toward<'r> {
     FarEnd(&'r mut OutboundRequest),
     Caller,
+    /// A duplex session's caller side: an answer bound for the far end ([`EMIT_TO_FAR_END`]) is
+    /// gathered as a turn's request; any other goes to the caller.
+    Session(&'r mut OutboundRequest),
 }
 
 /// Where a unit's host buffers go when its pump ends: every `on_piece` of the unit lends this
@@ -541,11 +549,19 @@ impl<'u> Pumping<'u> {
     }
 
     /// Lend the unit's own facts on every piece it pushes: the claim it arrived on, the dialect
-    /// `arrive` answered, and the caller's opaque reference (empty = none).
-    pub(crate) fn lend_unit(&mut self, claim: u32, dialect: u32, caller_ref: &[u8]) {
+    /// `arrive` answered, the caller's opaque reference (empty = none) and a session's stream
+    /// (`0` = none).
+    pub(crate) fn lend_unit(&mut self, claim: u32, dialect: u32, caller_ref: &[u8], stream: u64) {
         self.bufs.claim = claim;
         self.bufs.dialect = dialect;
         self.bufs.caller_ref = caller_ref.to_vec();
+        self.bufs.stream = stream;
+    }
+
+    /// Whether the unit moves money: a tick unit (a health probe) is zero-billed and draws no
+    /// lease, §1's exempt origins.
+    fn billed(&self) -> bool {
+        takes_lease(self.ctx.origin, self.ctx.kernel_verb_only)
     }
 
     /// The unit reached its end: its ticket goes back.
@@ -627,12 +643,22 @@ async fn until(left: Option<Duration>) {
 
 impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     /// S3: every attempt of the unit, until its reply is complete, it fails, or the driver cancels.
-    pub(crate) async fn attempts(&self, run: &mut Pumping<'_>) -> End {
+    /// A session's turn leg ([`session::Turn`]) is the same walk: each attempt picks a member
+    /// inside the destination set sealed at the open (a member outside it is passed over, never
+    /// crossed), pushes only the ATTEMPT piece, and sends the turn's request.
+    pub(crate) async fn attempts(
+        &self,
+        run: &mut Pumping<'_>,
+        turn: Option<&session::Turn<'_>>,
+    ) -> End {
         let mut attempt_no = 0;
         'attempt: loop {
             attempt_no += 1;
             let picked = guarded_run(run, self.far.member(run.token, attempt_no)).await;
             let ((member, pool), terminal) = match picked {
+                Ok(Pick::Member { name, .. }) if turn.is_some_and(|t| !t.within(&name)) => {
+                    continue 'attempt;
+                }
                 Ok(Pick::Member {
                     name,
                     pool,
@@ -664,11 +690,12 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 member,
                 pool,
                 attempt_no,
-                ..OutboundRequest::default()
+                ..turn.map(|t| t.request.clone()).unwrap_or_default()
             };
             // THE ATTEMPT PIECE, then the caller's body the kernel kept, re-pushed on every attempt.
             // With no member for the first attempt there is no ATTEMPT piece: the body alone, which
-            // a plane may answer itself (a local answer); otherwise the unit has nowhere to go.
+            // a plane may answer itself (a local answer); otherwise the unit has nowhere to go. A
+            // health probe has no caller: its ATTEMPT piece alone asks for the probe request.
             let attempt = Piece {
                 from: FROM_KERNEL,
                 flags: 0,
@@ -684,7 +711,17 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 src: Src::Body,
                 ..attempt
             };
-            let pieces: &[Piece] = if far_bound { &[attempt, body] } else { &[body] };
+            let both = [attempt, body];
+            let probe = run.bufs.claim == CLAIM_PROBE;
+            let pieces: &[Piece] = match (turn.is_some(), far_bound) {
+                // A session turn pushes the ATTEMPT piece alone: the turn's request is its body.
+                (true, true) => &both[..1],
+                (true, false) => &[],
+                // A health probe has no caller: its ATTEMPT piece alone asks for the probe request.
+                (false, true) if probe => &both[..1],
+                (false, true) => &both[..],
+                (false, false) => &both[1..],
+            };
             let local = {
                 let mut toward = Toward::FarEnd(&mut request);
                 for piece in pieces {
@@ -788,7 +825,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             };
             let bufs = &run.bufs;
             let units = &bufs.units[..(out.units_written as usize).min(bufs.units.len())];
-            let checkpoint = if units.is_empty() {
+            let checkpoint = if units.is_empty() || !run.billed() {
                 Checkpoint::Continue
             } else {
                 let mut st = run.lock();
@@ -811,8 +848,13 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             {
                 *toward = Toward::Caller;
             }
+            let far = match toward {
+                Toward::FarEnd(_) => true,
+                Toward::Session(_) => out.flags & EMIT_TO_FAR_END != 0,
+                Toward::Caller => false,
+            };
             match toward {
-                Toward::FarEnd(request) => {
+                Toward::FarEnd(request) | Toward::Session(request) if far => {
                     if out.flags & EMIT_TO_FAR_END != 0 {
                         if out.verb.len != 0 {
                             request.verb = bufs.arena(out.verb).to_vec();
@@ -822,7 +864,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         request.body.extend_from_slice(emitted);
                     }
                 }
-                Toward::Caller => {
+                _ => {
                     let n = emitted.len();
                     let streamed = run.lock().facts.streamed;
                     // A retry verdict fails over only before the first byte; after it, it is hard.
@@ -834,7 +876,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         // answered is the unit's serving member, the one 1.5.5 ledgered and metered
                         // the response under (v1.5.5 `crates/busbar/src/proxy/usage.rs`
                         // `ledger_and_meter`: "`lane` is the SERVING lane"). A local answer has none.
-                        if !bufs.member.is_empty() {
+                        if !bufs.member.is_empty() && run.billed() {
                             let model = String::from_utf8_lossy(&bufs.member);
                             self.driver.money.served(run.ctx, &model, &bufs.provider);
                         }
@@ -874,6 +916,12 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         }
     }
 }
+
+/// The duplex session's two sides, on this pump (K6): a child module, so it drives the pump's own
+/// pieces and push.
+#[path = "session.rs"]
+mod session;
+pub use session::SessionCaller;
 
 #[cfg(test)]
 #[allow(unsafe_code)]

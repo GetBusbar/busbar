@@ -344,6 +344,49 @@ pub(crate) fn reframe_bridge(
     StatusClass::Ok
 }
 
+/// A within-core stream's native decode, named as a TYPE so the ONE [`reframe_slot`] below serves it
+/// and the stream's own file spells no FFI slot (one-memory-abi:c-unwind: a new
+/// `extern "C-unwind"` is never added; the [`JournalReframeFn`] shape it must coerce to is the
+/// contract's, and its spelling stays in this already-audited host module).
+pub(crate) trait NativeReframe {
+    /// The stream's decode of one stored body into its chain record.
+    fn reframe(
+        scope: &str,
+        body: &[u8],
+    ) -> busbar_contract::records::RecordStoreResult<PlaneJournalRecord>;
+}
+
+/// THE IN-CORE REFRAME SLOT, generic over the stream's [`NativeReframe`]: the [`JournalReframeFn`]
+/// a within-core stream registers is `reframe_slot::<ItsDecode>`, forwarding the raw buffers to
+/// [`reframe_bridge`] over that decode.
+#[allow(clippy::too_many_arguments)]
+pub(crate) extern "C-unwind" fn reframe_slot<N: NativeReframe>(
+    _host: HostCtx,
+    _kind_id: u32,
+    body_ptr: *const u8,
+    body_len: usize,
+    out: *mut MaybeUninit<ReframeOut>,
+    prev_buf: *mut u8,
+    prev_cap: usize,
+    hash_buf: *mut u8,
+    hash_cap: usize,
+    suffix_buf: *mut u8,
+    suffix_cap: usize,
+) -> StatusClass {
+    reframe_bridge(
+        body_ptr,
+        body_len,
+        out,
+        prev_buf,
+        prev_cap,
+        hash_buf,
+        hash_cap,
+        suffix_buf,
+        suffix_cap,
+        N::reframe,
+    )
+}
+
 /// SAFE SEED WRAPPER for a within-core seam user: drive [`journal_seed`] over a registered stream and
 /// return the reported [`ChainBreakHdr`] by value, keeping the `MaybeUninit` read (the one unsafe step)
 /// inside this audited module so `plane::taskstore` stays `deny(unsafe)`. `Err(())` is a seam fault

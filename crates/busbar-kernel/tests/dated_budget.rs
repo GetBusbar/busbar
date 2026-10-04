@@ -296,3 +296,83 @@ fn a_durable_row_prices_as_the_cell_hydrated_from_it_after_a_card_edit() {
          (300 = the current card repricing the stored window)"
     );
 }
+
+/// The engine's cost model charging a flat fee of `fee_cents` a request, `m` priced, with the same
+/// `team` group (a cap no test here reaches).
+fn fee_cost(fee_cents: i64) -> CostModel {
+    let card = BTreeMap::from([(
+        "m".to_string(),
+        busbar_kernel::config::RateEntryCfg {
+            input_utok: 1.0,
+            ..Default::default()
+        },
+    )]);
+    let groups = BTreeMap::from([(
+        "team".to_string(),
+        busbar_kernel::config::GroupCfg {
+            enabled: true,
+            ..Default::default()
+        },
+    )]);
+    CostModel::resolve_parts(Some(&card), fee_cents, &groups)
+}
+
+/// The history's card for the same figures.
+fn fee_card(fee_cents: i64) -> RateCard {
+    RateCard::from_micro_rates([(LaneClass::new("m", "input"), 1.0)], fee_cents)
+}
+
+/// MONEY-AUDIT D-3/F-5: A FEE REFUND RETURNS THE FEE OF THE ERA ITS REQUEST WAS CHARGED IN.
+///
+/// The fee is 5 when A is admitted; the card is edited to 10 and B is admitted; then A fails. A's
+/// fee is the one that comes back, so the key owes B's 10. The refund used to take the NEWEST era's
+/// request — B's, at 10 — and leave A's 5 billed: 5 where 10 is owed.
+#[test]
+fn a_fee_refund_returns_the_fee_of_the_era_its_request_was_charged_in() {
+    let (holder, _serial) = holder_opening(fee_card(5));
+
+    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let key = VirtualKey {
+        id: "vk_era_refund".to_string(),
+        generation_hash: "hash-era-refund".to_string(),
+        name: "era-refund".to_string(),
+        enabled: true,
+        group: Some("team".to_string()),
+        ..Default::default()
+    };
+    store.put_key(&key).unwrap();
+    let gov = GovState::new(store.clone(), None).unwrap();
+    let now = busbar_kernel::store::now();
+
+    let before = fee_cost(5);
+    let a = (gov.try_admit(&before, &key, "", now)).expect("A admits at fee 5");
+
+    // THE EDIT: the configuration charges 10 a request from this instant.
+    let edit_ms = busbar_kernel::store::now_ms();
+    {
+        let mut history = holder.0.lock().unwrap();
+        let mut next = History::clone(&history);
+        next.append(CardEntryDraft {
+            effective_from: edit_ms,
+            effective_until: None,
+            card: fee_card(10),
+            appended_at: edit_ms,
+            author: Author::Config { policy_epoch: 1 },
+        });
+        *history = Arc::new(next);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let after = fee_cost(10);
+    gov.try_admit(&after, &key, "", now)
+        .expect("B admits at fee 10");
+    let spend = |gov: &GovState| {
+        (gov.usage_for(&after, &key.id, now))
+            .expect("priced")
+            .expect("the key exists")
+            .spend_cents
+    };
+    assert_eq!(spend(&gov), 15, "A's 5 and B's 10");
+
+    gov.refund_charge(a.charge()); // A failed upstream
+    assert_eq!(spend(&gov), 10, "A's fee came back; B's 10 is owed");
+}

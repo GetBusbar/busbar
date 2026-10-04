@@ -39,9 +39,12 @@ impl Conns for Echo {
         conn: ConnId,
         bytes: &[u8],
         _: bool,
+        text: bool,
     ) -> Result<usize, ConnError> {
         let (_, q) = self.0.get(caller, conn)?;
-        q.lock().unwrap().push(bytes.to_vec());
+        // A text write echoes marked, so the bit's crossing is visible to the reader.
+        let marked = if text { b"text:".as_slice() } else { b"" };
+        q.lock().unwrap().push([marked, bytes].concat());
         Ok(bytes.len())
     }
     fn read(
@@ -158,9 +161,13 @@ fn every_operation_crosses_the_lowering() {
             Some("numbering")
         )
     );
-    assert_eq!(pa.write(conn, b"again", true), Ok(5));
+    assert_eq!(pa.write(conn, b"again", true, false), Ok(5));
     let again = pa.read(conn, 0, &mut buf).unwrap();
     assert_eq!(&buf[..again.len], b"again");
+    // RED (C19-TAIL U5 write): the text bit crosses the lowering.
+    assert_eq!(pa.write(conn, b"{}", true, true), Ok(2));
+    let text = pa.read(conn, 0, &mut buf).unwrap();
+    assert_eq!(&buf[..text.len], b"text:{}", "a text write crosses as text");
     assert_eq!(again.reason, None);
     assert_eq!(
         pa.read(conn, 0, &mut buf),
@@ -196,7 +203,7 @@ fn another_instances_connection_is_refused_across_the_lowering() {
         )
         .unwrap();
     let mut buf = [0_u8; 8];
-    assert_eq!(pb.write(conn, b"x", true), Err(ConnError::NotOwner));
+    assert_eq!(pb.write(conn, b"x", true, false), Err(ConnError::NotOwner));
     assert_eq!(pb.read(conn, 0, &mut buf), Err(ConnError::NotOwner));
     assert_eq!(pb.wait(&[conn], 0), Err(ConnError::NotOwner));
     assert_eq!(pb.facts(conn), Err(ConnError::NotOwner));
@@ -219,7 +226,7 @@ fn a_closed_connection_is_refused_across_the_lowering() {
         .unwrap();
     pa.close(conn).unwrap();
     let mut buf = [0_u8; 8];
-    assert_eq!(pa.write(conn, b"x", true), Err(ConnError::Closed));
+    assert_eq!(pa.write(conn, b"x", true, false), Err(ConnError::Closed));
     assert_eq!(pa.read(conn, 0, &mut buf), Err(ConnError::Closed));
     assert_eq!(pa.facts(conn), Err(ConnError::Closed));
     assert_eq!(pa.close(conn), Err(ConnError::Closed));
@@ -349,7 +356,7 @@ fn a_host_moved_after_minting_its_context_still_serves_the_table() {
             },
         )
         .expect("the moved host serves the open");
-    assert_eq!(p.write(conn, b"moved", true), Ok(5));
+    assert_eq!(p.write(conn, b"moved", true, false), Ok(5));
     let mut buf = [0_u8; 64];
     let opening = p.read(conn, 7, &mut buf).expect("the (empty) opening");
     assert_eq!(opening.len, 0);

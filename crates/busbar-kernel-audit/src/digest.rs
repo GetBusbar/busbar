@@ -10,8 +10,8 @@
 
 /// The lowercase hexadecimal digest the chain is built on.
 pub fn sha256_hex(data: &[u8]) -> String {
-    use sha2::{Digest as _, Sha256};
-    Sha256::digest(data)
+    ring::digest::digest(&ring::digest::SHA256, data)
+        .as_ref()
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()

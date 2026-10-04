@@ -3,7 +3,6 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_contract::caps::KernelSeal;
 use busbar_contract::WireStatus;
 use busbar_kernel_egress::ports::Disposition;
 
@@ -13,7 +12,7 @@ use busbar_kernel_egress::ports::Disposition;
 /// production adapter above never mints one of its own — it forwards the borrow its caller
 /// lent it).
 fn route_token() -> Pass<Route> {
-    Pass::mint(&KernelSeal::acquire_for_kernel())
+    busbar_kernel::test_support::tokens::pass()
 }
 
 /// A gRPC upstream's trailers-only `UNAVAILABLE`, at the production adapter's own width: the
@@ -377,6 +376,9 @@ fn a_drifted_bank_reads_as_a_drift() {
 /// drift, naming both spellings. Read off the seal's own body, so moving the call out of the boot
 /// path goes red here; and the seal on today's banks still succeeds, so the call refuses nothing it
 /// should not.
+// The seal it drives composes the shipped transport stack (the http rows over the linked transport
+// door); a build that links no transport door cannot seal it, so this cell gates on that axis.
+#[cfg(linked_axis_transport_door)]
 #[test]
 fn the_boot_seal_runs_the_label_bank_check_and_a_drift_refuses_the_boot() {
     let registry = include_str!("../registry.rs");
@@ -465,4 +467,25 @@ fn the_root_breaker_observes_into_the_kernels_own_cells() {
         !breaker.ready("pool", DestinationId::new(1), now, &route_token()),
         "the root adapter answers with the trip the kernel recorded"
     );
+}
+
+/// A HEALTH PROBE through the adapter (K7): its answer reaches every cell of the member under the
+/// pools' policy. A client fault leaves a member parked in every pool parked; a 2xx recovers it.
+#[test]
+fn a_probe_answer_reaches_every_cell_of_the_member() {
+    let breaker = adapter_for("pool");
+    let dest = DestinationId::new(21);
+    let t = route_token();
+    assert!(breaker.observe("pool", dest, Outcome::HardDown, 0, &t));
+    assert!(breaker.suppressing(dest, 0));
+
+    breaker.probed(dest, Outcome::RecordNothing, 0, &t);
+    assert!(
+        breaker.suppressing(dest, 0),
+        "a client fault records nothing"
+    );
+
+    breaker.probed(dest, Outcome::Success, 0, &t);
+    assert!(!breaker.suppressing(dest, 0), "the probe recovered it");
+    assert!(breaker.ready("pool", dest, 0, &t));
 }

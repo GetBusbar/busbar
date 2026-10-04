@@ -33,6 +33,7 @@ pub mod load;
 pub mod log_file;
 pub mod plane_calls;
 pub mod plugin;
+pub mod ready;
 pub mod services;
 pub mod ticket;
 pub mod validate;
@@ -49,8 +50,8 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn, ReleaseIn, TickIn,
-    TickOut, ValidateIn,
+    CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, ReadyIn, RefreshIn, ReleaseIn,
+    TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
@@ -93,6 +94,13 @@ pub trait Kind: Send + Sync + 'static {
     fn context(statement: &Statement) -> Result<Option<Box<Context>>, String> {
         let _ = statement;
         Ok(None)
+    }
+
+    /// The credential kinds an instance of this kind declares its op reads through the host's
+    /// `records.secret`, read off its [`Kind::context`]; none for a kind that declares none.
+    fn credential_kinds(context: Option<&Context>) -> Vec<String> {
+        let _ = context;
+        Vec::new()
     }
 
     /// THE KIND'S ANSWER VALIDATION: the kind's pure `check_<op>` in `abi/<kind>/`, run after every
@@ -148,6 +156,12 @@ pub trait DriveFrame: Send {
     /// Connection class, the ticket; its `driver` field) and answer its heads, `in` first, then
     /// `out` and the `out`'s size.
     fn prepare(&mut self, driver: Ticket, flags: u32) -> (*mut InHead, *mut OutHead, u32);
+
+    /// The names its last READY answer wrote (a plane's ready sessions); none for a kind whose
+    /// `drive` names nothing.
+    fn named(&self) -> &[u64] {
+        &[]
+    }
 }
 
 impl DriveFrame for Frame<DriveIn, OutHead> {
@@ -180,6 +194,7 @@ pub fn lifecycle_name(slot: u32) -> &'static str {
         s::CANCEL => "cancel",
         s::RELEASE => "release",
         s::CLOSE => "close",
+        s::READY => "ready",
         _ => "op",
     }
 }
@@ -220,6 +235,7 @@ unsafe impl InFrame for TickIn {}
 unsafe impl InFrame for DriveIn {}
 unsafe impl InFrame for CancelIn {}
 unsafe impl InFrame for ReleaseIn {}
+unsafe impl InFrame for ReadyIn {}
 unsafe impl OutFrame for OutHead {}
 unsafe impl OutFrame for OpenOut {}
 unsafe impl OutFrame for TickOut {}

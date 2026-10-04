@@ -7,11 +7,18 @@
 //! Select picks the plugins the configuration uses (BUSBAR-1.6.0.md §2, §4 Law 7). `--validate` runs these three
 //! stages and nothing dials, no library is opened and no store is opened.
 //!
-//! The rest of boot — the one load, register and seal — moves here as BOOT-LOOP 8.
+//! Stage 4 Book ([`book`]) opens the store, replays the WAL, seals the opening and binds the
+//! keyset, at boot only. The configured `plugins.dir` scan ([`dropped_from_config`]), the door
+//! planes' and dropped transports' one load ([`load_door_planes`], [`dropped_transports`]) and the
+//! host egress carrier ([`HostEgressCarrier`]) live here too. The rest of boot — register and seal —
+//! moves here as BOOT-LOOP 8.
 
 use std::sync::Arc;
 
-use super::loader::{boot::*, dispatch::LoadError, dispatch::ManifestFacts, PluginRegistry};
+use super::linked::{linked_exports, Linked};
+use super::loader::{
+    boot::*, dispatch::LoadError, dispatch::ManifestFacts, DynPlane, PluginRegistry,
+};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_kernel::config::{FetchTarget, PluginsCfg};
 use busbar_kernel::preflight::{Fetched, RegistryIn};
@@ -40,13 +47,17 @@ pub fn registry(
             dir: p.enabled.then_some(std::path::Path::new(&p.dir)),
         }),
     };
-    super::loader::boot::registry(
+    let registry = super::loader::boot::registry(
         Build {
             linked: i.linked,
             scan,
         },
         note,
-    )
+    )?;
+    // The dropped-in secret plugins that state a door join the secret axis (the root's, over the
+    // one dispatcher); a 1.5.x one with no door stays on the cold lane (M6).
+    super::linked::secret_rows().set_dropped(discovered(&registry, |kind| kind == "secret")?);
+    Ok(registry)
 }
 
 /// THE `plugins:` BLOCK'S TRUST, resolved: the embedded first-party key, the configured
@@ -131,8 +142,20 @@ fn document(path: &std::path::Path) -> Option<serde_json::Value> {
 ///
 /// A stated rendering that does not read back, naming the plugin.
 pub fn discover(registry: &PluginRegistry) -> Result<Vec<Candidate>, String> {
+    discovered(registry, |_| true)
+}
+
+/// [`discover`] over the admitted plugins whose manifest kind `keep` accepts.
+fn discovered(
+    registry: &PluginRegistry,
+    keep: impl Fn(&str) -> bool,
+) -> Result<Vec<Candidate>, String> {
     let mut out = Vec::new();
-    for row in registry.loadable() {
+    for row in registry
+        .loadable()
+        .iter()
+        .filter(|r| keep(&r.manifest.kind))
+    {
         let Some(stated) = row
             .manifest
             .stated_rendering()
@@ -352,6 +375,575 @@ pub fn refuse_unserved_inbound(
     let doc = document(path).unwrap_or_default();
     let candidates = discover(registry)?;
     refuse_inbound(&candidates, &select(&Uses::of(&doc), &candidates))
+}
+
+/// THE PLANES DROPPED INTO `dir`: every tarball the loader's three-phase scan admits under `policy`
+/// whose signed kind is `plane`, loaded over the HOT-tier ABI from its verified bytes, in the scan's
+/// (filename) order. A scan the loader refuses yields no plane here — the plugins preflight reads the
+/// same directory under the same policy later in boot and refuses it there with every problem named;
+/// a trusted plane that will not LOAD is a refusal here, as a linked plane's would be.
+pub fn dropped_planes(
+    dir: &std::path::Path,
+    policy: &crate::root::loader::sign::TrustPolicy,
+) -> Result<Vec<DynPlane>, String> {
+    let Ok(registry) = crate::root::loader::scan_and_validate(dir, policy) else {
+        return Ok(Vec::new());
+    };
+    registry.open_planes(&[]).map(|set| set.hot)
+}
+
+/// THE PLUGINS DROPPED INTO THE CONFIGURED `plugins.dir`, scanned ONCE before any axis is installed —
+/// so before the configuration is parsed, which needs those axes — and kept for the process, whose
+/// dropped-in planes and export modules are opened from it. Only the kernel-owned `plugins:` block is
+/// read, off the same file and environment interpolation the boot load uses; the trust policy and
+/// the persisted first-party floors are resolved as the preflight resolves them. No `plugins:`
+/// block, `enabled: false`, or no readable file: `None`, and the directory is not read. A scan the
+/// loader refuses is `None` here too — the plugins preflight reads the same directory under the same
+/// policy later in boot and refuses it there with every problem named.
+///
+/// The build's LINKED export sinks ([`Linked::exports`], K9b) are registered into the same registry
+/// ahead of the directory's rows, through the one admission (`PluginRegistry::link`) — so the export
+/// axis holds both doors' rows, and a build that links a sink has an axis with no `plugins:` block.
+pub fn dropped_from_config(
+    linked: &Linked,
+) -> Option<&'static crate::root::loader::PluginRegistry> {
+    let rows = linked_exports(linked.exports, linked.export_doors).unwrap_or_else(|refusal| {
+        eprintln!("busbar: {refusal}");
+        std::process::exit(2);
+    });
+    let scanned = scan_configured();
+    if scanned.is_none() && rows.is_empty() {
+        return None;
+    }
+    let registry = scanned.unwrap_or_else(crate::root::loader::PluginRegistry::empty);
+    let registry = registry.link(rows).unwrap_or_else(|refusal| {
+        eprintln!("busbar: {refusal}");
+        std::process::exit(2);
+    });
+    // Kept for the process — the export axis and the diagnostics axis read it for as long as it
+    // serves — in the one registry slot boot fills.
+    Some(REGISTRY.get_or_init(|| registry))
+}
+
+/// The one plugin registry [`dropped_from_config`] builds, held for the process.
+pub(crate) static REGISTRY: std::sync::OnceLock<crate::root::loader::PluginRegistry> =
+    std::sync::OnceLock::new();
+
+/// The configured `plugins.dir`'s admitted rows (see [`dropped_from_config`]).
+fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
+    let path =
+        crate::root::cli::resolve_config_path(crate::root::cli::config_path_flag().as_deref());
+    let raw = std::fs::read_to_string(path).ok()?;
+    let text = busbar_kernel::config::interpolate_env_with(
+        &raw,
+        busbar_kernel::config::EnvSubst::Lenient,
+        &mut Vec::new(),
+    )
+    .ok()?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(&text).ok()?;
+    let plugins =
+        serde_yaml::from_value::<busbar_kernel::config::PluginsCfg>(doc.get("plugins")?.clone())
+            .ok()
+            .filter(|p| p.enabled)?;
+    let l = &plugins.logs;
+    let words = (l.dir.as_deref(), l.level.as_deref(), &l.levels);
+    if let Ok(logs) = crate::root::loader::dispatch::PluginLogConfig::from_words(
+        words.0,
+        words.1,
+        words.2,
+        l.rotate_mb,
+        l.keep,
+    ) {
+        let _ = LOGS.set(logs);
+    }
+    plugins.warn_invalid_floors();
+    let data_dir = busbar_kernel::preflight::fleet_data_dir();
+    let build = RegistryIn {
+        linked: Vec::new(),
+        plugins: Some(&plugins),
+        data_dir: data_dir.as_deref(),
+    };
+    crate::root::boot::registry(build, &mut |_| {}).ok()
+}
+
+/// THE PLANES DROPPED INTO `dropped` (see [`dropped_from_config`]) AND THE LINKED PLANE DOORS: every
+/// plane that states itself through a door is discovered here and bound by [`load_door_planes`] once
+/// the process's dispatcher is built; every HOT-lane plane (M6-HOT-PLANE) is opened here and
+/// returned for the plane axis. A trusted plane that will not state itself or LOAD refuses the boot,
+/// as a linked plane's would.
+pub fn dropped_planes_of(
+    linked: &Linked,
+    dropped: Option<&crate::root::loader::PluginRegistry>,
+) -> Vec<DynPlane> {
+    let set = match dropped {
+        Some(registry) => registry.open_planes(linked.plane_doors),
+        None => crate::root::loader::PluginRegistry::empty().open_planes(linked.plane_doors),
+    };
+    let set = set.unwrap_or_else(|refusal| {
+        eprintln!("busbar: {refusal}");
+        std::process::exit(2);
+    });
+    let _ = DOOR_CANDIDATES.set(set.doors);
+    set.hot
+}
+
+/// The door planes [`dropped_planes_of`] discovered, waiting for the dispatcher.
+static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::boot::Candidate>> =
+    std::sync::OnceLock::new();
+
+/// The door planes [`load_door_planes`] bound, held for the process.
+static DOOR_PLANES: std::sync::OnceLock<Vec<(String, DoorPlane)>> = std::sync::OnceLock::new();
+
+/// A plane bound through its door.
+pub type DoorPlane =
+    crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::plane::Plane>;
+
+/// THE DOOR PLANES' ONE LOAD, run once the process's dispatcher is built
+/// ([`crate::root::dispatch::boot`]): every plane [`dropped_planes_of`] discovered, linked and
+/// dropped alike, bound through the loader's one load on that dispatcher, each to its own log sink
+/// under the configured `plugins.logs`, each declaring its needs on the process's one connection
+/// table (`root::connector::the()`). A plane that will not bind refuses the boot (exit 2).
+pub fn load_door_planes() {
+    let doors = DOOR_CANDIDATES.get().map_or(&[][..], Vec::as_slice);
+    // The process's ONE connection table: a plane that declares a need is declared on it.
+    let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
+        crate::root::connector::the().clone();
+    let bound = crate::root::loader::boot::load_planes(
+        doors,
+        plugin_logs(),
+        std::sync::Arc::new(crate::root::loader::dispatch::NoSink),
+        crate::root::dispatch::dispatcher().adopter(),
+        u32::MAX,
+        Some(conns),
+    )
+    .unwrap_or_else(|refusal| {
+        eprintln!("busbar: {refusal}");
+        std::process::exit(2);
+    });
+    let _ = DOOR_PLANES.set(bound);
+}
+
+/// The configured `plugins.logs` ([`scan_configured`] reads it), or its defaults.
+static LOGS: std::sync::OnceLock<crate::root::loader::dispatch::PluginLogConfig> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn plugin_logs() -> &'static crate::root::loader::dispatch::PluginLogConfig {
+    LOGS.get_or_init(|| {
+        let none = Default::default();
+        crate::root::loader::dispatch::PluginLogConfig::from_words(None, None, &none, None, None)
+            .expect("the plugins.logs defaults resolve")
+    })
+}
+
+/// Every plane bound through its door, by instance name (empty until [`load_door_planes`] runs).
+pub fn door_planes() -> &'static [(String, DoorPlane)] {
+    DOOR_PLANES.get().map_or(&[], Vec::as_slice)
+}
+
+/// THE TRANSPORTS DROPPED INTO THE CONFIGURED `plugins.dir` (the registry [`dropped_from_config`]
+/// scanned): every `kind: transport` plugin it admitted, loaded ONCE and held for the process, so the
+/// boot seal folds them beside the linked wires (`crate::root::registry::compose`) and a wire the
+/// data door serves through lives as long as the door. Each image is opened on the lane it speaks: a
+/// memory-ABI door through the one dispatcher, served over the host's sockets
+/// (`crate::root::doors`); a HOT decl through its adapter. A trusted transport that will not LOAD
+/// refuses the boot, as a linked plane's would.
+pub fn dropped_transports() -> crate::root::registry::Dropped {
+    type Held = (
+        Vec<crate::root::loader::DynTransport>,
+        Vec<crate::root::registry::DroppedDoor>,
+    );
+    static WIRES: std::sync::OnceLock<Held> = std::sync::OnceLock::new();
+    let (hot, doors) = WIRES.get_or_init(|| {
+        let Some(registry) = REGISTRY.get() else {
+            return (Vec::new(), Vec::new());
+        };
+        let opened = registry
+            .open_transport_entries(&crate::root::doors::bind())
+            .and_then(|entries| {
+                let doors = entries
+                    .doors
+                    .into_iter()
+                    .map(|plugin| {
+                        let facts = plugin
+                            .context::<crate::root::loader::dispatch::kinds::transport::TransportFacts>()
+                            .cloned()
+                            .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
+                        let key = facts.claims.first().copied().unwrap_or_default();
+                        let composes_over = facts.composes_over;
+                        let wire = crate::root::doors::host_wire(plugin)?;
+                        Ok(crate::root::registry::DroppedDoor {
+                            key,
+                            composes_over,
+                            wire,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok((entries.hot, doors))
+            });
+        opened.unwrap_or_else(|refusal| {
+            eprintln!("busbar: {refusal}");
+            std::process::exit(2);
+        })
+    });
+    crate::root::registry::Dropped { hot, doors }
+}
+
+/// THE EGRESS CARRIER (K9a S5): how the host carries an outbound HTTP request a plugin sink asks it
+/// to make — the sink never dials. The request meets the URL policy the sink was GRANTED first
+/// (K9e-2): the open web — the webhook URL policy: https only; loopback, link-local, private, CGNAT
+/// and cloud-metadata targets refused — or, for a first-party sink that declared it, the collector
+/// policy (`root::otlp::collector_policy`: https, or plaintext http to a loopback collector only;
+/// link-local, private, CGNAT and cloud-metadata refused). It then rides the host's egress engine on
+/// the pooled open-web posture the request-log webhook has always POSTed over (webpki trust, system
+/// DNS, the boot environment's proxy tunnel), under the request's own deadline over the exchange up
+/// to the response head. Headers are set in order, a later one replacing an earlier of the same
+/// name; one that is not a valid header is left off. The body is the sink's octets, text or binary.
+/// The answer's status is read back; its body is not read.
+pub struct HostEgressCarrier;
+
+/// The carrier's one client, built on the first request it carries.
+static CARRIER_CLIENT: std::sync::OnceLock<busbar_kernel::proxy::EgressClient> =
+    std::sync::OnceLock::new();
+
+impl HostEgressCarrier {
+    /// The request as the hop sends it — after `policy` — and its deadline; or the refusal.
+    fn prepare(
+        policy: crate::root::loader::EgressPolicy,
+        request: &busbar_contract::abi::cold::export::HttpRequest,
+        body: &[u8],
+    ) -> Result<
+        (CarriedRequest, tokio::time::Instant),
+        busbar_contract::abi::cold::export::HostResult,
+    > {
+        if let Err(refusal) = judge(policy, &request.url, false) {
+            return Err(carried_failure("refused", refusal));
+        }
+        let (Ok(uri), Ok(method)) = (
+            request.url.parse::<axum::http::Uri>(),
+            axum::http::Method::from_bytes(request.method.as_bytes()),
+        ) else {
+            return Err(carried_failure(
+                "request",
+                "target URL does not parse".to_string(),
+            ));
+        };
+        let mut headers = axum::http::HeaderMap::new();
+        for (name, value) in &request.headers {
+            if let (Ok(n), Ok(v)) = (
+                axum::http::header::HeaderName::from_bytes(name.as_bytes()),
+                axum::http::HeaderValue::from_str(value),
+            ) {
+                headers.insert(n, v);
+            }
+        }
+        let body = axum::body::Bytes::copy_from_slice(body);
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(request.timeout_ms);
+        Ok(((method, uri, headers, body), deadline))
+    }
+
+    /// Send a prepared request on the carrier's one client, under its deadline.
+    async fn send(
+        (method, uri, headers, body): CarriedRequest,
+        deadline: tokio::time::Instant,
+    ) -> busbar_contract::abi::cold::export::HostResult {
+        let req = busbar_kernel::egress::engine::request(method, uri, headers, body);
+        let client = CARRIER_CLIENT.get_or_init(|| {
+            busbar_kernel::proxy::build_egress_client(
+                &busbar_kernel::proxy::EgressClientSpec::pooled_webpki(
+                    usize::MAX,
+                    90,
+                    false,
+                    false,
+                ),
+            )
+        });
+        match busbar_kernel::egress::engine::send_bounded(client, req, deadline).await {
+            Ok(answer) => busbar_contract::abi::cold::export::HostResult::Http(
+                busbar_contract::abi::cold::export::HttpResponse {
+                    status: answer.status().as_u16(),
+                    body: String::new(),
+                },
+            ),
+            Err(e) => carried_failure("request", e.into_cause()),
+        }
+    }
+}
+
+/// `policy`'s verdict on `url`: the open web's (the webhook URL policy), or the collector's —
+/// `resolve` adds the collector guard's resolution half, which a sink's start-time admission asks.
+fn judge(
+    policy: crate::root::loader::EgressPolicy,
+    url: &str,
+    resolve: bool,
+) -> Result<(), String> {
+    match policy {
+        crate::root::loader::EgressPolicy::OpenWeb => {
+            busbar_kernel::observability::validate_webhook_url(Some(url.to_string())).map(|_| ())
+        }
+        crate::root::loader::EgressPolicy::Collector => {
+            crate::root::otlp::collector_policy(url, resolve)
+        }
+    }
+}
+
+/// A request the carrier sends: method, target, headers, body.
+type CarriedRequest = (
+    axum::http::Method,
+    axum::http::Uri,
+    axum::http::HeaderMap,
+    axum::body::Bytes,
+);
+
+/// A carried request's failure at `step`.
+fn carried_failure(step: &str, error: String) -> busbar_contract::abi::cold::export::HostResult {
+    busbar_contract::abi::cold::export::HostResult::Failed {
+        step: step.to_string(),
+        error,
+        rotation: None,
+    }
+}
+
+impl crate::root::loader::EgressCarrier for HostEgressCarrier {
+    fn carry(
+        &self,
+        request: &busbar_contract::abi::cold::export::HttpRequest,
+    ) -> busbar_contract::abi::cold::export::HostResult {
+        let open_web = crate::root::loader::EgressPolicy::OpenWeb;
+        self.carry_under(open_web, request, request.body.as_bytes())
+    }
+
+    /// The same hop, awaited by the delivery's task: no thread waits on the far end.
+    fn carry_async(
+        &'static self,
+        request: busbar_contract::abi::cold::export::HttpRequest,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = busbar_contract::abi::cold::export::HostResult> + Send,
+        >,
+    > {
+        let body = request.body.clone().into_bytes();
+        self.carry_under_async(crate::root::loader::EgressPolicy::OpenWeb, request, body)
+    }
+
+    fn admit(&self, url: &str) -> Result<(), String> {
+        self.admit_under(crate::root::loader::EgressPolicy::OpenWeb, url)
+    }
+
+    fn admit_under(
+        &self,
+        policy: crate::root::loader::EgressPolicy,
+        url: &str,
+    ) -> Result<(), String> {
+        judge(policy, url, true)
+    }
+
+    fn carry_under(
+        &self,
+        policy: crate::root::loader::EgressPolicy,
+        request: &busbar_contract::abi::cold::export::HttpRequest,
+        body: &[u8],
+    ) -> busbar_contract::abi::cold::export::HostResult {
+        let (req, deadline) = match HostEgressCarrier::prepare(policy, request, body) {
+            Ok(prepared) => prepared,
+            Err(refused) => return refused,
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return carried_failure("refused", "this host carries no plugin egress".to_string());
+        };
+        runtime.block_on(HostEgressCarrier::send(req, deadline))
+    }
+
+    fn carry_under_async(
+        &'static self,
+        policy: crate::root::loader::EgressPolicy,
+        request: busbar_contract::abi::cold::export::HttpRequest,
+        body: Vec<u8>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = busbar_contract::abi::cold::export::HostResult> + Send,
+        >,
+    > {
+        Box::pin(async move {
+            match HostEgressCarrier::prepare(policy, &request, &body) {
+                Ok((req, deadline)) => HostEgressCarrier::send(req, deadline).await,
+                Err(refused) => refused,
+            }
+        })
+    }
+}
+
+/// THE BOOT BOOK, COMPOSED — the extracted seam [`book`] calls, wired against a store
+/// adapter so its behaviour can be proved without a bound listener or a loaded plugin behind it.
+///
+/// Three decisions, made together here because they are ONE value and a caller that made them
+/// separately would have a node whose halves disagree:
+///
+/// 1. **The journal ships to the CONFIGURED STORE'S shipper.** A batch is offered to that shipper
+///    and its answer is part of the commit — committed-before-ack — and it is written to this
+///    node's own disk as well when a data directory was resolved. Read
+///    [`super::durability`]'s preamble for what "the store" answers with TODAY: on every store this
+///    binary can load, the record verbs are answered by the adapter's node-local shim, which
+///    acknowledges and never fails. So this line buys the WIRING, not new bytes at rest — the
+///    moment a store speaks the record ABI the batches land in it, with no change here. The
+///    durability a node gains today from this function is the on-disk half, and the honesty of the
+///    other half is that the previous release kept nothing there either.
+/// 2. **The ledger dual-writes onto the in-memory reconciliation rows.** That half stays memory: it
+///    is the cross-check the reconciliation identity is read from, not the acknowledgement path.
+/// 3. **The OPENING IS SEALED, here, before this function returns.** The previous release's rows are
+///    read through the same adapter and sealed as the opening figures, with the marker written onto
+///    THIS journal rather than the adapter's node-local shim — which could only ever hold it for the
+///    life of a process.
+///
+/// **THE ORDER IS THE WHOLE POINT.** The seal happens before the composed book is handed back, so it
+/// is impossible for a caller to reach a settlement path with an unopened book: the first accepted
+/// connection can settle, and a settlement posted before the opening was sealed would measure its
+/// residual from a checkpoint that did not exist when it happened. An opening sealed after traffic
+/// has begun is worse than no opening at all, because it looks authoritative.
+///
+/// It returns the wired stack, the rows a view reads them back from, and what the migration did.
+/// The opening is signed with the audit chain's own key (Q71(3): one keyset); a chain given no key
+/// seals it unsigned, which the ledger unit accepts.
+///
+/// # Errors
+///
+/// The journal could not be opened (a configured data directory that could not be read), or the
+/// opening could not be sealed — the two boot conditions [`super::migration::run`] returns where
+/// continuing would be worse than refusing. A store that merely would not answer for some rows is
+/// NOT one of them; see that module's preamble.
+pub fn compose_book(
+    adapter: &super::loader::store_adapter::StoreAdapter,
+    data_dir: Option<std::path::PathBuf>,
+    mig: &super::migration::MigrationConfig,
+    now: u64,
+    token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
+) -> Result<
+    (
+        super::durability::Durability,
+        Arc<busbar_kernel_ledger::legacy::RecordingRows>,
+        super::migration::Migration,
+    ),
+    String,
+> {
+    let rows = Arc::new(busbar_kernel_ledger::legacy::RecordingRows::new());
+    let mut durability = super::durability::build_for_node(
+        &super::durability::DurabilityConfig {
+            data_dir: data_dir.clone(),
+        },
+        mig.node,
+        adapter.shipper(),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::clone(&rows)),
+    )
+    .map_err(|e| format!("the boot ledger's log could not be opened: {e}"))?;
+    // The node amendment journal is rebuilt from the chain before anything can seal onto it, so a
+    // corrected count and every recorded content access survive the restart (a node with no data
+    // directory rebuilds nothing).
+    durability.restore_amendments();
+    // A corrupt journal segment was already logged and counted when the book was built; this puts
+    // the durable record of it on the chain. A failed append is logged, never a refusal to boot.
+    if let Err(lost) =
+        durability.journal_quarantines(token, busbar_contract::caps::StepName::Meter, now)
+    {
+        tracing::error!(
+            step = lost.step().as_str(),
+            "the journal could not record the quarantine boot recovery made"
+        );
+    }
+    // THE DEPLOYMENT KEYSET (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13; architect ruling 2026-09-26),
+    // bound BEFORE the opening is sealed so checkpoint 0 is signed with it too. With a data
+    // directory the first boot mints it, caches it there (0600) and seals its fingerprint in a
+    // `Bootstrap` record; a later boot that cannot produce that fingerprint refuses `KeysetMissing`.
+    // Without one it is ephemeral: minted for this process, written nowhere, checked by nothing.
+    super::keyset::bind(
+        &mut durability,
+        data_dir.as_deref(),
+        token,
+        busbar_contract::caps::StepName::Meter,
+        now,
+    )
+    .map_err(|e| e.to_string())?;
+    let migration = {
+        let (mut records, signer) =
+            durability.migration_records_signed(token, busbar_contract::caps::StepName::Meter);
+        let signer = signer
+            .as_ref()
+            .map(|s| s as &dyn busbar_kernel_ledger::checkpoint::CheckpointSecret);
+        super::migration::run(adapter, &mut records, mig, now, signer)
+            .map_err(|e| format!("the boot ledger could not seal its opening balances: {e}"))?
+    };
+    Ok((durability, rows, migration))
+}
+
+/// STAGE 4, BOOK (`BUSBAR-1.6.0.md` §3, the stage table: "open the store, replay the WAL, seal the
+/// opening, bind the keyset — at boot only"): THE PROCESS'S ONE BOOK, opened over the deployment's
+/// configured store with its balances sealed. Boot calls it once. Reload runs stages 1–3 and 5 and
+/// never Book (`BUSBAR-1.6.0.md` §3, and its round-2 ruling "Book stage and store are BOOT-ONLY"): a rebuilt
+/// generation carries the store it was handed, so a reload neither reopens the store nor seals a
+/// second opening.
+///
+/// A node with a governance store ships its book to that store and opens it from the rows the
+/// previous release left there; a node with none keeps the previous release's memory-only book,
+/// because a store the batches were never going to reach cannot be the one they are shipped to.
+///
+/// The data directory is the one [`busbar_kernel::preflight::fleet_data_dir`] resolves — the SAME
+/// accessor the plugin anti-downgrade floor persists under, so the two can never disagree about
+/// where this node keeps its own files. Absent, the branch in
+/// [`super::durability::build_for_node`] is the unset one and nothing is probed, nothing is opened
+/// and no file appears: this wiring gives a node with a CONFIGURED directory somewhere to write, and
+/// deliberately does not make writing unconditional.
+///
+/// # Errors
+///
+/// The ephemeral keyset could not be bound, or [`compose_book`] refused.
+pub fn book(app: &busbar_kernel::state::App) -> Result<super::durability::NodeBook, String> {
+    let Some(gov) = app.governance.as_ref() else {
+        // No store: the keyset is node-local and ephemeral (PB-13), and the chain still signs.
+        let book = super::durability::node_book();
+        if let Err(e) = super::keyset::bind_ephemeral(
+            &mut book.durability.lock().unwrap_or_else(|p| p.into_inner()),
+        ) {
+            return Err(e.to_string());
+        }
+        return Ok(book);
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let adapter = super::loader::store_adapter::StoreAdapter::native(gov.store());
+    let mig = super::migration::config_from(&app.cost, now);
+    let token = super::kernel::new_kernel().durability_token();
+    let data_dir = busbar_kernel::preflight::fleet_data_dir();
+    let (durability, rows, migration) = compose_book(&adapter, data_dir, &mig, now, &token)?;
+    // DEBUG, NOT INFO, and that is a neutrality decision rather than a taste one. The
+    // boot log's INFO+ line set is part of what "LLM-only ≡ 1.5.5" means — it is pinned
+    // by `tests/boot_lines_neutrality.rs` and recorded by the oracle's
+    // `hazard|no-data-dir|logs` cell — so a new line here is a user-visible byte change
+    // on a surface that must not move. The seal is an internal fact an operator can ask
+    // for; it is not news a 1.5.5 deployment ever printed.
+    if migration.sealed_now() {
+        tracing::debug!(
+            node = mig.node,
+            rate_card_version = mig.rate_card_version,
+            "the boot ledger sealed its opening balances from the configured store"
+        );
+    }
+    // THIS ONE STAYS A WARN, and the asymmetry is deliberate: it fires only when the store
+    // would not list its key rows, which means the opening is INCOMPLETE — sealed over the
+    // buckets configuration named and missing the ones the store would have. A money fact
+    // that degraded silently to keep a log shape would be the wrong trade. It cannot fire
+    // on the neutral shape: it takes a store that fails to answer, not a store with
+    // nothing in it.
+    if let Some(reason) = &migration.key_rows_unreadable {
+        tracing::warn!(
+            reason = %reason,
+            "the boot ledger could not list the store's key rows, so the opening was sealed \
+             over the buckets the configuration named"
+        );
+    }
+    let durability = Arc::new(std::sync::Mutex::new(durability));
+    // Every amendment sealed from here on goes on the book it was rebuilt from.
+    super::durability::bind_amendments(&durability);
+    Ok(super::durability::NodeBook { durability, rows })
 }
 
 #[cfg(test)]

@@ -39,13 +39,16 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, Diag, InHead, MetricEntry, Op, OutHead, Outcome, RawOutcome,
     DIAG_LOG, DIAG_LOG_DROPPED, METRIC_ADD, METRIC_OBSERVE, METRIC_SET, SEVERITY_ERROR,
     SEVERITY_TRACE,
 };
 use busbar_contract::abi::mechanism::door::{FAMILY_COUNTER, FAMILY_GAUGE, FAMILY_HISTOGRAM};
-use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, RefreshIn, ValidateIn};
+use busbar_contract::abi::mechanism::lifecycle::{
+    slot, OpenIn, OpenOut, ReadyIn, RefreshIn, ValidateIn,
+};
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
@@ -279,14 +282,16 @@ struct FamilyShape {
 /// THE INSTANCE, kind-erased: what every crossing needs. Shared across workers.
 pub(crate) struct Instance {
     /// The instance's identity on the host's connection table.
-    instance: InstanceId,
+    pub(crate) instance: InstanceId,
     /// The needs its Statement declares, in Statement order (empty when it was handed no table).
-    /// Each whose `target_from` names a config path is declared at every `open` and `refresh`,
-    /// pinned to what that path resolves to in the settings it is handed.
+    /// Each whose `target_from` or `trust_from` names a config path is declared at every `open` and
+    /// `refresh`, with what those paths resolve to in the settings it is handed.
     needs: Box<[ReadNeed]>,
     pub(crate) kind: KindCode,
     name: String,
     slots: Box<[Op]>,
+    /// The door's optional `ready` ([`slot::READY`]); `None` = the instance has none.
+    ready: Option<Op>,
     families: Box<[FamilyShape]>,
     diag_ids: DiagIds,
     ptr: AtomicPtr<c_void>,
@@ -325,6 +330,8 @@ pub(crate) struct Instance {
     /// crossing and held, at one address, until the `open` completes (a PENDING `open` keeps what
     /// it was lent), then handed to the caller as the reason. Empty at any other time.
     open_reason: Mutex<Vec<u8>>,
+    /// What its driver ticket's READY `drive` answers named, until the host collects them.
+    pub(crate) driven: super::worker::Driven,
     /// Last: the library outlives everything above.
     _lib: Option<Lib>,
 }
@@ -361,9 +368,12 @@ struct LogBudget {
 /// The gate bit `close` holds.
 const CLOSING: u32 = 1 << 31;
 
-/// Whether `slot` is one of the four that never overlap on one instance.
+/// Whether `slot` is one of the five that never overlap on one instance (`ready` among them).
 pub(crate) fn is_lifecycle(s: u32) -> bool {
-    matches!(s, slot::OPEN | slot::REFRESH | slot::RETIRE | slot::CLOSE)
+    matches!(
+        s,
+        slot::OPEN | slot::REFRESH | slot::RETIRE | slot::CLOSE | slot::READY
+    )
 }
 
 impl Instance {
@@ -388,6 +398,11 @@ impl Instance {
         HostCtx {
             ptr: std::ptr::from_ref(self.wake).cast_mut().cast(),
         }
+    }
+
+    /// Whether the door states `ready` ([`slot::READY`]).
+    pub(crate) fn has_ready(&self) -> bool {
+        self.ready.is_some()
     }
 
     pub(crate) fn slot_count(&self) -> u32 {
@@ -463,10 +478,12 @@ impl Instance {
             .is_ok()
     }
 
-    /// Declare each need whose `target_from` names a config path, pinned to what that path
-    /// resolves to in `settings` (the settings `open` or `refresh` hands the plugin), before the
-    /// plugin sees them. A path that resolves to nothing is declared without a target, which the
-    /// table refuses; a refresh re-declares, so a changed value moves the pin.
+    /// Declare each need whose `target_from` or `trust_from` names a config path, with what that
+    /// path resolves to in `settings` (the settings `open` or `refresh` hands the plugin), before
+    /// the plugin sees them: the target it is pinned to, and the operator CA PEM its connections
+    /// trust on top of the public roots. A path that resolves to nothing is declared without its
+    /// value, which the table refuses; a refresh re-declares, so a changed value moves the pin or
+    /// the trust.
     fn declare_targeted(&self, settings: Blob) {
         let Some((instance, table)) = self.wake.conn.get() else {
             return;
@@ -479,14 +496,14 @@ impl Instance {
         };
         let doc = serde_json::from_slice::<serde_json::Value>(bytes).ok();
         for (i, need) in self.needs.iter().enumerate() {
-            if need.target_from.is_empty() {
+            if !from_settings(need) {
                 continue;
             }
-            let target = doc
-                .as_ref()
-                .and_then(|d| resolve_target(d, &need.target_from));
+            let resolve = |path: &str| doc.as_ref().and_then(|d| resolve_setting(d, path));
+            let target = resolve(&need.target_from);
+            let trust = resolve(&need.trust_from);
             let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
-            let _ = table.declare(*instance, id, need, target.as_deref());
+            let _ = table.declare(*instance, id, need, target.as_deref(), trust.as_deref());
         }
     }
 
@@ -516,6 +533,12 @@ impl Instance {
     pub(crate) fn refuse(&self, s: u32, in_size: usize, out_size: usize) -> Option<Outcome> {
         if self.faulted.load(Ordering::Acquire) || self.is_closed() {
             return Some(Outcome::Fault);
+        }
+        if s == slot::READY {
+            // The door's optional tail op: only on an open instance that states it, in a frame
+            // that holds a `ReadyIn`.
+            let fits = self.ready.is_some() && self.is_open() && in_size >= size_of::<ReadyIn>();
+            return (!fits).then_some(Outcome::Refused);
         }
         if s >= self.slot_count() {
             return Some(Outcome::Refused);
@@ -608,6 +631,11 @@ impl Instance {
             // SAFETY: as above.
             self.declare_targeted(unsafe { (*input.cast::<OpenIn>()).settings });
         }
+        if s == slot::READY {
+            // `ready` is handed the same host tables `open` was.
+            // SAFETY: `refuse` checked the frame holds a `ReadyIn`.
+            unsafe { (*input.cast::<ReadyIn>()).host = &*self.tables.0 };
+        }
         // SAFETY: the host wrote `in.size`; a frame that holds a `RefreshIn` is read as one.
         if s == slot::REFRESH && unsafe { (*input).size } as usize >= size_of::<RefreshIn>() {
             // SAFETY: as above.
@@ -620,7 +648,11 @@ impl Instance {
             std::ptr::write_bytes(out.cast::<u8>(), 0, out_size as usize);
             (*out).size = out_size;
         }
-        let op = self.slots[s as usize];
+        let op = match (s, self.ready) {
+            (slot::READY, Some(ready)) => ready,
+            (slot::READY, None) => return Crossed::host(Outcome::Refused),
+            _ => self.slots[s as usize],
+        };
         self.crossings.fetch_add(1, Ordering::Relaxed);
         // SAFETY: the host wrote `in.size` itself.
         let in_size = unsafe { (*input).size } as usize;
@@ -681,6 +713,22 @@ impl Instance {
         };
         // A `validate`'s reason is copied: the buffer it was lent goes.
         drop(validate_reason);
+        // THE VALIDATE REFUSAL RULE (`abi::mechanism::lifecycle::check_validate_refusal`): the
+        // host renders a FAILED `validate`'s lines, so malformed lines are FAULT.
+        if s == slot::VALIDATE && outcome == Outcome::Failed {
+            let text = error.as_deref().unwrap_or_default();
+            if let Err(f) = busbar_contract::abi::mechanism::lifecycle::check_validate_refusal(text)
+            {
+                tracing::warn!(
+                    plugin = %self.name,
+                    kind = ?self.kind,
+                    rule = ?f.rule,
+                    field = f.field,
+                    "a validate refusal broke the refusal rule; the op answers FAULT"
+                );
+                return Crossed::host(Outcome::Fault);
+            }
+        }
         match (s, outcome) {
             (slot::OPEN, Outcome::Ready) => {
                 // SAFETY: `refuse` checked the frame holds an `OpenOut`.
@@ -857,6 +905,39 @@ unsafe fn array<'a, T>(p: *const T, len: usize) -> Option<&'a [T]> {
     }
 }
 
+/// `st`'s kind tail as this host's `T`, by THE KIND TAIL GROWTH RULE
+/// (`abi::mechanism::door::tail_read_len`): the plugin's first `min(size, host)` bytes, the rest
+/// zero (a field the plugin predates reads absent); refused when NULL or smaller than `frozen`, the
+/// kind's last frozen size. `who` names the plugin in the refusal.
+///
+/// # Safety
+/// `T` is a `#[repr(C)]` kind tail of plain integers and pointers leading with a `KindTailHead`, so
+/// all-zero bytes are a valid `T`; a non-NULL `st.kind_tail` is `'static` plugin data of at least its
+/// stated size.
+pub(crate) unsafe fn kind_tail<T: Copy>(
+    st: &busbar_contract::abi::mechanism::door::Statement,
+    who: &str,
+    frozen: usize,
+) -> Result<T, String> {
+    let p = st.kind_tail;
+    if p.is_null() {
+        return Err(format!("{who} states no kind tail"));
+    }
+    // SAFETY: a non-NULL kind tail leads with a `KindTailHead` (the caller's contract).
+    let size = unsafe { (*p).size };
+    let read = busbar_contract::abi::mechanism::door::tail_read_len(size, frozen, size_of::<T>())
+        .ok_or_else(|| {
+        format!("{who} states a {size}-byte tail, smaller than its frozen {frozen}")
+    })?;
+    let mut tail = std::mem::MaybeUninit::<T>::zeroed();
+    // SAFETY: `read` is at most the plugin's stated size and at most `size_of::<T>()`; the rest of
+    // `tail` stays zero, a valid `T` (the caller's contract).
+    unsafe {
+        std::ptr::copy_nonoverlapping(p.cast::<u8>(), tail.as_mut_ptr().cast::<u8>(), read);
+        Ok(tail.assume_init())
+    }
+}
+
 /// A borrowed string's bytes; NULL-and-empty reads as empty. The length is capped BEFORE any
 /// slice is made: over [`MAX_TEXT`], or non-empty behind NULL, is `None` (a malformed answer).
 pub(crate) fn str_bytes<'a>(s: AbiStr) -> Option<&'a [u8]> {
@@ -935,15 +1016,29 @@ impl<K: Kind> Plugin<K> {
                         .map(|r| r.needs)
                         .ok_or_else(|| LoadError::BadStatement("the needs do not render".into()))?;
                     for (i, need) in needs.iter().enumerate() {
-                        // A need whose target comes from config is declared once its settings
-                        // arrive (`open`, `refresh`); until then an open on it is undeclared.
-                        if !need.target_from.is_empty() {
+                        // THE BOOT'S SCHEME MATCH (spec Part 0: core refuses at boot; Part 2
+                        // #50): a need, outbound or inbound, over a scheme no loaded transport
+                        // serves refuses the load, naming the plugin and the scheme — fail closed
+                        // now, never at the need's first open or listen.
+                        if !need.transport.is_empty() && !table.serves_scheme(&need.transport) {
+                            return Err(LoadError::UnservedScheme {
+                                plugin: str_bytes(st.name)
+                                    .map(|n| String::from_utf8_lossy(n).into_owned())
+                                    .unwrap_or_default(),
+                                inbound: need.direction != DIRECTION_OUTBOUND,
+                                scheme: need.transport.clone(),
+                            });
+                        }
+                        // A need whose target or trust comes from config is declared once its
+                        // settings arrive (`open`, `refresh`); until then an open on it is
+                        // undeclared.
+                        if from_settings(need) {
                             continue;
                         }
                         let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
-                        // The answer is the connection table's to keep; a need the host will not
-                        // carry is refused at its open, not at bind.
-                        let _ = table.declare(instance, id, need, None);
+                        // The answer is the connection table's to keep (`need.admit` reads it);
+                        // its scheme was matched above.
+                        let _ = table.declare(instance, id, need, None, None);
                     }
                     declared_needs = needs.into_boxed_slice();
                     let _ = wake.conn.set((instance, Arc::clone(table)));
@@ -969,6 +1064,9 @@ impl<K: Kind> Plugin<K> {
             kind: v.kind,
         });
         let context = K::context(&st).map_err(LoadError::KindTail)?;
+        let _ = wake
+            .credential_kinds
+            .set(K::credential_kinds(context.as_deref()));
         let plugin = Self {
             inner: Arc::new(Instance {
                 instance,
@@ -976,6 +1074,7 @@ impl<K: Kind> Plugin<K> {
                 kind: v.kind,
                 name: String::from_utf8_lossy(name).into_owned(),
                 slots: v.slots,
+                ready: v.ready,
                 families,
                 diag_ids: DiagIds {
                     ptr: st.diag_ids,
@@ -1002,6 +1101,7 @@ impl<K: Kind> Plugin<K> {
                 wake,
                 tables,
                 open_reason: Mutex::new(Vec::new()),
+                driven: super::worker::Driven::default(),
                 _lib: lib,
             }),
             _k: PhantomData,
@@ -1153,9 +1253,16 @@ mod open_reason_plugins;
 #[path = "../tests/open_reason_tests.rs"]
 mod open_reason_tests;
 
-/// What a need's `target_from` names in an instance's settings: `settings.<key>[.<key>...]`, walked
-/// through the settings object to a non-empty string. Anything else resolves to nothing.
-pub(crate) fn resolve_target(settings: &serde_json::Value, path: &str) -> Option<String> {
+/// Whether a need takes a value from its instance's settings (`target_from` or `trust_from`), so it
+/// is declared at `open` and `refresh` rather than at bind.
+fn from_settings(need: &ReadNeed) -> bool {
+    !need.target_from.is_empty() || !need.trust_from.is_empty()
+}
+
+/// What a need's `target_from` or `trust_from` names in an instance's settings:
+/// `settings.<key>[.<key>...]`, walked through the settings object to a non-empty string. Anything
+/// else resolves to nothing.
+pub(crate) fn resolve_setting(settings: &serde_json::Value, path: &str) -> Option<String> {
     let rest = path.strip_prefix("settings.")?;
     rest.split('.')
         .try_fold(settings, |v, key| v.get(key))

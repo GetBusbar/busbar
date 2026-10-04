@@ -29,12 +29,14 @@ pub mod config_schema;
 pub mod conformance_sync;
 pub mod construction;
 pub mod contract_stateless;
+pub mod deferral_words;
 pub mod denylist_gate;
 pub mod dep_wall;
 pub mod design_bindings;
 pub mod design_docs_allowlist;
 pub mod dialect_coverage;
 pub mod dialect_map;
+pub mod documented_claims;
 pub mod door_only;
 pub mod duplex_ws_default_edge;
 pub mod field_inventory;
@@ -57,6 +59,7 @@ pub mod package_selectors;
 pub mod plane_abi_neutrality;
 pub mod plane_pricing_blindness;
 pub mod plane_purity;
+pub mod plane_secret_blindness;
 pub mod plane_transport_neutrality;
 pub mod plugin_closure_deps;
 pub mod population;
@@ -244,9 +247,10 @@ pub const REPORT_ONLY: &[Posture] = &[
     },
     Posture {
         name: "kind-isolation",
-        why: "RED on the Phase 4 drain debt and on nothing new. `:deps`, `:test-deps`, `:closure` \
-              and `:matrix` carry the measured coupling the Phase 4 kind-isolation drain removes \
-              (their rises await owner questions Q77/Q77a). They are excused FINDING BY FINDING: \
+        why: "RED on the Phase 4 drain debt and on nothing new. `:deps`, `:test-deps` and `:closure` \
+              carry the measured coupling the Phase 4 kind-isolation drain removes (their rises \
+              await owner questions Q77/Q77a). `:matrix` is no longer excused here because it no \
+              longer fails: it is report-only (owner 2026-10-03). They are excused FINDING BY FINDING: \
               every finding they carry must be in qa/kind-isolation.standing.txt at or below its \
               recorded figure. A new edge, cell or rise reds the posture, and every other row \
               blocks exactly as it always did. The snapshot only shrinks: `--posture \
@@ -256,7 +260,6 @@ pub const REPORT_ONLY: &[Posture] = &[
                 "kind-isolation:deps",
                 "kind-isolation:test-deps",
                 "kind-isolation:closure",
-                "kind-isolation:matrix",
             ],
             file: "qa/kind-isolation.standing.txt",
         }),
@@ -295,41 +298,27 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // clean checkout of b7200b496, base pinned to origin/predev, is red on exactly the rows on this
     // list. Three names were STALE and are struck here in the same commit:
     // `ports-only-tests:busbar-llm`, `request-path-fn-size` and `terminal-doors-in-audit-step` are
-    // PASS on that run. `ceiling-rose` is green again because the ten expired kind-isolation raises
-    // in qa/construction.toml were struck in the same commit (each cell already reads its `to` at
-    // the base). The rows below were red and on no list, so `--posture` scored them NEW; each is a
-    // true finding, named with what it measures and the phase that drains it.
+    // PASS on that run. The rows below were red and on no list, so `--posture` scored them NEW;
+    // each is a true finding, named with what it measures and the phase that drains it.
     //
     // `one-pricing-site` STRUCK (ARCHITECT ruling 2026-09-30, a $ commit landed alone): the admin
     // usage read built the ledger slice itself and priced it beside the cost unit. The row
     // projection moved into the cost unit (`busbar_kernel_ledger::cost::MeteredRow`), so admin
     // hands over its row and prices nothing.
-    // `token-sealed` and its three named mints: the Teller's tokens, `KernelSeal::acquire_for_kernel(`,
-    // the arrival-hold mint and `SecretOnce::mint(` are spelled outside their one home crate (266,
-    // 136, 49 and 5 sites). Item 317: the one deliberate cross-crate hole in the capability model is
-    // held by nothing while these are red. The arrival hold is a money hold, so this drains with it.
-    "token-sealed",
-    "token-sealed:admit-token-mint",
-    "token-sealed:kernel-seal",
-    "token-sealed:secret-once-mint",
+    // `token-sealed` and its three named mints STRUCK 2026-10-02 (GATE-GREEN, ARCHITECT rulings A + B,
+    // Q-GG2, Q-GG3): every site was test code. The contract's and the kernel member crates' minting
+    // tests moved into busbar-kernel/src; root, llm and core-admin tests take their tokens from the
+    // kernel's test-only mint (`test_support::tokens`) and core-admin's `secret_once`; the lint's
+    // rule-spec literals moved to a data file. Each row measures 0 with the full scan, tests included.
     //
-    // C1 / THE FOLD — DRAIN: Phase 4.
-    // `lean-core`: 14 string literals in the kernel and busbar-kernel-* crates naming a dialect or a
-    // section 1.3 pinned word (config/mod.rs, appbuild.rs). Item 379 widened the scan to the eight
-    // kernel crates the units became, which is what made it visible. Measured 2026-09-27: 5 (two
-    // reserved-name messages in config_validate, a metrics help text, two plane_host errors) once
-    // the 28 `known_sites` pins that had drifted off their literals were re-pointed.
-    "lean-core",
+    // `lean-core` STRUCK 2026-10-02 (GATE-GREEN): #178 re-pointed the reviewed sites by path + text;
+    // the last two, plane_host's completion-seam errors, became the neutral `CompletionRefusal` the
+    // mcp plane words in its own vocabulary, so the kernel spells neither.
     // `neutral-no-dialect` STRUCK 2026-09-25: the dialect and strict-purity drains emptied it, and
     // `--posture` scored the name STALE.
     //
-    // `loc-ceilings:union`: the kernel + contract + unit-* union measures 59342 against 57456 — the
-    // union had been absorbing its members' overage while it read their slack (item 378 made it
-    // read their ceilings). A TRUE red, held under OWNER RULING Q50. Its two members
-    // `loc-ceilings:caps-contract` and `surface-ceiling:contract` are STRUCK 2026-09-25: the pair was
-    // re-armed at the measurement (OWNER RULING Q68(3)), both rows are green, and `--posture` scored
-    // the two names STALE.
-    "loc-ceilings:union",
+    // `loc-ceilings:union` STRUCK 2026-10-02 WITH THE ROW ITSELF: size is not a CI check (owner
+    // 2026-10-02), and every `loc-ceilings:*` and `surface-ceiling:*` row is deleted.
 ];
 
 /// THE `qa-names` GATE'S STANDING REDS, BY NAME.
@@ -405,10 +394,10 @@ pub const MONEY_INVARIANTS_STANDING_REDS: &[&str] = &[
 /// [`QA_NAMES_STANDING_REDS`]: a red this list does not name is scored, and a name on this list that
 /// has gone green is STALE and is scored too.
 pub const CONFORMANCE_SYNC_STANDING_REDS: &[&str] = &[
-    // Item 165 (2026-09-24): freshness is judged against the checkout's own commit, so every
-    // carried-over pass is STALE on the dev line (TODO rule 7.3). Drained in Phase 5 on the release
-    // sha (TODO rule 7.4). Strike this line in the commit that turns the row green.
-    "conformance:freshness",
+    // DRAINED 2026-10-02: `conformance:freshness` stood here (item 165: freshness is judged against
+    // the checkout's own commit, so every carried-over pass was STALE). The ten hand-stamped passes
+    // left the tree (d2b588d74e: a verdict is produced at judge time), so nothing carried over is
+    // left to be stale. Struck in the train that turned it green.
 ];
 
 /// THE STRUCTURE-LINT GATE'S STANDING REDS, BY NAME. Same contract as
@@ -421,7 +410,8 @@ pub const STRUCTURE_LINT_STANDING_REDS: &[&str] = &[
     // other 33. DRAIN: Phase 4 — the plane owners dedupe each plane-local copy or sign its ledger
     // row, prune the stale ledger rows, take the axis identity questions out of the agnostic core
     // and collapse each second spelling. Strike each line in the commit that turns its row green.
-    "structure-lint:axis:purity",
+    // `structure-lint:axis:purity` STRUCK 2026-10-02 (GATE-GREEN, ee06655df0): the contract asks no
+    // claim its transport and the ABI handshake has one home, so the row is green.
     "structure-lint:plane-dup:unledgered",
 ];
 
@@ -690,8 +680,16 @@ const MEASURED_PLANE_PURITY: f64 = 27_923.0; // 16 cases, 298.0 s
 const MEASURED_PLANE_PURITY_STRICT: f64 = 19_435.0; // 12 cases, 202.1 s
 const MEASURED_STRUCTURE_LINT: f64 = 7_938.0; // 39 cases, 88.4 s
 const MEASURED_CONSTRUCTION: f64 = 33_096.0; // 36 cases, 352.4 s
-const MEASURED_KIND_ISOLATION: f64 = 128_034.0; // 152 cases, 1360.9 s
-const MEASURED_KIND_ISOLATION_SHIP: f64 = 120_208.0; // 122 cases, 1290.7 s
+                                             // RE-ARMED 2026-10-03 (lane-predev-all, run 37150144473's no-default-features shard). #454's crate
+                                             // EXTRACTIONS (`busbar-transport-ws` befd20dc37, and the http/tcp/grpc/a2a wires that are pinned git
+                                             // deps `crates/` no longer holds) grew the per-plant whole-tree scan: more selftest cases now PLANT
+                                             // OR REMOVE a crate — each invalidates the derived-vocabulary matrix memo and forces a full re-scan —
+                                             // so the battery's measured unit count rose. The counts are machine-independent (plants x scan size)
+                                             // and were read off the DENY run's own cost lines; the slack below (1.6x) carries the per-box spread.
+const MEASURED_KIND_ISOLATION: f64 = 319_876.0; // 240 cases; #454 extractions grew the per-plant scan
+const MEASURED_KIND_ISOLATION_SHIP: f64 = 199_904.0; // 137 cases; same cause
+/// The two kind-isolation batteries were re-measured on #454's tree, not the 2026-09-10 sitting.
+const TAKEN_KIND_ISOLATION: &str = "2026-10-03 9c479c0fe9";
 
 // `audit-ledger` IS STRUCK AGAIN, AND THE EXPLANATION IT WAS RE-BASELINED ON WAS WRONG.
 //
@@ -828,15 +826,15 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         gate: "kind-isolation",
         measured: MEASURED_KIND_ISOLATION,
         allowed: MEASURED_KIND_ISOLATION * BUDGET_SLACK,
-        taken: TAKEN,
-        why: "The dearest battery in the registry: every case plants an overlay and drives the whole gate over a 660k-line tree. The per-file compiled set and the matrix scan are memoised on (path, bytes) and the merge-base is read once per process; what is left is the plants and the rules. A plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo, which many cases do, because a census that walks the whole repository is proven by planting crates in it.",
+        taken: TAKEN_KIND_ISOLATION,
+        why: "The dearest battery in the registry: every case plants an overlay and drives the whole gate over a 660k-line tree. The per-file compiled set and the matrix scan are memoised on (path, bytes) and the merge-base is read once per process; what is left is the plants and the rules. A plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo, which many cases do, because a census that walks the whole repository is proven by planting crates in it. RE-MEASURED on #454's tree: its wire extractions (busbar-transport-ws et al.) turned more cases into crate-planting ones, raising the count.",
     },
     Budget {
         gate: "kind-isolation-ship",
         measured: MEASURED_KIND_ISOLATION_SHIP,
         allowed: MEASURED_KIND_ISOLATION_SHIP * BUDGET_SLACK,
-        taken: TAKEN,
-        why: "The ship twin of the battery above: the same shape held to a ceiling of zero, plus the derivations with a degenerate answer and the floors whose subject is the size of their own input.",
+        taken: TAKEN_KIND_ISOLATION,
+        why: "The ship twin of the battery above: the same shape held to a ceiling of zero, plus the derivations with a degenerate answer and the floors whose subject is the size of their own input. RE-MEASURED on #454's tree for the same cause as its non-ship twin.",
     },
     // `audit-ledger` HAS NO ENTRY HERE. It had one, set from 8 779 units and justified by a
     // register-growth story that measurement refuted; the cost was 128 `rev-list` processes per
@@ -2541,11 +2539,25 @@ pub static REGISTRY: &[Registration] = &[
         summary: "how the tree is BUILT, against BUSBAR-1.6.0.md and qa/construction.toml",
     },
     Registration {
+        name: "deferral-words",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(deferral_words::DeferralWordsGate),
+        summary: "DECISIONS #15 banned-word shapes over the 1.6.0 docs (report-only) + the pinned positive control",
+    },
+    Registration {
         name: "design-docs-allowlist",
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(design_docs_allowlist::DesignDocsAllowlistGate),
         summary: "docs/design holds the spec, the TODO, QUESTIONS, SLOT-LOG and 1.6.0-PARKED/ only",
+    },
+    Registration {
+        name: "documented-claims",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(documented_claims::DocumentedClaimsGate),
+        summary: "qa/documented-claims.json: every README/CHANGELOG claim is pinned by a recorded cell or excused, ids address their quotes",
     },
     Registration {
         name: "secret-hygiene",
@@ -2755,6 +2767,14 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(door_only::DoorOnlyGate),
         summary: "the binary closure reaches a plugin only through its door and installs no static \
                   fn-pointer seam but oauth2's and admin's (report-only ledger)",
+    },
+    Registration {
+        name: "plane-secret-blindness",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(plane_secret_blindness::PlaneSecretBlindnessGate),
+        summary: "no plane crate names a secret-resolving surface; the owed sites are a drain-only \
+                  ledger (THE DESIGN, the trust boundary)",
     },
     Registration {
         name: "linked-dropped-features",

@@ -41,11 +41,6 @@ item = "sigv4"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel-identity/src/egress_auth/tests.rs"
-item = "sigv4"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel-identity/src/ingress_sigv4.rs"
 item = "sigv4"
 
@@ -68,11 +63,6 @@ item = "openapi"
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/admin/v1/contract/taxonomy.rs"
 item = "prometheus"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/admin/versions.rs"
-item = "openapi"
 
 [[finding]]
 rule = "c1-literals:literal"
@@ -263,8 +253,3 @@ item = "webhook"
 rule = "c1-literals:literal"
 file = "crates/plugin-loader/src/plane.rs"
 item = "openapi"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/plugin-loader/src/registry.rs"
-item = "ranking"

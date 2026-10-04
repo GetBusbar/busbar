@@ -115,7 +115,7 @@ pub(crate) trait RelayTransport: Send + Sync {
         addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],
-    ) -> Result<HttpResponse, String>;
+    ) -> Result<HttpResponse, SendFailure>;
 
     /// THE STREAMING HOP. Same pin, same headers, same body; the difference is that the reply is
     /// handed to `on_chunk` AS IT ARRIVES rather than buffered whole.
@@ -132,6 +132,30 @@ pub(crate) trait RelayTransport: Send + Sync {
         body: &[u8],
         on_chunk: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
     ) -> Result<StreamHead, String>;
+}
+
+/// A UNARY HOP THAT FAILED AT THE TRANSPORT, and how much of the backend's answer crossed the wire
+/// before it did — the half of a failed exchange the hop's `bytes` still bill (Q35: the bytes busbar
+/// actually received, and the request it carried). The streaming twin counts its chunks as they
+/// arrive, so it needs no such carrier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SendFailure {
+    /// The operator line naming the failure.
+    pub(crate) err: String,
+    /// The response body bytes received before the connection failed: `Some` once the backend's
+    /// answer had begun (its head arrived, so the request was carried), `None` when no answer
+    /// arrived at all.
+    pub(crate) received: Option<usize>,
+}
+
+impl From<String> for SendFailure {
+    /// A failure before any answer arrived.
+    fn from(err: String) -> Self {
+        Self {
+            err,
+            received: None,
+        }
+    }
 }
 
 /// What the chunk sink says about continuing — the neutral host-owned [`busbar_kernel::egress::ChunkFlow`],
@@ -1679,6 +1703,9 @@ fn prepare<'a>(
     // build) and none of it reaches a backend, so counting an attempt for one of those would report
     // traffic at an agent busbar never contacted. See `count_leg_failure` for the other half.
     busbar_kernel::telemetry::upstream_attempt_on(call.agent_id, framed_leg(call.framing));
+    if let Some(bytes) = call.bytes {
+        bytes.mark_left();
+    }
     Ok((framed_url, pin, request))
 }
 
@@ -1761,18 +1788,24 @@ fn relay_once(
     );
     // THE HOP'S PAYLOAD BYTES, both ways, the moment the exchange is known to have happened — BEFORE
     // any reading of the answer can refuse it: a backend that answered a 5xx or an oversized body was
-    // still sent this request and still sent those bytes back. A transport failure carried no
-    // exchange busbar can measure, so it counts nothing. See [`HopBytes`].
-    if let (Some(bytes), Ok(resp)) = (call.bytes, sent.as_ref()) {
+    // still sent this request and still sent those bytes back. A connection that died mid-answer
+    // carried the request and the bytes that arrived before it died, and both count — the streaming
+    // leg's rule for a cut stream. A failure before any answer arrived carried no exchange busbar
+    // can measure, so it counts nothing. See [`HopBytes`].
+    let received = match sent.as_ref() {
+        Ok(resp) => Some(resp.body.len()),
+        Err(f) => f.received,
+    };
+    if let (Some(bytes), Some(received)) = (call.bytes, received) {
         bytes.add_sent(request.body.len());
-        bytes.add_received(resp.body.len());
+        bytes.add_received(received);
     }
-    let resp = sent.map_err(|err| {
+    let resp = sent.map_err(|f| {
         count_leg_failure(
             call,
             RelayRefusal::Transport {
                 url: url.to_string(),
-                err,
+                err: f.err,
             },
         )
     })?;

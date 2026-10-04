@@ -23,6 +23,10 @@
 
 #![cfg(unix)]
 #![cfg(linked_axis_body_ingress)]
+// The config names `module: prometheus`, the linked scrape sink on the export-doors axis: a build
+// that links no export door (the single-plane rows link only the exports axis) refuses that module at
+// boot ("unknown exporter 'prometheus'"), which is correct product behaviour, not what this measures.
+#![cfg(linked_axis_export_doors)]
 
 mod common;
 
@@ -90,6 +94,8 @@ fn write_configs_with(dir: &Path, data_port: u16, admin_port: u16, tail_settings
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
+advanced:
+  allow_destinations: ["127.0.0.1"]
 admin_require_mtls: false
 auth:
   chain: []

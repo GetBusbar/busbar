@@ -10,6 +10,8 @@ pub mod overlay;
 
 /// The top-level `groups:` limit tree: GroupCfg + the generic limit shape.
 pub mod groups;
+/// The root legacy table the composition root hands in, and the one rewrite over it.
+pub mod legacy;
 /// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector.
 pub mod migrate;
 pub mod migrate_export;
@@ -427,10 +429,11 @@ pub struct RootCfg {
     /// as `(section, value)`: its plane's `build` reads it through the same `BuildCtx::endpoint_slot`.
     pub endpoint_resources:
         std::collections::HashMap<&'static str, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
-    /// The VALIDATED authorization server (`oauth_as:`), or `None` when this deployment is not one.
-    /// Derived and refused at boot by `crate::oauth_as::config::AsIdentity::from_cfg`, so nothing
-    /// downstream re-parses the issuer or re-derives an endpoint path.
-    pub oauth_as: Option<crate::oauth_as::config::AsIdentity>,
+    /// The `oauth_as:` block, OPAQUE to the kernel, or `None` when this deployment is not an
+    /// authorization server. It was handed to its owner (`oauth_as::seam::AsPlaneSeam::check`) and
+    /// accepted by `resolve`, so a value here is a block the owner has already validated, with the
+    /// secret references the owner listed in it.
+    pub oauth_as: Option<crate::oauth_as::seam::CheckedAsBlock>,
     /// The `tools:` named-definition registry — its owning plane's config section, carried through `resolve` VERBATIM.
     ///
     /// Verbatim on purpose: this is operator INTENT (owner ruling 3), and the only derivation that
@@ -499,6 +502,8 @@ pub struct RootCfg {
     /// DISABLED — every cloud-metadata endpoint is reachable by every provider. Logs a startup WARN.
     /// Default false.
     pub allow_all_metadata: bool,
+    /// The `advanced` destination-guard keys, as written ([`RootCfg::destinations`] adds the rest).
+    pub guard: Destinations,
     /// Fully-resolved operational limits ("NEVER CODED CAPS"), projected from the `limits:` /
     /// `observability:` / `governance:` / `metrics:` / `health:` / `routing:` config sections. Every
     /// value defaults to its historical hardcoded const, so an all-default config is unchanged. Read
@@ -1177,7 +1182,7 @@ pub struct DeployCfg {
     ///
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
-    pub oauth_as: Option<crate::oauth_as::config::OauthAsCfg>,
+    pub oauth_as: Option<serde_yaml::Value>,
     /// The top-level `tools:` NAMED-DEFINITION map (1.6.0) — its owning plane's registry: entry name →
     /// `{url, pin, tools_allow, …}`. Sibling of `pools:` and `agents:` with the same shape and the
     /// same two reserved section keys; there is no `plane:`/`bind:`/`target:` selector, because the
@@ -1384,7 +1389,7 @@ impl DeployCfg {
 }
 
 // Moved to `busbar_kernel::config::sections`; re-exported at its historical `config::` path.
-pub use busbar_kernel::config::sections::SecurityCfg;
+pub use busbar_kernel::config::sections::{Destinations, SecurityCfg};
 
 /// The top-level `plugins:` block — the ONLY configuration surface of the dynamic plugin subsystem.
 /// A plugin is a plugin: store, auth, and hook plugins share this one block (one directory, one
@@ -2020,6 +2025,11 @@ pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -
             .path_base
             .clone()
             .or_else(|| def.path_base.clone()),
+        organization: deploy_cfg
+            .organization
+            .clone()
+            .or_else(|| def.organization.clone()),
+        project: deploy_cfg.project.clone().or_else(|| def.project.clone()),
         token_url: deploy_cfg
             .token_url
             .clone()
@@ -2576,9 +2586,27 @@ pub fn resolve(
     // found by an agent that cannot log in and cannot say why.
     let oauth_as = deploy
         .oauth_as
-        .as_ref()
-        .map(crate::oauth_as::config::AsIdentity::from_cfg)
-        .and_then(|identity| identity.map_err(|e| errors.push(e.to_string())).ok());
+        .clone()
+        .filter(|block| !block.is_null())
+        .and_then(|block| {
+            let Some(seam) = crate::oauth_as::seam::seam() else {
+                errors.push(
+                    "oauth_as: configured, but the authorization-server plane (busbar-core-oauth2) \
+                     is not linked into this binary"
+                        .to_string(),
+                );
+                return None;
+            };
+            match (seam.check)(&block) {
+                Ok(secret_refs) => {
+                    Some(crate::oauth_as::seam::CheckedAsBlock { block, secret_refs })
+                }
+                Err(e) => {
+                    errors.push(e);
+                    None
+                }
+            }
+        });
 
     if errors.is_empty() {
         // An absent `security:` block is the all-default one: no extra hosts, no allow-all.
@@ -2617,6 +2645,11 @@ pub fn resolve(
             blocked_metadata_hosts: security.blocked_metadata_hosts,
             allow_metadata_hosts: security.allow_metadata_hosts,
             allow_all_metadata: security.allow_all_metadata,
+            guard: Destinations {
+                block_private_addresses: deploy.advanced.block_private_addresses,
+                allow: deploy.advanced.allow_destinations.clone(),
+                ..Destinations::default()
+            },
             // Project the operational-limit sections onto a flat resolved struct. The `advanced:` /
             // `export:` blocks are optional; absent ⇒ their section defaults (the historical
             // hardcoded values, via the manual `Default` impls).
@@ -2641,6 +2674,10 @@ pub fn resolve(
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/advanced_destinations_tests.rs"]
+mod advanced_destinations_tests;
 
 #[cfg(test)]
 #[path = "tests/named_map_merge_tests.rs"]

@@ -14,13 +14,16 @@
 //! BUSBAR-1.6.0.md:173, "sit in the root legacy table"). The kernel hands the provider on as `op`,
 //! so neither this module nor the kernel names an instance.
 
-use busbar_contract::auth::{AuthModule, AuthVerdict};
+use std::sync::Arc;
 
-/// A linked auth row: the key configuration names it by, and the SDK boundary its crate exports
-/// (`BUSBAR_COLD_ENTRY`), run through the one image load a dropped-in `kind: auth` plugin takes.
-pub type LinkedAuth = (&'static str, AuthBoundary);
-/// The SDK boundary a linked auth row is opened through.
-pub type AuthBoundary = &'static busbar_contract::abi::cold::ColdEntry;
+use busbar_contract::auth::{AuthVerdict, Principal};
+use busbar_contract::auth_calls::{AuthCalls, Verified, VerifyAnswer, VerifyRequest};
+
+/// A linked auth row: the key configuration names it by, and its door on the auth kind's memory
+/// ABI — the same door its dropped-in build exports (THE DESIGN: compiled-in = dropped-in).
+pub type LinkedAuth = (&'static str, AuthDoor);
+/// The door a linked auth row is opened through (`abi::auth`, one dispatcher).
+pub type AuthDoor = busbar_contract::abi::mechanism::door::DoorFn;
 
 /// THE OPERATOR CREDENTIAL'S FROZEN WORDS, as the composition root's legacy table spells them: the
 /// provider configuration names it by (the `auth.admin_auth:` default, the one `module:` whose
@@ -91,12 +94,12 @@ pub fn answered(op: &str) -> bool {
     linked_names().contains(&op)
 }
 
-/// A TEST REGISTRY ROW: link `entry` (the SDK boundary of the auth plugin a test binary links for
-/// the operator credential), under the provider key of `words`, as the composition root links its
-/// row. The first install stands.
-pub fn install_row(words: OperatorWords, entry: AuthBoundary) {
+/// A TEST REGISTRY ROW: link `door` (the door of the auth plugin a test binary links for the
+/// operator credential), under the provider key of `words`, as the composition root links its row.
+/// The first install stands.
+pub fn install_row(words: OperatorWords, door: AuthDoor) {
     static ROW: std::sync::OnceLock<[LinkedAuth; 1]> = std::sync::OnceLock::new();
-    install_linked(ROW.get_or_init(|| [(words.provider, entry)]), words);
+    install_linked(ROW.get_or_init(|| [(words.provider, door)]), words);
 }
 
 /// THE OPERATOR CREDENTIAL'S REFUSALS, v1.5.5's text byte for byte with the provider read off the
@@ -163,25 +166,93 @@ pub fn migrated_token(op: &str) -> String {
     format!("governance.admin_token -> auth.admin_auth: [ {op}: {{ token: <secret-ref> }} ]")
 }
 
+/// What the operator credential answered one request.
+#[derive(Debug)]
+pub enum Judgement {
+    /// A verdict: identified, a bad credential (1.5.5's refusal bytes), or not its credential.
+    Verdict(AuthVerdict),
+    /// The verifier's `max_inflight` is full and the call was not queued: the request is answered
+    /// 503 unavailable, never refused as a bad credential (THE DESIGN's overloaded-verifier ruling).
+    Overloaded,
+    /// The verifier answered no verdict (FAILED, FAULT, REFUSED, a timeout): an outage, distinct
+    /// from a bad credential, as a login's `LoginOutcome::Outage` is (ARCHITECT ruling 2026-09-30,
+    /// AUTH-DOOR Q1).
+    Outage,
+}
+
+impl Judgement {
+    /// The judgement as the admin chain walks it: a verdict, or the chain cannot be judged.
+    ///
+    /// # Errors
+    /// The verifier is overloaded or answered no verdict.
+    pub fn verdict(self) -> Result<AuthVerdict, AdminUnavailable> {
+        match self {
+            Self::Verdict(v) => Ok(v),
+            Self::Overloaded => Err(AdminUnavailable::Overloaded),
+            Self::Outage => Err(AdminUnavailable::Outage),
+        }
+    }
+}
+
+/// The admin chain could not be judged: the operator credential's verifier is overloaded or
+/// answered no verdict. The request is answered 503 `unavailable`, never refused as a bad
+/// credential (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1; THE DESIGN's overloaded-verifier ruling).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminUnavailable {
+    /// The verifier's `max_inflight` is full; the call was not queued.
+    Overloaded,
+    /// The verifier answered no verdict: an outage, distinct from a bad credential.
+    Outage,
+}
+
+impl AdminUnavailable {
+    /// The caller-safe message of the 503: ONE text for both causes. 1.5.5's operator verify was
+    /// in-process and had no outage, so there are no 1.5.5 bytes for one; it answers exactly as the
+    /// overloaded verifier does (ARCHITECT ruling 2026-09-30, AUTH-DOOR: no new customer string).
+    pub fn message(self) -> &'static str {
+        "the admin credential verifier is overloaded; retry shortly"
+    }
+}
+
+/// A `verify` answer as the admin chain reads it. The strips are the transport's, never the
+/// chain's.
+fn judgement(answer: VerifyAnswer) -> Judgement {
+    match answer.verified {
+        Verified::Identity(id) => Judgement::Verdict(AuthVerdict::Identify(Principal {
+            id: id.subject,
+            name: id.name,
+            roles: id.groups,
+            ttl_secs: id.ttl_secs,
+        })),
+        Verified::Reject => Judgement::Verdict(AuthVerdict::Reject),
+        Verified::Pass => Judgement::Verdict(AuthVerdict::Pass),
+        Verified::Overloaded => Judgement::Overloaded,
+        Verified::Failed => Judgement::Outage,
+    }
+}
+
 /// The operator credential, as the auth axis answered it.
 pub enum OperatorCredential {
     /// No auth row answers the operator credential's provider.
     Unanswered,
-    /// A row answers it and no operator token is configured: nothing to judge, so it defers (and a
-    /// chain that only defers denies — the admin surface is closed without a token).
+    /// A row answers it and no operator token is configured: nothing to judge, so it passes (and a
+    /// chain that only passes denies — the admin surface is closed without a token).
     Unset,
-    /// The opened module, over the configured token's digest.
-    Module(Box<dyn AuthModule>),
+    /// The opened instance, over the configured token's digest, on the auth kind's memory ABI.
+    Module(Arc<dyn AuthCalls>),
 }
 
 impl OperatorCredential {
     /// The operator credential over the token digest `digest`: `answered` says whether a row answers
-    /// the [`provider`] key, and `open` opens that row over a digest. FAIL-CLOSED: a row that answers
-    /// but cannot open is an error, never a module silently dropped.
+    /// the [`provider`] key, and `open` opens that row over a digest through the auth axis.
+    /// FAIL-CLOSED: a row that answers but cannot open is an error, never a module silently dropped.
+    ///
+    /// # Errors
+    /// The answering row would not open.
     pub fn open(
         answered: bool,
         digest: Option<&str>,
-        open: impl FnOnce(&str) -> Result<Box<dyn AuthModule>, String>,
+        open: impl FnOnce(&str) -> Result<Arc<dyn AuthCalls>, String>,
     ) -> Result<Self, String> {
         match (answered, digest) {
             (true, Some(digest)) => open(digest).map(Self::Module),
@@ -190,24 +261,33 @@ impl OperatorCredential {
         }
     }
 
-    /// Judge the two admin carriers. BOTH are put to the module on every call, whatever the first
-    /// answered, and the answers fold: either identifying admits, else either refusing refuses, else
-    /// the module defers — so "the Bearer matched" is indistinguishable from "the Bearer missed and
-    /// the header matched". `None` when no row answers: the caller says so, and defers.
-    pub fn judge(&self, bearer: Option<&str>, header: Option<&str>) -> Option<AuthVerdict> {
+    /// Judge `request` — the request's field lines at `Head`, handed through as presented: the
+    /// plugin reads the carriers its Statement names (both admin carriers, folded), so the kernel
+    /// names none. AWAITS a pending verify (the admin door is async and never answers 503 for
+    /// pending I/O). `None` when no row answers: the caller says so, and passes.
+    pub async fn judge(&self, request: VerifyRequest) -> Option<Judgement> {
         let module = match self {
             Self::Unanswered => return None,
-            Self::Unset => return Some(AuthVerdict::Pass),
+            Self::Unset => return Some(Judgement::Verdict(AuthVerdict::Pass)),
+            Self::Module(module) => module,
+        };
+        Some(judgement(module.verify(request).await))
+    }
+
+    /// The SYNCHRONOUS PROBE of the same judgement: one ticketless, watchdog-bounded crossing on
+    /// the caller's thread (`verify_now`), for a caller that cannot await (the dry run, the root's
+    /// admin door). A plugin that must wait answers no verdict here, which is a
+    /// [`Judgement::Outage`] — the probe fails closed.
+    pub fn probe(&self, request: &VerifyRequest) -> Option<Judgement> {
+        let module = match self {
+            Self::Unanswered => return None,
+            Self::Unset => return Some(Judgement::Verdict(AuthVerdict::Pass)),
             Self::Module(module) => module,
         };
         Some(
-            match (module.authenticate(bearer), module.authenticate(header)) {
-                (AuthVerdict::Identify(p), _) | (_, AuthVerdict::Identify(p)) => {
-                    AuthVerdict::Identify(p)
-                }
-                (AuthVerdict::Reject, _) | (_, AuthVerdict::Reject) => AuthVerdict::Reject,
-                _ => AuthVerdict::Pass,
-            },
+            module
+                .verify_now(request)
+                .map_or(Judgement::Outage, judgement),
         )
     }
 }
@@ -249,7 +329,7 @@ impl Operator {
         defs: impl Iterator<Item = (&'a str, &'a str)>,
         answered: bool,
         digest: Option<String>,
-        open: impl FnOnce(&str) -> Result<Box<dyn AuthModule>, String>,
+        open: impl FnOnce(&str) -> Result<Arc<dyn AuthCalls>, String>,
     ) -> Result<Self, String> {
         let defs: Vec<(&str, &str)> = defs.collect();
         let module_of = |name: &str| defs.iter().find(|d| d.0 == name).map(|d| d.1);

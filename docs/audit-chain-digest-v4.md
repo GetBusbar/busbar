@@ -20,7 +20,7 @@ our libraries, or our word for anything. If only busbar can verify busbar's chai
 a claim, and a claim is not evidence.
 
 **The page is checked against itself, by something that cannot see the implementation.**
-`crates/busbar-kernel-audit/src/tests/published_recipe_tests.rs` reads the field table below and
+`crates/busbar-kernel/src/tests/members/audit/published_recipe_tests.rs` reads the field table below and
 the worked example in section 7 — the published artifacts, nothing else — frames and hashes them by
 the rules stated here, and compares the result against the digest this page and this build each
 claim. It is forbidden from calling the three functions that *are* the recipe, and that ban is
@@ -376,7 +376,7 @@ check the `signature` against the `public_key` above with any ed25519 implementa
 trust.
 
 Three tests hold this section down, in
-`crates/busbar-kernel-audit/src/tests/published_recipe_tests.rs`:
+`crates/busbar-kernel/src/tests/members/audit/published_recipe_tests.rs`:
 
 * `the_published_table_reproduces_the_published_examples_digest` — the page checks out on its own
   terms, over committed artifacts only, with no chain sealed and no source consulted.
@@ -389,7 +389,7 @@ Three tests hold this section down, in
 
 The three bodies are also asserted to be **this build's own output** by
 `the_worked_example_in_the_published_spec_is_what_this_build_answers_with` in
-`crates/busbar-kernel-audit/src/tests/sign_tests.rs`. The page cannot drift from the code without
+`crates/busbar-kernel/src/tests/members/audit/sign_tests.rs`. The page cannot drift from the code without
 one of these going red.
 
 ---
@@ -406,7 +406,7 @@ by the `v3` page, whose field order has not changed and never will; a node does 
 signature domain did not move, because what is signed did not change — the digest's hex text — only
 which fields the digest is taken over. Moving a record between recipes is itself caught: a `v3`
 record relabelled `v4` gains a field in its preimage, a `v4` record relabelled `v3` loses one, and
-either no longer hashes to its sealed digest. `crates/busbar-kernel-audit/src/tests/record_tests.rs`
+either no longer hashes to its sealed digest. `crates/busbar-kernel/src/tests/members/audit/record_tests.rs`
 pins the `v3` and `v4` digests a fully populated record froze and the relabelling arms;
 `published_recipe_tests.rs` proves off the two pages alone that `v4` is `v3` plus exactly
 `incarnation` (`the_v3_page_is_kept_and_v4_is_v3_plus_incarnation`).

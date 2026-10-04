@@ -155,6 +155,19 @@ pub(crate) fn ledger_and_meter(
         usage,
         sink.charged_at,
     );
+    // THE RESIDUALS (MONEY LAW, owner 2026-10-02): counts the reader found that no billing class
+    // records. `tier` never holds them, so nothing above billed them; the reader already WARNed, and
+    // the kernel writes their one `usage.residual` audit row here, at the settle.
+    if let Some(u) = usage {
+        host.settle_residual(
+            &u.residual_units,
+            crate::PLANE_KEY,
+            lane.protocol,
+            &lane.model,
+            sink.request_id,
+            &sink.key.id,
+        );
+    }
 }
 
 /// `lane` is the SERVING lane - the model attribution for BOTH the token ledger and the metering

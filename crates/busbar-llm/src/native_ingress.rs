@@ -116,7 +116,8 @@ impl busbar_kernel::plane_host::GauntletPlane for NativePlane<'_> {
                 Err(resp) => return *resp,
                 Ok(admitted) => admitted,
             };
-        let charged = admit.is_some();
+        // The admission's own handle, held to the terminal: its charge is what a non-2xx refunds.
+        let charged = admit.clone();
         // A budget downgrade re-pooled the admission: dispatch through the pool the charge actually
         // landed on, not the one the client asked for.
         let model = downgraded.as_deref().unwrap_or(req.destination);
@@ -152,7 +153,7 @@ impl busbar_kernel::plane_host::GauntletPlane for NativePlane<'_> {
                     req.started,
                     req.charged_at,
                     resp,
-                    charged,
+                    charged.as_ref(),
                 );
             };
 
@@ -205,9 +206,14 @@ impl busbar_kernel::plane_host::GauntletPlane for NativePlane<'_> {
             // Busbar is invisible to upstreams: every client header but the per-connection mechanics,
             // the ones the dialects govern and busbar's own (the pool's affinity header), forwarded
             // later by a same-dialect egress only.
-            busbar_kernel::proxy::collect_client_headers(headers, |n| {
-                crate::engine::governed(n) || n.eq_ignore_ascii_case(affinity_header)
-            }),
+            crate::engine::ClientFwd {
+                headers: busbar_kernel::proxy::collect_client_headers(headers, |n| {
+                    crate::engine::governed(n) || n.eq_ignore_ascii_case(affinity_header)
+                }),
+                // This gauntlet entry is handed no URL (its callers resolved the operation already);
+                // the loop's route step carries the caller's query.
+                query: None,
+            },
         )
         .await;
 
@@ -230,7 +236,7 @@ impl busbar_kernel::plane_host::GauntletPlane for NativePlane<'_> {
             req.started,
             req.charged_at,
             resp,
-            charged,
+            charged.as_ref(),
         )
     }
 
@@ -348,6 +354,8 @@ pub(crate) fn usage_sink(
             // The header-arrival epoch this request was admitted at — reused for the token fee so it
             // shares the flat per-request fee's window (#29). See `UsageSink::charged_at`.
             charged_at,
+            // Not minted yet: the forward path stamps it (`UsageSink::request_id`).
+            request_id: 0,
             // The admission's in-flight HOLDS (the `concurrent` limit gauges) ride the sink so
             // they release when the response stream completes / the request context unwinds - the
             // sink is the one per-request object that provably lives to stream end. The opaque

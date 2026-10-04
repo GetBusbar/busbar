@@ -114,6 +114,10 @@ async fn drive<A: busbar_kernel::test_support::BuiltAppSeam + ?Sized>(
     body: bytes::Bytes,
     client_fwd: Vec<(HeaderName, HeaderValue)>,
 ) {
+    let client_fwd = crate::engine::ClientFwd {
+        headers: client_fwd,
+        query: None,
+    };
     let resp = forward_with_pool_keyed(
         app,
         vec![crate::engine::WeightedLane {
@@ -510,7 +514,7 @@ async fn answer_head(
         ingress,
         crate::test_support::CHAT,
         None,
-        Vec::new(),
+        Default::default(),
     )
     .await;
     let head = resp.headers().clone();
@@ -576,4 +580,188 @@ async fn a_translated_answer_relays_no_upstream_head() {
     .await;
     assert!(head.get("x-ratelimit-remaining-tokens").is_none());
     assert!(head.get("openai-processing-ms").is_none());
+}
+
+// ── THE URL: a same-dialect hop carries the caller's query ──────────────────────────────────────────
+
+/// One request through an `upstream_protocol` lane on a one-shot server that records the request
+/// line and answers `reply`; the request line it saw.
+async fn request_line(
+    ingress: &'static str,
+    upstream_protocol: &'static str,
+    query: &str,
+    reply: serde_json::Value,
+) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    crate::testkit::install_test_seams();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let seen = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = sock.read(&mut chunk).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        let body = reply.to_string();
+        let answer = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        sock.write_all(answer.as_bytes()).await.unwrap();
+        let text = String::from_utf8_lossy(&buf).to_string();
+        text.lines().next().unwrap_or_default().to_string()
+    });
+    let app = TestApp::new()
+        .lane(LaneSpec::new("test-model", upstream_protocol, &base).provider("zai"))
+        .pool("p", &[(0, 1)])
+        .build();
+    let body = if ingress == "anthropic" {
+        anthropic_body()
+    } else {
+        openai_body()
+    };
+    let resp = forward_with_pool_keyed(
+        &app,
+        vec![crate::engine::WeightedLane {
+            reasoning: None,
+            idx: 0,
+            weight: 1,
+            attempt_timeout_ms: None,
+        }],
+        body,
+        None,
+        None,
+        "p",
+        None,
+        ingress,
+        crate::test_support::CHAT,
+        None,
+        crate::engine::ClientFwd {
+            headers: Vec::new(),
+            query: Some(query.to_string()),
+        },
+    )
+    .await;
+    let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
+    seen.await.unwrap()
+}
+
+/// A same-dialect hop sends the caller's query; a translated hop sends none.
+#[tokio::test]
+async fn a_same_dialect_hop_carries_the_callers_query() {
+    let same = request_line(
+        "openai",
+        crate::proto_codec::PROTO_OPENAI,
+        "trace=a%2Fb&beta=true",
+        openai_reply(),
+    )
+    .await;
+    assert!(
+        same.starts_with("POST /v1/chat/completions?trace=a%2Fb&beta=true "),
+        "{same}"
+    );
+    let crossed = request_line(
+        "anthropic",
+        crate::proto_codec::PROTO_OPENAI,
+        "beta=true",
+        openai_reply(),
+    )
+    .await;
+    assert!(
+        crossed.starts_with("POST /v1/chat/completions "),
+        "{crossed}"
+    );
+}
+
+// ── TENANT SELECTORS: set from busbar's config (OWNER 2026-10-02; ARCHITECT ruling 2) ───────────────
+
+/// One openai-family request through a lane of `protocol` whose provider config names `tenant`;
+/// the upstream's view of the two OpenAI tenant headers.
+async fn tenant_seen(
+    ingress: &'static str,
+    protocol: &'static str,
+    tenant: Option<(&str, &str)>,
+) -> (Option<String>, Option<String>) {
+    crate::testkit::install_test_seams();
+    let state = Arc::new(MockServerState::new());
+    let reply = if protocol == crate::proto_codec::PROTO_ANTHROPIC {
+        json!({ "content": [] })
+    } else {
+        openai_reply()
+    };
+    state.push(MockResponse::Ok {
+        status: StatusCode::OK,
+        body: reply,
+    });
+    let server = MockServer::new(state.clone()).await;
+    let mut lane = LaneSpec::new("test-model", protocol, &server.base_url()).provider("zai");
+    if let Some((org, project)) = tenant {
+        lane = lane.tenant(org, project);
+    }
+    let app = TestApp::new().lane(lane).pool("p", &[(0, 1)]).build();
+    let body = if ingress == "anthropic" {
+        anthropic_body()
+    } else {
+        openai_body()
+    };
+    drive(
+        &app,
+        ingress,
+        body,
+        collect(&[
+            ("openai-organization", "org-caller"),
+            ("openai-project", "proj-caller"),
+        ]),
+    )
+    .await;
+    let seen = (
+        state.get_last_request_header("openai-organization"),
+        state.get_last_request_header("openai-project"),
+    );
+    server.shutdown().await;
+    seen
+}
+
+/// The provider's configured tenant goes upstream, on a same-dialect and a translated route alike,
+/// and the caller's never does; with none configured none is sent (1.5.5's bytes); a dialect that
+/// declares no tenant selector gets none.
+#[tokio::test]
+async fn the_tenant_comes_from_config_never_from_the_caller() {
+    let configured = (Some("org-cfg".to_string()), Some("proj-cfg".to_string()));
+    assert_eq!(
+        tenant_seen(
+            "openai",
+            crate::proto_codec::PROTO_OPENAI,
+            Some(("org-cfg", "proj-cfg"))
+        )
+        .await,
+        configured
+    );
+    assert_eq!(
+        tenant_seen(
+            "anthropic",
+            crate::proto_codec::PROTO_OPENAI,
+            Some(("org-cfg", "proj-cfg"))
+        )
+        .await,
+        configured
+    );
+    assert_eq!(
+        tenant_seen("openai", crate::proto_codec::PROTO_OPENAI, None).await,
+        (None, None)
+    );
+    assert_eq!(
+        tenant_seen(
+            "anthropic",
+            crate::proto_codec::PROTO_ANTHROPIC,
+            Some(("org-cfg", "proj-cfg"))
+        )
+        .await,
+        (None, None)
+    );
 }

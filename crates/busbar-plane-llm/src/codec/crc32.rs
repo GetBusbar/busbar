@@ -5,7 +5,8 @@
 //! CRC-32/ISO-HDLC checksum the AWS event-stream framing stamps on every prelude and message — the
 //! reflected polynomial `0xEDB88320`, initial value and final XOR `0xFFFFFFFF`. A 256-entry table
 //! built at compile time and one table step per byte. The frames it covers are single stream events
-//! (a few hundred bytes), so the byte-at-a-time loop is not on a measurable path.
+//! (a few hundred bytes), so the byte-at-a-time loop is not on a measurable path once the table
+//! is read in place (see [`TABLE`]).
 //!
 //! The standard check vectors are pinned beside this module, and the event-stream drift test holds
 //! every frame this plane encodes byte-identical to the host's encoder.
@@ -13,8 +14,10 @@
 /// The reflected CRC-32 polynomial.
 const POLY: u32 = 0xEDB8_8320;
 
-/// One table entry per byte value: the CRC of that byte alone, before the final XOR.
-const TABLE: [u32; 256] = {
+/// One table entry per byte value: the CRC of that byte alone, before the final XOR. A `static`,
+/// not a `const`: an unoptimized build materializes a `const` array at every use, so indexing a
+/// `const` table copied all 1 KiB of it once per byte hashed.
+static TABLE: [u32; 256] = {
     let mut table = [0u32; 256];
     let mut i = 0;
     while i < 256 {

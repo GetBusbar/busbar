@@ -119,6 +119,7 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         blocked_metadata_hosts: _,
         allow_metadata_hosts: _,
         allow_all_metadata: _,
+        guard: _,
         upstream_credentials: _,
         // The configured plane section NAMES (Law 7): `&'static str` keys, no credential.
         plane_sections: _,
@@ -186,34 +187,17 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
     // alternative is a deployment that boots, advertises a JWKS, and fails on the first token
     // request of the day with a secret module error.
     //
-    // Destructured EXHAUSTIVELY rather than read through `identity.signing_key()`, because the
-    // accessor would keep compiling on the day a second `SecretRef` is added to the validated
-    // identity, and that second secret would then be one `--validate` calls fine and the process
-    // fails on at runtime. Everything below `signing_key` is a derived endpoint path or a policy
-    // number, and none of them can ever carry a credential — but each is named here so that
-    // ADDING one is a compile error somebody has to answer.
-    if let Some(identity) = oauth_as {
-        let crate::oauth_as::config::AsIdentity {
-            signing_key,
-            // The issuer and the eight paths derived from it. Public by construction: every one of
-            // them is published in the RFC 8414 metadata document.
-            issuer: _,
-            issuer_path: _,
-            metadata_path: _,
-            authorize_path: _,
-            token_path: _,
-            register_path: _,
-            jwks_path: _,
-            consent_path: _,
-            // Policy, not credential: the scope ceiling, the token lifetime, and the advisory
-            // `kid` that appears in every published JWKS entry.
-            default_grant: _,
-            access_token_ttl: _,
-            key_id: _,
-        } = identity;
-        if let Some(key) = signing_key {
-            refs.push(("oauth_as.signing_key".to_string(), key));
-        }
+    // The `oauth_as:` block is OPAQUE to the kernel: its owner (`busbar-core-oauth2`) lists the
+    // references it carries (`resolve` kept them on the accepted block), walking its validated
+    // identity with an exhaustive destructure there, so a new secret-bearing field is a compile
+    // error in that crate.
+    // Destructured exhaustively, so a field added to the accepted block is a compile error here.
+    if let Some(crate::oauth_as::seam::CheckedAsBlock {
+        block: _,
+        secret_refs,
+    }) = oauth_as
+    {
+        refs.extend(secret_refs.iter().map(|(path, key)| (path.clone(), key)));
     }
 
     for (name, p) in providers {
@@ -227,6 +211,8 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
             error_map: _,
             path: _,
             path_base: _,
+            organization: _,
+            project: _,
             token_url: _,
             scope: _,
             subject: _,
@@ -427,13 +413,21 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     // whoever holds it forges every token this deployment will ever issue. Reached from `RootCfg`
     // through `oauth_as`, which is the VALIDATED identity, which is why that type carries the
     // reference verbatim rather than consuming it at `resolve` time.
-    ("AsIdentity", SecretBearing::Walked),
+    ("CheckedAsBlock", SecretBearing::Walked),
+    (
+        "AsIdentity",
+        SecretBearing::NotInResolvedConfig(
+            "the `oauth_as:` block is OPAQUE in `RootCfg`: the kernel hands it to its owner through \
+             the seam's `check`, and `busbar-core-oauth2` walks this type with an exhaustive \
+             destructure (`config::secret_refs`), so a new secret field there is a compile error.",
+        ),
+    ),
     (
         "OauthAsCfg",
         SecretBearing::NotInResolvedConfig(
-            "the DESERIALIZE-side `oauth_as:` block. `resolve` lowers it into `AsIdentity`, which \
-             IS walked, and every `--validate`/boot check runs against the RESOLVED config. Same \
-             shape as any endpoint plane's `resolve`-lowered resource, and the same reason.",
+            "the DESERIALIZE-side `oauth_as:` block. `busbar-core-oauth2` lowers it into \
+             `AsIdentity` and walks that, and `resolve` runs that owner check on every \
+             `--validate`/boot, so the block is covered without the kernel naming this type.",
         ),
     ),
     (

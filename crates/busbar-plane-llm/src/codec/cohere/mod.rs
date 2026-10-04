@@ -300,6 +300,74 @@ const SOURCES: &str = "sources";
 /// The cohere wire word `strict_tools`, spelled once.
 const STRICT_TOOLS: &str = "strict_tools";
 
+/// The Cohere v2 request content grammar (`codec::drops`). A part of any other kind does not cross
+/// a translate attempt, which names it.
+const REQUEST_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["messages[]", "content[]"],
+    tag: Some(keys::TYPE),
+    modelled: &[keys::TEXT, keys::IMAGE_URL, keys::DOCUMENT, keys::THINKING],
+    companions: &[],
+}];
+
+/// The Cohere v2 answer content grammar.
+/// How this dialect spells each IR content-block kind (a dropped block's warn names it so).
+const IR_BLOCK_KINDS: &[(&str, &str)] = &[
+    (crate::codec::drops::kind::TEXT, "type=text"),
+    (crate::codec::drops::kind::IMAGE, "type=image_url"),
+    (crate::codec::drops::kind::DOCUMENT, "type=document"),
+    (crate::codec::drops::kind::THINKING, "type=thinking"),
+];
+
+/// The IR request members the reader carries by code from a path no map-file row names (how a drop
+/// of one is named by the caller's wire path).
+const REQUEST_CODE_NAMES: &[(&str, &str)] = &[
+    (crate::codec::drops::name::REASONING, keys::THINKING),
+    (
+        crate::codec::drops::name::THINKING_BUDGET,
+        "thinking.token_budget",
+    ),
+];
+
+/// The IR request members the reader never sets.
+// No candidate count, cache marks, parallel-call switch, metadata, top-logprob count, output
+// modalities or service tier.
+const UNREAD: &[&str] = &[
+    crate::codec::drops::name::N,
+    crate::codec::drops::name::CACHE_CONTROL,
+    crate::codec::drops::name::PARALLEL_TOOL_CALLS,
+    crate::codec::drops::name::METADATA,
+    crate::codec::drops::name::TOP_LOGPROBS,
+    crate::codec::drops::name::OUTPUT_MODALITIES,
+    crate::codec::drops::name::SERVICE_TIER,
+];
+
+const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
+    at: &["message", "content[]"],
+    tag: Some(keys::TYPE),
+    modelled: &[keys::TEXT, keys::THINKING],
+    companions: &[],
+}];
+
+/// The Cohere reader parks nothing beyond the members its map file does not model (what it
+/// promotes, it takes back out of `extra`).
+const PARKED: &[crate::codec::drops::Parked] = &[];
+
+/// What this dialect's answers carry beyond its map file's rows (the drop walk, design F3 "Drops").
+// The prompt-cache hit count is read into the usage; the serving model is read beside the id.
+const RESPONSE_CODE: &[&str] = &["usage.cached_tokens", "model"];
+const STREAM_CODE: &[&str] = &[];
+
+/// The answer paths INSIDE a subtree this dialect carries that its code does not carry, named by the
+/// drop walk (DF-MAP-IR-GAPS section E: its A, B and C paths that a coarse map row covers).
+const RESPONSE_DROPS: &[&str] = &[
+    "message.citations[].content_index",
+    "message.citations[].sources[].type=tool.tool_output",
+];
+const STREAM_DROPS: &[&str] = &[
+    "type=citation-start.delta.message.citations.content_index",
+    "type=citation-start.delta.message.citations.sources[].type=tool.tool_output",
+];
+
 /// The cohere wire word `texts`, spelled once.
 const TEXTS: &str = "texts";
 
@@ -513,17 +581,17 @@ fn write_cohere_reasoning(
     table: [u32; 4],
 ) -> serde_json::Value {
     match ask {
-        // IR-09: matched FIRST — `to_budget` gives `Off` 0, which as an enable ask would invert
-        // the caller's meaning.
+        // IR-09: matched FIRST — `Off` is a disable ask, never an enable with a budget.
         crate::codec::ir::IrReasoningAsk::Off => {
             serde_json::json!({ (keys::TYPE): keys::DISABLED })
         }
-        crate::codec::ir::IrReasoningAsk::Dynamic => {
-            serde_json::json!({ (keys::TYPE): keys::ENABLED })
-        }
-        other => {
-            serde_json::json!({ (keys::TYPE): keys::ENABLED, (TOKEN_BUDGET): other.to_budget(table) })
-        }
+        // `Dynamic` has no table entry: it is Cohere's own budget-less enable.
+        other => match other.to_budget(table) {
+            Some(budget) => {
+                serde_json::json!({ (keys::TYPE): keys::ENABLED, (TOKEN_BUDGET): budget })
+            }
+            None => serde_json::json!({ (keys::TYPE): keys::ENABLED }),
+        },
     }
 }
 
@@ -608,8 +676,10 @@ fn read_cohere_image_detail(
     let word = image_url?.get(keys::DETAIL)?.as_str()?;
     let detail = crate::codec::ir::IrImageDetail::parse(word);
     if detail.is_none() {
-        tracing::warn!(
-            detail = %word,
+        crate::codec::drops::writer_drop!(
+            crate::codec::drops::wire("messages[].content[].image_url.detail"),
+            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+            [detail = %word,],
             "cohere: dropping an unknown image_url.detail word (not auto/low/high)"
         );
     }
@@ -1206,3 +1276,12 @@ mod ir_mapping_tests;
 #[cfg(test)]
 #[path = "tests/ir_round3_tests.rs"]
 mod ir_round3_tests;
+
+#[cfg(test)]
+#[path = "tests/usage_census_tests.rs"]
+mod usage_census_tests;
+
+/// DF-MAP audit: the answer slots on the Cohere wire, and the cache-read count row.
+#[cfg(test)]
+#[path = "tests/df_map_audit_tests.rs"]
+mod df_map_audit_tests;

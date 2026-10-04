@@ -43,7 +43,6 @@ busbar-core-connector = { path = "../busbar-core-connector" }
 # into the fixed-width `reason_hash` the dated rate-card history seals (the same SHA-256 the substrate
 # signs with). These are the composition root's, used only by the admin verb's effect half.
 serde_json = { workspace = true }
-sha2 = { workspace = true }
 hex = { workspace = true }
 # The deployment keyset (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13): `root::keyset` mints the one
 # ed25519 seed that signs the audit chain and the ledger's checkpoints from the OS CSPRNG.
@@ -62,6 +61,9 @@ ed25519-dalek = { workspace = true }
 # protocol and watch it refuse that protocol's config rather than serve it
 # (scripts/proto-deletion-gate.sh). Default-on: the shipped binary speaks both.
 busbar-llm = { path = "../busbar-llm", optional = true }
+# THE LLM PLANE, through its memory-ABI door: the edge the development-only `llm-on-driver` switch
+# carries (see that feature). Off by default: the `proto-llm` row serves llm until the flip.
+busbar-plane-llm = { path = "../busbar-plane-llm", optional = true }
 busbar-mcp = { path = "../busbar-mcp", optional = true }
 # THE A2A PLANE-KIND SHELL (step 3.B.0 of the plane split). Empty crate so far (see its `src/lib.rs`)
 # — nothing in `main.rs` names it and `plane-a2a` below is not in `default`, so this edge is inert
@@ -86,10 +88,9 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 # provisioning have somewhere to live that is not a unit and not a plane.
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 busbar-contract = { path = "../busbar-contract" }
-# The eight kernel workflow crates (#36).
+# The seven kernel workflow crates (#36).
 busbar-kernel-identity = { path = "../busbar-kernel-identity", features = ["sha256"] }
 busbar-kernel-scope = { path = "../busbar-kernel-scope" }
-busbar-kernel-budget = { path = "../busbar-kernel-budget" }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
@@ -117,6 +118,15 @@ busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
 # THE DEFAULT STORE (`governance.store: memory`), linked in every build through the `stores` axis —
 # the same row a dropped-in store takes, opened in process. The kernel names no store.
 busbar-store-memory = { path = "../store-memory" }
+# THE SECRET SOURCES (`{ env: VAR }`, `{ file: PATH }`), linked in every build through the
+# `secret-doors` axis (THE DESIGN, "Plugins": env and file secrets are ordinary plugins, linked in
+# the default build; ARCHITECT 2026-10-02 WIRE-SECRET) and loaded through the one loader only when a
+# reference names one.
+# They live in their own repos (GetBusbar/busbar-secret-env, GetBusbar/busbar-secret-file) and are
+# pulled at a PINNED rev; the workspace `[patch]` points the busbar crate they name at this tree.
+# The kernel names neither.
+busbar-secret-env = { workspace = true }
+busbar-secret-file = { workspace = true }
 # THE RANKING HOOKS (`cheapest`/`fastest`/`least_busy`/`usage`), linked through the `hooks` axis
 # under `hooks-ranking` — one row, the strategy spellings its aliases. The kernel names no hook.
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
@@ -158,7 +168,7 @@ busbar-transport-http = { workspace = true }
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
 # exact leak `cargo xtask gate duplex-ws-default-edge` exists to catch. `plane-streaming` carries the edge.
-busbar-transport-ws = { path = "../busbar-transport-ws", optional = true }
+busbar-transport-ws = { workspace = true, optional = true }
 busbar-transport-stdio = { path = "../busbar-transport-stdio" }
 # The root's card is SWAPPED by a live config apply and PINNED by every unit that prices against it,
 # which is one atomic store against many lock-free readers — the same shape, and the same crate, the
@@ -178,6 +188,8 @@ tracing = { workspace = true }
 # THE COLLECTOR EGRESS POLICY (`root::otlp`, K9e-2): the OTLP endpoint guard, which the host's egress
 # carrier holds a sink that declares `collector` to, parses the target as a URL.
 url = { workspace = true }
+# Selects `idna`'s unicode-rs backend for every `url` in the binary (see the workspace row).
+idna_adapter = { workspace = true }
 metrics = { workspace = true }
 serde_yaml = { workspace = true }
 # THE THREAD-PER-CORE BOOT SEAM — the one unix data-plane topology (non-unix keeps the classic
@@ -262,6 +274,22 @@ transport-tcp = []
 # differently either way — which is what keeps the neutrality cells answering the same on both
 # legs, and is why this ships on rather than waiting for a golden it could never move.
 plane-decisions = ["dep:busbar-plane-decisions"]
+# THE DECISIONS PLANE THROUGH ITS DOOR, the plane's development-only switch (BUSBAR-1.6.0.md Part 3
+# section 12, "The switch": a development-only cargo feature flips a plane onto the driver during its
+# fold and is deleted when the fold completes). Never in `default`. On, the plane's memory-ABI door
+# (`busbar_plane_decisions::plane_door::door`) is a `plane-door` row: the root hands it to the loader
+# beside every dropped-in plane door and binds it through the one load on the one dispatcher, so the
+# compiled-in plane is called through the same table as its dropped-in cdylib (#2, #30; THE DESIGN
+# section 11.4). It carries `plane-decisions`, which keeps the crate edge and the `decisions:` key's
+# owner.
+plane-decisions-door = ["plane-decisions"]
+# THE LLM PLANE THROUGH ITS DOOR, the llm fold's development-only switch (BUSBAR-1.6.0.md Part 3
+# section 12, "The switch"; deleted when the llm fold completes). Never in `default`. On, the plane's
+# memory-ABI door (`busbar_plane_llm::plane_door::door`) is a `plane-door` row, bound through the
+# loader's one load beside every dropped-in plane door, the same table as its dropped-in cdylib
+# (#2, #30; THE DESIGN section 11.4). It carries `proto-llm`, whose row stays linked and answers
+# every arrival the serve path does not hand the door.
+llm-on-driver = ["proto-llm", "dep:busbar-plane-llm"]
 # THE REQUEST-LOG FILE SINK, DEFAULT ON: the `busbar-export-file` crate on the export axis. Off, the
 # module resolves only when a signed tarball of the sink is dropped into `plugins/`.
 export-file = ["dep:busbar-export-file"]
@@ -334,6 +362,10 @@ auth-admin-tokens = "busbar-auth-admin-tokens-plugin"
 # it) and the ranking hooks (under their feature).
 store-memory = "busbar-store-memory"
 hooks-ranking = "busbar-hooks-ranking"
+# THE SECRET AXIS: the env and file sources, required dependencies (every build links them; the key
+# names the row). Each is loaded only when a reference names it.
+secret-env = "busbar-secret-env"
+secret-file = "busbar-secret-file"
 # THE TRANSPORT AXIS (#3, #30): the wires this build links, one row each, folded bottom-up by the boot
 # seal. A row whose crate is a required dependency is linked in every build (its key names the row);
 # `ws` rides its optional edge. Rows share a crate where one crate carries several wires.
@@ -343,6 +375,10 @@ transport-sse = "busbar-transport-http"
 transport-ws = "busbar-transport-ws"
 transport-grpc = "busbar-transport-http"
 transport-stdio = "busbar-transport-stdio"
+# THE PLANE DOOR AXIS (#2, THE DESIGN section 11.4): a plane's memory-ABI `door`, bound through the
+# loader's one load beside the dropped-in plane doors.
+plane-decisions-door = "busbar-plane-decisions"
+llm-on-driver = "busbar-plane-llm"
 
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
 # kernel-side), `protocols`, `path-ingress`, `body-ingress`, `protocol-seams`, `diagnostics`,
@@ -354,7 +390,11 @@ transport-stdio = "busbar-transport-stdio"
 # `node`: the entry's `install_node`, handed the node a root unit drives the entry's units through.
 # `transport`: a wire's `KEY`, `COMPOSES_OVER` and `build(lower, &TransportSettings)`.
 # `stores` / `hooks`: an in-process store's `STORE` and a ranking row's `HOOK` (`root::linked`).
-# `auths`: a `kind: auth` plugin's SDK boundary (`BUSBAR_COLD_ENTRY`), under its `linked-name` key.
+# `auths`: a `kind: auth` plugin's memory-ABI door (`<entry>::door::door`, the one its dropped-in
+# build exports), under its `linked-name` key.
+# `plane-door`: a plane's memory-ABI `door`, bound through the loader's one load (`root::linked`).
+# `secret-doors`: a `kind: secret` plugin's memory-ABI `door`.
+# `export-doors`: a memory-ABI `kind: export` sink's `NAME`, `ALIAS`, `DECLARES` and `door`.
 [package.metadata.busbar.linked-axes]
 proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams diagnostics on-host cli-help node gauntlet-one-shot"
 plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
@@ -363,17 +403,23 @@ plane-streaming = "plane claims diagnostics ws-arrivals compose gauntlet-session
 plane-decisions = "plane claims"
 export-file = "exports"
 export-webhook = "exports"
-export-prometheus = "exports"
-export-otlp = "exports"
+export-prometheus = "export-doors"
+export-otlp = "export-doors"
 auth-admin-tokens = "auths"
 store-memory = "stores"
 hooks-ranking = "hooks"
+secret-env = "secret-doors"
+secret-file = "secret-doors"
 transport-tcp = "transport transport-door"
-transport-http = "transport"
+# `connector-door`: the http framer's door is opened on the root's one Connector, so an export
+# sink's outbound `http` need is served compiled-in; the wire the registry folds keeps its build.
+transport-http = "transport connector-door"
 transport-sse = "transport"
 transport-ws = "transport"
 transport-grpc = "transport"
 transport-stdio = "transport"
+plane-decisions-door = "plane-door"
+llm-on-driver = "plane-door"
 
 # A linked crate whose entry module is not `<crate>::linked`: the decisions plane is a PURE plane
 # crate whose manifest names `busbar-contract` and nothing else (#40), so its kernel-typed hooks are
@@ -383,8 +429,17 @@ busbar-plane-decisions = "crate::root::plane_decisions"
 # One crate, several wires: each row past the crate's own `linked` names its entry.
 transport-sse = "busbar_transport_http::linked::sse"
 transport-grpc = "busbar_transport_http::linked::grpc"
-# An auth plugin's boundary is the SDK's, at its crate root.
+# A secret plugin's door is its `door` module's.
+busbar-secret-env = "busbar_secret_env::door"
+busbar-secret-file = "busbar_secret_file::door"
+# An auth plugin's entry is its crate root; its memory-ABI door is `<entry>::door::door`.
 busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
+# A plane door row's entry is the module that exports its `door`.
+plane-decisions-door = "busbar_plane_decisions::plane_door"
+llm-on-driver = "busbar_plane_llm::plane_door"
+# A memory-ABI export sink's door is its logic crate's `door` module's (`plugin_door!`).
+busbar-export-prometheus = "busbar_export_prometheus::door"
+busbar-export-otlp = "busbar_export_otlp::door"
 
 # The key an `auths` row answers on the auth axis — the name its signed tarball's manifest states.
 [package.metadata.busbar.linked-name]
@@ -408,6 +463,8 @@ plane-decisions = "plane_decisions"
 proto-llm = "plane_node"
 
 [dev-dependencies]
+# Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
+sha2 = { workspace = true }
 # root_listeners_are_the_connectors.rs: the TLS data door's certificate, generated per run.
 rcgen = { workspace = true, features = ["pem"] }
 # The loop-unify shadow-compare test (`root::gauntlet_kernel`) implements a deterministic
@@ -426,6 +483,12 @@ busbar-kernel = { path = "../busbar-kernel", features = ["test-support"] }
 # The amendment-chain verify test edits the held journal in memory (`tamper_node_for_test`), which the
 # audit crate exposes to a dependent's tests only behind this feature.
 busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-support"] }
+# THE STORE ADAPTER'S MINTED-TOKEN SEAMS (`tests/store_adapter_verb_seam.rs`, ARCHITECT C4B-1): the
+# loader's fake-call store harness and oracle-cache locator are `test-support` only, and the store
+# proof the harness loads is the memory store's cold door, built here with the door on (a scoped
+# `cargo test -p busbar` would otherwise build the shipped store without it).
+busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }
+busbar-store-memory = { path = "../store-memory", features = ["cold-dropped-in"] }
 # THE EQUIVALENCE PROOF CALLS THE ADMIN READ RATHER THAN REPRODUCING IT.
 # `tests/money_one_function_equivalence.rs` runs every implementation of `money = f(ledger, card)`
 # side by side, and `GET /api/v1/admin/usage` is one of them. Its three derivations are crate-private
@@ -482,9 +545,10 @@ busbar-auth-oidc = { workspace = true, features = ["testkit"] }
 # single-plane build) would not compile the test; the test's edge is its own, unconditional here.
 tower = { workspace = true, features = ["util"] }
 # The `traces` stream's both-doors proof (`tests/traces_stream_both_doors.rs`, K9a S7 + K9e-2): the
-# OTLP sink's repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-otlp` edge above —
-# its linked row and its dropped-in library both fed the kernel's traces producer, both posting to a
-# local collector — and the subscriber that test installs the producer under.
+# OTLP sink's repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-otlp` edge above
+# — the shipped binary links the sink's door and has its dropped-in library in `plugins/`, both
+# posting to a local collector. `tests/boot_lines_neutrality.rs` reads the boot's lines through the
+# subscriber.
 busbar-export-otlp-plugin = { workspace = true }
 tracing-subscriber = { workspace = true }
 # What that test and `tests/export_otlp_delivers_spans.rs` (the shipped binary posting to a local
@@ -519,3 +583,44 @@ crate-type = ["cdylib"]
 [[bench]]
 name = "hook_path"
 harness = false
+
+# The linked door this binary proves is the export axis's optional edge; without the feature there is
+# no linked row to prove, so the target is not built.
+[[test]]
+name = "traces_stream_both_doors"
+path = "tests/traces_stream_both_doors.rs"
+required-features = ["export-otlp"]
+
+# These three boot the real binary on a config that names an admin token (the 1.5.5 shape). Without
+# the operator credential's linked row that config is a boot refusal (BUSBAR-9007), so the targets
+# are built only with the feature that answers it.
+[[test]]
+name = "boot_lines_neutrality"
+path = "tests/boot_lines_neutrality.rs"
+required-features = ["auth-admin-tokens"]
+
+[[test]]
+name = "no_data_dir_neutrality"
+path = "tests/no_data_dir_neutrality.rs"
+required-features = ["auth-admin-tokens"]
+
+[[test]]
+name = "root_listeners_are_the_connectors"
+path = "tests/root_listeners_are_the_connectors.rs"
+required-features = ["auth-admin-tokens"]
+[package.metadata.busbar.legacy]
+# THE ROOT LEGACY TABLE (BUSBAR-1.6.0.md §2), @generated from plugins.yaml (`legacy:` and each
+# entry's `retired:`); src/root/tests/legacy.rs is red on an edit and prints the render to paste.
+# build.rs emits it as `LEGACY_ROWS`, which the root hands to the kernel before any config is read.
+"gov14_busy_timeout_key" = "sqlite_busy_timeout_ms"
+"gov14_change" = "governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)"
+"gov14_db_path" = "busbar-governance.db"
+"gov14_module" = "sqlite"
+"module_examples" = "sqlite | postgres | valkey"
+"renamed_display" = "Valkey"
+"retired_url_scheme" = "redis"
+"retired.store.redis" = "valkey"
+"retired.store.busbar-store-redis" = "valkey"
+"retired.store.busbar-store-redis-plugin" = "valkey"
+"manifest.valkey" = "busbar-store-valkey"
+"asset.valkey" = "busbar-store-valkey"

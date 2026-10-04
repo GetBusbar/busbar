@@ -29,8 +29,8 @@ path = "src/lib.rs"
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
 # One-way: this crate reads `busbar-kernel`'s `TlsCfg` config shape and its `SecretResolver` seam
-# (the "secret kind" — the one place a `SecretRef` is turned into bytes), and joins the kernel's one
-# destination judge (`KernelServices`, its per-class rules) behind the dial judge (`process`);
+# (the "secret kind" — the one place a `SecretRef` is turned into bytes), reads its `Destinations`
+# config and implements its `DestJudge` trait with the one destination guard (`guard`, `process`);
 # `busbar-kernel` names nothing here.
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 rustls = { workspace = true }
@@ -45,7 +45,6 @@ tokio-util = { workspace = true }
 # the SHA-256 an SPKI pin is compared under. Both moved here with the outbound trust itself, which a
 # transport no longer holds (TRANSPORT-STACK: TLS is core's connection security).
 webpki-roots = { workspace = true }
-sha2 = { workspace = true }
 # The host's UDP port (`udp`): a non-blocking datagram socket built without a runtime.
 socket2 = { workspace = true }
 # The dtls engine (`dtls`): dimpl for the DTLS state machine, run on ring through the engine's own
@@ -69,6 +68,8 @@ libc = { workspace = true }
 
 
 [dev-dependencies]
+# Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
+sha2 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
 # THE UNIVERSAL-NEEDS WITNESS (tests/universal_needs.rs, its only user): the fixture below is loaded
 # dropped in through the real admission, scan and open, never a host written for the test. Dev-only.
@@ -76,6 +77,13 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 serde_json = { workspace = true }
 # The tls tests write the minted cert and key as PEM; the shipped dtls engine mints DER only.
 rcgen = { workspace = true, features = ["pem"] }
+# THE DOOR THE WITNESS DRIVES, dropped in: the tcp transport repo's cdylib (the socket framer), at
+# the rev the workspace pins, built under `deps/` by this edge and found by what it states, never by
+# name. Dev-only; the wires' own both-doors conformance lives in their repos. The http repo's cdylib
+# is not an edge here: its closure reaches a socket stack (hyper-util, socket2, tokio net) that
+# qa/dep-wall.ledger does not pin for it, and a new offender is never pinned in the change that
+# brings it in.
+busbar-transport-tcp-plugin = { workspace = true }
 
 # THE UNIVERSAL-NEEDS FIXTURE: a secret-kind plugin that declares one outbound need and dials through
 # the connection table. A cargo example, built by `cargo test` as a cdylib — a fixture, never a

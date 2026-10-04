@@ -358,12 +358,12 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "kind_restart_default_matches_binding_lifecycle", "kind_restart_default per plugin kind"),
     ]),
     ("PB-64", &[
-        ("test", "next_refresh_never_sleeps_past_a_live_token_expiry", "REFRESH_SKEW_SECS and MIN_SLEEP_SECS"),
+        ("test", "crates/busbar-kernel/src/egress_auth/tests/bearer_token_tests.rs::next_refresh_never_sleeps_past_a_live_token_expiry", "REFRESH_SKEW_SECS and MIN_SLEEP_SECS"),
         ("test", "headers_for_emits_nothing_before_first_mint", "no header before the first mint"),
         ("test", "is_ready_false_before_first_mint_true_after", "is_ready is false pre-mint so the prober skips the lane"),
         ("test", "cached_token_new_omits_header_for_bytes_invalid_in_a_header_value", "an unencodable credential omits the header"),
         ("test", "headers_for_reflects_prebuilt_header_after_a_refresh", "the header is built once at mint"),
-        ("test", "token_response_tolerates_expires_in_as_number_string_or_absent", "expires_in defaults to 3600"),
+        ("test", "crates/busbar-kernel/src/egress_auth/tests/oauth_client_credentials_tests.rs::token_response_tolerates_expires_in_as_number_string_or_absent", "expires_in defaults to 3600"),
     ]),
     ("PB-65", &[
         ("test", "test_auth_headers_valid_key_emits_x_goog_api_key", "the x-goog-api-key header name"),
@@ -464,9 +464,9 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "test_escalating_cooldown_on_repeated_trips", "cooldown escalates with the streak"),
     ]),
     ("PB-81", &[
-        ("test", "hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline", "the MAX_INFLIGHT_HOOK_CALLS cap"),
-        ("test", "dlopen_slow_gate_hits_the_deadline", "call_bounded cuts a slow gate at its budget"),
-        ("test", "dlopen_plugin_panic_is_fail_closed_err", "a panicking plugin is a fail-closed error"),
+        ("test", "the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_resolve_one", "a saturated hook fails on the caller's deadline, never waits out the wedge, and serves again once its calls drain"),
+        ("test", "dlopen_slow_gate_hits_the_deadline", "the call budget cuts a slow gate off promptly, an error on_error decides (R1: one of the two 1.5.5 timeout tests)"),
+        ("test", "a_panicking_hook_is_broken_through_the_axis_never_a_verdict", "a panicking plugin is a fail-closed error"),
         ("lint", "xtask/src/gates/blocking_ffi.rs", "every plugin transport call is made from a blocking context"),
     ]),
     ("PB-82", &[
@@ -535,8 +535,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "strip_same_proto_usage_fires_without_object_field", "the same-proto usage hide-back"),
     ]),
     ("PB-97", &[
-        ("test", "head_pristine_matches_translate_output", "head_provably_pristine re-emits the retained bytes"),
-        ("test", "non_object_body_is_head_pristine", "a non-object body is pristine"),
+        ("test", "a_same_dialect_hop_is_the_callers_bytes_with_governed_splices", "a same-dialect hop is the caller's bytes with the governed splices only"),
         ("test", "pristine_same_proto_is_byte_identical_body_model", "an unmodified same-dialect request reaches upstream byte-identical"),
         ("test", "pristine_same_proto_is_byte_identical_url_model", "same, with the model on the path"),
         ("test", "claude_on_vertex_drops_model_and_injects_anthropic_version", "the Claude-on-Vertex shim literal"),

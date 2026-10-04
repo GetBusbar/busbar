@@ -83,8 +83,9 @@ pub(crate) struct Sessions {
 struct Inner {
     /// session id -> (subject, when it expires)
     live: HashMap<String, (String, Instant)>,
-    /// session id -> the approvals staked for it, each `client_id\u{1f}scope`
-    staked: HashMap<String, Vec<String>>,
+    /// session id -> the decisions staked for it: each key (`client_id\u{1f}scope`, or
+    /// [`pushed_key`] for a pushed request) with `true` for an approval and `false` for a refusal.
+    staked: HashMap<String, Vec<(String, bool)>>,
 }
 
 /// The subject a session with no operator behind it reports.
@@ -129,28 +130,37 @@ impl Sessions {
             .map(|(s, _)| s.clone())
     }
 
-    /// Stake ONE approval for `key` against this session.
-    pub(crate) fn stake(&self, id: &str, key: String) {
+    /// Stake ONE decision for `key` against this session: `approve` true for an approval, false
+    /// for the operator's refusal (RFC 6749 s4.1.2.1 `access_denied`).
+    pub(crate) fn stake(&self, id: &str, key: String, approve: bool) {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         if inner.live.contains_key(id) {
-            inner.staked.entry(id.to_string()).or_default().push(key);
+            inner
+                .staked
+                .entry(id.to_string())
+                .or_default()
+                .push((key, approve));
         }
     }
 
-    /// SPEND an approval. `true` at most once per [`Sessions::stake`], which is the whole reason
-    /// this is not a `contains`.
-    fn spend(&self, id: &str, key: &str) -> bool {
+    /// Whether a decision is staked for `key`, WITHOUT spending it. The pushed-request gate in
+    /// `routes` asks this before it lets `/authorize` reach `oauth-as`, which spends the
+    /// `request_uri` on arrival.
+    pub(crate) fn is_staked(&self, id: &str, key: &str) -> bool {
+        let inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        inner
+            .staked
+            .get(id)
+            .is_some_and(|pending| pending.iter().any(|(k, _)| k == key))
+    }
+
+    /// SPEND a decision: `Some(approve)` at most once per [`Sessions::stake`], which is the whole
+    /// reason this is not a `contains`.
+    fn spend(&self, id: &str, key: &str) -> Option<bool> {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        let Some(pending) = inner.staked.get_mut(id) else {
-            return false;
-        };
-        match pending.iter().position(|k| k == key) {
-            Some(i) => {
-                pending.swap_remove(i);
-                true
-            }
-            None => false,
-        }
+        let pending = inner.staked.get_mut(id)?;
+        let i = pending.iter().position(|(k, _)| k == key)?;
+        Some(pending.swap_remove(i).1)
     }
 }
 
@@ -169,6 +179,29 @@ fn approval_key(client_id: &str, scope: &oauth_as::scope::ScopeSet) -> String {
             .collect::<Vec<_>>()
             .join(" ")
     )
+}
+
+/// What a decision on a PUSHED request (RFC 9126) is for: one client, one `request_uri`. The handle
+/// is single use and bound to the client that pushed it, so it names exactly one request, scope
+/// included; the scope is not in the authorization URL to key on. The `\u{1e}` keeps this key
+/// space apart from [`approval_key`]'s, whose scope tokens can never carry a control character.
+pub(crate) fn pushed_key(client_id: &str, request_uri: &str) -> String {
+    format!("{client_id}\u{1f}\u{1e}{request_uri}")
+}
+
+/// The key a decision on this authorization request is staked under: [`pushed_key`] when the
+/// request names a `request_uri`, [`approval_key`] otherwise.
+fn decision_key(request: &ApprovalRequest<'_>) -> String {
+    let request_uri = request.uri.query().and_then(|q| {
+        super::routes::form_urlencoded_pairs(q)
+            .into_iter()
+            .find(|(k, _)| k == "request_uri")
+            .map(|(_, v)| v)
+    });
+    match request_uri {
+        Some(handle) => pushed_key(request.client_id.as_str(), &handle),
+        None => approval_key(request.client_id.as_str(), request.scope),
+    }
 }
 
 /// The session id carried by a request, read out of the cookie header.
@@ -205,8 +238,8 @@ pub(crate) fn subject_resolver(
 /// log in BEFORE it is shown what it would be approving, because a consent screen that renders for
 /// an anonymous visitor is a phishing page this deployment hosts.
 ///
-/// NOTHING IS EVER REMEMBERED HERE. The two outcomes are `Approve` — for a staked, and now spent,
-/// approval — and the redirect that sends the operator to the screen; `ApproveAndRemember` is never
+/// NOTHING IS EVER REMEMBERED HERE. The outcomes are `Approve` or `Deny` — for a staked, and now
+/// spent, decision — and the redirect that sends the operator to the screen; `ApproveAndRemember` is never
 /// returned, so no `oauth_as::consent::ConsentRecord` is ever written and `request.remembered` is
 /// always `None`. That is what makes the one-shot spend above the ONLY thing standing between an
 /// authorization request and a code, which is the property this plane wants: every request is
@@ -223,11 +256,12 @@ pub(crate) fn approval_resolver(
         if request.subject == PENDING || sessions.subject(&id).is_none() {
             return redirect(&login_url, request);
         }
-        if sessions.spend(
-            &id,
-            &approval_key(request.client_id.as_str(), request.scope),
-        ) {
-            return ApprovalDecision::Approve;
+        match sessions.spend(&id, &decision_key(request)) {
+            Some(true) => return ApprovalDecision::Approve,
+            // The operator refused on the screen: RFC 6749 s4.1.2.1 `access_denied`, at the
+            // client's validated redirect URI.
+            Some(false) => return ApprovalDecision::Deny,
+            None => {}
         }
         // Logged in, nothing staked: this is the first time the operator has seen this request, so
         // send them to the screen that describes it. `Deny` here would refuse a legitimate first
@@ -244,10 +278,17 @@ pub(crate) fn approval_resolver(
 /// a URL a caller supplied, so echoing it is not an open redirect: it is percent-encoded into a
 /// query parameter of our own origin and is only ever used to rebuild a path on this host.
 fn redirect(login_url: &str, request: &ApprovalRequest<'_>) -> ApprovalDecision {
-    let target = format!(
-        "{login_url}?return={}",
-        percent_encode(&request.uri.to_string())
-    );
+    ApprovalDecision::Respond(Box::new(login_redirect(
+        login_url,
+        &request.uri.to_string(),
+    )))
+}
+
+/// The 302 to the consent screen for the authorization request at `target` (path and query on this
+/// origin). Shared by [`redirect`] and by the pushed-request gate in `routes`, which sends the
+/// browser to the same screen before `oauth-as` has seen the request.
+pub(crate) fn login_redirect(login_url: &str, target: &str) -> oauth_as::http::Response {
+    let target = format!("{login_url}?return={}", percent_encode(target));
     let response = http::Response::builder()
         .status(http::StatusCode::FOUND)
         .header(http::header::LOCATION, target)
@@ -256,7 +297,7 @@ fn redirect(login_url: &str, request: &ApprovalRequest<'_>) -> ApprovalDecision 
         .header(http::header::CACHE_CONTROL, "no-store")
         .body(oauth_as::http::Body::empty());
     match response {
-        Ok(r) => ApprovalDecision::Respond(Box::new(r)),
+        Ok(r) => r,
         // NOT unreachable. `login_url` is `AsIdentity::consent_url()` — `origin() + consent_path`,
         // built from the OPERATOR's own `issuer`. `AsIdentity::from_cfg` checks the issuer's SHAPE
         // (absolute, no `?`/`#`, no trailing slash) but never character-checks it, so a control
@@ -275,7 +316,7 @@ fn redirect(login_url: &str, request: &ApprovalRequest<'_>) -> ApprovalDecision 
                  failing closed with a 502 rather than answering access_denied on the operator's \
                  behalf"
             );
-            ApprovalDecision::Respond(Box::new(unencodable_login_redirect()))
+            unencodable_login_redirect()
         }
     }
 }

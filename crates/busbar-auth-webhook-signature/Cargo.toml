@@ -1,0 +1,38 @@
+[package]
+name = "busbar-auth-webhook-signature"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The webhook-signature auth mechanism: an inbound request authenticated by an HMAC over its URL (and, per variant, its parameters) keyed by a shared secret, as one auth-kind plugin on the auth kind's memory ABI. Variant `twilio`: X-Twilio-Signature."
+license = "Apache-2.0"
+
+# STAGED IN-TREE, as the other auth-kind plugins are (ARCHITECT ruling 2026-09-28, placement (B)):
+# its home is its own repo, and the extraction is a pure move; its only busbar edge is
+# `busbar-contract`.
+
+[lib]
+# rlib only: the LINKED door (`busbar_auth_webhook_signature::door`) and the tests. The DROPPED door
+# is `examples/webhook_signature_door.rs`, the same door behind the one exported symbol, so this
+# crate's own source stays `forbid(unsafe_code)` (SDK-SAFE).
+crate-type = ["rlib"]
+
+# DEPENDENCY POLICY. A plugin's closure is `busbar-contract` plus the third-party crates it needs to
+# do its job (owner ruling 2026-09-28, PLUGIN LIBRARIES): JSON settings, `ring`'s HMAC (SHA-1 for
+# `twilio`, SHA-256 for `standard-webhooks`) and SHA-256, and base64.
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+base64 = { workspace = true }
+ring = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# THE PLUGIN TESTS ITSELF: `tests/conformance.rs` loads the linked door AND the dropped-in image
+# through the real loader, through the same table.
+busbar-plugin-loader = { path = "../plugin-loader" }
+
+# THE DROPPED-IN IMAGE: the same door, exported through the one symbol, built by `cargo test`.
+[[example]]
+name = "webhook_signature_door"
+crate-type = ["cdylib"]

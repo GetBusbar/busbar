@@ -13,7 +13,6 @@ members = [
     "crates/busbar-kernel",
     "crates/busbar-kernel-identity",
     "crates/busbar-kernel-scope",
-    "crates/busbar-kernel-budget",
     "crates/busbar-kernel-ledger",
     "crates/busbar-kernel-egress",
     "crates/busbar-kernel-breaker",
@@ -29,8 +28,11 @@ members = [
     "crates/plane-example",
     "crates/hooks-ranking",
     "crates/store-memory",
-    "crates/busbar-transport-ws",
     "crates/busbar-transport-stdio",
+    "crates/busbar-auth-header",
+    "crates/busbar-auth-sigv4",
+    "crates/busbar-auth-oauth",
+    "crates/busbar-auth-webhook-signature",
     "testing/ws-conformance/subject",
     "xtask",
 ]
@@ -64,21 +66,35 @@ members = [
 # is the check — not a reviewer's eye.
 [workspace.dependencies]
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
-busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "47cb5047e4c9a73341c613c09a056b4a4bb8eb99" }
+busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "648b6683d0b9274c02a20f6da17146ba1b85f74c" }
 busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b" }
 busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b" }
 busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "795eadb866e5f9a98bc854b9697ae42a28a51e92" }
 busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "795eadb866e5f9a98bc854b9697ae42a28a51e92" }
-busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "02f463307f9820faedda131467dcfaa83b25df78" }
-busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "02f463307f9820faedda131467dcfaa83b25df78" }
-busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f" }
-busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "0e5e5a7da8bc5e5b6de3d916ef7e8f498653932f" }
+busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "b10cd35eaec72969ac2b40dea379194d655daca9" }
+busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "b10cd35eaec72969ac2b40dea379194d655daca9" }
+busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "1df4b10d12764fef89966b9c9bd007f5d481f6ed" }
+busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "1df4b10d12764fef89966b9c9bd007f5d481f6ed" }
+# THE SECRET SOURCES (THE DESIGN, "Plugins"; ARCHITECT 2026-10-02 WIRE-SECRET): `busbar` links each logic
+# crate's door on the secret axis; the kernel's test build stands their `resolve` in. One rev each.
+# The env source's logic crate is also the door the loader's secret conformance suite links; its cdylib
+# crate (`busbar-secret-env-plugin`, same repo) is NOT a dependency: it is built from this pinned
+# checkout by the build:dlopen-cdylibs step and dlopened.
+busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "495318c9fa50c42b28705208fd02e83e3f363312" }
+busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "479c833a108bc5d94e03f754b0a1b5f9ea97c0e3" }
+# The same two crates at the same revs, under the role the kernel's test build gives them (its
+# stand-in secret axis; a kernel source names no plugin). A rev bump moves both lines of its pair.
+fixture-secret-env = { package = "busbar-secret-env", git = "https://github.com/GetBusbar/busbar-secret-env", rev = "495318c9fa50c42b28705208fd02e83e3f363312" }
+fixture-secret-file = { package = "busbar-secret-file", git = "https://github.com/GetBusbar/busbar-secret-file", rev = "479c833a108bc5d94e03f754b0a1b5f9ea97c0e3" }
 # THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.
 busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
 # THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "17cfd311eb8f72340dc323f9947f0055a8b537bd" }
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "9e6bf2cdbe77e51968dd6e8df6a1eabe96c0a1c4" }
+# THE WS TRANSPORT: the websocket framer door (kind: transport), pulled at a pinned rev; the logic
+# crate the root links (behind plane-streaming) and the ws-conformance subject drives.
+busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "1c6a67f010728c96fe9041e41817fb69c8e4fd05" }
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
@@ -146,7 +162,6 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 futures = "0.3"
 getrandom = "0.3"
 hex = "0.4.3"
-hmac = "0.13.0"
 http = "1"
 http-body = "1"
 http-body-util = "0.1"
@@ -212,11 +227,28 @@ metrics-util = { version = "0.20.4", default-features = false }
 # off: busbar signs and verifies ES256 only, over `ring`, and `jwt-rsa` would pull the `rsa` crate
 # with its RUSTSEC-2023-0071 signing advisory into a tree that has no use for it. `test-util` (the
 # signer/storage conformance harnesses, dev-dependencies only) is likewise unrenamed.
+#
+# THE FAPI 2.0 SECURITY PROFILE BUILDING BLOCKS (1.6.0, owner ruling 2026-09-19: the code is built
+# to pass the OIDF suite). Each is used only under `oauth_as.fapi2: true`; none adds a crate to the
+# graph (`par = []`, `dpop` and `client-assertion` = `["jwt"]`, already on):
+#
+#   par                RFC 9126 pushed authorization requests: the `/par` endpoint and the
+#                      `require_pushed_authorization_requests` flag FAPI 2.0 s5.3.2.2-3 mandates.
+#   dpop               RFC 9449 sender-constrained tokens (`cnf.jkt`), FAPI 2.0 s5.3.4-2. Verified
+#                      by the ES256 verifier busbar already installs over `ring`.
+#   client-assertion   RFC 7523 `private_key_jwt`, the profile's client authentication.
+#
+# The plain posture's RFC 8414 document stays the bytes it was: the plane serves it with the
+# members these three add removed (`busbar_core_oauth2::plane`), so a deployment that did not ask
+# for the profile advertises none of it.
 oauth-as = { version = "1.0.0", features = [
     "http",
     "jwt",
     "consent",
     "resource-metadata",
+    "par",
+    "dpop",
+    "client-assertion",
 ] }
 # The OpenTelemetry project's own generated OTLP types, DEV-ONLY: the root's OTLP proofs decode what
 # the `otlp` sink (GetBusbar/busbar-export-otlp) posts with the proto's publisher's types, never with the
@@ -282,7 +314,11 @@ serde_urlencoded = "0.7"
 # `serde_yaml::from_str` call site unchanged. Renaming here states the substitution once for the
 # whole workspace instead of re-arguing it in each member.
 serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
-sha2 = "0.11.0"
+# 0.10, the line every dependency that carries RustCrypto ships (oauth-as, sha1 via axum/tungstenite).
+# busbar's own digests and MACs are on ring (the one crypto backend); sha2 stays only where ring
+# would be a new backend in a plugin's closure (busbar-contract) and as the independent witness the
+# tests compare ring's bytes against.
+sha2 = "0.10"
 smallvec = "1"
 # Raw socket options for the thread-per-core data plane: each per-worker listener sets SO_REUSEPORT
 # so the kernel load-balances connections across the per-worker `TcpListener`s. Binary-only boot seam;
@@ -359,6 +395,11 @@ tungstenite = { version = "0.29", default-features = false }
 # under reqwest's re-export alias, and the egress-symmetry sweep spells the dependency honestly.
 # Already in the lock (reqwest, a2a-lf and friends all resolve it).
 url = "2"
+# THE IDNA BACKEND SELECTOR `idna` itself documents: 1.1.x maps Unicode hostnames through the small
+# unicode-rs crates (unicode-normalization, unicode-bidi) instead of ICU4X's ~20-crate stack, which
+# `url` -> `idna` otherwise links into the binary only for this. UTS #46 processing is unchanged.
+# Pinned exactly: the selection is the version number. Declared by the binary crate (`busbar`).
+idna_adapter = "=1.1.0"
 zeroize = "1"
 
 # ── BUSBAR'S OWN CRATES, AS A PLUGIN REPO NAMES THEM ─────────────────────────────────────────────

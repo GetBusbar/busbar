@@ -98,6 +98,44 @@ pub(crate) const ROWS_TIER: &[Field] = &[
     row(&["service_tier"], Slot::ServiceTier, ValueCodec::Words(WORDS_SERVICE_TIER)).park(),
 ];
 
+/// The response wire paths this dialect carries (the drop walk's map).
+pub(crate) const RESPONSE_PATHS: &[&str] = &[
+    "id",
+    "type",
+    "role",
+    "model",
+    "content",
+    "stop_reason",
+    "stop_sequence",
+    "usage.input_tokens",
+    "usage.output_tokens",
+    "usage.cache_creation_input_tokens",
+    "usage.cache_read_input_tokens",
+    "usage.cache_creation.ephemeral_5m_input_tokens",
+    "usage.cache_creation.ephemeral_1h_input_tokens",
+    "usage.server_tool_use.web_search_requests",
+    "usage.service_tier",
+    "content[].type=web_search_tool_result",
+    "content[].type=web_search_tool_result.tool_use_id",
+    "content[].type=web_search_tool_result.content[].url",
+    "content[].type=web_search_tool_result.content[].title",
+    "content[].type=web_search_tool_result.content.error_code",
+];
+
+/// The stream wire paths this dialect carries (the drop walk's map).
+pub(crate) const STREAM_PATHS: &[&str] = &[
+    "type=message_start",
+    "type=content_block_start",
+    "type=content_block_delta.delta.type=text_delta",
+    "type=content_block_delta.delta.type=input_json_delta",
+    "type=content_block_delta.delta.type=thinking_delta",
+    "type=content_block_delta.delta.type=signature_delta",
+    "type=content_block_delta.delta.type=citations_delta",
+    "type=content_block_stop",
+    "type=message_delta",
+    "type=message_stop",
+];
+
 /// The request table, walked in order.
 pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_SAMPLING, ROWS_TIER, ROWS_BLOCKS];
 

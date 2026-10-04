@@ -23,8 +23,8 @@ use busbar_kernel::store::LaneRuntime;
 //
 // `set_data_workers`, `set_worker_id` and `UpstreamClients` are no longer re-exported: the
 // composition root's boot publish now targets `busbar_kernel::topology::…` directly, which left
-// the three `busbar_kernel::state::…` spellings with no caller at all bar one `engine_facade`
-// re-export line, itself repointed here. Nothing outside core names them.
+// the three `busbar_kernel::state::…` spellings with no caller at all. Nothing outside core names
+// them.
 pub use busbar_kernel::topology::{worker_stripe, worker_stripes};
 
 /// Re-export the neutral companion-slot key DERIVER: a plane's ALWAYS-PRESENT per-generation runtime
@@ -196,8 +196,8 @@ pub struct App {
     // the map goes unread in that config alone.
     #[allow(dead_code)]
     pub plane_rewrites: PlaneRewriteMap,
-    /// The plugin-resolution environment for hooks: the validated plugin registry + the shared
-    /// projectors. Threaded to the admin control-plane reads/writes (configure/status/schema) and the
+    /// The plugin-resolution environment for hooks: the validated plugin registry + the root's hook
+    /// axis over it. Threaded to the admin control-plane reads/writes (configure/status/schema) and the
     /// Prometheus scrape so they open a hook's `kind: hook` plugin the same way the request path's
     /// resolved transports did. Cheap to clone (Arc-backed). Replaces the retired webhook client the
     /// out-of-process transport needed.
@@ -312,18 +312,17 @@ pub struct App {
     pub idempotency_cache: Arc<
         std::sync::Mutex<std::collections::HashMap<(String, String), (u64, serde_json::Value)>>,
     >,
-    /// Config VERSION HISTORY — every successful config-plane mutation records its snapshot here.
-    /// Arc-shared across apply snapshots (survives every swap); bounded ring (see
-    /// `admin::versions`).
-    pub versions: Arc<crate::admin::versions::VersionLog>,
+    /// The admin side's state (the config VERSION HISTORY, typed and filled by the admin service),
+    /// behind the admin seam's one slot. Arc-shared across apply snapshots (survives every swap).
+    pub admin: Arc<crate::admin::seam::AdminSlot>,
     /// The ADMIN auth chain (`admin_auth:` module names, default: the operator credential) — executed by
     /// the auth middleware for `/admin` paths. Empty = the explicit OPEN admin posture (dev).
     pub admin_chain: Vec<String>,
     /// The RESOLVED admin auth modules — every `admin_auth:` entry opened through the auth kind's
     /// registry (1.5.2 admin-plane OIDC). Keyed by the config module name (the same string
     /// `admin_chain` names and `role_bindings.<module>` binds); the operator credential is held apart
-    /// (`AdminAuthChain::operator`), opened over its token's digest. `has_plugin` gates the
-    /// off-reactor offload of the admin chain (a plugin can do blocking JWKS/introspection I/O).
+    /// (`AdminAuthChain::operator`), opened over its token's digest. Each external module's call
+    /// is offloaded off the reactor (a plugin can do blocking JWKS/introspection I/O).
     /// Rebuilt on boot AND reload (`build_app_from_config`), Arc-shared so `App::clone` is cheap.
     pub admin_modules: Arc<crate::auth::AdminAuthChain>,
     /// The RESOLVED hosted-login methods (`auth.methods:`, 1.5.2) — each opened as a login
@@ -480,7 +479,7 @@ pub struct App {
     /// Lives on `App` (not a bare `static AtomicU64`) so it is Arc-shared like `store`/
     /// `probe_schedule`: a config apply's `(*current).clone()` and a REBUILD's carry-over from
     /// `prior` (`build_app_from_config`) both keep the SAME counter instance, so ids stay monotonic
-    /// across a config reload the way `versions`/`mutation_limiter` already do — and it is
+    /// across a config reload the way `admin`/`mutation_limiter` already do — and it is
     /// constructible per-test (no hidden global), matching this file's existing "no global mutable
     /// state" convention for live per-process counters (see `QueuedDepth`, `VersionLog`).
     pub request_id_counter: Arc<std::sync::atomic::AtomicU64>,
