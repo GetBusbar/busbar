@@ -156,6 +156,31 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
         })));
     }
 
+    /// Install the state in `open`, PRE-PARKING `parked` on this call's ticket — for an `open`
+    /// whose connect step answered PENDING. The box is minted and RETAINED across the pend (the
+    /// trampoline keeps it rather than dropping it), so plugin-owned per-instance memory carries
+    /// what the step parked to the RESUME, which reads it back with [`Instance::resume`]. There is
+    /// no module static: the half-open state lives in the instance box, like every other op's. A
+    /// call with no ticket parks nothing (it may not pend). Panics outside `open`, as [`open`].
+    pub fn open_parking<S: Send + Sync + 'static>(&self, state: T, parked: S) {
+        assert!(
+            self.index == slot::OPEN,
+            "Instance::open_parking: the state is installed in `open` only"
+        );
+        let mut map: Parked = HashMap::new();
+        if !self.ticket.is_none() {
+            map.insert(self.ticket, Box::new(parked));
+        }
+        self.opened.set(Some(Box::new(Tagged {
+            head: Head {
+                tag: TypeId::of::<T>(),
+                parked: Mutex::new(map),
+                kept: Kept::default(),
+            },
+            state,
+        })));
+    }
+
     fn head(&self) -> Option<&'call Head> {
         // SAFETY: a non-NULL instance is the SDK's box, alive beyond `'call` (as `get`).
         unsafe { head(self.ptr) }
@@ -381,8 +406,27 @@ impl<S: SafeSlot> Entry for Safe<S> {
                 // Every kind's `open` `out` leads with the lifecycle's `OpenOut` (`KindOps`).
                 debug_assert!(size_of::<S::Out>() >= size_of::<OpenOut>());
                 let minted = match (answered, opened.take()) {
-                    (Outcome::Ready, Some(b)) => Box::into_raw(b).cast::<c_void>(),
-                    _ => std::ptr::null_mut(),
+                    // A FRESH open installed a box: hand it to the host when the open is READY, or
+                    // RETAIN it across a PENDING so the open's RESUME finds its half-open state on
+                    // the same box (plugin-owned memory, no module static). Any other outcome drops
+                    // the box (the `take` above).
+                    (Outcome::Ready | Outcome::Pending, Some(b)) => {
+                        Box::into_raw(b).cast::<c_void>()
+                    }
+                    (_, Some(_)) => std::ptr::null_mut(),
+                    // A RESUME of a pended open installs no new box; the box IS the instance the
+                    // host kept across the pend. Keep it while the open runs (READY completes it,
+                    // PENDING pends again). A failure frees it: an open never leaves a half-open
+                    // box behind, and no `close` will come for an instance that never opened.
+                    (Outcome::Ready | Outcome::Pending, None) => instance,
+                    (_, None) if !instance.is_null() => {
+                        // SAFETY: the SDK's `Tagged<S::State>` box this open minted on its earlier
+                        // PENDING; the open failed, so the host holds no instance and will not pass
+                        // it again (the call contract).
+                        drop(unsafe { Box::from_raw(instance.cast::<Tagged<S::State>>()) });
+                        std::ptr::null_mut()
+                    }
+                    (_, None) => std::ptr::null_mut(),
                 };
                 // SAFETY: at OPEN, `S::Out` is the kind's `open` `out`, which leads with an
                 // `OpenOut` (`KindOps`'s contract); `out` is a live `&mut` to it.

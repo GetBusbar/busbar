@@ -780,7 +780,13 @@ impl<B: StoreSlots> SafeSlot for Validate<B> {
     }
 }
 
-/// `open`: the store opens on its settings.
+/// `open`: the store opens on its settings, then runs its connect step
+/// ([`StoreSlots::connect`]), which may pend on `open`'s ticket. A PENDING open installs the
+/// instance NOW — carrying the opened store and parking the step's context on the ticket — and the
+/// trampoline RETAINS that box across the pend; the open's RESUME resolves it on a non-NULL
+/// instance. The half-open state lives in plugin-owned per-instance memory, never a contract
+/// static: the contract is stateless, a pure shape that links into the host and every dropped-in
+/// plugin alike, so a static in it would be a second static the moment a plugin is dropped in.
 #[derive(Debug)]
 pub struct Open<B>(PhantomData<B>);
 impl<B: StoreSlots> SafeSlot for Open<B> {
@@ -793,13 +799,71 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
         mut out: Out<'_, OpenOut>,
     ) -> Outcome {
         let host = input.host().map(|h| Host::of(&h));
-        match B::open(input.field(|i| &i.settings).bytes(), host) {
-            Ok(store) => {
+        let ticket = instance.ticket();
+        // THE RESUME of a pended open: the retained instance box carries the opened store, and
+        // what its connect step parked is read back on this ticket. A RESUME with no instance or
+        // nothing parked is FAULT — an open never runs afresh on its RESUME.
+        if instance.resuming() {
+            let Some(served) = instance.get() else {
+                return Outcome::Fault;
+            };
+            let Some(parked) = instance.resume::<Parked>().map(|b| *b) else {
+                return Outcome::Fault;
+            };
+            let mut cx = Op::enter(ticket, host.as_ref(), Some(parked));
+            return match served.store().connect(&mut cx) {
+                Step::Ready(Ok(())) => {
+                    drop(cx.into_parked());
+                    Outcome::Ready
+                }
+                Step::Ready(Err(e)) => {
+                    drop(cx.into_parked());
+                    open_failed(input, &mut out, |o| &o.err_len, &e)
+                }
+                Step::Pending { wake_at_ns } => {
+                    if !cx.can_pend() || (wake_at_ns == 0 && !cx.made_a_service()) {
+                        drop(cx.into_parked());
+                        return Outcome::Fault;
+                    }
+                    out.raw().head.wake_at_ns = wake_at_ns;
+                    // The box exists (the host kept it across the last pend), so the step's
+                    // context parks on it as any other op's does.
+                    instance.park(cx.into_parked());
+                    Outcome::Pending
+                }
+            };
+        }
+        // A FRESH open: open the store on its settings, then run its connect step.
+        let store = match B::open(input.field(|i| &i.settings).bytes(), host) {
+            Ok(store) => store,
+            // No instance exists to hold the reason: it goes into the host's lent reason buffer.
+            Err(e) => return open_failed(input, &mut out, |o| &o.err_len, &e),
+        };
+        let mut cx = Op::enter(ticket, host.as_ref(), None);
+        match store.connect(&mut cx) {
+            Step::Ready(Ok(())) => {
+                // The step's connection closes with its op (`Parked`'s drop).
+                drop(cx.into_parked());
                 instance.open(Served::new(store, host));
                 Outcome::Ready
             }
-            // No instance exists to hold the reason: it goes into the host's lent reason buffer.
-            Err(e) => open_failed(input, &mut out, |o| &o.err_len, &e),
+            Step::Ready(Err(e)) => {
+                drop(cx.into_parked());
+                open_failed(input, &mut out, |o| &o.err_len, &e)
+            }
+            Step::Pending { wake_at_ns } => {
+                // As an op: PENDING needs a ticket, and on 0 a connector service in flight.
+                if !cx.can_pend() || (wake_at_ns == 0 && !cx.made_a_service()) {
+                    drop(cx.into_parked());
+                    return Outcome::Fault;
+                }
+                out.raw().head.wake_at_ns = wake_at_ns;
+                // Install the instance NOW, carrying the opened store, and park the step's context
+                // on this ticket: the trampoline retains the box across the PENDING, and the
+                // RESUME finds both on a non-NULL instance.
+                instance.open_parking(Served::new(store, host), cx.into_parked());
+                Outcome::Pending
+            }
         }
     }
 }
@@ -1426,9 +1490,27 @@ slot!(
 /// [`Safe`](crate::abi::sdk::Safe) slot over `MyStore: StoreSlots`. The Statement names the
 /// store, declares [`DIAG_IDS`], carries the store's tail ([`tail`]) and states its marks
 /// ([`marks`]).
+///
+/// A store that reaches its backend over the host's connections declares its NEEDS, `(transport,
+/// auth)` per need, exactly as every other kind does (THE DESIGN, connections; ARCHITECT ruling
+/// 2026-10-03 on Q-L14-1): `store_door!(MyStore, "my-store", "1.0.0", 64, needs: NEEDS);` with
+/// `NEEDS: &'static [Need]` ([`Need`](crate::abi::host::conn::connector::Need)). The loader then
+/// hands the instance the connector table and declares each need on the host's one connection
+/// table, a need whose `target_from`/`trust_from` names a settings path at `open` and every
+/// `refresh`; a store op on a ticket reaches it through [`Op::connector`](super::Op::connector) and
+/// [`Op::checkout`](super::Op::checkout).
 #[macro_export]
 macro_rules! store_door {
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr $(,)?) => {
+        $crate::store_door!(@door $store, $name, $version, $max_inflight,
+            ::core::ptr::null::<$crate::abi::host::conn::connector::Need>(), 0);
+    };
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr $(,)?) => {
+        const __BUSBAR_STORE_NEEDS: &[$crate::abi::host::conn::connector::Need] = $needs;
+        $crate::store_door!(@door $store, $name, $version, $max_inflight,
+            __BUSBAR_STORE_NEEDS.as_ptr(), __BUSBAR_STORE_NEEDS.len());
+    };
+    (@door $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, $needs_len:expr) => {
         const __BUSBAR_STORE_TAIL: $crate::abi::store::StoreTail =
             $crate::abi::sdk::store::door::tail::<$store>();
         const __BUSBAR_STORE_DIAGS: [$crate::abi::mechanism::call::AbiStr; 2] =
@@ -1441,6 +1523,8 @@ macro_rules! store_door {
                 kind_tail: ::core::ptr::from_ref(&__BUSBAR_STORE_TAIL)
                     .cast::<$crate::abi::mechanism::door::KindTailHead>(),
                 marks: $crate::abi::sdk::store::door::marks::<$store>(),
+                needs: $needs,
+                needs_len: $needs_len,
                 ..$crate::abi::sdk::door::statement($name, $version, $max_inflight)
             },
             lifecycle: {
