@@ -18,8 +18,10 @@
 //!   first and queues the rest. A queued frame is the session's unsolicited output: the door wakes
 //!   the instance's driver ticket, `drive` names the session, and each collection (`FROM_KERNEL`,
 //!   no bytes, no attempt) answers the next queued frame, toward the side it is bound for.
-//! - EVERY ANSWER REPORTS THE SESSION'S CUMULATIVE UNITS, the six classes the plane counts. The
-//!   kernel checkpoints them and writes the session's one line at its end; the plane holds no
+//! - EVERY ANSWER REPORTS THE SESSION'S CUMULATIVE UNITS, the six classes the plane counts, and,
+//!   once the far end has first answered the session, its fee unit ([`PER_SESSION_CLASS`], `1`):
+//!   a session whose far end never answered (its open failed) reports none, and its fee is refunded.
+//!   The kernel checkpoints them and writes the session's one line at its end; the plane holds no
 //!   reservation and never cuts on money.
 //! - THE WALL-CLOCK CEILING (`streams.session_max_secs`, Q21a) is measured on the kernel's tick
 //!   clock: while a live generation configures one the door asks to be ticked every
@@ -34,6 +36,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 
 use crate::codec::ir::codec::OpenAiRealtimeCodec;
+use crate::codec::ir::config::SessionConfig;
 use crate::codec::ir::GeminiLiveCodec;
 use crate::config::StreamsCfg;
 use crate::driven::{Door, Steps};
@@ -49,6 +52,10 @@ const NS_PER_SEC: u64 = 1_000_000_000;
 /// The clock starts at a tick rather than at the first piece because a piece carries no clock
 /// reading on the tick clock, and a ceiling compared across two clocks is no ceiling.
 pub const CEILING_TICK_NS: u64 = NS_PER_SEC;
+
+/// The tail's class index of the session's fee unit (`per_session`), after the six counted
+/// classes ([`crate::session_unit::CLASSES`]).
+pub const PER_SESSION_CLASS: u32 = crate::session_unit::CLASSES.len() as u32;
 
 /// The most live sessions the door keeps at once; past it, a new stream is refused.
 pub const MAX_SESSIONS: usize = 4096;
@@ -101,6 +108,8 @@ pub struct Live {
     ceiling_secs: Option<u64>,
     /// When its clock started, on the tick clock; `None` until the first tick after its open.
     started_ns: Option<u64>,
+    /// The far end has answered the session: its fee unit was incurred.
+    answered: bool,
     /// What the frame a caller-side answer is writing still owes the reply buffer.
     pub(crate) near: crate::piece::Owed,
     /// What the frame a far-side answer is writing still owes the reply buffer.
@@ -118,29 +127,47 @@ impl Live {
     /// doors lock the section's session.
     #[must_use]
     pub fn open(door: Door, cfg: &StreamsCfg) -> Option<Live> {
+        Self::open_locked(door, cfg, None)
+    }
+
+    /// The session params `door` locks under `cfg`, as the open's hooks are shown them: the
+    /// carrier's µ-law for the telephony door, the section's session for every other.
+    #[must_use]
+    pub fn locked(door: Door, cfg: &StreamsCfg) -> SessionConfig {
+        match door {
+            Door::Twilio => g711_config(),
+            _ => cfg.session.clone(),
+        }
+    }
+
+    /// [`Self::open`], locked to `rewritten` where a session-open hook rewrote the params
+    /// ([`Self::locked`]) this session opens under.
+    #[must_use]
+    pub fn open_locked(
+        door: Door,
+        cfg: &StreamsCfg,
+        rewritten: Option<SessionConfig>,
+    ) -> Option<Live> {
         let ceiling = cfg.session_max_secs.map(|s| u64::from(s.get()));
+        let locked = rewritten.unwrap_or_else(|| Self::locked(door, cfg));
         let unit = match door {
             Door::Sideband => Unit::Realtime(SessionUnit::open(
                 OpenAiRealtimeCodec,
-                cfg.session.clone(),
+                locked,
                 false,
                 0,
                 None,
             )),
             Door::Twilio => Unit::Realtime(SessionUnit::open(
                 OpenAiRealtimeCodec,
-                g711_config(),
+                locked,
                 true,
                 0,
                 None,
             )),
-            Door::Gemini => Unit::Gemini(SessionUnit::open(
-                GeminiLiveCodec,
-                cfg.session.clone(),
-                false,
-                0,
-                None,
-            )),
+            Door::Gemini => {
+                Unit::Gemini(SessionUnit::open(GeminiLiveCodec, locked, false, 0, None))
+            }
             Door::Mint | Door::Sdp | Door::Metadata => return None,
         };
         Some(Live {
@@ -149,6 +176,7 @@ impl Live {
             ending: false,
             ceiling_secs: ceiling,
             started_ns: None,
+            answered: false,
             near: crate::piece::Owed::default(),
             far: crate::piece::Owed::default(),
             short_near: None,
@@ -182,8 +210,9 @@ impl Live {
         self.take(plan);
     }
 
-    /// A far-end piece, at `now_ms`.
+    /// A far-end piece, at `now_ms`. The first one incurs the session's fee unit.
     pub fn from_far_end(&mut self, bytes: &[u8], now_ms: u64) {
+        self.answered = true;
         let plan = each!(&mut self.unit, |u| u.from_far_end(bytes, now_ms));
         self.take(plan);
     }
@@ -234,18 +263,55 @@ impl Live {
     }
 
     /// The session's cumulative units, as the door reports them: (class index, amount), the zero
-    /// classes left out.
+    /// classes left out; the fee unit is `1` once the far end has answered.
     #[must_use]
     pub fn units(&self) -> Vec<(u32, u64)> {
         let units: CumulativeUnits = each!(&self.unit, |u| u.units());
-        Door::Sideband.meter(&units)
+        let mut out = Door::Sideband.meter(&units);
+        if self.answered {
+            out.push((PER_SESSION_CLASS, 1));
+        }
+        out
     }
+}
+
+/// THE SESSION-OPEN PARAMS A COMMITTED HOOK REWRITE PRODUCED (the session-open hook projection the
+/// retired streams crate applied, verbatim: ARCHITECT Q-L5B-PROJECT), or why they cannot be used.
+/// The rewrite is a JSON object PATCHED over the `locked` params as the hook was shown them: a key
+/// the hook named wins, a key it did not name keeps the locked value (naming a key with `null`
+/// clears it). The merge comes before the decode, so a patch that names one bad field refuses the
+/// open; so does output that is not JSON, or JSON that is not an object. A rewrite busbar cannot
+/// read back is never opened as if it had not been made.
+///
+/// # Errors
+///
+/// The output is not JSON, not an object, or not a session config once merged.
+pub fn committed_session_config(
+    locked: &SessionConfig,
+    rewrite: &[u8],
+) -> Result<SessionConfig, String> {
+    let patch: serde_json::Value =
+        serde_json::from_slice(rewrite).map_err(|e| format!("the output is not JSON: {e}"))?;
+    let serde_json::Value::Object(patch) = patch else {
+        return Err("the output is JSON but not a session-params object".to_string());
+    };
+    let Ok(serde_json::Value::Object(mut merged)) = serde_json::to_value(locked) else {
+        return Err(
+            "the plane's own locked session params did not project to an object".to_string(),
+        );
+    };
+    merged.extend(patch);
+    serde_json::from_value::<SessionConfig>(serde_json::Value::Object(merged))
+        .map_err(|e| format!("the output is not a session config: {e}"))
 }
 
 /// The door's live sessions, by the kernel's stream.
 #[derive(Debug, Default)]
 pub struct Sessions {
     live: BTreeMap<u64, Live>,
+    /// The session-open params a hook rewrote, by the unit (= the stream) the session opens on,
+    /// until its first piece opens it.
+    rewritten: BTreeMap<u64, SessionConfig>,
     /// The tickets each session's pieces crossed on (one per side), so a cancel on either ends it.
     tickets: HashMap<Ticket, u64>,
 }
@@ -258,9 +324,22 @@ impl Sessions {
             if self.live.len() >= MAX_SESSIONS {
                 return None;
             }
-            self.live.insert(stream, Live::open(door, cfg)?);
+            let rewritten = self.rewritten.remove(&stream);
+            self.live
+                .insert(stream, Live::open_locked(door, cfg, rewritten)?);
         }
         self.live.get_mut(&stream)
+    }
+
+    /// The session-open params a hook rewrote for the session unit `unit` opens (kept until its
+    /// first piece; the oldest dropped past [`MAX_SESSIONS`] kept).
+    pub fn rewrite(&mut self, unit: u64, params: SessionConfig) {
+        while self.rewritten.len() >= MAX_SESSIONS {
+            if self.rewritten.pop_first().is_none() {
+                break;
+            }
+        }
+        self.rewritten.insert(unit, params);
     }
 
     /// Stream `stream`'s session, when one is open.
@@ -278,6 +357,7 @@ impl Sessions {
     /// Stream `stream`'s session is over: it and its tickets are forgotten.
     pub fn close(&mut self, stream: u64) {
         self.live.remove(&stream);
+        self.rewritten.remove(&stream);
         self.tickets.retain(|_, s| *s != stream);
     }
 

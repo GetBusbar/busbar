@@ -343,6 +343,7 @@ fn the_tail_states_what_the_served_plane_declares() {
             "text_tokens_out/token",
             "audio_seconds_in/duration",
             "tool_calls/count",
+            "per_session/count",
         ]
     );
     // SAFETY: as above.
@@ -353,6 +354,17 @@ fn the_tail_states_what_the_served_plane_declares() {
     assert_eq!(fees, ["per_session"]);
     busbar_contract::abi::plane::check::check_tail(t)
         .expect("the kind's own check admits the tail");
+    // The fee unit is one of the billable classes (ARCHITECT Q-L5-FEE (A)+(C)): the plane can
+    // report it, and the loader's bind-time check admits it.
+    // SAFETY: as above.
+    let (fee_units, billable) = unsafe {
+        (
+            std::slice::from_raw_parts(t.fee_units, t.fee_units_len),
+            std::slice::from_raw_parts(t.billable_classes, t.billable_classes_len),
+        )
+    };
+    busbar_contract::abi::plane::check::check_fee_units(fee_units, billable)
+        .expect("every fee unit is a billable class");
 }
 
 // ── THE ONE-REQUEST DOORS' PIECES ───────────────────────────────────────────────────────────────
@@ -395,6 +407,8 @@ struct Bufs {
     arena: [u8; 256],
     /// The units the last answer wrote (class, source, amount), or, short, the room it needed.
     last_units: String,
+    /// The need the last answer named for its far request (`0` = none).
+    last_need: u32,
 }
 
 /// One piece pushed to a unit: whose it is, its flags, bytes, status and kept head fields.
@@ -423,6 +437,7 @@ impl Bufs {
             fields: [z(); 4],
             arena: [0; 256],
             last_units: String::new(),
+            last_need: 0,
         }
     }
 
@@ -446,6 +461,7 @@ impl Bufs {
         let mut f = Frame::new(i, o);
         let c = p.call(slot::ON_PIECE, &mut f);
         let o = f.out;
+        self.last_need = o.need;
         self.last_units = if o.units_needed != 0 {
             format!("needed {}", o.units_needed)
         } else {
@@ -720,23 +736,25 @@ fn a_live_session_is_answered_through_the_door() {
     let far = line("far usage");
     assert!(
         far.contains("far=false done=false")
-            && far.ends_with("units=[0:1=10 1:1=20 2:1=3 3:1=4 4:1=2]"),
-        "the closed turn's tokens and its two admitted seconds, reported: {far}"
+            && far.ends_with("units=[0:1=10 1:1=20 2:1=3 3:1=4 4:1=2 6:1=1]"),
+        "the closed turn's tokens, its two admitted seconds and the answered session's fee \
+         unit, reported: {far}"
     );
     assert!(line("collect ").contains("emitted= more=0 far=false done=false"));
     assert!(
-        line("short ").starts_with("short Failed") && line("short ").ends_with("units=[needed 5]"),
+        line("short ").starts_with("short Failed") && line("short ").ends_with("units=[needed 6]"),
         "{}",
         line("short ")
     );
     let recall = line("short re-call");
     assert!(
-        recall.contains("far=true") && recall.ends_with("units=[0:1=10 1:1=20 2:1=3 3:1=4 4:1=2]"),
+        recall.contains("far=true")
+            && recall.ends_with("units=[0:1=10 1:1=20 2:1=3 3:1=4 4:1=2 6:1=1]"),
         "the re-call answers the same piece once, its audio not counted twice: {recall}"
     );
     let end = line("caller end");
     assert!(
-        end.contains("done=true") && end.ends_with("units=[0:1=10 1:1=20 2:1=3 3:1=4 4:1=4]"),
+        end.contains("done=true") && end.ends_with("units=[0:1=10 1:1=20 2:1=3 3:1=4 4:1=4 6:1=1]"),
         "the caller's end settles the open turn's two seconds once: {end}"
     );
     assert!(line("request unit on a session door")
@@ -755,4 +773,153 @@ fn the_dropped_door_answers_a_live_session_as_the_linked_door_does() {
         session_script(&linked(&d)),
         "the two doors must answer a session identically"
     );
+}
+
+// ── THE ROUTE A DOOR NAMES (ARCHITECT Q-L5B-ROUTE) ───────────────────────────────────────────────
+
+/// `arrive` on `claim`: its outcome, the route class and the entry it names.
+fn arrive_route(p: &Plugin<Plane>, claim: u32) -> (Outcome, u8, String) {
+    let mut a: Frame<ArriveIn, ArriveOut> = Frame::new(z(), z());
+    a.input.head = in_head();
+    a.input.claim = claim;
+    a.out.head = out_head();
+    let c = p.call(slot::ARRIVE, &mut a);
+    (c.outcome, a.out.route, read(a.out.pool))
+}
+
+/// Every door that reaches the far end names the DIRECT route `streams.session.model` (the entry the
+/// composition folds from the top-level models catalog); the metadata door reaches none and names
+/// none; with no model configured nothing is named (the door steps refuse an unnamed keyed route).
+/// Both ways.
+#[test]
+fn a_door_that_reaches_the_far_end_names_the_session_model_as_its_direct_route() {
+    use busbar_contract::abi::plane::{ROUTE_DIRECT, ROUTE_POOL};
+    let d = Dispatcher::new(DispatchConfig::default());
+    let mut doors = vec![linked(&d)];
+    doors.extend(dropped(&d));
+    for p in &doors {
+        assert_eq!(open(p, 1, SESSION, Some(PUBLIC)).0, Outcome::Ready);
+        for claim in [0, 1, 2, 3, 4] {
+            assert_eq!(
+                arrive_route(p, claim),
+                (Outcome::Ready, ROUTE_DIRECT, "m-cap".to_string()),
+                "claim {claim}"
+            );
+        }
+        assert_eq!(
+            arrive_route(p, 5),
+            (Outcome::Ready, ROUTE_POOL, String::new()),
+            "the metadata document reaches no far end"
+        );
+    }
+    let bare = linked(&d);
+    assert_eq!(open(&bare, 1, b"{}", Some(PUBLIC)).0, Outcome::Ready);
+    assert_eq!(
+        arrive_route(&bare, 2),
+        (Outcome::Ready, ROUTE_POOL, String::new()),
+        "no model, no route named"
+    );
+}
+
+// ── THE SESSION OPEN'S HOOK VIEW (ARCHITECT Q-L5B-PROJECT; K5's `project`) ───────────────────────
+
+/// `project` of unit 31 on `claim` with `rewrite` (empty = none): its outcome, the projected body
+/// and whether it was answered as rewritten.
+fn project(p: &Plugin<Plane>, claim: u32, rewrite: &'static [u8]) -> (Outcome, String, bool) {
+    use busbar_contract::abi::hook::{MessageView, SignalEntry};
+    use busbar_contract::abi::plane::{ProjectIn, ProjectOut, SPAN_ABSENT};
+    let mut arena = vec![0u8; 4096];
+    let mut signals: Vec<SignalEntry> = vec![z(); 4];
+    let mut turns: Vec<MessageView> = vec![z(); 4];
+    let mut j: Frame<ProjectIn, ProjectOut> = Frame::new(z(), z());
+    (j.input.head, j.out.head) = (in_head(), out_head());
+    j.input.claim = claim;
+    j.input.unit = 31;
+    j.input.arena_buf = arena.as_mut_ptr();
+    j.input.arena_cap = arena.len();
+    j.input.signals_buf = signals.as_mut_ptr();
+    j.input.signals_cap = signals.len();
+    j.input.messages_buf = turns.as_mut_ptr();
+    j.input.messages_cap = turns.len();
+    if !rewrite.is_empty() {
+        j.input.rewrite = json(rewrite);
+    }
+    let c = p.call(slot::PROJECT, &mut j);
+    let body = if j.out.body.offset == SPAN_ABSENT {
+        String::new()
+    } else {
+        at(&arena, j.out.body)
+    };
+    (c.outcome, body, j.out.rewritten.offset != SPAN_ABSENT)
+}
+
+/// A session door projects the session-open params it locks as the view's body; a hook's rewrite is
+/// patched over them and THAT is answered (kept for the session the unit opens); a rewrite that does
+/// not read back refuses; a one-request door projects no body and takes no rewrite. Both ways.
+#[test]
+fn a_session_open_is_projected_for_the_hooks_and_a_rewrite_patches_it() {
+    let d = Dispatcher::new(DispatchConfig::default());
+    let mut doors = vec![linked(&d)];
+    doors.extend(dropped(&d));
+    for p in &doors {
+        assert_eq!(open(p, 1, SESSION, Some(PUBLIC)).0, Outcome::Ready);
+        let (outcome, body, rewritten) = project(p, 2, b"");
+        assert_eq!(outcome, Outcome::Ready);
+        let view: serde_json::Value = serde_json::from_str(&body).expect("the locked params");
+        assert_eq!(view["model"], "m-cap", "{body}");
+        assert!(!rewritten);
+        let (outcome, body, rewritten) = project(p, 2, br#"{"voice":"marin"}"#);
+        assert_eq!(outcome, Outcome::Ready);
+        let view: serde_json::Value = serde_json::from_str(&body).expect("the patched params");
+        assert_eq!(view["voice"], "marin", "the hook's key wins: {body}");
+        assert_eq!(
+            view["model"], "m-cap",
+            "the unnamed key keeps its value: {body}"
+        );
+        assert!(rewritten, "answered as rewritten");
+        assert_eq!(project(p, 2, br#"{"voice":7}"#).0, Outcome::Refused);
+        assert_eq!(project(p, 0, b""), (Outcome::Ready, String::new(), false));
+        assert_eq!(project(p, 0, br#"{"x":1}"#).0, Outcome::Refused);
+    }
+}
+
+// ── THE NEED A FAR REQUEST RIDES (ARCHITECT Q-L5B-NEEDS) ─────────────────────────────────────────
+
+/// Every far request names the outbound need it rides: a live session's frames OpenAI Realtime's
+/// socket, the mint's request Realtime's one-shot pass (each a declared outbound need under the
+/// dialect's style, held by the door's own compile-time check). Both ways.
+#[test]
+fn every_far_request_names_the_need_it_rides() {
+    let d = Dispatcher::new(DispatchConfig::default());
+    let mut doors = vec![linked(&d)];
+    doors.extend(dropped(&d));
+    for p in &doors {
+        assert_eq!(open(p, 1, SESSION, Some(PUBLIC)).0, Outcome::Ready);
+        let mut b = Bufs::with_units(1 << 18, 8);
+        let answer = b.call(p, &session(40, FROM_CALLER, 0, &uplink(100)));
+        assert!(answer.contains("far=true"), "{answer}");
+        assert_eq!(b.last_need, door::RIDES_REALTIME_SOCKET, "{answer}");
+        let mut b = Bufs::new(1 << 16);
+        let answer = b.call(p, &attempt(41, 0));
+        assert!(answer.contains("far=true"), "{answer}");
+        assert_eq!(b.last_need, door::RIDES_REALTIME_PASS, "{answer}");
+    }
+}
+
+/// A refused open (a hook's veto, an admission's refusal) is answered in the dialects' error shape:
+/// the kernel's status read as the error's type, its words as the message.
+#[test]
+fn a_refusal_is_rendered_in_the_dialects_error_shape() {
+    for (status, kind) in [
+        (401, "authentication_error"),
+        (403, "permission_error"),
+        (429, "rate_limit_error"),
+        (400, "invalid_request_error"),
+        (503, "server_error"),
+    ] {
+        let body: serde_json::Value =
+            serde_json::from_slice(&door::refusal_body(status, "no sessions today")).expect("JSON");
+        assert_eq!(body["error"]["type"], kind, "{status}");
+        assert_eq!(body["error"]["message"], "no sessions today");
+    }
 }

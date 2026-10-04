@@ -48,10 +48,13 @@ use std::ptr;
 use std::sync::Mutex;
 
 use crate::piece::{self, Owed};
+use busbar_contract::abi::hook::REQUEST_STREAM;
 use busbar_contract::abi::host::conn::connector::{
     Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, KEEP_NAMED,
 };
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT};
+use busbar_contract::abi::mechanism::call::{
+    AbiStr, Blob, InHead, OutHead, Outcome, Span, BLOB_ABSENT,
+};
 use busbar_contract::abi::mechanism::door::{
     KindTailHead, Section, Statement, SECTION_DECLARING, SECTION_REQUIRED,
 };
@@ -65,7 +68,7 @@ use busbar_contract::abi::plane::{
     PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
     CANCEL_FAILED, CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
     FROM_KERNEL, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, SHAPE_PIECEWISE, UNITS_ESTIMATED, UNITS_REPORTED,
+    PIECE_OUT_TEXT, ROUTE_DIRECT, SHAPE_PIECEWISE, SPAN_ABSENT, UNITS_ESTIMATED, UNITS_REPORTED,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
@@ -78,7 +81,7 @@ use crate::driven::{Door, Steps};
 use crate::meta;
 use crate::provider::{GEMINI_LIVE, OPENAI_REALTIME};
 use crate::request_unit::{self, Answer, Piece, RequestUnit};
-use crate::session_door::{Sessions, Side, CEILING_TICK_NS};
+use crate::session_door::{committed_session_config, Live, Sessions, Side, CEILING_TICK_NS};
 
 /// The name the plane's Statement carries.
 pub const NAME: &str = crate::codec::PLANE_KEY;
@@ -130,25 +133,52 @@ const SECTIONS: &[Section] = &[
     },
 ];
 
-/// The dialects, in the order the per-call `dialect` index names them.
+/// The dialects, in the order the per-call `dialect` index names them; then the PROVIDER
+/// protocols a member's provider states, as the far-end spellings of the two realtime dialects
+/// (ARCHITECT Q-L5B-NEEDS: the provider protocol -> realtime dialect mapping is the plane's own):
+/// `openai` is spoken as OpenAI Realtime, `gemini` as Gemini Live. No arrival names them.
 pub const DIALECTS_BY_NAME: &[&str] = &[
     OPENAI_REALTIME,
     GEMINI_LIVE,
     Dialect::TwilioMediaStreams.name(),
+    OPENAI_PROVIDER,
+    GEMINI_PROVIDER,
 ];
+
+/// The provider protocol whose realtime dialect is OpenAI Realtime.
+pub const OPENAI_PROVIDER: &str = "openai";
+/// The provider protocol whose realtime dialect is Gemini Live.
+pub const GEMINI_PROVIDER: &str = "gemini";
 
 const DIALECTS: &[AbiStr] = &[
     abi_str(DIALECTS_BY_NAME[0]),
     abi_str(DIALECTS_BY_NAME[1]),
     abi_str(DIALECTS_BY_NAME[2]),
+    abi_str(DIALECTS_BY_NAME[3]),
+    abi_str(DIALECTS_BY_NAME[4]),
 ];
 
-/// The upstream dialects' default auth styles.
-const DIALECT_AUTH: &[DialectAuth] = &[DialectAuth {
-    dialect: 0,
-    _reserved: 0,
-    style: abi_str("bearer"),
-}];
+/// The OpenAI Realtime far end's credential style (`Authorization: Bearer`).
+pub const REALTIME_STYLE: &str = "bearer";
+/// The Gemini Live far end's credential style (the `x-goog-api-key` header).
+pub const LIVE_STYLE: &str = "x-goog-api-key";
+
+const fn dialect_auth(dialect: u32, style: &'static str) -> DialectAuth {
+    DialectAuth {
+        dialect,
+        _reserved: 0,
+        style: abi_str(style),
+    }
+}
+
+/// The upstream dialects' default auth styles: each realtime dialect's, and its provider
+/// protocol's spelling's.
+const DIALECT_AUTH: &[DialectAuth] = &[
+    dialect_auth(0, REALTIME_STYLE),
+    dialect_auth(1, LIVE_STYLE),
+    dialect_auth(3, REALTIME_STYLE),
+    dialect_auth(4, LIVE_STYLE),
+];
 
 const SCOPE_KINDS: &[AbiStr] = &[abi_str(SCOPE)];
 
@@ -165,7 +195,10 @@ const fn class(class: &'static str, family: &'static str) -> BillableClass {
     }
 }
 
-/// The six classes a session counts in; `cached_tokens` is attribution only, never billed.
+/// The six classes a session counts in (`cached_tokens` is attribution only, never billed), then
+/// the session's fee unit: `per_session`, reported `1` once the far end first answers the session
+/// and never before, so a session whose open failed refunds its fee (ARCHITECT Q-L5-FEE (A), Q17-6;
+/// the fee unit is a billable class reported as a count of 0 or 1 and never ledgered, Q17-5 (c)).
 const BILLABLE_CLASSES: &[BillableClass] = &[
     class(meta::CLASS_AUDIO_TOKENS_IN.as_str(), TOKEN_FAMILY),
     class(meta::CLASS_AUDIO_TOKENS_OUT.as_str(), TOKEN_FAMILY),
@@ -173,6 +206,7 @@ const BILLABLE_CLASSES: &[BillableClass] = &[
     class(meta::CLASS_TEXT_TOKENS_OUT.as_str(), TOKEN_FAMILY),
     class(meta::CLASS_AUDIO_SECONDS_IN.as_str(), "duration"),
     class(meta::CLASS_TOOL_CALLS.as_str(), "count"),
+    class(PER_SESSION, "count"),
 ];
 
 const FEE_UNITS: &[AbiStr] = &[abi_str(PER_SESSION)];
@@ -203,9 +237,11 @@ const fn need(direction: u32, transport: &'static str, auth: AbiStr, target: Abi
     }
 }
 
-/// The plane's connection needs: its keyed doors and its telephony door inbound; the provider's
-/// realtime socket and its one-shot passes outbound, to the upstream `streams.session.model` names.
-/// The outbound credential is the kernel's, per the dialect's default style.
+/// The plane's connection needs: its keyed doors and its telephony door inbound; outbound, to the
+/// upstream `streams.session.model` names, OpenAI Realtime's socket and its one-shot passes (the
+/// mint, the SDP offer) under its bearer style, and Gemini Live's socket under its key header
+/// (ARCHITECT Q-L5B-NEEDS: every outbound need declares its auth; the kernel binds each a member's
+/// style names, one per (transport, auth), and a far request names the one it rides).
 const NEEDS: &[Need] = &[
     need(DIRECTION_INBOUND, WS_TRANSPORT, abi_str(KEY_AUTH), NONE),
     need(DIRECTION_INBOUND, HTTP_TRANSPORT, abi_str(KEY_AUTH), NONE),
@@ -218,16 +254,30 @@ const NEEDS: &[Need] = &[
     need(
         DIRECTION_OUTBOUND,
         WS_TRANSPORT,
-        NONE,
+        abi_str(REALTIME_STYLE),
         abi_str(EGRESS_TARGET),
     ),
     need(
         DIRECTION_OUTBOUND,
         HTTP_TRANSPORT,
-        NONE,
+        abi_str(REALTIME_STYLE),
+        abi_str(EGRESS_TARGET),
+    ),
+    need(
+        DIRECTION_OUTBOUND,
+        WS_TRANSPORT,
+        abi_str(LIVE_STYLE),
         abi_str(EGRESS_TARGET),
     ),
 ];
+
+/// The need a far request rides, as `OnPieceOut::need` names it (its index in [`NEEDS`] plus one):
+/// OpenAI Realtime's socket.
+pub const RIDES_REALTIME_SOCKET: u32 = 4;
+/// OpenAI Realtime's one-shot passes (the mint, the SDP offer).
+pub const RIDES_REALTIME_PASS: u32 = 5;
+/// Gemini Live's socket.
+pub const RIDES_LIVE_SOCKET: u32 = 6;
 
 /// THE STATEMENT TAIL.
 pub const TAIL: &PlaneTail = &PlaneTail {
@@ -716,8 +766,11 @@ slot!(Release, ReleaseIn, OutHead, |_, _, _out| { Outcome::Ready });
 slot!(Close, InHead, OutHead, |_, _, _out| { Outcome::Ready });
 
 // A claimed arrival is classified: its door's dialect, the session open, a known principal. No
-// admission estimate: a session's units are what the far end reports.
-slot!(Arrive, ArriveIn, ArriveOut, |_, input, out| {
+// admission estimate: a session's units are what the far end reports. A door that reaches the far end
+// names its route: the DIRECT entry `streams.session.model` (ARCHITECT Q-L5B-ROUTE: the composition
+// folds that top-level catalog model into the plane's route table, so the kernel's door steps resolve
+// it as any section entry). The metadata door reaches none and names none.
+slot!(Arrive, ArriveIn, ArriveOut, |instance, input, out| {
     let Some(a) = crate::driven::arrive(input.claim) else {
         out.set(|o| &o.refusal, REFUSAL_NO_DOOR);
         out.set(|o| &o.refusal_status, 404);
@@ -739,6 +792,13 @@ slot!(Arrive, ArriveIn, ArriveOut, |_, input, out| {
     out.set(|o| &o.op_class, a.op_class);
     out.set(|o| &o.dialect, a.dialect);
     out.set(|o| &o.principal_need, a.door.authenticate());
+    let model = (!a.door.is_open())
+        .then(|| instance.get().and_then(Plane::newest))
+        .flatten()
+        .and_then(|cfg| cfg.session.model);
+    if let Some(model) = model {
+        out.route(ROUTE_DIRECT, &model);
+    }
     Outcome::Ready
 });
 
@@ -814,6 +874,7 @@ fn answer_piece(
             }
             out.set(|o| &o.verb, verb);
             out.set(|o| &o.target, target);
+            out.set(|o| &o.need, RIDES_REALTIME_PASS);
             held.owed.owe(&attempt.body, EMIT_TO_FAR_END, input, out);
             (Outcome::Ready, false)
         }
@@ -927,7 +988,17 @@ fn session_piece(p: &Plane, input: Lent<'_, OnPieceIn>, out: &mut Out<'_, OnPiec
                 out.set(|o| &o.verb, verb);
                 out.set(|o| &o.target, path);
             }
-            live.near.owe(&frame, EMIT_TO_FAR_END, input, out);
+            out.set(
+                |o| &o.need,
+                if door == Door::Gemini {
+                    RIDES_LIVE_SOCKET
+                } else {
+                    RIDES_REALTIME_SOCKET
+                },
+            );
+            // A realtime dialect's frame is a JSON text message on its socket.
+            live.near
+                .owe(&frame, EMIT_TO_FAR_END | PIECE_OUT_TEXT, input, out);
             false
         }
         Some((Side::Caller, frame)) => {
@@ -1014,8 +1085,59 @@ slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
 // The refusal render, the admin serve and the hook projection are declined: a declined unit is
 // charged nothing.
 
-slot!(Refusal, RefusalIn, RefusalOut, |_, _, _out| {
-    Outcome::Refused
+/// A refusal in the realtime dialects' error shape (the OpenAI REST error envelope, which both
+/// the session doors and the one-request doors answer a refused open in): the kernel's status read
+/// as the error's type, its text as the message.
+#[must_use]
+pub fn refusal_body(status: u16, text: &str) -> Vec<u8> {
+    let kind = match status {
+        401 => "authentication_error",
+        403 => "permission_error",
+        404 => "not_found_error",
+        429 => "rate_limit_error",
+        400..=499 => "invalid_request_error",
+        _ => "server_error",
+    };
+    serde_json::to_vec(&serde_json::json!({
+        "error": {"message": text, "type": kind, "param": null, "code": null}
+    }))
+    .unwrap_or_default()
+}
+
+/// The response field naming a refusal body's document type.
+const FIELD_CONTENT_TYPE: &str = "content-type";
+/// A refusal body's document type.
+const CONTENT_TYPE_JSON: &str = "application/json";
+
+// `refusal`: the kernel's status and text (a hook's veto, an admission's refusal) in the dialects'
+// error shape, as JSON, before any upgrade.
+slot!(Refusal, RefusalIn, RefusalOut, |_, input, out| {
+    let given = input.get();
+    let status = u16::try_from(given.status).unwrap_or(0);
+    let text = input.field(|i| &i.text).as_str().unwrap_or_default();
+    let body = refusal_body(status, text);
+    let (mut reply, mut fields, mut arena) =
+        (input.reply_buf(), input.fields_buf(), input.arena_buf());
+    reply.extend(&body);
+    fields.push(OutField {
+        name: arena.span(FIELD_CONTENT_TYPE.as_bytes()),
+        value: arena.span(CONTENT_TYPE_JSON.as_bytes()),
+    });
+    let short = !(reply.fits() && fields.fits() && arena.fits());
+    let (rw, rnd) = reply.settle(short);
+    let (fw, fnd) = fields.settle(short);
+    let (aw, and) = arena.settle(short);
+    out.set(|o| &o.reply_written, rw as u64);
+    out.set(|o| &o.reply_needed, rnd as u64);
+    out.set(|o| &o.fields_written, fw as u32);
+    out.set(|o| &o.fields_needed, fnd as u32);
+    out.set(|o| &o.arena_written, aw as u64);
+    out.set(|o| &o.arena_needed, and as u64);
+    if short {
+        Outcome::Failed
+    } else {
+        Outcome::Ready
+    }
 });
 
 slot!(Serve, ServeIn, ServeOut, |_, _, _out| { Outcome::Refused });
@@ -1024,8 +1146,98 @@ slot!(Hydrate, GenIn, OutHead, |_, _, _out| { Outcome::Ready });
 
 slot!(Start, GenIn, OutHead, |_, _, _out| { Outcome::Ready });
 
-slot!(Project, ProjectIn, ProjectOut, |_, _, _out| {
-    Outcome::Refused
+// `project` (ARCHITECT Q-L5B-PROJECT; K5): the hook view of a unit's open, once, when a hook is
+// bound. A session door projects the session-open params it locks (the telephony door's µ-law, else
+// the section's session) as the view's body, the session-open the hooks screen; a hook's rewrite is
+// patched over them ([`committed_session_config`]), kept for the session the unit opens, and THAT is
+// projected and answered. A rewrite that does not read back refuses the open. A one-request door
+// projects its view with no body, and takes no rewrite.
+slot!(Project, ProjectIn, ProjectOut, |instance, input, out| {
+    let Some(p) = instance.get() else {
+        return Outcome::Failed;
+    };
+    let given = input.get();
+    let Some(door) = Door::of(given.claim) else {
+        return Outcome::Refused;
+    };
+    let Some(cfg) = p.newest() else {
+        return Outcome::Refused;
+    };
+    let rewrite = input.field(|i| &i.rewrite).bytes();
+    let (body, rewritten) = if door.is_session() {
+        let locked = Live::locked(door, &cfg);
+        let params = if rewrite.is_empty() {
+            locked
+        } else {
+            match committed_session_config(&locked, rewrite) {
+                Ok(params) => {
+                    lock(&p.sessions).rewrite(given.unit, params.clone());
+                    params
+                }
+                Err(_) => return Outcome::Refused,
+            }
+        };
+        let Ok(body) = serde_json::to_vec(&params) else {
+            return Outcome::Refused;
+        };
+        (Some(body), !rewrite.is_empty())
+    } else if rewrite.is_empty() {
+        (None, false)
+    } else {
+        return Outcome::Refused;
+    };
+    let (signals, mut arena, turns) =
+        (input.signals_buf(), input.arena_buf(), input.messages_buf());
+    let dialect = DIALECTS_BY_NAME
+        .get(door.dialect() as usize)
+        .map(|d| arena.span(d.as_bytes()));
+    let pool = cfg
+        .session
+        .model
+        .as_deref()
+        .map(|m| arena.span(m.as_bytes()));
+    let body = body.as_deref().map(|b| arena.span(b));
+    let short = !(signals.fits() && arena.fits() && turns.fits());
+    let (sw, snd) = signals.settle(short);
+    let (aw, and) = arena.settle(short);
+    let (tw, tnd) = turns.settle(short);
+    out.set(|o| &o.signals_needed, snd as u32);
+    out.set(|o| &o.arena_written, aw as u64);
+    out.set(|o| &o.arena_needed, and as u64);
+    out.set(|o| &o.messages_needed, tnd as u32);
+    let absent = Span {
+        offset: SPAN_ABSENT,
+        len: 0,
+    };
+    out.set(|o| &o.body, absent);
+    out.set(|o| &o.rewritten, absent);
+    if short {
+        // The driver re-calls once with the buffers this named, the same rewrite with it: patching
+        // it again over the locked params writes the same body.
+        return Outcome::Failed;
+    }
+    if let Some(pool) = pool {
+        out.host_str(|o| &o.view.pool, &arena, pool);
+    }
+    if let Some(dialect) = dialect {
+        out.host_str(|o| &o.view.ingress_dialect, &arena, dialect);
+    }
+    out.set(
+        |o| &o.view.flags,
+        if door.is_session() { REQUEST_STREAM } else { 0 },
+    );
+    out.host_rows(|o| &o.view.signals, &signals);
+    out.set(|o| &o.view.signals_len, sw);
+    out.set(|o| &o.prompt.message_count, tw as u64);
+    out.host_rows(|o| &o.prompt.messages, &turns);
+    out.set(|o| &o.prompt.messages_len, tw);
+    if let Some(body) = body {
+        out.set(|o| &o.body, body);
+        if rewritten {
+            out.set(|o| &o.rewritten, body);
+        }
+    }
+    Outcome::Ready
 });
 
 busbar_contract::plugin_door! {
@@ -1052,3 +1264,11 @@ busbar_contract::plugin_door! {
 #[cfg(test)]
 #[path = "tests/ladder_tests.rs"]
 mod ladder_tests;
+
+const _: () = {
+    // The ride constants name the needs they say they name.
+    assert!(NEEDS[RIDES_REALTIME_SOCKET as usize - 1].direction == DIRECTION_OUTBOUND);
+    assert!(NEEDS[RIDES_REALTIME_PASS as usize - 1].direction == DIRECTION_OUTBOUND);
+    assert!(NEEDS[RIDES_LIVE_SOCKET as usize - 1].direction == DIRECTION_OUTBOUND);
+    assert!(DIALECTS.len() == DIALECTS_BY_NAME.len());
+};

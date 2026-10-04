@@ -13,7 +13,9 @@
 //! (`EMIT_DONE` only with the last byte) is written once in this plane. Each plane door carries
 //! this logic today; one SDK home for all of them is 1.6.0-QUESTIONS.md PIECE-HOME.
 
-use busbar_contract::abi::plane::{OnPieceIn, OnPieceOut, OutField, UnitCount, EMIT_DONE};
+use busbar_contract::abi::plane::{
+    OnPieceIn, OnPieceOut, OutField, UnitCount, EMIT_DONE, EMIT_TO_FAR_END, PIECE_OUT_TEXT,
+};
 use busbar_contract::abi::sdk::{HostBuf, Lent, Out};
 
 /// Whether `input` is the kernel's re-call after a `more = 1` answer: no bytes, no flags and no
@@ -56,8 +58,9 @@ impl Owed {
     }
 
     /// Write what is owed into the reply buffer, as much as fits: `more = 1` while any is left, and
-    /// the owed flags on every write, `EMIT_DONE` held back until the last byte. Answers whether the
-    /// unit is done.
+    /// the owed flags on every write, `EMIT_DONE` held back until the last byte, and so is a
+    /// far-bound message's `PIECE_OUT_TEXT` (the kernel gathers a far-bound message whole, so its
+    /// last piece names it text). Answers whether the unit is done.
     pub fn pay(&mut self, input: Lent<'_, OnPieceIn>, out: &mut Out<'_, OnPieceOut>) -> bool {
         let n = input.reply_buf().stream(&self.bytes[self.at..]);
         self.at += n;
@@ -66,7 +69,9 @@ impl Owed {
         out.set(|o| &o.more, u32::from(more));
         out.set(
             |o| &o.flags,
-            if more {
+            if more && self.flags & EMIT_TO_FAR_END != 0 {
+                self.flags & !(EMIT_DONE | PIECE_OUT_TEXT)
+            } else if more {
                 self.flags & !EMIT_DONE
             } else {
                 self.flags

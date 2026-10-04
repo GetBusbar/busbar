@@ -85,8 +85,15 @@ fn the_far_ends_usage_reaches_the_caller_and_the_sessions_units() {
     s.from_far_end(&usage_done(), 0);
     assert_eq!(
         s.units(),
-        vec![(0, 10), (1, 20), (2, 3), (3, 4), (seconds(), 2)],
-        "the closed turn's tokens and its admitted audio"
+        vec![
+            (0, 10),
+            (1, 20),
+            (2, 3),
+            (3, 4),
+            (seconds(), 2),
+            (PER_SESSION_CLASS, 1)
+        ],
+        "the closed turn's tokens, its admitted audio, and the fee the answered session incurred"
     );
     let emit = s.next(false);
     assert!(
@@ -243,4 +250,94 @@ fn drive_names_the_sessions_that_owe_output() {
     assert_eq!(all.ready(8), vec![4, 5]);
     assert_eq!(all.ready(1), vec![4]);
     assert_eq!(all.ready_count(), 2);
+}
+
+/// THE SESSION'S FEE UNIT (ARCHITECT Q-L5-FEE (A); Q17-6): `per_session` is reported `1` once the
+/// far end first answers the session, never before. A session whose far end never answered (its
+/// open failed) reports no fee unit however much its caller sent, so the kernel refunds the fee.
+#[test]
+fn the_fee_unit_is_incurred_when_the_far_end_first_answers() {
+    let mut s = sideband();
+    s.from_caller(&uplink(1000), false);
+    let _ = s.next(true);
+    assert!(
+        !s.units().iter().any(|(c, _)| *c == PER_SESSION_CLASS),
+        "no far answer, no fee unit: {:?}",
+        s.units()
+    );
+    s.from_caller(&[], true);
+    assert!(
+        !s.units().iter().any(|(c, _)| *c == PER_SESSION_CLASS),
+        "an open that never reached the far end ends with no fee unit"
+    );
+    let mut s = sideband();
+    s.from_far_end(&audio_delta("it1"), 0);
+    assert_eq!(
+        s.units()
+            .iter()
+            .filter(|(c, _)| *c == PER_SESSION_CLASS)
+            .collect::<Vec<_>>(),
+        vec![&(PER_SESSION_CLASS, 1)],
+        "the far end's first answer incurs it once"
+    );
+    s.from_far_end(&audio_delta("it2"), 0);
+    assert!(s.units().contains(&(PER_SESSION_CLASS, 1)), "still one");
+}
+
+/// THE SESSION-OPEN REWRITE (ARCHITECT Q-L5B-PROJECT; the retired streams crate's projection,
+/// verbatim): a hook's rewrite is a PATCH over the locked params (a key it names wins, a key it does
+/// not keep the plane's value, `null` clears); output that is not JSON, not an object, or not a
+/// session config once merged is refused, never opened as if no rewrite had been made.
+#[test]
+fn a_session_open_rewrite_patches_the_locked_params_or_refuses() {
+    let locked = SessionConfig {
+        instructions: Some("be brief".to_string()),
+        voice: Some("alloy".to_string()),
+        ..SessionConfig::default()
+    };
+    let patched =
+        committed_session_config(&locked, br#"{"voice":"marin"}"#).expect("a readable patch");
+    assert_eq!(
+        patched.voice.as_deref(),
+        Some("marin"),
+        "the named key wins"
+    );
+    assert_eq!(
+        patched.instructions.as_deref(),
+        Some("be brief"),
+        "an unnamed key keeps the locked value"
+    );
+    let cleared = committed_session_config(&locked, br#"{"instructions":null}"#).expect("clear");
+    assert_eq!(cleared.instructions, None, "naming null clears");
+    for bad in [&b"not json"[..], b"7", br#"{"voice":7}"#] {
+        assert!(
+            committed_session_config(&locked, bad).is_err(),
+            "{}",
+            String::from_utf8_lossy(bad)
+        );
+    }
+}
+
+/// A session opened after its open's hooks rewrote the params opens under the rewritten params,
+/// once; a stream with none opens under what its door locks.
+#[test]
+fn a_rewritten_session_open_locks_the_rewritten_params_once() {
+    let cfg = StreamsCfg::default();
+    assert_eq!(Live::locked(Door::Sideband, &cfg), cfg.session);
+    assert_eq!(
+        Live::locked(Door::Twilio, &cfg),
+        crate::session_params::g711_config()
+    );
+    let mut sessions = Sessions::default();
+    let rewritten = SessionConfig {
+        voice: Some("marin".to_string()),
+        ..cfg.session.clone()
+    };
+    sessions.rewrite(7, rewritten);
+    assert!(sessions.get_or_open(7, Door::Sideband, &cfg).is_some());
+    sessions.close(7);
+    assert!(
+        sessions.rewritten.is_empty(),
+        "consumed at the open and gone with the session"
+    );
 }
