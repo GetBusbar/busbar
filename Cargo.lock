@@ -336,6 +336,7 @@ dependencies = [
  "busbar-kernel-wal",
  "busbar-llm",
  "busbar-mcp",
+ "busbar-plane-a2a",
  "busbar-plane-decisions",
  "busbar-plane-llm",
  "busbar-plane-streaming",
@@ -929,8 +930,11 @@ name = "busbar-plane-a2a"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "indexmap",
  "serde",
  "serde_json",
+ "tracing",
+ "url",
 ]
 
 [[package]]
