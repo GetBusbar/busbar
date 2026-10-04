@@ -109,17 +109,21 @@ pub fn boot(
     dest: Arc<dyn DestJudge>,
     listens: &[&str],
 ) -> &'static Arc<Connector> {
-    // The process's one runtime is the reactor a socket a plugin opens from a dispatcher worker
-    // registers on (`busbar_core_connector::io`).
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        busbar_core_connector::io::install_process_reactor(handle);
-    }
+    // The reactor a socket a plugin opens from a dispatcher worker registers on
+    // (`busbar_core_connector::io`): the connector's own I/O thread, never a runtime a synchronous
+    // caller may block. The control runtime's thread waits, synchronously, on governance-store ops
+    // (the boot's store open, admin, the budget flusher: the bridge's TRANSITIONAL wait, ARCHITECT
+    // ruling 2026-10-03 on Q-L16-1); a remote store's socket on that runtime's reactor would never
+    // be driven while it waits.
+    busbar_core_connector::io::install_process_reactor(io_reactor());
     let built = process::build(
         || entries(doors),
         dest,
         &process::own_ports(listens),
         // A plugin reading a connection through a ticket (an export sink's delivery parked on its
-        // collector's reply) is woken through the process's one dispatcher.
+        // collector's reply; a remote store's pending reply, ARCHITECT ruling 2026-10-03 on
+        // Q-L14-1) is woken on the process's one dispatcher, the one every kind's instances are
+        // opened on.
         crate::root::dispatch::dispatcher().conn_waker(),
     );
     let connector = built.unwrap_or_else(|refusal| {
@@ -130,6 +134,34 @@ pub fn boot(
         eprintln!("busbar: a second connector was built; the process has one");
         std::process::exit(2);
     })
+}
+
+// TRANSITIONAL: the connector's own I/O thread exists because synchronous governance callers wait
+// on the control runtime's thread (ARCHITECT ruling 2026-10-03 on Q-L16-3, the Q-L16-1 row); drains
+// with that wait (D2/D3; 1.6.0-TODO.md).
+/// THE CONNECTOR'S I/O THREAD: a single-threaded runtime of its own whose reactor drives every
+/// socket a plugin opens from a dispatcher worker, and nothing else. Built once.
+fn io_reactor() -> tokio::runtime::Handle {
+    static IO: OnceLock<tokio::runtime::Handle> = OnceLock::new();
+    IO.get_or_init(|| {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap_or_else(|e| {
+                eprintln!("busbar: the connector's I/O runtime did not build: {e}");
+                std::process::exit(2);
+            });
+        let handle = rt.handle().clone();
+        std::thread::Builder::new()
+            .name("busbar-conn-io".into())
+            .spawn(move || rt.block_on(std::future::pending::<()>()))
+            .unwrap_or_else(|e| {
+                eprintln!("busbar: the connector's I/O thread did not start: {e}");
+                std::process::exit(2);
+            });
+        handle
+    })
+    .clone()
 }
 
 #[cfg(test)]

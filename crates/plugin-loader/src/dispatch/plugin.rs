@@ -730,13 +730,22 @@ impl Instance {
             }
         }
         match (s, outcome) {
-            (slot::OPEN, Outcome::Ready) => {
+            (slot::OPEN, Outcome::Ready | Outcome::Pending) => {
+                // An open that answered READY (done) or PENDING (its connect step pends) hands back
+                // its instance box; the host keeps it so a PENDING open's RESUME runs on the SAME
+                // box — plugin-owned memory carries the half-open state across the pend (no module
+                // static in the contract).
                 // SAFETY: `refuse` checked the frame holds an `OpenOut`.
                 let inst = unsafe { (*out.cast::<OpenOut>()).instance };
                 if inst.is_null() {
                     return Crossed::host(Outcome::Fault);
                 }
                 self.ptr.store(inst, Ordering::Release);
+            }
+            (slot::OPEN, _) => {
+                // An open that FAILED (fresh, or on its RESUME): no instance. The plugin's
+                // trampoline freed the box a prior PENDING minted; drop our pointer to it.
+                self.ptr.store(std::ptr::null_mut(), Ordering::Release);
             }
             (slot::CLOSE, Outcome::Ready) => {
                 self.closed.store(true, Ordering::Release);

@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STORE'S DEADLINE CLASSES AND THE BRIDGE'S PENDING RULE, over a store door whose ops
-//! PEND and never wake:
+//! THE STORE'S DEADLINE CLASSES, over a store door whose ops PEND and never wake:
 //!
 //! * a WriteBehind op (`add_usage_batch`) to a hung store does NOT hold a reload drain, which
 //!   waits only on Call/Stream/Connection ops (H5: its own deadline class);
-//! * a Call-class op (`record_get`) to the same hung store DOES hold the drain;
-//! * a synchronous bridge call that PENDS faults the store, loudly: a debug build panics.
+//! * a Call-class op (`record_get`) to the same hung store DOES hold the drain.
+//!
+//! (A synchronous bridge call that PENDS is no longer FAULT: it is submitted on a ticket and
+//! completes on the wake, ARCHITECT ruling 2026-10-03 on Q-L14-1; `store_v3_pend_tests` proves it.)
 //!
 //! Every other slot is the memory store's, through the store SDK.
 
@@ -17,10 +18,8 @@ use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
 use busbar_contract::abi::sdk::door::Slot;
-use busbar_contract::abi::store::{
-    AddUsageBatchIn, GetPlaneRecordIn, HostBytesOut, OpId, RecordGetIn,
-};
-use busbar_contract::records::{RecordStore, UsageDelta};
+use busbar_contract::abi::store::{AddUsageBatchIn, HostBytesOut, OpId, RecordGetIn};
+use busbar_contract::records::UsageDelta;
 use busbar_contract::store_calls::StoreCalls;
 
 use crate::dispatch::kinds::store::Store;
@@ -47,18 +46,8 @@ impl Slot for HangsCall {
     }
 }
 
-/// `get_plane_record`: PENDING, which a ticket-less crossing may not answer.
-struct PendsTicketless;
-impl Slot for PendsTicketless {
-    type In = GetPlaneRecordIn;
-    type Out = HostBytesOut;
-    fn call(_: *mut c_void, _: &GetPlaneRecordIn, _: &mut HostBytesOut) -> Outcome {
-        Outcome::Pending
-    }
-}
-
 mod hung {
-    use super::{HangsCall, HangsWriteBehind, PendsTicketless};
+    use super::{HangsCall, HangsWriteBehind};
     use crate::both_ways::store_fixture::MemoryStore as M;
     use busbar_contract::abi::sdk::store::door as d;
     use busbar_contract::abi::sdk::Safe as S;
@@ -112,7 +101,7 @@ mod hung {
                     list_denylist: S<d::ListDenylist<M>>,
                     list_audit_tail: S<d::ListAuditTail<M>>,
                     upsert_plane_record: S<d::UpsertPlaneRecord<M>>,
-                    get_plane_record: PendsTicketless,
+                    get_plane_record: S<d::GetPlaneRecord<M>>,
                     append_plane_record: S<d::AppendPlaneRecord<M>>,
                     list_plane_records: S<d::ListPlaneRecords<M>>,
                     list_plane_record_parents: S<d::ListPlaneRecordParents<M>>,
@@ -208,14 +197,4 @@ fn a_hung_call_op_holds_the_reload_drain() {
         "a Call-class op in flight is waited on"
     );
     task.abort();
-}
-
-/// A store that PENDS on the synchronous bridge's ticket-less crossing faults, and a debug build
-/// says so by panicking: a pending store reached from a synchronous consumer never goes unseen.
-#[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "synchronous bridge")]
-fn a_store_that_pends_on_the_synchronous_bridge_fails_loudly() {
-    let (s, _d) = open();
-    let _ = RecordStore::get_plane_record(&s, "task", "t1");
 }
