@@ -51,7 +51,7 @@ use crate::proxy::egress_unit::{
         Journal, Outcome, Permit, Telemetry, UpstreamStatus,
     },
     walk::budget_secs,
-    Member, Pool, Shed, Step, Taken, Walk, WalkPorts, WeightedFloor,
+    Member, Pool, Shape, Shed, Step, Taken, Walk, WalkPorts, WeightedFloor,
 };
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
 use busbar_contract::abi::transport::{
@@ -66,6 +66,7 @@ use busbar_contract::redacted::Redacted;
 use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::{WireStatus, WireStatusClass};
 
+use super::hooks::{CandidateFacts, Candidates, Constraint};
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
 
 /// The bytes one read of the far end takes.
@@ -251,8 +252,11 @@ impl Egress {
                 walk,
                 live: None,
                 probe: None,
+                failed: None,
             }),
             probe_of: None,
+            described: None,
+            constraint: Mutex::new(None),
         }
     }
 
@@ -282,8 +286,11 @@ impl Egress {
                 walk,
                 live: None,
                 probe: Some(member),
+                failed: None,
             }),
             probe_of: Some(destination),
+            described: None,
+            constraint: Mutex::new(None),
         })
     }
 }
@@ -323,6 +330,9 @@ struct State {
     walk: Walk,
     live: Option<Live>,
     probe: Option<Member>,
+    /// Why the last attempt failed over, in the walk's failover vocabulary (the `routing` stage
+    /// tap's `previous_failure`).
+    failed: Option<&'static str>,
 }
 
 /// ONE UNIT'S FAR END over its [`Egress`].
@@ -332,6 +342,97 @@ pub struct EgressFarEnd<'e> {
     state: Mutex<State>,
     /// The member a health probe is pinned to; `None` for a unit's walk.
     probe_of: Option<DestinationId>,
+    /// What the hooks are shown of each member beyond the walk's own facts, by member name: the
+    /// operator's tags, tier and cost (the plane's section states them).
+    described: Option<Arc<HashMap<String, MemberFacts>>>,
+    /// The hooks' constraint on the walk, once the request stage set one.
+    constraint: Mutex<Option<Constraint>>,
+}
+
+/// What the operator states of one member for the hooks: its tags, its tier and its cost.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MemberFacts {
+    /// The member's model, as the hooks name it (empty = the member's name).
+    pub model: String,
+    /// The operator's tags.
+    pub tags: Vec<String>,
+    /// The operator's tier.
+    pub tier: Option<String>,
+    /// The operator's cost per million tokens.
+    pub cost_per_mtok: Option<f64>,
+}
+
+impl EgressFarEnd<'_> {
+    /// What the hooks are shown of each member beyond the walk's own facts, by member name.
+    #[must_use]
+    pub fn described(mut self, facts: Arc<HashMap<String, MemberFacts>>) -> Self {
+        self.described = Some(facts);
+        self
+    }
+
+    fn facts_of(&self, member: &Member) -> Option<&MemberFacts> {
+        self.described.as_ref().and_then(|d| d.get(&member.name))
+    }
+
+    fn tags_of(&self, member: &Member) -> &[String] {
+        self.facts_of(member).map_or(&[], |f| f.tags.as_slice())
+    }
+
+    /// `members` as the hooks' constraint leaves them for one pick: the routed pool's members the
+    /// hooks kept, in their order; a fallback pool's held to their restricts (`Err` = a required
+    /// restrict no member satisfies). The order, as destinations, rides beside.
+    fn constrained(
+        &self,
+        members: Vec<Member>,
+        primary: bool,
+    ) -> Result<(Vec<Member>, Vec<DestinationId>), ()> {
+        let constraint = self
+            .constraint
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(c) = constraint else {
+            return Ok((members, Vec::new()));
+        };
+        if primary {
+            let kept: Vec<Member> = members
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| c.keep.as_ref().is_none_or(|k| k.contains(i)))
+                .map(|(_, m)| m.clone())
+                .collect();
+            let order: Vec<DestinationId> = c
+                .order
+                .iter()
+                .flatten()
+                .filter_map(|i| members.get(*i))
+                .map(|m| m.destination)
+                .collect();
+            return Ok((kept, order));
+        }
+        let tagged = members
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (i, self.tags_of(m)));
+        let kept = c.enforce(tagged).map_err(|_| ())?;
+        Ok((
+            kept.into_iter()
+                .filter_map(|i| members.get(i).cloned())
+                .collect(),
+            Vec::new(),
+        ))
+    }
+}
+
+/// The walk's picks as the unit's hooks shape them ([`EgressFarEnd::constrained`]).
+impl Shape for EgressFarEnd<'_> {
+    fn shape(
+        &self,
+        members: Vec<Member>,
+        primary: bool,
+    ) -> Option<(Vec<Member>, Vec<DestinationId>)> {
+        self.constrained(members, primary).ok()
+    }
 }
 
 fn exhausted(shed: &Shed) -> Pick {
@@ -340,6 +441,20 @@ fn exhausted(shed: &Shed) -> Pick {
         retry_after: shed
             .retry_after_secs
             .map(|s| u32::try_from(s).unwrap_or(u32::MAX)),
+        detail: shed.detail,
+    }
+}
+
+/// The walk's shed as the unit is answered: a required gate restriction no member satisfies is the
+/// hooks' veto in the shed's words; any other shed is the walk's exhaustion.
+fn shed_pick(shed: &Shed) -> Pick {
+    if shed.gate_rejected {
+        Pick::Vetoed {
+            status: u32::from(shed.status),
+            text: shed.detail.to_string(),
+        }
+    } else {
+        exhausted(shed)
     }
 }
 
@@ -500,9 +615,11 @@ impl EgressFarEnd<'_> {
         };
         let name = member.name.clone();
         let route = self.egress.routes.get(&member.destination);
-        let passthrough = route
-            .and_then(|r| r.auth.as_ref())
-            .is_some_and(|a| a.passthrough);
+        // Through its pool (`upstream_credentials: passthrough`), or by its own binding.
+        let passthrough = member.passthrough
+            || route
+                .and_then(|r| r.auth.as_ref())
+                .is_some_and(|a| a.passthrough);
         let provider = route.map(|r| r.provider.clone()).unwrap_or_default();
         w.live = Some(Live {
             pool: pool.clone(),
@@ -542,9 +659,12 @@ impl EgressFarEnd<'_> {
                     return self.claim_member(&mut w, String::new(), member, None, None, false, 1);
                 }
             }
-            match w.walk.next(&ports, self.route.affinity, token) {
+            match w
+                .walk
+                .next_shaped(&ports, self.route.affinity, Some(self), token)
+            {
                 Step::Take(taken) => return self.admit_taken(&mut w, taken),
-                Step::Shed(shed) => return exhausted(&shed),
+                Step::Shed(shed) => return shed_pick(&shed),
                 Step::Wait(wait) => wait,
             }
         };
@@ -569,6 +689,7 @@ impl EgressFarEnd<'_> {
     fn no_answer(&self, token: &Pass<Route>, cause: NoAnswer) -> FarPiece {
         let e = self.egress;
         let mut w = self.lock();
+        let mut failed = None;
         if let Some(live) = w.live.as_mut() {
             let now = e.clock.now_secs();
             live.probe = None;
@@ -594,6 +715,10 @@ impl EgressFarEnd<'_> {
                 e.telemetry.upstream_failure(&pool, destination, failure);
                 e.telemetry.failover(&pool, failover);
             }
+            failed = Some(failover);
+        }
+        if failed.is_some() {
+            w.failed = failed;
         }
         self.settle(&mut w);
         fail_over()
@@ -608,6 +733,11 @@ impl EgressFarEnd<'_> {
             .as_ref()
             .and_then(|l| l.member.attempt_timeout_ms)
             .map_or(remaining.max(1), |ms| attempt_cap_ms(ms, remaining))
+    }
+
+    /// Whether the live attempt's member relays the caller's own credential.
+    fn live_passthrough(&self) -> bool {
+        self.lock().live.as_ref().is_some_and(|l| l.passthrough)
     }
 
     /// ONE CALL to the member's auth binding for this attempt's fields (THE DESIGN, section 6).
@@ -642,8 +772,16 @@ impl EgressFarEnd<'_> {
             } else {
                 Vec::new()
             },
-            caller_credential: if binding.passthrough {
-                self.route.caller_credential.clone()
+            // A passthrough member's one auth call is lent the caller's verified credential; a
+            // caller who presented none lends an empty one, so nothing is presented (never the
+            // operator's own key), as 1.5.5's `present_caller` did.
+            caller_credential: if binding.passthrough || self.live_passthrough() {
+                Some(
+                    self.route
+                        .caller_credential
+                        .clone()
+                        .unwrap_or_else(|| Redacted::new(Vec::new())),
+                )
             } else {
                 None
             },
@@ -748,14 +886,18 @@ impl EgressFarEnd<'_> {
             .map(|(n, v)| (n.as_str(), v.as_slice()))
             .collect();
         let cap_ms = self.attempt_cap();
-        let pool = {
+        let (pool, degraded) = {
             let w = self.lock();
-            w.live
-                .as_ref()
-                .map(|l| Self::metric_pool(&l.pool, &l.member).to_string())
-                .unwrap_or_default()
+            w.live.as_ref().map_or((String::new(), false), |l| {
+                (
+                    Self::metric_pool(&l.pool, &l.member).to_string(),
+                    l.degraded,
+                )
+            })
         };
-        if self.probe_of.is_none() {
+        // A terminal's dispatch (a spill, the least-bad bypass, a queued slot) is not one of the
+        // walk's attempts: 1.5.5's degraded forward counted none (`busbar_upstream_attempts_total`).
+        if self.probe_of.is_none() && !degraded {
             e.telemetry.upstream_attempt(&pool, destination);
         }
         // 3. The connector: the judged, pinned dial and the framer's encode.
@@ -1017,6 +1159,9 @@ impl EgressFarEnd<'_> {
             live.probe = None;
             live.spent = e.breaker.spend_budget(destination);
             live.delivered = self.route.wants_stream && !bytes.is_empty();
+            let head_ms = e.clock.now_millis().saturating_sub(live.anchor_ms);
+            #[allow(clippy::cast_precision_loss)]
+            e.telemetry.upstream_latency(destination, head_ms as f64);
             return FarPiece {
                 bytes,
                 status: far_status,
@@ -1024,6 +1169,7 @@ impl EgressFarEnd<'_> {
                 fail_over: false,
                 fields: false,
                 head: Vec::new(),
+                relayed: live.degraded,
             };
         }
         let classified = e.breaker.classify(destination, status);
@@ -1055,6 +1201,7 @@ impl EgressFarEnd<'_> {
                     .upstream_failure(&pool, destination, classified.label);
             }
             live.error_left = Some(e.error_body_max);
+            let relayed = live.degraded;
             let piece = cap(
                 live,
                 FarPiece {
@@ -1064,6 +1211,7 @@ impl EgressFarEnd<'_> {
                     fail_over: false,
                     fields: false,
                     head: Vec::new(),
+                    relayed,
                 },
             );
             if piece.last {
@@ -1080,6 +1228,7 @@ impl EgressFarEnd<'_> {
             let (pool, failed) = (live.pool.clone(), live.member.clone());
             w.walk.refused_for_size(&e.ports(), &pool, &failed);
         }
+        w.failed = Some(classified.label);
         self.settle(&mut w);
         fail_over()
     }
@@ -1116,6 +1265,68 @@ impl FarEnd for EgressFarEnd<'_> {
         token: &'a Pass<Route>,
     ) -> impl Future<Output = Option<FarPiece>> + Send + 'a {
         self.next_piece(token)
+    }
+
+    fn candidates(&self, _token: &Pass<Route>) -> Option<Candidates> {
+        let pool = self.egress.pools.get(&self.route.pool)?;
+        let members = pool.admissible_members();
+        Some(Candidates {
+            pool: pool.name.clone(),
+            members: members
+                .iter()
+                .enumerate()
+                .map(|(idx, m)| {
+                    let facts = self.facts_of(m);
+                    CandidateFacts {
+                        idx,
+                        model: facts
+                            .filter(|f| !f.model.is_empty())
+                            .map_or_else(|| m.name.clone(), |f| f.model.clone()),
+                        provider: self
+                            .egress
+                            .routes
+                            .get(&m.destination)
+                            .map(|r| r.provider.clone())
+                            .unwrap_or_default(),
+                        weight: m.weight,
+                        context_max: m.context_max.and_then(|c| usize::try_from(c).ok()),
+                        tier: facts.and_then(|f| f.tier.clone()),
+                        cost_per_mtok: facts.and_then(|f| f.cost_per_mtok),
+                        tags: facts.map(|f| f.tags.clone()).unwrap_or_default(),
+                        ..CandidateFacts::default()
+                    }
+                })
+                .collect(),
+        })
+    }
+
+    fn remaining(&self, _token: &Pass<Route>) -> Option<usize> {
+        let w = self.lock();
+        let Some((name, primary)) = w.walk.walking() else {
+            return Some(0);
+        };
+        let pool = self.egress.pools.get(name)?;
+        let members = self
+            .constrained(pool.admissible_members().into_owned(), primary)
+            .map(|(members, _)| members)
+            .unwrap_or_default();
+        Some(
+            members
+                .iter()
+                .filter(|m| !w.walk.ctx().is_excluded(m.destination))
+                .count(),
+        )
+    }
+
+    fn failure(&self, _token: &Pass<Route>) -> Option<&'static str> {
+        self.lock().failed
+    }
+
+    fn constrain(&self, _token: &Pass<Route>, constraint: Constraint) {
+        *self
+            .constraint
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(constraint);
     }
 }
 

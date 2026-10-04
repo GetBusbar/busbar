@@ -80,6 +80,13 @@ pub struct App {
     /// An ABSENT slot — the featureless binary boots with no fallback plane configured, so none was
     /// inserted — reads as the substrate-resident empty view, never a panic. Neutral: names no dialect.
     pub fallback_runtime_key: &'static str,
+    /// The composition root's projection of the configuration this generation was built from
+    /// ([`crate::appbuild::ConfigProjection`]); `None` when the root bound none.
+    pub config_projection: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    /// The kernel's own tables over the `pools:`/`models:` sections this generation resolved: the
+    /// read seam's answer when no plane contributed a runtime of its own (a door-served plane walks
+    /// these sections through its door).
+    pub config_tables: Arc<busbar_kernel::plane_host::ConfigTables>,
     pub store: Arc<dyn LaneRuntime>,
     /// THE CONTAINER PLANES' BREAKER CELLS — the degenerate single-member cell per registered
     /// container-plane member (the breaker-all-planes audit's closing design). Live state, shared by
@@ -538,7 +545,7 @@ impl App {
             self.plane_slot(key),
         ) {
             (Some(viewer), Some(slot)) => viewer(slot.as_ref()),
-            _ => &busbar_kernel::plane_host::EMPTY_VIEW,
+            _ => &*self.config_tables,
         }
     }
 
@@ -802,7 +809,13 @@ pub struct AppHandle {
     /// host. Bound once by the composition root ([`attach_on_swap`](Self::attach_on_swap)), which is
     /// the one place allowed to name the plane that owns them; unbound, a swap re-attaches nothing.
     attach: std::sync::OnceLock<fn(&Arc<dyn busbar_kernel::plane_host::EngineHost>)>,
+    /// What the composition root re-seals against a NEW generation once it is swapped in (its door
+    /// planes' refresh); unbound, a swap re-seals nothing.
+    on_apply: std::sync::OnceLock<OnApply>,
 }
+
+/// The composition root's re-seal over a newly swapped-in generation.
+pub type OnApply = Arc<dyn Fn(&Arc<App>) + Send + Sync>;
 
 impl AppHandle {
     pub fn new(app: Arc<App>) -> Self {
@@ -812,6 +825,7 @@ impl AppHandle {
             swapping: std::sync::atomic::AtomicBool::new(false),
             snapshot_host: std::sync::Mutex::new(None),
             attach: std::sync::OnceLock::new(),
+            on_apply: std::sync::OnceLock::new(),
         }
     }
 
@@ -821,6 +835,13 @@ impl AppHandle {
     /// binding wins: there is one set of per-generation workers per process.
     pub fn attach_on_swap(&self, attach: fn(&Arc<dyn busbar_kernel::plane_host::EngineHost>)) {
         let _ = self.attach.set(attach);
+    }
+
+    /// Bind what every [`swap`](Self::swap) re-seals against the incoming generation once it is the
+    /// current one: the composition root's door planes, refreshed onto its configuration (spec
+    /// Part 1 line 569, one validated object per `refresh`). First binding wins.
+    pub fn attach_on_apply(&self, on_apply: OnApply) {
+        let _ = self.on_apply.set(on_apply);
     }
 
     /// Bind the composition-root-owned ENGINE HOST for the CURRENT generation — the host the active
@@ -901,6 +922,9 @@ impl AppHandle {
             }
         }
         self.current.store(next.clone());
+        if let Some(on_apply) = self.on_apply.get() {
+            on_apply(&next);
+        }
         // RETIRE the OUTGOING generation's engine host (App-retype WEDGE 2f). The active health probers
         // hold a `Weak<dyn EngineHost>` to the composition-root-owned host of the snapshot they were
         // spawned against; dropping it here makes their `Weak::upgrade` fail, so they exit rather than

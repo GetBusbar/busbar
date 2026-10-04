@@ -395,6 +395,10 @@ pub trait Telemetry: Send + Sync {
     /// One upstream attempt was started against this member.
     fn upstream_attempt(&self, pool: &str, destination: DestinationId);
 
+    /// A served attempt's time to the upstream's response head, in milliseconds (the destination's
+    /// latency signal, a bounded proxy that never waits out a streamed body).
+    fn upstream_latency(&self, _destination: DestinationId, _ms: f64) {}
+
     /// One attempt failed, with the disposition label the previous release used.
     fn upstream_failure(&self, pool: &str, destination: DestinationId, disposition: &'static str);
 

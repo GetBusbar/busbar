@@ -1694,6 +1694,11 @@ impl TestApp {
         // Built and inserted ONLY when a real fallback (LLM) plane owns the key — otherwise `lanes`/
         // `by_model`/the `self.*` tables simply drop unused, and `App::llm_runtime` reads the empty
         // default (a surface with no LLM plane never routes through `engine_tables` anyway).
+        // THE KERNEL'S OWN TABLES over the same lanes and pools, as production `appbuild` builds them:
+        // the read seam answers from them when the fallback plane contributes no runtime of its own
+        // (a door plane), and reads the empty default when no fallback plane is registered.
+        let mut config_tables =
+            std::sync::Arc::<busbar_kernel::plane_host::ConfigTables>::default();
         if crate::plane::is_fallback(crate::plane::fallback_key()) {
             // Assemble the NEUTRAL `PlaneBuildInput` (money-path Phase 3-4 C) exactly as production
             // `appbuild` does, then hand it to the fallback (LLM) plane's REGISTERED `build_runtime`
@@ -1758,6 +1763,12 @@ impl TestApp {
                     name,
                 })
                 .collect();
+            config_tables = std::sync::Arc::new(busbar_kernel::plane_host::ConfigTables::of(
+                &lane_inputs,
+                &pool_inputs,
+                &by_model,
+                self.upstream_credentials,
+            ));
             let default_failover = self
                 .failover_cfg
                 .as_ref()
@@ -1897,6 +1908,10 @@ impl TestApp {
             // above into `plane_slots` under this interned key; the snapshot names only the key, and
             // `App::llm_runtime` downcasts the slot on the money path.
             fallback_runtime_key,
+            // The kernel's own tables over the fixture's lanes and pools (built above when a fallback
+            // plane is registered), read when that plane contributes no runtime of its own.
+            config_tables,
+            config_projection: None,
             store: store.clone(),
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
             session_store: std::sync::Arc::new(crate::session::SessionStore::new(1024, None)),
@@ -2144,10 +2159,13 @@ pub fn hook_axis_stand_in(
     registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
 ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String> {
     use busbar_plugin_loader::dispatch::{DispatchConfig, Dispatcher};
+    static DISPATCHER: std::sync::OnceLock<std::sync::Arc<Dispatcher>> = std::sync::OnceLock::new();
+    let dispatcher =
+        DISPATCHER.get_or_init(|| std::sync::Arc::new(Dispatcher::new(DispatchConfig::default())));
     let rows = busbar_plugin_loader::hook_door::HookRows::new(
         crate::preflight::STAND_IN_HOOK_DOORS,
         Some(registry.as_ref()),
-        std::sync::Arc::new(Dispatcher::new(DispatchConfig::default())),
+        dispatcher.clone(),
     )?;
     Ok(std::sync::Arc::new(rows))
 }

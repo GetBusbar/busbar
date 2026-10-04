@@ -59,9 +59,13 @@ fn record(projection: Projection, facts: &[(F, Value)]) -> Arc<Value> {
     Arc::new(rec.finish())
 }
 
-/// A span as it opened: when (monotonic, and epoch microseconds), and the stream's fields it
-/// carries.
-struct Opened(Instant, u64, Fields);
+/// A span as it opened: when (monotonic, and epoch microseconds), the stream's fields it carries,
+/// and its own id for the export, unique for the process (the subscriber's span ids are reused
+/// once a span closes, so two requests' spans would otherwise share an id and a trace).
+struct Opened(Instant, u64, Fields, u64);
+
+/// The next export id: one per span opened, never reused, never zero.
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// The `traces` fields a span records, by the field's own name — and only those: a span field that
 /// shares a name with another stream's field (`key_id`, say) is not a traces fact.
@@ -87,24 +91,37 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Producer {
         let mut fields = Fields(Vec::new());
         attrs.record(&mut fields);
         let epoch = UNIX_EPOCH.elapsed().unwrap_or_default().as_micros() as u64;
+        let own = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         span.extensions_mut()
-            .insert(Opened(Instant::now(), epoch, fields));
+            .insert(Opened(Instant::now(), epoch, fields, own));
     }
 
     /// The span's record: its facts, its parent's id, its ROOT's id as the trace id (a root is its
     /// own trace), its own id and name, when it opened and how long it stayed open.
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(&id) else { return };
-        let Some(Opened(start, epoch, Fields(mut facts))) = span.extensions_mut().remove() else {
+        let Some(Opened(start, epoch, Fields(mut facts), own)) = span.extensions_mut().remove()
+        else {
             return;
         };
-        let hex = |id: &Id| Value::from(format!("{:016x}", id.into_u64()));
-        let parent = span.parent().map(|p| (F::ParentSpanId, hex(&p.id())));
-        let root = span.scope().last().map_or(id.clone(), |r| r.id());
+        let hex = |id: u64| Value::from(format!("{id:016x}"));
+        // A span's export id, as it opened (`Opened`); one opened before this layer saw it keeps
+        // the subscriber's id.
+        let export_id = |s: &tracing_subscriber::registry::SpanRef<'_, S>| {
+            s.extensions()
+                .get::<Opened>()
+                .map_or_else(|| s.id().into_u64(), |o| o.3)
+        };
+        let parent = span.parent().map(|p| (F::ParentSpanId, hex(export_id(&p))));
+        let root = span
+            .scope()
+            .last()
+            .filter(|r| r.id() != id)
+            .map_or(own, |r| export_id(&r));
         let lasted = start.elapsed().as_micros() as u64;
         facts.extend(parent.into_iter().chain([
-            (F::TraceId, hex(&root)),
-            (F::SpanId, hex(&id)),
+            (F::TraceId, hex(root)),
+            (F::SpanId, hex(own)),
             (F::Name, Value::from(span.name())),
             (F::Start, Value::from(epoch)),
             (F::DurationUs, Value::from(lasted)),

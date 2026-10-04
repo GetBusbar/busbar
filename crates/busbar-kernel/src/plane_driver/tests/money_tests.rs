@@ -649,6 +649,8 @@ fn a_cancel_bill_carries_the_floor_counts_and_never_an_estimate() {
     let facts = crate::plane_driver::cancel::Facts {
         far_end_answered: true,
         streamed: true,
+        headed: true,
+        relayed: false,
         units: vec![
             floor(INPUT, 40),
             UnitCount {

@@ -1164,6 +1164,7 @@ fn spent() -> Pick {
     Pick::Exhausted {
         status: refusal_status(ReasonCode::NoDestination),
         retry_after: None,
+        detail: busbar_kernel_egress::wire::DETAIL_OVERLOADED,
     }
 }
 

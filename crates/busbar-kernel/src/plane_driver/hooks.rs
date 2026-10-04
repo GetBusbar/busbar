@@ -85,6 +85,8 @@ pub struct Bind<'a> {
     pub pool: &'a str,
     /// The principal the kernel verified, when there is one.
     pub principal: Option<&'a str>,
+    /// The dialect the unit arrived in: the index into the plane's dialects.
+    pub dialect: u32,
 }
 
 /// The stage taps a unit binds, by stage.
@@ -151,6 +153,8 @@ pub struct UnitHooks {
     pub groups: GroupScope,
     /// The access amendment of a hook handed the prompt.
     pub reads: HookRead,
+    /// The dialect the unit arrived in, by name (the label of a view the plane could not read).
+    pub dialect: String,
 }
 
 impl std::fmt::Debug for UnitHooks {
@@ -212,8 +216,11 @@ pub trait CallerFacts: Send + Sync {
     fn rate_headroom(&self, principal: &str, pool: &str) -> Option<f64>;
     /// The caller's budget chain.
     fn budget(&self, principal: &str) -> Vec<BudgetBucketState>;
-    /// Leave the access amendment of a hook handed the prompt.
-    fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool);
+    /// Leave the access amendment of a hook handed the prompt: the kernel's one seam (the node
+    /// journal), field names only.
+    fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool) {
+        crate::audit::amend::hook_read(hook, principal, dialect, identity);
+    }
     /// Fire the `response` taps of a unit refused at authentication.
     fn denied_taps(&self, taps: &[TapEntry], request_id: u64, dialect: &str, status: u16) {
         let shape = StageShape::zeroed(request_id, "", dialect, false);
@@ -232,6 +239,63 @@ pub trait CallerFacts: Send + Sync {
             SignalBag::default(),
             &|groups: &[String]| self.in_groups(None, groups),
         );
+    }
+}
+
+/// THE PRODUCTION CALLER FACTS: what the hooks may know of a verified caller, read where 1.5.5's
+/// hook seam read it (v1.5.5 `crates/busbar/src/proxy/hooks.rs`): the caller's governance key
+/// (looked up by the principal the kernel verified, its id), its `groups:` membership walked against
+/// the generation's group registry (`EngineHost::caller_in_hook_groups`, self + ancestors), and its
+/// rate headroom and budget chain over the governance state and card the generation pins
+/// (`EngineHost::rate_headroom` / `budget_state`, pure observations).
+pub struct EngineCaller {
+    /// The current generation's engine host, read per call (a config apply replaces it).
+    pub host: HostSource,
+    /// The principal's governance key, by its id (`GovState::lookup_by_sub`).
+    pub keys: KeyLookup,
+}
+
+/// The CURRENT generation's engine host, read where it is needed: a config apply replaces the
+/// generation (its hook registry, its group tree, its card), and a unit bound after the apply binds
+/// the new one, as 1.5.5's request read the snapshot it arrived on.
+pub type HostSource = Arc<dyn Fn() -> Arc<dyn crate::plane_host::EngineHost> + Send + Sync>;
+
+/// A governance key lookup by principal id.
+pub type KeyLookup =
+    Arc<dyn Fn(&str) -> Option<Arc<busbar_contract::records::VirtualKey>> + Send + Sync>;
+
+impl EngineCaller {
+    fn key_of(&self, principal: &str) -> Option<Arc<busbar_contract::records::VirtualKey>> {
+        (self.keys)(principal)
+    }
+}
+
+impl CallerFacts for EngineCaller {
+    fn key(&self, principal: &str) -> Option<CallerKey> {
+        self.key_of(principal).map(|k| CallerKey {
+            id: k.id.clone(),
+            name: k.name.clone(),
+        })
+    }
+
+    fn in_groups(&self, principal: Option<&str>, groups: &[String]) -> bool {
+        let key = principal.and_then(|p| self.key_of(p));
+        (self.host)().caller_in_hook_groups(key.as_ref().and_then(|k| k.group.as_deref()), groups)
+    }
+
+    fn rate_headroom(&self, principal: &str, pool: &str) -> Option<f64> {
+        let key = self.key_of(principal)?;
+        let host = (self.host)();
+        let pin = host.meter_pin()?;
+        host.rate_headroom(&pin, &key, Some(pool), crate::store::now())
+    }
+
+    fn budget(&self, principal: &str) -> Vec<BudgetBucketState> {
+        let host = (self.host)();
+        match (self.key_of(principal), host.meter_pin()) {
+            (Some(key), Some(pin)) => host.budget_state(&pin, &key, crate::store::now()),
+            _ => Vec::new(),
+        }
     }
 }
 
@@ -276,7 +340,12 @@ impl Parts {
     }
 
     /// The unit's hooks, with what `caller` knows of the verified principal.
-    fn bind(self, bind: &Bind<'_>, caller: &Arc<dyn CallerFacts>, request_id: u64) -> UnitHooks {
+    fn bind(
+        self,
+        bind: &Bind<'_>,
+        (caller, dialects): (&Arc<dyn CallerFacts>, &[String]),
+        request_id: u64,
+    ) -> UnitHooks {
         let principal = bind.principal.map(str::to_string);
         let groups_caller = Arc::clone(caller);
         let reads_caller = Arc::clone(caller);
@@ -300,6 +369,10 @@ impl Parts {
                     reads_caller.hook_read(hook, principal, dialect, id);
                 },
             ),
+            dialect: dialects
+                .get(bind.dialect as usize)
+                .cloned()
+                .unwrap_or_default(),
         }
     }
 }
@@ -335,7 +408,11 @@ impl HookBinder for BoundHooks {
             self.taps.clone(),
             self.requested,
         )?;
-        Some(parts.bind(bind, &self.caller, (self.next_request_id)()))
+        Some(parts.bind(
+            bind,
+            (&self.caller, &self.dialects),
+            (self.next_request_id)(),
+        ))
     }
 
     fn denied(&self, dialect: u32, status: u16) {
@@ -357,8 +434,8 @@ impl HookBinder for BoundHooks {
 /// declared signals and its one request-id counter), with what `caller` knows of a verified
 /// principal.
 pub struct HostHooks {
-    /// The generation's engine host.
-    pub host: Arc<dyn crate::plane_host::EngineHost>,
+    /// The current generation's engine host, read once per bound unit.
+    pub host: HostSource,
     /// What the hooks may know of a verified caller.
     pub caller: Arc<dyn CallerFacts>,
     /// The plane's dialects, in its tail's order.
@@ -367,7 +444,8 @@ pub struct HostHooks {
 
 impl HookBinder for HostHooks {
     fn bind(&self, bind: &Bind<'_>) -> Option<UnitHooks> {
-        let h = &*self.host;
+        let host = (self.host)();
+        let h = &*host;
         let parts = Parts::of(
             (h.rewrite_hooks(), h.global_gates()),
             (h.pool_rewrites(bind.pool), h.pool_gates(bind.pool)),
@@ -380,18 +458,19 @@ impl HookBinder for HostHooks {
             },
             *h.requested_signals(),
         )?;
-        Some(parts.bind(bind, &self.caller, h.next_request_id()))
+        Some(parts.bind(bind, (&self.caller, &self.dialects), h.next_request_id()))
     }
 
     fn denied(&self, dialect: u32, status: u16) {
-        let taps = self.host.tap_hooks_response();
+        let host = (self.host)();
+        let taps = host.tap_hooks_response();
         if taps.is_empty() {
             return;
         }
         denied_taps(
             &*self.caller,
             taps,
-            self.host.next_request_id(),
+            host.next_request_id(),
             &self.dialects,
             (dialect, status),
         );
@@ -736,7 +815,6 @@ struct Asked<'a> {
     hooks: &'a UnitHooks,
     pool: &'a str,
     candidates: &'a [Candidate<'a>],
-    principal: Option<&'a str>,
     /// The walk named its candidates (an empty pool, then, has nothing to rank).
     named: bool,
 }
@@ -750,8 +828,11 @@ impl Asked<'_> {
         }
     }
 
+    /// The access amendment of a hook handed the prompt, naming whose content it was: the
+    /// caller's governance key, as the previous release named it.
     fn read(&self, hook: &str, identity: bool) {
-        (self.hooks.reads)(hook, self.principal, &self.view.dialect, identity);
+        let whose = self.hooks.key.as_ref().map(|k| k.id.as_str());
+        (self.hooks.reads)(hook, whose, &self.view.dialect, identity);
     }
 
     /// One decision of `resolved`, under its deadline, its failure walked down its on-error chain.
@@ -1148,21 +1229,42 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             .principal
             .as_ref()
             .map(|p| p.as_str().to_string());
+        let dialect = self.lock().decoded.as_ref().map_or(0, |d| d.dialect);
         let Some(hooks) = binder.bind(&Bind {
             pool: &walk_pool,
             principal: principal.as_deref(),
+            dialect,
         }) else {
             return Ok(());
         };
+        self.lock().hooked_pool.clone_from(&walk_pool);
         // The unit's correlation id, a native `u64` on its span (never a formatted string), the
         // same value every hook payload and tap of the unit carries.
         let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
         span.record("request_id", hooks.request_id);
         let mut view = match self.project(None) {
             Ok(view) => view,
+            // A request the plane cannot read is the request's failure where a hook must judge
+            // it (a rewrite, a gate, a route policy); a tap only observes, and observes the zeroed
+            // shape (the previous release's stage capture), the request proceeding.
+            Err(Stopped::Unreadable)
+                if hooks.rewrites.is_empty()
+                    && hooks.gates.is_empty()
+                    && hooks.policy.is_none() =>
+            {
+                Projection {
+                    pool: walk_pool.clone(),
+                    dialect: hooks.dialect.clone(),
+                    ..Projection::default()
+                }
+            }
             Err(stopped) => {
                 // The unit's response taps still see it, in the zeroed shape.
-                self.lock().hooked = Some((hooks, Projection::default()));
+                let zeroed = Projection {
+                    dialect: hooks.dialect.clone(),
+                    ..Projection::default()
+                };
+                self.lock().hooked = Some((hooks, zeroed));
                 return Err(stopped);
             }
         };
@@ -1171,7 +1273,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         } else {
             walk_pool
         };
-        let principal = principal.as_deref();
+        self.lock().hooked_pool.clone_from(&pool);
 
         // 1. THE REWRITE CHAIN.
         for (timeout, hook) in &hooks.rewrites {
@@ -1235,7 +1337,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 &all,
                 &mut keep,
                 &mut constraint,
-                principal,
             )
             .await;
         if let Err(stopped) = decided {
@@ -1263,12 +1364,10 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             self.far.constrain(token, constraint);
         }
         self.lock().hooked = Some((hooks, view));
-        self.lock().hooked_pool = pool;
         Ok(())
     }
 
     /// Steps 3 and 4: the gates reconciled, then the base policy when no gate ordered.
-    #[allow(clippy::too_many_arguments)]
     async fn decide_route(
         &self,
         hooks: &UnitHooks,
@@ -1277,7 +1376,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         all: &[CandidateFacts],
         keep: &mut HashSet<usize>,
         constraint: &mut Constraint,
-        principal: Option<&str>,
     ) -> Result<(), Stopped> {
         let mut gate_order: Option<(Vec<usize>, &'static str)> = None;
         if !hooks.gates.is_empty() {
@@ -1287,7 +1385,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 hooks,
                 pool,
                 candidates: &shown,
-                principal,
                 named,
             };
             let outcomes: Vec<Decided> =
@@ -1410,7 +1507,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             hooks,
             pool,
             candidates: &shown,
-            principal,
             named,
         };
         match Box::pin(asked.decide(policy)).await {

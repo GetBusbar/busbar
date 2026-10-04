@@ -92,6 +92,13 @@ pub(crate) struct Facts {
     pub(crate) far_end_answered: bool,
     /// A byte of the reply reached the caller.
     pub(crate) streamed: bool,
+    /// The reply's head was stated to the caller (once: a head with no body may precede the
+    /// answer's first byte).
+    pub(crate) headed: bool,
+    /// The live attempt's answer is relayed as the unit's: a terminal's dispatch (a spill, the
+    /// least-bad bypass, a queued slot), which 1.5.5 never failed over, so a retry verdict on it
+    /// renders the answer instead.
+    pub(crate) relayed: bool,
     /// The last cumulative units the plane reported.
     pub(crate) units: Vec<UnitCount>,
 }

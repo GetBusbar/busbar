@@ -85,11 +85,13 @@ use tokio::sync::{watch, Notify};
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
 pub use far_end::{
-    AuthBinding, Egress, EgressFarEnd, MemberRoute, ResponseKeep, UnitRoute, DEFAULT_ERROR_BODY_MAX,
+    AuthBinding, Egress, EgressFarEnd, MemberFacts, MemberRoute, ResponseKeep, UnitRoute,
+    DEFAULT_ERROR_BODY_MAX,
 };
 pub use hooks::{
-    Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, GroupScope,
-    HookBinder, HookRead, HostHooks, Projection, Restrict, RewriteChain, StageTaps, UnitHooks,
+    Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, EngineCaller,
+    GroupScope, HookBinder, HookRead, HostHooks, HostSource, Projection, Restrict, RewriteChain,
+    StageTaps, UnitHooks,
 };
 pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
@@ -211,12 +213,12 @@ pub struct PlaneDriver {
     reload: watch::Sender<bool>,
     /// The kernel's record write path and the instance the plane's writes are keyed by.
     records: Option<(Arc<KernelServices>, Caller)>,
+    /// Which hooks bind to a unit of this plane; `None` = none ever does.
+    hooks: Option<Arc<dyn HookBinder>>,
     driver: Option<Ticket>,
     services: Arc<KernelServices>,
     /// The open duplex sessions, by stream: what wakes each when `drive` names it (R-B).
     sessions: Mutex<HashMap<u64, Arc<Notify>>>,
-    /// Which hooks bind to a unit of this plane; `None` = none ever does.
-    hooks: Option<Arc<dyn HookBinder>>,
 }
 
 impl Drop for PlaneDriver {
@@ -276,10 +278,10 @@ impl PlaneDriver {
             buried: Mutex::new(Vec::new()),
             reload: watch::channel(false).0,
             records: None,
+            hooks: None,
             driver,
             services,
             sessions: Mutex::default(),
-            hooks: None,
         })
     }
 
@@ -403,6 +405,20 @@ pub trait DriverSteps: Units {
     /// The units the plane's `arrive` expects the unit to do (its admission estimate, THE DESIGN
     /// §7 `admission: estimate`), told with [`Self::decoded`]. An estimate never bills.
     fn expected(&self, _ctx: &UnitCtx, _units: &[UnitCount]) {}
+
+    /// The words of the refusal one of these steps raised, where it has its own: its Retry-After
+    /// seconds (a rolling limit's wait, `RefusalIn::retry_after_s`, the previous release's
+    /// `Retry-After` on a limit's 429) and its message (`RefusalIn::text`, the kernel's own message
+    /// for the refusal: the previous release's sentence for a pool the key may not use or a model
+    /// no rate prices). `(None, None)` = the reason's own spelling, no wait.
+    fn refused_words(&self) -> (Option<u32>, Option<String>) {
+        (None, None)
+    }
+
+    /// An attempt of the unit starts on a member of `provider`, the unit's request read in its
+    /// `dialect` (the one `arrive` answered): the previous release's translation counter counts an
+    /// attempt whose far end speaks another dialect.
+    fn attempting(&self, _ctx: &UnitCtx, _dialect: u32, _provider: &str) {}
 }
 
 /// A refusal or failure the plane rendered, for the caller.
@@ -494,6 +510,11 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
         self.lock().decoded.clone()
     }
 
+    /// The status the plane's `arrive` refused the arrival under, when it refused it.
+    pub fn declined_status(&self) -> Option<u32> {
+        self.lock().declined.map(|(_, status)| status)
+    }
+
     /// The status a refusal for `reason` goes out under, as [`Self::render`] chooses it.
     fn status_for(&self, reason: ReasonCode) -> u32 {
         let st = self.lock();
@@ -570,7 +591,7 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
     /// The plane renders a refusal (`refusal`, ticketless, one re-call when short); the kernel's
     /// generic failure, with no body, when it cannot.
     fn render(&self, reason: ReasonCode) -> Rendered {
-        self.render_as(reason, None, None)
+        self.render_as(reason, None, None, None)
     }
 
     /// [`Self::render`], or under the status and Retry-After the walk chose (an exhaustion
@@ -581,6 +602,7 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
         reason: ReasonCode,
         walk: Option<(u32, Option<u32>)>,
         said: Option<&str>,
+        retry_after: Option<u32>,
     ) -> Rendered {
         let (unit, dialect, declined) = {
             let st = self.lock();
@@ -595,7 +617,7 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             (None, Some((_, status))) => status,
             (None, None) => self.driver.config.status(dialect, reason),
         };
-        let retry_after_s = walk.and_then(|(_, r)| r).unwrap_or(0);
+        let retry_after_s = walk.and_then(|(_, r)| r).or(retry_after).unwrap_or(0);
         let text = said.unwrap_or(reason.as_str());
         let caps = self.driver.config.caps;
         let (mut reply, mut fields, mut arena) = (
@@ -681,6 +703,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                         ReasonCode::HookVeto,
                         Some((veto.status, None)),
                         Some(veto.text.as_str()),
+                        None,
                     );
                     self.lock().rendered = Some(rendered);
                     self.response_tap(true, veto.status);
@@ -727,24 +750,32 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             route::End::Failed(reason) | route::End::Cancel(reason, _) => {
                 self.response_tap(false, self.status_for(*reason));
             }
-            route::End::Exhausted(status, _) => self.response_tap(false, *status),
+            route::End::Exhausted(status, ..) => self.response_tap(false, *status),
             route::End::Vetoed(status, _) => self.response_tap(true, *status),
         }
         let answer = match end {
             route::End::Done => StepAnswer::proceed(token, RoutePlan::default()),
             route::End::Failed(reason) => StepAnswer::refuse(token, Refusal::new(reason)),
-            route::End::Exhausted(status, retry_after) => {
+            route::End::Exhausted(status, retry_after, detail) => {
                 // THE WALK'S EXHAUSTION TERMINAL: its status and its Retry-After floor, handed to
                 // the plane's `refusal` (RefusalIn.retry_after_s), which renders them in its dialect.
-                let rendered =
-                    self.render_as(ReasonCode::BreakerOpen, Some((status, retry_after)), None);
+                let rendered = self.render_as(
+                    ReasonCode::BreakerOpen,
+                    Some((status, retry_after)),
+                    Some(detail),
+                    None,
+                );
                 self.lock().rendered = Some(rendered);
                 StepAnswer::refuse(token, Refusal::new(ReasonCode::BreakerOpen))
             }
             route::End::Vetoed(status, text) => {
                 // THE WALK'S REFUSAL FOR A HOOK'S RESTRICTION: answered as the hook would be.
-                let rendered =
-                    self.render_as(ReasonCode::HookVeto, Some((status, None)), Some(&text));
+                let rendered = self.render_as(
+                    ReasonCode::HookVeto,
+                    Some((status, None)),
+                    Some(&text),
+                    None,
+                );
                 self.lock().rendered = Some(rendered);
                 StepAnswer::refuse(token, Refusal::new(ReasonCode::HookVeto))
             }
@@ -870,7 +901,8 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         };
         let body = match reason {
             Some(reason) if !pending => {
-                let rendered = self.render(reason);
+                let (retry_after, said) = self.steps.refused_words();
+                let rendered = self.render_as(reason, None, said.as_deref(), retry_after);
                 if let (Some(binder), true) = (&self.driver.hooks, is_authentication(reason)) {
                     // A unit refused at authentication: the response taps see the previous
                     // release's synthetic completion, under the status the caller is answered.

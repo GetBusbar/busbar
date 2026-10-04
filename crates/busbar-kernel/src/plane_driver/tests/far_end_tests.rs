@@ -707,6 +707,42 @@ async fn a_401_takes_the_member_down_and_is_relayed_to_the_plane() {
     );
 }
 
+/// THE LEAST-BAD TERMINAL'S ANSWER IS RELAYED (1.5.5 relayed a degraded dispatch's answer and never
+/// failed it over): every member failed over, the terminal takes the least-bad one past its
+/// breaker, and its answered failure reaches the plane marked relayed, so a retry verdict renders
+/// it rather than ending the unit on the exhaustion shed. An ordinary attempt's answer is not.
+#[tokio::test]
+async fn the_least_bad_terminals_answer_is_relayed_and_an_ordinary_attempts_is_not() {
+    let r = rig(
+        &[("a.test", Script::Answer(503, None, vec![b"down"]))],
+        OnExhausted::LeastBad,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    let first = far.next(&t).await.expect("a piece");
+    assert!(
+        first.fail_over,
+        "the walk's own attempt fails over: {first:?}"
+    );
+    assert!(!first.relayed);
+    assert!(
+        matches!(far.member(&t, 2).await, Pick::Member { .. }),
+        "the least-bad terminal takes the member again"
+    );
+    assert!(far.send(&t, request()).await);
+    let relayed = far.next(&t).await.expect("a piece");
+    assert!(!relayed.fail_over, "{relayed:?}");
+    assert!(
+        relayed.relayed,
+        "the terminal's answer is the unit's: {relayed:?}"
+    );
+    assert_eq!(relayed.status.map(|(s, _)| s), Some(503));
+    assert_eq!(relayed.bytes, b"down");
+}
+
 /// A PASSTHROUGH member's 401 is the caller's own key failing (1.5.5's attempt classifier): nothing
 /// is recorded against the member, and the answer is relayed to the plane as it came.
 #[tokio::test]
@@ -792,7 +828,8 @@ async fn exhaustion_sheds_with_the_retry_after_floor() {
         far.member(&t, 2).await,
         Pick::Exhausted {
             status: 503,
-            retry_after: Some(2)
+            retry_after: Some(2),
+            detail: busbar_kernel_egress::wire::DETAIL_OVERLOADED,
         }
     );
     // A genuine cooldown is quoted instead of the floor.
@@ -806,7 +843,8 @@ async fn exhaustion_sheds_with_the_retry_after_floor() {
         far.member(&t, 1).await,
         Pick::Exhausted {
             status: 503,
-            retry_after: Some(9)
+            retry_after: Some(9),
+            detail: busbar_kernel_egress::wire::DETAIL_OVERLOADED,
         }
     );
 }
@@ -1105,6 +1143,47 @@ async fn passthrough_hands_the_callers_credential_only_to_its_member() {
     assert_eq!(relays, vec![false, true]);
 }
 
+/// PASSTHROUGH THROUGH A POOL: a member its pool reaches with the caller's own credential (the
+/// pool's `upstream_credentials: passthrough`) has its one auth call lent the caller's credential,
+/// though its binding is its provider's own; and a caller who presented none lends an empty one, so
+/// nothing is presented (never the operator's key), as 1.5.5's `present_caller` did.
+#[tokio::test]
+async fn a_passthrough_pool_member_is_lent_the_callers_credential_or_an_empty_one() {
+    let mut r = rig(
+        &[
+            ("a.test", Script::Answer(200, None, vec![b"ok"])),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    for member in &mut r.egress.pools.get_mut(POOL).unwrap().members {
+        member.passthrough = true;
+    }
+    let t = token();
+    for credential in [Some(b"caller-key".to_vec()), None] {
+        let far = r.egress.unit(UnitRoute {
+            caller_credential: credential.clone().map(Into::into),
+            ..route()
+        });
+        let Pick::Member {
+            name, passthrough, ..
+        } = far.member(&t, 1).await
+        else {
+            panic!("a member");
+        };
+        assert!(passthrough, "{name}: the plane is told the member relays");
+        assert!(far.send(&t, request()).await);
+        let _ = drain(&far, &t).await;
+    }
+    let lent = r.auth.callers.lock().unwrap().clone();
+    let presented: Vec<Option<Vec<u8>>> = lent.into_iter().collect();
+    assert_eq!(
+        presented,
+        vec![Some(b"caller-key".to_vec()), Some(Vec::new())]
+    );
+}
+
 /// AUTH POINTS: a member whose style signs the body (`HeadBody`) has its one auth call made at
 /// `HeadBody` with the whole body, the bytes the framer sends; a member whose style is over the
 /// head is called at `Head` and lent no body.
@@ -1226,9 +1305,116 @@ async fn a_context_length_refusal_excludes_only_admissible_smaller_windows() {
     );
 }
 
-#[allow(unsafe_code)]
-#[path = "probe_unit_tests.rs"]
-mod probe_unit;
+/// THE HOOKS' CONSTRAINT ON THE WALK (ARCHITECT K5: `FarEnd` candidates/constrain): the walk
+/// reports its pool's members with what the operator states of them, and once constrained picks
+/// only the members the hooks kept, the hooks' order first.
+#[tokio::test]
+async fn the_hooks_constraint_orders_and_restricts_the_pick() {
+    use crate::plane_driver::{Constraint, MemberFacts};
+    let r = rig(
+        &[
+            ("a.test", Script::Answer(200, None, vec![b"a"])),
+            ("b.test", Script::Answer(200, None, vec![b"b"])),
+            ("c.test", Script::Answer(200, None, vec![b"c"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let described = Arc::new(HashMap::from([(
+        "m2".to_string(),
+        MemberFacts {
+            tags: vec!["baa".to_string()],
+            tier: Some("gold".to_string()),
+            ..MemberFacts::default()
+        },
+    )]));
+    let far = r.egress.unit(route()).described(described);
+    let candidates = far
+        .candidates(&t)
+        .expect("the walk names its pool's members");
+    assert_eq!(candidates.pool, POOL);
+    let names: Vec<(usize, &str, &str)> = candidates
+        .members
+        .iter()
+        .map(|c| (c.idx, c.model.as_str(), c.provider.as_str()))
+        .collect();
+    assert_eq!(names, [(0, "m0", "p0"), (1, "m1", "p1"), (2, "m2", "p2")]);
+    assert_eq!(candidates.members[2].tags, ["baa"]);
+    assert_eq!(candidates.members[2].tier.as_deref(), Some("gold"));
+    // The hooks keep m1 and m2 and prefer m2: the weighted walk (m0 heaviest) is overridden.
+    far.constrain(
+        &t,
+        Constraint {
+            keep: Some(vec![1, 2]),
+            order: Some(vec![2]),
+            ..Constraint::default()
+        },
+    );
+    let picked = |p: Pick| match p {
+        Pick::Member { name, .. } => name,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        picked(far.member(&t, 1).await),
+        "m2",
+        "the hooks' order first"
+    );
+    assert!(far.send(&t, request()).await);
+    let _ = drain(&far, &t).await;
+    assert_eq!(
+        picked(far.member(&t, 2).await),
+        "m1",
+        "then what the hooks kept"
+    );
+}
+
+/// A required restrict the hooks decided holds at the fallback pool's boundary: no member there
+/// carries its tags, so the walk refuses as the hook would (the previous release failed closed
+/// there rather than spill to an ineligible far end).
+#[tokio::test]
+async fn a_required_restrict_refuses_at_the_fallback_pool() {
+    use crate::plane_driver::{Constraint, Restrict};
+    let mut r = rig(
+        &[("a.test", Script::Refused)],
+        OnExhausted::FallbackPool("fb".into()),
+        None,
+    );
+    let fallback = Pool {
+        name: "fb".into(),
+        members: vec![Member::new(DestinationId::new(1), "m0", 1)],
+        failover: Failover {
+            timeout_secs: 30,
+            max_hops: 3,
+            exclusions: Vec::new(),
+        },
+        on_exhausted: OnExhausted::Status503,
+    };
+    r.egress.pools.insert("fb".to_string(), fallback);
+    let t = token();
+    let far = r.egress.unit(route());
+    far.constrain(
+        &t,
+        Constraint {
+            restricts: vec![Restrict {
+                tags_any: vec!["baa".to_string()],
+                on_empty: crate::config::PolicyOnError::Reject,
+                name: "compliance",
+            }],
+            ..Constraint::default()
+        },
+    );
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(!far.send(&t, request()).await, "the dial is refused");
+    assert_eq!(
+        far.member(&t, 2).await,
+        Pick::Vetoed {
+            status: 503,
+            text: "No upstream satisfies a required gate's restriction. Please retry shortly."
+                .to_string(),
+        }
+    );
+}
 
 /// THE DISPATCH RECORD NAMES ITS UNIT (ARCHITECT P3 (c), 2026-10-02): the write-ahead record the walk
 /// makes before each dial carries the unit the walk serves, so the root writes it under that unit's
@@ -1251,3 +1437,7 @@ async fn every_dispatch_is_recorded_under_its_unit() {
     assert_eq!(kept.len(), 1, "one record, before the dial");
     assert_eq!(kept[0].unit, busbar_contract::UnitKey::new(77));
 }
+
+#[allow(unsafe_code)]
+#[path = "probe_unit_tests.rs"]
+mod probe_unit;

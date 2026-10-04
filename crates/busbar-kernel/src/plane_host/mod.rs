@@ -1830,7 +1830,8 @@ pub use crate::plane_host::build_input::{
     TripInput, TripModeInput,
 };
 pub use crate::plane_host::engine_view::{
-    EmptyEngineTablesView, EngineTablesView, LaneView, EMPTY_VIEW,
+    set_pool_queued_depth, ConfigTables, EmptyEngineTablesView, EngineTablesView, LaneView,
+    EMPTY_VIEW,
 };
 use crate::store::Unavailable;
 use crate::trust::validate::{Lapsed, Standing};
