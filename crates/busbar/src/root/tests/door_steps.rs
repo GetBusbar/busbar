@@ -295,7 +295,9 @@ fn provider(protocol: &str, style: Option<&str>) -> super::ProviderRoute {
         protocol: protocol.to_string(),
         credential: busbar_contract::secret_ref::SecretRef::none(),
         style: style.map(str::to_string),
-        settings: serde_json::json!({}),
+        token_url: None,
+        scope: None,
+        subject: None,
     }
 }
 
