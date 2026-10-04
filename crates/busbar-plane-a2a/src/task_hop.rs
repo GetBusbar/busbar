@@ -67,6 +67,9 @@ pub trait Mint: Reach {
 pub struct Request<'a> {
     /// The caller's JSON-RPC envelope.
     pub envelope: &'a Value,
+    /// The envelope a request-stage rewrite left, when one did: the request relayed (its task ids
+    /// translated over it). The task is opened from [`Request::envelope`].
+    pub relayed: Option<&'a Value>,
     /// The caller's reference: the task store's key prefix.
     pub caller: &'a str,
     /// The agent the kernel picked.
@@ -333,7 +336,8 @@ fn translated(
     backends: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Option<Vec<u8>>, Halt> {
     let mut owned = BTreeMap::new();
-    for id in identity::translatable(req.envelope) {
+    let relayed = req.relayed.unwrap_or(req.envelope);
+    for id in identity::translatable(relayed) {
         if owned.contains_key(id) {
             continue;
         }
@@ -347,7 +351,7 @@ fn translated(
     if owned.is_empty() {
         return Ok(None);
     }
-    Ok(identity::translate_request(req.envelope, &|id| {
+    Ok(identity::translate_request(relayed, &|id| {
         owned.get(id).cloned()
     }))
 }

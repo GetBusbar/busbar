@@ -143,6 +143,11 @@ pub struct Hop {
     /// The ATTEMPT's agent endpoint was judged by the relay's guard: its re-entries do not judge it
     /// again.
     endpoint_judged: bool,
+    /// THE ENVELOPE A REQUEST-STAGE REWRITE LEFT (`project`'s `rewrite`): what the hop relays
+    /// (its task ids translated over it, its binding composed from it). Everything else the hop
+    /// reads (the task it opens, the callback it carries, the admission) reads the caller's own
+    /// envelope, as the engine read the params its gate had already screened.
+    rewritten: Option<serde_json::Value>,
 }
 
 impl Hop {
@@ -165,6 +170,7 @@ impl Hop {
             verifying: None,
             held_writes: Vec::new(),
             endpoint_judged: false,
+            rewritten: None,
         }
     }
 
@@ -778,6 +784,7 @@ fn open_task(
     let backends = |id: &str| reach.plane.backends.get(&task_key(caller, id));
     let req = task_hop::Request {
         envelope,
+        relayed: hop.rewritten.as_ref(),
         caller,
         member,
         now,
@@ -958,7 +965,11 @@ fn bind(reach: &Reach<'_>, hop: &mut Hop, member: &str, generation: u64) -> Opti
     let word = crate::binding::binding_of(card.as_deref());
     match crate::binding::speakable(&word) {
         Some(binding) => {
-            let envelope = hop.request.clone().unwrap_or(serde_json::Value::Null);
+            let envelope = hop
+                .rewritten
+                .clone()
+                .or_else(|| hop.request.clone())
+                .unwrap_or(serde_json::Value::Null);
             hop.relay.bind(binding, &envelope);
             None
         }
@@ -2093,20 +2104,94 @@ pub fn session_of(envelope: &[u8]) -> Option<String> {
     (!context.is_empty()).then(|| context.to_string())
 }
 
+/// A REQUEST-STAGE HOOK'S REWRITE, read as the served engine read a `prompt: rw` reply to an A2A
+/// submission (`plane_host::apply_rewrite_to_invoke_args`, the invoke rewrite contract, in rule):
+/// the hook stage hands the plane the reply as `{"messages": [...], "tools": ...}`; an A2A request
+/// has one untrusted content member, its `params` object, and the rewrite REPLACES it: a
+/// `messages` entry's `content` (an object verbatim, or a JSON string that parses to an object) or,
+/// for an entry with no `role`, the entry itself; the LAST entry that yields an object wins.
+///
+/// `None` = not applied (no usable object, or a reply that is not JSON): the unit proceeds with the
+/// request it had, as a rewrite that cannot be applied left the served engine's submission as it
+/// came.
+#[must_use]
+pub fn rewritten_params(rewrite: &[u8]) -> Option<serde_json::Value> {
+    use serde_json::Value;
+    let reply: Value = serde_json::from_slice(rewrite).ok()?;
+    let mut params: Option<Value> = None;
+    for message in reply.get("messages")?.as_array()? {
+        let candidate = match message.get("content") {
+            Some(content) => content,
+            None if message.get("role").is_none() => message,
+            None => continue,
+        };
+        let resolved = match candidate {
+            Value::Object(_) => Some(candidate.clone()),
+            Value::String(text) => serde_json::from_str::<Value>(text)
+                .ok()
+                .filter(Value::is_object),
+            _ => None,
+        };
+        if resolved.is_some() {
+            params = resolved;
+        }
+    }
+    params
+}
+
+/// THE ENVELOPE `envelope` WITH ITS `params` REPLACED by `params`, re-serialized (the served
+/// engine wrote a committed rewrite back into the envelope and relayed it re-serialized). `None`
+/// for a body that is not a JSON object.
+#[must_use]
+pub fn with_params(
+    envelope: &[u8],
+    params: serde_json::Value,
+) -> Option<(serde_json::Value, Vec<u8>)> {
+    let mut value: serde_json::Value = serde_json::from_slice(envelope).ok()?;
+    value.as_object_mut()?.insert("params".to_string(), params);
+    let bytes = serde_json::to_vec(&value).ok()?;
+    Some((value, bytes))
+}
+
+/// THE HTTP+JSON BODY THAT SPELLS `params` on `route`, where the line's body is the request's
+/// params ([`crate::rest::compose`]: a message sent or streamed, a push config posted, whose task
+/// the path names again); `None` on a route whose params the path and query spell.
+fn target_body(route: &door::Route, params: &serde_json::Value) -> Option<Vec<u8>> {
+    let rel = route
+        .target
+        .strip_prefix(crate::MOUNT_PATH)
+        .unwrap_or(route.target);
+    let bodied = route.verb == "POST"
+        && [
+            crate::ROUTE_MESSAGE_SEND,
+            crate::ROUTE_MESSAGE_STREAM,
+            crate::ROUTE_PUSH_CONFIGS,
+        ]
+        .contains(&rel);
+    bodied.then(|| serde_json::to_vec(params).ok()).flatten()
+}
+
 slot!(
     /// `project`: the hook view of an arrival on the JSON-RPC or the HTTP+JSON line: its
     /// [`projection`] as the body (the envelope its request spelled, on the HTTP+JSON line), the
-    /// plane's own key as the ingress dialect (the engine's gate label), and the agent the target
-    /// addresses by name as the pool (none when the kernel's walk picks one), and its
-    /// [`session_of`] as the session. No signals. Any other line, or a body that is no envelope,
-    /// projects nothing (REFUSED).
-    Project, ProjectIn, ProjectOut, |_, input, mut out| {
+    /// plane's own key as the ingress dialect (the engine's gate label), the agent the target
+    /// addresses by name as the pool (none when the kernel's walk picks one), its [`session_of`] as
+    /// the session, and the prompt view a content-granted hook reads (the one `user` turn of the
+    /// params as JSON text, as the served engine projected an A2A submission). No signals.
+    ///
+    /// A request-stage hook's rewrite ([`rewritten_params`]) is applied first: the envelope with its
+    /// params replaced is the request projected and the request the unit relays from then on (kept
+    /// on the unit, [`Hop`]); the body the kernel keeps and re-pushes is answered in `rewritten`
+    /// (the envelope on the JSON-RPC line, the params where the HTTP+JSON line's body is the params).
+    /// Any other line, or a body that is no envelope, projects nothing (REFUSED).
+    Project, ProjectIn, ProjectOut, |instance, input, mut out| {
         let Some(route) = door::ROUTES.get(input.get().claim as usize) else {
             return Outcome::Refused;
         };
         let target = input.field(|i| &i.target).as_str().unwrap_or_default();
         let body = input.field(|i| &i.body).bytes();
-        let envelope = match door::line_of(route) {
+        let line = door::line_of(route);
+        let envelope = match line {
             Line::Document => body.to_vec(),
             Line::Target => match crate::rest::compose(route, target, body) {
                 Ok(Some(envelope)) => envelope,
@@ -2114,20 +2199,71 @@ slot!(
             },
             Line::Framed | Line::Open => return Outcome::Refused,
         };
+        let rewrite = input.field(|i| &i.rewrite).bytes();
+        let applied = (!rewrite.is_empty())
+            .then(|| rewritten_params(rewrite))
+            .flatten()
+            .and_then(|params| {
+                let kept = match line {
+                    Line::Target => target_body(route, &params),
+                    _ => None,
+                };
+                with_params(&envelope, params).map(|(value, bytes)| (value, bytes, kept))
+            });
+        let (envelope, rewritten) = match applied {
+            Some((value, bytes, kept)) => {
+                if let Some(plane) = instance.get() {
+                    plane.units.with(&input.get().unit, |u| {
+                        if let Some(u) = u {
+                            let target_line = u.envelope.is_some();
+                            if let Some(hop) = u.hop.as_mut() {
+                                if target_line {
+                                    hop.relay.send_instead(bytes.clone());
+                                }
+                                hop.rewritten = Some(value.clone());
+                            }
+                        }
+                    });
+                }
+                let kept = match line {
+                    Line::Document => Some(bytes.clone()),
+                    _ => kept,
+                };
+                (bytes, kept)
+            }
+            None => (envelope, None),
+        };
         let Some(projected) = projection(&envelope) else {
             return Outcome::Refused;
         };
+        let invocation = invocation_of(&envelope);
+        let shape = busbar_contract::ir::facts::IrFacts::shape(&invocation);
+        let turns: Vec<(&str, String)> = busbar_contract::ir::facts::IrFacts::content(&invocation)
+            .iter()
+            .map(|item| (item.author(), item.screenable_text().into_owned()))
+            .collect();
         let session = session_of(&envelope);
         let pool = agent_of(target).unwrap_or_default();
-        let (signals, mut arena) = (input.signals_buf(), input.arena_buf());
+        let (signals, mut arena, mut messages) =
+            (input.signals_buf(), input.arena_buf(), input.messages_buf());
         let pool = arena.span(pool.as_bytes());
         let dialect = arena.span(crate::PLANE_KEY.as_bytes());
         let projected = arena.span(&projected);
         let session = session.map(|s| arena.span(s.as_bytes()));
-        let short = !arena.fits();
+        let rewritten = rewritten.as_deref().map(|r| arena.span(r));
+        let turns: Vec<_> = turns
+            .iter()
+            .map(|(role, text)| (arena.span(role.as_bytes()), arena.span(text.as_bytes())))
+            .collect();
+        for (role, text) in turns {
+            messages.push_turn(&arena, role, text);
+        }
+        let short = !arena.fits() || !messages.fits();
         let (aw, and) = arena.settle(short);
+        let (turns_written, turns_needed) = messages.settle(short);
         out.set(|o| &o.arena_written, aw as u64);
         out.set(|o| &o.arena_needed, and as u64);
+        out.set(|o| &o.messages_needed, turns_needed as u32);
         if short {
             return Outcome::Failed;
         }
@@ -2137,10 +2273,43 @@ slot!(
             out.host_octets(|o| &o.view.session, &arena, session);
         }
         out.host_list(|o| &o.view.signals, |o| &o.view.signals_len, &signals);
+        out.set(|o| &o.view.message_count, shape.turn_count as u64);
+        out.set(|o| &o.view.total_chars, shape.text_chars as u64);
+        let mut flags = 0;
+        if shape.has_tools {
+            flags |= busbar_contract::abi::hook::REQUEST_HAS_TOOLS;
+        }
+        out.set(|o| &o.view.flags, flags);
         out.set(|o| &o.body, projected);
+        out.host_rows(|o| &o.prompt.messages, &messages);
+        out.set(|o| &o.prompt.messages_len, turns_written);
+        out.set(|o| &o.prompt.message_count, turns_written as u64);
+        if let Some(rewritten) = rewritten {
+            out.set(|o| &o.rewritten, rewritten);
+        }
         Outcome::Ready
     }
 );
+
+/// THE INVOCATION the served engine's hooks read an A2A request as: the method as the tool and the
+/// `params` as the arguments (`null` when it has none, or for a body that is no envelope).
+#[must_use]
+pub fn invocation_of(envelope: &[u8]) -> busbar_contract::ir::invoke::InvokeReq {
+    let value: serde_json::Value =
+        serde_json::from_slice(envelope).unwrap_or(serde_json::Value::Null);
+    busbar_contract::ir::invoke::InvokeReq {
+        tool: value
+            .get("method")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        arguments: value
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        extra: Default::default(),
+    }
+}
 
 #[cfg(test)]
 #[path = "tests/plane_door_tests.rs"]

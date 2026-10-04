@@ -25,6 +25,10 @@ fn project_session(claim: usize, target: &str, body: &[u8]) -> (Outcome, Option<
         value: busbar_contract::abi::hook::SignalValue { u64_: 0 },
     }; 4];
     let mut arena = vec![0u8; 4096];
+    let mut messages = [busbar_contract::abi::hook::MessageView {
+        role: AbiStr::over(b""),
+        text: AbiStr::over(b""),
+    }; 4];
     let input = ProjectIn {
         claim: u32::try_from(claim).unwrap(),
         target: AbiStr {
@@ -41,6 +45,8 @@ fn project_session(claim: usize, target: &str, body: &[u8]) -> (Outcome, Option<
         signals_cap: signals.len(),
         arena_buf: arena.as_mut_ptr(),
         arena_cap: arena.len(),
+        messages_buf: messages.as_mut_ptr(),
+        messages_cap: messages.len(),
         ..blank_in()
     };
     let mut out: ProjectOut = blank_out();
@@ -57,9 +63,14 @@ fn project_session(claim: usize, target: &str, body: &[u8]) -> (Outcome, Option<
     busbar_contract::abi::plane::check::check_project(
         outcome,
         &out,
-        &signals,
-        signals.len() as u64,
-        (arena.as_ptr(), arena.len() as u64),
+        &busbar_contract::abi::plane::check::ProjectHost {
+            signals: &signals,
+            signals_cap: signals.len() as u64,
+            messages: &messages,
+            messages_cap: messages.len() as u64,
+            arena: (arena.as_ptr(), arena.len() as u64),
+            rewrite: false,
+        },
     )
     .expect("the answer passes the loader's check");
     let s = out.view.session;

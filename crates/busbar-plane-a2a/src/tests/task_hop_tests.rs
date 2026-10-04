@@ -81,6 +81,7 @@ fn opened_with(
     let mut out = Vec::new();
     let req = Request {
         envelope,
+        relayed: None,
         caller,
         member: MEMBER,
         now: 300,
@@ -325,6 +326,7 @@ fn an_inline_callback_the_floor_refuses_refuses_the_request_before_anything_open
         let envelope = with_callback(json!({ "url": url }));
         let req = Request {
             envelope: &envelope,
+            relayed: None,
             caller: ALICE,
             member: MEMBER,
             now: 300,
