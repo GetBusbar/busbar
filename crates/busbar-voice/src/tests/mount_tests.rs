@@ -164,6 +164,7 @@ fn slot_from_public_url(public_url: Option<&str>) -> Option<Arc<dyn std::any::An
     let ctx = BuildCtx {
         endpoint_slot: None,
         agent_defs: &unit,
+        tool_defs: &unit,
         public_url,
         prior: None,
     };

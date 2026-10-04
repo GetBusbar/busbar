@@ -236,9 +236,10 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let reach = DoorReach {
         providers: &providers,
         secrets: &secrets,
-        auths: &auths,
+        auths: Arc::new(auths),
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
         stream_ceiling_secs: 600,
+        catalog: None,
     };
 
     // THE COMPOSITION, AS PRODUCTION SEALS IT: the door opened with its section (one model),
@@ -255,6 +256,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         &dispatcher,
         &composed_services(),
         &sections,
+        None,
         &plane_money,
         Some(&DoorEgress {
             reach: &reach,
@@ -265,7 +267,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let _ = std::fs::remove_file(&key_file);
     let composed = &mut served.planes[0];
     assert!(
-        composed.egress.is_some(),
+        composed.live.current().egress.is_some(),
         "the composition sealed its egress"
     );
     let money_steps = Arc::clone(&composed.money);
@@ -376,6 +378,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
         &dispatcher,
         &composed_services(),
         &sections,
+        None,
         &money,
         None,
     )

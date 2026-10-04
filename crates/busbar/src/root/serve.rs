@@ -53,7 +53,7 @@ use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
 #[cfg(linked_axis_node)]
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 #[cfg(linked_axis_node)]
-use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_OPEN};
+use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN};
 #[cfg(linked_axis_node)]
 use busbar_contract::auth::AuthPrincipal;
 #[cfg(linked_axis_node)]
@@ -378,15 +378,187 @@ pub struct ServedPlane {
     pub audit_kind: &'static str,
     /// Its key, scope kind, billable classes and fee units, read off its tail.
     pub facts: DoorFacts,
-    /// The pools and entries its section states (ARCHITECT Q-SW6).
-    pub pools: DoorPools,
     /// Its money steps: the same seam its driver reports units, cancel bills and abandoned ends to.
     pub money: Arc<PlaneMoney>,
-    /// Its egress, sealed for the generation: the kernel's walk over the connector. `None` = none
-    /// composed: every walk of its units is exhausted at once (nothing is dialled).
-    pub egress: Option<Arc<Egress>>,
+    /// What its units are served over for the current refresh generation (its pools and its
+    /// egress), replaced whole by a config apply ([`DoorApply`]).
+    pub live: Arc<DoorApply>,
     /// The kernel's host services it was admitted to: its units' records are written there.
     pub kernel: Arc<KernelServices>,
+}
+
+/// WHAT ONE GENERATION OF A DOOR PLANE IS SERVED OVER: its section as written, its refresh
+/// generation, the pools and entries the section states (ARCHITECT Q-SW6), and its egress sealed
+/// for the section's members (the kernel's walk over the connector; `None` = none composed, every
+/// walk of its units is exhausted at once and nothing is dialled).
+pub struct DoorLive {
+    /// The section, as written.
+    pub section: serde_yaml::Value,
+    /// The plane's generation serving it.
+    pub generation: u64,
+    /// Its pools and entries.
+    pub pools: DoorPools,
+    /// Its egress.
+    pub egress: Option<Arc<Egress>>,
+}
+
+/// What a door plane's egress is re-sealed over on a config apply: the providers the deployment
+/// booted with, the auth plugins, the connector and the journal.
+pub struct ApplyReach {
+    providers: BTreeMap<String, crate::root::door_steps::ProviderRoute>,
+    auths: Arc<crate::root::door_steps::OutboundAuths>,
+    conns: Arc<dyn busbar_contract::conn::PollConns>,
+    journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
+    stream_ceiling_secs: u64,
+    /// The top-level models catalog the deployment booted with ([`catalog_routes`]).
+    catalog: Option<std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
+}
+
+/// A CONFIG APPLY ON ONE SERVED DOOR PLANE (ARCHITECT Q-DEL-A2A-APPLY; THE DESIGN §11, plugin
+/// memory is "valid to its next refresh generation"): every apply refreshes the plane onto a new
+/// generation of the section the installed generation writes, so the plane re-reads it and its
+/// generation-scoped memory resets with it, as predev rebuilt the plane on every apply; its pools
+/// and egress are re-derived from that section. The generation before the previous one is retired
+/// (units still running on the previous one finish on it).
+pub struct DoorApply {
+    plugin: DoorPlane,
+    served_facts: crate::root::loader::dispatch::kinds::plane::ServedFacts,
+    facts: DoorFacts,
+    reach: Option<ApplyReach>,
+    live: std::sync::RwLock<Arc<DoorLive>>,
+}
+
+impl DoorApply {
+    /// The current generation's pools and egress.
+    #[must_use]
+    pub fn current(&self) -> Arc<DoorLive> {
+        Arc::clone(
+            &self
+                .live
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Refresh onto the generation `app` installed: its section (the plane's slot in it, else the
+    /// section the plane serves now), a new refresh generation, and pools and egress re-derived.
+    /// A plane that will not refresh keeps serving its current generation, logged.
+    pub fn apply(&self, app: &busbar_kernel::state::App) {
+        let now = self.current();
+        let section = app
+            .plane_slots
+            .get(self.facts.plane.as_str())
+            .and_then(|s| s.downcast_ref::<busbar_kernel::plane::door::DoorSlot>())
+            .map_or_else(|| now.section.clone(), |s| s.section.value.clone());
+        match self.refreshed(&section, now.generation + 1, &*app.secret_resolver) {
+            Ok(next) => {
+                *self
+                    .live
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(next);
+                if now.generation > 1 {
+                    crate::root::loader::dispatch::kinds::plane::retire_door(
+                        &self.plugin,
+                        now.generation - 1,
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(
+                plane = self.facts.plane.as_str(),
+                error = %e,
+                "door plane kept its generation across a config apply"
+            ),
+        }
+    }
+
+    fn refreshed(
+        &self,
+        section: &serde_yaml::Value,
+        generation: u64,
+        secrets: &dyn busbar_contract::secret::SecretResolve,
+    ) -> Result<DoorLive, String> {
+        let settings = if section.is_null() {
+            Vec::new()
+        } else {
+            serde_json::to_vec(section).map_err(|e| format!("its section: {e}"))?
+        };
+        crate::root::loader::dispatch::kinds::plane::refresh_door(
+            &self.plugin,
+            &settings,
+            generation,
+        )?;
+        let table = routes_of(
+            section,
+            self.reach.as_ref().and_then(|r| r.catalog.as_ref()),
+        );
+        let pools = DoorPools::of(&table);
+        let egress = match &self.reach {
+            Some(r) => {
+                let reach = crate::root::door_steps::DoorReach {
+                    providers: &r.providers,
+                    secrets,
+                    auths: Arc::clone(&r.auths),
+                    conns: Arc::clone(&r.conns),
+                    stream_ceiling_secs: r.stream_ceiling_secs,
+                    catalog: r.catalog.as_ref(),
+                };
+                let routes = crate::root::door_steps::member_routes(
+                    &table,
+                    &pools,
+                    &self.served_facts,
+                    &reach,
+                )?;
+                Some(Arc::new(crate::root::door_steps::compose_egress(
+                    &self.facts,
+                    &pools,
+                    self.plugin.instance(),
+                    Arc::clone(&r.conns),
+                    &routes,
+                    Arc::clone(&r.journal),
+                    r.stream_ceiling_secs,
+                )?))
+            }
+            None => None,
+        };
+        Ok(DoorLive {
+            section: section.clone(),
+            generation,
+            pools,
+            egress,
+        })
+    }
+}
+
+/// EVERY SERVED DOOR PLANE'S APPLY, kept when the planes move into the data routes, for the
+/// handle's appliers ([`busbar_kernel::state::AppHandle::on_apply`]).
+#[derive(Clone, Default)]
+pub struct DoorAppliers(Vec<Arc<DoorApply>>);
+
+impl DoorAppliers {
+    /// Refresh every served door plane onto the generation `app` installed.
+    pub fn apply(&self, app: &busbar_kernel::state::App) {
+        for plane in &self.0 {
+            plane.apply(app);
+        }
+    }
+}
+
+impl std::fmt::Debug for DoorLive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DoorLive")
+            .field("generation", &self.generation)
+            .field("pools", &self.pools)
+            .field("egress", &self.egress.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for DoorApply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DoorApply")
+            .field("facts", &self.facts)
+            .finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for ServedPlane {
@@ -408,6 +580,15 @@ pub struct Served {
     /// opened on while they run: the process's one node's.
     #[cfg(linked_axis_node)]
     pub post: Option<Arc<crate::root::plane_node::NodeEndPost>>,
+}
+
+impl Served {
+    /// Every served plane's config apply, kept for the handle's appliers once the planes move into
+    /// the data routes.
+    #[must_use]
+    pub fn appliers(&self) -> DoorAppliers {
+        DoorAppliers(self.planes.iter().map(|p| Arc::clone(&p.live)).collect())
+    }
 }
 
 impl Served {
@@ -436,8 +617,8 @@ pub fn compose_served(
     dispatcher: &Arc<Dispatcher>,
     late: &LateServices,
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
+    public_url: Option<&str>,
     reach: &crate::root::door_steps::DoorReach<'_>,
-    deployment: Deployment<'_>,
 ) -> Result<Served, String> {
     let Some(gov) = gov else {
         if !doors.is_empty() {
@@ -461,12 +642,12 @@ pub fn compose_served(
             reach,
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         };
-        let mut served = compose_planes_in(
+        let mut served = compose_planes(
             doors,
             dispatcher,
             late,
             sections,
-            deployment,
+            public_url,
             &money,
             Some(&egress),
         )?;
@@ -475,7 +656,7 @@ pub fn compose_served(
     }
     #[cfg(not(linked_axis_node))]
     {
-        let _ = (gov, dispatcher, late, reach, deployment);
+        let _ = (gov, dispatcher, late, reach, public_url);
         match doors
             .iter()
             .find(|(_, plugin)| sections.contains_key(plugin.served().section))
@@ -518,90 +699,7 @@ pub fn compose_planes(
     dispatcher: &Arc<Dispatcher>,
     late: &LateServices,
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
-    money: &dyn Fn() -> Arc<PlaneMoney>,
-    egress: Option<&DoorEgress<'_>>,
-) -> Result<Served, String> {
-    compose_planes_in(
-        doors,
-        dispatcher,
-        late,
-        sections,
-        Deployment::default(),
-        money,
-        egress,
-    )
-}
-
-/// WHAT A DOOR PLANE'S COMPOSITION READS OF THE DEPLOYMENT beside its own section (ARCHITECT
-/// Q-L5B-ROUTE, 2026-10-03).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Deployment<'d> {
-    /// The deployment's public base URL (top-level `public_url:`), handed to each plane's `open`
-    /// (`PlaneOpenIn.public_url`): a plane whose claims and audience are read from it publishes
-    /// them only under one.
-    pub public_url: Option<&'d str>,
-    /// The top-level `models:` catalog, from which a section's `session.model` reference is folded
-    /// into its route table ([`catalog_routes`]).
-    pub catalog: Option<&'d std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
-}
-
-/// The `session:` block of a section, and the `model:` key inside it that names a top-level catalog
-/// model.
-const SESSION_KEY: &str = "session";
-const MODEL_KEY: &str = "model";
-
-/// THE ROUTE TABLE A SECTION'S DOOR STEPS RESOLVE AGAINST (ARCHITECT Q-L5B-ROUTE, 2026-10-03): the
-/// section as written, plus, where it states no `models:` of its own and its `session.model` names an
-/// entry of the top-level models `catalog`, that one entry folded in as its `models:` map (its
-/// provider, upstream model and attempt cap), so the plane's door names it as a DIRECT route and the
-/// kernel's door steps resolve it as any entry of the plane's own section. The 1.5.5 shape of both
-/// sections is unchanged: only the route table is folded, never the settings the door opens with.
-#[must_use]
-pub fn catalog_routes(
-    section: &serde_yaml::Value,
-    catalog: &std::collections::HashMap<String, busbar_contract::config::ModelCfg>,
-) -> serde_yaml::Value {
-    use serde_yaml::{Mapping, Value};
-    let mut routes = section.clone();
-    let named = section
-        .get(SESSION_KEY)
-        .and_then(|s| s.get(MODEL_KEY))
-        .and_then(Value::as_str);
-    let (Some(map), Some(model)) = (routes.as_mapping_mut(), named) else {
-        return routes;
-    };
-    let models_key = Value::from(busbar_contract::section::RESERVED_MODELS_KEY);
-    let Some(entry) = catalog
-        .get(model)
-        .filter(|_| !map.contains_key(&models_key))
-    else {
-        return routes;
-    };
-    let mut folded = Mapping::new();
-    folded.insert("provider".into(), entry.provider.clone().into());
-    if let Some(upstream) = &entry.upstream_model {
-        folded.insert("upstream_model".into(), upstream.clone().into());
-    }
-    if let Some(ms) = entry.attempt_timeout_ms {
-        folded.insert("attempt_timeout_ms".into(), ms.into());
-    }
-    let mut models = Mapping::new();
-    models.insert(model.into(), Value::Mapping(folded));
-    map.insert(models_key, Value::Mapping(models));
-    routes
-}
-
-/// [`compose_planes`], reading the deployment's public URL and model catalog.
-///
-/// # Errors
-///
-/// As [`compose_planes`].
-pub fn compose_planes_in(
-    doors: &[(String, DoorPlane)],
-    dispatcher: &Arc<Dispatcher>,
-    late: &LateServices,
-    sections: &BTreeMap<&'static str, serde_yaml::Value>,
-    deployment: Deployment<'_>,
+    public_url: Option<&str>,
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
 ) -> Result<Served, String> {
@@ -622,13 +720,24 @@ pub fn compose_planes_in(
             );
             continue;
         };
+        // The plane's other owned sections this document writes, as written, by section name: it
+        // reads them beside its settings (ARCHITECT Q-L3B-AUD). Names come from its Statement.
+        let owned: serde_json::Map<String, serde_json::Value> = served_facts
+            .owns
+            .iter()
+            .filter_map(|name| {
+                let value = serde_json::to_value(sections.get(name)?).ok()?;
+                Some(((*name).to_string(), value))
+            })
+            .collect();
         let snapshot =
-            open(plugin, section, deployment.public_url).map_err(|e| format!("{instance}: {e}"))?;
+            open(plugin, section, public_url, &owned).map_err(|e| format!("{instance}: {e}"))?;
         let calls = Arc::new(PlaneInstance::new(
             plugin.clone(),
             Arc::clone(dispatcher),
             0,
         ));
+        let plane_money = money();
         let config = DriverConfig {
             caps: BufferCaps::default(),
             op_classes: served_facts
@@ -638,14 +747,15 @@ pub fn compose_planes_in(
                 .collect(),
             status_of: refusal_status,
             refusal_statuses: calls.refusal_statuses(),
-            caller_refs: None,
+            // Each unit is lent its caller's opaque reference under the book's signing material,
+            // as a plane that attributes its work to a caller (a task's owner) is lent it.
+            caller_refs: plane_money.caller_refs(),
         };
         let caller = Caller {
             instance: Arc::from(instance.as_str()),
             plugin: Arc::from(plugin.name()),
             kind: KindCode::Plane,
         };
-        let plane_money = money();
         let driver = PlaneDriver::new(
             Arc::clone(&calls) as Arc<dyn PlaneCalls>,
             config,
@@ -711,18 +821,15 @@ pub fn compose_planes_in(
                 .collect(),
         );
         // The route table: the section, with the catalog model its `session.model` names folded in.
-        let routes_of = deployment.catalog.map_or_else(
-            || section.clone(),
-            |catalog| catalog_routes(section, catalog),
-        );
-        let pools = DoorPools::of(&routes_of);
+        let table = routes_of(section, egress.and_then(|e| e.reach.catalog));
+        let pools = DoorPools::of(&table);
         // THE EGRESS, SEALED (THE DESIGN §6 steps 2-3): each member's route resolved and its
         // credential bound by the auth plugin serving its style, over the connector its needs were
         // declared on.
-        let egress = match egress {
+        let egress_sealed = match egress {
             Some(egress) => {
                 let routes = crate::root::door_steps::member_routes(
-                    &routes_of,
+                    &table,
                     &pools,
                     &served_facts,
                     egress.reach,
@@ -743,34 +850,114 @@ pub fn compose_planes_in(
             }
             None => None,
         };
+        let reach = egress.map(|e| ApplyReach {
+            providers: e.reach.providers.clone(),
+            auths: Arc::clone(&e.reach.auths),
+            conns: Arc::clone(&e.reach.conns),
+            journal: Arc::clone(&e.journal),
+            stream_ceiling_secs: e.reach.stream_ceiling_secs,
+            catalog: e.reach.catalog.cloned(),
+        });
+        let live = Arc::new(DoorApply {
+            plugin: plugin.clone(),
+            served_facts: served_facts.clone(),
+            facts: facts.clone(),
+            reach,
+            live: std::sync::RwLock::new(Arc::new(DoorLive {
+                section: section.clone(),
+                generation: 1,
+                pools,
+                egress: egress_sealed,
+            })),
+        });
         served.planes.push(ServedPlane {
             instance: instance.clone(),
             driver: Arc::new(driver),
             snapshot,
             audit_kind: served_facts.audit_kind,
             facts,
-            pools,
             money: plane_money,
-            egress,
+            live,
             kernel: Arc::clone(&kernel),
         });
     }
     Ok(served)
 }
 
-/// `open` the plane, generation 1, its settings `section` as JSON; the snapshot it published.
+/// The `session:` block of a section, and the `model:` key inside it that names a top-level catalog
+/// model.
+const SESSION_KEY: &str = "session";
+const MODEL_KEY: &str = "model";
+
+/// THE ROUTE TABLE A SECTION'S DOOR STEPS RESOLVE AGAINST (ARCHITECT Q-L5B-ROUTE, 2026-10-03): the
+/// section as written, plus, where it states no `models:` of its own and its `session.model` names an
+/// entry of the top-level models `catalog`, that one entry folded in as its `models:` map (its
+/// provider, upstream model and attempt cap), so the plane's door names it as a DIRECT route and the
+/// kernel's door steps resolve it as any entry of the plane's own section. The 1.5.5 shape of both
+/// sections is unchanged: only the route table is folded, never the settings the door opens with.
+#[must_use]
+pub fn catalog_routes(
+    section: &serde_yaml::Value,
+    catalog: &std::collections::HashMap<String, busbar_contract::config::ModelCfg>,
+) -> serde_yaml::Value {
+    use serde_yaml::{Mapping, Value};
+    let mut routes = section.clone();
+    let named = section
+        .get(SESSION_KEY)
+        .and_then(|s| s.get(MODEL_KEY))
+        .and_then(Value::as_str);
+    let (Some(map), Some(model)) = (routes.as_mapping_mut(), named) else {
+        return routes;
+    };
+    let models_key = Value::from(busbar_contract::section::RESERVED_MODELS_KEY);
+    let Some(entry) = catalog
+        .get(model)
+        .filter(|_| !map.contains_key(&models_key))
+    else {
+        return routes;
+    };
+    let mut folded = Mapping::new();
+    folded.insert("provider".into(), entry.provider.clone().into());
+    if let Some(upstream) = &entry.upstream_model {
+        folded.insert("upstream_model".into(), upstream.clone().into());
+    }
+    if let Some(ms) = entry.attempt_timeout_ms {
+        folded.insert("attempt_timeout_ms".into(), ms.into());
+    }
+    let mut models = Mapping::new();
+    models.insert(model.into(), Value::Mapping(folded));
+    map.insert(models_key, Value::Mapping(models));
+    routes
+}
+
+/// The route table of `section` under `catalog` ([`catalog_routes`]); the section itself without one.
+fn routes_of(
+    section: &serde_yaml::Value,
+    catalog: Option<&std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
+) -> serde_yaml::Value {
+    catalog.map_or_else(|| section.clone(), |c| catalog_routes(section, c))
+}
+
+/// `open` the plane, generation 1, its settings `section` as JSON, the deployment's `public_url`
+/// (absent = none stated) and its `owned` sections; the snapshot it published.
 fn open(
     plugin: &DoorPlane,
     section: &serde_yaml::Value,
     public_url: Option<&str>,
+    owned: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<OwnedSnapshot, String> {
-    let public_url = public_url.unwrap_or_default();
     // The reserved `work:` bounds are core-owned: the kernel reads them; the plane never sees them.
     let mut section = section.clone();
     if let Some(map) = section.as_mapping_mut() {
         map.remove(busbar_contract::section::RESERVED_WORK_KEY);
     }
     let settings = serde_json::to_vec(&section).map_err(|e| format!("its section: {e}"))?;
+    let owned = if owned.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::to_vec(owned).map_err(|e| format!("its owned sections: {e}"))?
+    };
+    let url = public_url.unwrap_or_default();
     let mut frame = Frame::new(
         PlaneOpenIn {
             open: OpenIn {
@@ -788,18 +975,30 @@ fn open(
                 err_buf: std::ptr::null_mut(),
                 err_cap: 0,
             },
-            public_url: if public_url.is_empty() {
-                AbiStr {
-                    ptr: std::ptr::null(),
-                    len: 0,
-                }
-            } else {
-                AbiStr {
-                    ptr: public_url.as_ptr(),
-                    len: public_url.len(),
-                }
+            // The deployment's public base URL, which a plane states its audience and its claims
+            // against (a plane with none fronts nothing).
+            public_url: AbiStr {
+                ptr: if url.is_empty() {
+                    std::ptr::null()
+                } else {
+                    url.as_ptr()
+                },
+                len: url.len(),
             },
-            owned: busbar_contract::abi::mechanism::call::Blob::ABSENT,
+            owned: Blob {
+                ptr: if owned.is_empty() {
+                    std::ptr::null()
+                } else {
+                    owned.as_ptr()
+                },
+                len: owned.len(),
+                fmt: if owned.is_empty() {
+                    busbar_contract::abi::mechanism::call::BLOB_ABSENT
+                } else {
+                    BLOB_JSON
+                },
+                flags: 0,
+            },
         },
         PlaneOpenOut {
             open: OpenOut {
@@ -1016,13 +1215,15 @@ fn claim_line(
             )
         })?;
     let exact = claim.flags & CLAIM_EXACT != 0;
+    let pattern = claim.flags & CLAIM_PATTERN != 0;
     let line = busbar_kernel::guest::Line {
         route: busbar_kernel::guest::Route {
             methods: method_bit(&claim.verb),
-            // An exact claim is its target; any other is its target's whole subtree, at any depth
-            // (the guest list's tail pattern, which matches what remains, including nothing).
+            // An exact claim is its target; a pattern claim is its target, each `{name}` one
+            // segment (`CLAIM_PATTERN`); any other is its target's whole subtree, at any depth (the
+            // guest list's tail pattern, which matches what remains, including nothing).
             path_form: if exact { PATH_EXACT } else { PATH_PATTERN },
-            path: if exact {
+            path: if exact || pattern {
                 claim.target.clone()
             } else {
                 format!("{}/{{*{SUBTREE}}}", claim.target.trim_end_matches('/'))
@@ -1114,6 +1315,7 @@ pub fn door_routes(
         ))
     });
     let instances: Vec<String> = served.planes.iter().map(|p| p.instance.clone()).collect();
+    let documents = resource_documents(&served);
     // Every mount: an exact line at its one path; a subtree line at its target and its tail.
     let mut mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
     let mut of_line: HashMap<(String, u32), (RouteAuth, DoorClaim)> = HashMap::new();
@@ -1122,10 +1324,10 @@ pub fn door_routes(
             LineAuth::None => RouteAuth::None,
             LineAuth::Chain(_) => RouteAuth::Key,
         };
-        let paths = if line.route.path_form == PATH_EXACT {
+        let tail = format!("/{{*{SUBTREE}}}");
+        let paths = if line.route.path_form == PATH_EXACT || !line.route.path.ends_with(&tail) {
             vec![line.route.path.clone()]
         } else {
-            let tail = format!("/{{*{SUBTREE}}}");
             let target = line.route.path.trim_end_matches(&tail).to_string();
             let target = if target.is_empty() {
                 "/".to_string()
@@ -1188,6 +1390,27 @@ pub fn door_routes(
     Ok(mounts
         .into_iter()
         .map(|(path, method, auth, (plane, claim))| {
+            // THE PROTECTED-RESOURCE DOCUMENT (ARCHITECT Q-L3B-RFC9728): rendered by the kernel's
+            // one RFC 9728 renderer from the facts the door states; not a unit, no audit row.
+            if let Some(doc) = documents.get(&(plane, claim)).cloned() {
+                return PlaneRouteSpec {
+                    path,
+                    method,
+                    auth,
+                    handler: Arc::new(move |_ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                        let doc = Arc::clone(&doc);
+                        Box::pin(async move {
+                            busbar_kernel::ingress::protocol::metadata(
+                                &busbar_kernel::ingress::protocol::Metadata {
+                                    resource: std::borrow::Cow::Borrowed(&doc.resource),
+                                    authorization_servers: &doc.authorization_servers,
+                                    scopes_supported: &doc.scopes_supported,
+                                },
+                            )
+                        })
+                    }),
+                };
+            }
             let routes = Arc::clone(&routes);
             PlaneRouteSpec {
                 path,
@@ -1208,6 +1431,62 @@ pub fn door_routes(
             }
         })
         .collect())
+}
+
+/// A door plane's RFC 9728 facts: its audience and the authorization servers and scopes it states.
+struct ResourceDocument {
+    resource: String,
+    authorization_servers: Vec<String>,
+    scopes_supported: Vec<String>,
+}
+
+/// THE PROTECTED-RESOURCE DOCUMENTS the served door planes state, by `(plane, claim)`: an open GET
+/// claim at the path of the plane's `resource_metadata`, beside the audience it binds, with the
+/// facts its snapshot states (`resource_facts`, absent = none).
+fn resource_documents(
+    served: &Served,
+) -> std::collections::HashMap<(usize, u32), Arc<ResourceDocument>> {
+    let mut out = std::collections::HashMap::new();
+    for (p, plane) in served.planes.iter().enumerate() {
+        let snapshot = &plane.snapshot;
+        let (Some(resource), Some(metadata)) = (&snapshot.audience, &snapshot.resource_metadata)
+        else {
+            continue;
+        };
+        let after = metadata.find("://").map_or(0, |at| at + 3);
+        let path = metadata[after..]
+            .find('/')
+            .map_or("/", |at| &metadata[after + at..]);
+        let facts: serde_json::Value = snapshot
+            .resource_facts
+            .as_deref()
+            .and_then(|f| serde_json::from_slice(f).ok())
+            .unwrap_or_default();
+        let list = |key: &str| -> Vec<String> {
+            facts
+                .get(key)
+                .and_then(serde_json::Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let doc = Arc::new(ResourceDocument {
+            resource: resource.clone(),
+            authorization_servers: list("authorization_servers"),
+            scopes_supported: list("scopes_supported"),
+        });
+        for (i, claim) in snapshot.claims.iter().enumerate() {
+            if claim.flags & CLAIM_OPEN != 0 && claim.verb == "GET" && claim.target == path {
+                if let Ok(rung) = u32::try_from(i) {
+                    out.insert((p, rung), Arc::clone(&doc));
+                }
+            }
+        }
+    }
+    out
 }
 
 #[cfg(linked_axis_node)]
@@ -1390,6 +1669,7 @@ impl DataRoutes {
         nesting: Option<Nesting>,
     ) -> Option<Rendered> {
         let served = &self.served.planes[plane];
+        let live = served.live.current();
         let node = self.post.node();
         let unit = node.mint();
         let arrived = node.arrived();
@@ -1401,7 +1681,7 @@ impl DataRoutes {
         };
         let mut steps = DoorSteps::new(
             &served.facts,
-            &served.pools,
+            &live.pools,
             node.resolver(),
             app,
             Some(&*served.money),
@@ -1418,7 +1698,7 @@ impl DataRoutes {
             steps = steps.under(n.parent.cell());
         }
         let far = DoorFar {
-            egress: served.egress.as_deref(),
+            egress: live.egress.as_deref(),
             steps: &steps,
             unit,
             far: OnceLock::new(),
