@@ -622,7 +622,7 @@
     },
     {
      "kind": "test",
-     "ref": "a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild",
+     "ref": "crates/plugin-loader/src/tests/registry_tests.rs::a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild",
      "proves": "a published 1.5.5 plugin is refused at boot naming the rebuild (C21)",
      "source": "curated",
      "status": "mapped"
@@ -643,7 +643,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-family:plugins, test:supported_abi_is_one_version_per_kind, test:a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild, test:untrusted_is_skipped_not_fatal_but_reference_fails_loud, gate:scripts/signing-gate.sh"
+   "verdict_detail": "oracle-family:plugins, test:supported_abi_is_one_version_per_kind, test:crates/plugin-loader/src/tests/registry_tests.rs::a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild, test:untrusted_is_skipped_not_fatal_but_reference_fails_loud, gate:scripts/signing-gate.sh"
   },
   {
    "id": "PB-12",

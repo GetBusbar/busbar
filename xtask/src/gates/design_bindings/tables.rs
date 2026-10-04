@@ -88,7 +88,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
     ]),
     ("PB-11", &[
         ("test", "supported_abi_is_one_version_per_kind", "one current version per kind (THE DESIGN 11.8)"),
-        ("test", "a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild", "a published 1.5.5 plugin is refused at boot naming the rebuild (C21)"),
+        ("test", "crates/plugin-loader/src/tests/registry_tests.rs::a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild", "a published 1.5.5 plugin is refused at boot naming the rebuild (C21)"),
         ("test", "untrusted_is_skipped_not_fatal_but_reference_fails_loud", "an untrusted plugin is logged and skipped, never dlopened"),
         ("gate", "scripts/signing-gate.sh", "signed loads; unsigned, wrong-key and tampered manifests refused with the literal messages"),
     ]),
