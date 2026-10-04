@@ -1371,6 +1371,53 @@ pub fn live_host_factory(
     })
 }
 
+/// THE LIVE RE-RESOLUTION a door unit's entitlement asks through (`entitlement.check`, ARCHITECT
+/// round 4 Q-L3B-SURFACES (a)): an admitted principal re-resolved against the CURRENT snapshot's
+/// governance registry (a registry key, by id) and `role_bindings` (a role-bound key), exactly as
+/// [`EngineHost::principal_standing`] judges a long-lived response's frame. `None` when it no longer
+/// stands; a deployment with governance off stands as admitted.
+#[must_use]
+pub fn live_standing(
+    handle: std::sync::Arc<crate::state::AppHandle>,
+) -> crate::host_services::Standing {
+    std::sync::Arc::new(move |admitted, now| {
+        let app = handle.load();
+        standing_in(&app, admitted, now)
+    })
+}
+
+/// [`live_standing`] over one fixed generation `app` (a composition with no live handle).
+#[must_use]
+pub fn standing_over(app: std::sync::Arc<crate::state::App>) -> crate::host_services::Standing {
+    std::sync::Arc::new(move |admitted, now| standing_in(&app, admitted, now))
+}
+
+/// `admitted` as it stands in `app` at `now`.
+fn standing_in(
+    app: &crate::state::App,
+    admitted: &Arc<busbar_contract::records::VirtualKey>,
+    now: u64,
+) -> Option<Arc<busbar_contract::records::VirtualKey>> {
+    let resolve = crate::governance::LiveResolve {
+        governance: app.governance.as_deref(),
+        role_bindings: &app.role_bindings,
+    };
+    let standing = busbar_kernel::trust::validate::Standing::opened(
+        Some(admitted),
+        busbar_kernel::trust::validate::Snapshot::Watching,
+        std::time::Duration::MAX,
+    );
+    match standing.still_permitted(
+        Some(&resolve as &dyn busbar_kernel::trust::validate::GovResolve),
+        0,
+        now,
+    ) {
+        Ok(Some(live)) => Some(live),
+        Ok(None) => Some(Arc::clone(admitted)),
+        Err(_) => None,
+    }
+}
+
 // The request-admission gate verdict is a pure POD naming only `busbar_contract::abi::hot` + std, so it now
 // lives in the substrate beside the neutral `EngineHost` seam; core re-exports it so every in-core
 // caller (`gate_decide_over`, a2a) is unchanged.

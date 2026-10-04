@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! WHICH NEED A MEMBER DIALS (ARCHITECT ruling 2026-10-02; `BUSBAR-1.6.0.md`, the vocabulary: every
-//! plugin declares its connection needs as `(transport, auth)` per direction, and the kernel
-//! instantiates them through the connector). Resolved ONCE, at config load, never per request:
-//! each member's outbound auth binding, the auth plugin key its route or member config names, is
-//! matched against the plane instance's declared OUTBOUND needs on the `auth` element. Exactly one
-//! need must match. None, or more than one, refuses the load, naming the member and the keys. Each
-//! attempt then dials its member's resolved need ([`super::MemberRoute::need`]): per request, an
-//! index lookup.
+//! WHICH NEEDS A MEMBER DIALS (ARCHITECT ruling 2026-10-02, amended by Q-L5B-NEEDS 2026-10-03;
+//! `BUSBAR-1.6.0.md` spec #3: every plugin declares its connection needs as a LIST of
+//! `(transport, auth)` per direction, and the kernel instantiates them through the connector).
+//! Resolved ONCE, at config load, never per request: each member's outbound auth binding, the auth
+//! plugin key its route or member config names, is matched against the plane instance's declared
+//! OUTBOUND needs on the `auth` element, and EVERY need it matches is bound for the member, one
+//! binding per (transport, auth). None refuses the load; two matching needs over one transport are
+//! one binding twice and refuse it too, naming the member and the needs. A far request names the
+//! need it rides (`OnPieceOut::need`); one that names none rides the member's first bound need
+//! ([`super::MemberRoute::need`]): per request, an index lookup.
 //!
 //! The kernel names no scheme and no plane here: it compares the keys the config and the plane's
 //! Statement state, byte for byte.
@@ -40,7 +42,7 @@ pub enum NeedRefusal {
         /// The auth keys the plane's outbound needs declare, in declared order.
         declared: Vec<String>,
     },
-    /// More than one declared outbound need names it.
+    /// More than one declared outbound need over one transport names it.
     Ambiguous {
         /// The member.
         member: String,
@@ -75,7 +77,7 @@ impl std::fmt::Display for NeedRefusal {
             } => write!(
                 f,
                 "member '{member}' names auth '{auth}', which {} outbound needs of its plane \
-                 declare (needs {}); exactly one must",
+                 declare over one transport (needs {}); one binding per (transport, auth)",
                 needs.len(),
                 needs
                     .iter()
@@ -89,48 +91,55 @@ impl std::fmt::Display for NeedRefusal {
 
 impl std::error::Error for NeedRefusal {}
 
-/// THE NEED EACH MEMBER DIALS: `needs` is the plane instance's declared needs in Statement order
-/// (a [`NeedId`] is a position in it); only outbound needs are matched.
+/// THE NEEDS EACH MEMBER DIALS: `needs` is the plane instance's declared needs in Statement order
+/// (a [`NeedId`] is a position in it); only outbound needs are matched. Each member's bound needs,
+/// in declared order: every outbound need its auth key names, at most one per transport.
 ///
 /// # Errors
 ///
-/// The first member whose auth key matches no outbound need, or more than one.
+/// The first member whose auth key matches no outbound need, or two over one transport.
 pub fn resolve_member_needs(
     needs: &[ReadNeed],
     members: &[MemberAuth<'_>],
-) -> Result<BTreeMap<String, NeedId>, NeedRefusal> {
-    let outbound: Vec<(NeedId, &str)> = needs
+) -> Result<BTreeMap<String, Vec<NeedId>>, NeedRefusal> {
+    let outbound: Vec<(NeedId, &str, &str)> = needs
         .iter()
         .zip(0u32..)
         .filter(|(n, _)| n.direction == DIRECTION_OUTBOUND)
-        .map(|(n, i)| (NeedId(i), n.auth.as_str()))
+        .map(|(n, i)| (NeedId(i), n.auth.as_str(), n.transport.as_str()))
         .collect();
     let mut resolved = BTreeMap::new();
     for m in members {
-        let matched: Vec<NeedId> = outbound
+        let matched: Vec<(NeedId, &str)> = outbound
             .iter()
-            .filter(|(_, auth)| *auth == m.auth)
-            .map(|(id, _)| *id)
+            .filter(|(_, auth, _)| *auth == m.auth)
+            .map(|(id, _, transport)| (*id, *transport))
             .collect();
-        match matched.as_slice() {
-            [one] => {
-                resolved.insert(m.member.to_string(), *one);
-            }
-            [] => {
-                return Err(NeedRefusal::NoMatch {
-                    member: m.member.to_string(),
-                    auth: m.auth.to_string(),
-                    declared: outbound.iter().map(|(_, a)| (*a).to_string()).collect(),
-                })
-            }
-            _ => {
+        if matched.is_empty() {
+            return Err(NeedRefusal::NoMatch {
+                member: m.member.to_string(),
+                auth: m.auth.to_string(),
+                declared: outbound.iter().map(|(_, a, _)| (*a).to_string()).collect(),
+            });
+        }
+        for (_, transport) in &matched {
+            let twice: Vec<NeedId> = matched
+                .iter()
+                .filter(|(_, t)| t == transport)
+                .map(|(id, _)| *id)
+                .collect();
+            if twice.len() > 1 {
                 return Err(NeedRefusal::Ambiguous {
                     member: m.member.to_string(),
                     auth: m.auth.to_string(),
-                    needs: matched,
-                })
+                    needs: twice,
+                });
             }
         }
+        resolved.insert(
+            m.member.to_string(),
+            matched.into_iter().map(|(id, _)| id).collect(),
+        );
     }
     Ok(resolved)
 }

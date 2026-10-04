@@ -865,7 +865,7 @@ impl RoutingPolicy for SessionSpy {
     }
 }
 
-/// What the a2a door's `project` answers for a `message/send`: the invoke document.
+/// What a door plane's `project` answers for an invocation: the invoke document.
 const PROJECTED: &[u8] =
     br#"{"tool":"message/send","arguments":{"message":{"parts":[{"text":"hi"}]}}}"#;
 
@@ -899,7 +899,7 @@ async fn the_door_paths_incremental_scan_keys_on_the_views_session() {
             let door = DoorSubject {
                 projected: PROJECTED,
                 container: "planner",
-                dialect: "a2a",
+                dialect: "door-dialect",
                 request_id: 1,
                 key: Some(who),
                 session,

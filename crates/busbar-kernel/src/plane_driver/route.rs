@@ -115,6 +115,9 @@ pub struct OutboundRequest {
     pub fields: HeadFields,
     /// The body.
     pub body: Vec<u8>,
+    /// The need the request rides, as the plane named it (`OnPieceOut::need`: its declared index
+    /// plus one); `0` = the member's own.
+    pub need: u32,
 }
 
 /// THE FAR END, as the pump reaches it: the kernel's egress walk and the connector stand behind it
@@ -306,6 +309,20 @@ impl Piece {
     }
 }
 
+/// THE OPERATOR'S NAME a plane is lent for the member (and pool) its attempt was picked from
+/// (`OnPieceIn::member`, `OnPieceIn::pool`: "the operator's name"): the kernel keys a door plane's
+/// walk state by (plane key, entry), written `<plane key>`[`PLANE_LANE_SEP`]`<entry>` (ARCHITECT
+/// Q-FL3), and the plane is lent the entry alone, the name its own section writes. A name with no
+/// plane key (a model plane's lane) is lent as it is.
+///
+/// [`PLANE_LANE_SEP`]: crate::governance::PLANE_LANE_SEP
+fn operator_name(key: &[u8]) -> &[u8] {
+    let sep = crate::governance::PLANE_LANE_SEP as u8;
+    key.iter()
+        .position(|b| *b == sep)
+        .map_or(key, |at| &key[at + 1..])
+}
+
 /// An `on_piece` frame of `unit` over `bufs`. Built and handed to the dispatcher in one breath, so
 /// no raw pointer is ever held across an await.
 fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) {
@@ -317,7 +334,7 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
     let (member, pool) = if p.attempt_no == 0 {
         (&[][..], &[][..])
     } else {
-        (&bufs.member[..], &bufs.pool[..])
+        (operator_name(&bufs.member), operator_name(&bufs.pool))
     };
     let str_of = |b: &[u8]| {
         if b.is_empty() {
@@ -407,6 +424,7 @@ struct Answer {
     verdict: u32,
     verb: Span,
     target: Span,
+    need: u32,
     units_needed: u32,
     records_needed: u32,
     fields_needed: u32,
@@ -426,6 +444,7 @@ impl Answer {
             verdict: o.verdict,
             verb: o.verb,
             target: o.target,
+            need: o.need,
             units_needed: o.units_needed,
             records_needed: o.records_needed,
             fields_needed: o.fields_needed,
@@ -770,8 +789,11 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             let local = {
                 let mut toward = Toward::FarEnd(&mut request);
                 for piece in pieces {
-                    if let Step::End(end) = self.push(run, *piece, &mut toward).await {
-                        return end;
+                    match self.push(run, *piece, &mut toward).await {
+                        Step::End(end) => return end,
+                        // The plane declined this member: nothing was sent; the next one.
+                        Step::Retry if far_bound => continue 'attempt,
+                        _ => {}
                     }
                     if matches!(toward, Toward::Caller) {
                         break;
@@ -891,14 +913,29 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             let bufs = &run.bufs;
             let emitted = &bufs.reply[..(out.emitted as usize).min(bufs.reply.len())];
-            // A LOCAL ANSWER: the plane answered a piece bound for the far end with its reply done
-            // and nothing for the far end. The unit is the plane's to finish: its bytes go to the
-            // caller, and no far end is sent to.
-            if matches!(toward, Toward::FarEnd(_))
-                && out.flags & EMIT_TO_FAR_END == 0
-                && out.flags & EMIT_DONE != 0
-            {
-                *toward = Toward::Caller;
+            // A DECLINED MEMBER: the plane answered a piece bound for the far end with nothing at all
+            // and the retry verdict (a member this unit may not reach, ARCHITECT round 4
+            // Q-L3B-SURFACES (h)): nothing was sent, so the walk moves to its next member.
+            if let Toward::FarEnd(_) = toward {
+                if out.verdict == VERDICT_RETRY
+                    && out.flags & (EMIT_TO_FAR_END | EMIT_DONE) == 0
+                    && out.reply_status == 0
+                    && emitted.is_empty()
+                {
+                    return Step::Retry;
+                }
+            }
+            // A LOCAL ANSWER: the plane answered a piece bound for the far end with nothing for the
+            // far end, and either its reply done or (with no member to send to) a reply begun: a
+            // window of a longer answer asks for more and may not say done (ARCHITECT B7). The unit
+            // is the plane's to finish: its bytes go to the caller, and no far end is sent to.
+            if let Toward::FarEnd(request) = toward {
+                let answered = out.flags & EMIT_DONE != 0
+                    || (request.member.is_empty()
+                        && (out.reply_status != 0 || !emitted.is_empty()));
+                if out.flags & EMIT_TO_FAR_END == 0 && answered {
+                    *toward = Toward::Caller;
+                }
             }
             let far = match toward {
                 Toward::FarEnd(_) => true,
@@ -911,6 +948,9 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         if out.verb.len != 0 {
                             request.verb = bufs.arena(out.verb).to_vec();
                             request.target = bufs.arena(out.target).to_vec();
+                        }
+                        if out.need != 0 {
+                            request.need = out.need;
                         }
                         request.fields.extend(bufs.fields_of(out.fields_written));
                         request.body.extend_from_slice(emitted);

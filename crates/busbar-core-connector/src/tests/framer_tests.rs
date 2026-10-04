@@ -27,6 +27,37 @@ fn a_full_sink_is_re_called_until_every_byte_is_out() {
     assert!(door.count("ingest") > 1, "re-called while it owed more");
 }
 
+/// WS-DIAL (ARCHITECT Q-L5B-WS-DIAL 2026-10-03): a dialled framing's `begin` is handed the dial's
+/// opening head fields (`BeginIn::fields`), in order; a framing begun without any hands none.
+#[test]
+fn a_dial_hands_its_opening_head_fields_to_begin() {
+    let door = Arc::new(TestDoor::identity("bytes"));
+    let opening = vec![
+        ("authorization".to_string(), b"Bearer k".to_vec()),
+        ("x-mode".to_string(), b"realtime".to_vec()),
+    ];
+    let _ = Framing::begin_with(
+        door.clone(),
+        SIDE_DIAL,
+        "t",
+        &Established::default(),
+        &opening,
+    )
+    .unwrap();
+    let _ = Framing::begin(door.clone(), SIDE_DIAL, "t", &Established::default()).unwrap();
+    let begun = door.begun_fields.lock().unwrap();
+    assert_eq!(
+        *begun,
+        vec![
+            vec![
+                (b"authorization".to_vec(), b"Bearer k".to_vec()),
+                (b"x-mode".to_vec(), b"realtime".to_vec()),
+            ],
+            Vec::new(),
+        ]
+    );
+}
+
 /// RED (C19-TAIL U5): a piece the framer states as text (`PIECE_TEXT`) is read up as text; one it
 /// does not is binary.
 #[test]

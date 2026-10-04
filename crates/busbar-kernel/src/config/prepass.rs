@@ -315,6 +315,9 @@ fn lift_plane<'de, S: LiftableSection + for<'a> Deserialize<'a>, D: Deserializer
     lifted: &mut Lifted,
 ) -> Result<(), D::Error> {
     let section = plane_remainder::<D>(section_key, de, lifted)?;
+    // A named-map section is a declaring section its plane owns the grammar of, so it is kept as
+    // written too ([`DeployCfg::declared_raw`]): the settings its plane's door opens with.
+    lifted.declared_raw.insert(section_key, section.clone());
     S::deserialize(section)
         .map_err(D::Error::custom)?
         .bank(lifted);

@@ -149,6 +149,9 @@ pub struct ServedFacts {
     /// The tail's kernel-owned trust keys: a registration whose pin names a mechanism that pins the
     /// far end's key (`PinMechanismDecl::peer_key`) has that key sealed into its member route.
     pub trust_keys: Vec<TrustKeyDecl>,
+    /// Each need's transport, in the same order (`Need::transport`): a member binds at most one
+    /// need per (transport, auth) (ARCHITECT Q-L5B-NEEDS).
+    pub need_transports: Vec<&'static str>,
     /// The tail's dialects, in order.
     pub dialects: Vec<&'static str>,
     /// The tail's `dialect_auth`: each dialect's default outbound style, by its dialect index
@@ -289,6 +292,10 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
                 .map(|n| kept(n.trust_from))
                 .collect(),
             trust_keys: declared(&tail).trust_keys,
+            need_transports: listed(st.needs, st.needs_len)
+                .into_iter()
+                .map(|n| kept(n.transport))
+                .collect(),
             dialects: listed(tail.dialects, tail.dialects_len)
                 .into_iter()
                 .map(kept)

@@ -312,6 +312,15 @@ fn resolve_for(
     section: &str,
     providers: &[(&str, super::ProviderRoute)],
 ) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
+    resolve_over(section, providers, facts)
+}
+
+/// [`resolve`], over the plane facts `served`.
+fn resolve_over(
+    section: &str,
+    providers: &[(&str, super::ProviderRoute)],
+    served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
     let section: serde_yaml::Value = serde_yaml::from_str(section).expect("yaml");
     let providers = providers
         .iter()
@@ -331,7 +340,45 @@ fn resolve_for(
         conns,
         stream_ceiling_secs: 1,
     };
-    super::member_routes(&section, &DoorPools::of(&section), facts, &reach)
+    super::member_routes(&section, &DoorPools::of(&section), served, &reach)
+}
+
+/// MULTI-NEED (ARCHITECT Q-L5B-NEEDS 2026-10-03): a member binds EVERY outbound need its style
+/// names, one per transport, the first as its own and the rest riding beside it, each opened when
+/// a far request names it.
+#[test]
+fn a_member_binds_every_need_its_style_names_one_per_transport() {
+    use busbar_contract::abi::host::conn::connector::{DIRECTION_INBOUND, DIRECTION_OUTBOUND};
+    let served = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        need_auths: vec![
+            (DIRECTION_INBOUND, "bearer"),
+            (DIRECTION_OUTBOUND, "bearer"),
+            (DIRECTION_OUTBOUND, "bearer"),
+            (DIRECTION_OUTBOUND, "api-key"),
+        ],
+        need_transports: vec!["ws", "ws", "http", "ws"],
+        ..styled()
+    };
+    let routes = resolve_over(
+        "models: {m: {provider: p}}",
+        &[("p", provider("d", None))],
+        &served,
+    )
+    .expect("the member resolves");
+    let route = &routes["m"];
+    assert_eq!(route.need.0, 1, "its first bound need is its own");
+    let rides: Vec<u32> = route.rides.iter().map(|(n, _)| n.0).collect();
+    assert_eq!(
+        rides,
+        [2],
+        "the http need rides beside it; the api-key need is not its style"
+    );
+    assert_eq!(route.ride(3).map(|(n, _)| n.0), Some(2));
+    assert_eq!(route.ride(0).map(|(n, _)| n.0), Some(1));
+    assert!(
+        route.ride(4).is_none(),
+        "a need its style does not name is no ride"
+    );
 }
 
 /// The routes `section`'s members resolve to over `providers`, or why the load is refused.
