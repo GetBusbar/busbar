@@ -11,9 +11,10 @@
 //! [`StoreFailure::Overloaded`] without a crossing (the 503 of R8).
 //!
 //! The 1.5.5 op set stays reachable through [`RecordStore`](crate::records::RecordStore), which
-//! the loader's handle also implements, synchronously, for the consumers that have not moved here.
-//! M6: that synchronous bridge is deleted when no consumer remains (the remaining consumers are
-//! listed on the loader's implementation).
+//! the loader's handle also implements, synchronously, for the consumers that have not moved here:
+//! each of its ops is submitted on a ticket like these and the caller waits for the completion, so
+//! a store that pends completes it there too. M6: that synchronous bridge is deleted when no
+//! consumer remains (the remaining consumers are listed on the loader's implementation).
 
 use std::future::Future;
 use std::pin::Pin;

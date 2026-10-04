@@ -276,7 +276,8 @@ pub trait DeclaredConns: Conns {
     /// `trust_from` reference (`None` = the need's); any other reference is refused. The first
     /// call starts the handshake and every call drives it: `Ok` once it completed,
     /// [`ConnError::Pending`] with interest under `ticket` while it runs. A host that offers no
-    /// upgrade refuses.
+    /// upgrade refuses. `verify_off`: the far end's certificate is NOT verified (the operator's
+    /// opt-in, `UPGRADE_VERIFY_OFF`), honoured for an operator-infrastructure need only.
     ///
     /// # Errors
     ///
@@ -289,9 +290,10 @@ pub trait DeclaredConns: Conns {
         conn: ConnId,
         name: Option<&str>,
         trust: Option<&str>,
+        verify_off: bool,
         ticket: Ticket,
     ) -> Result<(), ConnError> {
-        let _ = (caller, conn, name, trust, ticket);
+        let _ = (caller, conn, name, trust, verify_off, ticket);
         Err(ConnError::Refused)
     }
 

@@ -270,7 +270,9 @@ impl Connector<'_> {
         let Some(f) = f else {
             return Poll::Ready(Err(ConnFailure::Unarmed));
         };
-        if self.ticket.is_none() {
+        // A service on no ticket may not pend: `close` never does, so it is made on none (an
+        // instance closing its kept connections as it goes).
+        if self.ticket.is_none() && op != service::CLOSE {
             return Poll::Ready(Err(ConnFailure::NoTicket));
         }
         let seq = self.issued;
@@ -328,10 +330,22 @@ impl Connector<'_> {
     /// `dest.judge` answered, `Judged::within`; `""` = no pin beyond the host's judgement): the
     /// stream. A dial the host's judgement pins outside `within` is refused before any byte leaves.
     pub fn establish(&mut self, need: u32, target: Option<&str>, within: &str) -> Answer<u64> {
+        self.establish_timed(need, target, within, 0)
+    }
+
+    /// [`Connector::establish`], its dial bounded by `timeout_ms` (`0` = the need's own timeout,
+    /// else the host's default): an operator-set connect timeout.
+    pub fn establish_timed(
+        &mut self,
+        need: u32,
+        target: Option<&str>,
+        within: &str,
+        timeout_ms: u32,
+    ) -> Answer<u64> {
         let input = EstablishIn {
             head: blank_head(),
             need,
-            _reserved: 0,
+            timeout_ms,
             target: text(target),
             within: text(Some(within)),
         };
@@ -373,11 +387,27 @@ impl Connector<'_> {
         name: Option<&str>,
         trust: Option<&str>,
     ) -> Answer<()> {
+        self.upgrade_secure_flagged(stream, name, trust, 0)
+    }
+
+    /// [`Connector::upgrade_secure`] with `UPGRADE_*` `flags`
+    /// ([`UPGRADE_VERIFY_OFF`](crate::abi::host::conn::connector::UPGRADE_VERIFY_OFF): the
+    /// operator's opt-in to an unverified handshake, honoured for an operator-infrastructure need
+    /// only).
+    pub fn upgrade_secure_flagged(
+        &mut self,
+        stream: u64,
+        name: Option<&str>,
+        trust: Option<&str>,
+        flags: u32,
+    ) -> Answer<()> {
         let input = UpgradeIn {
             head: blank_head(),
             stream,
             offered_name: text(name),
             trust: text(trust),
+            flags,
+            _reserved: 0,
         };
         self.call(service::UPGRADE_SECURE, |s| s.upgrade_secure, input)
             .map(|r| r.map(|_| ()))

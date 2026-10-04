@@ -1366,7 +1366,7 @@ unsafe fn establish_and_read(me: &Inst, ticket: Ticket) -> bool {
     let mut est = EstablishIn {
         head: std::mem::zeroed(),
         need: 0,
-        _reserved: 0,
+        timeout_ms: 0,
         target: s(b"far"),
         within: NO_STR,
     };

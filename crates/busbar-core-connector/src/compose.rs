@@ -36,7 +36,7 @@ use busbar_contract::abi::transport::{CLOSE_NORMAL, SIDE_ACCEPT, SIDE_DIAL};
 use crate::endpoint;
 use crate::framer::{self, Established, FramerDoor, Framing, Got, Yielded};
 use crate::io::{self as reactor, Direction, Registered};
-use crate::socket;
+use crate::socket::{self, Sock};
 
 /// How much one socket read takes.
 const READ_CHUNK: usize = 16 * 1024;
@@ -125,7 +125,7 @@ enum Phase {
 
 /// What a connection's bytes ride: the host's socket, or a program's pipes.
 enum Wire {
-    Socket(Registered<TcpStream>),
+    Socket(Registered<Sock>),
     Program(Box<Pipes>),
 }
 
@@ -359,7 +359,8 @@ impl Planned {
         } else {
             None
         };
-        let sock = reactor::register(socket::connect(addr).map_err(failed)?).map_err(failed)?;
+        let sock = Sock::Tcp(socket::connect(addr).map_err(failed)?);
+        let offered_name = tls.as_ref().and(located.name.clone());
         // No handshake to agree a protocol in the clear: an entry that offers exactly one
         // protocol speaks it by prior knowledge, and it is recorded as agreed
         // (`LocateOut::alpn_written`).
@@ -367,12 +368,49 @@ impl Planned {
             [one] if tls.is_none() => Some(one.clone()),
             _ => None,
         };
+        Connection::over_socket(door, sock, dial, tls, offered_name, prior)
+    }
+}
+
+impl Connection {
+    /// Dial the UNIX-DOMAIN socket at `path` (the target `unix:<path>`, [`socket::unix_path`]) as a
+    /// raw stream through `door`: no name, no address to judge, no connection security at the dial
+    /// (a later [`Connection::upgrade_secure`] secures it as it would a TCP stream). The caller
+    /// admits the target first (operator-infrastructure needs only); the endpoint check and the
+    /// entry's `locate`, which read hosts, are not asked. The connection comes back at once, its
+    /// open in flight.
+    ///
+    /// # Errors
+    ///
+    /// [`Failure::Refused`] when no socket listens at `path`; [`Failure::Failed`] off a worker or
+    /// when the socket cannot be made.
+    pub fn dial_unix(door: Arc<dyn FramerDoor>, dial: Dial, path: &str) -> Result<Self, Failure> {
+        let stream = socket::connect_unix(path).map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
+                Failure::Refused(format!("no socket listens at `{path}`: {e}"))
+            }
+            _ => failed(e),
+        })?;
+        Self::over_socket(door, Sock::Unix(stream), dial, None, None, None)
+    }
+
+    /// A dialled connection over `sock`, its connect in flight; `prior` is the protocol it speaks
+    /// by prior knowledge, recorded as agreed.
+    fn over_socket(
+        door: Arc<dyn FramerDoor>,
+        sock: Sock,
+        dial: Dial,
+        tls: Option<rustls::Connection>,
+        offered_name: Option<String>,
+        prior: Option<Vec<u8>>,
+    ) -> Result<Self, Failure> {
+        let sock = reactor::register(sock).map_err(failed)?;
         let established = Established {
-            offered_name: tls.as_ref().and(located.name.clone()),
+            offered_name,
             agreed_protocol: prior,
             claim: door.facts().claims.first().map(|c| (*c).to_owned()),
         };
-        Ok(Connection {
+        Ok(Self {
             door,
             wire: Wire::Socket(sock),
             target: dial.target,
@@ -510,7 +548,7 @@ impl Connection {
                 ))
             }
         };
-        let sock = reactor::register(stream).map_err(failed)?;
+        let sock = reactor::register(Sock::Tcp(stream)).map_err(failed)?;
         let established = Established {
             offered_name: None,
             agreed_protocol: None,

@@ -35,6 +35,19 @@ extern "C" fn establish(_: HostCtx, i: *const c_void, o: *mut ServiceOut) -> Raw
     RawOutcome::of(Outcome::Ready)
 }
 
+/// The streams `close` was handed, with whether the call rode a ticket.
+static CLOSED: Mutex<Vec<(u64, bool)>> = Mutex::new(Vec::new());
+
+extern "C" fn close(_: HostCtx, i: *const c_void, _: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: a `StreamIn`, leading with its `ServiceHead`.
+    let input = unsafe { *i.cast::<crate::abi::host::conn::connector::StreamIn>() };
+    CLOSED
+        .lock()
+        .unwrap()
+        .push((input.stream, !input.head.handle.ticket.is_none()));
+    RawOutcome::of(Outcome::Ready)
+}
+
 static SLOTS: ConnectorSlots = ConnectorSlots {
     size: std::mem::size_of::<ConnectorSlots>() as u32,
     slots: crate::abi::host::conn::connector::SERVICES,
@@ -47,7 +60,7 @@ static SLOTS: ConnectorSlots = ConnectorSlots {
     facts: None,
     checkout: None,
     checkin: None,
-    close: None,
+    close: Some(close),
     random: None,
     identity: None,
     read_reply: None,
@@ -256,5 +269,19 @@ fn establish_hands_the_host_the_set_its_dial_lands_within() {
     assert_eq!(
         *WITHIN.lock().unwrap(),
         vec!["203.0.113.5,2001:db8::1".to_owned(), String::new()]
+    );
+}
+
+/// `close` never pends, so it is made on no ticket (an instance closing its kept connections as it
+/// goes); every other service still refuses NONE.
+#[test]
+fn close_is_made_on_no_ticket() {
+    let h = host(&SLOTS);
+    let mut c = h.connector(Ticket::NONE);
+    assert_eq!(c.close(9), Poll::Ready(Ok(())));
+    assert!(CLOSED.lock().unwrap().contains(&(9, false)));
+    assert_eq!(
+        c.establish(0, None, ""),
+        Poll::Ready(Err(ConnFailure::NoTicket))
     );
 }
