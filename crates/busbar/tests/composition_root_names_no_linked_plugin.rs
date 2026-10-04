@@ -369,45 +369,6 @@ fn the_manifest_links_a_plane_through_its_door() {
     );
 }
 
-/// THE A2A FOLD'S SWITCH (BUSBAR-1.6.0.md Part 3 §12 "The switch"): the development-only
-/// `plane-a2a-door` feature links the a2a plane's memory-ABI door on the `plane-door` axis, and the
-/// default build links no a2a door, so the shipped binary serves a2a as it did until the flip (a2a
-/// is new in 1.6.0 and additive; an llm-only configuration never opens it).
-#[test]
-fn the_a2a_switch_links_the_a2a_door_and_the_default_build_does_not() {
-    let manifest = read("Cargo.toml");
-    let default: Vec<String> = manifest
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("default = ["))
-        .expect("the manifest states a default feature set")
-        .split('"')
-        .skip(1)
-        .step_by(2)
-        .map(str::to_string)
-        .collect();
-    assert!(
-        !default.iter().any(|f| f == "plane-a2a-door"),
-        "the development-only switch is in `default`: {default:?}"
-    );
-    let doors_of = |on: &dyn Fn(&str) -> bool| {
-        let (src, _) = linked_source(&manifest, on);
-        src.lines()
-            .find_map(|l| l.trim().strip_prefix("plane_doors: &[").map(str::to_string))
-            .unwrap_or_else(|| panic!("no plane_doors table generated:\n{src}"))
-    };
-    let a2a_door = "busbar_plane_a2a::plane_door::door, ";
-    let switched = doors_of(&|f: &str| f == "plane-a2a-door" || default.iter().any(|d| d == f));
-    assert!(
-        switched.contains(a2a_door),
-        "`plane-a2a-door` links no a2a door: plane_doors = [{switched}"
-    );
-    let shipped = doors_of(&|f: &str| default.iter().any(|d| d == f));
-    assert!(
-        !shipped.contains(a2a_door),
-        "the default build links the a2a door: plane_doors = [{shipped}"
-    );
-}
-
 /// A FOLD'S SWITCH (BUSBAR-1.6.0.md Part 3 §12 "The switch"): every development-only
 /// `<plane>-on-driver` feature links its plane's memory-ABI door on the `plane-door` axis, and the
 /// default build links none of those doors, so the shipped binary serves the plane as it did until
