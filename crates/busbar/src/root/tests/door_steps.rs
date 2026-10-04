@@ -575,9 +575,11 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
                 key_file.display().to_string(),
             ),
             style: Some("oauth-client-credentials".to_string()),
-            token_url: Some(TOKEN_URL.to_string()),
-            scope: Some("https://cognitiveservices.azure.com/.default".to_string()),
-            subject: None,
+            params: super::StyleParams {
+                token_url: Some(TOKEN_URL.to_string()),
+                scope: Some("https://cognitiveservices.azure.com/.default".to_string()),
+                subject: None,
+            },
         },
     )]
     .into();
