@@ -151,8 +151,9 @@ pub mod kind {
 /// fields, so the enriched request still decodes in a plugin built before they existed. Nothing is
 /// refused in either direction, and the `supported_abi` range is unchanged.
 ///
-/// The engine's `supported_abi` for `store` is exactly this version (THE DESIGN §11.8: one version
-/// per kind); a published 1.5.5 store (`abi_version: 2`) is refused at boot, naming the rebuild.
+/// The engine's `supported_abi` for `store` is exactly this version (THE DESIGN's no-legacy-loading
+/// rule — one ABI version per kind); a published 1.5.5 store (`abi_version: 2`) is refused at boot,
+/// naming the rebuild.
 pub const ABI_VERSION: u32 = 4;
 
 /// The exported-symbol names the engine resolves after `dlopen`/`LoadLibrary`. A plugin of ANY kind

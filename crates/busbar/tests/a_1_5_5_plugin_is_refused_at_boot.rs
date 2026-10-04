@@ -14,6 +14,16 @@
 //! deadline below expires with no refusal.
 
 #![cfg(unix)]
+// THE END-TO-END BOOT PROOF DRIVES THE REAL DATA DOOR, so it needs the row that carries the
+// body-ingress axis — the LLM plane that owns provider lanes — linked, exactly as
+// transport_dropped_in_serves.rs and the other boot-the-binary proofs gate. A single-plane or
+// no-transport build has no provider-lane wire codec and refuses its config at boot (BUSBAR-9007, or
+// the composition root not sealing a listener with no transport under it) BEFORE it ever scans the
+// plugins directory — correct product behaviour, not what this test measures. The loader's own suite
+// (crates/plugin-loader/src/tests) proves the one-version-per-kind refusal mechanism in EVERY build;
+// this proof is the end-to-end boot half, which only a build that boots a data door can exercise.
+// (THE DESIGN's no-legacy-loading rule; ruling C21/ABI-o1.)
+#![cfg(linked_axis_body_ingress)]
 
 mod common;
 
