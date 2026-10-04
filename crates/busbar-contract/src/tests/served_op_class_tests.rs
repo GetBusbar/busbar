@@ -30,6 +30,7 @@ fn decl(key: &'static str, served: &'static [ServedOpClass]) -> PlaneDeclaration
         record_kinds: &[],
         required_config_sections: &[],
         trust_keys: &[],
+        caller_credential_refusal: None,
         served_op_classes: served,
     }
 }

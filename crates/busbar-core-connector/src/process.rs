@@ -19,7 +19,7 @@ use busbar_contract::abi::host::service::{
 };
 use busbar_contract::transport::trust::EgressTrust;
 use busbar_kernel::config::Destinations;
-use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal};
+use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal, Refused};
 
 use crate::guard::{Guard, Resolve, SystemResolver};
 use crate::pool::PoolPosture;
@@ -89,7 +89,12 @@ impl GuardJudge {
 
     /// The name and scheme arms: the host, port and scheme to dial, and the literal when the host
     /// is one.
-    fn named(&self, dest: &str, class: u32) -> Result<(String, u16, bool, Option<IpAddr>), u64> {
+    fn named(
+        &self,
+        dest: &str,
+        class: u32,
+        strict: bool,
+    ) -> Result<(String, u16, bool, Option<IpAddr>), u64> {
         // The classes a need may declare are 0..=4; a destination under any other names none.
         if class > EGRESS_LOOPBACK_ALLOWED {
             return Err(DEST_NO_HOST);
@@ -98,7 +103,10 @@ impl GuardJudge {
         if !https && class == EGRESS_OPEN_WEB {
             return Err(DEST_PLAINTEXT);
         }
-        let literal = self.guard.judge_name(&host, class).map_err(|r| r.verdict)?;
+        let literal = self
+            .guard
+            .judge_name_as(&host, class, strict)
+            .map_err(|r| r.verdict)?;
         if let Some(ip) = literal {
             plaintext_to_loopback(class, https, ip)?;
         }
@@ -146,18 +154,19 @@ fn split(dest: &str) -> Result<(String, u16, bool), u64> {
 }
 
 impl DestJudge for GuardJudge {
-    fn judge_name(&self, dest: &str, class: u32) -> Result<(), u64> {
-        self.named(dest, class).map(|_| ())
+    fn judge_name(&self, dest: &str, class: u32, refuse_private: bool) -> Result<(), u64> {
+        self.named(dest, class, refuse_private).map(|_| ())
     }
 
     fn judge(
         &self,
         dest: &str,
         class: u32,
+        refuse_private: bool,
         done: Box<dyn FnOnce(Admitted) + Send>,
     ) -> Option<Admitted> {
-        let (host, port, https, literal) = match self.named(dest, class) {
-            Err(v) => return Some(Err(v)),
+        let (host, port, https, literal) = match self.named(dest, class, refuse_private) {
+            Err(v) => return Some(Err(v.into())),
             Ok(n) => n,
         };
         if let Some(ip) = literal {
@@ -169,10 +178,17 @@ impl DestJudge for GuardJudge {
             &name,
             Box::new(move |answer| {
                 done(match answer {
-                    Err(_) => Err(DEST_UNRESOLVABLE),
+                    // The resolver's own reason, named.
+                    Err(reason) => Err(Refused {
+                        verdict: DEST_UNRESOLVABLE,
+                        detail: Some(reason),
+                    }),
                     Ok(addrs) => guard
-                        .judge_answer(&host, &addrs, class)
-                        .map_err(|r| r.verdict)
+                        .judge_answer_as(&host, &addrs, class, refuse_private)
+                        .map_err(|r| Refused {
+                            verdict: r.verdict,
+                            detail: r.addr.map(|a| a.to_string()),
+                        })
                         .and_then(|()| {
                             // All admitted, so the first is a choice between equals that keeps
                             // the resolver's own ordering.
@@ -210,10 +226,10 @@ pub fn judge(dest: Arc<dyn DestJudge>, own_ports: &[u16]) -> Arc<dyn DialJudge> 
     let own: Arc<[u16]> = own_ports.into();
     Arc::new(move |target: &str, class: u32, done: Judged| {
         let later = Arc::clone(&own);
-        let pin = |v: Admitted| v.map(|(at, _)| at);
+        let pin = |v: Admitted| v.map(|(at, _)| at).map_err(|r| r.verdict);
         let pended: Box<dyn FnOnce(Admitted) + Send> =
             Box::new(move |v| done(not_the_node(class, &later, pin(v))));
-        dest.judge(target, class, pended)
+        dest.judge(target, class, false, pended)
             .map(|v| not_the_node(class, &own, pin(v)))
     })
 }

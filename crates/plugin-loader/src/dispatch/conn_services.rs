@@ -484,6 +484,9 @@ extern "C" fn facts(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
                 endpoint: held_text(&mut all, key, None),
                 agreed_protocol: held_text(&mut all, key, f.alpn.as_deref()),
                 peer_cert_hash: held_text(&mut all, key, hash),
+                peer_key_pin: held_text(&mut all, key, f.peer_key_pin.as_deref()),
+                client_identity: u32::from(f.client_identity),
+                _reserved: 0,
             };
             // SAFETY: the caller's `facts`, checked non-NULL, live for the call.
             unsafe { i.facts.write_unaligned(written) };

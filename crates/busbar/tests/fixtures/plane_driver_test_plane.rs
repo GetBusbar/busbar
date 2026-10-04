@@ -279,6 +279,10 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     trust_keys_len: 0,
     refusal_statuses: &STATUSES.0 as *const RefusalStatus,
     refusal_statuses_len: 3,
+    caller_credential_refusal: NO_STR,
+    admin_routes: std::ptr::null(),
+    admin_routes_len: 0,
+    admin_openapi: NO_BLOB,
 });
 
 static FAMILIES: Shared<[MetricFamily; 1]> = Shared([MetricFamily {
@@ -553,6 +557,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             openapi: NO_BLOB,
             audience: NO_STR,
             resource_metadata: NO_STR,
+            resource_facts: busbar_contract::abi::mechanism::call::Blob::ABSENT,
         });
         let me = Box::new(Inst {
             wake,

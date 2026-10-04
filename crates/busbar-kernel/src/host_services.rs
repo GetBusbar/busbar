@@ -81,18 +81,23 @@ use crate::trust::signed;
 /// trait, so the edge stays connector -> kernel.
 pub trait DestJudge: Send + Sync {
     /// `dest` (a URL or `host[:port]`) under egress class `class`, without resolving: the scheme
-    /// and name arms, an IP literal judged as its own answer. `Err` is the `DEST_*` verdict.
+    /// and name arms, an IP literal judged as its own answer. `refuse_private`: every private
+    /// address and loopback name refused whatever the deployment's private-address setting and
+    /// the class (`DEST_REFUSE_PRIVATE`). `Err` is the `DEST_*` verdict.
     ///
     /// # Errors
     ///
     /// The verdict refusing it.
-    fn judge_name(&self, dest: &str, class: u32) -> Result<(), u64>;
-    /// `dest` judged and pinned: at once (`Some`) for a literal or a refusal the name decides; a
-    /// name is resolved off the caller's thread and `done` gets the answer (`None`).
+    fn judge_name(&self, dest: &str, class: u32, refuse_private: bool) -> Result<(), u64>;
+    /// `dest` judged and pinned, on [`Self::judge_name`]'s terms: at once (`Some`) for a literal
+    /// or a refusal the name decides; a name is resolved off the caller's thread and `done` gets
+    /// the answer (`None`). A refusal an address or the resolution decided names it
+    /// ([`Refused::detail`]).
     fn judge(
         &self,
         dest: &str,
         class: u32,
+        refuse_private: bool,
         done: Box<dyn FnOnce(Admitted) + Send>,
     ) -> Option<Admitted>;
     /// An answer the kernel's own client resolved for `host`, judged whole under `class`.
@@ -185,6 +190,25 @@ pub const NEST_FULL: &str = "the node runs as many nested units as it holds";
 pub const NO_NEST_ROUTE: &str = "no nested dispatch is installed";
 /// The FAILED answer of a nested unit whose reply was dropped unanswered.
 pub const NEST_DROPPED: &str = "the nested unit ended with no reply";
+/// THE ONE JUDGEMENT'S REFUSAL: the `DEST_*` verdict, and what decided it when an address or the
+/// resolution did (the refused address as text; the resolver's own reason), which `dest.judge`
+/// writes for a caller that asks (`DEST_EXPLAIN`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refused {
+    /// The `DEST_*` verdict.
+    pub verdict: u64,
+    /// The refused address, or the resolver's reason; `None` when the name alone decided it.
+    pub detail: Option<String>,
+}
+
+impl From<u64> for Refused {
+    fn from(verdict: u64) -> Self {
+        Refused {
+            verdict,
+            detail: None,
+        }
+    }
+}
 
 /// What `dest.judge` answers on services built without a destination judge.
 pub const NO_DEST_JUDGE: &str = "no destination judge is installed";
@@ -1114,12 +1138,15 @@ impl HostServices for KernelServices {
         }
     }
 
-    fn dest_judge(&self, dest: &str, class: u32, resolve: bool, later: Option<Later>) -> Ran {
+    fn dest_judge(&self, dest: &str, class: u32, flags: u32, later: Option<Later>) -> Ran {
+        let resolve = flags & svc::DEST_RESOLVE != 0;
+        let refuse_private = flags & svc::DEST_REFUSE_PRIVATE != 0;
+        let explain = flags & svc::DEST_EXPLAIN != 0;
         // The name and scheme arms first, at once: a refusal never waits on a resolution.
         let Some(j) = &self.judge else {
             return Ran::Now(Stored::refused(NO_DEST_JUDGE));
         };
-        let named = j.judge_name(dest, class);
+        let named = j.judge_name(dest, class, refuse_private);
         match named {
             Err(v) => return Ran::Now(Stored::ready(v)),
             Ok(()) if resolve => {}
@@ -1131,8 +1158,14 @@ impl HostServices for KernelServices {
             ));
         };
         // The one judge; the verdict is its answer, and admitted, every address it judged.
-        match self.judge(dest, class, Box::new(move |v| later(judged(v)))) {
-            Some(v) => Ran::Now(judged(v)),
+        let judgement = move |v| judged(v, explain);
+        match j.judge(
+            dest,
+            class,
+            refuse_private,
+            Box::new(move |v| later(judgement(v))),
+        ) {
+            Some(v) => Ran::Now(judged(v, explain)),
             None => Ran::Later,
         }
     }
@@ -1589,20 +1622,26 @@ impl HostServices for KernelServices {
 pub type Judged = Box<dyn FnOnce(Result<SocketAddr, u64>) + Send>;
 
 /// THE ONE JUDGEMENT'S ANSWER: the pinned address and every address judged with it (the pin
-/// first), or the `DEST_*` verdict refusing them.
-pub type Admitted = Result<(SocketAddr, Vec<IpAddr>), u64>;
+/// first), or the [`Refused`] verdict refusing them.
+pub type Admitted = Result<(SocketAddr, Vec<IpAddr>), Refused>;
 
 /// `dest.judge`'s stored answer for a judgement: the verdict, and admitted, one span per judged
-/// address (key = the address as text, value absent).
-fn judged(v: Admitted) -> Stored {
-    let addrs = match v {
-        Ok((_, addrs)) => addrs,
-        Err(verdict) => return Stored::ready(verdict),
+/// address (key = the address as text, value absent); refused and asked to `explain`, one span
+/// naming what decided it, when an address or the resolution did.
+fn judged(v: Admitted, explain: bool) -> Stored {
+    let (mut s, keys) = match v {
+        Ok((_, addrs)) => (
+            Stored::ready(svc::DEST_ALLOWED),
+            addrs.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        ),
+        Err(r) => (
+            Stored::ready(r.verdict),
+            r.detail.filter(|_| explain).into_iter().collect(),
+        ),
     };
-    let mut s = Stored::ready(svc::DEST_ALLOWED);
-    for a in addrs {
+    for key in keys {
         let at = s.bytes.len();
-        s.bytes.extend_from_slice(a.to_string().as_bytes());
+        s.bytes.extend_from_slice(key.as_bytes());
         s.spans.push(ItemSpan {
             value: absent_span(),
             ..span(at, s.bytes.len() - at, 0, 0)
@@ -1624,21 +1663,11 @@ impl KernelServices {
         class: u32,
         done: Judged,
     ) -> Option<Result<SocketAddr, u64>> {
-        let pin = |v: Admitted| v.map(|(addr, _)| addr);
-        self.judge(dest, class, Box::new(move |v| done(pin(v))))
-            .map(pin)
-    }
-
-    /// The one judgement both [`Self::judge_dial`] and `dest.judge` read: [`Admitted`], at once
-    /// (`Some`) or through `done` (`None`), on the terms `judge_dial` states.
-    fn judge(
-        &self,
-        dest: &str,
-        class: u32,
-        done: Box<dyn FnOnce(Admitted) + Send>,
-    ) -> Option<Admitted> {
+        let pin = |v: Admitted| v.map(|(addr, _)| addr).map_err(|r| r.verdict);
         match &self.judge {
-            Some(j) => j.judge(dest, class, done),
+            Some(j) => j
+                .judge(dest, class, false, Box::new(move |v| done(pin(v))))
+                .map(pin),
             None => Some(Err(svc::DEST_NO_HOST)),
         }
     }

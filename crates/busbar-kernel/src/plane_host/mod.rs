@@ -1636,6 +1636,7 @@ fn build_invoke_rewrite_request<'a>(
         prompt: Some(prompt),
         identity: None,
         signals: Default::default(),
+        session: None,
     }
 }
 

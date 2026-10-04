@@ -1522,6 +1522,7 @@ fn dreq(text: &str) -> RoutingRequest<'static> {
         }),
         identity: None,
         signals: Default::default(),
+        session: None,
     }
 }
 

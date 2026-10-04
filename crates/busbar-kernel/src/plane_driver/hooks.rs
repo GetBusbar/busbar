@@ -568,6 +568,7 @@ impl Projection {
             prompt: prompt.then(|| self.prompt()),
             identity,
             signals: SignalBag::default(),
+            session: None,
         }
     }
 

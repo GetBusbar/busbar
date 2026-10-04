@@ -17,7 +17,7 @@ impl HostServices for Judges {
             mono_ns: 7,
         }
     }
-    fn dest_judge(&self, _: &str, _: u32, _: bool, _: Option<Later>) -> Ran {
+    fn dest_judge(&self, _: &str, _: u32, _: u32, _: Option<Later>) -> Ran {
         Ran::Now(Stored::ready(1))
     }
     fn records_get(&self, _: &Caller, _: &str, _: &[u8], _: Later) -> Ran {
@@ -68,7 +68,7 @@ impl HostServices for Judges {
 }
 
 fn judged(s: &LateServices) -> Stored {
-    match s.dest_judge("https://example.test/", 0, false, None) {
+    match s.dest_judge("https://example.test/", 0, 0, None) {
         Ran::Now(stored) => stored,
         Ran::Later => panic!("the late services never pend"),
     }
@@ -158,7 +158,7 @@ fn kernel(blocked: &[&str], allow_all: bool) -> KernelServices {
 }
 
 fn verdict(s: &dyn HostServices, dest: &str, class: u32) -> Stored {
-    match s.dest_judge(dest, class, false, None) {
+    match s.dest_judge(dest, class, 0, None) {
         Ran::Now(stored) => stored,
         Ran::Later => panic!("an unresolved judgement answers at once"),
     }
@@ -347,6 +347,7 @@ fn plane(section: &'static str, record_kinds: &'static [&'static str]) -> PlaneD
         required_config_sections: &[],
         trust_keys: &[],
         served_op_classes: &[],
+        caller_credential_refusal: None,
     }
 }
 

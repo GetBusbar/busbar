@@ -52,11 +52,11 @@ pub trait HostServices: Send + Sync {
     /// `clock.now`: the kernel's one clock. Never pends.
     fn now(&self) -> Reading;
 
-    /// `dest.judge`: judge `dest` against egress class `class`'s rules; `resolve` = the caller set
-    /// `DEST_RESOLVE`. Answers [`Ran::Now`] with a `DEST_*` verdict (or REFUSED for an unknown
+    /// `dest.judge`: judge `dest` against egress class `class`'s rules; `flags` = the caller's
+    /// `DEST_RESOLVE` | `DEST_REFUSE_PRIVATE` | `DEST_EXPLAIN`. Answers [`Ran::Now`] with a `DEST_*` verdict (or REFUSED for an unknown
     /// class), or hands `later` on and answers [`Ran::Later`]. `later` is `None` only for a call
     /// that may not pend, which never reaches here for this service.
-    fn dest_judge(&self, dest: &str, class: u32, resolve: bool, later: Option<Later>) -> Ran;
+    fn dest_judge(&self, dest: &str, class: u32, flags: u32, later: Option<Later>) -> Ran;
 
     /// `records.get`: `caller`'s record of `kind` under `key`, its own queued writes first.
     /// READY `FOUND` with span `0`'s value the record, or READY `ABSENT`.

@@ -154,6 +154,11 @@ pub(crate) struct Env {
     /// What the host services are served from; `None` = the host bound none, and every service
     /// answers REFUSED.
     pub(crate) provider: Option<Arc<dyn HostServices>>,
+    /// THE PROCESS'S RUNTIME, the reactor a plugin's connection is registered on: a crossing on a
+    /// worker runs inside it, so a dial the connector makes on the worker (a plugin's `exchange`)
+    /// lands on the per-worker reactor (THE DESIGN, the connections section). Taken from the first
+    /// submit made inside a runtime (the dispatcher is built before the runtime starts).
+    pub(crate) runtime: std::sync::OnceLock<tokio::runtime::Handle>,
 }
 
 /// One op's completion.
@@ -1111,8 +1116,16 @@ impl Worker {
 /// THE WORKER LOOP: messages, then timers, then one runnable action; sleep until the next timer
 /// or message.
 pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
+    // Inside the process's runtime once it is known, for the rest of this worker's life.
+    let mut entered: Option<tokio::runtime::EnterGuard<'static>> = None;
     let mut st = w.lock();
     loop {
+        if entered.is_none() {
+            if let Some(handle) = env.runtime.get() {
+                let handle: &'static tokio::runtime::Handle = Box::leak(Box::new(handle.clone()));
+                entered = Some(handle.enter());
+            }
+        }
         if st.dead {
             return;
         }
@@ -1246,6 +1259,9 @@ impl Dispatcher {
             completions: Arc::default(),
             services: Arc::default(),
             provider,
+            runtime: tokio::runtime::Handle::try_current()
+                .map(std::sync::OnceLock::from)
+                .unwrap_or_default(),
         });
         let mut started = Vec::new();
         let slots = (0..n)
@@ -1506,6 +1522,11 @@ impl Dispatcher {
         watch: Duration,
         driven: bool,
     ) -> Reply<I, O> {
+        if self.pool.env.runtime.get().is_none() {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let _ = self.pool.env.runtime.set(handle);
+            }
+        }
         let inst = &plugin.inner;
         if ticket.is_none() {
             return Reply::settled(Outcome::Fault, frame);

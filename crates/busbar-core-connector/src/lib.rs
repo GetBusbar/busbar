@@ -1305,6 +1305,8 @@ impl Conns for Connector {
         let (line, _) = held.line().ok_or(ConnError::Closed)?;
         let e = line.established().ok_or(ConnError::Closed)?;
         Ok(ConnFacts {
+            client_identity: false,
+            peer_key_pin: None,
             sni: e.offered_name.clone(),
             alpn: e
                 .agreed_protocol

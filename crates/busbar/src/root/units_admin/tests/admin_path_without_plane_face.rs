@@ -950,6 +950,7 @@ const A_SERVED_PLANE: busbar_contract::plane::PlaneDeclaration =
         required_config_sections: &[],
         trust_keys: &[],
         served_op_classes: &[],
+        caller_credential_refusal: None,
     };
 
 /// A door that identifies ANOTHER principal than the operator: authenticated, and holding no grant.

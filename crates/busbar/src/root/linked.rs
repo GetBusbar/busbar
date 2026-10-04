@@ -566,6 +566,7 @@ pub fn hot_plane_row(plane: &'static DynPlane) -> Result<PlaneDecl, String> {
             })
             .collect::<Vec<_>>()
             .leak(),
+        caller_credential_refusal: None,
     };
     HOT_PLANES
         .lock()

@@ -83,7 +83,7 @@ fn dest_judge_refuses_what_the_name_decides_at_once() {
         ("https://93.184.216.34/", svc::DEST_ALLOWED),
     ] {
         let (_, later) = recorder();
-        let got = verdict_now(s.dest_judge(dest, 0, true, Some(later)));
+        let got = verdict_now(s.dest_judge(dest, 0, svc::DEST_RESOLVE, Some(later)));
         assert_eq!(
             (got.outcome, got.value),
             (Stored::ready(0).outcome, want),
@@ -109,7 +109,7 @@ fn dest_judge_refuses_every_loopback_spelling_without_resolving() {
         "https://10.0.0.5\\x/",
     ] {
         let (_, later) = recorder();
-        let got = verdict_now(s.dest_judge(dest, 0, false, Some(later)));
+        let got = verdict_now(s.dest_judge(dest, 0, 0, Some(later)));
         assert_eq!(
             (got.outcome, got.value),
             (Stored::ready(0).outcome, svc::DEST_INTERNAL),
@@ -127,7 +127,12 @@ fn dest_judge_resolves_only_when_asked_and_judges_what_answered() {
     let s = services(Arc::clone(&r), Destinations::default());
     let (slot, later) = recorder();
     assert!(matches!(
-        s.dest_judge("https://api.example.com/v1", 0, true, Some(later)),
+        s.dest_judge(
+            "https://api.example.com/v1",
+            0,
+            svc::DEST_RESOLVE,
+            Some(later)
+        ),
         Ran::Later
     ));
     let done = r.held.lock().unwrap().pop().unwrap();
@@ -139,7 +144,12 @@ fn dest_judge_resolves_only_when_asked_and_judges_what_answered() {
 
     let (slot, later) = recorder();
     assert!(matches!(
-        s.dest_judge("https://api.example.com/v1", 0, true, Some(later)),
+        s.dest_judge(
+            "https://api.example.com/v1",
+            0,
+            svc::DEST_RESOLVE,
+            Some(later)
+        ),
         Ran::Later
     ));
     let done = r.held.lock().unwrap().pop().unwrap();
@@ -150,7 +160,7 @@ fn dest_judge_resolves_only_when_asked_and_judges_what_answered() {
     );
 
     let (_, later) = recorder();
-    let got = verdict_now(s.dest_judge("https://api.example.com/v1", 0, false, Some(later)));
+    let got = verdict_now(s.dest_judge("https://api.example.com/v1", 0, 0, Some(later)));
     assert_eq!(got.value, svc::DEST_ALLOWED);
     assert_eq!(r.asked.load(Ordering::SeqCst), 2);
 }
@@ -177,7 +187,12 @@ fn dest_judge_writes_the_addresses_it_judged() {
     let s = services(Arc::clone(&r), Destinations::default());
     let (slot, later) = recorder();
     assert!(matches!(
-        s.dest_judge("https://push.example.com/hook", 0, true, Some(later)),
+        s.dest_judge(
+            "https://push.example.com/hook",
+            0,
+            svc::DEST_RESOLVE,
+            Some(later)
+        ),
         Ran::Later
     ));
     let done = r.held.lock().unwrap().pop().unwrap();
@@ -194,7 +209,8 @@ fn dest_judge_writes_the_addresses_it_judged() {
     assert_eq!(r.asked.load(Ordering::SeqCst), 1, "one resolution");
 
     let (_, later) = recorder();
-    let got = verdict_now(s.dest_judge("https://93.184.216.34/x", 0, true, Some(later)));
+    let got =
+        verdict_now(s.dest_judge("https://93.184.216.34/x", 0, svc::DEST_RESOLVE, Some(later)));
     assert_eq!(
         (got.value, addresses(&got)),
         (svc::DEST_ALLOWED, vec!["93.184.216.34".to_owned()])
@@ -202,7 +218,12 @@ fn dest_judge_writes_the_addresses_it_judged() {
 
     let (slot, later) = recorder();
     assert!(matches!(
-        s.dest_judge("https://mixed.example.com/", 0, true, Some(later)),
+        s.dest_judge(
+            "https://mixed.example.com/",
+            0,
+            svc::DEST_RESOLVE,
+            Some(later)
+        ),
         Ran::Later
     ));
     let done = r.held.lock().unwrap().pop().unwrap();
@@ -218,7 +239,7 @@ fn dest_judge_writes_the_addresses_it_judged() {
     );
 
     let (_, later) = recorder();
-    let got = verdict_now(s.dest_judge("https://push.example.com/", 0, false, Some(later)));
+    let got = verdict_now(s.dest_judge("https://push.example.com/", 0, 0, Some(later)));
     assert!(got.spans.is_empty(), "not asked to resolve, none");
 }
 
@@ -226,7 +247,7 @@ fn dest_judge_writes_the_addresses_it_judged() {
 fn an_egress_class_the_guard_does_not_know_is_refused() {
     let s = services(Arc::default(), Destinations::default());
     let (_, later) = recorder();
-    let got = verdict_now(s.dest_judge("https://a.example/", 7, true, Some(later)));
+    let got = verdict_now(s.dest_judge("https://a.example/", 7, svc::DEST_RESOLVE, Some(later)));
     assert_eq!(got.value, svc::DEST_NO_HOST);
 }
 
@@ -319,7 +340,12 @@ fn allow_all_metadata_admits_metadata_on_the_dial_and_on_dest_judge() {
         );
     }
     let (_, later) = recorder();
-    let got = verdict_now(s.dest_judge("https://169.254.169.254/latest", P, true, Some(later)));
+    let got = verdict_now(s.dest_judge(
+        "https://169.254.169.254/latest",
+        P,
+        svc::DEST_RESOLVE,
+        Some(later),
+    ));
     assert_eq!(got.value, svc::DEST_ALLOWED);
 
     let pinned = Arc::new(Mutex::new(None));
@@ -427,4 +453,75 @@ fn an_operator_blocked_answer_is_refused_on_the_dial() {
     let done = r.held.lock().unwrap().pop().expect("resolved");
     done(Ok(vec!["93.184.216.34".parse().unwrap()]));
     assert_eq!(*pinned.lock().unwrap(), Some(Err(svc::DEST_METADATA)));
+}
+
+/// ASKED TO REFUSE PRIVATE REACH AND TO EXPLAIN (ARCHITECT Q-DEL-A2A-GUARD-WORDS): under a
+/// deployment that does NOT block private addresses, `DEST_REFUSE_PRIVATE` refuses a private
+/// literal, a loopback name and a name answering a private address all the same; with
+/// `DEST_EXPLAIN` a refusal an address decided names it (a cloud-metadata answer included), a
+/// failed resolution names the resolver's reason, and a refusal the name alone decided names
+/// nothing. Not asked to explain, nothing is written on a refusal.
+#[test]
+fn dest_judge_refuses_private_reach_when_asked_and_names_what_decided_it() {
+    let r = Arc::new(HandResolver::default());
+    let open = Destinations {
+        block_private_addresses: false,
+        ..Destinations::default()
+    };
+    let guard = Guard::from_config(&open).expect("a valid guard");
+    let s = KernelServices::new().with_dest_judge(Arc::new(GuardJudge::new(
+        guard,
+        Arc::clone(&r) as Arc<dyn Resolve>,
+    )));
+    let strict = svc::DEST_RESOLVE | svc::DEST_REFUSE_PRIVATE | svc::DEST_EXPLAIN;
+    let open_web = busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB;
+    // The deployment alone admits a private literal; the caller's flag refuses it, at once.
+    for (flags, want) in [
+        (svc::DEST_RESOLVE, svc::DEST_ALLOWED),
+        (strict, svc::DEST_INTERNAL),
+    ] {
+        let (_, later) = recorder();
+        let got = verdict_now(s.dest_judge("https://10.0.0.7/", open_web, flags, Some(later)));
+        assert_eq!(got.value, want, "flags {flags}");
+    }
+    let (_, later) = recorder();
+    let got = verdict_now(s.dest_judge("https://localhost/", open_web, strict, Some(later)));
+    assert_eq!(got.value, svc::DEST_INTERNAL, "a loopback name");
+    assert!(
+        got.bytes.is_empty(),
+        "the name alone decided it: nothing named"
+    );
+    // A name answering a private address, a metadata address, and no answer at all.
+    let answered = |answer: Result<Vec<std::net::IpAddr>, String>, flags: u32| {
+        let (slot, later) = recorder();
+        assert!(matches!(
+            s.dest_judge("https://card.example/", open_web, flags, Some(later)),
+            Ran::Later
+        ));
+        let done = r.held.lock().unwrap().pop().expect("a resolution asked");
+        done(answer);
+        let got = slot.lock().unwrap().take().expect("answered");
+        (got.value, String::from_utf8(got.bytes).expect("text"))
+    };
+    let private = vec![
+        "93.184.216.34".parse().unwrap(),
+        "10.1.2.3".parse().unwrap(),
+    ];
+    assert_eq!(
+        answered(Ok(private.clone()), strict),
+        (svc::DEST_INTERNAL, "10.1.2.3".to_string())
+    );
+    assert_eq!(
+        answered(Ok(private), svc::DEST_RESOLVE | svc::DEST_REFUSE_PRIVATE),
+        (svc::DEST_INTERNAL, String::new()),
+        "not asked to explain, nothing is named"
+    );
+    assert_eq!(
+        answered(Ok(vec!["169.254.169.254".parse().unwrap()]), strict),
+        (svc::DEST_METADATA, "169.254.169.254".to_string())
+    );
+    assert_eq!(
+        answered(Err("no such host".to_string()), strict),
+        (svc::DEST_UNRESOLVABLE, "no such host".to_string())
+    );
 }
