@@ -151,10 +151,9 @@ pub mod kind {
 /// fields, so the enriched request still decodes in a plugin built before they existed. Nothing is
 /// refused in either direction, and the `supported_abi` range is unchanged.
 ///
-/// Because v3 and v4 never changed what a v2 artifact is asked or how it answers, the engine's
-/// `supported_abi` range for `store` is `[2, ABI_VERSION]` (see `plugin-loader`'s
-/// `STORE_ABI_FLOOR`): every published first-party store plugin (sqlite/postgres/mysql/valkey,
-/// all `abi_version: 2`) keeps loading and behaves exactly as it did under 1.5.5. Only v1 is refused.
+/// The engine's `supported_abi` for `store` is exactly this version (THE DESIGN's no-legacy-loading
+/// rule — one ABI version per kind); a published 1.5.5 store (`abi_version: 2`) is refused at boot,
+/// naming the rebuild.
 pub const ABI_VERSION: u32 = 4;
 
 /// The exported-symbol names the engine resolves after `dlopen`/`LoadLibrary`. A plugin of ANY kind
@@ -406,8 +405,7 @@ pub enum StoreRequest {
     // fields are `#[serde(default)]`, so a request from an OLDER engine that omits them still decodes
     // — at the same neutral values the receiver used to hard-code — and serde ignores unknown fields
     // by default, so a request carrying them still decodes in an OLDER plugin built before they
-    // existed. Neither side is refused, and the engine's `supported_abi` range is untouched: every
-    // published `abi_version: 2` store keeps loading and keeps behaving exactly as it did.
+    // existed.
     /// UPSERT one plane record by `(kind, id)` — the neutral `PutTask`/`PutMcpDemotion`.
     UpsertPlaneRecord {
         kind: String,
