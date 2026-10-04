@@ -1348,7 +1348,12 @@ impl http_body::Body for ReplyBody {
 #[path = "tests/serve.rs"]
 mod tests;
 
-#[cfg(test)]
+// `serve_planes.rs` uses `crate::root::plane_node`, compiled only when a linked plane rides the
+// `node` axis (the generated `linked_axis_node` cfg, root/mod.rs); its only consumers are the
+// `linked_axis_node`-gated `money_tests`/`door_tests`, so gating it to the same cfg loses no
+// coverage under the default node-bearing build and lets the bin test build under
+// `--no-default-features`, where no plane rides the node axis.
+#[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_planes.rs"]
 mod planes_tests;
 
