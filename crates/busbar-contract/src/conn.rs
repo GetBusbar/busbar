@@ -309,6 +309,135 @@ pub trait DeclaredConns: Conns {
     /// scheme no loaded transport serves, naming the plugin and the scheme — fail closed at boot,
     /// never at the need's first open.
     fn serves_scheme(&self, transport: &str) -> bool;
+
+    /// Record that `owner` declared `need` (as [`DeclaredConns::declare`]), its target a PROGRAM
+    /// the need's `target_from` resolved to in the instance's settings ([`Program::from_settings`]):
+    /// every open on the need spawns that program, its stdin and stdout the connection, the child's
+    /// lifecycle the host's (killed on close). A table that carries no program refuses it.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Refused`] when the host will not carry the need as declared.
+    fn declare_program(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        program: &Program,
+    ) -> Result<(), ConnError> {
+        let _ = (owner, need, spec, program);
+        Err(ConnError::Refused)
+    }
+}
+
+/// A PROGRAM a need dials (its `transport` a byte-stream framer the program's pipes carry): the
+/// three things a spawn needs that one target string cannot spell — the absolute path
+/// of the executable, its argument vector and its environment — read from the instance's settings.
+/// No shell; the child inherits no environment the settings did not write down. An environment
+/// value may be secret, so it never prints ([`std::fmt::Debug`] shows names and byte counts).
+#[derive(Clone, PartialEq, Eq)]
+pub struct Program {
+    /// The executable's absolute path.
+    pub command: String,
+    /// Its arguments, in order (not including the command).
+    pub args: Vec<String>,
+    /// Its whole environment, name and value, in the settings' order.
+    pub env: Vec<(String, String)>,
+}
+
+impl std::fmt::Debug for Program {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let env: Vec<String> = self
+            .env
+            .iter()
+            .map(|(name, value)| format!("{name} = <{} bytes>", value.len()))
+            .collect();
+        f.debug_struct("Program")
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("env", &env)
+            .finish()
+    }
+}
+
+/// Why a settings value is not a [`Program`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgramRefused {
+    /// The value is not an object with a `command` string.
+    NoCommand,
+    /// The command is not an absolute path (no shell resolves a bare name).
+    NotAbsolute,
+    /// `args` is not a list of strings.
+    Args,
+    /// `env` is not a map of strings.
+    Env,
+    /// A key other than `command`, `args` and `env`.
+    UnknownKey,
+    /// A NUL byte in the command, an argument, or an environment name or value; or an environment
+    /// name that is empty or holds `=`: none of them can be handed to a process.
+    Nul,
+}
+
+impl Program {
+    /// The settings' spelling of a program: `{command, args?, env?}` — `command` an absolute path,
+    /// `args` a list of strings, `env` a map of string to string; any other key, type or a NUL byte
+    /// is refused.
+    ///
+    /// # Errors
+    ///
+    /// The [`ProgramRefused`] naming what the value breaks.
+    pub fn from_settings(value: &serde_json::Value) -> Result<Self, ProgramRefused> {
+        let map = value.as_object().ok_or(ProgramRefused::NoCommand)?;
+        if map
+            .keys()
+            .any(|k| !matches!(k.as_str(), "command" | "args" | "env"))
+        {
+            return Err(ProgramRefused::UnknownKey);
+        }
+        let command = map
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(ProgramRefused::NoCommand)?;
+        if !command.starts_with('/') {
+            return Err(ProgramRefused::NotAbsolute);
+        }
+        let args = match map.get("args") {
+            None => Vec::new(),
+            Some(v) => v
+                .as_array()
+                .ok_or(ProgramRefused::Args)?
+                .iter()
+                .map(|a| a.as_str().map(str::to_owned).ok_or(ProgramRefused::Args))
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        let env = match map.get("env") {
+            None => Vec::new(),
+            Some(v) => v
+                .as_object()
+                .ok_or(ProgramRefused::Env)?
+                .iter()
+                .map(|(k, v)| {
+                    v.as_str()
+                        .map(|v| (k.clone(), v.to_owned()))
+                        .ok_or(ProgramRefused::Env)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        let nul = |s: &str| s.contains('\0');
+        if nul(command)
+            || args.iter().any(|a| nul(a))
+            || env
+                .iter()
+                .any(|(k, v)| nul(k) || nul(v) || k.is_empty() || k.contains('='))
+        {
+            return Err(ProgramRefused::Nul);
+        }
+        Ok(Self {
+            command: command.to_owned(),
+            args,
+            env,
+        })
+    }
 }
 
 /// THE HOST-SIDE READER'S CONNECTION TABLE: [`Conns`] plus a read that wakes a [`Waker`] instead of

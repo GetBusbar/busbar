@@ -1487,7 +1487,13 @@ fn key_granting(grants: &[(&str, &str)]) -> Arc<VirtualKey> {
 
 /// Admit `unit` with `principal` and ask whether it is entitled to `target`.
 fn entitled(r: &Rig, unit: u64, principal: Option<Arc<VirtualKey>>, target: &str) -> u64 {
-    r.s.units().admitted(unit, UnitRecord { principal });
+    r.s.units().admitted(
+        unit,
+        UnitRecord {
+            principal,
+            depth: 0,
+        },
+    );
     r.s.entitlement_check(&caller("inst"), Some(unit), target)
         .value
 }

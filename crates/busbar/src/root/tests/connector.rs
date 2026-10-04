@@ -19,13 +19,25 @@ fn judge() -> Arc<dyn busbar_kernel::host_services::DestJudge> {
 fn the_process_has_one_connector_and_every_path_takes_it() {
     let doors = crate::LINKED_TRANSPORT_DOORS;
     assert!(!doors.is_empty(), "this build links a transport door");
-    let built = process::build(|| entries(doors), judge(), &[], Arc::new(|_| {}));
+    let built = process::build(
+        || entries(doors, &TransportSettings::default()),
+        judge(),
+        &[],
+        Arc::new(|_| {}),
+        PoolPosture::NONE,
+    );
     let built = built.expect("the linked doors build a connector");
     let installed = install(Arc::clone(&built)).expect("the first install is the one");
     assert!(Arc::ptr_eq(installed, &built));
     assert!(Arc::ptr_eq(the(), &built), "the() is the installed one");
-    let second = process::build(|| entries(doors), judge(), &[], Arc::new(|_| {}))
-        .expect("a second one builds");
+    let second = process::build(
+        || entries(doors, &TransportSettings::default()),
+        judge(),
+        &[],
+        Arc::new(|_| {}),
+        PoolPosture::NONE,
+    )
+    .expect("a second one builds");
     assert!(install(second).is_err(), "a second connector is refused");
     assert!(Arc::ptr_eq(the(), &built));
 }
@@ -243,4 +255,100 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
         Some(DEST_METADATA),
         "operator infrastructure refuses metadata whatever is carved"
     );
+}
+
+/// RED (ARCHITECT round 4 (e)): a plane's upstream need whose settings name a PROGRAM is dialled by
+/// the one connector over a linked transport door that frames a program's pipes LINE BY LINE (the
+/// stdio row's door, found by what it does, never by name): the connector spawns the program
+/// (operator-infrastructure class; no shell, only its stated environment), its first line is one
+/// frame with the newline stripped, a message written is one line to its stdin, and it is killed
+/// on close.
+#[test]
+fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
+    use busbar_contract::abi::host::conn::connector::{
+        DIRECTION_OUTBOUND, EGRESS_OPERATOR_INFRASTRUCTURE,
+    };
+    use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+    use busbar_contract::conn::{
+        ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
+    };
+    let doors = crate::LINKED_TRANSPORT_DOORS;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    rt.block_on(async {
+        let c = process::build(
+            || entries(doors, &TransportSettings::default()),
+            judge(),
+            &[],
+            Arc::new(|_| {}),
+            PoolPosture::NONE,
+        )
+        .expect("the linked doors build a connector");
+        let program = busbar_contract::conn::Program::from_settings(&serde_json::json!({
+            "command": "/bin/sh",
+            "args": ["-c", "echo \"got:$DECLARED\"; read line; echo \"again:$line\""],
+            "env": {"DECLARED": "yes"},
+        }))
+        .expect("a program");
+        // The next frame on `conn`, read through the table.
+        let frame = |conn: ConnId| {
+            let c = &c;
+            async move {
+                let mut buf = [0_u8; 128];
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                loop {
+                    match c.read(InstanceId(7), conn, 1, &mut buf) {
+                        Ok(piece) => break Some(buf[..piece.len].to_vec()),
+                        Err(ConnError::Pending) if std::time::Instant::now() < deadline => {
+                            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                        }
+                        _ => break None,
+                    }
+                }
+            }
+        };
+        let mut line_framed = Vec::new();
+        for (n, (key, _)) in (0u32..).zip(doors) {
+            let need = ReadNeed {
+                direction: DIRECTION_OUTBOUND,
+                egress_class: EGRESS_OPERATOR_INFRASTRUCTURE,
+                transport: (*key).to_owned(),
+                auth: String::new(),
+                target_from: "settings.server".to_owned(),
+                trust_from: String::new(),
+                details: ReadBlob {
+                    fmt: 0,
+                    flags: 0,
+                    bytes: Vec::new(),
+                },
+                timeout_ms: 0,
+            };
+            let (owner, id) = (InstanceId(7), NeedId(n));
+            // A door that frames over another layer carries no program: refused at declare.
+            if c.declare_program(owner, id, &need, &program).is_err() {
+                continue;
+            }
+            // A door that will not begin a framing over a program's pipes refuses the open.
+            let Ok(conn) = c.open(owner, id, &OpenDesc::default()) else {
+                continue;
+            };
+            if frame(conn).await.as_deref() == Some(b"got:yes".as_slice()) {
+                assert_eq!(c.write(owner, conn, b"{\"id\":1}", true, false), Ok(8));
+                assert_eq!(
+                    frame(conn).await.as_deref(),
+                    Some(b"again:{\"id\":1}".as_slice()),
+                    "a message is one line to the program; its answer one frame back"
+                );
+                line_framed.push(*key);
+            }
+            c.close(owner, conn).expect("closes");
+        }
+        assert_eq!(
+            line_framed.len(),
+            1,
+            "exactly one linked door frames a program line by line"
+        );
+    });
 }

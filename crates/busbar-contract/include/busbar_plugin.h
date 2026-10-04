@@ -579,6 +579,10 @@ extern "C" {
 #define BB_HSVC_DEST_PLAINTEXT UINT64_C(6) /* `dest.judge` verdict: plaintext the class does not admit. */
 #define BB_HSVC_DEST_UNRESOLVABLE UINT64_C(7) /* `dest.judge` verdict: the name did not resolve. */
 #define BB_HSVC_DEST_NO_ADDRESSES UINT64_C(8) /* `dest.judge` verdict: the name resolved to nothing. */
+#define BB_HSVC_WORK_REFERENCE_LEN ((size_t)32) /* The length of a work handle's reference, in hex digits: 128 bits. */
+#define BB_HSVC_MAX_WORK_RECORD ((size_t)256) /* The most bytes a work handle's record carries (the body lives in the plugin's own records; the */
+#define BB_HSVC_WORK_LIVE UINT8_C(1) /* `work.find`'s state byte: the handle is live. */
+#define BB_HSVC_WORK_SETTLED UINT8_C(2) /* `work.find`'s state byte: the handle is settled. */
 #define BB_HSVC_TRUST_NEW UINT64_C(1) /* `trust.sight` verdict: never seen before. */
 #define BB_HSVC_TRUST_SAME UINT64_C(2) /* `trust.sight` verdict: the pinned catalogue. */
 #define BB_HSVC_TRUST_DRIFTED UINT64_C(3) /* `trust.sight` verdict: the catalogue moved from its pin. */
@@ -3056,6 +3060,8 @@ struct bb_transport_RefuseIn {
     const uint8_t *bytes;
     size_t len;
     bb_transport_FramerSink sink;
+    uint32_t status;
+    uint32_t _reserved2;
 };
 
 /* `finish`'s `in` (the framer's `close`). */
@@ -3370,28 +3376,29 @@ struct bb_hsvc_UnitNestIn {
     bb_hsvc_ServiceBufs into;
 };
 
-/* [`op::WORK_OPEN`]'s `in`: open a durable work handle. `value` = the handle. */
+/* [`op::WORK_OPEN`]'s `in`: open a durable work handle for the calling unit's principal. `value` = */
 struct bb_hsvc_WorkOpenIn {
     bb_hsvc_ServiceHead head;
     bb_mech_AbiStr kind;
     bb_mech_Blob record;
+    bb_hsvc_ServiceBufs into;
 };
 
-/* [`op::WORK_FIND`]'s `in`: the scoped lookup. Every denial answers alike ([`ABSENT`]); found, */
+/* [`op::WORK_FIND`]'s `in`: the scoped lookup, within the calling instance and the calling unit's */
 struct bb_hsvc_WorkFindIn {
     bb_hsvc_ServiceHead head;
     bb_mech_AbiStr reference;
     bb_hsvc_ServiceBufs into;
 };
 
-/* [`op::WORK_SETTLE`]'s `in`: settle a handle with its final record. */
+/* [`op::WORK_SETTLE`]'s `in`: settle a live handle of the calling instance with its final record */
 struct bb_hsvc_WorkSettleIn {
     bb_hsvc_ServiceHead head;
     uint64_t handle;
     bb_mech_Blob record;
 };
 
-/* [`op::WORK_RESUME`]'s `in`: bind the handle's record to the calling unit. A continuation is a */
+/* [`op::WORK_RESUME`]'s `in`: bind the handle's record to the calling unit, whose principal must be */
 struct bb_hsvc_WorkResumeIn {
     bb_hsvc_ServiceHead head;
     uint64_t handle;
@@ -5154,7 +5161,7 @@ BB_ASSERT(offsetof(bb_transport_EncodeIn, body_len) == 112, "bb_transport_Encode
 BB_ASSERT(offsetof(bb_transport_EncodeIn, sink) == 120, "bb_transport_EncodeIn.sink: offset");
 BB_ASSERT(offsetof(bb_transport_EncodeIn, method) == 200, "bb_transport_EncodeIn.method: offset");
 BB_ASSERT(offsetof(bb_transport_EncodeIn, target) == 216, "bb_transport_EncodeIn.target: offset");
-BB_ASSERT(sizeof(bb_transport_RefuseIn) == 208, "bb_transport_RefuseIn: size");
+BB_ASSERT(sizeof(bb_transport_RefuseIn) == 216, "bb_transport_RefuseIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_RefuseIn) == 8, "bb_transport_RefuseIn: alignment");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, head) == 0, "bb_transport_RefuseIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, framing) == 88, "bb_transport_RefuseIn.framing: offset");
@@ -5164,6 +5171,8 @@ BB_ASSERT(offsetof(bb_transport_RefuseIn, _reserved) == 108, "bb_transport_Refus
 BB_ASSERT(offsetof(bb_transport_RefuseIn, bytes) == 112, "bb_transport_RefuseIn.bytes: offset");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, len) == 120, "bb_transport_RefuseIn.len: offset");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, sink) == 128, "bb_transport_RefuseIn.sink: offset");
+BB_ASSERT(offsetof(bb_transport_RefuseIn, status) == 208, "bb_transport_RefuseIn.status: offset");
+BB_ASSERT(offsetof(bb_transport_RefuseIn, _reserved2) == 212, "bb_transport_RefuseIn._reserved2: offset");
 BB_ASSERT(sizeof(bb_transport_FinishIn) == 184, "bb_transport_FinishIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FinishIn) == 8, "bb_transport_FinishIn: alignment");
 BB_ASSERT(offsetof(bb_transport_FinishIn, head) == 0, "bb_transport_FinishIn.head: offset");
@@ -5391,11 +5400,12 @@ BB_ASSERT(offsetof(bb_hsvc_UnitNestIn, verb) == 24, "bb_hsvc_UnitNestIn.verb: of
 BB_ASSERT(offsetof(bb_hsvc_UnitNestIn, target) == 40, "bb_hsvc_UnitNestIn.target: offset");
 BB_ASSERT(offsetof(bb_hsvc_UnitNestIn, body) == 56, "bb_hsvc_UnitNestIn.body: offset");
 BB_ASSERT(offsetof(bb_hsvc_UnitNestIn, into) == 80, "bb_hsvc_UnitNestIn.into: offset");
-BB_ASSERT(sizeof(bb_hsvc_WorkOpenIn) == 64, "bb_hsvc_WorkOpenIn: size");
+BB_ASSERT(sizeof(bb_hsvc_WorkOpenIn) == 96, "bb_hsvc_WorkOpenIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_WorkOpenIn) == 8, "bb_hsvc_WorkOpenIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_WorkOpenIn, head) == 0, "bb_hsvc_WorkOpenIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_WorkOpenIn, kind) == 24, "bb_hsvc_WorkOpenIn.kind: offset");
 BB_ASSERT(offsetof(bb_hsvc_WorkOpenIn, record) == 40, "bb_hsvc_WorkOpenIn.record: offset");
+BB_ASSERT(offsetof(bb_hsvc_WorkOpenIn, into) == 64, "bb_hsvc_WorkOpenIn.into: offset");
 BB_ASSERT(sizeof(bb_hsvc_WorkFindIn) == 72, "bb_hsvc_WorkFindIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_WorkFindIn) == 8, "bb_hsvc_WorkFindIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_WorkFindIn, head) == 0, "bb_hsvc_WorkFindIn.head: offset");

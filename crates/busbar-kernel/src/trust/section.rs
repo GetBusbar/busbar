@@ -140,7 +140,7 @@ pub fn parse_section(
 }
 
 /// The registrations of a plane section, in order: every string key that is not a reserved section
-/// word.
+/// word or the core-owned `work:` bounds.
 pub(crate) fn registrations(
     value: &serde_yaml::Value,
 ) -> impl Iterator<Item = (&str, &serde_yaml::Value)> {
@@ -149,7 +149,10 @@ pub(crate) fn registrations(
         .into_iter()
         .flat_map(|m| m.iter())
         .filter_map(|(k, v)| k.as_str().map(|k| (k, v)))
-        .filter(|(k, _)| !busbar_contract::section::RESERVED_SECTION_KEYS.contains(k))
+        .filter(|(k, _)| {
+            !busbar_contract::section::RESERVED_SECTION_KEYS.contains(k)
+                && *k != busbar_contract::section::RESERVED_WORK_KEY
+        })
 }
 
 /// A pin object: its shape, then the rule that makes the object form worth having — a root needs
