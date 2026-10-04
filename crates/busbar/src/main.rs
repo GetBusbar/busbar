@@ -778,6 +778,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     #[cfg(feature = "root-admin")]
     let breaker_policy = root::adapters::BreakerPolicy::from_pools(&cfg.pools);
 
+    // What the door planes are sealed over, projected from every configuration as it is built
+    // (`root::door_steps::door_config`), so a config apply refreshes them onto the new generation.
+    busbar_kernel::appbuild::set_config_projection(root::door_steps::door_config);
+
     // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
     // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
     // Boot has no `prior` App, so `build_app_from_config` never resolves a credential rotation here
@@ -791,9 +795,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The marker sits DIRECTLY above the call it exempts, and must: the lint carries an allow across
     // the comment block that starts it and no further, so the voice-credential capture that used to
     // stand between the two silently ate this exemption and left the build itself flagged.
-    // What the door planes are sealed over, projected from every configuration as it is built
-    // (`root::door_steps::door_config`), so a config apply refreshes them onto the new generation.
-    busbar_kernel::appbuild::set_config_projection(root::door_steps::door_config);
     let (boot_app, _boot_gov_rotate, boot_limits) = build_app_from_config(
         cfg,
         plugins_cfg,
