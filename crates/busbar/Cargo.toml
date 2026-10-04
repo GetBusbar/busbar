@@ -169,6 +169,9 @@ busbar-export-otlp = { workspace = true, optional = true }
 # Which wires a build links is the `transport` rows of the linked table below; the source names none.
 busbar-transport-tcp = { workspace = true }
 busbar-transport-http = { workspace = true }
+# gRPC: its own framer door over the carrier (OWNER 2026-09-29, "1 new transport"), linked on the
+# transport-door axis.
+busbar-transport-grpc = { workspace = true }
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
@@ -383,7 +386,7 @@ transport-tcp = "busbar-transport-tcp"
 transport-http = "busbar-transport-http"
 transport-sse = "busbar-transport-http"
 transport-ws = "busbar-transport-ws"
-transport-grpc = "busbar-transport-http"
+transport-grpc = "busbar-transport-grpc"
 transport-stdio = "busbar-transport-stdio"
 # THE PLANE DOOR AXIS (#2, THE DESIGN section 11.4): a plane's memory-ABI `door`, bound through the
 # loader's one load beside the dropped-in plane doors.
@@ -427,7 +430,7 @@ transport-tcp = "transport transport-door"
 transport-http = "transport connector-door"
 transport-sse = "transport"
 transport-ws = "transport"
-transport-grpc = "transport"
+transport-grpc = "transport transport-door"
 transport-stdio = "transport"
 plane-decisions-door = "plane-door"
 llm-on-driver = "plane-door"
@@ -439,7 +442,6 @@ llm-on-driver = "plane-door"
 busbar-plane-decisions = "crate::root::plane_decisions"
 # One crate, several wires: each row past the crate's own `linked` names its entry.
 transport-sse = "busbar_transport_http::linked::sse"
-transport-grpc = "busbar_transport_http::linked::grpc"
 # A secret plugin's door is its `door` module's.
 busbar-secret-env = "busbar_secret_env::door"
 busbar-secret-file = "busbar_secret_file::door"

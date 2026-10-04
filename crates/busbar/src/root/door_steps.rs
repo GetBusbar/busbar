@@ -874,36 +874,38 @@ pub struct ProviderRoute {
     pub credential: busbar_contract::secret_ref::SecretRef,
     /// `auth:`, the style it overrides its plane's dialect default with.
     pub style: Option<String>,
-    /// The style's parameters, as the config typed them (`token_url`, `scope`, `subject`, where
-    /// stated). Carried TYPED, never as an opaque `serde_json::Value` settings bag, so no engine
-    /// type holds a raw settings bag (settings-leak gate; Law 11, secret-hygiene). They are
-    /// assembled into the one JSON object the auth plugin opens the binding with only at the
-    /// `open_outbound` boundary ([`ProviderRoute::style_params`]); this type is never serialized
-    /// and never reaches an admin read.
+    /// The style's parameters (`token_url`, `scope`, `subject`, where stated).
+    pub params: StyleParams,
+}
+
+/// THE PARAMETERS A PROVIDER'S `auth:` STYLE IS OPENED WITH, typed: the three keys a provider states
+/// (`token_url`, `scope`, `subject`), each present only where the operator wrote it. The JSON object
+/// the auth plugin's `open_outbound` reads is built from them at the call, never carried as a bag.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StyleParams {
+    /// `token_url`, where stated.
     pub token_url: Option<String>,
-    /// See [`ProviderRoute::token_url`].
+    /// `scope`, where stated.
     pub scope: Option<String>,
-    /// See [`ProviderRoute::token_url`].
+    /// `subject`, where stated.
     pub subject: Option<String>,
 }
 
-impl ProviderRoute {
-    /// The style's parameters as the ONE JSON object `open_outbound` opens the binding with: the
-    /// stated `token_url`/`scope`/`subject`, each omitted when unset, in that order — byte-identical
-    /// to the bag the config's typed fields spell. Built at the ABI boundary, never a stored field.
+impl StyleParams {
+    /// The one JSON object `open_outbound` reads: the stated keys, in this order, and no others.
     #[must_use]
-    pub fn style_params(&self) -> serde_json::Value {
-        let mut bag = serde_json::Map::new();
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut object = serde_json::Map::new();
         for (key, value) in [
             ("token_url", &self.token_url),
             ("scope", &self.scope),
             ("subject", &self.subject),
         ] {
             if let Some(v) = value {
-                bag.insert(key.to_string(), serde_json::Value::String(v.clone()));
+                object.insert(key.to_string(), serde_json::Value::String(v.clone()));
             }
         }
-        serde_json::Value::Object(bag)
+        serde_json::Value::Object(object)
     }
 }
 
@@ -934,9 +936,11 @@ pub fn provider_routes(
                     protocol: p.protocol.clone(),
                     credential: p.api_key.clone(),
                     style: p.auth.map(|a| style_word(a).to_string()),
-                    token_url: p.token_url.clone(),
-                    scope: p.scope.clone(),
-                    subject: p.subject.clone(),
+                    params: StyleParams {
+                        token_url: p.token_url.clone(),
+                        scope: p.scope.clone(),
+                        subject: p.subject.clone(),
+                    },
                 },
             )
         })
@@ -1042,9 +1046,9 @@ impl OutboundAuths {
     ///
     /// The serving plugin would not open for its outbound styles.
     pub fn serving(&self, style: &str) -> Result<Option<Serving>, String> {
-        use crate::root::loader::dispatch::auth_outbound::{serves_style, OutboundInstance};
+        use crate::root::loader::dispatch::auth_outbound::{outbound_style, OutboundInstance};
         for (name, plugin) in self.rows() {
-            let Some(decl) = serves_style(&plugin, style) else {
+            let Some(decl) = outbound_style(&plugin, style) else {
                 continue;
             };
             let mut opened = self.opened.lock().unwrap_or_else(|p| p.into_inner());
@@ -1213,7 +1217,7 @@ pub fn member_routes(
             )
         })?;
         let handle = auth
-            .open_outbound(&r.style, &credential, &r.provider.style_params())
+            .open_outbound(&r.style, &credential, &r.provider.params.to_json())
             .map_err(|e| format!("provider '{}' {e}", r.name))?;
         let need = dialled
             .get(&r.entry)

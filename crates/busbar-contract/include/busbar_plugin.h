@@ -3046,6 +3046,8 @@ struct bb_transport_RefuseIn {
     const uint8_t *bytes;
     size_t len;
     bb_transport_FramerSink sink;
+    uint32_t status;
+    uint32_t _reserved2;
 };
 
 /* `finish`'s `in` (the framer's `close`). */
@@ -5135,7 +5137,7 @@ BB_ASSERT(offsetof(bb_transport_EncodeIn, body_len) == 112, "bb_transport_Encode
 BB_ASSERT(offsetof(bb_transport_EncodeIn, sink) == 120, "bb_transport_EncodeIn.sink: offset");
 BB_ASSERT(offsetof(bb_transport_EncodeIn, method) == 200, "bb_transport_EncodeIn.method: offset");
 BB_ASSERT(offsetof(bb_transport_EncodeIn, target) == 216, "bb_transport_EncodeIn.target: offset");
-BB_ASSERT(sizeof(bb_transport_RefuseIn) == 208, "bb_transport_RefuseIn: size");
+BB_ASSERT(sizeof(bb_transport_RefuseIn) == 216, "bb_transport_RefuseIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_RefuseIn) == 8, "bb_transport_RefuseIn: alignment");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, head) == 0, "bb_transport_RefuseIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, framing) == 88, "bb_transport_RefuseIn.framing: offset");
@@ -5145,6 +5147,8 @@ BB_ASSERT(offsetof(bb_transport_RefuseIn, _reserved) == 108, "bb_transport_Refus
 BB_ASSERT(offsetof(bb_transport_RefuseIn, bytes) == 112, "bb_transport_RefuseIn.bytes: offset");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, len) == 120, "bb_transport_RefuseIn.len: offset");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, sink) == 128, "bb_transport_RefuseIn.sink: offset");
+BB_ASSERT(offsetof(bb_transport_RefuseIn, status) == 208, "bb_transport_RefuseIn.status: offset");
+BB_ASSERT(offsetof(bb_transport_RefuseIn, _reserved2) == 212, "bb_transport_RefuseIn._reserved2: offset");
 BB_ASSERT(sizeof(bb_transport_FinishIn) == 184, "bb_transport_FinishIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FinishIn) == 8, "bb_transport_FinishIn: alignment");
 BB_ASSERT(offsetof(bb_transport_FinishIn, head) == 0, "bb_transport_FinishIn.head: offset");

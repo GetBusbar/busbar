@@ -300,9 +300,7 @@ fn provider(protocol: &str, style: Option<&str>) -> super::ProviderRoute {
         protocol: protocol.to_string(),
         credential: busbar_contract::secret_ref::SecretRef::none(),
         style: style.map(str::to_string),
-        token_url: None,
-        scope: None,
-        subject: None,
+        params: super::StyleParams::default(),
     }
 }
 

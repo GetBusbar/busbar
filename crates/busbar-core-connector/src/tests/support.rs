@@ -56,6 +56,8 @@ pub struct TestDoor {
     pub crossings: Mutex<Vec<&'static str>>,
     /// Every thread a crossing ran on.
     pub threads: Mutex<HashSet<ThreadId>>,
+    /// The neutral status every `refuse` crossing carried, in order.
+    pub refused_statuses: Mutex<Vec<u32>>,
 }
 
 impl TestDoor {
@@ -77,6 +79,7 @@ impl TestDoor {
             next: AtomicU64::new(1),
             crossings: Mutex::new(Vec::new()),
             threads: Mutex::new(HashSet::new()),
+            refused_statuses: Mutex::new(Vec::new()),
         }
     }
 
@@ -267,6 +270,7 @@ impl FramerDoor for TestDoor {
             Call::Refuse(i, o) => match framings.get_mut(&i.framing) {
                 None => ("refuse", failed("no such framing")),
                 Some(st) => {
+                    self.refused_statuses.lock().unwrap().push(i.status);
                     st.outbound.extend(raw(i.bytes, i.len));
                     answer(st, &i.sink, o, silence);
                     ("refuse", ok)
