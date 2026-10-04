@@ -12,7 +12,7 @@
 //! so every draft below hands the loop a body the kernel does not have to re-walk. The plane once
 //! handed back an empty table because the arena could not allocate one; it can, and this does.
 
-use busbar_contract::bounded::{BoundedVec, FactValue, Facts, Ir, ScratchBytes, Span};
+use busbar_contract::bounded::{BoundedVec, FactValue, Facts, ScratchBytes, Span};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::ids::{AdminVerbId, LaneId, SchemeAlt};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
@@ -25,12 +25,13 @@ use busbar_contract::unit::{
 };
 use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, TransportEnvelope};
 
-use crate::facts as f;
 use crate::jsonrpc;
-use crate::meta::{self, CLASS_BYTES, CLASS_TOOL_CALLS};
-use crate::ops;
-use crate::records as rec;
+use crate::tool_facts as f;
+use crate::tool_meta::{self as meta, CLASS_BYTES, CLASS_TOOL_CALLS};
+use crate::tool_ops as ops;
+use crate::tool_records as rec;
 use crate::McpPlane;
+use busbar_contract::abi::sdk::body::{has, read_raw, read_str, view};
 
 /// The per-connection codec state this plane keeps.
 ///
@@ -107,7 +108,7 @@ impl McpPlane {
                 lane: server.lane,
             },
             None => DestinationFacts::Upstream {
-                transport: crate::claims::CARRIER_HTTP,
+                transport: crate::tool_claims::CARRIER_HTTP,
                 address: busbar_contract::UpstreamAddress::socket(""),
                 lane: LaneId::new(""),
             },
@@ -115,43 +116,9 @@ impl McpPlane {
     }
 
     /// Which method row a unit's operation class came from, where the class names one.
-    fn row_for_op(op: busbar_contract::ids::OpClassId) -> Option<&'static ops::MethodRow> {
+    fn row_for_op(op: busbar_contract::ids::OpClassId) -> Option<&'static ops::RpcMethodRow> {
         ops::METHODS.iter().find(|r| r.op == op)
     }
-}
-
-/// The span view of a body, built from the pointers this plane declared.
-///
-/// One scan of one closed grammar, into the unit's own arena, so the loop reads the spans the plane
-/// resolved instead of walking the same bytes a second time. The arena refusing is a decode
-/// failure at the step that asked for the bytes, which is what the arena's budget means.
-fn view<'u>(body: &'u [u8], pointers: &[&'u str], ctx: &Ctx<'u>) -> Result<Ir<'u>, Decode> {
-    let spans = busbar_contract::spans::resolve(body, pointers, ctx.arena())
-        .map_err(|_| Decode::Oversize)?;
-    Ok(Ir::new(body, spans))
-}
-
-/// The string value at one pointer of a body, with its quotes stripped.
-fn read_str<'u>(body: &'u [u8], pointer: &str) -> Option<&'u str> {
-    let raw = read_raw(body, pointer)?;
-    let inner = raw.strip_prefix(b"\"")?.strip_suffix(b"\"")?;
-    core::str::from_utf8(inner).ok()
-}
-
-/// The raw bytes at one pointer of a body.
-///
-/// Through the contract's own span grammar, which is the kernel's: this plane used to carry a
-/// scanner of its own, and a closed grammar with a second reading is two grammars.
-fn read_raw<'u>(body: &'u [u8], pointer: &str) -> Option<&'u [u8]> {
-    match busbar_contract::spans::resolve_pointer(body, pointer) {
-        busbar_contract::spans::Resolved::Found(span) => body.get(span.start..span.end),
-        _ => None,
-    }
-}
-
-/// Whether a body has a member at one pointer at all.
-fn has(body: &[u8], pointer: &str) -> bool {
-    read_raw(body, pointer).is_some()
 }
 
 /// The facts a request body yields, read once.
@@ -159,7 +126,7 @@ fn request_facts<'u>(body: &'u [u8], envelope: &jsonrpc::Envelope) -> Facts<'u> 
     let mut facts = Facts::new();
     if let Some(method) = envelope.method_str(body) {
         let _ = facts.set(f::FACT_METHOD, FactValue::Str(method));
-        if let Some(row) = ops::row_for(method) {
+        if let Some(row) = ops::method_row_for(method) {
             // The subject is what the request is ABOUT, read from where the codec's own table says
             // it lives — never from the request's content.
             if let Some(pointer) = row.name_pointer {
@@ -362,7 +329,7 @@ fn bool_literal(raw: &[u8]) -> Option<bool> {
 /// asserted byte for byte in the envelope module's own tests. What is NOT pinned is the message
 /// TEXT, which the composition root must compare against the battery's recorded answers on the day
 /// it switches this plane on. That is stated here rather than left for someone to discover.
-fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
+fn refusal_words(reason: RefusalReason) -> (i64, &'static str) {
     // THE MATCH IS TOTAL — there is no `_` arm. Before this, only nine of the 42 reasons were mapped
     // and the rest collapsed to `CODE_INTERNAL`, so a rate limit, an open breaker, a drain or a spent
     // budget reached the caller as "this node broke" — a node fault a client retries the wrong way.
@@ -503,7 +470,7 @@ impl Plane for McpPlane {
             })));
         }
 
-        let row = ops::row_for(method).ok_or(Decode::UnsupportedOperation)?;
+        let row = ops::method_row_for(method).ok_or(Decode::UnsupportedOperation)?;
         // A method an UPSTREAM sends is not one a caller may send. Reading it here would let a
         // caller open a unit that only a paired server is allowed to open.
         if row.sender == ops::Sender::Provider {
@@ -624,7 +591,7 @@ impl Plane for McpPlane {
                     codec.rounds_asked = codec.rounds_asked.saturating_add(1);
                 }
             }
-            let Some(row) = ops::row_for(method) else {
+            let Some(row) = ops::method_row_for(method) else {
                 // A notice a server sends is dropped, exactly as one a caller sends is.
                 return Ok(Progress::Discard {
                     reason: DiscardCode::Unsupported,
@@ -634,7 +601,7 @@ impl Plane for McpPlane {
             //
             // Ingress refuses a caller who names a `Sender::Provider` method, because that would
             // let a caller open a unit only a paired server may open. The same asymmetry runs the
-            // other way and is worse: `row_for` searches the WHOLE vocabulary, so without this an
+            // other way and is worse: `method_row_for` searches the WHOLE vocabulary, so without this an
             // upstream could name `tools/call` — a `Sender::Client` method — on the response leg
             // and have it minted as a genuine unit. That unit then runs all seven governance steps
             // under the ORIGINAL CALLER's identity, budget and approval grant, for work the caller
@@ -770,7 +737,7 @@ impl Plane for McpPlane {
             Some(FactValue::Str(text)) => Some(jsonrpc::id_value(text.as_bytes())?),
             _ => None,
         };
-        let (code, message) = refusal_render(refusal.reason);
+        let (code, message) = refusal_words(refusal.reason);
         // A reason that implies a wait says so, under the member a caller can act on. Nothing else
         // about why is disclosed.
         let data = refusal
@@ -798,7 +765,7 @@ impl Plane for McpPlane {
     fn authenticate<'u>(&self, _u: &Unit<'u>, ctx: &Ctx<'u>) -> CredentialLocator {
         // A locally launched server has no request to carry a header on: its credential is handed to
         // it when it starts. Everything on the document transport presents a bearer credential.
-        let over_stdio = crate::claims::is_stdio(ctx.transport().key());
+        let over_stdio = crate::tool_claims::is_stdio(ctx.transport().key());
         let alt = if over_stdio { "environment" } else { "bearer" };
         // A notice asks for nothing, and it used to be narrowed to an invented "anonymous"
         // alternative for that reason. A notice arrives on the SAME claim a request does, though,
@@ -1028,7 +995,7 @@ impl Plane for McpPlane {
         let _ = ctx;
         let mut facts = Facts::new();
         match verb {
-            v if v == crate::meta::VERB_TOOLS => {
+            v if v == crate::tool_meta::VERB_TOOLS => {
                 let _ = facts.set("count", FactValue::Int(self.servers().len() as i64));
                 for server in self.servers() {
                     // The server's name is the key and the lane it is priced on is the value.
@@ -1038,7 +1005,7 @@ impl Plane for McpPlane {
                     let _ = facts.set(server.id, FactValue::Str(server.lane.as_str()));
                 }
             }
-            v if v == crate::meta::VERB_SERVER => {
+            v if v == crate::tool_meta::VERB_SERVER => {
                 // The projection over ONE registration. A subject that names no registration is an
                 // unsupported operation rather than an empty answer: "there is no such server" and
                 // "that server has nothing to report" are different facts.

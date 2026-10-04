@@ -228,7 +228,6 @@ pub fn frame(bytes: &[u8]) -> Frame {
             status: None,
             status_code: None,
             retry_after_secs: None,
-            text: false,
         },
     }
 }

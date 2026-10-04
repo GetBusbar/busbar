@@ -78,6 +78,11 @@ pub const DEFAULT_MOUNT: &str = "/mcp";
 /// The discovery document for the default mount.
 pub const DEFAULT_METADATA: &str = "/.well-known/oauth-protected-resource/mcp";
 
+/// THE TASK-RUN CLAIM: where a task's continuation arrives, nested by the unit that created the task
+/// (`unit.nest`, ARCHITECT round 5 Q-L3B-TASKS (b) → (A)). It takes a credential like the endpoint:
+/// a continuation runs under the principal its work handle recorded, and only once.
+pub const TASK_RUN_MOUNT: &str = "/mcp/tasks/run";
+
 /// The named stream a locally launched server's frames arrive on.
 pub const STDIO_STREAM: &str = "mcp";
 

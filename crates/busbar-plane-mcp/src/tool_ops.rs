@@ -110,7 +110,7 @@ pub enum Sender {
 
 /// One row of the vocabulary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MethodRow {
+pub struct RpcMethodRow {
     /// The method name exactly as it appears on the wire.
     pub method: &'static str,
     /// Which operation class a unit carrying it is.
@@ -130,92 +130,92 @@ pub struct MethodRow {
 ///
 /// A name absent from here is a method this plane does not carry, and the decode step says so rather
 /// than guessing.
-pub const METHODS: &[MethodRow] = &[
-    MethodRow {
+pub const METHODS: &[RpcMethodRow] = &[
+    RpcMethodRow {
         method: "server/discover",
         op: OP_DISCOVER,
         sender: Sender::Client,
         event_framed: false,
         name_pointer: None,
     },
-    MethodRow {
+    RpcMethodRow {
         method: "tools/list",
         op: OP_TOOLS_LIST,
         sender: Sender::Client,
         event_framed: false,
         name_pointer: None,
     },
-    MethodRow {
+    RpcMethodRow {
         method: "tools/call",
         op: OP_TOOL_CALL,
         sender: Sender::Client,
         event_framed: false,
         name_pointer: Some("/params/name"),
     },
-    MethodRow {
+    RpcMethodRow {
         method: "prompts/list",
         op: OP_PROMPTS_LIST,
         sender: Sender::Client,
         event_framed: false,
         name_pointer: None,
     },
-    MethodRow {
+    RpcMethodRow {
         method: "prompts/get",
         op: OP_PROMPT_GET,
         sender: Sender::Client,
         event_framed: false,
         name_pointer: Some("/params/name"),
     },
-    MethodRow {
+    RpcMethodRow {
         method: "resources/list",
         op: OP_RESOURCES_LIST,
         sender: Sender::Client,
         event_framed: false,
         name_pointer: None,
     },
-    MethodRow {
+    RpcMethodRow {
         method: "resources/templates/list",
         op: OP_RESOURCE_TEMPLATES_LIST,
         sender: Sender::Client,
         event_framed: false,
         name_pointer: None,
     },
-    MethodRow {
+    RpcMethodRow {
         method: "resources/read",
         op: OP_RESOURCE_READ,
         sender: Sender::Client,
         event_framed: false,
         name_pointer: Some("/params/uri"),
     },
-    MethodRow {
+    RpcMethodRow {
         method: "completion/complete",
         op: OP_COMPLETION,
         sender: Sender::Client,
         event_framed: false,
         name_pointer: None,
     },
-    MethodRow {
+    RpcMethodRow {
         method: "tasks/get",
         op: OP_TASK_GET,
         sender: Sender::Client,
         event_framed: false,
         name_pointer: Some("/params/taskId"),
     },
-    MethodRow {
+    RpcMethodRow {
         method: "tasks/update",
         op: OP_TASK_UPDATE,
         sender: Sender::Client,
         event_framed: false,
         name_pointer: Some("/params/taskId"),
     },
-    MethodRow {
+    RpcMethodRow {
         method: "tasks/cancel",
         op: OP_TASK_CANCEL,
         sender: Sender::Client,
         event_framed: false,
         name_pointer: Some("/params/taskId"),
     },
-    MethodRow {
+    RpcMethodRow {
         method: "subscriptions/listen",
         op: OP_SUBSCRIPTIONS_LISTEN,
         sender: Sender::Client,
@@ -223,21 +223,21 @@ pub const METHODS: &[MethodRow] = &[
         name_pointer: None,
     },
     // The three an upstream sends BACK, mid-call.
-    MethodRow {
+    RpcMethodRow {
         method: "sampling/createMessage",
         op: OP_SAMPLING,
         sender: Sender::Provider,
         event_framed: false,
         name_pointer: None,
     },
-    MethodRow {
+    RpcMethodRow {
         method: "roots/list",
         op: OP_ROOTS_LIST,
         sender: Sender::Provider,
         event_framed: false,
         name_pointer: None,
     },
-    MethodRow {
+    RpcMethodRow {
         method: "elicitation/create",
         op: OP_ELICITATION,
         sender: Sender::Provider,
@@ -259,7 +259,7 @@ pub const NOTIFICATIONS: &[&str] = &[
 
 /// The row for one method name, if this plane carries that method at all.
 #[must_use]
-pub fn row_for(method: &str) -> Option<&'static MethodRow> {
+pub fn method_row_for(method: &str) -> Option<&'static RpcMethodRow> {
     METHODS.iter().find(|r| r.method == method)
 }
 
