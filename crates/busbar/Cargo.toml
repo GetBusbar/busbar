@@ -490,6 +490,9 @@ busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
 busbar-voice = { path = "../busbar-voice", features = ["test-support"] }
+# `root::door_steps` tests: a member bound under an OAuth grant, its credential minted by the real
+# token-style auth plugin through its own need (TODO row 22).
+busbar-auth-oauth = { path = "../busbar-auth-oauth" }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
 # through the kernel's test_support, exposed to dependents only behind this feature.
 busbar-kernel = { path = "../busbar-kernel", features = ["test-support"] }
