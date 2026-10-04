@@ -1,0 +1,2161 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE PLANE'S DOOR, SERVED: the slots the kernel calls over the plane ABI, on the SDK's safe
+//! surface. [`door`] is the LINKED door; the same function is the DROPPED door once a `cdylib`
+//! exports it (`busbar_contract::export_door!`), so the two cannot answer differently.
+//!
+//! The lifecycle is this plane's own:
+//!
+//! * `validate` reads the settings blob as the `agents:` section ([`door::read_settings`]) and
+//!   refuses in the grammar's words;
+//! * `open` judges the same section, reads the deployment's public base URL and publishes the
+//!   first generation's snapshot ([`door::snapshot_spec`]); `refresh` judges the new section and
+//!   publishes the next generation over the base URL `open` was given; `retire` drops a
+//!   generation's snapshot. Each generation holds the section it serves beside its snapshot
+//!   (`Generations<PlaneSnapshot, AgentsCfg>`), and an arrival keeps the newest one;
+//! * `arrive` decides an arrival on the JSON-RPC line ([`crate::arrival::decide`]) and keeps it,
+//!   with the generation it arrived under, keyed by its unit (`Keyed`); a refused arrival states
+//!   its refusal in its own words, and `refusal` renders those, or the kernel's, in the line's
+//!   dialect ([`crate::arrival::render`]);
+//! * `on_piece` drives a unit's unary hop ([`crate::relay::Relay`]): the request each ATTEMPT
+//!   sends the agent the kernel picked, the caller's body relayed verbatim, and the caller's
+//!   answer from the far end's, written into the host's buffers across `more` re-calls. A hop
+//!   that is about a task opens it at its first ATTEMPT and settles it on the far end's answer,
+//!   over the task store's host records ([`crate::task_hop`]); its answer leaves under busbar's
+//!   task identity ([`crate::identity`]);
+//! * `on_piece` answers the verbs the plane answers itself over the task store's host records
+//!   ([`crate::task_door`]);
+//! * a hop whose answer moves its task queues the task's push notification, and `tick` delivers
+//!   the due ones over the plane's outbound need ([`crate::push_door`]);
+//! * `drive` has no session with unsolicited output, `cancel` finds nothing in flight, and
+//!   `release`/`close` hold nothing the SDK does not already drop.
+
+use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+use busbar_contract::abi::mechanism::lifecycle::{
+    CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
+};
+use busbar_contract::abi::plane::{
+    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn,
+    PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, ProjectIn, ProjectOut, RecordWrite, RefusalIn,
+    RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END,
+    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_REQUIRED,
+    RECORD_PUT, REFUSAL_ARRIVE, ROUTE_DIRECT, ROUTE_SCOPE, UNITS_REPORTED,
+};
+use busbar_contract::abi::sdk::conn::Host;
+use busbar_contract::abi::sdk::door::statement;
+use busbar_contract::abi::sdk::life::Refusal;
+use busbar_contract::abi::sdk::publish::{Generations, Keyed};
+use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot, Services};
+
+use std::sync::Arc;
+use std::task::Poll;
+
+use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
+
+use crate::a2a::config::AgentsCfg;
+use crate::arrival::{self, Dialect, Disposition};
+use crate::door::{self, Line};
+use crate::relay::{self, Answer, Relay, Settled};
+use crate::task_door::{kind_index, Via};
+use crate::task_hop::{self, Opened};
+use crate::tasks::{task_key, Halt, Write};
+
+/// The most calls the kernel keeps in flight on one instance, as the transport doors state it.
+const MAX_INFLIGHT: u32 = 64;
+
+/// The version the Statement names: the crate's (a test pins the two equal).
+pub const VERSION: &str = "1.6.0";
+
+/// THE STATEMENT: the plane's name and version, the settings section it declares
+/// ([`door::SECTIONS`]), its two outbound needs ([`door::NEEDS`]), the secret references its section
+/// holds ([`door::SECRET_REFS`]) and its tail ([`door::TAIL`]).
+pub const STATEMENT: Statement = Statement {
+    kind_tail: (door::TAIL as *const busbar_contract::abi::plane::PlaneTail).cast::<KindTailHead>(),
+    sections: door::SECTIONS.as_ptr(),
+    sections_len: door::SECTIONS.len(),
+    needs: door::NEEDS.as_ptr(),
+    needs_len: door::NEEDS.len(),
+    secret_refs: door::SECRET_REFS.as_ptr(),
+    secret_refs_len: door::SECRET_REFS.len(),
+    ..statement(crate::PLANE_KEY, VERSION, MAX_INFLIGHT)
+};
+
+/// The most units the instance keeps state for at once; past it, the oldest is dropped first.
+pub const MAX_UNITS: usize = 4096;
+
+/// One unit the instance keeps, from its arrival: what the arrival was, the agent the caller
+/// addressed by name (if it did), the section of the generation it arrived under, and what its
+/// pieces carry from one to the next ([`crate::task_door::Pass`]).
+#[derive(Debug)]
+pub struct Unit {
+    /// The arrival, decided.
+    pub disposition: Disposition,
+    /// The agent a `/a2a/agents/{agent_id}` target names.
+    pub agent: Option<String>,
+    /// The section of the newest generation when it arrived.
+    pub section: Option<Arc<AgentsCfg>>,
+    /// The unit's unary hop and what it still owes the host; `None` for a unit `on_piece` does not
+    /// serve yet.
+    pub hop: Option<Hop>,
+    /// The host services its pieces have made so far, and the piece in flight.
+    pub pass: crate::task_door::Pass,
+    /// The JSON-RPC envelope an HTTP+JSON arrival's request spells ([`crate::rest::compose`]):
+    /// what its unit answers and relays in place of the caller's body, its answers re-framed for
+    /// the line ([`crate::rest::reframe`]). `None` on the JSON-RPC line.
+    pub envelope: Option<Vec<u8>>,
+    /// The refresh generation it arrived under: the held cards it reads are that generation's.
+    pub generation: u64,
+}
+
+/// One unit's unary hop, and the answer it is part way through writing.
+#[derive(Debug)]
+pub struct Hop {
+    relay: Relay,
+    outbox: Outbox,
+    /// A task hop's request, until its first ATTEMPT opens the task.
+    opening: Option<serde_json::Value>,
+    /// The caller's request envelope: what a binding other than JSON-RPC composes from.
+    request: Option<serde_json::Value>,
+    /// What the far end's answer has said about the task, until its record writes are made.
+    settle: Vec<Settled>,
+    /// The second the piece in flight entered, kept across its re-entries.
+    now: Option<u64>,
+    /// A subscribe: busbar's own refusal of a task it does not hold live comes before the hop.
+    subscribe: bool,
+    /// How many of the piece in flight's task moves have queued their push notifications: a
+    /// re-entry never queues one twice.
+    queued: usize,
+    /// What the piece in flight files for earlier deliveries, taken once across its re-entries.
+    owed: Option<Vec<crate::push::Owed>>,
+    /// The ATTEMPT passed the admission gate: its re-entries do not judge it again.
+    admitted: bool,
+    /// The skill the agent's held card matched at admission.
+    skill: Option<String>,
+    /// The flight epoch it waits on, while another unit's look at its agent is in flight.
+    waits_on: Option<u64>,
+    /// Verify-on-call's look, while one of its services is in flight.
+    verifying: Option<LookParked>,
+    /// The record writes the ATTEMPT made before verify-on-call paused it: they ride with its
+    /// answer when it resumes.
+    held_writes: Vec<Write>,
+    /// The ATTEMPT's agent endpoint was judged by the relay's guard: its re-entries do not judge it
+    /// again.
+    endpoint_judged: bool,
+}
+
+impl Hop {
+    /// A task-less hop answering the request `id`, declaring `version`.
+    #[must_use]
+    pub fn new(id: serde_json::Value, version: &'static str) -> Self {
+        Hop {
+            relay: Relay::new(id, version),
+            outbox: Outbox::default(),
+            opening: None,
+            request: None,
+            settle: Vec::new(),
+            now: None,
+            subscribe: false,
+            queued: 0,
+            owed: None,
+            admitted: false,
+            skill: None,
+            waits_on: None,
+            verifying: None,
+            held_writes: Vec::new(),
+            endpoint_judged: false,
+        }
+    }
+
+    /// A task-less hop for the request `envelope`.
+    #[must_use]
+    pub fn of(
+        id: serde_json::Value,
+        version: &'static str,
+        envelope: Option<serde_json::Value>,
+    ) -> Self {
+        Hop {
+            request: envelope,
+            ..Hop::new(id, version)
+        }
+    }
+
+    /// A hop about a task: `envelope` opens it at the first ATTEMPT.
+    #[must_use]
+    pub fn task(id: serde_json::Value, version: &'static str, envelope: serde_json::Value) -> Self {
+        Hop {
+            opening: Some(envelope.clone()),
+            request: Some(envelope),
+            ..Hop::new(id, version)
+        }
+    }
+
+    /// A hop about a task whose answer may be events (the engine's event-stream hop): `envelope`
+    /// opens it at the first ATTEMPT; a `subscribe` answers busbar's own refusal first.
+    #[must_use]
+    pub fn events(
+        id: serde_json::Value,
+        version: &'static str,
+        envelope: serde_json::Value,
+        subscribe: bool,
+    ) -> Self {
+        let mut hop = Hop::task(id, version, envelope);
+        hop.relay.expect_events();
+        hop.subscribe = subscribe;
+        hop
+    }
+}
+
+/// What a piece's answer still owes the host: its head, once, then its bytes, `reply_cap` at a
+/// time. `live` while any of it is unwritten; `recall` after a short answer, whose re-call carries
+/// the same piece and must not apply it twice.
+#[derive(Debug, Default)]
+struct Outbox {
+    live: bool,
+    recall: bool,
+    to_far: bool,
+    done: bool,
+    head: Option<Head>,
+    bytes: Vec<u8>,
+    at: usize,
+    /// The record writes that ride with the head.
+    writes: Vec<Write>,
+}
+
+/// The head an answer starts with.
+#[derive(Debug)]
+enum Head {
+    /// The request bound for the far end: verb, target, fields.
+    Attempt(relay::Attempt),
+    /// The caller's reply: its status and media type.
+    Reply(u32, &'static str),
+    /// The caller's reply in events: `200`, an event stream nothing may cache.
+    Events,
+}
+
+/// The head fields an answer in events starts with (the engine's event-stream response).
+const EVENTS_HEAD: [(&str, &str); 2] = [
+    (relay::H_CONTENT_TYPE, crate::events::EVENTS_MEDIA_TYPE),
+    ("cache-control", "no-store"),
+];
+
+impl Outbox {
+    /// The outbox for `answer`; `None` for a piece the hop refuses.
+    fn of(answer: Answer) -> Option<Self> {
+        let (to_far, done, head, bytes) = match answer {
+            Answer::Nothing => (false, false, None, Vec::new()),
+            Answer::Refused => return None,
+            Answer::Attempt(a) => (true, false, Some(Head::Attempt(a)), Vec::new()),
+            Answer::ToFarEnd(bytes) => (true, false, None, bytes),
+            Answer::ToCaller(r) => (
+                false,
+                true,
+                Some(Head::Reply(r.status, r.content_type)),
+                r.body,
+            ),
+            Answer::Part(part) => (
+                false,
+                part.last,
+                part.head.then_some(Head::Events),
+                part.body,
+            ),
+        };
+        Some(Outbox {
+            live: true,
+            recall: false,
+            to_far,
+            done,
+            head,
+            bytes,
+            at: 0,
+            writes: Vec::new(),
+        })
+    }
+}
+
+/// One instance: the public base URL `open` was given, the host tables, every live generation's
+/// snapshot and section, the units in flight, the second the task store was last swept, and the
+/// far end's own id for each relayed task busbar learnt it for.
+pub struct A2aDoor {
+    public_url: Option<String>,
+    pub(crate) host: Option<Host>,
+    pub(crate) services: Option<Services>,
+    generations: Generations<PlaneSnapshot, AgentsCfg>,
+    pub(crate) units: Keyed<u64, Unit>,
+    pub(crate) swept: Keyed<(), u64>,
+    /// `<caller>/<busbar task id>` to the far end's own id for the task: plane memory, so a
+    /// restart forgets it (the engine's `idmap`, its bound included).
+    backends: Keyed<String, String>,
+    /// The agents' verified cards, held in plugin memory to their refresh generation.
+    pub(crate) cards: crate::cards::Cards,
+    /// The push notifications waiting for delivery, and the webhook credentials they present.
+    pub(crate) deliveries: crate::push::Deliveries,
+    /// The newest refresh generation published.
+    newest: Keyed<(), u64>,
+    /// The sizes short host-records answers named, per handle ([`crate::task_door::Grown`]).
+    pub(crate) grown: crate::task_door::Grown,
+    /// Each agent's verify-on-call flight: one look at a time.
+    pub(crate) flights: Flights,
+    /// Each registered agent's trust: the identity an operator approved (`approve`), the last
+    /// sighting of its card and verify-on-call's ledger: plane memory, so a restart forgets it.
+    pub(crate) trust: Keyed<String, crate::trust::Standing>,
+}
+
+impl A2aDoor {
+    /// The newest refresh generation published; `0` before `open`.
+    fn newest(&self) -> u64 {
+        self.newest.get(&()).unwrap_or(0)
+    }
+
+    /// `generation` is published: the newest when it is newer.
+    fn published(&self, generation: u64) {
+        self.newest.with_all(|m| {
+            if m.get(&()).is_none_or(|n| *n < generation) {
+                m.insert((), generation);
+            }
+        });
+    }
+}
+
+/// The most far-end task ids the instance remembers (the engine's `idmap::CAPACITY`).
+pub const MAX_BACKEND_IDS: usize = 100_000;
+
+/// The settings blob read as the `agents:` section, or the refusal in the grammar's words.
+fn section(bytes: &[u8]) -> Result<AgentsCfg, Refusal> {
+    door::read_settings(bytes).map_err(Refusal::refused)
+}
+
+/// Keep `value` under `key` in `map`, dropping the smallest keys first past `cap`.
+fn keep<K: Ord, V>(map: &Keyed<K, V>, cap: usize, key: K, value: V) {
+    map.with_all(|m| {
+        while m.len() >= cap && !m.contains_key(&key) {
+            if m.pop_first().is_none() {
+                break;
+            }
+        }
+        m.insert(key, value);
+    });
+}
+
+/// The agent a JSON-RPC target names below the catalogue, if it names one.
+fn agent_of(target: &str) -> Option<String> {
+    let path = target.split(['?', '#']).next().unwrap_or(target);
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    match segments.as_slice() {
+        ["a2a", "agents", id] => Some((*id).to_string()),
+        _ => None,
+    }
+}
+
+/// The public base URL the host lent, when it states one.
+fn public_url(bytes: &[u8]) -> Option<String> {
+    std::str::from_utf8(bytes)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// [`ArriveOut::refusal`]: the arrival is refused in the plane's own words, at its own status
+/// (the words ride in the head's error, and `refusal` renders them).
+pub const REFUSED_IN_OWN_WORDS: u32 = 1;
+
+/// [`ArriveOut::refusal`]: no line of this door serves the arrival yet (a 404).
+pub const UNSERVED: u32 = 2;
+
+/// The status of an arrival no line of this door serves yet.
+const STATUS_NOT_FOUND: u32 = 404;
+
+/// REFUSED in the plane's own words, at its own status: `refusal` renders them in the line's
+/// dialect.
+fn refused(out: &mut Out<'_, ArriveOut>, refusal: &arrival::Refusal) -> Outcome {
+    out.set(|o| &o.refusal, REFUSED_IN_OWN_WORDS);
+    out.set(|o| &o.refusal_status, refusal.status);
+    out.fail(Refusal::refused(refusal.words()))
+}
+
+/// REFUSED: no line of this door serves the arrival yet. TRANSITIONAL: the gRPC and open lines
+/// are filled when the kernel's plane driver serves the door's request path.
+fn unserved(out: &mut Out<'_, ArriveOut>) -> Outcome {
+    out.set(|o| &o.refusal, UNSERVED);
+    out.set(|o| &o.refusal_status, STATUS_NOT_FOUND);
+    out.fail(Refusal::bare())
+}
+
+/// One slot body on the SDK's safe surface, over this plane's [`A2aDoor`].
+macro_rules! slot {
+    ($(#[$doc:meta])* $name:ident, $in:ty, $out:ty,
+     |$inst:pat_param, $input:pat_param, $o:pat_param| $body:block) => {
+        $(#[$doc])*
+        pub struct $name;
+        impl SafeSlot for $name {
+            type In = $in;
+            type Out = $out;
+            type State = A2aDoor;
+            fn call($inst: Instance<'_, A2aDoor>, $input: Lent<'_, $in>, $o: Out<'_, $out>)
+                -> Outcome $body
+        }
+    };
+}
+
+slot!(
+    /// `validate`: the settings read as the section, or refused in the grammar's words.
+    Validate, ValidateIn, OutHead, |_, input, mut out| {
+        match section(input.field(|i| &i.settings).bytes()) {
+            Ok(_) => Outcome::Ready,
+            Err(refusal) => out.fail(refusal),
+        }
+    }
+);
+
+slot!(
+    /// `open`: the instance over the section and the public base URL, and the first generation's
+    /// snapshot.
+    Open, PlaneOpenIn, PlaneOpenOut, |instance, input, mut out| {
+        let cfg = match section(input.field(|i| &i.open.settings).bytes()) {
+            Ok(cfg) => cfg,
+            Err(refusal) => return out.fail(refusal),
+        };
+        let generation = input.get().open.generation;
+        let plane = A2aDoor {
+            public_url: public_url(input.field(|i| &i.public_url).bytes()),
+            host: input.field(|i| &i.open).host().map(|h| Host::of(h.get())),
+            services: input
+                .field(|i| &i.open)
+                .host()
+                .and_then(|h| Services::of(h.get())),
+            generations: Generations::new(),
+            units: Keyed::new(),
+            swept: Keyed::new(),
+            backends: Keyed::new(),
+            cards: crate::cards::Cards::new(),
+            deliveries: crate::push::Deliveries::new(),
+            newest: Keyed::new(),
+            grown: Keyed::new(),
+            flights: Flights::default(),
+            trust: Keyed::new(),
+        };
+        plane.published(generation);
+        let spec = door::snapshot_spec(plane.public_url.as_deref());
+        out.publish_with(|o| &o.snapshot, &plane.generations, generation, &spec, cfg);
+        instance.open(plane);
+        Outcome::Ready
+    }
+);
+
+slot!(
+    /// `refresh`: the new section judged, and the next generation's snapshot over the same public base
+    /// URL.
+    Refresh, RefreshIn, PlaneRefreshOut, |instance, input, mut out| {
+        let Some(plane) = instance.get() else {
+            return Outcome::Failed;
+        };
+        let cfg = match section(input.field(|i| &i.settings).bytes()) {
+            Ok(cfg) => cfg,
+            Err(refusal) => return out.fail(refusal),
+        };
+        let spec = door::snapshot_spec(plane.public_url.as_deref());
+        let generation = input.get().generation;
+        out.publish_with(|o| &o.snapshot, &plane.generations, generation, &spec, cfg);
+        plane.published(generation);
+        // EVERY REGISTRATION STARTS AGAIN at the fail-closed floor, as the engine rebuilt each one
+        // on a config apply (`A2aPlane::from_config_carrying`): nothing approved, nothing sighted.
+        plane.trust.with_all(std::collections::BTreeMap::clear);
+        Outcome::Ready
+    }
+);
+
+slot!(
+    /// `retire`: the generation's snapshot is dropped.
+    Retire, GenIn, OutHead, |instance, input, _| {
+        if let Some(plane) = instance.get() {
+            plane.generations.retire(input.get().generation);
+            plane.cards.retire(input.get().generation);
+        }
+        Outcome::Ready
+    }
+);
+
+slot!(
+    /// `tick`: one due push notification attempted ([`crate::push_door::tick`]), and the next
+    /// tick wanted when the earliest waiting one is due (`0`: none waits).
+    Tick, TickIn, TickOut, |instance, input, mut out| {
+        let Some(plane) = instance.get() else {
+            out.set(|o| &o.next_tick_ns, 0);
+            return Outcome::Ready;
+        };
+        let outcome = crate::push_door::tick(plane, &instance, input.get().now_ns);
+        out.set(|o| &o.next_tick_ns, plane.deliveries.next_tick_ns());
+        outcome
+    }
+);
+
+slot!(
+    /// `drive`: no session has unsolicited output.
+    Drive, PlaneDriveIn, PlaneDriveOut, |_, _, _| { Outcome::Ready }
+);
+
+slot!(
+    /// `cancel`: nothing the far end moved is in flight, so nothing moved; a card look the
+    /// cancelled unit held is abandoned, and every unit waiting on it is woken at once to look for
+    /// itself (ARCHITECT Q-DEL-A2A-TIMED-WAKE: cancellation is a wake).
+    Cancel, CancelIn, CancelOut, |instance, input, mut out| {
+        if let Some(plane) = instance.get() {
+            let woken = plane.flights.abandon(input.get().ticket);
+            if let Some(host) = plane.host.as_ref() {
+                for waiter in woken {
+                    host.wake(waiter);
+                }
+            }
+        }
+        out.set(|o| &o.disposition, CANCEL_ABORTED);
+        Outcome::Ready
+    }
+);
+
+slot!(
+    /// `release`: this plane answers under no lease.
+    Release, ReleaseIn, OutHead, |_, _, _| { Outcome::Ready }
+);
+
+slot!(
+    /// `close`: the SDK drops the instance and every snapshot it still holds.
+    Close, InHead, OutHead, |_, _, _| { Outcome::Ready }
+);
+
+// ── the request path ──────────────────────────────────────────────────────────────────────────
+//
+// Nothing routes to these before the flip: the engine still serves every request, and no
+// production path loads this door (`tests/door_unrouted.rs` holds that). `arrive`, `on_piece`,
+// `refusal` and `project` serve the JSON-RPC and HTTP+JSON lines, their one-reply hops and their
+// hops answering in events; `serve`, `hydrate` and `start` are REFUSED.
+
+slot!(
+    /// `arrive`: an arrival on the JSON-RPC line, or on the HTTP+JSON line as the envelope its
+    /// request spells ([`crate::rest::compose`]), decided and kept with the generation it arrived
+    /// under, keyed by its unit; a refused one refused in its own words. A message whose method the
+    /// vocabulary does not list is classed as the hop the engine relays it on, never refused.
+    /// TRANSITIONAL: an arrival on the gRPC line or an open line is filled when the kernel's plane
+    /// driver serves the door's request path.
+    Arrive, ArriveIn, ArriveOut, |instance, input, mut out| {
+        let Some(plane) = instance.get() else {
+            return Outcome::Failed;
+        };
+        let given = input.get();
+        let Some(route) = door::ROUTES.get(given.claim as usize) else {
+            return unserved(&mut out);
+        };
+        let target = input.field(|i| &i.target).as_str().unwrap_or_default();
+        let body = input.field(|i| &i.body).bytes();
+        let (dialect, envelope) = match door::line_of(route) {
+            Line::Document => (door::DIALECT_DOCUMENT, None),
+            Line::Target => match crate::rest::compose(route, target, body) {
+                Ok(Some(envelope)) => (door::DIALECT_TARGET, Some(envelope)),
+                Ok(None) => return unserved(&mut out),
+                Err(refusal) => return refused(&mut out, &refusal),
+            },
+            Line::Framed | Line::Open => return unserved(&mut out),
+        };
+        let fields = input.fields();
+        let disposition = arrival::decide(envelope.as_deref().unwrap_or(body), |name| {
+            fields
+                .iter()
+                .find(|f| {
+                    f.field(|f| &f.name)
+                        .as_str()
+                        .is_ok_and(|n| n.eq_ignore_ascii_case(name))
+                })
+                .and_then(|f| f.field(|f| &f.value).as_str().ok())
+        });
+        if let Disposition::Refused(refusal) = &disposition {
+            return refused(&mut out, refusal);
+        }
+        let Some(op) = disposition.op_class().and_then(door::op_class_index) else {
+            return unserved(&mut out);
+        };
+        out.set(|o| &o.op_class, op);
+        out.set(|o| &o.principal_need, PRINCIPAL_REQUIRED);
+        out.set(|o| &o.dialect, dialect);
+        let agent = agent_of(target);
+        let request: Option<serde_json::Value> =
+            serde_json::from_slice(envelope.as_deref().unwrap_or(body)).ok();
+        let generation = plane.newest();
+        let mut hop = hop_of(&disposition, agent.is_some(), request.clone());
+        // The HTTP+JSON line relays the envelope its request spelled, never the caller's body.
+        if let (Some(hop), Some(composed)) = (hop.as_mut(), envelope.as_ref()) {
+            hop.relay.send_instead(composed.clone());
+        }
+        // The entry the unit routes over: the addressed agent, its name inside the `agents:`
+        // section, routed directly (ARCHITECT Q-SW6/Q-FL3); an unaddressed unit is routed by the
+        // caller's scope, to the one agent its grant reaches, as 1.5.5 chose it (ARCHITECT
+        // Q-DEL-A2A-SELECT).
+        //
+        // THE ADMISSION AND THE CATALOGUE AT ARRIVAL (the engine's `receive::admit`/`select`,
+        // ARCHITECT Q-DEL-A2A-GATE/-SCOPE-TRUST): an addressed agent that is not serving, or whose
+        // card the request does not fit, refuses the unit about that agent — the kernel judges the
+        // caller's grant over it first and charges nothing; an unaddressed unit names the agents
+        // that would serve it as its candidates, which the kernel intersects with the caller's
+        // grant.
+        let section = plane.generations.current();
+        match &agent {
+            Some(agent) => {
+                out.route(ROUTE_DIRECT, agent);
+                if let Some(def) = section.as_ref().and_then(|s| s.agents.get(agent)) {
+                    if let Err(refusal) =
+                        admit_unit(plane, (agent, def), Some(agent), generation, request.as_ref())
+                    {
+                        return refused(&mut out, &refusal);
+                    }
+                }
+            }
+            None => {
+                let candidates: Vec<&str> = section
+                    .as_ref()
+                    .map(|s| {
+                        s.agents
+                            .iter()
+                            .filter(|(name, def)| {
+                                admit_unit(plane, (name, def), None, generation, request.as_ref())
+                                    .is_ok()
+                            })
+                            .map(|(name, _)| name.as_str())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                out.route(
+                    ROUTE_SCOPE,
+                    &candidates.join(busbar_contract::abi::plane::ROUTE_SCOPE_SEPARATOR),
+                );
+            }
+        }
+        let unit = Unit {
+            disposition,
+            agent,
+            section: plane.generations.current(),
+            hop,
+            pass: crate::task_door::Pass::default(),
+            envelope,
+            generation,
+        };
+        keep(&plane.units, MAX_UNITS, given.unit, unit);
+        Outcome::Ready
+    }
+);
+
+/// The hop a unit's `on_piece` serves, as the engine relays it (`receive::unary_hop` and
+/// `receive::stream_hop`): the extended-card read addressed to one agent, task-less (its
+/// `card_fetch` arm); a request whose answer is events (the vocabulary's multi-frame rows, and an
+/// unlisted method named as a stream), about a task, a subscribe answering busbar's own refusal
+/// first; and every other relayed one-reply request, about a task (`request` is its envelope: the
+/// caller's on the JSON-RPC line, the one its request spelled on the HTTP+JSON line). A verb the
+/// plane answers itself has no hop.
+fn hop_of(
+    disposition: &Disposition,
+    addressed: bool,
+    request: Option<serde_json::Value>,
+) -> Option<Hop> {
+    use crate::local::{verb_of, LocalVerb};
+    use crate::ops::{relay_class, OP_AGENT_CARD, OP_MESSAGE_SEND, OP_MESSAGE_STREAM};
+    match disposition {
+        Disposition::Request { row, id, version } if row.op == OP_AGENT_CARD => {
+            addressed.then(|| Hop::of(id.clone(), version, request))
+        }
+        Disposition::Request { row, id, version } if row.multi_frame => {
+            let subscribe = verb_of(row.method) == Some(LocalVerb::Subscribe);
+            Some(Hop::events(id.clone(), version, request?, subscribe))
+        }
+        Disposition::Request { row, id, version } if verb_of(row.method).is_none() => {
+            Some(Hop::task(id.clone(), version, request?))
+        }
+        Disposition::Unlisted {
+            method,
+            id,
+            version,
+        } => {
+            let class = relay_class(method);
+            if class == OP_MESSAGE_SEND {
+                Some(Hop::task(id.clone(), version, request?))
+            } else if class == OP_MESSAGE_STREAM {
+                Some(Hop::events(id.clone(), version, request?, false))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The URL the operator wrote for agent `member` in the section the unit arrived under.
+fn url_of<'a>(unit: &'a Unit, member: &str) -> Option<&'a str> {
+    unit.section
+        .as_ref()?
+        .agents
+        .get(member)
+        .map(|a| a.url.as_str())
+}
+
+/// The host reach one piece's task work makes: the instance, and the piece's ticket.
+struct Reach<'p> {
+    plane: &'p A2aDoor,
+    ticket: Ticket,
+}
+
+impl Reach<'_> {
+    /// The piece's records and random bytes, counting on from the `issued` its unit's finished
+    /// pieces made; `None` when the instance was opened without host tables.
+    fn via(&self, issued: u32) -> Option<Via<'_>> {
+        let host = self.plane.host.as_ref()?;
+        Some(Via::new(
+            host,
+            self.plane.services,
+            self.ticket,
+            issued,
+            &self.plane.grown,
+        ))
+    }
+
+    /// Now, in seconds, from the host's clock.
+    fn now(&self) -> Option<u64> {
+        self.now_ms().map(|ms| ms / 1_000)
+    }
+
+    /// The host's wall clock, milliseconds.
+    fn now_ms(&self) -> Option<u64> {
+        let host = self.plane.host.as_ref()?;
+        match host.connector(self.ticket).clock_now() {
+            Poll::Ready(Ok(reading)) => Some(reading.wall_ns / 1_000_000),
+            _ => None,
+        }
+    }
+}
+
+/// OPEN the task `hop` is about, at its first ATTEMPT ([`task_hop::open`]): its identity on the
+/// relay and its record writes on `writes`, or the caller's whole answer when it does not go ahead.
+fn open_task(
+    reach: &Reach<'_>,
+    hop: &mut Hop,
+    pass: &mut crate::task_door::Pass,
+    request: (&str, &str),
+    skill: Option<String>,
+    writes: &mut Vec<Write>,
+) -> Result<Option<relay::Reply>, Outcome> {
+    let (caller, member) = request;
+    let Some(envelope) = hop.opening.as_ref() else {
+        return Ok(None);
+    };
+    let now = match hop.now {
+        Some(now) => now,
+        None => *hop.now.insert(reach.now().ok_or(Outcome::Failed)?),
+    };
+    let mut via = reach.via(pass.issued).ok_or(Outcome::Failed)?;
+    // A subscribe answers busbar's own refusal first, for a task it does not hold for this caller
+    // or holds as terminal (the engine's local half of the verb); a live task is relayed.
+    if hop.subscribe {
+        let mut none = Vec::new();
+        let refused = match crate::local::answer(
+            &mut via,
+            crate::local::LocalVerb::Subscribe,
+            envelope,
+            caller,
+            now,
+            &mut none,
+        ) {
+            Err(Halt::Pending) => return Err(Outcome::Pending),
+            Err(Halt::Failed(_)) => Some(crate::local::unreadable(hop.relay.id())),
+            Ok(answer) => answer,
+        };
+        if let Some(answer) = refused {
+            pass.issued = via.issued();
+            hop.opening = None;
+            hop.now = None;
+            return Ok(Some(relay::Reply {
+                status: answer.status,
+                content_type: crate::arrival::JSON_MEDIA_TYPE,
+                body: answer.body,
+            }));
+        }
+    }
+    let backends = |id: &str| reach.plane.backends.get(&task_key(caller, id));
+    let req = task_hop::Request {
+        envelope,
+        caller,
+        member,
+        now,
+    };
+    let opened = match task_hop::open(&mut via, &req, hop.relay.id(), &backends, writes) {
+        Err(Halt::Pending) => return Err(Outcome::Pending),
+        Err(Halt::Failed(_)) => return Err(Outcome::Failed),
+        Ok(opened) => opened,
+    };
+    pass.issued = via.issued();
+    hop.opening = None;
+    hop.now = None;
+    match opened {
+        Opened::Refused(reply) => Ok(Some(reply)),
+        Opened::Hop {
+            mut task,
+            instead,
+            callback,
+        } => {
+            // The credential an inline callback names is held in plane memory, as the engine's
+            // delivery holds it: none clears one held.
+            if let Some(callback) = callback {
+                reach
+                    .plane
+                    .deliveries
+                    .remember_auth(&task.task_id, callback.auth);
+            }
+            task.skill = skill;
+            hop.relay.for_task(task);
+            if let Some(body) = instead {
+                hop.relay.send_instead(body);
+            }
+            Ok(None)
+        }
+    }
+}
+
+/// SETTLE the task `hop` is about on what its answer has said ([`task_hop::settle`]), in order: the
+/// record writes ride with the answer, the far end's own id for the task is remembered, each move
+/// of the task queues its push notification, and what earlier deliveries owe this caller's other
+/// tasks' chains is filed.
+fn settle_task(
+    reach: &Reach<'_>,
+    hop: &mut Hop,
+    pass: &mut crate::task_door::Pass,
+    caller: &str,
+) -> Result<(), Outcome> {
+    let settles = std::mem::take(&mut hop.settle);
+    if settles.is_empty() {
+        return Ok(());
+    }
+    let Some(task) = hop.relay.task().cloned() else {
+        return Ok(());
+    };
+    let pend = |hop: &mut Hop, settles: Vec<Settled>| {
+        hop.settle = settles;
+        Err(Outcome::Pending)
+    };
+    let now = match hop.now {
+        Some(now) => now,
+        None => *hop.now.insert(reach.now().ok_or(Outcome::Failed)?),
+    };
+    let mut via = reach.via(pass.issued).ok_or(Outcome::Failed)?;
+    let mut writes = Vec::new();
+    let mut moved = Vec::new();
+    let mut halted = false;
+    for settled in &settles {
+        match task_hop::settle(&mut via, &task, settled, caller, now, &mut writes) {
+            Err(Halt::Pending) => {
+                halted = true;
+                break;
+            }
+            Err(Halt::Failed(_)) => {}
+            Ok(row) => moved.extend(row),
+        }
+    }
+    if halted {
+        return pend(hop, settles);
+    }
+    // Each move owes its push notification. The config reads are made on every entry, so a
+    // re-entry's host calls keep their order; each notification is queued once.
+    for (i, row) in moved.iter().enumerate() {
+        let config = match crate::local::held_config(&mut via, caller, &row.task_id) {
+            Err(Halt::Pending) => return pend(hop, settles),
+            Err(Halt::Failed(_)) => None,
+            Ok(config) => config,
+        };
+        if i >= hop.queued {
+            crate::push_door::queue(&reach.plane.deliveries, row, config.as_ref());
+            hop.queued = i + 1;
+        }
+    }
+    // What earlier deliveries owe this caller's other tasks' chains rides with this answer.
+    let owed = hop
+        .owed
+        .get_or_insert_with(|| {
+            reach
+                .plane
+                .deliveries
+                .take_owed(caller, Some(task.task_id.as_str()))
+        })
+        .clone();
+    if let Err(Halt::Pending) =
+        crate::push_door::file_owed(&mut via, caller, &owed, now, &mut writes)
+    {
+        return pend(hop, settles);
+    }
+    hop.queued = 0;
+    hop.owed = None;
+    pass.issued = via.issued();
+    for settled in settles {
+        let backend = match settled {
+            Settled::Reported { backend_id, .. } | Settled::Event { backend_id, .. } => backend_id,
+            Settled::Failed => None,
+        };
+        if let Some(backend) = backend {
+            keep(
+                &reach.plane.backends,
+                MAX_BACKEND_IDS,
+                task_key(caller, &task.task_id),
+                backend,
+            );
+        }
+    }
+    hop.outbox.writes.extend(writes);
+    hop.now = None;
+    Ok(())
+}
+
+/// THE ADMISSION AND THE CATALOGUE (the engine's `receive::admit`, after the kernel's identity and
+/// grant), for a unit routed to `member` (`def`): an agent that is not `approved` is refused in the
+/// admission's words ([`crate::trust::not_serving`]); one with no held card, or whose held card
+/// the request's shape (`envelope`) does not fit, is excluded from the catalogue — addressed, the
+/// catalogue's refusal naming the exclusion (`403`, [`crate::skill::refusal`]), routed by scope,
+/// the none-refusal. The skill the card matched.
+pub(crate) fn admit_unit(
+    plane: &A2aDoor,
+    (member, def): (&str, &crate::a2a::config::AgentDefCfg),
+    addressed: Option<&str>,
+    generation: u64,
+    envelope: Option<&serde_json::Value>,
+) -> Result<Option<String>, arrival::Refusal> {
+    let standing = plane.trust.get(&member.to_string());
+    let state = crate::trust::state_of(standing.as_ref(), def);
+    if state != crate::trust::State::Approved {
+        let approval = standing.as_ref().map(|s| s.approval_under(&def.pin));
+        let reason = approval
+            .as_ref()
+            .and_then(crate::trust::Approval::suspension);
+        return Err(crate::trust::not_serving(addressed, state, reason));
+    }
+    let excluded = |unfit: crate::skill::Unfit| match addressed {
+        Some(_) => crate::skill::refusal(&unfit),
+        None => arrival::scope_refusal(""),
+    };
+    let Some(card) = plane.cards.at(member, generation) else {
+        return Err(excluded(crate::skill::Unfit::NoCachedCard));
+    };
+    let shape = envelope
+        .map(crate::skill::TaskShape::of)
+        .unwrap_or_default();
+    crate::skill::fit(&card, &shape).map_err(excluded)
+}
+
+/// A refusal as the caller's whole answer: its status, and its envelope.
+fn reply_of(refusal: &arrival::Refusal) -> relay::Reply {
+    relay::Reply {
+        status: refusal.status,
+        content_type: arrival::JSON_MEDIA_TYPE,
+        body: serde_json::to_vec(&refusal.envelope()).unwrap_or_default(),
+    }
+}
+
+/// BIND the hop to the binding `member`'s card held under `generation` declares; the refusal's
+/// answer when the plane frames none of them.
+fn bind(reach: &Reach<'_>, hop: &mut Hop, member: &str, generation: u64) -> Option<Answer> {
+    let card = reach.plane.cards.at(member, generation);
+    let word = crate::binding::binding_of(card.as_deref());
+    match crate::binding::speakable(&word) {
+        Some(binding) => {
+            let envelope = hop.request.clone().unwrap_or(serde_json::Value::Null);
+            hop.relay.bind(binding, &envelope);
+            None
+        }
+        None => Some(hop.relay.refuse_unspeakable(&word)),
+    }
+}
+
+/// The caller's answer as its line spells it: on the HTTP+JSON line (`target_line`) a whole answer
+/// is re-framed ([`crate::rest::reframe`]) and each event to its bare result
+/// ([`crate::events::reframe_events`]), as the engine re-frames what its shared sequence answered;
+/// on the JSON-RPC line it leaves as the relay wrote it.
+#[must_use]
+pub fn for_line(answer: Answer, target_line: bool) -> Answer {
+    match answer {
+        Answer::ToCaller(mut reply) if target_line => {
+            reply.body = crate::rest::reframe(reply.status, &reply.body);
+            Answer::ToCaller(reply)
+        }
+        Answer::Part(mut part) if target_line => {
+            part.body = crate::events::reframe_events(&part.body);
+            Answer::Part(part)
+        }
+        other => other,
+    }
+}
+
+/// One piece of `unit`'s hop: applied (unless it continues or re-calls the answer still owed) and
+/// written into the host's buffers. A task hop's first ATTEMPT opens its task first, and the far
+/// end's answer settles it before anything is written. Answers the outcome and whether the unit is
+/// done.
+fn piece(
+    reach: &Reach<'_>,
+    unit: &mut Unit,
+    input: Lent<'_, OnPieceIn>,
+    out: &mut Out<'_, OnPieceOut>,
+) -> (Outcome, bool) {
+    let given = input.get();
+    let bytes = input.field(|i| &i.bytes).bytes();
+    let member = input.field(|i| &i.member).as_str().unwrap_or_default();
+    let caller = input.field(|i| &i.caller_ref).as_str().unwrap_or_default();
+    let url = url_of(unit, member).map(str::to_string);
+    // THE AGENT'S REGISTRATION, as the unit's generation holds it: what the trust gates judge.
+    let def = unit
+        .section
+        .as_ref()
+        .and_then(|s| s.agents.get(member))
+        .cloned();
+    let addressed = unit.agent.clone();
+    let target_line = unit.envelope.is_some();
+    let pass = &mut unit.pass;
+    let Some(hop) = unit.hop.as_mut() else {
+        return (Outcome::Refused, false);
+    };
+    // A re-call carries the same piece again (after a short or pending answer) or nothing at all
+    // (after `more = 1`: no bytes, no flags, no attempt); either way it is served from what is owed.
+    let continues = hop.outbox.live
+        && (hop.outbox.recall || (bytes.is_empty() && given.flags == 0 && given.attempt_no == 0));
+    if !continues {
+        let mut writes = std::mem::take(&mut hop.held_writes);
+        // THE ADMISSION GATE (the engine's ordered gate, its artifact step), on the ATTEMPT's first
+        // entry: an agent whose recorded state is not `approved` is refused before anything else
+        // the hop does, in the admission's words.
+        let admission = match (&def, given.from == FROM_KERNEL && !hop.admitted) {
+            (Some(def), true) => {
+                let admitted = admit_unit(
+                    reach.plane,
+                    (member, def),
+                    addressed.as_deref(),
+                    unit.generation,
+                    hop.request.as_ref(),
+                );
+                match admitted {
+                    Ok(skill) => {
+                        hop.admitted = true;
+                        hop.skill = skill;
+                        None
+                    }
+                    Err(refusal) => Some(reply_of(&refusal)),
+                }
+            }
+            _ => None,
+        };
+        let opened = if let Some(reply) = admission {
+            Some(reply)
+        } else if given.from == FROM_KERNEL {
+            // The skill the agent's held card matched at admission (ARCHITECT ruling B2).
+            let skill = hop.skill.clone();
+            match open_task(reach, hop, pass, (caller, member), skill, &mut writes) {
+                Err(outcome) => return (outcome, false),
+                Ok(refused) => refused,
+            }
+        } else {
+            None
+        };
+        // VERIFY-ON-CALL, then THE HOP'S TRUST GATE: after the task is opened (the engine's order:
+        // its local verbs and the addressed task's lookup first), the agent's card is re-verified
+        // when its `reverify_ttl` has lapsed, and an agent the look demoted is not sent the request.
+        let demoted = match (&def, given.from == FROM_KERNEL && opened.is_none()) {
+            (Some(def), true) => {
+                match verify_on_call(reach, hop, pass, member, def, unit.generation) {
+                    Poll::Pending => {
+                        hop.held_writes = writes;
+                        return (Outcome::Pending, false);
+                    }
+                    Poll::Ready(true) => None,
+                    Poll::Ready(false) => Some(hop.relay.refuse_demoted()),
+                }
+            }
+            _ => None,
+        };
+        // The binding this attempt speaks, off the agent's held card (JSON-RPC when none is held);
+        // a card naming only a binding the plane does not frame refuses the hop by name.
+        let unspeakable = if given.from == FROM_KERNEL && opened.is_none() && demoted.is_none() {
+            bind(reach, hop, member, unit.generation)
+        } else {
+            None
+        };
+        // THE RELAY'S GUARD, last before the attempt goes (the engine's `relay::prepare`).
+        let unguarded = match (&def, &url) {
+            (Some(def), Some(url))
+                if given.from == FROM_KERNEL
+                    && opened.is_none()
+                    && demoted.is_none()
+                    && unspeakable.is_none() =>
+            {
+                match guard_relay(reach, hop, pass, url, def) {
+                    Poll::Pending => {
+                        hop.held_writes = writes;
+                        return (Outcome::Pending, false);
+                    }
+                    Poll::Ready(refused) => refused,
+                }
+            }
+            _ => None,
+        };
+        let answer = match (opened, demoted.or(unspeakable).or(unguarded)) {
+            (Some(reply), _) => Answer::ToCaller(reply),
+            (None, Some(answer)) => answer,
+            (None, None) => {
+                let from = match given.from {
+                    FROM_KERNEL => relay::From::Kernel(url.as_deref()),
+                    FROM_CALLER => relay::From::Caller,
+                    FROM_FAR_END => relay::From::FarEnd,
+                    _ => return (Outcome::Refused, false),
+                };
+                hop.relay.on_piece(relay::Piece {
+                    from,
+                    bytes,
+                    status: (given.flags & PIECE_HAS_STATUS != 0).then_some(given.status_code),
+                    last: given.flags & PIECE_LAST != 0,
+                })
+            }
+        };
+        let Some(outbox) = Outbox::of(for_line(answer, target_line)) else {
+            return (Outcome::Refused, false);
+        };
+        hop.outbox = outbox;
+        hop.outbox.writes = writes;
+        hop.settle.extend(hop.relay.take_settled());
+        // Until it is written, a re-call of this piece is served from what is owed.
+        hop.outbox.recall = true;
+    }
+    if !hop.settle.is_empty() {
+        if let Err(outcome) = settle_task(reach, hop, pass, caller) {
+            return (outcome, false);
+        }
+    }
+    let ob = &mut hop.outbox;
+    let (mut reply, mut fields, mut records, mut arena, mut units) = (
+        input.reply_buf(),
+        input.fields_buf(),
+        input.records_buf(),
+        input.arena_buf(),
+        input.units_buf(),
+    );
+    let moved = hop.relay.moved();
+    if moved != 0 {
+        units.push(UnitCount {
+            class: 0,
+            source: UNITS_REPORTED,
+            amount: moved,
+        });
+    }
+    let mut head_fields = |list: &[(&'static str, String)]| {
+        for (name, value) in list {
+            fields.push(OutField {
+                name: arena.span(name.as_bytes()),
+                value: arena.span(value.as_bytes()),
+            });
+        }
+    };
+    let (mut verb, mut target, mut status) = (None, None, 0);
+    match &ob.head {
+        Some(Head::Attempt(a)) => {
+            head_fields(&a.fields);
+            verb = Some(arena.span(a.verb.as_bytes()));
+            target = Some(arena.span(a.target.as_bytes()));
+        }
+        Some(Head::Reply(s, content_type)) => {
+            head_fields(&[(relay::H_CONTENT_TYPE, (*content_type).to_string())]);
+            status = *s;
+        }
+        Some(Head::Events) => {
+            head_fields(&EVENTS_HEAD.map(|(name, value)| (name, value.to_string())));
+            status = relay::STATUS_OK;
+        }
+        None => {}
+    }
+    for w in &ob.writes {
+        records.push(RecordWrite {
+            kind: kind_index(w.kind),
+            op: RECORD_PUT,
+            key: arena.span(w.key.as_bytes()),
+            value: arena.span(&w.value),
+        });
+    }
+    let short = !(fields.fits() && records.fits() && arena.fits() && units.fits());
+    let (fw, fnd) = fields.settle(short);
+    let (rw, rnd) = records.settle(short);
+    let (aw, and) = arena.settle(short);
+    let (uw, und) = units.settle(short);
+    out.set(|o| &o.fields_written, fw as u32);
+    out.set(|o| &o.fields_needed, fnd as u32);
+    out.set(|o| &o.records_written, rw as u32);
+    out.set(|o| &o.records_needed, rnd as u32);
+    out.set(|o| &o.arena_written, aw as u64);
+    out.set(|o| &o.arena_needed, and as u64);
+    out.set(|o| &o.units_written, uw as u32);
+    out.set(|o| &o.units_needed, und as u32);
+    if short {
+        ob.recall = true;
+        return (Outcome::Failed, false);
+    }
+    let n = reply.stream(&ob.bytes[ob.at..]);
+    ob.at += n;
+    ob.head = None;
+    ob.writes.clear();
+    ob.recall = false;
+    let more = ob.at < ob.bytes.len();
+    ob.live = more;
+    let mut flags = 0;
+    if ob.to_far {
+        flags |= EMIT_TO_FAR_END;
+    }
+    let done = ob.done && !more;
+    if done {
+        flags |= EMIT_DONE;
+    }
+    if let (Some(v), Some(t)) = (verb, target) {
+        out.set(|o| &o.verb, v);
+        out.set(|o| &o.target, t);
+    }
+    out.set(|o| &o.emitted, n as u64);
+    out.set(|o| &o.more, u32::from(more));
+    out.set(|o| &o.flags, flags);
+    out.set(|o| &o.reply_status, status);
+    (Outcome::Ready, done)
+}
+
+slot!(
+    /// `on_piece`: the unit's unary hop, one piece at a time ([`crate::relay`]); otherwise a verb
+    /// the plane answers itself, over the task store ([`crate::task_door`]); a unit that is
+    /// neither is REFUSED. A finished hop's unit is forgotten.
+    OnPiece, OnPieceIn, OnPieceOut, |instance, input, mut out| {
+        let Some(plane) = instance.get() else {
+            return Outcome::Failed;
+        };
+        let unit = input.get().unit;
+        let relayed = plane.units.with(&unit, |u| u.is_some_and(|u| u.hop.is_some()));
+        if !relayed {
+            return crate::task_door::on_piece(plane, &instance, input, out)
+                .unwrap_or(Outcome::Refused);
+        }
+        let reach = Reach {
+            plane,
+            ticket: instance.ticket(),
+        };
+        let (outcome, done) = plane.units.with(&unit, |u| match u {
+            Some(u) => piece(&reach, u, input, &mut out),
+            None => (Outcome::Refused, false),
+        });
+        if done {
+            plane.units.remove(&unit);
+        }
+        outcome
+    }
+);
+
+/// THE AGENTS OF `reachable` (the kernel's list for a unit routed by scope) IN THE CALLER'S
+/// CATALOGUE: the engine chose among those, and an agent that is not `approved`, holds no card, or
+/// whose card the unit's request does not fit, is in no catalogue ([`admit_unit`]). Where exactly
+/// one of them is, the kernel's list stands: the engine would have chosen that one, and a refusal
+/// naming it alone would name no choice.
+fn serving_of(plane: &A2aDoor, unit: u64, reachable: &str) -> String {
+    use busbar_contract::abi::plane::ROUTE_SCOPE_SEPARATOR;
+    let (generation, envelope) = plane.units.with(&unit, |u| {
+        u.map_or((plane.newest(), None), |u| {
+            (u.generation, u.hop.as_ref().and_then(|h| h.request.clone()))
+        })
+    });
+    let section = plane.generations.current();
+    let serving: Vec<&str> = reachable
+        .split(ROUTE_SCOPE_SEPARATOR)
+        .filter(|id| {
+            section
+                .as_ref()
+                .and_then(|s| s.agents.get(*id))
+                .is_some_and(|def| {
+                    admit_unit(plane, (id, def), Some(id), generation, envelope.as_ref()).is_ok()
+                })
+        })
+        .collect();
+    if serving.len() == 1 {
+        return reachable.to_string();
+    }
+    serving.join(ROUTE_SCOPE_SEPARATOR)
+}
+
+slot!(
+    /// `refusal`: a refused arrival rendered in its own words and status, and a kernel or gate
+    /// refusal in the engine's admission words at the kernel's status, each in the line's dialect;
+    /// on the gRPC line, the envelope at its neutral status, for the grpc transport to map. The
+    /// gate-rejected marker is the kernel's: this rendering never sets it.
+    RefusalSlot, RefusalIn, RefusalOut, |instance, input, mut out| {
+        let given = input.get();
+        // An unaddressed unit no one agent of the caller's grant reaches (the kernel's
+        // `no_destination` for a unit routed by scope): 1.5.5's own words, the several agents it
+        // reaches named from the kernel's text.
+        let scoped = given.reason == busbar_contract::abi::plane::RefusalCode::NoDestination.code()
+            && instance.get().is_some_and(|plane| {
+            plane
+                .units
+                .with(&given.unit, |u| u.is_some_and(|u| u.agent.is_none()))
+        });
+        let dialect = match given.dialect {
+            door::DIALECT_DOCUMENT => Dialect::JsonRpc,
+            door::DIALECT_TARGET => Dialect::RestJson,
+            door::DIALECT_FRAMED => Dialect::Framed,
+            _ => return Outcome::Refused,
+        };
+        let text = input.field(|i| &i.text).bytes();
+        let rendered = if scoped {
+            let reachable = std::str::from_utf8(text).unwrap_or_default();
+            let serving = instance
+                .get()
+                .map_or_else(|| reachable.to_string(), |plane| {
+                    serving_of(plane, given.unit, reachable)
+                });
+            arrival::render(dialect, &arrival::scope_refusal(&serving), true)
+        } else if given.cause == REFUSAL_ARRIVE {
+            let Some(refusal) = arrival::Refusal::from_words(text) else {
+                return Outcome::Refused;
+            };
+            arrival::render(dialect, &refusal, true)
+        } else {
+            let text = std::str::from_utf8(text).unwrap_or_default();
+            arrival::render(dialect, &arrival::kernel_refusal(given.status, text), false)
+        };
+        let (mut reply, mut fields, mut arena) =
+            (input.reply_buf(), input.fields_buf(), input.arena_buf());
+        reply.extend(&rendered.body);
+        fields.push(OutField {
+            name: arena.span(b"content-type"),
+            value: arena.span(rendered.content_type.as_bytes()),
+        });
+        let short = !(reply.fits() && fields.fits() && arena.fits());
+        let (rw, rnd) = reply.settle(short);
+        let (fw, fnd) = fields.settle(short);
+        let (aw, and) = arena.settle(short);
+        out.set(|o| &o.reply_written, rw as u64);
+        out.set(|o| &o.reply_needed, rnd as u64);
+        out.set(|o| &o.fields_written, fw as u32);
+        out.set(|o| &o.fields_needed, fnd as u32);
+        out.set(|o| &o.arena_written, aw as u64);
+        out.set(|o| &o.arena_needed, and as u64);
+        if short {
+            return Outcome::Failed;
+        }
+        out.set(|o| &o.status, rendered.status);
+        Outcome::Ready
+    }
+);
+
+// ── THE TRUST VERBS (ARCHITECT Q-L3B-VERBS) ──────────────────────────────────────────────────────
+
+/// The agent a trust verb's target names: the segment its route's `{name}` stands at.
+fn verb_agent(route: &str, target: &[u8]) -> Option<String> {
+    let target = std::str::from_utf8(target).ok()?;
+    let path = target.split(['?', '#']).next().unwrap_or(target);
+    let at = route.split('/').position(|seg| seg == "{name}")?;
+    let name = path.split('/').nth(at)?;
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// What one look landed: the sighting, and the card document a verified sighting was taken from.
+#[derive(Debug)]
+struct Looked {
+    sighting: crate::trust::Sighting,
+    card: Option<serde_json::Value>,
+}
+
+/// A look paused: its card fetch on the connection need (the legacy path's or the canonical's,
+/// the handle it counts on from, the exchange), or its sighting on the kernel's trust book (what
+/// it landed, and the handles it issued).
+#[derive(Debug)]
+enum LookParked {
+    /// One hop of the card fetch is in flight: its destination's judgement (`exchange` absent), or
+    /// its request (the exchange, and the handle it counts on from).
+    Fetching {
+        hop: CardHop,
+        exchange: Option<ParkedExchange>,
+    },
+    /// `trust.sight` is in flight.
+    Sighted(Looked, u32),
+}
+
+/// Where a look runs: the instance, the op's ticket, and the completion handle its host services
+/// count on from (every service the op made before it, so a handle is never issued twice on the
+/// op: the replay rule).
+struct LookAt<'a> {
+    plane: &'a A2aDoor,
+    ticket: Ticket,
+    base: u32,
+}
+
+impl LookAt<'_> {
+    fn handle(&self, seq: u32) -> CompletionHandle {
+        CompletionHandle {
+            ticket: self.ticket,
+            seq,
+            _reserved: 0,
+        }
+    }
+}
+
+/// A card fetch's request in flight: the handle it counts on from, and the exchange.
+type ParkedExchange = (u32, Box<busbar_contract::abi::sdk::exchange::Exchange>);
+
+/// ONE HOP OF A CARD FETCH: which discovery path it is on, how many redirects its chain followed,
+/// the URL it reaches, and the handle its services count on from.
+#[derive(Debug, Clone)]
+struct CardHop {
+    legacy: bool,
+    redirects: u8,
+    url: String,
+    issued: u32,
+}
+
+/// The most addresses one card host's judgement is read for.
+const JUDGED_ADDRESSES: usize = 16;
+/// Room for those addresses, or for the resolver's reason a refusal names.
+const JUDGED_BYTES: usize = 4096;
+
+/// THE GUARD, AS THE ENGINE APPLIED IT TO EVERY HOP (`fetch::guard_hop`, the card fetch's and the
+/// relay's alike): the host's ONE destination judgement of `url` (the name, then every address it
+/// resolves to), on handle `base`. A registration without `allow_private` is refused every private
+/// address and loopback name whatever the deployment's `block_private_addresses` says
+/// (`DEST_REFUSE_PRIVATE`); one with it reaches them as the operator's own infrastructure; a
+/// cloud-metadata host is refused either way. Admitted: the handles issued and the address set the
+/// dial must land on; refused: the engine's sentence, naming the refused address or the resolver's
+/// reason (`DEST_EXPLAIN`). PENDING while the resolution is in flight.
+fn judge_hop(
+    at: &LookAt<'_>,
+    url: &str,
+    allow_private: bool,
+    base: u32,
+) -> Poll<Result<(u32, String), String>> {
+    use busbar_contract::abi::host::conn::connector::{EGRESS_OPEN_WEB, EGRESS_PROVIDER};
+    use busbar_contract::abi::host::service::{
+        ItemSpan, DEST_ALLOWED, DEST_EXPLAIN, DEST_REFUSE_PRIVATE,
+    };
+    use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
+    let Some(services) = at.plane.services else {
+        return Poll::Ready(Ok((base, String::new())));
+    };
+    let (class, flags) = if allow_private {
+        (EGRESS_PROVIDER, DEST_EXPLAIN)
+    } else {
+        (EGRESS_OPEN_WEB, DEST_EXPLAIN | DEST_REFUSE_PRIVATE)
+    };
+    let absent = busbar_contract::abi::mechanism::call::Span {
+        offset: SPAN_ABSENT,
+        len: 0,
+    };
+    let mut bytes = vec![0u8; JUDGED_BYTES];
+    let mut spans = [ItemSpan {
+        key: absent,
+        value: absent,
+    }; JUDGED_ADDRESSES];
+    let judged = services.dest_judge_as(
+        at.handle(base),
+        url,
+        class,
+        flags,
+        Some((&mut bytes[..], &mut spans[..])),
+    );
+    Poll::Ready(match judged {
+        Poll::Pending => return Poll::Pending,
+        Poll::Ready(Err(e)) => Err(format!("agent card fetch of `{url}` failed: {e:?}")),
+        Poll::Ready(Ok(judged)) if judged.verdict == DEST_ALLOWED => {
+            Ok((base + 1, judged.within()))
+        }
+        Poll::Ready(Ok(judged)) => Err(crate::trust::refused_judgement(
+            url,
+            judged.verdict,
+            judged.detail(),
+        )),
+    })
+}
+
+/// THE RELAY'S GUARD (the engine's `relay::prepare`, which guarded the registered endpoint through
+/// the card fetch's own hop door before every relayed submission): the agent's `url` judged on the
+/// registration's `allow_private`, once per attempt. `None` = the hop may go; a refusal is the
+/// hop's answer (`a2a.hop.endpoint_refused`).
+fn guard_relay(
+    reach: &Reach<'_>,
+    hop: &mut Hop,
+    pass: &mut crate::task_door::Pass,
+    url: &str,
+    def: &crate::a2a::config::AgentDefCfg,
+) -> Poll<Option<Answer>> {
+    if hop.endpoint_judged {
+        return Poll::Ready(None);
+    }
+    // The refusal's sentence is the operator's (the engine journalled it); the caller reads the
+    // hop's fixed words.
+    let refused = match crate::trust::scheme_refusal(url, def.allow_private) {
+        Some(_) => true,
+        None => {
+            let at = LookAt {
+                plane: reach.plane,
+                ticket: reach.ticket,
+                base: pass.issued,
+            };
+            match judge_hop(&at, url, def.allow_private, pass.issued) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Ok((issued, _))) => {
+                    pass.issued = issued;
+                    false
+                }
+                Poll::Ready(Err(_)) => {
+                    pass.issued += 1;
+                    true
+                }
+            }
+        }
+    };
+    hop.endpoint_judged = true;
+    Poll::Ready(refused.then(|| hop.relay.refuse_endpoint()))
+}
+
+/// THE CARD at the agent origin's well-known paths, canonical first, over the agent's connection
+/// need, as the engine fetched it (`fetch::fetch_card`): every hop guarded from scratch
+/// ([`judge_hop`]), a redirect followed — resolved against the hop that sent it — up to
+/// [`crate::trust::MAX_REDIRECTS`], and the legacy path only when the canonical one produced no
+/// document. The card (or why there is none), what the last hop's connection observed (the
+/// connector's facts: the far end's key and whether busbar presented its client identity,
+/// Q-DEL-A2A-SPKI) and the handles issued; the parked fetch while one of its services is in flight.
+fn fetch_card(
+    at: &LookAt<'_>,
+    def: &crate::a2a::config::AgentDefCfg,
+    resumed: Option<(CardHop, Option<ParkedExchange>)>,
+) -> Result<
+    (
+        Result<serde_json::Value, String>,
+        crate::trust::Handshake,
+        u32,
+    ),
+    LookParked,
+> {
+    use busbar_contract::abi::sdk::exchange::{exchange, Exchange, Request};
+    let urls = match crate::trust::discovery_urls(&def.url) {
+        Ok(urls) => urls,
+        Err(refusal) => return Ok((Err(refusal), crate::trust::Handshake::default(), at.base)),
+    };
+    let (mut hop, mut parked) = resumed.unwrap_or_else(|| {
+        let first = CardHop {
+            legacy: false,
+            redirects: 0,
+            url: urls[0].clone(),
+            issued: at.base,
+        };
+        (first, None)
+    });
+    loop {
+        let url = hop.url.clone();
+        let mut seen = crate::trust::Handshake::default();
+        let got: Result<Option<serde_json::Value>, String> = 'hop: {
+            let (start, state) = match parked.take() {
+                Some((start, state)) => (start, Ok(*state)),
+                None => {
+                    if let Some(refusal) = crate::trust::scheme_refusal(&url, def.allow_private) {
+                        break 'hop Err(refusal);
+                    }
+                    let (start, within) = match judge_hop(at, &url, def.allow_private, hop.issued) {
+                        Poll::Pending => {
+                            return Err(LookParked::Fetching {
+                                hop,
+                                exchange: None,
+                            })
+                        }
+                        Poll::Ready(Err(refusal)) => break 'hop Err(refusal),
+                        Poll::Ready(Ok(judged)) => judged,
+                    };
+                    let target = url::Url::parse(&url)
+                        .map(|u| match u.query() {
+                            Some(q) => format!("{}?{q}", u.path()),
+                            None => u.path().to_string(),
+                        })
+                        .unwrap_or_default();
+                    // The stream's facts are read before it closes: what the connector observed of
+                    // the far end's key, which a transport-pinned registration is judged by.
+                    let request = Exchange::request(Request {
+                        method: b"GET".to_vec(),
+                        target: target.into_bytes(),
+                        fields: vec![(
+                            b"accept".to_vec(),
+                            crate::arrival::JSON_MEDIA_TYPE.as_bytes().to_vec(),
+                        )],
+                        body: Vec::new(),
+                        timeout_ms: crate::trust::CARD_FETCH_TIMEOUT_MS,
+                    })
+                    // RESOLVE, PIN, DIAL THE PIN: the dial lands on an address the judgement judged,
+                    // and the stream's facts are read before it closes.
+                    .map(|request| request.landing_within(within).observing());
+                    (start, request)
+                }
+            };
+            let answer = match (state, at.plane.host.as_ref()) {
+                (Err(e), _) => Err(e.to_string()),
+                (Ok(_), None) => {
+                    Err(busbar_contract::abi::sdk::conn::ConnFailure::Unarmed.to_string())
+                }
+                (Ok(mut state), Some(host)) => {
+                    let mut conn = host.connector_from(at.ticket, start);
+                    match exchange(&mut conn, &mut state, door::NEED_AGENT, Some(&url)) {
+                        Poll::Pending => {
+                            return Err(LookParked::Fetching {
+                                hop,
+                                exchange: Some((start, Box::new(state))),
+                            });
+                        }
+                        Poll::Ready(answer) => {
+                            hop.issued = conn.issued();
+                            if let Some(observed) = state.observed() {
+                                seen = crate::trust::Handshake {
+                                    peer_key_pin: observed.peer_key_pin.clone(),
+                                    client_identity_offered: observed.client_identity,
+                                };
+                            }
+                            answer.map_err(|e| crate::trust::transport_err(conn.cause(), &e))
+                        }
+                    }
+                }
+            };
+            let response = match answer {
+                Ok(response) => response,
+                Err(e) => break 'hop crate::trust::read_card(&url, Err(e)).map(Some),
+            };
+            let location = response
+                .fields
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(b"location"))
+                .and_then(|(_, value)| std::str::from_utf8(value).ok());
+            match crate::trust::next_hop(&url, response.status, location, hop.redirects) {
+                Err(refusal) => Err(refusal),
+                Ok(Some(next)) => {
+                    hop.redirects += 1;
+                    hop.url = next;
+                    Ok(None)
+                }
+                Ok(None) => {
+                    crate::trust::read_card(&url, Ok((response.status, &response.body))).map(Some)
+                }
+            }
+        };
+        match got {
+            Ok(None) => {}
+            Ok(Some(card)) => return Ok((Ok(card), seen, hop.issued)),
+            Err(_) if !hop.legacy => {
+                hop = CardHop {
+                    legacy: true,
+                    redirects: 0,
+                    url: urls[1].clone(),
+                    issued: hop.issued,
+                };
+            }
+            Err(refusal) => return Ok((Err(refusal), seen, hop.issued)),
+        }
+    }
+}
+
+/// The kernel's verdict on `card`'s signatures against the root key it holds for agent `name`
+/// (`trust.verify`, on handle `seq`): `Ok` when they verified, else the refusal in this plane's
+/// words.
+fn signed_by_root(
+    at: &LookAt<'_>,
+    seq: u32,
+    name: &str,
+    card: &serde_json::Value,
+) -> Result<(), String> {
+    let (payload, signatures) = crate::trust::signed_parts(card)?;
+    let unjudged = |why: String| format!("the agent card's signatures were not judged: {why}");
+    let Some(services) = at.plane.services else {
+        return Err(unjudged(
+            "the instance was handed no host services".to_string(),
+        ));
+    };
+    let handle = at.handle(seq);
+    let (mut buf, mut grown) = (vec![0u8; 256], Vec::new());
+    // A short buffer is re-called once, on the same handle, at the size the kernel named.
+    let answer = match services.trust_verify(handle, name, &payload, &signatures, &mut buf) {
+        Err(busbar_contract::abi::sdk::ServiceError::Short { bytes, .. }) => {
+            grown.resize(usize::try_from(bytes).unwrap_or(usize::MAX).min(1 << 16), 0);
+            services.trust_verify(handle, name, &payload, &signatures, &mut grown)
+        }
+        other => other,
+    };
+    match answer {
+        Ok(signed) => {
+            crate::trust::jws_refusal(signed.verdict, signed.named, card).map_or(Ok(()), Err)
+        }
+        Err(e) => Err(unjudged(format!("{e:?}"))),
+    }
+}
+
+/// THE LOOK every trust read shares (`connect`, `approve` and verify-on-call), so no two of them
+/// judge a card differently: fetch the card, verify it against the registration's pin, and record
+/// the verified fingerprint on the kernel's trust book (`trust.sight`, which stamps the agent's
+/// re-verification clock and judges it against a declared fingerprint). A failed fetch or
+/// verification is a sighting too: it derives `error`, never "unchanged". What it landed and the
+/// handles it issued; the parked look while a service is in flight.
+fn look(
+    at: &LookAt<'_>,
+    name: &str,
+    def: &crate::a2a::config::AgentDefCfg,
+    parked: Option<LookParked>,
+) -> Result<(Looked, u32), LookParked> {
+    use crate::trust::Sighting;
+    let resumed = match parked {
+        Some(LookParked::Sighted(looked, issued)) => return Ok((looked, issued)),
+        Some(LookParked::Fetching { hop, exchange }) => Some((hop, exchange)),
+        None => None,
+    };
+    let (card, hop, issued) = fetch_card(at, def, resumed)?;
+    let (verify_seq, sight_seq) = (issued, issued + 1);
+    // A fetch the connector refused for the agent's pinned key reads as the pin's own refusal.
+    let card = card.map_err(|e| crate::trust::hop_refusal(&def.pin, &hop, &def.url).unwrap_or(e));
+    let looked = match card.and_then(|card| {
+        crate::trust::verify(&def.pin, &card, &hop, || {
+            signed_by_root(at, verify_seq, name, &card)
+        })
+        .map(|seen| (seen, card))
+    }) {
+        Ok((seen, card)) => Looked {
+            sighting: Sighting::Seen(seen),
+            card: Some(card),
+        },
+        Err(reason) => Looked {
+            sighting: Sighting::Failed(reason),
+            card: None,
+        },
+    };
+    let issued = sight_seq + 1;
+    let fingerprint = match &looked.sighting {
+        Sighting::Seen(seen) => seen.pin.fingerprint(),
+        _ => None,
+    };
+    if let (Some(fingerprint), Some(services)) = (fingerprint, at.plane.services) {
+        if services
+            .trust_sight(at.handle(sight_seq), name, fingerprint)
+            .is_pending()
+        {
+            return Err(LookParked::Sighted(looked, issued));
+        }
+    }
+    Ok((looked, issued))
+}
+
+/// VERIFY-ON-CALL (the served engine's `receive::verify_agent_on_call` and `verify::reverify_once`):
+/// a relayed unit's agent whose last look is older than its `reverify_ttl` is looked at again
+/// before the hop, and what the look found is folded into its standing by the recovery rule
+/// ([`crate::trust::Cadence::settle`]); a verified card is held for the relay. Whether the agent
+/// still serves afterwards; the parked look while a service is in flight.
+fn verify_on_call(
+    reach: &Reach<'_>,
+    hop: &mut Hop,
+    pass: &mut crate::task_door::Pass,
+    member: &str,
+    def: &crate::a2a::config::AgentDefCfg,
+    generation: u64,
+) -> Poll<bool> {
+    let plane = reach.plane;
+    let key = member.to_string();
+    let standing = plane.trust.get(&key).unwrap_or_default();
+    let cadence = crate::trust::Cadence::of(def);
+    let Some(now_ms) = reach.now_ms() else {
+        return Poll::Ready(false);
+    };
+    let serves = |standing: &crate::trust::Standing| {
+        crate::trust::state_of(Some(standing), def) == crate::trust::State::Approved
+    };
+    // A UNIT WAITING ON ANOTHER'S LOOK takes its verdict, never a look of its own — unless that
+    // look was abandoned before it landed, when the waiter looks again (the engine's gate,
+    // released by its dropped holder, re-checks and fetches).
+    if let Some(seen) = hop.waits_on {
+        match plane.flights.state(&key, seen, reach.ticket) {
+            FlightState::InFlight => return Poll::Pending,
+            FlightState::Landed => {
+                hop.waits_on = None;
+                let standing = plane.trust.get(&key).unwrap_or_default();
+                return Poll::Ready(serves(&standing));
+            }
+            FlightState::Released => hop.waits_on = None,
+        }
+    }
+    if hop.verifying.is_none() {
+        if !cadence.due(&standing.ledger, now_ms) {
+            return Poll::Ready(serves(&standing));
+        }
+        // SINGLE-FLIGHT (the engine's `VerifyGate::ensure_fresh`): one look per agent at a time;
+        // a unit due while another's is in flight waits for its verdict.
+        if let Some(seen) = plane.flights.join(&key, reach.ticket) {
+            hop.waits_on = Some(seen);
+            return Poll::Pending;
+        }
+    }
+    let at = LookAt {
+        plane,
+        ticket: reach.ticket,
+        base: pass.issued,
+    };
+    let (looked, issued) = match look(&at, member, def, hop.verifying.take()) {
+        Ok(done) => done,
+        Err(parked) => {
+            hop.verifying = Some(parked);
+            return Poll::Pending;
+        }
+    };
+    pass.issued = issued;
+    // RE-READ: another unit may have moved the standing while this look was in flight.
+    let mut standing = plane.trust.get(&key).unwrap_or_default();
+    let approval = standing.approval_under(&def.pin);
+    let recorded = standing.sighting.clone();
+    standing.sighting = cadence.settle(
+        &approval,
+        &recorded,
+        looked.sighting,
+        &mut standing.ledger,
+        now_ms,
+    );
+    if let Some(card) = looked.card {
+        plane.cards.hold(member, generation, card);
+    }
+    // The breaker is evaluated on the same pass, as the engine's re-verification did.
+    standing.apply_anomaly_breaker();
+    let serving = serves(&standing);
+    plane.trust.insert(key.clone(), standing);
+    // THE FLIGHT LANDS: every unit that waited on it is woken to take its verdict.
+    if let Some(host) = plane.host.as_ref() {
+        for waiter in plane.flights.land(&key) {
+            host.wake(waiter);
+        }
+    }
+    Poll::Ready(serving)
+}
+
+/// ONE AGENT'S LOOK IN FLIGHT (the engine's `VerifyGate` flight): how many looks have landed, the
+/// unit looking now, and the units waiting on it.
+#[derive(Debug, Clone, Default)]
+pub struct Flight {
+    epoch: u64,
+    owner: Option<Ticket>,
+    waiters: Vec<Ticket>,
+}
+
+/// Where a waiter's flight stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlightState {
+    /// The look it waits on is still in flight.
+    InFlight,
+    /// The look landed: its verdict is recorded.
+    Landed,
+    /// The look was abandoned before it landed: nothing was recorded, and the waiter looks again.
+    Released,
+}
+
+/// Every agent's flight.
+#[derive(Debug, Default)]
+pub struct Flights(Keyed<String, Flight>);
+
+impl Flights {
+    /// `ticket` is due to look at `agent`: `None` = it holds the flight and looks; `Some(epoch)` =
+    /// another unit's look is in flight, and `ticket` waits on it.
+    fn join(&self, agent: &str, ticket: Ticket) -> Option<u64> {
+        self.0.with_all(|m| {
+            let f = m.entry(agent.to_string()).or_default();
+            match f.owner {
+                Some(owner) if owner != ticket => {
+                    if !f.waiters.contains(&ticket) {
+                        f.waiters.push(ticket);
+                    }
+                    Some(f.epoch)
+                }
+                _ => {
+                    f.owner = Some(ticket);
+                    None
+                }
+            }
+        })
+    }
+
+    /// Where the flight `ticket` joined at `seen` stands; still in flight, `ticket` stays a waiter.
+    fn state(&self, agent: &str, seen: u64, ticket: Ticket) -> FlightState {
+        self.0.with_all(|m| {
+            let Some(f) = m.get_mut(agent) else {
+                return FlightState::Released;
+            };
+            if f.epoch != seen {
+                return FlightState::Landed;
+            }
+            if f.owner.is_none() {
+                return FlightState::Released;
+            }
+            if !f.waiters.contains(&ticket) {
+                f.waiters.push(ticket);
+            }
+            FlightState::InFlight
+        })
+    }
+
+    /// The flight on `agent` landed: the next epoch, no owner, and the units that waited on it.
+    fn land(&self, agent: &str) -> Vec<Ticket> {
+        self.0.with_all(|m| {
+            let f = m.entry(agent.to_string()).or_default();
+            f.epoch += 1;
+            f.owner = None;
+            std::mem::take(&mut f.waiters)
+        })
+    }
+
+    /// THE UNIT ON `ticket` WAS ABANDONED (cancelled): every flight it held is released, landing
+    /// nothing, and the units that waited on them are answered to be woken; it waits on none any
+    /// more.
+    fn abandon(&self, ticket: Ticket) -> Vec<Ticket> {
+        self.0.with_all(|m| {
+            let mut woken = Vec::new();
+            for f in m.values_mut() {
+                f.waiters.retain(|w| *w != ticket);
+                if f.owner == Some(ticket) {
+                    f.owner = None;
+                    woken.append(&mut f.waiters);
+                }
+            }
+            woken
+        })
+    }
+}
+
+/// The head fields a trust verb's view is answered with.
+const VIEW_FIELDS: &[(&str, &str)] = &[(relay::H_CONTENT_TYPE, crate::arrival::JSON_MEDIA_TYPE)];
+
+/// A trust verb's refusal: `status`, the message alone (the kernel frames it in the admin
+/// taxonomy), the condition it is when it names one, and its audit row.
+fn verb_refused(
+    input: &Lent<'_, ServeIn>,
+    out: &mut Out<'_, ServeOut>,
+    status: u32,
+    message: &str,
+    condition: Option<&str>,
+    audit: u32,
+) -> Outcome {
+    use busbar_contract::plane::ADMIN_CONDITION_FIELD;
+    let mut fields = vec![(relay::H_CONTENT_TYPE, "text/plain")];
+    fields.extend(condition.map(|c| (ADMIN_CONDITION_FIELD, c)));
+    out.answer(input, status, &fields, message.as_bytes(), audit)
+}
+
+slot!(
+    /// `serve`: the trust verbs over the section's registrations (ARCHITECT Q-L3B-VERBS), in the
+    /// served engine's order and words:
+    ///
+    /// * an unregistered name is `404` before anything else, audited nowhere;
+    /// * `approve` reads its body (`{"fingerprint": "…"}`) next, and a malformed one is `400`
+    ///   (the malformed-body condition), audited nowhere;
+    /// * both then LOOK ([`look`]): the card fetched over the agent's own connection need and
+    ///   verified against its pin;
+    /// * `connect` answers its preview and writes nothing — it never grants;
+    /// * `approve` compares what the endpoint serves now against the fingerprint the operator
+    ///   names and refuses any disagreement `400` (the invalid-config condition), audited
+    ///   rejected; otherwise it locks the identity and the skills seen, holds the verified card for
+    ///   the relay, and answers the registration as it now stands.
+    Serve, ServeIn, ServeOut, |instance, input, mut out| {
+        use busbar_contract::abi::plane::{AUDIT_APPLIED, AUDIT_NONE, AUDIT_REJECTED};
+        use busbar_contract::plane::{
+            ADMIN_CONDITION_INVALID_CONFIG as INVALID_CONFIG,
+            ADMIN_CONDITION_MALFORMED_BODY as MALFORMED_BODY,
+        };
+        let Some(plane) = instance.get() else {
+            return Outcome::Failed;
+        };
+        let Some((_, route)) = door::ADMIN_VERBS.get(input.get().route as usize) else {
+            return verb_refused(&input, &mut out, STATUS_NOT_FOUND, "", None, AUDIT_NONE);
+        };
+        let approving = route.ends_with("/approve");
+        let registered = |name: &str| {
+            plane
+                .generations
+                .current()
+                .and_then(|held| held.agents.get(name).cloned())
+        };
+        let found = verb_agent(route, input.field(|i| &i.target).bytes())
+            .and_then(|name| registered(&name).map(|def| (name, def)));
+        let Some((name, def)) = found else {
+            return verb_refused(&input, &mut out, STATUS_NOT_FOUND, "", None, AUDIT_NONE);
+        };
+        let claimed = if approving {
+            let fields = input.fields();
+            let content_type = fields
+                .iter()
+                .find(|f| {
+                    f.field(|f| &f.name)
+                        .as_str()
+                        .is_ok_and(|n| n.eq_ignore_ascii_case(relay::H_CONTENT_TYPE))
+                })
+                .and_then(|f| f.field(|f| &f.value).as_str().ok());
+            match crate::trust::approve_body(content_type, input.field(|i| &i.body).bytes()) {
+                Ok(fingerprint) => Some(fingerprint),
+                Err(refusal) => {
+                    let condition = Some(MALFORMED_BODY);
+                    return verb_refused(&input, &mut out, 400, &refusal, condition, AUDIT_NONE);
+                }
+            }
+        } else {
+            None
+        };
+        let at = LookAt {
+            plane,
+            ticket: instance.ticket(),
+            base: 0,
+        };
+        let looked = match look(&at, &name, &def, instance.resume::<LookParked>().map(|p| *p)) {
+            Ok((looked, _)) => looked,
+            Err(parked) => {
+                instance.park(parked);
+                return Outcome::Pending;
+            }
+        };
+        let standing = plane.trust.get(&name).unwrap_or_default();
+        let approval = standing.approval_under(&def.pin);
+        let Some(claimed) = claimed else {
+            // A PREVIEW WRITES NOTHING: what the registration stands on is untouched.
+            let view = crate::trust::preview_view(&name, &approval, &looked.sighting);
+            return out.answer(&input, 200, VIEW_FIELDS, view.as_bytes(), AUDIT_APPLIED);
+        };
+        if let Err(refusal) = crate::trust::agrees(&looked.sighting, claimed.trim()) {
+            let condition = Some(INVALID_CONFIG);
+            return verb_refused(&input, &mut out, 400, &refusal, condition, AUDIT_REJECTED);
+        }
+        // RE-FOUND, NOT ASSUMED: a refresh may have dropped the registration or moved its pin
+        // while the card was fetched, and an approval is the operator's decision about the
+        // registration as it stands.
+        if registered(&name).is_none_or(|now| now.pin != def.pin) {
+            return verb_refused(&input, &mut out, STATUS_NOT_FOUND, "", None, AUDIT_REJECTED);
+        }
+        let mut approval = approval;
+        if let Err(refusal) = approval.approve(&looked.sighting) {
+            return verb_refused(&input, &mut out, 400, &refusal, None, AUDIT_REJECTED);
+        }
+        // THE SERVED CARD, warmed from the document this approval just verified: the relay reads
+        // the agent's binding and skills off it.
+        if let Some(card) = looked.card {
+            plane.cards.hold(&name, plane.newest(), card);
+        }
+        let view = crate::trust::registration_view(&name, &approval, &looked.sighting);
+        plane.trust.insert(
+            name,
+            crate::trust::Standing {
+                approval,
+                locked_under: Some(def.pin.clone()),
+                sighting: looked.sighting,
+                ..standing
+            },
+        );
+        out.answer(&input, 200, VIEW_FIELDS, view.as_bytes(), AUDIT_APPLIED)
+    }
+);
+
+slot!(
+    /// `hydrate`: nothing to load. The door's durable state is host records (its tasks, their push
+    /// configs and chains), read on demand through `records.get`/`records.list`; what it holds in
+    /// memory (cards, the far-end id map, owed push outcomes) is plane memory a restart forgets, as
+    /// the engine's was.
+    Hydrate, GenIn, OutHead, |_, _, _| { Outcome::Ready }
+);
+
+slot!(
+    /// `start`: the door runs nothing of its own. Its timed work is the lifecycle `tick` (push
+    /// delivery) and the retention sweep the first relayed piece of each second runs
+    /// ([`crate::task_door`]).
+    Start, GenIn, OutHead, |_, _, _| { Outcome::Ready }
+);
+
+/// THE HOOK PROJECTION of one request envelope (the design's legacy engine folds and its plane
+/// driver): `{tool, arguments}`, the method and its `params` (`null` when it has none), as the
+/// engine's gate projects an A2A submission: the prose a screening hook reads lives in the
+/// message's parts, inside `params`.
+/// `None` for a body that is not a JSON object.
+#[must_use]
+pub fn projection(envelope: &[u8]) -> Option<Vec<u8>> {
+    let envelope: serde_json::Value = serde_json::from_slice(envelope).ok()?;
+    envelope.as_object()?;
+    let tool = envelope
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let arguments = envelope
+        .get("params")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    serde_json::to_vec(&serde_json::json!({ "tool": tool, "arguments": arguments })).ok()
+}
+
+/// THE SESSION a request's hook view carries: the `contextId` its message names, which groups an
+/// A2A conversation's tasks (the engine keyed its gate's incremental scan on it); `None` when the
+/// message names none, so the request is screened whole. ARCHITECT RULING 2026-10-03
+/// (Q-FOLD-A2A-2-PROJECT-POOL, session half): `project` writes it into the view's opaque session.
+#[must_use]
+pub fn session_of(envelope: &[u8]) -> Option<String> {
+    let envelope: serde_json::Value = serde_json::from_slice(envelope).ok()?;
+    let context = crate::identity::context_of(&envelope);
+    (!context.is_empty()).then(|| context.to_string())
+}
+
+slot!(
+    /// `project`: the hook view of an arrival on the JSON-RPC or the HTTP+JSON line: its
+    /// [`projection`] as the body (the envelope its request spelled, on the HTTP+JSON line), the
+    /// plane's own key as the ingress dialect (the engine's gate label), and the agent the target
+    /// addresses by name as the pool (none when the kernel's walk picks one), and its
+    /// [`session_of`] as the session. No signals. Any other line, or a body that is no envelope,
+    /// projects nothing (REFUSED).
+    Project, ProjectIn, ProjectOut, |_, input, mut out| {
+        let Some(route) = door::ROUTES.get(input.get().claim as usize) else {
+            return Outcome::Refused;
+        };
+        let target = input.field(|i| &i.target).as_str().unwrap_or_default();
+        let body = input.field(|i| &i.body).bytes();
+        let envelope = match door::line_of(route) {
+            Line::Document => body.to_vec(),
+            Line::Target => match crate::rest::compose(route, target, body) {
+                Ok(Some(envelope)) => envelope,
+                _ => return Outcome::Refused,
+            },
+            Line::Framed | Line::Open => return Outcome::Refused,
+        };
+        let Some(projected) = projection(&envelope) else {
+            return Outcome::Refused;
+        };
+        let session = session_of(&envelope);
+        let pool = agent_of(target).unwrap_or_default();
+        let (signals, mut arena) = (input.signals_buf(), input.arena_buf());
+        let pool = arena.span(pool.as_bytes());
+        let dialect = arena.span(crate::PLANE_KEY.as_bytes());
+        let projected = arena.span(&projected);
+        let session = session.map(|s| arena.span(s.as_bytes()));
+        let short = !arena.fits();
+        let (aw, and) = arena.settle(short);
+        out.set(|o| &o.arena_written, aw as u64);
+        out.set(|o| &o.arena_needed, and as u64);
+        if short {
+            return Outcome::Failed;
+        }
+        out.host_str(|o| &o.view.pool, &arena, pool);
+        out.host_str(|o| &o.view.ingress_dialect, &arena, dialect);
+        if let Some(session) = session {
+            out.host_octets(|o| &o.view.session, &arena, session);
+        }
+        out.host_list(|o| &o.view.signals, |o| &o.view.signals_len, &signals);
+        out.set(|o| &o.body, projected);
+        Outcome::Ready
+    }
+);
+
+#[cfg(test)]
+#[path = "tests/plane_door_tests.rs"]
+mod tests;
+
+busbar_contract::plugin_door! {
+    ops: busbar_contract::abi::plane::Ops,
+    statement: STATEMENT,
+    lifecycle: {
+        validate: Safe<Validate>, open: Safe<Open>, refresh: Safe<Refresh>, retire: Safe<Retire>,
+        tick: Safe<Tick>, drive: Safe<Drive>, cancel: Safe<Cancel>, release: Safe<Release>,
+        close: Safe<Close>,
+    },
+    kind_ops: {
+        arrive: Safe<Arrive>, on_piece: Safe<OnPiece>, refusal: Safe<RefusalSlot>,
+        serve: Safe<Serve>, hydrate: Safe<Hydrate>, start: Safe<Start>, project: Safe<Project>,
+    },
+}

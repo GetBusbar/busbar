@@ -1,0 +1,701 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The trust surface's decisions, against the served engine's words: the card fetch's refusals,
+//! the verification per mechanism, the approval and its cap, the derived state, the two views and
+//! the `approve` body.
+
+use serde_json::json;
+
+use super::*;
+
+fn pin(mechanism: PinMechanism, key: Option<&str>) -> AgentPinCfg {
+    AgentPinCfg {
+        mechanism,
+        key: key.map(str::to_string),
+        fingerprint: None,
+    }
+}
+
+fn card(description: &str) -> Value {
+    json!({
+        "name": "planner",
+        "skills": [{"id": "plan", "name": "Plan", "description": description}],
+    })
+}
+
+fn signed_root() -> AgentPinCfg {
+    pin(PinMechanism::JwsIssuerKey, Some("MCowBQYDK2VwAyEA"))
+}
+
+fn seen(card: &Value) -> Sighting {
+    Sighting::Seen(
+        verify(&signed_root(), card, &Handshake::default(), || Ok(())).expect("verifies"),
+    )
+}
+
+#[test]
+fn the_discovery_urls_are_the_origin_s_two_well_known_paths_canonical_first() {
+    assert_eq!(
+        discovery_urls("https://agent.example/agents/planner?x=1").unwrap(),
+        [
+            "https://agent.example/.well-known/agent-card.json".to_string(),
+            "https://agent.example/.well-known/agent.json".to_string(),
+        ]
+    );
+    assert_eq!(
+        discovery_urls("not a url").unwrap_err(),
+        "agent card URL is not a URL: `not a url`"
+    );
+}
+
+#[test]
+fn plaintext_is_admitted_only_where_the_registration_allows_private() {
+    let url = "http://127.0.0.1:9/.well-known/agent-card.json";
+    assert_eq!(scheme_refusal(url, true), None);
+    assert_eq!(scheme_refusal("https://a.example/x", false), None);
+    assert!(scheme_refusal(url, false).unwrap().starts_with(
+        "agent card URL `http://127.0.0.1:9/.well-known/agent-card.json` uses scheme `http`"
+    ));
+}
+
+#[test]
+fn a_card_read_refuses_what_is_not_a_card_in_the_engine_s_words() {
+    let url = "https://a.example/.well-known/agent-card.json";
+    assert_eq!(
+        read_card(url, Err("refused".to_string())).unwrap_err(),
+        format!("agent card fetch of `{url}` failed: refused")
+    );
+    assert_eq!(
+        read_card(url, Ok((404, b"{}"))).unwrap_err(),
+        format!("agent card fetch of `{url}` returned HTTP 404")
+    );
+    assert_eq!(
+        read_card(url, Ok((200, b"[1]"))).unwrap_err(),
+        format!("the document at `{url}` is not an agent card: the document is not a JSON object")
+    );
+    let big = vec![b' '; MAX_CARD_BYTES + 1];
+    assert!(read_card(url, Ok((200, &big)))
+        .unwrap_err()
+        .ends_with("bytes, over the configured ceiling"));
+    assert_eq!(
+        read_card(url, Ok((200, b"{\"a\":1}"))).unwrap(),
+        json!({"a": 1})
+    );
+}
+
+#[test]
+fn each_mechanism_verifies_as_the_engine_did() {
+    let c = card("plans");
+    let rooted = verify(&signed_root(), &c, &Handshake::default(), || Ok(())).unwrap();
+    assert_eq!(
+        rooted.pin.fingerprint(),
+        Some(card::fingerprint(&c).unwrap().as_str())
+    );
+    assert_eq!(rooted.skills.len(), 1);
+    assert_eq!(
+        verify(&signed_root(), &c, &Handshake::default(), || Err(
+            "not by the key".to_string()
+        ))
+        .unwrap_err(),
+        "not by the key"
+    );
+    assert!(verify(
+        &pin(PinMechanism::JwsIssuerKey, None),
+        &c,
+        &Handshake::default(),
+        || Ok(())
+    )
+    .unwrap_err()
+    .contains("carries no `pin.key:`"));
+    assert!(verify(
+        &pin(PinMechanism::CertKeyPin, Some("sha256/K=")),
+        &c,
+        &Handshake::default(),
+        || Ok(())
+    )
+    .unwrap_err()
+    .contains("this fetch observed none"));
+    assert_eq!(
+        verify(
+            &pin(PinMechanism::Unpinned, None),
+            &c,
+            &Handshake::default(),
+            || unreachable!()
+        )
+        .unwrap()
+        .pin,
+        CardPin::Unpinned
+    );
+    assert!(verify(
+        &pin(PinMechanism::Unpinned, Some("k")),
+        &c,
+        &Handshake::default(),
+        || Ok(())
+    )
+    .unwrap_err()
+    .starts_with("`pin.mechanism: unpinned` carries `pin.key:`"));
+}
+
+#[test]
+fn the_kernel_s_signature_verdicts_are_worded_as_the_engine_worded_them() {
+    let c = json!({"signatures": [{}, {}]});
+    assert_eq!(jws_refusal(svc::SIGNED_VERIFIED, "", &c), None);
+    assert_eq!(
+        jws_refusal(svc::SIGNED_TOO_MANY, "", &c).unwrap(),
+        "the agent card carries 2 signatures, more than any legitimate card needs"
+    );
+    assert_eq!(
+        jws_refusal(svc::SIGNED_NOT_BY_ROOT, "", &c).unwrap(),
+        "the agent card is signed, but not by the pinned issuer key"
+    );
+    assert_eq!(
+        jws_refusal(svc::SIGNED_NONE, "", &c).unwrap(),
+        "the agent card carries no signature"
+    );
+    assert!(jws_refusal(svc::SIGNED_ALGORITHM, "none", &c)
+        .unwrap()
+        .starts_with("signature algorithm `none` is refused"));
+}
+
+#[test]
+fn approval_locks_what_was_seen_and_drift_quarantines_it() {
+    let first = seen(&card("plans"));
+    let mut approval = Approval::default();
+    assert_eq!(approval.state(&first), State::Pending);
+    approval.approve(&first).unwrap();
+    assert_eq!(approval.state(&first), State::Approved);
+    assert_eq!(approval.state(&Sighting::Never), State::Approved);
+    let moved = seen(&card("plans, and forwards your text"));
+    assert_eq!(approval.state(&moved), State::Quarantined);
+    let d = approval.drift(&moved);
+    assert!(d.pin_changed, "the fingerprint moved");
+    assert_eq!(d.changed, vec!["plan".to_string()]);
+    assert_eq!(
+        approval.state(&Sighting::Failed("down".to_string())),
+        State::Error
+    );
+}
+
+#[test]
+fn an_unpinned_registration_is_captured_and_never_approved() {
+    let c = card("plans");
+    let unpinned = Sighting::Seen(
+        verify(
+            &pin(PinMechanism::Unpinned, None),
+            &c,
+            &Handshake::default(),
+            || Ok(()),
+        )
+        .unwrap(),
+    );
+    assert!(Approval::default()
+        .approve(&unpinned)
+        .unwrap_err()
+        .contains("no authenticity root (unpinned)"));
+    assert!(agrees(&unpinned, "sha256:x")
+        .unwrap_err()
+        .contains("`pin.mechanism: unpinned`"));
+    let preview: Value =
+        serde_json::from_str(&preview_view("a", &Approval::default(), &unpinned)).unwrap();
+    assert_eq!(preview["state"], "pending");
+    assert_eq!(preview["fingerprint"], Value::Null);
+    assert_eq!(preview["pin_mechanism"], "unpinned");
+}
+
+#[test]
+fn the_preview_never_reports_approved_and_names_the_fingerprint() {
+    let s = seen(&card("plans"));
+    let mut approval = Approval::default();
+    approval.approve(&s).unwrap();
+    let fp = card::fingerprint(&card("plans")).unwrap();
+    assert_eq!(
+        preview_view("planner", &approval, &s),
+        format!(
+            r#"{{"name":"planner","state":"pending","pin_mechanism":"jws_issuer_key","fingerprint":"{fp}","pin_changed":false,"added":[],"changed":[],"removed":[],"observed_skills":1,"failure":null}}"#
+        )
+    );
+    let view: Value = serde_json::from_str(&registration_view("planner", &approval, &s)).unwrap();
+    assert_eq!(view["state"], "approved");
+    assert_eq!(view["fingerprint"], fp.as_str());
+}
+
+#[test]
+fn agreement_refuses_every_arm_but_the_named_fingerprint() {
+    let s = seen(&card("plans"));
+    let fp = card::fingerprint(&card("plans")).unwrap();
+    assert_eq!(agrees(&s, &fp), Ok(()));
+    assert!(agrees(&s, "")
+        .unwrap_err()
+        .starts_with("`fingerprint` must name"));
+    assert!(agrees(&s, "sha256:other")
+        .unwrap_err()
+        .contains("The card moved between the preview and the approval"));
+    assert!(agrees(&Sighting::Failed("down".to_string()), &fp)
+        .unwrap_err()
+        .ends_with("nothing to approve: down"));
+}
+
+#[test]
+fn a_lock_taken_under_another_pin_does_not_hold() {
+    let s = seen(&card("plans"));
+    let mut approval = Approval::default();
+    approval.approve(&s).unwrap();
+    let standing = Standing {
+        approval,
+        locked_under: Some(signed_root()),
+        sighting: s,
+        ..Standing::default()
+    };
+    assert_eq!(standing.approval_under(&signed_root()), standing.approval);
+    let moved = pin(PinMechanism::JwsIssuerKey, Some("other"));
+    assert_eq!(standing.approval_under(&moved), Approval::default());
+}
+
+#[test]
+fn the_approve_body_is_read_as_the_engine_s_extractor_read_it() {
+    let json = Some("application/json");
+    assert_eq!(
+        approve_body(json, br#"{"fingerprint":"sha256:a"}"#),
+        Ok("sha256:a".to_string())
+    );
+    assert_eq!(
+        approve_body(
+            Some("application/merge+json; charset=utf-8"),
+            br#"{"fingerprint":"f"}"#
+        ),
+        Ok("f".to_string())
+    );
+    let prefix =
+        "the approve body must be `{\"fingerprint\": \"…\"}` naming the fingerprint `connect` reported: ";
+    assert_eq!(
+        approve_body(None, b"{}").unwrap_err(),
+        format!("{prefix}Expected request with `Content-Type: application/json`")
+    );
+    assert_eq!(
+        approve_body(json, b"{").unwrap_err(),
+        format!("{prefix}Failed to parse the request body as JSON: EOF while parsing an object at line 1 column 1")
+    );
+    assert_eq!(
+        approve_body(json, b"{}").unwrap_err(),
+        format!("{prefix}Failed to deserialize the JSON body into the target type: missing field `fingerprint` at line 1 column 2")
+    );
+    assert_eq!(
+        approve_body(json, br#"{"fingerprint":5}"#).unwrap_err(),
+        format!("{prefix}Failed to deserialize the JSON body into the target type: fingerprint: invalid type: integer `5`, expected a string at line 1 column 16")
+    );
+    assert!(approve_body(json, br#"{"x":1}"#)
+        .unwrap_err()
+        .contains("unknown field `x`, expected `fingerprint`"));
+    assert!(approve_body(json, br#"{"fingerprint":"a"} x"#)
+        .unwrap_err()
+        .contains("Failed to parse the request body as JSON: trailing characters"));
+}
+
+fn def_of(pin: AgentPinCfg, cadence: serde_json::Value) -> AgentDefCfg {
+    let mut def = json!({"url": "https://a.example/x", "pin": pin});
+    if let (Some(d), Some(c)) = (def.as_object_mut(), cadence.as_object()) {
+        d.extend(c.clone());
+    }
+    serde_json::from_value(def).unwrap()
+}
+
+#[test]
+fn only_an_approved_registration_serves_and_an_unpinned_one_never_does() {
+    let unpinned = def_of(pin(PinMechanism::Unpinned, None), json!({}));
+    assert_eq!(state_of(None, &unpinned), State::Pending);
+    let rooted = def_of(signed_root(), json!({}));
+    assert_eq!(state_of(None, &rooted), State::Pending);
+    let s = seen(&card("plans"));
+    let mut approval = Approval::default();
+    approval.approve(&s).unwrap();
+    let mut standing = Standing {
+        approval,
+        locked_under: Some(signed_root()),
+        sighting: s,
+        ..Standing::default()
+    };
+    assert_eq!(state_of(Some(&standing), &rooted), State::Approved);
+    standing.sighting = seen(&card("moved"));
+    assert_eq!(state_of(Some(&standing), &rooted), State::Quarantined);
+}
+
+#[test]
+fn a_unit_whose_agent_is_not_serving_is_refused_in_the_engine_s_words() {
+    let addressed = not_serving(Some("planner"), State::Pending, None);
+    assert_eq!(addressed.status, 503);
+    assert_eq!(
+        serde_json::to_value(addressed.envelope()).unwrap()["error"]["message"],
+        "fronted agent `planner` is not serving (Pending)"
+    );
+    assert_eq!(addressed.envelope()["id"], Value::Null);
+    assert_eq!(addressed.envelope()["error"]["code"], -32004);
+    let scoped = not_serving(None, State::Quarantined, None);
+    assert_eq!(scoped.status, 400);
+    assert_eq!(
+        scoped.envelope()["error"]["message"],
+        "no agent this key may reach can serve this shape of task"
+    );
+}
+
+#[test]
+fn the_cadence_reads_the_registration_and_its_defaults() {
+    let defaults = Cadence::of(&def_of(signed_root(), json!({})));
+    assert_eq!(defaults.ttl_ms, 5_000);
+    assert_eq!(defaults.recovery_backoff_ms, 15 * 60 * 1_000);
+    let spelled = Cadence::of(&def_of(
+        signed_root(),
+        json!({"reverify_ttl": "0s", "recovery_backoff": "1m"}),
+    ));
+    assert_eq!(spelled.ttl_ms, 0);
+    assert_eq!(spelled.recovery_backoff_ms, 60_000);
+    let mut ledger = Ledger::default();
+    assert!(defaults.due(&ledger, 1), "never looked is due");
+    ledger.last_checked_ms = Some(1_000);
+    assert!(!defaults.due(&ledger, 5_999));
+    assert!(defaults.due(&ledger, 6_000), "a lapsed ttl is due");
+    assert!(
+        defaults.due(&ledger, 999),
+        "a clock that went backwards is due"
+    );
+    assert!(spelled.due(&ledger, 1_000), "strict-live is always due");
+}
+
+#[test]
+fn settling_records_drift_at_once_and_holds_recovery_for_the_backoff() {
+    let cadence = Cadence {
+        ttl_ms: 0,
+        recovery_backoff_ms: 1_000,
+    };
+    let approved = seen(&card("plans"));
+    let mut approval = Approval::default();
+    approval.approve(&approved).unwrap();
+    let mut ledger = Ledger::default();
+    let drifted = seen(&card("moved"));
+    let recorded = cadence.settle(&approval, &approved, drifted.clone(), &mut ledger, 10);
+    assert_eq!(recorded, drifted, "detection is never held");
+    assert_eq!(
+        (ledger.last_drift_ms, ledger.drift_observations),
+        (Some(10), 1)
+    );
+    let held = cadence.settle(&approval, &recorded, approved.clone(), &mut ledger, 500);
+    assert_eq!(
+        held, drifted,
+        "a clean answer inside the backoff is disbelieved"
+    );
+    let cleared = cadence.settle(&approval, &held, approved.clone(), &mut ledger, 1_010);
+    assert_eq!(
+        cleared, approved,
+        "after the backoff the clean answer is recorded"
+    );
+    let failed = Sighting::Failed("down".to_string());
+    assert_eq!(
+        cadence.settle(&approval, &cleared, failed.clone(), &mut ledger, 2_000),
+        failed,
+        "a failed contact is recorded, never read as unchanged"
+    );
+    assert_eq!(ledger.last_checked_ms, Some(2_000));
+}
+
+#[test]
+fn a_suspension_refuses_whatever_the_card_and_names_its_reason() {
+    let s = seen(&card("plans"));
+    let mut approval = Approval::default();
+    approval.approve(&s).unwrap();
+    approval.suspend("vendor breach notice");
+    assert_eq!(approval.state(&s), State::Suspended);
+    assert_eq!(
+        approval.state(&Sighting::Failed("down".into())),
+        State::Suspended
+    );
+    let refusal = not_serving(Some("planner"), State::Suspended, approval.suspension());
+    assert_eq!(
+        refusal.envelope()["error"]["message"],
+        "fronted agent `planner` is not serving (Suspended): vendor breach notice"
+    );
+    let mut relocked = approval.clone();
+    relocked.approve(&s).unwrap();
+    assert_eq!(
+        relocked.state(&s),
+        State::Suspended,
+        "an approval does not lift it"
+    );
+}
+
+#[test]
+fn the_anomaly_breaker_trips_only_on_configured_thresholds_and_never_lifts() {
+    use crate::a2a::anomaly::{Thresholds, Window};
+    let s = seen(&card("plans"));
+    let mut approval = Approval::default();
+    approval.approve(&s).unwrap();
+    let mut standing = Standing {
+        approval,
+        locked_under: Some(signed_root()),
+        sighting: s,
+        ..Standing::default()
+    };
+    standing.window = Window {
+        observations: 10,
+        errors: 9,
+        ..Window::default()
+    };
+    assert_eq!(
+        standing.apply_anomaly_breaker(),
+        None,
+        "nothing configured trips nothing"
+    );
+    standing.thresholds = Thresholds {
+        min_observations: 5,
+        error_rate: Some(0.5),
+        ..Thresholds::default()
+    };
+    let trip = standing
+        .apply_anomaly_breaker()
+        .expect("a configured threshold trips");
+    assert_eq!(standing.approval.suspension(), Some(trip.reason().as_str()));
+    assert_eq!(
+        state_of(Some(&standing), &def_of(signed_root(), json!({}))),
+        State::Suspended
+    );
+    standing.window = Window::default();
+    assert_eq!(standing.apply_anomaly_breaker(), None);
+    assert!(
+        standing.approval.suspension().is_some(),
+        "the breaker never lifts it"
+    );
+}
+
+#[test]
+fn a_redirect_is_followed_within_the_bound_in_the_engine_s_words() {
+    let at = "https://a.example/.well-known/agent-card.json";
+    assert_eq!(next_hop(at, 200, None, 0), Ok(None));
+    assert_eq!(
+        next_hop(at, 302, Some(" /cards/planner.json "), 0),
+        Ok(Some("https://a.example/cards/planner.json".to_string()))
+    );
+    assert_eq!(
+        next_hop(at, 301, Some("https://b.example/c"), 2),
+        Ok(Some("https://b.example/c".to_string()))
+    );
+    assert_eq!(
+        next_hop(at, 302, Some("/x"), 3).unwrap_err(),
+        format!("agent card fetch exceeded 3 redirect(s), still redirecting at `{at}`")
+    );
+    assert_eq!(
+        next_hop(at, 307, None, 0).unwrap_err(),
+        format!("agent card fetch got HTTP 307 from `{at}` with no usable Location header")
+    );
+    assert!(next_hop(at, 307, Some("   "), 0).is_err());
+}
+
+#[test]
+fn the_guard_s_verdicts_are_worded_as_the_engine_worded_them() {
+    use busbar_contract::abi::host::service as svc;
+    let url = "https://agent.internal./.well-known/agent-card.json";
+    assert_eq!(host_of(url).as_deref(), Some("agent.internal"));
+    assert_eq!(host_of("https://[::1]:8443/x").as_deref(), Some("::1"));
+    assert_eq!(refused_name(url, svc::DEST_ALLOWED), None);
+    assert_eq!(
+        refused_name(url, svc::DEST_INTERNAL).unwrap(),
+        "SSRF guard refused the agent card fetch: host `agent.internal` is a loopback name; set \
+         this registration's `allow_private: true` if that is deliberate"
+    );
+    assert_eq!(
+        refused_name(url, svc::DEST_METADATA).unwrap(),
+        "SSRF guard refused the agent card fetch: host `agent.internal` is a cloud-metadata name"
+    );
+    assert!(refused_name(url, svc::DEST_OBFUSCATED).unwrap().ends_with(
+        "is an alternate IPv4 encoding a resolver still expands to an internal address"
+    ));
+    assert_eq!(
+        refused_name(url, svc::DEST_NO_ADDRESSES).unwrap(),
+        "agent card host `agent.internal` resolved to no addresses at all; there is nothing to \
+         connect to and nothing to have judged"
+    );
+    assert_eq!(
+        refused_address(url, "10.0.0.7"),
+        "SSRF guard refused the agent card fetch: host `agent.internal` resolved to the internal \
+         address 10.0.0.7; set this registration's `allow_private: true` if reaching it is \
+         deliberate. A cloud-metadata address is refused whatever that is set to."
+    );
+}
+
+/// THE JUDGEMENT'S REFUSAL IN 1.5.5's WORDS (ARCHITECT Q-DEL-A2A-GUARD-WORDS): a name that
+/// resolved to a cloud-metadata or internal address names that address; a literal host names
+/// itself; a failed resolution names the resolver's reason; a refusal the name alone decided is
+/// the name's.
+#[test]
+fn a_judged_refusal_names_the_address_or_the_resolvers_reason() {
+    let named = "https://card.example/.well-known/agent-card.json";
+    let internal = |host: &str, addr: &str| {
+        format!(
+            "SSRF guard refused the agent card fetch: host `{host}` resolved to the internal \
+             address {addr}; set this registration's `allow_private: true` if reaching it is \
+             deliberate. A cloud-metadata address is refused whatever that is set to."
+        )
+    };
+    assert_eq!(
+        refused_judgement(named, svc::DEST_METADATA, Some("169.254.169.254")),
+        internal("card.example", "169.254.169.254")
+    );
+    assert_eq!(
+        refused_judgement(named, svc::DEST_INTERNAL, Some("10.1.2.3")),
+        internal("card.example", "10.1.2.3")
+    );
+    assert_eq!(
+        refused_judgement("https://10.0.0.7/x", svc::DEST_INTERNAL, None),
+        internal("10.0.0.7", "10.0.0.7")
+    );
+    assert_eq!(
+        refused_judgement(named, svc::DEST_UNRESOLVABLE, Some("no such host")),
+        "agent card host `card.example` did not resolve: no such host"
+    );
+    assert_eq!(
+        refused_judgement("https://localhost/x", svc::DEST_INTERNAL, None),
+        "SSRF guard refused the agent card fetch: host `localhost` is a loopback name; set this \
+         registration's `allow_private: true` if that is deliberate"
+    );
+    assert_eq!(
+        refused_judgement(named, svc::DEST_METADATA, None),
+        "SSRF guard refused the agent card fetch: host `card.example` is a cloud-metadata name"
+    );
+}
+
+#[test]
+fn an_address_literal_is_read_as_one_and_a_name_is_not() {
+    assert_eq!(
+        literal_url("127.0.0.1").as_deref(),
+        Some("https://127.0.0.1/")
+    );
+    assert_eq!(literal_url("::1").as_deref(), Some("https://[::1]/"));
+    assert_eq!(literal_url("agent.example"), None);
+}
+
+/// THE CONNECTION'S FAILURE IN predev's WORDS: the engine's HTTP client error with its cause
+/// chain, by the stage the connector named; with none named, the connector's own text.
+#[test]
+fn a_failed_card_hop_is_named_as_the_engines_client_named_it() {
+    use busbar_contract::abi::host::conn::connector::{
+        CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_EXCHANGE, CAUSE_FRAMER, CAUSE_NONE, CAUSE_SECURITY,
+    };
+    use busbar_contract::abi::sdk::conn::ConnFailure;
+    let refused = ConnFailure::Refused("Connection refused (os error 111)".into());
+    assert_eq!(
+        transport_err(CAUSE_CONNECT, &refused),
+        "client error (Connect): tcp connect error: Connection refused (os error 111)"
+    );
+    let unknown = ConnFailure::Refused("invalid peer certificate: UnknownIssuer".into());
+    assert_eq!(
+        transport_err(CAUSE_SECURITY, &unknown),
+        "client error (Connect): invalid peer certificate: UnknownIssuer"
+    );
+    let reset = ConnFailure::Failed("Connection reset by peer (os error 104)".into());
+    assert_eq!(
+        transport_err(CAUSE_EXCHANGE, &reset),
+        "client error (SendRequest): connection error: Connection reset by peer (os error 104)"
+    );
+    let unanswered = ConnFailure::Failed("connection closed before message completed".into());
+    assert_eq!(
+        transport_err(CAUSE_FRAMER, &unanswered),
+        "client error (SendRequest): connection closed before message completed"
+    );
+    assert_eq!(
+        transport_err(CAUSE_DEADLINE, &ConnFailure::Failed(String::new())),
+        "governed egress hop exceeded its deadline"
+    );
+    assert_eq!(
+        transport_err(CAUSE_NONE, &ConnFailure::Refused(String::new())),
+        "the connector refused the call"
+    );
+}
+
+/// A key pin seen on the hop.
+fn hop(peer_key_pin: Option<&str>, client_identity_offered: bool) -> Handshake {
+    Handshake {
+        peer_key_pin: peer_key_pin.map(str::to_string),
+        client_identity_offered,
+    }
+}
+
+/// THE TRANSPORT PIN (Q-DEL-A2A-SPKI), the served engine's verdicts and words: the connector's
+/// observed key matching the pin is observed and approvable (`cert_spki`, and `mtls` once busbar
+/// presented its client identity), the OBSERVED key is what is recorded; no key observed is
+/// refused as not observed; another key as a mismatch naming both; `mtls` whose hop presented no
+/// identity of busbar's as one-way, the peer half judged first.
+#[test]
+fn a_transport_pin_is_observed_approvable_and_enforced_as_the_engine_judged_it() {
+    let c = card("plans");
+    let key = "R2V0IHRoZSBrZXkgcmlnaHQ=";
+    let spki = pin(PinMechanism::CertKeyPin, Some(&format!(" {key} ")));
+    let seen = verify(&spki, &c, &hop(Some(key), false), || unreachable!()).unwrap();
+    assert_eq!(
+        seen.pin,
+        CardPin::Rooted {
+            mechanism: PinMechanism::CertKeyPin,
+            key: key.to_string(),
+            fingerprint: card::fingerprint(&c).unwrap(),
+        }
+    );
+    let mut lock = Approval::default();
+    lock.approve(&Sighting::Seen(seen))
+        .expect("an observed key is approvable");
+
+    assert_eq!(
+        verify(&spki, &c, &hop(None, false), || Ok(())).unwrap_err(),
+        "`pin.mechanism: cert_spki` binds the CARD ENDPOINT's certificate, and this fetch observed \
+         none — the hop was plaintext, or the peer's certificate yielded no \
+         subject-public-key-info. Refused rather than recorded as satisfied: a fetch that \
+         succeeded is not a transport binding that was checked."
+    );
+    assert_eq!(
+        verify(&spki, &c, &hop(Some("b3RoZXI="), false), || Ok(())).unwrap_err(),
+        format!(
+            "`pin.mechanism: cert_spki`: the card endpoint served a certificate whose \
+             subject-public-key-info is `b3RoZXI=`, and the operator pinned `{key}`. The endpoint \
+             answered and it is not the endpoint the operator supplied a root for."
+        )
+    );
+    // Base64 is case-significant: a key in another case is another key.
+    assert!(
+        verify(&spki, &c, &hop(Some(&key.to_lowercase()), false), || Ok(()))
+            .unwrap_err()
+            .contains("the operator pinned")
+    );
+
+    let mutual = pin(PinMechanism::MutualTls, Some(key));
+    let both = verify(&mutual, &c, &hop(Some(key), true), || unreachable!()).unwrap();
+    assert_eq!(both.pin.mechanism(), "mtls");
+    assert!(verify(&mutual, &c, &hop(Some(key), false), || Ok(()))
+        .unwrap_err()
+        .starts_with("`pin.mechanism: mtls` requires busbar to present a client certificate"));
+    // The peer half first: a mismatched endpoint is a mismatch, not a missing identity.
+    assert!(
+        verify(&mutual, &c, &hop(Some("b3RoZXI="), false), || Ok(()))
+            .unwrap_err()
+            .starts_with("`pin.mechanism: mtls`: the card endpoint served a certificate")
+    );
+}
+
+/// A card fetch the connector refused for the pinned key reads as the pin's refusal (the key it
+/// served named); a refused plaintext card URL of a transport-pinned registration as not observed;
+/// any other fetch failure, and any other mechanism, keeps the fetch's own words.
+#[test]
+fn a_refused_hop_of_a_transport_pinned_registration_reads_as_the_pin_s_refusal() {
+    let key = "R2V0IHRoZSBrZXkgcmlnaHQ=";
+    let spki = pin(PinMechanism::CertKeyPin, Some(key));
+    let https = "https://agent.example/a";
+    assert!(hop_refusal(&spki, &hop(Some("b3RoZXI="), false), https)
+        .unwrap()
+        .contains("subject-public-key-info is `b3RoZXI=`"));
+    assert_eq!(hop_refusal(&spki, &hop(None, false), https), None);
+    assert!(
+        hop_refusal(&spki, &hop(None, false), "http://127.0.0.1:9/a")
+            .unwrap()
+            .contains("this fetch observed none")
+    );
+    assert_eq!(hop_refusal(&spki, &hop(Some(key), false), https), None);
+    assert_eq!(
+        hop_refusal(&signed_root(), &hop(Some("b3RoZXI="), false), https),
+        None
+    );
+}

@@ -69,6 +69,9 @@ busbar-mcp = { path = "../busbar-mcp", optional = true }
 # — nothing in `main.rs` names it and `plane-a2a` below is not in `default`, so this edge is inert
 # until the plane/codec code that a later step moves actually lands here.
 busbar-a2a = { path = "../busbar-a2a", optional = true }
+# THE A2A PLANE, through its memory-ABI door: the edge the development-only `plane-a2a-door` switch
+# carries (see that feature). Off by default: the `plane-a2a` row serves a2a until the flip.
+busbar-plane-a2a = { path = "../busbar-plane-a2a", optional = true }
 # THE VOICE PLANE-KIND CRATE (Plane 4), the analogue of busbar-a2a above. Optional behind
 # `plane-streaming`, now IN `default` (voice ships default-ON + deletable, exactly like plane-mcp/
 # plane-a2a). The LLM money path is unchanged (busbar-core's default carries no voice/duplex-ws
@@ -298,6 +301,13 @@ plane-decisions-door = ["plane-decisions"]
 # (#2, #30; THE DESIGN section 11.4). It carries `proto-llm`, whose row stays linked and answers
 # every arrival the serve path does not hand the door.
 llm-on-driver = ["proto-llm", "dep:busbar-plane-llm"]
+# THE A2A PLANE THROUGH ITS DOOR, the a2a fold's development-only switch (BUSBAR-1.6.0.md Part 3
+# section 12, "The switch"; deleted when the a2a fold completes, with `busbar-a2a`). Never in
+# `default`. On, the plane's memory-ABI door (`busbar_plane_a2a::plane_door::door`) is a `plane-door`
+# row, bound through the loader's one load beside every dropped-in plane door, the same table as its
+# dropped-in cdylib (#2, #30; THE DESIGN section 11.4). It carries `plane-a2a`, whose row stays
+# linked and answers every arrival the serve path does not hand the door.
+plane-a2a-door = ["plane-a2a", "dep:busbar-plane-a2a"]
 # THE REQUEST-LOG FILE SINK, DEFAULT ON: the `busbar-export-file` crate on the export axis. Off, the
 # module resolves only when a signed tarball of the sink is dropped into `plugins/`.
 export-file = ["dep:busbar-export-file"]
@@ -392,6 +402,7 @@ transport-stdio = "busbar-transport-stdio"
 # loader's one load beside the dropped-in plane doors.
 plane-decisions-door = "busbar-plane-decisions"
 llm-on-driver = "busbar-plane-llm"
+plane-a2a-door = "busbar-plane-a2a"
 
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
 # kernel-side), `protocols`, `path-ingress`, `body-ingress`, `protocol-seams`, `diagnostics`,
@@ -434,6 +445,7 @@ transport-grpc = "transport transport-door"
 transport-stdio = "transport transport-door"
 plane-decisions-door = "plane-door"
 llm-on-driver = "plane-door"
+plane-a2a-door = "plane-door"
 
 # A linked crate whose entry module is not `<crate>::linked`: the decisions plane is a PURE plane
 # crate whose manifest names `busbar-contract` and nothing else (#40), so its kernel-typed hooks are
@@ -451,6 +463,7 @@ busbar-auth-header = "busbar_auth_header::compiled_in"
 # A plane door row's entry is the module that exports its `door`.
 plane-decisions-door = "busbar_plane_decisions::plane_door"
 llm-on-driver = "busbar_plane_llm::plane_door"
+plane-a2a-door = "busbar_plane_a2a::plane_door"
 # A memory-ABI export sink's door is its logic crate's `door` module's (`plugin_door!`).
 busbar-export-prometheus = "busbar_export_prometheus::door"
 busbar-export-otlp = "busbar_export_otlp::door"
