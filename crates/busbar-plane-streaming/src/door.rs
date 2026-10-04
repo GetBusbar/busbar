@@ -50,7 +50,7 @@ use std::sync::Mutex;
 use crate::piece::{self, Owed};
 use busbar_contract::abi::hook::REQUEST_STREAM;
 use busbar_contract::abi::host::conn::connector::{
-    Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, KEEP_NAMED,
+    Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, EGRESS_PROVIDER, KEEP_NAMED,
 };
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, InHead, OutHead, Outcome, Span, BLOB_ABSENT,
@@ -239,6 +239,16 @@ const fn need(direction: u32, transport: &'static str, auth: AbiStr, target: Abi
     }
 }
 
+/// One outbound need: to a configured provider, its dials judged in the provider egress class, its
+/// address the member's own (the `base_url` of the catalog model `streams.session.model` names, sealed
+/// by the kernel's egress), never a config path of the plane's: a model name is no dial target.
+const fn outbound(transport: &'static str, style: &'static str) -> Need {
+    Need {
+        egress_class: EGRESS_PROVIDER,
+        ..need(DIRECTION_OUTBOUND, transport, abi_str(style), NONE)
+    }
+}
+
 /// The plane's connection needs: its keyed doors and its telephony door inbound; outbound, to the
 /// upstream `streams.session.model` names, OpenAI Realtime's socket and its one-shot passes (the
 /// mint, the SDP offer) under its bearer style, and Gemini Live's socket under its key header
@@ -253,24 +263,9 @@ const NEEDS: &[Need] = &[
         abi_str(SIGNATURE_AUTH),
         NONE,
     ),
-    need(
-        DIRECTION_OUTBOUND,
-        WS_TRANSPORT,
-        abi_str(REALTIME_STYLE),
-        abi_str(EGRESS_TARGET),
-    ),
-    need(
-        DIRECTION_OUTBOUND,
-        HTTP_TRANSPORT,
-        abi_str(REALTIME_STYLE),
-        abi_str(EGRESS_TARGET),
-    ),
-    need(
-        DIRECTION_OUTBOUND,
-        WS_TRANSPORT,
-        abi_str(LIVE_STYLE),
-        abi_str(EGRESS_TARGET),
-    ),
+    outbound(WS_TRANSPORT, REALTIME_STYLE),
+    outbound(HTTP_TRANSPORT, REALTIME_STYLE),
+    outbound(WS_TRANSPORT, LIVE_STYLE),
 ];
 
 /// The need a far request rides, as `OnPieceOut::need` names it (its index in [`NEEDS`] plus one):
