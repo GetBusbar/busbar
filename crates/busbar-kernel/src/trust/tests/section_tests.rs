@@ -14,10 +14,12 @@ const MECHANISMS: &[PinMechanismDecl] = &[
     PinMechanismDecl {
         token: "sealed_key",
         root: true,
+        peer_key: false,
     },
     PinMechanismDecl {
         token: "open",
         root: false,
+        peer_key: false,
     },
 ];
 

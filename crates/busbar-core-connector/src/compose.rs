@@ -3,11 +3,16 @@
 
 //! COMPOSE: one connection, `socket -> [TLS] -> framer` (`BUSBAR-1.6.0.md` THE DESIGN, §5), dialled
 //! ([`Connection::dial`], the framing begun on `SIDE_DIAL`) or accepted ([`Connection::accepted`],
-//! the server-side mirror: TLS as the server, the framing begun on `SIDE_ACCEPT`).
+//! the server-side mirror: TLS as the server, the framing begun on `SIDE_ACCEPT`); or a PROGRAM's
+//! pipes ([`Connection::spawn`]: `child stdin/stdout -> framer`), the child spawned here with no
+//! shell and only the environment its settings state, and killed when the connection closes or is
+//! dropped.
 //!
 //! The socket is the host's, non-blocking, its readiness on the dialling worker's reactor
 //! ([`crate::io`]); connection security is `rustls` driven sans-IO here, with the protocol offer
-//! (ALPN) the entry's registration states; the framer is the entry's table ([`crate::framer`]).
+//! (ALPN) the entry's `locate` answered (THE DESIGN, connections: "the ALPN offer is the
+//! framer's"; the registration's offer stands only for an entry that answers none); the framer is
+//! the entry's table ([`crate::framer`]).
 //! The connection is a state machine the caller polls — it holds no thread and no task, and every
 //! wait is Pending with the caller's waker registered on the socket or the timer:
 //!
@@ -31,7 +36,7 @@ use busbar_contract::abi::transport::{CLOSE_NORMAL, SIDE_ACCEPT, SIDE_DIAL};
 use crate::endpoint;
 use crate::framer::{self, Established, FramerDoor, Framing, Got, Yielded};
 use crate::io::{self as reactor, Direction, Registered};
-use crate::socket;
+use crate::socket::{self, Sock};
 
 /// How much one socket read takes.
 const READ_CHUNK: usize = 16 * 1024;
@@ -84,9 +89,10 @@ pub struct Dial {
     /// The target, as the entry's `locate` reads it.
     pub target: String,
     /// The client TLS config, where the target asks for connection security (its ALPN offer is
-    /// set per dial from `alpn`).
+    /// set per dial: the entry's own, else `alpn`).
     pub tls: Option<Arc<rustls::ClientConfig>>,
-    /// The protocols offered in the TLS handshake, most preferred first.
+    /// The protocols offered in the TLS handshake, most preferred first, where the entry's
+    /// `locate` answers no offer of its own.
     pub alpn: Vec<Vec<u8>>,
     /// The bound on the open: connect and handshake.
     pub open_timeout: Duration,
@@ -117,10 +123,24 @@ enum Phase {
     Failed(Failure),
 }
 
+/// What a connection's bytes ride: the host's socket, or a program's pipes.
+enum Wire {
+    Socket(Registered<Sock>),
+    Program(Box<Pipes>),
+}
+
+/// A spawned program: the child the connection owns, and the host's ends of the two pipes that
+/// are its input and its output, on the calling worker's reactor.
+struct Pipes {
+    child: tokio::process::Child,
+    stdin: tokio::net::unix::pipe::Sender,
+    stdout: tokio::net::unix::pipe::Receiver,
+}
+
 /// One composed connection.
 pub struct Connection {
     door: Arc<dyn FramerDoor>,
-    sock: Registered<TcpStream>,
+    wire: Wire,
     target: String,
     /// `SIDE_DIAL` | `SIDE_ACCEPT`.
     side: u32,
@@ -139,6 +159,8 @@ pub struct Connection {
     head_words: HeadWords,
     /// Writes the caller made before the framing began, in order: `(stream, bytes, end)`.
     early: Vec<(u64, Vec<u8>, bool, bool)>,
+    /// Every byte the socket has taken, for the life of the connection.
+    flushed: u64,
     open_deadline: Option<Instant>,
     framer_deadline: Option<Instant>,
     sleep: Option<(Instant, Pin<Box<tokio::time::Sleep>>)>,
@@ -274,6 +296,25 @@ impl Planned {
         self.located.secure
     }
 
+    /// The name the entry located for connection security, where it names one.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.located.name.as_deref()
+    }
+
+    /// The dial this plan was located for.
+    #[must_use]
+    pub fn dial(&self) -> &Dial {
+        &self.dial
+    }
+
+    /// This dial's first message and its head words, taken out (a reuse sends them on a pooled
+    /// connection instead of dialling).
+    #[must_use]
+    pub fn into_opening(self) -> (Option<Opening>, HeadWords) {
+        (self.dial.opening, self.dial.head_words)
+    }
+
     /// Dial exactly `addr` — the address judged for [`Self::authority`] — with the name the entry
     /// located offered to connection security: a non-blocking connect registered on the calling
     /// worker's reactor. The connection comes back at once, its open in flight.
@@ -293,7 +334,13 @@ impl Planned {
                 Failure::Refused("the target asks for connection security and none is set".into())
             })?;
             let mut config = (*base).clone();
-            config.alpn_protocols.clone_from(&dial.alpn);
+            // THE OFFER IS THE FRAMER'S: what its `locate` answered, most preferred first; the
+            // registration's stands only for an entry that answers none.
+            config.alpn_protocols = if located.offer.is_empty() {
+                dial.alpn.clone()
+            } else {
+                located.offer.clone()
+            };
             let host = located.name.clone().unwrap_or_else(|| {
                 located
                     .authority
@@ -312,15 +359,60 @@ impl Planned {
         } else {
             None
         };
-        let sock = reactor::register(socket::connect(addr).map_err(failed)?).map_err(failed)?;
+        let sock = Sock::Tcp(socket::connect(addr).map_err(failed)?);
+        let offered_name = tls.as_ref().and(located.name.clone());
+        // No handshake to agree a protocol in the clear: an entry that offers exactly one
+        // protocol speaks it by prior knowledge, and it is recorded as agreed
+        // (`LocateOut::alpn_written`).
+        let prior = match located.offer.as_slice() {
+            [one] if tls.is_none() => Some(one.clone()),
+            _ => None,
+        };
+        Connection::over_socket(door, sock, dial, tls, offered_name, prior)
+    }
+}
+
+impl Connection {
+    /// Dial the UNIX-DOMAIN socket at `path` (the target `unix:<path>`, [`socket::unix_path`]) as a
+    /// raw stream through `door`: no name, no address to judge, no connection security at the dial
+    /// (a later [`Connection::upgrade_secure`] secures it as it would a TCP stream). The caller
+    /// admits the target first (operator-infrastructure needs only); the endpoint check and the
+    /// entry's `locate`, which read hosts, are not asked. The connection comes back at once, its
+    /// open in flight.
+    ///
+    /// # Errors
+    ///
+    /// [`Failure::Refused`] when no socket listens at `path`; [`Failure::Failed`] off a worker or
+    /// when the socket cannot be made.
+    pub fn dial_unix(door: Arc<dyn FramerDoor>, dial: Dial, path: &str) -> Result<Self, Failure> {
+        let stream = socket::connect_unix(path).map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
+                Failure::Refused(format!("no socket listens at `{path}`: {e}"))
+            }
+            _ => failed(e),
+        })?;
+        Self::over_socket(door, Sock::Unix(stream), dial, None, None, None)
+    }
+
+    /// A dialled connection over `sock`, its connect in flight; `prior` is the protocol it speaks
+    /// by prior knowledge, recorded as agreed.
+    fn over_socket(
+        door: Arc<dyn FramerDoor>,
+        sock: Sock,
+        dial: Dial,
+        tls: Option<rustls::Connection>,
+        offered_name: Option<String>,
+        prior: Option<Vec<u8>>,
+    ) -> Result<Self, Failure> {
+        let sock = reactor::register(sock).map_err(failed)?;
         let established = Established {
-            offered_name: tls.as_ref().and(located.name.clone()),
-            agreed_protocol: None,
+            offered_name,
+            agreed_protocol: prior,
             claim: door.facts().claims.first().map(|c| (*c).to_owned()),
         };
-        Ok(Connection {
+        Ok(Self {
             door,
-            sock,
+            wire: Wire::Socket(sock),
             target: dial.target,
             side: SIDE_DIAL,
             tls,
@@ -332,6 +424,7 @@ impl Planned {
             opening: dial.opening,
             head_words: dial.head_words,
             early: Vec::new(),
+            flushed: 0,
             open_deadline: Some(Instant::now() + dial.open_timeout),
             framer_deadline: None,
             sleep: None,
@@ -342,6 +435,92 @@ impl Planned {
 }
 
 impl Connection {
+    /// SPAWN `program` and frame its pipes through `door` (a byte-stream framer): no shell, its
+    /// absolute path executed with its arguments and ONLY the environment it states, its input and
+    /// output the connection, its error output the host's; the child killed when the connection
+    /// closes or is dropped. The framing begins at once (`SIDE_DIAL`), with `dial`'s opening message and
+    /// head words; the dial's target names the program for the framer, never its environment.
+    ///
+    /// # Errors
+    ///
+    /// [`Failure::Refused`] for a command that is not an absolute path; [`Failure::Failed`] off a
+    /// worker or when the program cannot be spawned.
+    pub fn spawn(
+        door: Arc<dyn FramerDoor>,
+        program: &busbar_contract::conn::Program,
+        dial: Dial,
+    ) -> Result<Self, Failure> {
+        if !program.command.starts_with('/') {
+            return Err(Failure::Refused(
+                "a program is spawned by its absolute path only".into(),
+            ));
+        }
+        if tokio::runtime::Handle::try_current().is_err() {
+            return Err(Failure::Failed(reactor::NOT_ON_A_WORKER.into()));
+        }
+        // Two OS pipes: the child reads one and writes the other; the host keeps the far ends.
+        // The child's error output is the host's own (a spawned command inherits it).
+        let (child_reads, host_writes) = std::io::pipe().map_err(failed)?;
+        let (host_reads, child_writes) = std::io::pipe().map_err(failed)?;
+        // The command (and the child's ends of the pipes it holds) is dropped with this statement,
+        // so the child sees the end of its input when the host closes its end.
+        let child = tokio::process::Command::new(&program.command)
+            .args(&program.args)
+            .env_clear()
+            .envs(program.env.iter().map(|(k, v)| (k, v)))
+            .stdin(child_reads)
+            .stdout(child_writes)
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(failed)?;
+        let stdin =
+            tokio::net::unix::pipe::Sender::from_owned_fd(host_writes.into()).map_err(failed)?;
+        let stdout =
+            tokio::net::unix::pipe::Receiver::from_owned_fd(host_reads.into()).map_err(failed)?;
+        let established = Established {
+            offered_name: None,
+            agreed_protocol: None,
+            claim: door.facts().claims.first().map(|c| (*c).to_owned()),
+        };
+        let mut conn = Self {
+            door,
+            wire: Wire::Program(Box::new(Pipes {
+                child,
+                stdin,
+                stdout,
+            })),
+            target: dial.target,
+            side: SIDE_DIAL,
+            tls: None,
+            upgraded: false,
+            framing: None,
+            established,
+            phase: Phase::Connecting,
+            out: VecDeque::new(),
+            inbox: VecDeque::new(),
+            opening: dial.opening,
+            head_words: dial.head_words,
+            early: Vec::new(),
+            flushed: 0,
+            open_deadline: None,
+            framer_deadline: None,
+            sleep: None,
+            _slot: None,
+        };
+        conn.begin()?;
+        Ok(conn)
+    }
+
+    /// The process id of the program a spawned connection runs; `None` for a socket, or once the
+    /// child was reaped.
+    #[must_use]
+    pub fn program_id(&self) -> Option<u32> {
+        match &self.wire {
+            Wire::Program(p) => p.child.id(),
+            Wire::Socket(_) => None,
+        }
+    }
+
     /// Take `stream`, accepted by a listener, on the calling worker's reactor: server TLS first when
     /// `accept.tls` is set (bounded by the handshake timeout, the protocol agreed off
     /// `accept.alpn`), then the framing begun on `SIDE_ACCEPT`. `slot` is the listener's hold,
@@ -369,7 +548,7 @@ impl Connection {
                 ))
             }
         };
-        let sock = reactor::register(stream).map_err(failed)?;
+        let sock = reactor::register(Sock::Tcp(stream)).map_err(failed)?;
         let established = Established {
             offered_name: None,
             agreed_protocol: None,
@@ -377,7 +556,7 @@ impl Connection {
         };
         let mut conn = Self {
             door,
-            sock,
+            wire: Wire::Socket(sock),
             target: String::new(),
             side: SIDE_ACCEPT,
             tls,
@@ -389,6 +568,7 @@ impl Connection {
             opening: None,
             head_words: HeadWords::default(),
             early: Vec::new(),
+            flushed: 0,
             open_deadline: Some(Instant::now() + accept.handshake_timeout),
             framer_deadline: None,
             sleep: None,
@@ -405,6 +585,121 @@ impl Connection {
     #[must_use]
     pub fn is_open(&self) -> bool {
         matches!(self.phase, Phase::Open)
+    }
+
+    /// Whether this connection was dialled (its exchanges are the caller's requests), not accepted.
+    #[must_use]
+    pub fn dialled(&self) -> bool {
+        self.side == SIDE_DIAL
+    }
+
+    /// Whether the connection has neither ended nor failed.
+    #[must_use]
+    pub fn live(&self) -> bool {
+        !matches!(self.phase, Phase::Ended | Phase::Failed(_))
+    }
+
+    /// Whether the connection carries CONCURRENT exchanges, one stream each: the protocol agreed
+    /// (in the handshake, or by prior knowledge) is `h2` (RFC 9113; ARCHITECT ruling Q-L18-MUX
+    /// 2026-10-03: concurrent requests to one origin share an h2 connection, h1 stays one request
+    /// per connection).
+    #[must_use]
+    pub fn multiplexes(&self) -> bool {
+        self.dialled() && self.live() && self.established.agreed_protocol.as_deref() == Some(b"h2")
+    }
+
+    /// Every byte the socket has taken so far.
+    #[must_use]
+    pub fn flushed(&self) -> u64 {
+        self.flushed
+    }
+
+    /// Whether the connection can carry another exchange now: dialled, framed and open, with
+    /// nothing left unread and nothing held back for the socket.
+    #[must_use]
+    pub fn reusable(&self) -> bool {
+        self.dialled()
+            && self.framing.is_some()
+            && matches!(self.phase, Phase::Open)
+            && self.inbox.is_empty()
+            && self.early.is_empty()
+    }
+
+    /// Take in whatever the far end sent while the connection sat idle (its goodbye, a closed
+    /// socket, a settings change), without waiting, and answer whether it can still carry an
+    /// exchange.
+    pub fn fresh(&mut self, cx: &mut Context<'_>) -> bool {
+        loop {
+            match self.drive(cx) {
+                Ok(true) if self.inbox.is_empty() => {}
+                Ok(_) => return self.reusable(),
+                Err(f) => {
+                    self.phase = Phase::Failed(f);
+                    return false;
+                }
+            }
+        }
+    }
+
+    /// Open a NEW exchange on this dialled connection, on `stream`: `opening`, encoded with its
+    /// head words by the entry, emitted now if the framing has begun and with the early writes
+    /// once it does. The framer speaks whatever the connection agreed (on HTTP/2, a new stream of
+    /// the same connection).
+    ///
+    /// # Errors
+    ///
+    /// The connection ended or failed, or the entry refused the message.
+    pub fn open_exchange(
+        &mut self,
+        stream: u64,
+        opening: Option<Opening>,
+        head_words: HeadWords,
+        cx: &mut Context<'_>,
+    ) -> Result<(), Failure> {
+        match &self.phase {
+            Phase::Failed(f) => return Err(f.clone()),
+            Phase::Ended => return Err(Failure::Closed),
+            _ => {}
+        }
+        let Some(message) = self.encode_opening(opening, head_words)? else {
+            return Ok(());
+        };
+        match self.phase {
+            Phase::Open => {
+                let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
+                let y = framing
+                    .emit(stream, &message, true, false)
+                    .map_err(failed)?;
+                self.absorb(y)?;
+            }
+            _ => self.early.push((stream, message, true, false)),
+        }
+        if let Err(f) = self.drive(cx) {
+            self.phase = Phase::Failed(f.clone());
+            return Err(f);
+        }
+        Ok(())
+    }
+
+    /// `opening` as the entry's wire message with its head words; `None` = nothing to send.
+    fn encode_opening(
+        &self,
+        opening: Option<Opening>,
+        (method, target): HeadWords,
+    ) -> Result<Option<Vec<u8>>, Failure> {
+        let Some((fields, body)) = opening else {
+            return Ok(None);
+        };
+        if fields.is_empty() && body.is_empty() && method.is_empty() && target.is_empty() {
+            return Ok(None);
+        }
+        let fields: Vec<(&str, &[u8])> = fields
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_slice()))
+            .collect();
+        framer::encode_head(self.door.as_ref(), &method, &target, &fields, &body)
+            .map(Some)
+            .map_err(|e| Failure::Refused(e.to_string()))
     }
 }
 
@@ -631,7 +926,12 @@ impl Connection {
     fn drive(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
         let mut moved = false;
         if matches!(self.phase, Phase::Connecting) {
-            match socket::poll_connected(&self.sock, cx) {
+            let connected = match &self.wire {
+                Wire::Socket(sock) => socket::poll_connected(sock, cx),
+                // A spawned program's pipes are open from the spawn.
+                Wire::Program(_) => Poll::Ready(Ok(())),
+            };
+            match connected {
                 Poll::Ready(Ok(())) => {
                     moved = true;
                     if self.tls.is_some() {
@@ -658,10 +958,17 @@ impl Connection {
         let mut moved = false;
         while !self.out.is_empty() {
             let (a, _) = self.out.as_slices();
-            match self.sock.poll_io(Direction::Write, cx, |mut s| s.write(a)) {
+            let wrote = match &mut self.wire {
+                Wire::Socket(sock) => sock.poll_io(Direction::Write, cx, |mut s| s.write(a)),
+                Wire::Program(p) => {
+                    tokio::io::AsyncWrite::poll_write(Pin::new(&mut p.stdin), cx, a)
+                }
+            };
+            match wrote {
                 Poll::Ready(Ok(0)) => return Err(Failure::Closed),
                 Poll::Ready(Ok(n)) => {
                     self.out.drain(..n);
+                    self.flushed += n as u64;
                     moved = true;
                 }
                 Poll::Ready(Err(e)) => return Err(failed(e)),
@@ -674,10 +981,15 @@ impl Connection {
     /// Read what the socket has, and hand it on.
     fn read(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
         let mut buf = [0_u8; READ_CHUNK];
-        match self
-            .sock
-            .poll_io(Direction::Read, cx, |mut s| s.read(&mut buf))
-        {
+        let read = match &mut self.wire {
+            Wire::Socket(sock) => sock.poll_io(Direction::Read, cx, |mut s| s.read(&mut buf)),
+            Wire::Program(p) => {
+                let mut into = tokio::io::ReadBuf::new(&mut buf);
+                tokio::io::AsyncRead::poll_read(Pin::new(&mut p.stdout), cx, &mut into)
+                    .map_ok(|()| into.filled().len())
+            }
+        };
+        match read {
             Poll::Ready(Ok(0)) => {
                 self.feed(&[], true)?;
                 Ok(true)
@@ -753,26 +1065,24 @@ impl Connection {
         self.framing = Some(framing);
         self.phase = Phase::Open;
         self.absorb(y)?;
-        if let Some((fields, body)) = self.opening.take() {
-            let (method, target) = std::mem::take(&mut self.head_words);
-            if !fields.is_empty() || !body.is_empty() || !method.is_empty() || !target.is_empty() {
-                let fields: Vec<(&str, &[u8])> = fields
-                    .iter()
-                    .map(|(n, v)| (n.as_str(), v.as_slice()))
-                    .collect();
-                let message =
-                    framer::encode_head(self.door.as_ref(), &method, &target, &fields, &body)
-                        .map_err(|e| Failure::Refused(e.to_string()))?;
-                let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
-                let y = framing
-                    .emit(EXCHANGE_STREAM, &message, true, false)
-                    .map_err(failed)?;
-                self.absorb(y)?;
-            }
-        }
+        self.send_opening()?;
         for (stream, bytes, end, text) in std::mem::take(&mut self.early) {
             let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
             let y = framing.emit(stream, &bytes, end, text).map_err(failed)?;
+            self.absorb(y)?;
+        }
+        Ok(())
+    }
+
+    /// Send the dial's first message, if one is held, on [`EXCHANGE_STREAM`].
+    fn send_opening(&mut self) -> Result<(), Failure> {
+        let opening = self.opening.take();
+        let words = std::mem::take(&mut self.head_words);
+        if let Some(message) = self.encode_opening(opening, words)? {
+            let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
+            let y = framing
+                .emit(EXCHANGE_STREAM, &message, true, false)
+                .map_err(failed)?;
             self.absorb(y)?;
         }
         Ok(())
@@ -885,6 +1195,10 @@ impl Connection {
         }
         let waker = std::task::Waker::noop();
         let _ = self.flush(&mut Context::from_waker(waker));
+        // A program is the connection's own: it ends with it.
+        if let Wire::Program(p) = &mut self.wire {
+            let _ = p.child.start_kill();
+        }
     }
 }
 

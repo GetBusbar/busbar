@@ -146,6 +146,7 @@ fn load_open(
                 ptr: std::ptr::null(),
                 len: 0,
             },
+            owned: busbar_contract::abi::mechanism::call::Blob::ABSENT,
         },
         PlaneOpenOut {
             open: OpenOut {
@@ -206,7 +207,8 @@ fn stats(plugin: &Plugin<Plane>) -> [u64; cases::stat::COUNT] {
                 len: 0,
             },
             route: 0,
-            _route_reserved: [0; 7],
+            route_flags: 0,
+            _route_reserved: [0; 6],
         },
     );
     assert_eq!(
@@ -376,7 +378,8 @@ fn zero_arrive_out() -> ArriveOut {
             len: 0,
         },
         route: 0,
-        _route_reserved: [0; 7],
+        route_flags: 0,
+        _route_reserved: [0; 6],
     }
 }
 
@@ -742,6 +745,8 @@ fn zero_piece_out() -> OnPieceOut {
         arena_needed: 0,
         verb: span,
         target: span,
+        need: 0,
+        _need_reserved: 0,
     }
 }
 

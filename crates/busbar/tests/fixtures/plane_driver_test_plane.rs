@@ -7,7 +7,10 @@
 //! It exports the one door over the plane table and defines no ABI shape of its own. What it does
 //! with a unit is chosen by the member name the kernel hands its ATTEMPT piece (`ok`, `retry`,
 //! `retry-late`, `pend`, `hang`, `wedge`, `fault`, `cancel-fault`, `short`, `short-twice`), and `arrive`
-//! reacts to the request target (`/short`, `/short-twice`, `/refuse`, `/stats`, `/clock`). Its far-end
+//! reacts to the request target (`/short`, `/short-twice`, `/refuse`, `/stats`, `/clock`). A unit
+//! on `/call/local` answers its caller itself (an echo of the body); a unit on `/call/nest:<target>`
+//! runs `POST <target>` as a NESTED unit through the host's `unit.nest` and answers its caller
+//! `nested:<status>:<the child's body>` (`nest-refused:<reason>` when the host refused it). Its far-end
 //! answer echoes the far end's bytes, in pieces of at most `reply_cap` (`more = 1` for the rest),
 //! with cumulative far-end-reported units = the bytes emitted so far.
 //!
@@ -40,7 +43,8 @@ use busbar_contract::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, IoIn, Need, DIRECTION_OUTBOUND,
 };
 use busbar_contract::abi::host::service::{
-    op as service_op, ClockNowIn, ClockReading, HostSlots, ServiceHead, ServiceOut,
+    op as service_op, ClockNowIn, ClockReading, HostSlots, ItemSpan, ServiceBufs, ServiceHead,
+    ServiceOut, UnitNestIn,
 };
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, OutHead, Outcome, RawOutcome, Span, BLOB_ABSENT, FLAG_RESUME,
@@ -275,6 +279,10 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     trust_keys_len: 0,
     refusal_statuses: &STATUSES.0 as *const RefusalStatus,
     refusal_statuses_len: 3,
+    caller_credential_refusal: NO_STR,
+    admin_routes: std::ptr::null(),
+    admin_routes_len: 0,
+    admin_openapi: NO_BLOB,
 });
 
 static FAMILIES: Shared<[MetricFamily; 1]> = Shared([MetricFamily {
@@ -549,6 +557,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             openapi: NO_BLOB,
             audience: NO_STR,
             resource_metadata: NO_STR,
+            resource_facts: busbar_contract::abi::mechanism::call::Blob::ABSENT,
         });
         let me = Box::new(Inst {
             wake,
@@ -742,6 +751,15 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 me.tick_every_ms.store(ms, Ordering::SeqCst);
                 vec![estimate(0, ms)]
             }
+            t if t == b"/call/local" || t.starts_with(b"/call/nest:") => {
+                // A local answer, or a nesting unit: each routes directly over the section's `m`.
+                o.route = ROUTE_DIRECT;
+                o.pool = AbiStr {
+                    ptr: b"m".as_ptr(),
+                    len: 1,
+                };
+                vec![estimate(0, i.body.len as u64)]
+            }
             b"/open" => {
                 // The open claim routes directly over the section's `m`.
                 o.route = ROUTE_DIRECT;
@@ -840,11 +858,29 @@ extern "C" fn on_piece(
                 return say(out, Outcome::Ready);
             }
             FROM_CALLER => {
-                u.body.extend_from_slice(piece);
+                // A resumed crossing re-reads the piece it pended on: the body already holds it.
+                if !resume {
+                    u.body.extend_from_slice(piece);
+                }
                 if i.flags & PIECE_LAST == 0 {
                     return say(out, Outcome::Ready);
                 }
-                if head.as_slice() == b"/local" {
+                if let Some(child) = head.strip_prefix(b"/call/nest:") {
+                    // A NESTED UNIT through the host's `unit.nest`, on the unit's own ticket; a
+                    // PENDING answer pends this crossing, and the resumed crossing re-issues the
+                    // same handle and reads the child's stored reply.
+                    let reply = match nest(me, t, child, &u.body) {
+                        None => return say(out, Outcome::Pending),
+                        Some(reply) => reply,
+                    };
+                    o.reply_status = 200;
+                    let n = reply.len().min(i.reply_cap);
+                    std::ptr::copy_nonoverlapping(reply.as_ptr(), i.reply_buf, n);
+                    o.emitted = n as u64;
+                    o.flags = EMIT_DONE;
+                    return say(out, Outcome::Ready);
+                }
+                if head.as_slice() == b"/local" || head.as_slice() == b"/call/local" {
                     // A LOCAL ANSWER: the plane answers the caller itself (an echo of the body),
                     // with nothing for the far end.
                     o.reply_status = 200;
@@ -960,6 +996,67 @@ extern "C" fn on_piece(
             o.flags |= PIECE_OUT_TEXT;
         }
         say(out, Outcome::Ready)
+    }
+}
+
+/// `POST <child>` as a nested unit of the unit on ticket `t`, through the host's `unit.nest`:
+/// `None` while it pends; then `nested:<status>:<body>`, or `nest-refused:<reason>`.
+unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Option<Vec<u8>> {
+    me.count(Stat::HostCalls);
+    let Some(slot) = me.services.as_ref().and_then(|table| table.unit_nest) else {
+        return Some(b"nest-refused:unserved".to_vec());
+    };
+    let mut buf = vec![0u8; 1 << 16];
+    let blank = ItemSpan {
+        key: Span { offset: 0, len: 0 },
+        value: Span { offset: 0, len: 0 },
+    };
+    let mut spans = [blank; 32];
+    let call = UnitNestIn {
+        head: ServiceHead {
+            size: std::mem::size_of::<UnitNestIn>() as u32,
+            op: service_op::UNIT_NEST,
+            handle: CompletionHandle {
+                ticket: t,
+                seq: 0,
+                _reserved: 0,
+            },
+        },
+        verb: s(b"POST"),
+        target: AbiStr {
+            ptr: child.as_ptr(),
+            len: child.len(),
+        },
+        body: Blob {
+            ptr: body.as_ptr(),
+            len: body.len(),
+            fmt: 0,
+            flags: 0,
+        },
+        into: ServiceBufs {
+            buf: buf.as_mut_ptr(),
+            cap: buf.len(),
+            spans: spans.as_mut_ptr(),
+            spans_cap: spans.len(),
+        },
+    };
+    let mut answer = std::mem::zeroed::<ServiceOut>();
+    match slot(me.ctx, (&call as *const UnitNestIn).cast(), &mut answer).outcome() {
+        Outcome::Pending => None,
+        Outcome::Ready => {
+            let first = spans[0].value;
+            let at = first.offset as usize;
+            let child_body = &buf[at..at + first.len as usize];
+            Some([format!("nested:{}:", answer.value).as_bytes(), child_body].concat())
+        }
+        _ => {
+            let why = if answer.error.ptr.is_null() {
+                &[][..]
+            } else {
+                std::slice::from_raw_parts(answer.error.ptr, answer.error.len)
+            };
+            Some([b"nest-refused:".as_slice(), why].concat())
+        }
     }
 }
 
@@ -1269,7 +1366,7 @@ unsafe fn establish_and_read(me: &Inst, ticket: Ticket) -> bool {
     let mut est = EstablishIn {
         head: std::mem::zeroed(),
         need: 0,
-        _reserved: 0,
+        timeout_ms: 0,
         target: s(b"far"),
         within: NO_STR,
     };

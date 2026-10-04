@@ -19,9 +19,8 @@ use busbar_contract::abi::mechanism::call::{Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket as PlaneTicket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, ProjectIn, ProjectOut, RefusalIn, RefusalOut,
-    ServeIn, ServeOut,
-    UnitCount, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END, FROM_FAR_END, FROM_KERNEL, TAIL_PROBES,
-    UNITS_REPORTED,
+    ServeIn, ServeOut, UnitCount, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END, FROM_FAR_END,
+    FROM_KERNEL, TAIL_PROBES, UNITS_REPORTED,
 };
 use busbar_contract::caps::OpClassId;
 use busbar_contract::plane_calls::{

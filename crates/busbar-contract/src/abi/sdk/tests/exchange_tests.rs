@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use super::*;
 use crate::abi::host::conn::connector::{
-    service, ConnectorSlots, IoIn, ReplyIn, RequestIn, SERVICES,
+    service, ConnectorSlots, FactsIn, IoIn, ReplyIn, RequestIn, StreamFacts, SERVICES,
 };
 use crate::abi::host::service::{ServiceHead, ServiceOut};
 use crate::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
@@ -176,6 +176,52 @@ slot!(write_request, service::WRITE_REQUEST);
 slot!(read_reply, service::READ_REPLY);
 slot!(close, service::CLOSE);
 
+/// The far end's key pin the scripted host's `FACTS` reports.
+const OBSERVED_PIN: &str = "c2NyaXB0ZWQga2V5";
+
+/// `FACTS`, as a connector host answers it on a stream already dialled: READY at once with the
+/// facts written on a handle's first issue; a re-issue answers the stored outcome and writes
+/// nothing (the replay rule).
+extern "C" fn facts(_: HostCtx, i: *const c_void, o: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: a `FactsIn`.
+    let io = unsafe { *i.cast::<FactsIn>() };
+    assert_eq!(io.head.op, service::FACTS);
+    let seq = io.head.handle.seq;
+    let mut g = SCRIPT.lock().unwrap();
+    let s = g.as_mut().expect("a script");
+    if s.stored.contains_key(&seq) {
+        return answer(o, Outcome::Ready, 0, 0);
+    }
+    *s.runs.entry(seq).or_default() += 1;
+    s.stored.insert(seq, (Outcome::Ready, 0, 0));
+    // SAFETY: the SDK's facts slot, live for the call.
+    unsafe {
+        io.facts.write(StreamFacts {
+            size: std::mem::size_of::<StreamFacts>() as u32,
+            secure: 1,
+            endpoint: AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            agreed_protocol: AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            peer_cert_hash: AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            peer_key_pin: AbiStr {
+                ptr: OBSERVED_PIN.as_ptr(),
+                len: OBSERVED_PIN.len(),
+            },
+            client_identity: 1,
+            _reserved: 0,
+        });
+    }
+    answer(o, Outcome::Ready, 0, 0)
+}
+
 static SLOTS: ConnectorSlots = ConnectorSlots {
     size: std::mem::size_of::<ConnectorSlots>() as u32,
     slots: SERVICES,
@@ -185,7 +231,7 @@ static SLOTS: ConnectorSlots = ConnectorSlots {
     read: None,
     write: Some(write),
     upgrade_secure: None,
-    facts: None,
+    facts: Some(facts),
     checkout: None,
     checkin: None,
     close: Some(close),
@@ -220,6 +266,8 @@ struct Run<T> {
     entries: u32,
     runs: HashMap<u32, u32>,
     framed: Framed,
+    /// The exchange's state once it completed.
+    state: Exchange,
 }
 
 /// Run the op to completion under `reply`: a fresh connector each entry, the same parked state.
@@ -255,6 +303,7 @@ fn run<T>(
         entries,
         runs: s.runs,
         framed: s.framed,
+        state,
     }
 }
 
@@ -457,4 +506,39 @@ fn a_transport_that_never_acks_is_a_conformance_failure() {
         "{:?}",
         r.answered
     );
+}
+
+/// THE TRANSPORT PIN, PLUGIN SIDE (the transport pin, ARCHITECT 2026-10-03): an exchange that asks reads its stream's facts
+/// once the reply ended, before the close — the far end's key and whether busbar presented its
+/// client identity — and keeps them across the op's re-entries, whose replayed `FACTS` writes
+/// nothing; no service runs twice. An exchange that does not ask makes no `FACTS` at all.
+#[test]
+fn an_observing_exchange_reads_its_streams_facts_before_the_close() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        http_reply(),
+        false,
+        Exchange::request(post()).expect("a request").observing(),
+        None,
+        |c, st| exchange(c, st, 0, Some("https://far/hook")),
+    );
+    assert_eq!(r.answered.expect("the exchange completes").status, 200);
+    let observed = r.state.observed().expect("the facts were read");
+    assert_eq!(observed.peer_key_pin.as_deref(), Some(OBSERVED_PIN));
+    assert!(observed.client_identity && observed.secure);
+    // establish, head, body, end, four reads, facts, close: ten services, each run once.
+    assert_eq!(r.runs.len(), 10);
+    assert!(r.runs.values().all(|&n| n == 1), "{:?}", r.runs);
+
+    let plain = run(
+        http_reply(),
+        false,
+        Exchange::request(post()).expect("a request"),
+        None,
+        |c, st| exchange(c, st, 0, Some("https://far/hook")),
+    );
+    assert!(plain.state.observed().is_none());
+    assert_eq!(plain.runs.len(), 9, "no facts asked, none made");
 }

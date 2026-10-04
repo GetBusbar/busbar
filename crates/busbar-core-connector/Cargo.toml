@@ -62,8 +62,9 @@ crc32fast = { workspace = true }
 # OS socket (BUSBAR-1.6.0.md THE DESIGN, §5). `tokio` is asked for its reactor registration
 # (`net`: `AsyncFd`) and its timer (`time`) on the calling worker's own runtime — no runtime and no
 # thread of this crate's. `socket2` makes the non-blocking connect and the per-acceptor listener
-# (address and port reuse); `libc` names the in-progress connect.
-tokio = { workspace = true, features = ["net", "time", "rt"] }
+# (address and port reuse); `libc` names the in-progress connect. `process`: a need whose target is a
+# PROGRAM is the child's pipes, spawned and killed by the connector (its reactor carries them).
+tokio = { workspace = true, features = ["net", "time", "rt", "process"] }
 libc = { workspace = true }
 
 

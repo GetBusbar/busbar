@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use busbar_contract::abi::host::service::{SECRET_LIVE, SECRET_NOT_LIVE};
 use busbar_contract::services::{
-    Caller, CredentialRead, HostServices, Later, Ran, Reading, RecordsList, Stored,
+    Caller, CredentialRead, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
 };
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
 use busbar_kernel::test_support::TestApp;
@@ -81,7 +81,7 @@ impl HostServices for Inner {
             mono_ns: 22,
         }
     }
-    fn dest_judge(&self, _: &str, _: u32, _: bool, _: Option<Later>) -> Ran {
+    fn dest_judge(&self, _: &str, _: u32, _: u32, _: Option<Later>) -> Ran {
         Ran::Now(Stored::ready(1))
     }
     fn records_get(&self, _: &Caller, _: &str, _: &[u8], _: Later) -> Ran {
@@ -113,6 +113,21 @@ impl HostServices for Inner {
     }
     fn records_secret(&self, _: &str, _: &str, _: Later) -> Ran {
         panic!("the credential read is the source's, never the inner services'")
+    }
+    fn unit_nest(&self, _: &Caller, _: Option<u64>, _: NestAsk, _: Later) -> Ran {
+        Ran::Now(Stored::ready(12))
+    }
+    fn work_open(&self, _: &Caller, _: Option<u64>, _: &str, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::ready(13))
+    }
+    fn work_find(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::ready(14))
+    }
+    fn work_settle(&self, _: &Caller, _: u64, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::ready(15))
+    }
+    fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
+        Ran::Now(Stored::ready(16))
     }
 }
 
@@ -149,7 +164,7 @@ fn the_services_delegate_and_serve_the_read() {
         limit: 0,
     };
     let values: Vec<u64> = [
-        now(s.dest_judge("x", 0, false, None)),
+        now(s.dest_judge("x", 0, 0, None)),
         now(s.records_get(&caller, "k", b"key", Box::new(|_| {}))),
         now(s.records_list(&caller, list, Box::new(|_| {}))),
         now(s.records_claim(&caller, "k", b"key", 1, Box::new(|_| {}))),

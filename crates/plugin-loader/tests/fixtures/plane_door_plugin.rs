@@ -104,6 +104,15 @@ const TAIL: &PlaneTail = &PlaneTail {
     trust_keys_len: 0,
     refusal_statuses: std::ptr::null(),
     refusal_statuses_len: 0,
+    caller_credential_refusal: NONE,
+    admin_routes: std::ptr::null(),
+    admin_routes_len: 0,
+    admin_openapi: busbar_contract::abi::mechanism::call::Blob {
+        ptr: std::ptr::null(),
+        len: 0,
+        fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
+        flags: 0,
+    },
 };
 
 /// Every generation's claim.

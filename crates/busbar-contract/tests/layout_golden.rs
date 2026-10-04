@@ -1597,7 +1597,7 @@ fn compute_layout() -> String {
     record!(
         s,
         tkind::BeginIn,
-        [head, side, _reserved, target, facts, sink]
+        [head, side, _reserved, target, facts, sink, fields, fields_len]
     );
     record!(
         s,
@@ -1627,7 +1627,7 @@ fn compute_layout() -> String {
     record!(
         s,
         tkind::RefuseIn,
-        [head, framing, stream, has_stream, _reserved, bytes, len, sink]
+        [head, framing, stream, has_stream, _reserved, bytes, len, sink, status, _reserved2]
     );
     record!(s, tkind::FinishIn, [head, framing, reason, _reserved, sink]);
     record!(s, tkind::FramingIn, [head, framing, sink]);
@@ -1642,7 +1642,7 @@ fn compute_layout() -> String {
         pkind::Ops,
         [head, arrive, on_piece, refusal, serve, hydrate, start, project]
     );
-    record!(s, pkind::DialectAuth, [dialect, _reserved, style]);
+    record!(s, pkind::DialectAuth, [dialect, _reserved, style, params]);
     record!(s, pkind::OpClass, [op, name]);
     record!(s, pkind::BillableClass, [class, family]);
     record!(s, pkind::RouteCost, [class, _reserved, weight]);
@@ -1698,7 +1698,11 @@ fn compute_layout() -> String {
             trust_keys,
             trust_keys_len,
             refusal_statuses,
-            refusal_statuses_len
+            refusal_statuses_len,
+            caller_credential_refusal,
+            admin_routes,
+            admin_routes_len,
+            admin_openapi
         ]
     );
     record!(
@@ -1724,10 +1728,11 @@ fn compute_layout() -> String {
             admin_routes_len,
             openapi,
             audience,
-            resource_metadata
+            resource_metadata,
+            resource_facts
         ]
     );
-    record!(s, pkind::PlaneOpenIn, [open, public_url]);
+    record!(s, pkind::PlaneOpenIn, [open, public_url, owned]);
     record!(s, pkind::PlaneOpenOut, [open, snapshot]);
     record!(s, pkind::PlaneRefreshOut, [head, snapshot]);
     record!(s, pkind::UnitCount, [class, source, amount]);
@@ -1758,6 +1763,7 @@ fn compute_layout() -> String {
             cancels,
             pool,
             route,
+            route_flags,
             _route_reserved
         ]
     );
@@ -1815,7 +1821,9 @@ fn compute_layout() -> String {
             arena_written,
             arena_needed,
             verb,
-            target
+            target,
+            need,
+            _need_reserved
         ]
     );
     record!(
@@ -1946,16 +1954,29 @@ fn compute_layout() -> String {
     record!(
         s,
         hconn::EstablishIn,
-        [head, need, _reserved, target, within]
+        [head, need, timeout_ms, target, within]
     );
     record!(s, hconn::StreamIn, [head, stream]);
     record!(s, hconn::IoIn, [head, stream, buf, len]);
-    record!(s, hconn::UpgradeIn, [head, stream, offered_name, trust]);
+    record!(
+        s,
+        hconn::UpgradeIn,
+        [head, stream, offered_name, trust, flags, _reserved]
+    );
     record!(s, hconn::FactsIn, [head, stream, facts]);
     record!(
         s,
         hconn::StreamFacts,
-        [size, secure, endpoint, agreed_protocol, peer_cert_hash]
+        [
+            size,
+            secure,
+            endpoint,
+            agreed_protocol,
+            peer_cert_hash,
+            peer_key_pin,
+            client_identity,
+            _reserved
+        ]
     );
     record!(s, hconn::CheckoutIn, [head, need, _reserved]);
     record!(s, hconn::CheckinIn, [head, stream, disposition, _reserved]);
@@ -2031,7 +2052,7 @@ fn compute_layout() -> String {
     );
     record!(s, hsvc::SignIn, [head, data, into]);
     record!(s, hsvc::UnitNestIn, [head, verb, target, body, into]);
-    record!(s, hsvc::WorkOpenIn, [head, kind, record]);
+    record!(s, hsvc::WorkOpenIn, [head, kind, record, into]);
     record!(s, hsvc::WorkFindIn, [head, reference, into]);
     record!(s, hsvc::WorkSettleIn, [head, handle, record]);
     record!(s, hsvc::WorkResumeIn, [head, handle, into]);
@@ -2106,7 +2127,8 @@ fn compute_layout() -> String {
             max_tokens,
             flags,
             signals,
-            signals_len
+            signals_len,
+            session
         ]
     );
     record!(

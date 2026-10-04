@@ -163,6 +163,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // The pin and `verify_ttl:` are the kernel's to parse and judge; declared here by key.
         trust_keys: config::TRUST_KEYS,
         served_op_classes: &[],
+        caller_credential_refusal: None,
     };
 
 /// [`stdio_serve::serve_stdio`], boxed to the stdio-serve axis's shape ([`crate::linked`]).

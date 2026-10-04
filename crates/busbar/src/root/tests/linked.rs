@@ -88,6 +88,7 @@ fn native(key: &'static str) -> &'static [PlaneDecl] {
         required_config_sections: &[],
         trust_keys: &[],
         served_op_classes: &[],
+        caller_credential_refusal: None,
     };
     let hooks = PlaneHooks {
         wire_format_names: || &[busbar_kernel::plane::WIRE_HTTP_JSON],
@@ -290,6 +291,7 @@ fn stated(d: &'static hot::PlaneDecl) -> PlaneDeclaration {
             })
             .collect::<Vec<_>>()
             .leak(),
+        caller_credential_refusal: None,
     }
 }
 

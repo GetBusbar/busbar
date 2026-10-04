@@ -16,7 +16,9 @@
 use std::sync::{Arc, OnceLock};
 
 use busbar_contract::abi::mechanism::door::DoorFn;
+use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::framer::FramerDoor;
+use busbar_core_connector::pool::PoolPosture;
 use busbar_core_connector::registry::Entry;
 use busbar_core_connector::{process, Connector};
 use busbar_kernel::config::{Destinations, RootCfg};
@@ -51,19 +53,25 @@ pub fn install(connector: Arc<Connector>) -> Result<&'static Arc<Connector>, Arc
 }
 
 /// The framer entries of `doors` (key, door), each loaded and opened on the process's one
-/// dispatcher. A door that will not load or open is named in the refusal.
+/// dispatcher with the deployment's value of every setting it declares (`settings`: the h2c
+/// prior-knowledge and http1-only keys, the request timeout and body cap, at their 1.5.5 paths). A
+/// door that will not load or open is named in the refusal.
 ///
 /// # Errors
 ///
 /// The first door that would not load or open.
-pub fn entries(doors: &[(&str, DoorFn)]) -> Result<Vec<Entry>, String> {
+pub fn entries(
+    doors: &[(&str, DoorFn)],
+    settings: &TransportSettings,
+) -> Result<Vec<Entry>, String> {
     doors
         .iter()
         .map(|(key, door)| {
             let plugin = LinkedRow::of(*door)
                 .and_then(|row| load_linked::<TransportKind>(&row, crate::root::doors::bind()))
                 .map_err(|e| format!("transport `{key}`: {e}"))?;
-            let door: Arc<dyn FramerDoor> = Arc::new(crate::root::doors::Dispatched::open(plugin)?);
+            let door: Arc<dyn FramerDoor> =
+                Arc::new(crate::root::doors::Dispatched::open(plugin, settings)?);
             Ok(Entry {
                 door,
                 alpn: Vec::new(),
@@ -100,27 +108,44 @@ pub fn install_egress_trust(dest: Arc<dyn DestJudge>) {
     install_egress_trust_host(Arc::new(GuardedEgressTrust(dest)));
 }
 
-/// THE BOOT PATH'S STEP: build the one Connector over every linked transport door, its dials
-/// judged by `dest` (the deployment's one guard) with the node's own ports read off its
-/// `listens`, and install it. A connector that cannot be built refuses the boot, as an unsealed
-/// composition does.
+/// The connector's pool posture off the deployment's transport settings: 1.5.5's
+/// `limits.pool_max_idle_per_host` and `limits.pool_idle_timeout_secs`.
+#[must_use]
+pub fn pool_posture(settings: &TransportSettings) -> PoolPosture {
+    PoolPosture {
+        max_idle_per_host: settings.pool_max_idle_per_host,
+        idle_timeout: std::time::Duration::from_secs(settings.pool_idle_timeout_secs),
+    }
+}
+
+/// THE BOOT PATH'S STEP: build the one Connector over every linked transport door, each opened
+/// with the deployment's `settings`, its dials judged by `dest` (the deployment's one guard) with
+/// the node's own ports read off its `listens`, its dialled connections pooled per worker under
+/// the same settings' pool posture, and install it. A connector that cannot be built refuses the
+/// boot, as an unsealed composition does.
 pub fn boot(
     doors: &[(&str, DoorFn)],
+    settings: &TransportSettings,
     dest: Arc<dyn DestJudge>,
     listens: &[&str],
 ) -> &'static Arc<Connector> {
-    // The process's one runtime is the reactor a socket a plugin opens from a dispatcher worker
-    // registers on (`busbar_core_connector::io`).
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        busbar_core_connector::io::install_process_reactor(handle);
-    }
+    // The reactor a socket a plugin opens from a dispatcher worker registers on
+    // (`busbar_core_connector::io`): the connector's own I/O thread, never a runtime a synchronous
+    // caller may block. The control runtime's thread waits, synchronously, on governance-store ops
+    // (the boot's store open, admin, the budget flusher: the bridge's TRANSITIONAL wait, ARCHITECT
+    // ruling 2026-10-03 on Q-L16-1); a remote store's socket on that runtime's reactor would never
+    // be driven while it waits.
+    busbar_core_connector::io::install_process_reactor(io_reactor());
     let built = process::build(
-        || entries(doors),
+        || entries(doors, settings),
         dest,
         &process::own_ports(listens),
         // A plugin reading a connection through a ticket (an export sink's delivery parked on its
-        // collector's reply) is woken through the process's one dispatcher.
+        // collector's reply; a remote store's pending reply, ARCHITECT ruling 2026-10-03 on
+        // Q-L14-1) is woken on the process's one dispatcher, the one every kind's instances are
+        // opened on.
         crate::root::dispatch::dispatcher().conn_waker(),
+        pool_posture(settings),
     );
     let connector = built.unwrap_or_else(|refusal| {
         eprintln!("busbar: the connector did not build: {refusal}");
@@ -132,6 +157,38 @@ pub fn boot(
     })
 }
 
+// TRANSITIONAL: the connector's own I/O thread exists because synchronous governance callers wait
+// on the control runtime's thread (ARCHITECT ruling 2026-10-03 on Q-L16-3, the Q-L16-1 row); drains
+// with that wait (D2/D3; 1.6.0-TODO.md).
+/// THE CONNECTOR'S I/O THREAD: a single-threaded runtime of its own whose reactor drives every
+/// socket a plugin opens from a dispatcher worker, and nothing else. Built once.
+fn io_reactor() -> tokio::runtime::Handle {
+    static IO: OnceLock<tokio::runtime::Handle> = OnceLock::new();
+    IO.get_or_init(|| {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap_or_else(|e| {
+                eprintln!("busbar: the connector's I/O runtime did not build: {e}");
+                std::process::exit(2);
+            });
+        let handle = rt.handle().clone();
+        std::thread::Builder::new()
+            .name("busbar-conn-io".into())
+            .spawn(move || rt.block_on(std::future::pending::<()>()))
+            .unwrap_or_else(|e| {
+                eprintln!("busbar: the connector's I/O thread did not start: {e}");
+                std::process::exit(2);
+            });
+        handle
+    })
+    .clone()
+}
+
 #[cfg(test)]
 #[path = "tests/connector.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/connector_h2.rs"]
+mod h2_tests;

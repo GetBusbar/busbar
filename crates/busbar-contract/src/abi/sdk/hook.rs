@@ -228,6 +228,8 @@ pub struct Decoded<'a> {
     pub budget_remaining: Option<i64>,
     /// The request's budget chain, innermost first.
     pub budget: Vec<Bucket<'a>>,
+    /// The request's session, opaque octets the plane named; `None` = no session.
+    pub session: Option<&'a [u8]>,
 }
 
 impl<'a> Decoded<'a> {
@@ -298,6 +300,7 @@ impl<'a> Decoded<'a> {
                     budget_period: text_or_empty(b.field(|b| &b.budget_period)),
                 })
                 .collect(),
+            session: (!r.session.ptr.is_null()).then(|| r.field(|r| &r.session).bytes()),
         }
     }
 
@@ -329,6 +332,7 @@ impl<'a> Decoded<'a> {
                 user: u.user.as_deref().map(str::to_string),
             }),
             signals: self.signals.clone(),
+            session: self.session,
         }
     }
 
@@ -458,6 +462,9 @@ impl<'a> DecodedTap<'a> {
                 candidates: Vec::new(),
                 budget_remaining: None,
                 budget: Vec::new(),
+                // A tap's stage view carries no session (the ruling appends it to the request
+                // view only).
+                session: None,
             },
             stage,
         }

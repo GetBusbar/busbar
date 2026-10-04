@@ -22,11 +22,61 @@ use serde::Deserialize as _;
 ///
 /// The one declaration of the pair, so a word cannot come to be reserved on one plane and free on
 /// another.
-pub const RESERVED_SECTION_KEYS: &[&str] = &["hooks", "upstream_credentials"];
+pub const RESERVED_SECTION_KEYS: &[&str] = &["hooks", UPSTREAM_CREDENTIALS_KEY];
+
+/// The reserved `upstream_credentials:` word: how a member is credentialed (`own` or
+/// `passthrough`), the section's default and a registration's override.
+pub const UPSTREAM_CREDENTIALS_KEY: &str = "upstream_credentials";
+
+/// A registration's RFC 8693 `token_exchange:` block (ARCHITECT round 5 Q-L3B-EXCHANGE (B)): busbar's
+/// own subject token is exchanged, per call, for a token down-scoped to the caller's grant and
+/// audience-bound to the registration's [`AUDIENCE_KEY`]. Its keys are [`TOKEN_URL_KEY`],
+/// [`SUBJECT_TOKEN_KEY`] (a secret reference) and [`SUBJECT_TOKEN_TYPE_KEY`].
+pub const TOKEN_EXCHANGE_KEY: &str = "token_exchange";
+
+/// Inside [`TOKEN_EXCHANGE_KEY`]: the authorization server's token endpoint.
+pub const TOKEN_URL_KEY: &str = "token_url";
+
+/// Inside [`TOKEN_EXCHANGE_KEY`]: busbar's own subject token, a secret reference.
+pub const SUBJECT_TOKEN_KEY: &str = "subject_token";
+
+/// Inside [`TOKEN_EXCHANGE_KEY`]: RFC 8693 section 2.1 `subject_token_type`; absent =
+/// [`DEFAULT_SUBJECT_TOKEN_TYPE`].
+pub const SUBJECT_TOKEN_TYPE_KEY: &str = "subject_token_type";
+
+/// The `subject_token_type` a [`TOKEN_EXCHANGE_KEY`] block that states none exchanges: an access
+/// token, which is what busbar's own ambient credential is.
+pub const DEFAULT_SUBJECT_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
+
+/// A registration's `aud:`: the RFC 8707 resource indicator its outbound token is audience-bound to.
+pub const AUDIENCE_KEY: &str = "aud";
 
 /// THE RESERVED `pools` SUB-KEY of a plane's section (#47, POOLS-VERBS): its named pools, each a list
-/// of the section's own entries under `members`. Core-owned: the kernel reads it, the plane never.
+/// of the section's own entries under `members`, and the operations it may repeat under
+/// [`POOL_REPEATABLE_KEY`]. Core-owned: the kernel walks it; a plane reads it only to name the pool
+/// a unit routes over and whether its operation is performed at most once (ARCHITECT round 4
+/// Q-L3B-SURFACES (h)).
 pub const RESERVED_POOLS_KEY: &str = "pools";
+
+/// The operations a pool may perform twice, inside its [`RESERVED_POOLS_KEY`] entry: an operation
+/// not named is never repeated on another member once one answered.
+pub const POOL_REPEATABLE_KEY: &str = "repeatable";
+
+/// A pool whose members are each admitted on their OWN grant by the plane (a pool of named
+/// definitions, whose members are registrations), inside its [`RESERVED_POOLS_KEY`] entry: `true` =
+/// the pool's name is no grant of its own, and naming a pool never widens what a caller reaches.
+pub const POOL_MEMBER_GRANTED_KEY: &str = "member_granted";
+
+/// THE RESERVED `work` SUB-KEY of a plane's section (POOLS-VERBS, lifted as `pools` is): the bounds
+/// of the plane instance's durable work handles, `{max_live, retain_s}`. Core-owned: the kernel reads
+/// it and the plane never sees it.
+pub const RESERVED_WORK_KEY: &str = "work";
+
+/// The most live work handles one instance holds, inside [`RESERVED_WORK_KEY`].
+pub const WORK_MAX_LIVE_KEY: &str = "max_live";
+
+/// How long a settled work handle is retained, in seconds, inside [`RESERVED_WORK_KEY`].
+pub const WORK_RETAIN_S_KEY: &str = "retain_s";
 
 /// THE RESERVED `models` MAP of a model-serving plane's section (the uniform model-serving map,
 /// owner config-model ruling 2026-09-19): where present, its keys are the section's entries.
@@ -42,6 +92,37 @@ pub const MODEL_PROTOCOL_KEYS: &[&str] = &["protocol", "dialect"];
 
 /// A pool's member list, inside its [`RESERVED_POOLS_KEY`] entry.
 pub const POOL_MEMBERS_KEY: &str = "members";
+
+/// THE MEMBER-TARGET PATH of a need's `target_from` (ARCHITECT Q-L3B-ROUTES: a door plane's member
+/// routes come from its own section): `settings.*.<key>`, where `*` stands for EACH registration of
+/// the section, names every member's own target — its registration's `<key>` — rather than one
+/// target for the instance: that member's URL. Such a need is not pinned at `open`: the composition
+/// root seals one route per registration, at its URL's origin, and the plane spells the path of
+/// every request it sends that member.
+pub const MEMBER_TARGET_PREFIX: &str = "settings.*.";
+
+/// The registration key a member-target path names ([`MEMBER_TARGET_PREFIX`]); `None` for any
+/// other path (a single target, or none).
+#[must_use]
+pub fn member_target(target_from: &str) -> Option<&str> {
+    target_from
+        .strip_prefix(MEMBER_TARGET_PREFIX)
+        .filter(|key| !key.is_empty() && !key.contains('.'))
+}
+
+/// THE MEMBER-PROGRAM PATH of a need's `target_from` (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)):
+/// `settings.*`, where `*` stands for EACH registration of the section, names every member's own
+/// PROGRAM — the registration's `command`, `args` and `env` ([`crate::conn::Program::of_member`];
+/// its other keys are not the program's). A registration that names no `command` is not a member of
+/// such a need. The host keeps ONE long-lived program connection per (instance, need, member); an
+/// open names the member it reaches.
+pub const MEMBER_PROGRAM: &str = "settings.*";
+
+/// Whether `target_from` is the member-program path ([`MEMBER_PROGRAM`]).
+#[must_use]
+pub fn member_program(target_from: &str) -> bool {
+    target_from == MEMBER_PROGRAM
+}
 
 /// One plane's top-level section, split into its two reserved knobs and its registrations.
 ///

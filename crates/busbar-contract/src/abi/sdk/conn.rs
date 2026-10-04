@@ -19,8 +19,8 @@
 use std::task::Poll;
 
 use crate::abi::host::conn::connector::{
-    service, ConnectorSlots, EstablishIn, IoIn, ReplyIn, ReplyPiece, RequestIn, RequestPiece,
-    StreamIn, UpgradeIn,
+    service, ConnectorSlots, EstablishIn, FactsIn, IoIn, ReplyIn, ReplyPiece, RequestIn,
+    RequestPiece, StreamFacts, StreamIn, UpgradeIn,
 };
 use crate::abi::host::service::{
     op, ClockNowIn, ClockReading, HostSlots, NeedAdmitIn, ServiceFn, ServiceHead, ServiceOut,
@@ -62,6 +62,21 @@ impl std::error::Error for ConnFailure {}
 
 /// A connector service's answer.
 pub type Answer<T> = Poll<Result<T, ConnFailure>>;
+
+/// A STREAM'S FACTS, owned, as [`Connector::facts`] read them off the host connector: never key or
+/// certificate material.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Observed {
+    /// Connection security is established on the stream.
+    pub secure: bool,
+    /// The protocol the security handshake agreed; `None` = none.
+    pub agreed_protocol: Option<String>,
+    /// The far end's key, the pin of its leaf certificate's SubjectPublicKeyInfo
+    /// (`transport::trust::key_pin`'s spelling); `None` = the stream carried no certificate.
+    pub peer_key_pin: Option<String>,
+    /// Busbar presented its client identity in the handshake.
+    pub client_identity: bool,
+}
 
 /// THE INSTANCE'S HOST TABLES, as `open` handed them: the context every host call is made with,
 /// the wake, the connector table and the host services table.
@@ -119,7 +134,15 @@ impl Host {
             ticket,
             issued,
             budget_ms: None,
+            cause: std::cell::Cell::new(0),
         }
+    }
+
+    /// Whether the host lent the instance a connector table: a host that declared none of its needs
+    /// (no connection table bound) dials nothing for it.
+    #[must_use]
+    pub fn lends_connector(&self) -> bool {
+        !self.conns.is_null()
     }
 
     fn slots(&self) -> Option<&ConnectorSlots> {
@@ -136,6 +159,8 @@ pub struct Connector<'h> {
     ticket: Ticket,
     issued: u32,
     budget_ms: Option<u64>,
+    /// The `CAUSE_*` stage the host named on the last service that failed (`CAUSE_NONE` = none).
+    cause: std::cell::Cell<u64>,
 }
 
 /// A service `in`: every one leads with a [`ServiceHead`].
@@ -149,6 +174,7 @@ macro_rules! service_in {
 }
 service_in!(
     EstablishIn,
+    FactsIn,
     StreamIn,
     IoIn,
     UpgradeIn,
@@ -200,6 +226,14 @@ impl Connector<'_> {
         self.issued
     }
 
+    /// Where the last service this connector made that failed was failed, as the host named it:
+    /// a `CAUSE_*` stage (`CAUSE_NONE` = the host named none). The failure's text is the
+    /// [`ConnFailure`]'s, the underlying error's own words when a stage is named.
+    #[must_use]
+    pub fn cause(&self) -> u64 {
+        self.cause.get()
+    }
+
     /// Bound every request this connector sends to `ms` milliseconds: what is left of the op's
     /// deadline, as the op knows it. A request asking for longer is clamped to it.
     #[must_use]
@@ -236,7 +270,9 @@ impl Connector<'_> {
         let Some(f) = f else {
             return Poll::Ready(Err(ConnFailure::Unarmed));
         };
-        if self.ticket.is_none() {
+        // A service on no ticket may not pend: `close` never does, so it is made on none (an
+        // instance closing its kept connections as it goes).
+        if self.ticket.is_none() && op != service::CLOSE {
             return Poll::Ready(Err(ConnFailure::NoTicket));
         }
         let seq = self.issued;
@@ -277,8 +313,14 @@ impl Connector<'_> {
         match answered {
             Outcome::Ready => Poll::Ready(Ok(out)),
             Outcome::Pending => Poll::Pending,
-            Outcome::Failed => Poll::Ready(Err(ConnFailure::Failed(host_text(out.error)))),
-            Outcome::Refused => Poll::Ready(Err(ConnFailure::Refused(host_text(out.error)))),
+            Outcome::Failed => {
+                self.cause.set(out.value);
+                Poll::Ready(Err(ConnFailure::Failed(host_text(out.error))))
+            }
+            Outcome::Refused => {
+                self.cause.set(out.value);
+                Poll::Ready(Err(ConnFailure::Refused(host_text(out.error))))
+            }
             Outcome::Fault => Poll::Ready(Err(ConnFailure::Fault)),
         }
     }
@@ -288,10 +330,22 @@ impl Connector<'_> {
     /// `dest.judge` answered, `Judged::within`; `""` = no pin beyond the host's judgement): the
     /// stream. A dial the host's judgement pins outside `within` is refused before any byte leaves.
     pub fn establish(&mut self, need: u32, target: Option<&str>, within: &str) -> Answer<u64> {
+        self.establish_timed(need, target, within, 0)
+    }
+
+    /// [`Connector::establish`], its dial bounded by `timeout_ms` (`0` = the need's own timeout,
+    /// else the host's default): an operator-set connect timeout.
+    pub fn establish_timed(
+        &mut self,
+        need: u32,
+        target: Option<&str>,
+        within: &str,
+        timeout_ms: u32,
+    ) -> Answer<u64> {
         let input = EstablishIn {
             head: blank_head(),
             need,
-            _reserved: 0,
+            timeout_ms,
             target: text(target),
             within: text(Some(within)),
         };
@@ -333,14 +387,68 @@ impl Connector<'_> {
         name: Option<&str>,
         trust: Option<&str>,
     ) -> Answer<()> {
+        self.upgrade_secure_flagged(stream, name, trust, 0)
+    }
+
+    /// [`Connector::upgrade_secure`] with `UPGRADE_*` `flags`
+    /// ([`UPGRADE_VERIFY_OFF`](crate::abi::host::conn::connector::UPGRADE_VERIFY_OFF): the
+    /// operator's opt-in to an unverified handshake, honoured for an operator-infrastructure need
+    /// only).
+    pub fn upgrade_secure_flagged(
+        &mut self,
+        stream: u64,
+        name: Option<&str>,
+        trust: Option<&str>,
+        flags: u32,
+    ) -> Answer<()> {
         let input = UpgradeIn {
             head: blank_head(),
             stream,
             offered_name: text(name),
             trust: text(trust),
+            flags,
+            _reserved: 0,
         };
         self.call(service::UPGRADE_SECURE, |s| s.upgrade_secure, input)
             .map(|r| r.map(|_| ()))
+    }
+
+    /// WHAT `stream`'s CONNECTION SECURITY ESTABLISHED, as the host connector observed it
+    /// (`service::FACTS`): whether it is secured, the protocol agreed, the far end's key pin and
+    /// whether busbar presented its client identity (the transport pin, ARCHITECT 2026-10-03) — readable
+    /// on a stream whose connection the connector refused for its trust anchors too, until it is
+    /// closed. `None`: a re-issued handle the host answered from its store without writing the
+    /// facts again (the replay rule) — they were read on the entry that first answered it.
+    pub fn facts(&mut self, stream: u64) -> Answer<Option<Observed>> {
+        // `size` stays 0 unless the host wrote the facts on this call.
+        let mut slot = StreamFacts {
+            size: 0,
+            secure: 0,
+            endpoint: absent(),
+            agreed_protocol: absent(),
+            peer_cert_hash: absent(),
+            peer_key_pin: absent(),
+            client_identity: 0,
+            _reserved: 0,
+        };
+        let input = FactsIn {
+            head: blank_head(),
+            stream,
+            facts: std::ptr::from_mut(&mut slot),
+        };
+        self.call(service::FACTS, |s| s.facts, input).map(|r| {
+            r.map(|_| {
+                (slot.size != 0).then(|| {
+                    let owned = |t: AbiStr| Some(host_text(t)).filter(|t| !t.is_empty());
+                    Observed {
+                        secure: slot.secure == 1,
+                        agreed_protocol: owned(slot.agreed_protocol),
+                        peer_key_pin: owned(slot.peer_key_pin),
+                        client_identity: slot.client_identity == 1,
+                    }
+                })
+            })
+        })
     }
 
     /// Close `stream`.

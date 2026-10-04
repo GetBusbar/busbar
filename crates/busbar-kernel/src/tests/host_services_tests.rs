@@ -1487,7 +1487,13 @@ fn key_granting(grants: &[(&str, &str)]) -> Arc<VirtualKey> {
 
 /// Admit `unit` with `principal` and ask whether it is entitled to `target`.
 fn entitled(r: &Rig, unit: u64, principal: Option<Arc<VirtualKey>>, target: &str) -> u64 {
-    r.s.units().admitted(unit, UnitRecord { principal });
+    r.s.units().admitted(
+        unit,
+        UnitRecord {
+            principal,
+            depth: 0,
+        },
+    );
     r.s.entitlement_check(&caller("inst"), Some(unit), target)
         .value
 }
@@ -1590,7 +1596,7 @@ fn a_unit_not_in_flight_or_no_unit_is_not_entitled_and_ungoverned_is() {
 struct FakeGuard(Mutex<Vec<String>>);
 
 impl DestJudge for FakeGuard {
-    fn judge_name(&self, dest: &str, _class: u32) -> Result<(), u64> {
+    fn judge_name(&self, dest: &str, _class: u32, _refuse_private: bool) -> Result<(), u64> {
         self.0.lock().unwrap().push(dest.to_owned());
         if dest.contains("10.0.0.5") {
             Err(svc::DEST_INTERNAL)
@@ -1602,12 +1608,20 @@ impl DestJudge for FakeGuard {
         &self,
         dest: &str,
         class: u32,
+        refuse_private: bool,
         _done: Box<dyn FnOnce(Admitted) + Send>,
     ) -> Option<Admitted> {
-        Some(self.judge_name(dest, class).map(|()| {
-            let at: SocketAddr = "93.184.216.34:443".parse().unwrap();
-            (at, vec![at.ip()])
-        }))
+        Some(
+            self.judge_name(dest, class, refuse_private)
+                .map(|()| {
+                    let at: SocketAddr = "93.184.216.34:443".parse().unwrap();
+                    (at, vec![at.ip()])
+                })
+                .map_err(|verdict| Refused {
+                    verdict,
+                    detail: Some("10.0.0.5".into()),
+                }),
+        )
     }
     fn judge_answer(&self, _: &str, _: &[IpAddr], _: u32) -> Result<(), DestRefusal> {
         Ok(())
@@ -1622,7 +1636,7 @@ fn dest_judge_answers_the_installed_guard_refusal() {
     let s = KernelServices::new().with_dest_judge(guard.clone());
     for class in [0, 4] {
         let (_, later) = recorder();
-        let got = verdict_now(s.dest_judge("http://10.0.0.5:80/x", class, false, Some(later)));
+        let got = verdict_now(s.dest_judge("http://10.0.0.5:80/x", class, 0, Some(later)));
         assert_eq!(got.value, svc::DEST_INTERNAL, "class {class}");
     }
     assert_eq!(
@@ -1637,7 +1651,12 @@ fn dest_judge_answers_the_installed_guard_refusal() {
 fn dest_judge_answers_the_installed_guard_admission() {
     let s = KernelServices::new().with_dest_judge(Arc::new(FakeGuard::default()));
     let (_, later) = recorder();
-    let got = verdict_now(s.dest_judge("https://api.example.com/", 0, true, Some(later)));
+    let got = verdict_now(s.dest_judge(
+        "https://api.example.com/",
+        0,
+        svc::DEST_RESOLVE,
+        Some(later),
+    ));
     assert_eq!(got.value, svc::DEST_ALLOWED);
     assert_eq!(got.bytes, b"93.184.216.34");
     assert_eq!(

@@ -786,6 +786,9 @@ impl HostConns {
                 alpn: owned(w.alpn)?,
                 peer_cert,
                 claim: owned(w.claim)?,
+                // The far end's key pin and whether busbar presented its client identity reach a
+                // plugin on the host connector's FACTS service (`connector::StreamFacts`), not here.
+                ..ConnFacts::default()
             })
         }
     }

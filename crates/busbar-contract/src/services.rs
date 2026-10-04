@@ -52,11 +52,11 @@ pub trait HostServices: Send + Sync {
     /// `clock.now`: the kernel's one clock. Never pends.
     fn now(&self) -> Reading;
 
-    /// `dest.judge`: judge `dest` against egress class `class`'s rules; `resolve` = the caller set
-    /// `DEST_RESOLVE`. Answers [`Ran::Now`] with a `DEST_*` verdict (or REFUSED for an unknown
+    /// `dest.judge`: judge `dest` against egress class `class`'s rules; `flags` = the caller's
+    /// `DEST_RESOLVE` | `DEST_REFUSE_PRIVATE` | `DEST_EXPLAIN`. Answers [`Ran::Now`] with a `DEST_*` verdict (or REFUSED for an unknown
     /// class), or hands `later` on and answers [`Ran::Later`]. `later` is `None` only for a call
     /// that may not pend, which never reaches here for this service.
-    fn dest_judge(&self, dest: &str, class: u32, resolve: bool, later: Option<Later>) -> Ran;
+    fn dest_judge(&self, dest: &str, class: u32, flags: u32, later: Option<Later>) -> Ran;
 
     /// `records.get`: `caller`'s record of `kind` under `key`, its own queued writes first.
     /// READY `FOUND` with span `0`'s value the record, or READY `ABSENT`.
@@ -114,6 +114,47 @@ pub trait HostServices: Send + Sync {
     /// equal time. The loader has already checked that the caller declared `kind`. A host with no
     /// credential source refuses.
     fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran;
+
+    /// `unit.nest`: run `ask` as a nested unit, a child of `unit` (the unit the calling crossing
+    /// serves; `None` = it serves none, REFUSED): under its principal, its scope and its admission
+    /// chain, depth-capped, on whatever serves the claim `ask` names. READY with the child's status
+    /// as `value`, span `0`'s value its body and each span after it one head field. The kernel never
+    /// learns what the child is.
+    fn unit_nest(&self, caller: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran;
+
+    /// `work.open`: open a durable work handle of `kind` (a record kind `caller` declared) for the
+    /// principal of `unit`, with `record`. READY with the handle, span `0`'s key its reference.
+    fn work_open(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        kind: &str,
+        record: &[u8],
+        later: Later,
+    ) -> Ran;
+
+    /// `work.find`: the handle `reference` names, within `caller` and the principal of `unit`.
+    /// Every denial is READY `ABSENT` with nothing written; found, READY with the handle, span
+    /// `0`'s key the state byte and its value the record.
+    fn work_find(&self, caller: &Caller, unit: Option<u64>, reference: &[u8], later: Later) -> Ran;
+
+    /// `work.settle`: settle `caller`'s live handle `handle` with its final `record`. READY `0`.
+    fn work_settle(&self, caller: &Caller, handle: u64, record: &[u8], later: Later) -> Ran;
+
+    /// `work.resume`: bind `caller`'s handle `handle` to `unit`, whose principal must be the one the
+    /// handle recorded. READY `0`, span `0`'s key the state byte and its value the record.
+    fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran;
+}
+
+/// A `unit.nest` request, as the host copied it out of the caller's `in`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NestAsk {
+    /// The claim's verb.
+    pub verb: String,
+    /// The claim's target.
+    pub target: String,
+    /// The body.
+    pub body: Vec<u8>,
 }
 
 /// THE HOST-HELD CREDENTIAL READ `records.secret` serves: the secret of credential `id` of `kind`

@@ -23,7 +23,8 @@
 //! * [`io`] is readiness on the per-worker reactor (`io.{register, poll_ready, clear_ready,
 //!   deregister}`); [`socket`] the host's OS sockets; [`stream`] a host socket as a byte stream.
 //! * [`framer`] drives one transport entry's framer table host-side; [`compose`] builds a dialled
-//!   connection as socket -> \[TLS\] -> framer; [`listen`] binds one listener per inbound need and
+//!   connection as socket -> \[TLS\] -> framer; [`pool`] keeps a dialled connection whose exchange
+//!   finished whole for the next open to the same place; [`listen`] binds one listener per inbound need and
 //!   composes each accepted connection the same way, begun on the accept side; [`registry`] is the
 //!   view of which entry serves which scheme; [`wire`] presents a framer entry over host sockets to
 //!   the kernel's transport seam.
@@ -45,7 +46,9 @@ pub mod endpoint;
 pub mod framer;
 pub mod guard;
 pub mod io;
+mod line;
 pub mod listen;
+pub mod pool;
 pub mod process;
 pub mod registry;
 pub mod socket;
@@ -56,12 +59,13 @@ pub mod wire;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 use busbar_contract::abi::host::conn::connector::{
-    DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB,
+    DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
 use busbar_contract::abi::host::service::DEST_PLAINTEXT;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
@@ -74,10 +78,12 @@ use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
 
 use crate::compose::{
-    Connection, Dial, Failure, Planned, DEFAULT_OPEN_TIMEOUT, WRITE_BUFFER_BYTES,
+    Connection, Dial, Failure, Planned, DEFAULT_OPEN_TIMEOUT, EXCHANGE_STREAM, WRITE_BUFFER_BYTES,
 };
 use crate::framer::FramerDoor;
+use crate::line::{Line, EVERY};
 use crate::listen::{AcceptLimits, Listening};
+use crate::pool::{PoolKey, PoolPosture, Pools};
 use crate::registry::Transports;
 
 /// How the host wakes a caller's ticket.
@@ -175,6 +181,8 @@ struct DeclaredNeed {
     /// with that CA added on top (spec section 5, the host connector: "an extra trusted root added
     /// on top of the public roots, as in 1.5.5"); `None` = the connector's default trust.
     tls: Option<Arc<rustls::ClientConfig>>,
+    /// The program the need's `target_from` resolved to: every open spawns it.
+    program: Option<busbar_contract::conn::Program>,
 }
 
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
@@ -196,15 +204,58 @@ struct Judging {
     answer: Answer,
 }
 
-/// One connection the connector holds for its owner.
+/// What an exchange lent a pooled line keeps to redial it ONCE on a fresh connection when that line
+/// fails before any byte of the exchange left (ARCHITECT ruling Q-L18-RETRY, 1.5.5's pooled client
+/// re-sending a request its pooled connection closed under before it was written; never once a byte
+/// left, so nothing is sent twice, and no failover: the caller sees one exchange).
+struct Redial {
+    door: Arc<dyn FramerDoor>,
+    dial: Dial,
+    egress_class: u32,
+    judged_class: u32,
+    /// The bytes the line's socket had taken when the exchange was lent it.
+    mark: u64,
+}
+
+/// One connection the connector holds for its owner: the line it rides and the stream it reads
+/// there (a dialled exchange's own; an accepted connection's every stream).
 struct Held {
-    conn: Mutex<Option<Connection>>,
+    line: Mutex<Option<(Arc<Line>, u64)>>,
     /// The judgement the dial waits on; `None` once dialled.
     judging: Mutex<Option<Judging>>,
     /// The piece a short caller buffer left, and whether the end was answered.
     rest: Mutex<(Option<Piece>, Vec<u8>, bool)>,
     /// The far end's reason phrase, held until its head's last piece is read.
     reason: Mutex<Option<Vec<u8>>>,
+    /// Where a dialled connection goes back to when its exchange finished whole: its pool shard
+    /// and key (`None` = never pooled).
+    pooled: Option<(usize, PoolKey)>,
+    /// The dialled exchange ended WHOLE (its stream's end was read).
+    whole: AtomicBool,
+    /// The one redial an exchange lent a pooled line keeps.
+    redial: Mutex<Option<Redial>>,
+}
+
+impl Held {
+    fn over(
+        line: Option<(Arc<Line>, u64)>,
+        judging: Option<Judging>,
+        pooled: Option<(usize, PoolKey)>,
+    ) -> Self {
+        Held {
+            line: Mutex::new(line),
+            judging: Mutex::new(judging),
+            rest: Mutex::new((None, Vec::new(), false)),
+            reason: Mutex::new(None),
+            pooled,
+            whole: AtomicBool::new(false),
+            redial: Mutex::new(None),
+        }
+    }
+
+    fn line(&self) -> Option<(Arc<Line>, u64)> {
+        self.line.lock().expect("line").clone()
+    }
 }
 
 impl std::fmt::Debug for Held {
@@ -231,6 +282,8 @@ pub struct Connector {
     judge: Arc<dyn DialJudge>,
     /// One listener per inbound need.
     listeners: Listeners,
+    /// The per-worker pools of dialled connections.
+    pools: Pools,
 }
 
 impl std::fmt::Debug for Connector {
@@ -250,6 +303,7 @@ impl Default for Connector {
             wake: Arc::new(|_| {}),
             judge: Arc::new(LiteralsOnly(guard::Guard::default())),
             listeners: Mutex::new(HashMap::new()),
+            pools: Pools::new(PoolPosture::NONE),
         }
     }
 }
@@ -311,6 +365,15 @@ impl Connector {
             judge,
             ..Self::default()
         }
+    }
+
+    /// The same connector keeping dialled connections under `posture` (the deployment's
+    /// `limits.pool_max_idle_per_host` / `limits.pool_idle_timeout_secs`): an open to a place a
+    /// finished exchange's connection went back to rides that connection ([`pool`]).
+    #[must_use]
+    pub fn pooling(mut self, posture: PoolPosture) -> Self {
+        self.pools = Pools::new(posture);
+        self
     }
 
     /// The need `owner` declared as `need`, whole, as [`DeclaredConns::declare`] received it.
@@ -426,6 +489,52 @@ impl Connector {
                 egress_class,
                 declared_target: declared_target.map(str::to_owned),
                 tls,
+                program: None,
+            },
+        );
+        Ok(())
+    }
+
+    /// THE PROGRAM NEED: `owner`'s outbound `need` dials `program` (its pipes, framed by the entry
+    /// serving `transport`). Carried only in the operator-infrastructure class (the operator wrote
+    /// the program into config), with no auth style (no credential rides a pipe), over an entry
+    /// that frames a byte stream directly (it composes over nothing, as a framer over the host's
+    /// socket does).
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Refused`] for anything else; any earlier record of the need is dropped.
+    fn record_program(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        program: &busbar_contract::conn::Program,
+    ) -> Result<(), ConnError> {
+        let served = {
+            let view = self.transports.read().expect("transports");
+            view.serving(&spec.transport)
+                .filter(|served| served.entry.door.facts().composes_over.is_empty())
+                .map(|served| (Arc::clone(&served.entry.door), served.entry.alpn.clone()))
+        };
+        let carried = spec.direction == DIRECTION_OUTBOUND
+            && spec.egress_class == EGRESS_OPERATOR_INFRASTRUCTURE
+            && spec.auth.is_empty()
+            && program.command.starts_with('/');
+        let Some((door, alpn)) = served.filter(|_| carried) else {
+            self.over.lock().expect("needs").remove(&(owner, need));
+            return Err(ConnError::Refused);
+        };
+        self.slab.declare(owner, need);
+        self.over.lock().expect("needs").insert(
+            (owner, need),
+            DeclaredNeed {
+                door,
+                alpn,
+                egress_class: spec.egress_class,
+                declared_target: None,
+                tls: None,
+                program: Some(program.clone()),
             },
         );
         Ok(())
@@ -497,16 +606,10 @@ impl Connector {
             Poll::Pending => Err(ConnError::Pending),
             Poll::Ready(Err(f)) => Err(map(&f)),
             Poll::Ready(Ok(a)) => {
-                let id = self.slab.insert(
-                    owner,
-                    need,
-                    Held {
-                        conn: Mutex::new(Some(a.conn)),
-                        judging: Mutex::new(None),
-                        rest: Mutex::new((None, Vec::new(), false)),
-                        reason: Mutex::new(None),
-                    },
-                )?;
+                let line = Line::new(a.conn);
+                let id =
+                    self.slab
+                        .insert(owner, need, Held::over(Some((line, EVERY)), None, None))?;
                 Ok((id, a.peer))
             }
         }
@@ -529,24 +632,16 @@ impl Connector {
         text: bool,
     ) -> Result<usize, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
-        if !Self::settle(&held, None)? {
+        if !self.settle(&held, None)? {
             return Err(ConnError::Pending);
         }
-        let mut c = held.conn.lock().expect("connection");
-        let c = c.as_mut().ok_or(ConnError::Closed)?;
-        c.emit(
-            stream,
-            bytes,
-            end,
-            text,
-            &mut Context::from_waker(Waker::noop()),
-        )
-        .map_err(|f| map(&f))
+        let (line, _) = held.line().ok_or(ConnError::Closed)?;
+        line.emit(stream, bytes, end, text).map_err(|f| map(&f))
     }
 
     /// Dial a held connection whose judgement has answered. `Ok(false)`: still judging, `waker`
     /// (where given) registered for the answer. A refusal stays the connection's answer.
-    fn settle(held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
+    fn settle(&self, held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
         let mut judging = held.judging.lock().expect("judging");
         let Some(j) = judging.as_mut() else {
             return Ok(true);
@@ -573,13 +668,115 @@ impl Connector {
         let planned = j.planned.take().ok_or(ConnError::Refused)?;
         let early = std::mem::take(&mut j.early);
         *judging = None;
-        let mut conn = planned.dial_at(addr).map_err(|f| map(&f))?;
+        let conn = planned.dial_at(addr).map_err(|f| map(&f))?;
+        let line = self.ride(held, conn);
         for (bytes, end, text) in early {
-            conn.write(&bytes, end, text, &mut Context::from_waker(Waker::noop()))
+            line.emit(EXCHANGE_STREAM, &bytes, end, text)
                 .map_err(|f| map(&f))?;
         }
-        *held.conn.lock().expect("connection") = Some(conn);
         Ok(true)
+    }
+
+    /// `held` rides `conn`, just dialled, as its first exchange; a pooled exchange's line is held
+    /// in its shard's pool from now on (shared once it multiplexes).
+    fn ride(&self, held: &Held, conn: Connection) -> Arc<Line> {
+        let line = Line::new(conn);
+        if let Some((shard, key)) = &held.pooled {
+            self.pools.hold(*shard, key.clone(), &line);
+        }
+        *held.line.lock().expect("line") = Some((Arc::clone(&line), EXCHANGE_STREAM));
+        line
+    }
+
+    /// Judge `planned`'s authority under `judged_class` and dial the pinned address, held to the
+    /// need's egress class and `within`: the connection at once when the judgement answered at
+    /// once, else the judgement in flight (an address refusal answers the read or wait that finds
+    /// it).
+    ///
+    /// # Errors
+    ///
+    /// A judgement that refused at once, or a dial that could not start.
+    fn dial_judged(
+        &self,
+        planned: Planned,
+        egress_class: u32,
+        judged_class: u32,
+        within: &[IpAddr],
+    ) -> Result<(Option<Connection>, Option<Judging>), ConnError> {
+        let answer: Answer = Arc::new(Mutex::new((None, None)));
+        let answering = Arc::clone(&answer);
+        let judged = self.judge.judge_dial(
+            planned.authority(),
+            judged_class,
+            Box::new(move |v| {
+                let mut a = answering.lock().expect("judgement");
+                a.0 = Some(v);
+                if let Some(w) = a.1.take() {
+                    w.wake();
+                }
+            }),
+        );
+        Ok(match judged {
+            // Decided at once: a refusal answers the open, as 1.5.5 answered it.
+            Some(Err(_)) => return Err(ConnError::Refused),
+            Some(Ok(addr)) if !class_admits(egress_class, planned.secure(), within, addr) => {
+                return Err(ConnError::Refused)
+            }
+            Some(Ok(addr)) => (Some(planned.dial_at(addr).map_err(|f| map(&f))?), None),
+            None => (
+                None,
+                Some(Judging {
+                    planned: Some(planned),
+                    egress_class,
+                    within: within.to_vec(),
+                    early: Vec::new(),
+                    answer,
+                }),
+            ),
+        })
+    }
+
+    /// THE ONE REDIAL (ARCHITECT ruling Q-L18-RETRY): `held` was lent a pooled line that failed
+    /// before any byte of its exchange left. The line is let go and the exchange's opening is
+    /// dialled afresh, judged as any dial is. `Ok(false)`: no redial is owed (none kept, already
+    /// spent, or a byte had left).
+    fn redial(&self, held: &Held) -> Result<bool, ConnError> {
+        let mut kept = held.redial.lock().expect("redial");
+        let Some((line, stream)) = held.line() else {
+            return Ok(false);
+        };
+        if kept.as_ref().is_none_or(|r| line.flushed() != r.mark) {
+            *kept = None;
+            return Ok(false);
+        }
+        let Some(r) = kept.take() else {
+            return Ok(false);
+        };
+        drop(kept);
+        *held.line.lock().expect("line") = None;
+        self.let_go(held, &line, stream, false);
+        let planned = Planned::locate(r.door, r.dial).map_err(|f| map(&f))?;
+        match self.dial_judged(planned, r.egress_class, r.judged_class, &[])? {
+            (Some(conn), _) => {
+                self.ride(held, conn);
+            }
+            (None, judging) => *held.judging.lock().expect("judging") = judging,
+        }
+        Ok(true)
+    }
+
+    /// `held`'s exchange leaves `line` (`whole` = its answer was read to its end): the line goes
+    /// back to its pool, or is closed, once nobody holds it.
+    fn let_go(&self, held: &Held, line: &Arc<Line>, stream: u64, whole: bool) {
+        let left = line.leave(stream, whole);
+        if left > 0 {
+            return;
+        }
+        match &held.pooled {
+            Some((shard, key)) if whole => self.pools.release(*shard, key, line),
+            Some((shard, key)) => self.pools.drop_line(*shard, key, line),
+            None => line.close(),
+        }
     }
 
     /// One read of `conn`, waking `waker` when nothing is ready yet: the body [`Conns::read`] (a
@@ -599,54 +796,65 @@ impl Connector {
                 if rest.2 {
                     return Err(ConnError::Closed);
                 }
-                if !Self::settle(&held, Some(waker))? {
-                    return Err(ConnError::Pending);
-                }
-                let mut c = held.conn.lock().expect("connection");
-                let c = c.as_mut().ok_or(ConnError::Closed)?;
-                match c.poll_piece(&mut Context::from_waker(waker)) {
-                    Poll::Pending => return Err(ConnError::Pending),
-                    Poll::Ready(Err(f)) => return Err(map(&f)),
-                    Poll::Ready(Ok(None)) => {
-                        rest.2 = true;
-                        return Ok(Piece {
-                            kind: PieceKind::Completion,
-                            stream: StreamId(0),
-                            len: 0,
-                            end: true,
-                            status: None,
-                            status_code: None,
-                            status_namespace: None,
-                            retry_after_secs: None,
-                            reason: None,
-                        });
+                let got = loop {
+                    if !self.settle(&held, Some(waker))? {
+                        return Err(ConnError::Pending);
                     }
-                    // The far end's head (and its trailers) arrive as the framer's field block:
-                    // a Fields piece, the head ahead of the first Body piece.
-                    Poll::Ready(Ok(Some(got))) => {
-                        if got.reason.is_some() {
-                            held.reason.lock().expect("reason").clone_from(&got.reason);
+                    let (line, stream) = held.line().ok_or(ConnError::Closed)?;
+                    match line.poll_piece(stream, &mut Context::from_waker(waker)) {
+                        Poll::Pending => return Err(ConnError::Pending),
+                        // A lent pooled line that ended or failed before any byte of this
+                        // exchange left: redialled once, fresh, and read again.
+                        Poll::Ready(Err(_) | Ok(None)) if self.redial(&held)? => {}
+                        Poll::Ready(Err(f)) => return Err(map(&f)),
+                        Poll::Ready(Ok(None)) => {
+                            rest.2 = true;
+                            return Ok(completion(0));
                         }
-                        (
-                            Piece {
-                                kind: if got.fields {
-                                    PieceKind::Fields
-                                } else {
-                                    PieceKind::Body
-                                },
-                                stream: StreamId(got.stream),
-                                len: 0,
-                                end: got.end_of_frame,
-                                status: class(got.status_class),
-                                status_code: got.status_code,
-                                status_namespace: None,
-                                retry_after_secs: got.retry_after_secs,
-                                reason: None,
-                            },
-                            got.bytes,
-                        )
+                        Poll::Ready(Ok(Some(got))) => break (got, stream),
                     }
+                };
+                let (got, stream) = got;
+                let dialled = stream != EVERY;
+                // An answer arrived: a byte of the exchange had left, so no redial is owed.
+                *held.redial.lock().expect("redial") = None;
+                if dialled && got.stream == stream && got.ends_stream() {
+                    // A DIALLED exchange's stream ending whole is the exchange's completion
+                    // (`busbar_contract::abi::transport`, "streams end by piece"): the caller
+                    // has the whole answer, and the line may carry the next one.
+                    rest.2 = true;
+                    held.whole.store(true, Ordering::Release);
+                    return Ok(completion(got.stream));
                 }
+                if dialled && got.stream == stream && got.failed {
+                    // Its stream FAILED (the framer's reason is never the caller's payload): the
+                    // exchange fails, and the line is not kept.
+                    rest.2 = true;
+                    return Err(ConnError::Fault);
+                }
+                // The far end's head (and its trailers) arrive as the framer's field block: a
+                // Fields piece, the head ahead of the first Body piece.
+                if got.reason.is_some() {
+                    held.reason.lock().expect("reason").clone_from(&got.reason);
+                }
+                (
+                    Piece {
+                        kind: if got.fields {
+                            PieceKind::Fields
+                        } else {
+                            PieceKind::Body
+                        },
+                        stream: StreamId(got.stream),
+                        len: 0,
+                        end: got.end_of_frame,
+                        status: class(got.status_class),
+                        status_code: got.status_code,
+                        status_namespace: None,
+                        retry_after_secs: got.retry_after_secs,
+                        reason: None,
+                    },
+                    got.bytes,
+                )
             }
         };
         let n = bytes.len().min(buf.len());
@@ -698,6 +906,21 @@ fn host_of(target: &str) -> String {
     host.trim_start_matches('[')
         .trim_end_matches(']')
         .to_owned()
+}
+
+/// The piece that says the exchange finished.
+fn completion(stream: u64) -> Piece {
+    Piece {
+        kind: PieceKind::Completion,
+        stream: StreamId(stream),
+        len: 0,
+        end: true,
+        status: None,
+        status_code: None,
+        status_namespace: None,
+        retry_after_secs: None,
+        reason: None,
+    }
 }
 
 /// Whether a dial target carries a userinfo (`user:pass@`): a URL by the contract's one reader, a
@@ -782,13 +1005,27 @@ impl DeclaredConns for Connector {
         conn: ConnId,
         name: Option<&str>,
         trust: Option<&str>,
+        verify_off: bool,
         ticket: Ticket,
     ) -> Result<(), ConnError> {
         let (need, held) = self.slab.get(caller, conn)?;
         if self.framed(caller, need) {
             return Err(ConnError::Refused);
         }
-        let config = {
+        let config = if verify_off {
+            // The operator's opt-in to an unverified handshake: an operator-infrastructure need's
+            // only (ARCHITECT ruling 2026-10-03 on Q-L16-4).
+            let class = self
+                .over
+                .lock()
+                .expect("needs")
+                .get(&(caller, need))
+                .map(|d| d.egress_class);
+            if class != Some(EGRESS_OPERATOR_INFRASTRUCTURE) {
+                return Err(ConnError::Refused);
+            }
+            Arc::new(crate::tls::client::unverified_client_config())
+        } else {
             let declared = self.declared.lock().expect("declared needs");
             let trust_from = declared
                 .get(&(caller, need))
@@ -803,16 +1040,15 @@ impl DeclaredConns for Connector {
                 .ok_or(ConnError::Refused)?
         };
         let waker = self.waker(ticket);
-        if !Self::settle(&held, Some(&waker))? {
+        if !self.settle(&held, Some(&waker))? {
             return Err(ConnError::Pending);
         }
-        let mut c = held.conn.lock().expect("connection");
-        let c = c.as_mut().ok_or(ConnError::Closed)?;
+        let (line, _) = held.line().ok_or(ConnError::Closed)?;
         let name = match name {
             Some(n) => n.to_owned(),
-            None => host_of(c.target()),
+            None => host_of(&line.target().ok_or(ConnError::Closed)?),
         };
-        match c.upgrade_secure(
+        match line.upgrade_secure(
             &config,
             &name,
             DEFAULT_OPEN_TIMEOUT,
@@ -837,6 +1073,21 @@ impl DeclaredConns for Connector {
     fn serves_scheme(&self, transport: &str) -> bool {
         Connector::serves_scheme(self, transport)
     }
+
+    fn declare_program(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        program: &busbar_contract::conn::Program,
+    ) -> Result<(), ConnError> {
+        let answer = self.record_program(owner, need, spec, program);
+        self.declared
+            .lock()
+            .expect("declared needs")
+            .insert((owner, need), (spec.clone(), answer));
+        answer
+    }
 }
 
 impl Conns for Connector {
@@ -854,6 +1105,7 @@ impl Conns for Connector {
             egress_class,
             declared_target,
             tls,
+            program,
         } = self
             .over
             .lock()
@@ -861,22 +1113,87 @@ impl Conns for Connector {
             .get(&(caller, need))
             .cloned()
             .ok_or(ConnError::Refused)?;
+        // A PROGRAM NEED spawns the program its config names, and nothing else: an open naming a
+        // target of its own is refused. No address is judged: no network is dialled.
+        if let Some(program) = program {
+            if !desc.target.is_empty() {
+                return Err(ConnError::Refused);
+            }
+            let dial = Dial {
+                target: program.command.clone(),
+                tls: None,
+                alpn,
+                open_timeout: DEFAULT_OPEN_TIMEOUT,
+                opening: Some((
+                    desc.fields
+                        .iter()
+                        .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
+                        .collect(),
+                    desc.body.to_vec(),
+                )),
+                head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
+            };
+            let conn = Connection::spawn(door, &program, dial).map_err(|f| map(&f))?;
+            // A program is a dialled, single-use line (no pool, no judgement): its one exchange
+            // rides EXCHANGE_STREAM, as a freshly dialled connection's does.
+            let line = Line::new(conn);
+            return self.slab.insert(
+                caller,
+                need,
+                Held::over(Some((line, EXCHANGE_STREAM)), None, None),
+            );
+        }
         // No target named: the need's own, its config's (`EstablishIn.target` absent = the need's
         // `target_from`).
         let target = match (desc.target, declared_target.as_deref()) {
             ("", Some(declared)) => declared,
             (named, _) => named,
         };
+        let open_timeout = if desc.timeout_ms == 0 {
+            DEFAULT_OPEN_TIMEOUT
+        } else {
+            Duration::from_millis(desc.timeout_ms)
+        };
+        // A UNIX-DOMAIN TARGET (`unix:/path`; ARCHITECT ruling 2026-10-03 12:10Z, VALKEY-UNIX):
+        // served to an operator-infrastructure (or loopback-allowed) need as a raw stream, every
+        // other class refused; there is no address to resolve or judge. A need whose config names
+        // its target dials that path and no other.
+        if let Some(path) = socket::unix_path(target) {
+            if !matches!(
+                egress_class,
+                EGRESS_OPERATOR_INFRASTRUCTURE | EGRESS_LOOPBACK_ALLOWED
+            ) || declared_target.as_deref().is_some_and(|d| d != target)
+            {
+                return Err(ConnError::Refused);
+            }
+            let dial = Dial {
+                target: target.to_owned(),
+                tls: None,
+                alpn,
+                open_timeout,
+                opening: Some((
+                    desc.fields
+                        .iter()
+                        .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
+                        .collect(),
+                    desc.body.to_vec(),
+                )),
+                head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
+            };
+            let conn = Connection::dial_unix(door, dial, path).map_err(|f| map(&f))?;
+            let line = Line::new(conn);
+            return self.slab.insert(
+                caller,
+                need,
+                Held::over(Some((line, EXCHANGE_STREAM)), None, None),
+            );
+        }
         endpoint::check(target).map_err(|_| ConnError::Refused)?;
         let dial = Dial {
             target: target.to_owned(),
             tls: tls.or_else(|| self.tls.clone()),
             alpn,
-            open_timeout: if desc.timeout_ms == 0 {
-                DEFAULT_OPEN_TIMEOUT
-            } else {
-                Duration::from_millis(desc.timeout_ms)
-            },
+            open_timeout,
             opening: Some((
                 desc.fields
                     .iter()
@@ -909,49 +1226,55 @@ impl Conns for Connector {
         if egress_class == EGRESS_OPEN_WEB && !planned.secure() {
             return Err(ConnError::Refused);
         }
-        let answer: Answer = Arc::new(Mutex::new((None, None)));
-        let later = Arc::clone(&answer);
-        let judged = self.judge.judge_dial(
-            planned.authority(),
-            judged_class,
-            Box::new(move |v| {
-                let mut a = later.lock().expect("judgement");
-                a.0 = Some(v);
-                if let Some(w) = a.1.take() {
-                    w.wake();
-                }
-            }),
-        );
-        let (conn, judging) = match judged {
-            // Decided at once: a refusal answers the open, as 1.5.5 answered it.
-            Some(Err(_)) => return Err(ConnError::Refused),
-            Some(Ok(addr)) if !class_admits(egress_class, planned.secure(), desc.within, addr) => {
-                return Err(ConnError::Refused)
-            }
-            Some(Ok(addr)) => (Some(planned.dial_at(addr).map_err(|f| map(&f))?), None),
-            // The name resolves off this thread: the open is in flight, and an address refusal
-            // answers the read or wait that finds it.
-            None => (
-                None,
-                Some(Judging {
-                    planned: Some(planned),
+        // THE POOL: on this worker's shard, a live h2 line to the same place carries this
+        // exchange as its next stream, or a line an earlier exchange finished on carries it
+        // (judged, pinned and secured when it was dialled, under the same class); a dial pinned
+        // `within` an address set is never pooled.
+        let pooled = (self.pools.keeps() && desc.within.is_empty()).then(|| {
+            (
+                self.pools.shard(),
+                PoolKey {
+                    door: Arc::as_ptr(&door).cast::<()>() as usize,
+                    authority: planned.authority().to_ascii_lowercase(),
+                    secure: planned.secure(),
+                    name: planned.name().map(str::to_owned),
+                    class: (judged_class, egress_class),
+                },
+            )
+        });
+        let mut planned = planned;
+        if let Some((shard, key)) = &pooled {
+            if let Some(line) = self.pools.lend(*shard, key) {
+                let redial = Redial {
+                    door: Arc::clone(&door),
+                    dial: planned.dial().clone(),
                     egress_class,
-                    within: desc.within.to_vec(),
-                    early: Vec::new(),
-                    answer,
-                }),
-            ),
-        };
-        self.slab.insert(
-            caller,
-            need,
-            Held {
-                conn: Mutex::new(conn),
-                judging: Mutex::new(judging),
-                rest: Mutex::new((None, Vec::new(), false)),
-                reason: Mutex::new(None),
-            },
-        )
+                    judged_class,
+                    mark: line.flushed(),
+                };
+                let (opening, words) = planned.into_opening();
+                match line.attach(opening, words) {
+                    Ok(stream) => {
+                        let held = Held::over(Some((line, stream)), None, pooled);
+                        *held.redial.lock().expect("redial") = Some(redial);
+                        return self.slab.insert(caller, need, held);
+                    }
+                    // The lent line failed before the exchange left (ARCHITECT ruling
+                    // Q-L18-RETRY): it is let go, and the exchange dials a fresh connection.
+                    Err((stream, _)) => {
+                        line.leave(stream, false);
+                        self.pools.drop_line(*shard, key, &line);
+                        planned = Planned::locate(redial.door, redial.dial).map_err(|f| map(&f))?;
+                    }
+                }
+            }
+        }
+        let (conn, judging) = self.dial_judged(planned, egress_class, judged_class, desc.within)?;
+        let held = Held::over(None, judging, pooled);
+        if let Some(conn) = conn {
+            self.ride(&held, conn);
+        }
+        self.slab.insert(caller, need, held)
     }
 
     /// A write is taken whole, short, or (no room under
@@ -968,7 +1291,7 @@ impl Conns for Connector {
         text: bool,
     ) -> Result<usize, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
-        if !Self::settle(&held, None)? {
+        if !self.settle(&held, None)? {
             if let Some(j) = held.judging.lock().expect("judging").as_mut() {
                 // Held until the judgement answers, under the same cap a connection's buffer has.
                 let held_bytes: usize = j.early.iter().map(|(b, _, _)| b.len()).sum();
@@ -983,10 +1306,8 @@ impl Conns for Connector {
                 return Ok(take);
             }
         }
-        let mut c = held.conn.lock().expect("connection");
-        let c = c.as_mut().ok_or(ConnError::Closed)?;
-        let waker = Waker::noop();
-        match c.write(bytes, end, text, &mut Context::from_waker(waker)) {
+        let (line, stream) = held.line().ok_or(ConnError::Closed)?;
+        match line.emit(stream, bytes, end, text) {
             Ok(0) if !bytes.is_empty() => Err(ConnError::Pending),
             got => got.map_err(|f| map(&f)),
         }
@@ -1010,16 +1331,15 @@ impl Conns for Connector {
             if held.rest.lock().expect("rest").0.is_some() {
                 return Ok(at);
             }
-            match Self::settle(&held, Some(&waker)) {
+            match self.settle(&held, Some(&waker)) {
                 Ok(false) => continue,
                 Err(_) => return Ok(at),
                 Ok(true) => {}
             }
-            let mut c = held.conn.lock().expect("connection");
-            let Some(c) = c.as_mut() else {
+            let Some((line, stream)) = held.line() else {
                 return Ok(at);
             };
-            if c.poll_ready(&mut cx).is_ready() {
+            if line.poll_ready(stream, &mut cx).is_ready() {
                 return Ok(at);
             }
         }
@@ -1028,33 +1348,37 @@ impl Conns for Connector {
 
     fn facts(&self, caller: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
-        if !Self::settle(&held, None)? {
+        if !self.settle(&held, None)? {
             return Err(ConnError::Pending);
         }
-        let c = held.conn.lock().expect("connection");
-        let e = c.as_ref().ok_or(ConnError::Closed)?.established();
+        let (line, _) = held.line().ok_or(ConnError::Closed)?;
+        let e = line.established().ok_or(ConnError::Closed)?;
         Ok(ConnFacts {
+            client_identity: false,
+            peer_key_pin: None,
             sni: e.offered_name.clone(),
             alpn: e
                 .agreed_protocol
                 .as_ref()
                 .map(|p| String::from_utf8_lossy(p).into_owned()),
-            peer_cert: c
-                .as_ref()
-                .and_then(Connection::peer_cert_hash)
-                .map(|fingerprint| busbar_contract::transport::wire::CertFacts {
+            peer_cert: line.peer_cert_hash().map(|fingerprint| {
+                busbar_contract::transport::wire::CertFacts {
                     subject: String::new(),
                     issuer: String::new(),
                     fingerprint,
-                }),
+                }
+            }),
             claim: e.claim.clone(),
         })
     }
 
     fn close(&self, caller: InstanceId, conn: ConnId) -> Result<(), ConnError> {
         let held = self.slab.remove(caller, conn)?;
-        if let Some(c) = held.conn.lock().expect("connection").take() {
-            c.close();
+        let line = held.line.lock().expect("line").take();
+        if let Some((line, stream)) = line {
+            // An exchange that finished whole hands its line back to the pool it came from once
+            // nobody else rides it; any other close lets the line go.
+            self.let_go(&held, &line, stream, held.whole.load(Ordering::Acquire));
         }
         Ok(())
     }
@@ -1086,6 +1410,10 @@ mod trust_from_tests;
 #[cfg(test)]
 #[path = "tests/upgrade_tests.rs"]
 mod upgrade_tests;
+
+#[cfg(test)]
+#[path = "tests/unix_target_tests.rs"]
+mod unix_target_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code, dead_code)]

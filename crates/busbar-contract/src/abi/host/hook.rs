@@ -29,7 +29,7 @@ use crate::abi::hook::{
     STAGE_HAS_REMAINING_CANDIDATES, STAGE_HAS_STATUS, VIEW_HAS_BUDGET_REMAINING, VIEW_HAS_PROMPT,
     VIEW_HAS_USER,
 };
-use crate::abi::mechanism::call::{AbiStr, Blob, InHead, BLOB_ABSENT};
+use crate::abi::mechanism::call::{AbiStr, Blob, InHead, BLOB_ABSENT, BLOB_OCTETS};
 use crate::hook_wire::HookStageProjection;
 use crate::hooks::{Candidate, RoutingContext, RoutingRequest};
 use crate::signal::{SignalBag, SignalValue as Value};
@@ -56,6 +56,7 @@ struct Store {
     lists: Vec<Box<[AbiStr]>>,
     signals: Vec<Box<[SignalEntry]>>,
     messages: Vec<Box<[MessageView]>>,
+    octets: Vec<Box<[u8]>>,
 }
 
 impl Store {
@@ -72,6 +73,22 @@ impl Store {
 
     fn opt(&mut self, v: Option<&str>) -> AbiStr {
         v.map_or(NULL, |v| self.s(v))
+    }
+
+    /// Present octets ([`BLOB_OCTETS`]), copied into the view; `None` = an absent blob.
+    fn octets(&mut self, v: Option<&[u8]>) -> Blob {
+        let Some(v) = v else {
+            return NO_BLOB;
+        };
+        let b: Box<[u8]> = v.into();
+        let out = Blob {
+            ptr: b.as_ptr(),
+            len: b.len(),
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        };
+        self.octets.push(b);
+        out
     }
 
     fn list(&mut self, v: &[String]) -> (*const AbiStr, usize) {
@@ -174,6 +191,7 @@ fn request_view(store: &mut Store, req: &RoutingRequest<'_>) -> RequestView {
         flags,
         signals,
         signals_len,
+        session: store.octets(req.session),
     }
 }
 
