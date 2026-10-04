@@ -20,7 +20,7 @@
 //! test on the engine's side pins the two equal, entry by entry, until the engine is gone.
 
 use busbar_contract::abi::host::conn::connector::{
-    Need, DIRECTION_OUTBOUND, EGRESS_OPEN_WEB, EGRESS_PROVIDER, KEEP_NAMED,
+    Need, DIRECTION_OUTBOUND, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE, KEEP_NAMED,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Section, SECTION_DECLARING};
@@ -271,7 +271,12 @@ pub const NEEDS: &[Need] = &[
     },
     Need {
         direction: DIRECTION_OUTBOUND,
-        egress_class: EGRESS_PROVIDER,
+        // The operator's own destination (each agent at the `url:` the operator registered): the
+        // operator-infrastructure class, which reaches a private address as 1.5.5 reached an agent
+        // registered with `allow_private: true`. An agent registered without it is refused every
+        // private address by the plane's own judgement before the hop ([`crate::plane_door`]'s
+        // guard, `DEST_REFUSE_PRIVATE`); a cloud-metadata host is refused either way.
+        egress_class: EGRESS_OPERATOR_INFRASTRUCTURE,
         transport: abi_str(DOCUMENT_TRANSPORT),
         auth: NONE,
         target_from: abi_str(MEMBER_TARGET),

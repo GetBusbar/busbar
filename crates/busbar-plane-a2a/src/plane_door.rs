@@ -1455,7 +1455,9 @@ fn judge_hop(
     allow_private: bool,
     base: u32,
 ) -> Poll<Result<(u32, String), String>> {
-    use busbar_contract::abi::host::conn::connector::{EGRESS_OPEN_WEB, EGRESS_PROVIDER};
+    use busbar_contract::abi::host::conn::connector::{
+        EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+    };
     use busbar_contract::abi::host::service::{
         ItemSpan, DEST_ALLOWED, DEST_EXPLAIN, DEST_REFUSE_PRIVATE,
     };
@@ -1464,7 +1466,7 @@ fn judge_hop(
         return Poll::Ready(Ok((base, String::new())));
     };
     let (class, flags) = if allow_private {
-        (EGRESS_PROVIDER, DEST_EXPLAIN)
+        (EGRESS_OPERATOR_INFRASTRUCTURE, DEST_EXPLAIN)
     } else {
         (EGRESS_OPEN_WEB, DEST_EXPLAIN | DEST_REFUSE_PRIVATE)
     };
