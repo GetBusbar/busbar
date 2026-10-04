@@ -29,7 +29,7 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::redacted::Redacted;
 
-use super::kinds::auth::Auth;
+use super::kinds::auth::{Auth, AuthFacts, OutboundStyle};
 use super::{in_head, out_head, Dispatcher, Frame, Plugin};
 
 /// One open auth instance, the dispatcher that adopted it, and the worker a waiting `fields` is
@@ -41,6 +41,21 @@ pub struct OutboundInstance {
     worker: u32,
 }
 
+/// THE OUTBOUND STYLE `style` as `plugin`'s tail states it, if it serves it (THE DESIGN §6 step 3:
+/// the auth plugin that serves the style opens the binding). Named `serves_style`, not `serves`, so
+/// it is not a second spelling of the kernel's one trust-serve decision
+/// (`busbar-kernel/src/trust/mod.rs` `Approval::serves`, the dispatch gate) -- a different concept
+/// (auth-style serving, not trust dispatch); the neutrality census keeps `fn serves(` kernel-only.
+#[must_use]
+pub fn serves_style(plugin: &Plugin<Auth>, style: &str) -> Option<OutboundStyle> {
+    plugin
+        .context::<AuthFacts>()?
+        .styles
+        .iter()
+        .find(|s| s.name == style)
+        .cloned()
+}
+
 impl OutboundInstance {
     /// `plugin`, adopted by `dispatcher`, a waiting `fields` submitted on `worker`.
     pub fn new(plugin: Plugin<Auth>, dispatcher: Arc<Dispatcher>, worker: u32) -> Self {
@@ -49,6 +64,63 @@ impl OutboundInstance {
             dispatcher,
             worker,
         }
+    }
+
+    /// `plugin`'s instance OPENED for its outbound styles: validated and opened (generation 1) over
+    /// the empty settings document, as [`Self::new`] then serves it. An outbound style binds its
+    /// credential and settings per binding (`open_outbound`), never at the instance's open.
+    ///
+    /// # Errors
+    ///
+    /// `validate` or `open` did not answer READY, naming the plugin.
+    pub fn open(
+        plugin: Plugin<Auth>,
+        dispatcher: Arc<Dispatcher>,
+        worker: u32,
+    ) -> Result<Self, String> {
+        use busbar_contract::abi::mechanism::lifecycle::{slot as lc, OpenIn, OpenOut, ValidateIn};
+        const EMPTY: &[u8] = b"{}";
+        let named = |what: &str, outcome: Outcome| {
+            format!(
+                "`{}` did not {what} for its outbound styles: {outcome:?}",
+                plugin.name()
+            )
+        };
+        let mut v = Frame::new(
+            ValidateIn {
+                head: in_head(),
+                settings: blob(EMPTY, BLOB_JSON, 0),
+                err_buf: std::ptr::null_mut(),
+                err_cap: 0,
+            },
+            out_head(),
+        );
+        let called = plugin.call(lc::VALIDATE, &mut v);
+        if called.outcome != Outcome::Ready {
+            return Err(named("validate", called.outcome));
+        }
+        let mut f = Frame::new(
+            OpenIn {
+                head: in_head(),
+                host: std::ptr::null(),
+                settings: blob(EMPTY, BLOB_JSON, 0),
+                secrets: std::ptr::null(),
+                secrets_len: 0,
+                generation: 1,
+                err_buf: std::ptr::null_mut(),
+                err_cap: 0,
+            },
+            OpenOut {
+                head: out_head(),
+                instance: std::ptr::null_mut(),
+                err_len: 0,
+            },
+        );
+        let called = plugin.call(lc::OPEN, &mut f);
+        if called.outcome != Outcome::Ready {
+            return Err(named("open", called.outcome));
+        }
+        Ok(Self::new(plugin, dispatcher, worker))
     }
 }
 

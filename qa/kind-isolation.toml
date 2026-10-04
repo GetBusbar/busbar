@@ -560,21 +560,6 @@ kind = "contract"
 crate = "busbar-voice"
 kind = "plane"
 
-[[disagreement]]
-crate = "busbar"
-kind = "plane"
-note = "segment scanner 1942, window scanner 1941. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-a2a"
-kind = "plane"
-note = "segment scanner 3167, window scanner 3147; scored 3167. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the UNION of the two hit sets, never either one alone, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-contract"
-kind = "plane"
-note = "segment scanner 115, window scanner 113. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
 # ------------------------------------------------------------------------------------------------
 #
 # `kind-isolation:deps` held the manifests to a table of kind-to-kind CLASSES in Rust source, and a
@@ -625,6 +610,16 @@ verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes."
 why     = "busbar names busbar-a2a: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-auth-header"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 / §6 step 3 — the composition root is the one thing that names all three axes; the default distribution links the auth plugin that serves a door plane's outbound style (SERVE-WIRE, ARCHITECT Q-L1-AUTH (A) 2026-10-03)."
+why     = "busbar names busbar-auth-header: declared optional (feature `auth-header`, default-on) in the shipped graph, 1 declaration(s) at this commit — the root compiles in the header auth plugin (bearer/api-key/x-goog-api-key) a door plane's member egress binds its style through (door_steps `OutboundAuths`). The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack."
+drain   = "none: BUSBAR-1.6.0.md grants this class (the root names the auth axis). Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar"
@@ -1550,13 +1545,11 @@ drain = "delete the auth name from the auth crates: an auth plugin reaches auth 
 [[cell]]
 crate = "busbar-auth-header"
 kind = "auth"
-count = "14"
 
 # FIRST CELL of a new crate (OWNER GRANT (1), extended to a newly measured column (ARCHITECT ruling 2026-09-29): striking `auth` from PENDING_KINDS creates the auth column for the first time, so this first measurement is a baseline, not growth.) Needles: auth-sigv4 x1, busbar-auth-sigv4 x1.
 [[cell]]
 crate = "busbar-auth-oauth"
 kind = "auth"
-count = "2"
 
 # ------------------------------------------------------------------------------------------------
 # [[instance]] — THE FIVE PLUGIN-INSTANCE AXES C1 WAS NEVER MEASURED OVER (item 118 / C1-KIND)
@@ -1657,13 +1650,11 @@ kind = "secret"
 [[instance]]
 crate = "busbar-auth-header"
 kind = "auth"
-count = "2"
 
 # FIRST INSTANCE ROW of a new crate (OWNER GRANT (1), extended to a newly measured column (ARCHITECT ruling 2026-09-29): striking `auth` from PENDING_KINDS creates the auth column for the first time, so this first measurement is a baseline, not growth.)
 [[instance]]
 crate = "busbar-auth-oauth"
 kind = "auth"
-count = "1"
 
 # THE ONE REDIRECT: busbar's own crates, as a pulled plugin repo names them. A default plugin lives in
 # its own repo and names busbar-contract (#40: contract only; the SDK is busbar_contract::abi::sdk,

@@ -201,6 +201,14 @@ impl PlaneMoney {
             .unwrap_or_default()
     }
 
+    /// The key unit `key` is ledgered, metered and priced under: its serving member's once its
+    /// answer committed ([`MoneySeam::served`]), else the member it was opened with; `None` when no
+    /// money facts are open for it.
+    #[must_use]
+    pub fn serving(&self, key: UnitKey) -> Option<String> {
+        self.lock().get(&key).map(|o| o.money.model.clone())
+    }
+
     /// How many units' money facts are open (a witness: every end closes its unit).
     #[must_use]
     pub fn open_units(&self) -> usize {

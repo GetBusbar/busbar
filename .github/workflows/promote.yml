@@ -12,7 +12,7 @@ on: [pull_request, merge_group]
 concurrency: { group: "promote-${{ github.event.pull_request.number || github.event.merge_group.head_ref }}", cancel-in-progress: "${{ github.event_name == 'pull_request' && github.base_ref != 'dev' }}" }
 permissions: { contents: read }
 env:
-  RELEASE_REF: 9d6aa154c0e65e595cf0eb52bb504494eee5a5e9
+  RELEASE_REF: 2ada212dd1598005a6bf26c3756391b04668e810
   SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
   TO: ${{ github.base_ref || github.event.merge_group.base_ref }}
   BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}

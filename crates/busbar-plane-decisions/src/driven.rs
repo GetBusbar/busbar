@@ -63,6 +63,15 @@ pub mod tail {
     /// The one dialect this plane speaks. Dialect index 0 everywhere below.
     pub const DIALECTS: &[&str] = &[config::PROTOCOL];
 
+    /// The outbound auth style a jev far end is reached under: the operator's credential as a
+    /// bearer (the signed design: "auth = core gateway credential, plane returns a
+    /// CredentialLocator, never sees the secret").
+    pub const OUTBOUND_STYLE: &str = "bearer";
+
+    /// Each dialect's default outbound auth style, `(dialect index, style)` (the design, "Outbound auth", step 2:
+    /// a provider entry's `auth:`, else this; ARCHITECT Q-L1-AUTH (A), 2026-10-03).
+    pub const DIALECT_AUTH: &[(u32, &str)] = &[(0, OUTBOUND_STYLE)];
+
     /// The resource granularity a grant names: a configured decision provider.
     pub const SCOPE_KINDS: &[&str] = &["decision_provider"];
 
@@ -88,9 +97,10 @@ pub mod tail {
     /// own decision count.
     pub const FEE_UNITS: &[&str] = &[];
 
-    /// The connection needs, `(transport, auth)`, for the far-end direction. The plane names the
-    /// auth scheme and never holds what is behind it.
-    pub const NEEDS: &[(&str, &str)] = &[(claims::TRANSPORT, super::EGRESS_SCHEME)];
+    /// The connection needs, `(transport, auth)`, for the far-end direction: its dialect's style, the
+    /// one a member resolves to by default (a member is bound on the need its resolved style names).
+    /// The plane names the style and never holds what is behind it.
+    pub const NEEDS: &[(&str, &str)] = &[(claims::TRANSPORT, OUTBOUND_STYLE)];
 
     /// The claims the generation snapshot publishes, `(verb, target)`.
     pub const CLAIMS: &[(&str, &str)] = &[("POST", ops::PATH_SYSTEMONE)];
@@ -183,9 +193,11 @@ pub struct FarEndRequest<'a> {
 }
 
 /// Answer an ATTEMPT piece: the same request on every attempt, whichever member the kernel picked.
-/// jev names no provider on the wire, so the member changes nothing in the request.
+/// jev names no provider on the wire, so the member changes nothing in the request. Named
+/// `attempt_request`, not `attempt`, so it is not a cross-plane re-spelling of llm/a2a's `attempt`
+/// (structure-lint plane-dup; ARCHITECT ruling 2b 2026-10-04).
 #[must_use]
-pub fn attempt(caller_body: &[u8]) -> FarEndRequest<'_> {
+pub fn attempt_request(caller_body: &[u8]) -> FarEndRequest<'_> {
     FarEndRequest {
         verb: "POST",
         target: ops::PATH_SYSTEMONE,

@@ -87,6 +87,10 @@ impl PlaneCalls for PlaneInstance {
         self.pure(slot::ARRIVE, input, out, grow)
     }
 
+    fn arrived_pool(&self, out: &ArriveOut) -> Option<Vec<u8>> {
+        crate::dispatch::plugin::copy_str(out.pool)
+    }
+
     fn refusal(
         &self,
         input: &mut RefusalIn,

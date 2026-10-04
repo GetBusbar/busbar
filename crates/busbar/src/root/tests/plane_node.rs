@@ -4658,3 +4658,55 @@ fn a_declared_open_class_on_an_absent_card_posts_its_counts_unrefused() {
         Some(&50)
     );
 }
+
+/// THE WALK'S DISPATCH RECORD, ON THE BOOK (ARCHITECT P3 (c), 2026-10-02): a write-ahead record the
+/// egress walk makes for a unit whose facts are open is written onto the node's book under that
+/// unit's balance, window and arrival before the dial; one for a unit with no open facts is refused,
+/// so its dial never happens.
+#[test]
+fn a_dispatch_record_is_written_on_the_book_under_its_units_facts() {
+    use busbar_kernel_egress::ports::{Dispatched, DurabilityUnavailable, Journal};
+    let node = Arc::new(Node::new());
+    let durability = crate::root::durability::build(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+    )
+    .expect("a memory-buffered journal cannot fail to open");
+    let book = Arc::new(std::sync::Mutex::new(durability));
+    node.bind_book(Arc::clone(&book));
+    let written = || {
+        book.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .journal
+            .replay()
+            .expect("reads back")
+            .expect("verifies")
+            .len()
+    };
+    let site = NodeEndPost::new(Arc::clone(&node));
+    let record = |unit: u64| Dispatched {
+        leg: 0,
+        attempt: 1,
+        pool: String::new(),
+        destination: busbar_contract::DestinationId::new(0),
+        lane: None,
+        unit: UnitKey::new(unit),
+    };
+    site.open(
+        UnitKey::new(51),
+        PrincipalId::new("acct:dispatch"),
+        Arrived::at(EPOCH * 1_000, 0),
+        None,
+    );
+    let before = written();
+    assert_eq!(site.dispatched(&record(51)), Ok(()));
+    assert_eq!(written(), before + 1, "the dispatch is on the book");
+    assert_eq!(
+        site.dispatched(&record(52)),
+        Err(DurabilityUnavailable),
+        "no open facts, no record, no dial"
+    );
+    assert_eq!(written(), before + 1);
+    site.close(UnitKey::new(51));
+}

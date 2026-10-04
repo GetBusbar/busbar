@@ -227,6 +227,20 @@ impl<T> std::fmt::Debug for Out<'_, T> {
     }
 }
 
+impl Out<'_, crate::abi::plane::ArriveOut> {
+    /// THE ROUTE a READY arrival names (ARCHITECT Q-SW6 / Q-FL3, 2026-10-02): `class`
+    /// ([`crate::abi::plane::ROUTE_POOL`] or [`crate::abi::plane::ROUTE_DIRECT`]) and the `entry`
+    /// inside the plane's own section it names, the name kept in the instance's memory for the
+    /// answer. An answer with no instance keeps no name, so it names none.
+    pub fn route(&mut self, class: u8, entry: &str) {
+        self.set(|o| &o.route, class);
+        if let Some(kept) = self.kept {
+            let name = kept.text(entry.to_string());
+            self.put(|o| &o.pool, name);
+        }
+    }
+}
+
 impl<'a, T: AbiOut> Out<'a, T> {
     /// An `out` with no instance and no lent reason buffer (the unit tests' writer).
     #[cfg(test)]

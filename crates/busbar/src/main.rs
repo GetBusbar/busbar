@@ -45,7 +45,7 @@ use axum::Router;
 // checks without booting, and the last two are the config/providers path precedence the scanners
 // there answer for boot AND for every command.
 use busbar_kernel::{
-    build_app_from_config, build_split_routers_with_limits, load_config_from_disk, LoadedConfig,
+    build_app_from_config, build_split_routers_serving, load_config_from_disk, LoadedConfig,
     ENV_CONFIG,
 };
 use busbar_kernel::{config, config_validate, diagnostics, export, metrics, tls};
@@ -757,6 +757,16 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // as the release without this field, byte for byte.
     #[cfg(feature = "root-admin")]
     let boot_operator_auth = cfg.auth.clone();
+    // The operator's data chain (`auth.chain`), the auth of every data-listener guest-list line
+    // (THE DESIGN §6), captured for the door planes' lines before `cfg` is consumed.
+    let data_chain: Vec<String> = cfg
+        .auth
+        .as_ref()
+        .map(|a| a.chain.iter().map(|e| e.name.clone()).collect())
+        .unwrap_or_default();
+    // The resolved `providers:` (catalog-merged), as the door planes' members reach them (THE
+    // DESIGN §6 step 2), captured before `cfg` is consumed.
+    let door_providers = root::door_steps::provider_routes(&cfg.providers);
     // The root breaker's per-pool ladders, read off the same `pools:` the build resolves each pool's
     // own dispatch cfg from, before `cfg` is consumed.
     #[cfg(feature = "root-admin")]
@@ -824,43 +834,34 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         .clone()
         .map(|g| g as Arc<dyn busbar_kernel::host_services::SignKey>);
     root::serve::attach(&late_services, signer, &app.demotion_record, &planes);
-    // THE DOOR PLANES, COMPOSED (`root::serve::compose_planes`, TODO U6-U7): each plane bound through
-    // its door whose section this deployment writes is opened, driven and ticked here, once, its
-    // money posted onto the node's book a root unit keeps (`RootUnit::end_post`, through the
-    // generated table: this file names no root unit). A deployment without governance has no money
-    // book for a driven unit to settle on, and a build whose units keep no node book has nowhere to
-    // post an end, so their door planes stay bound and unopened, as before.
-    let end_post = ROOT_UNITS.iter().find_map(|u| u.end_post);
-    let served = match (app.governance.clone(), end_post) {
-        (Some(gov), Some(end_post)) => {
-            let post = end_post();
-            let money = move || {
-                Arc::new(busbar_kernel::plane_driver::PlaneMoney::new(
-                    Arc::clone(&gov),
-                    Arc::clone(&post),
-                )) as Arc<dyn busbar_kernel::plane_driver::MoneySeam>
-            };
-            root::serve::compose_planes(
-                root::boot::door_planes(),
-                &root::dispatch::dispatcher(),
-                &late_services,
-                &deploy.plane_raw,
-                &money,
-            )
-            .unwrap_or_else(|e| die(e))
-        }
-        (gov, _) => {
-            if !root::boot::door_planes().is_empty() {
-                let why = if gov.is_none() {
-                    "no governance book to settle on"
-                } else {
-                    "no node book to post an end onto"
-                };
-                tracing::warn!("door planes stay unopened: {why}");
-            }
-            root::serve::Served::default()
-        }
+    // THE DOOR PLANES, COMPOSED (`root::serve::compose_served`): opened, driven and ticked here, once,
+    // their money posted onto the process's one node, each member's egress sealed over the
+    // deployment's providers, the auth plugins that serve its style (the build's own rows, then
+    // the plugins directory's) and the one connector their needs were declared on.
+    let door_auths = root::door_steps::OutboundAuths::new(
+        root::dispatch::dispatcher(),
+        LINKED.auths,
+        root::boot::dropped_registry(),
+    );
+    let door_reach = root::door_steps::DoorReach {
+        providers: &door_providers,
+        secrets: &*app.secret_resolver,
+        auths: &door_auths,
+        conns: Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::PollConns>,
+        stream_ceiling_secs: busbar_kernel::config::limits::installed().map_or(
+            busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
+            |l| l.upstream_request_timeout_secs,
+        ),
     };
+    let served = root::serve::compose_served(
+        app.governance.clone(),
+        root::boot::door_planes(),
+        &root::dispatch::dispatcher(),
+        &late_services,
+        &deploy.door_sections(),
+        &door_reach,
+    )
+    .unwrap_or_else(|e| die(e));
     served.spawn_ticks();
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
     // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's
@@ -912,8 +913,26 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         &tls_secret_resolver,
     )
     .unwrap_or_else(|e| die(e));
-    let (data_router, admin_router, app_handle) = build_split_routers_with_limits(
+    // THE PROCESS'S ONE BOOK IS OPENED BEFORE THE ROUTERS ARE BUILT (ARCHITECT Q-SW7, 2026-10-02):
+    // the door planes' data routes are the router's construction (Q-SW1) and their units settle onto
+    // this same one book, so it is opened from the boot `app` and opened once; nothing below opens
+    // another (the rationale for the book itself is at its uses below). A build that serves a door
+    // plane opens it too.
+    let book = (cfg!(feature = "root-admin")
+        || ROOT_UNITS.iter().any(|u| u.opens_book)
+        || !served.planes.is_empty())
+    .then(|| root::boot::book(&app).unwrap_or_else(|e| die(e)));
+    // THE DOOR PLANES' DATA ROUTES (`root::serve::data_routes`): each served plane's claims, as its
+    // guest-list lines beside the kernel's own, onto the data router at its construction.
+    let doors = root::serve::data_routes(
+        served,
+        &data_chain,
+        &busbar_kernel::base_data_core_lines(&app),
+    )
+    .unwrap_or_else(|e| die(e));
+    let (data_router, admin_router, app_handle) = build_split_routers_serving(
         app,
+        doors,
         req_body_max,
         max_inbound,
         response_headers_cfg.server_timing,
@@ -939,8 +958,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // from a checkpoint that was not written yet.
     // Opened for the admin surface and for every root unit that settles onto it; a build with
     // neither opens nothing.
-    let book = (cfg!(feature = "root-admin") || ROOT_UNITS.iter().any(|u| u.opens_book))
-        .then(|| root::boot::book(&app_handle.load()).unwrap_or_else(|e| die(e)));
+    // (Opened above, before the routers: Q-SW7.)
 
     // THE CHECKPOINT CADENCE (OWNER Q71(3); BUSBAR-1.6.0.md THE DESIGN, §7): armed on the one book once its
     // opening is sealed, so every serving append checks the entry half and this tick checks the
@@ -1254,6 +1272,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         // can lose the race with process exit (same reason the budget flush above is inline here).
         let m = gov.flush_metering();
         tracing::info!(flushed = m, "metering rows flushed on shutdown");
+    }
+    // THE PLANE RECORD WRITE-BEHIND, drained before the store closes (`root::serve::drain_records`).
+    if !root::serve::drain_records(&late_services).await {
+        tracing::warn!("plane record writes were still queued at shutdown");
     }
     // No state snapshot on shutdown: reliability state is RAM-only (re-learned on boot) and the
     // audit log is written through to the durable store as it happens (store-or-RAM rule — there is

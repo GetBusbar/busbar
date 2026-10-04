@@ -4960,6 +4960,26 @@ Other rulings:
 - 2026-10-02 ARCHITECT K5: a K5 lane is staffed (the hook stage on the driver and the `project` ABI);
   the llm plane's `project` op follows K5's interface commit.
 
+### 2026-10-02 — ARCHITECT rulings (SERVE-WIRE, the served door)
+- 2026-10-02 ARCHITECT Q-SW6 (the door unit's pool), amended by Q-FL3/Q-FL2: `ArriveOut` gains
+  `pool: AbiStr`, the ENTRY NAME inside the plane's own section, and a one-byte route class
+  `route` (`ROUTE_POOL` | `ROUTE_DIRECT`) saying what it names (Part 3 §12 "on_piece carries the
+  route's pool"; pool, breaker and lane state keyed by (plane key, entry); #47 POOLS-VERBS;
+  FOLD-LLM2 Q2). The kernel resolves (plane key, entry) and never parses the name: a pool route
+  against the section's reserved `pools` sub-key, its rows under the pool's label; a direct route
+  against the section's entries (a model-serving section's `models` map, else its top-level
+  registrations), its meter and ledger rows under 1.5.5's EMPTY pool label, byte-identical. None
+  named, an unknown name or an unknown class is refused at verify (`no_destination`), rendered by
+  the plane's `refusal`; no 1.5.5 golden cell covers an unknown pool. A plane ABI v1 tail addition
+  before the tag (no version bump), with its validator (READY only: bytes behind a length, at most
+  `MAX_TEXT`, a known class; any other outcome names none), the SDK setter
+  `Out<ArriveOut>::route(class, entry)` and a RED test each.
+- 2026-10-02 ARCHITECT Q-SW8 (the egress walk's ports): its own non-`$` change between the served
+  door and the money steps carries the production clock, the members' concurrency permits and the
+  walk's counters. The write-ahead dispatch record (`Journal`) writes onto the money book's journal
+  (the node's `journal_dispatch`: a recovery reads it to tell a unit that sent something from one
+  that never did), so it is `$` and is composed with the money steps.
+
 # APPENDIX C — THE PLANE DRIVER AND HOST SERVICES (design, owner-ruled 2026-09-28)
 
 

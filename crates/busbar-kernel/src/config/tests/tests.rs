@@ -79,6 +79,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         plane_rate_cards: Default::default(),
         plane_fees: Default::default(),
         plane_raw: Default::default(),
+        declared_raw: Default::default(),
         store: None,
         secrets: Default::default(),
         advanced: AdvancedCfg::default(),
@@ -3913,6 +3914,40 @@ fn every_owned_declaring_section_lands_in_the_one_map_carrier() {
             "{section} must be a configured plane section"
         );
     }
+}
+
+/// THE DOOR'S SETTINGS (SERVE-WIRE, DEC-SERVE P2): a declaring section its plane owns the grammar
+/// of is parsed into the map carrier AND kept as written (card and fees stripped), so a plane
+/// served through its door opens with it as its settings, as a raw-carried plane does.
+#[test]
+fn a_declared_section_is_kept_as_written_for_the_door_beside_its_parse() {
+    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+        &NEUTRAL_SECTION_PLANE,
+        &RAW_SECTION_PLANE,
+    ]);
+    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(&format!(
+        "neutral_section:\n  a: 1\n  fees: {{ per_request: 3 }}\n{RAW_SECTION}:\n  greeting: hi\n\
+         providers: {{}}\nmodels: {{}}\npools: {{}}\n",
+    ))
+    .expect("both sections parse");
+    let sections = deploy.door_sections();
+    let a: serde_yaml::Value = serde_yaml::from_str("a: 1").unwrap();
+    let raw: serde_yaml::Value = serde_yaml::from_str("greeting: hi").unwrap();
+    assert_eq!(
+        sections.get("neutral_section"),
+        Some(&a),
+        "kept as written, fees lifted off"
+    );
+    assert_eq!(
+        sections.get(RAW_SECTION),
+        Some(&raw),
+        "the raw carrier's too"
+    );
+    assert!(
+        !deploy.plane_raw.contains_key("neutral_section"),
+        "never raw-carried"
+    );
 }
 
 /// The top-level section [`RAW_SECTION_PLANE`] declares — and does NOT own the grammar of.

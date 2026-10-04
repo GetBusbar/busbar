@@ -114,6 +114,35 @@ pub struct ServedFacts {
     pub op_classes: Vec<&'static str>,
     /// The tail's `audit_kind`.
     pub audit_kind: &'static str,
+    /// The tail's billable classes, in order: a unit count's `class` indexes them (the money
+    /// steps ledger each count under its class name, THE DESIGN §7).
+    pub billable_classes: Vec<&'static str>,
+    /// The tail's fee units, each also one of [`Self::billable_classes`]: the plane's report of
+    /// whether a unit incurred its fee (THE DESIGN §7, "the plane reports ... whether a fee unit was
+    /// incurred").
+    pub fee_units: Vec<&'static str>,
+    /// Each need's response-head rule, in Statement need order (`Need::keep_mode`, its kept and
+    /// denied names): what of a far end's head the host hands the plane on that need.
+    pub keeps: Vec<NeedKeep>,
+    /// Each need's direction and auth element, in Statement need order (`Need::direction`,
+    /// `Need::auth`): what a member's resolved style is matched against at config load.
+    pub need_auths: Vec<(u32, &'static str)>,
+    /// The tail's dialects, in order.
+    pub dialects: Vec<&'static str>,
+    /// The tail's `dialect_auth`: each dialect's default outbound style, by its dialect index
+    /// (THE DESIGN §6 step 2: a provider entry's `auth:`, else this).
+    pub dialect_auth: Vec<(u32, &'static str)>,
+}
+
+/// ONE NEED'S RESPONSE-HEAD RULE, as its Statement declares it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NeedKeep {
+    /// `KEEP_NAMED` or `KEEP_ALL_EXCEPT_DENIED`.
+    pub mode: u32,
+    /// `keep_response_headers`.
+    pub kept: Vec<&'static str>,
+    /// `deny_response_headers`.
+    pub denied: Vec<&'static str>,
 }
 
 /// The instance's tail bounds; an answer judged without them is FAULT (a plane instance always
@@ -168,6 +197,40 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
                 .map(|c| kept(c.op))
                 .collect(),
             audit_kind: kept(tail.audit_kind),
+            billable_classes: listed(tail.billable_classes, tail.billable_classes_len)
+                .into_iter()
+                .map(|c| kept(c.class))
+                .collect(),
+            fee_units: listed(tail.fee_units, tail.fee_units_len)
+                .into_iter()
+                .map(kept)
+                .collect(),
+            keeps: listed(st.needs, st.needs_len)
+                .into_iter()
+                .map(|n| NeedKeep {
+                    mode: n.keep_mode,
+                    kept: listed(n.keep_response_headers, n.keep_response_headers_len)
+                        .into_iter()
+                        .map(kept)
+                        .collect(),
+                    denied: listed(n.deny_response_headers, n.deny_response_headers_len)
+                        .into_iter()
+                        .map(kept)
+                        .collect(),
+                })
+                .collect(),
+            need_auths: listed(st.needs, st.needs_len)
+                .into_iter()
+                .map(|n| (n.direction, kept(n.auth)))
+                .collect(),
+            dialects: listed(tail.dialects, tail.dialects_len)
+                .into_iter()
+                .map(kept)
+                .collect(),
+            dialect_auth: listed(tail.dialect_auth, tail.dialect_auth_len)
+                .into_iter()
+                .map(|d| (d.dialect, kept(d.style)))
+                .collect(),
         },
     })
 }
@@ -227,6 +290,7 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
         signing: (!domain.is_empty() && !prefix.is_empty()).then_some((domain, prefix)),
         scope_kinds: words(t.scope_kinds, t.scope_kinds_len),
         trust_keys,
+        record_chains: listed(t.record_chains, t.record_chains_len),
     }
 }
 
@@ -583,6 +647,9 @@ pub struct OwnedClaim {
     pub carrier: String,
     /// `CLAIM_OPEN` | `CLAIM_EXACT` | `CLAIM_PATTERN`.
     pub flags: u32,
+    /// The dialect a refusal on this route wears before `arrive` has read the arrival (an index
+    /// into the tail's dialects, opaque to the host): the guest-list line's dialect.
+    pub refusal_dialect: u16,
 }
 
 /// One admin route of a snapshot, owned by the host.
@@ -694,6 +761,7 @@ fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot
                     target: text(c.target)?,
                     carrier: text(c.carrier)?,
                     flags: c.flags,
+                    refusal_dialect: c.refusal_dialect,
                 })
             })
             .collect::<Option<_>>()?,

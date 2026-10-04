@@ -429,6 +429,13 @@ pub fn dropped_from_config(
 pub(crate) static REGISTRY: std::sync::OnceLock<crate::root::loader::PluginRegistry> =
     std::sync::OnceLock::new();
 
+/// The plugin registry [`dropped_from_config`] built and kept, once it has (no rescan). The door
+/// composition reads it to seal each door-plane member's egress over the dropped-in auth plugins
+/// (`root::door_steps::OutboundAuths`).
+pub fn dropped_registry() -> Option<&'static crate::root::loader::PluginRegistry> {
+    REGISTRY.get()
+}
+
 /// The configured `plugins.dir`'s admitted rows (see [`dropped_from_config`]).
 fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
     let path =

@@ -40,8 +40,15 @@
 //! THE INSTANCE'S ADMISSION: built, the driver admits the instance to the kernel's host services
 //! ([`KernelServices::admit`]) from what it declares ([`PlaneCalls::declared`], its Statement tail)
 //! and its configured section, so its caller-scoped services (`records.*`, `sign`, `trust.*`)
-//! answer; right before each `tick` it runs the kernel's own tick ([`KernelServices::mark_due`],
-//! [`KernelServices::flush_tick`]), so the plane's `trust.due` sees the marks.
+//! answer; right before each `tick` it marks what is due ([`KernelServices::mark_due`]), so the
+//! plane's `trust.due` sees the marks.
+//!
+//! THE INSTANCE'S RECORD WRITES (ruling H2 U10): a piece's `RecordWrite`s join the kernel's one
+//! write-behind batcher ([`crate::host_records::WriteBehind`]) and the instance reads them at once
+//! through the pending-records overlay; the piece completes only once the store took every one.
+//! The batcher's cadence is not the plane's tick schedule: [`KernelServices::flushes`] restarts a
+//! stalled flush every second, and a reload never waits on a store write (the unit waiting on it is
+//! cancelled; the write itself runs on).
 
 mod cancel;
 mod epoch;
@@ -76,7 +83,7 @@ use tokio::sync::{watch, Notify};
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
 pub use far_end::{
-    AuthBinding, Egress, EgressFarEnd, MemberRoute, UnitRoute, DEFAULT_ERROR_BODY_MAX,
+    AuthBinding, Egress, EgressFarEnd, MemberRoute, ResponseKeep, UnitRoute, DEFAULT_ERROR_BODY_MAX,
 };
 pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
@@ -239,6 +246,7 @@ impl PlaneDriver {
             }),
             trust: trust.into_iter().collect(),
             scope_kinds: d.scope_kinds.iter().map(|k| (*k).to_string()).collect(),
+            record_chains: d.record_chains.clone(),
         };
         services.admit(&d.label, facts).map_err(|e| e.to_string())?;
         let driver = calls.driver();
@@ -270,7 +278,6 @@ impl PlaneDriver {
                 tokio::time::sleep(std::time::Duration::from_nanos(at - now)).await;
             }
             self.services.mark_due();
-            self.services.flush_tick();
             match self.calls.tick(driver, self.calls.now_ns()).await {
                 Some(next) if next != 0 => at = next,
                 _ => return,
@@ -350,6 +357,24 @@ pub struct Decoded {
     pub dialect: u32,
     /// The expected units (the admission estimate).
     pub expected: Vec<UnitCount>,
+    /// The entry it routes over: the name inside the plane's own section (ARCHITECT Q-SW6), opaque
+    /// bytes the kernel never parses; `None` = it named none.
+    pub pool: Option<Vec<u8>>,
+    /// What [`Decoded::pool`] names: `ROUTE_POOL` or `ROUTE_DIRECT` (ARCHITECT Q-FL3).
+    pub route: u8,
+}
+
+/// THE KERNEL STEPS A PLANE'S UNIT IS SERVED UNDER ([`PlaneDriver::unit`]'s `steps`): the loop's
+/// [`Units`], told once what the plane's `arrive` decided, before identity and scope run.
+pub trait DriverSteps: Units {
+    /// The unit `ctx` decoded to operation class `op`, routing over the entry its `arrive` named
+    /// (`None` = none named) as a pool or directly (`route`, `ROUTE_*`). Called once, when decode
+    /// proceeds.
+    fn decoded(&self, _ctx: &UnitCtx, _op: OpClassId, _route: u8, _pool: Option<&[u8]>) {}
+
+    /// The units the plane's `arrive` expects the unit to do (its admission estimate, THE DESIGN
+    /// §7 `admission: estimate`), told with [`Self::decoded`]. An estimate never bills.
+    fn expected(&self, _ctx: &UnitCtx, _units: &[UnitCount]) {}
 }
 
 /// A refusal or failure the plane rendered, for the caller.
@@ -487,6 +512,8 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
                 .take(o.units_written as usize)
                 .copied()
                 .collect(),
+            pool: self.driver.calls.arrived_pool(&o),
+            route: o.route,
         })
     }
 
@@ -583,7 +610,7 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
     }
 }
 
-impl<S: Units + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
+impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
     /// S3, the route step: the pump over the unit's own ticket, then the cancel the driver makes
     /// itself on a deadline, a cut or a reload.
     async fn route_async(&self, token: &Pass<Route>, ctx: &UnitCtx) -> StepAnswer<Route> {
@@ -657,7 +684,7 @@ macro_rules! forward_to_steps {
     )*};
 }
 
-impl<S: Units + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C> {
+impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C> {
     forward_to_steps! {
         arrival(token: &Pass<ArrivalStep>, ctx: &UnitCtx) -> StepAnswer<ArrivalStep>;
         authenticate(token: &Pass<Authenticate>, ctx: &UnitCtx) -> StepAnswer<Authenticate>;
@@ -697,6 +724,10 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C>
         let op = decoded
             .as_ref()
             .and_then(|d| classes.get(d.op_class as usize).copied());
+        if let (Some(op), Some(d)) = (op, decoded.as_ref()) {
+            self.steps.decoded(ctx, op, d.route, d.pool.as_deref());
+            self.steps.expected(ctx, &d.expected);
+        }
         self.lock().decoded = decoded;
         op.map_or_else(
             || StepAnswer::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
@@ -753,7 +784,7 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C>
     }
 }
 
-impl<S: Units + Sync, F: FarEnd, C: CallerEnd> RouteAwait for PlaneUnits<'_, S, F, C> {
+impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> RouteAwait for PlaneUnits<'_, S, F, C> {
     fn route_leg<'a>(
         &'a self,
         token: &'a Pass<Route>,
