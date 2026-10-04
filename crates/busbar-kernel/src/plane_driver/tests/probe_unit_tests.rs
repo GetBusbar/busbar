@@ -122,6 +122,10 @@ impl PlaneCalls for Prober {
         AbiOutcome::Ready
     }
 
+    fn arrived_pool(&self, _out: &ArriveOut) -> Option<Vec<u8>> {
+        None
+    }
+
     fn refusal(
         &self,
         _: &mut RefusalIn,

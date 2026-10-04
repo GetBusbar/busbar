@@ -38,10 +38,8 @@ fn the_tail_names_the_decision_class_at_its_index() {
     assert_eq!(family, "decision");
     assert!(tail::FEE_UNITS.is_empty());
     assert_eq!(tail::SECTION_DECLARING, crate::config::SECTION);
-    assert_eq!(
-        tail::NEEDS,
-        &[(crate::claims::TRANSPORT, "decision-egress")]
-    );
+    assert_eq!(tail::NEEDS, &[(crate::claims::TRANSPORT, "bearer")]);
+    assert_eq!(tail::DIALECT_AUTH, &[(0, "bearer")]);
 }
 
 #[test]

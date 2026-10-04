@@ -84,6 +84,10 @@ pub struct InstanceDecl {
     pub scope_kinds: Vec<&'static str>,
     /// The per-registration keys the kernel parses for the trust lifecycle.
     pub trust_keys: Vec<crate::plane::TrustKeyDecl>,
+    /// Its chained record kinds, as its tail declares them (each `kind` an index into
+    /// [`InstanceDecl::record_kinds`]): the kernel frames and verifies their chain (Part 3, the plane driver, "Record
+    /// writes ... A record kind the plane declares as chained keeps its declared framing").
+    pub record_chains: Vec<crate::abi::plane::RecordChain>,
 }
 
 /// ONE PLANE INSTANCE'S CALLS, as the kernel's plane driver makes them.
@@ -99,6 +103,10 @@ pub trait PlaneCalls: Send + Sync {
         out: &mut ArriveOut,
         grow: Grow<'_, ArriveIn, ArriveOut>,
     ) -> Outcome;
+
+    /// The pool a READY `arrive` named ([`ArriveOut::pool`], ARCHITECT Q-SW6), copied out of the
+    /// plane's memory while that answer is the instance's last; `None` when it named none.
+    fn arrived_pool(&self, out: &ArriveOut) -> Option<Vec<u8>>;
 
     /// `refusal`, ticketless, with the same one re-call as [`PlaneCalls::arrive`].
     fn refusal(

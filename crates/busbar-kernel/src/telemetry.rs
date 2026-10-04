@@ -346,12 +346,13 @@ pub fn upstream_failure(app: &App, pool_label: &str, lane_idx: usize, dispositio
 pub fn breaker_trip(app: &App, pool_label: &str, lane_idx: usize) {
     match app.tslots.lane_family(pool_label, lane_idx) {
         Some(fam) if fam.trips.is_valid() => fam.trips.incr(),
-        _ => metrics::counter!(
-            crate::metrics::BREAKER_TRIPS_TOTAL,
-            "pool" => pool_label.to_owned(),
-            "lane" => app.engine_tables_view().lane_view(lane_idx).map(|l| l.model.to_owned()).unwrap_or_default()
-        )
-        .increment(1),
+        _ => breaker_trip_on(
+            pool_label,
+            app.engine_tables_view()
+                .lane_view(lane_idx)
+                .map(|l| l.model)
+                .unwrap_or(""),
+        ),
     }
 }
 
@@ -361,13 +362,38 @@ pub fn failover(app: &App, pool_label: &str, reason: &'static str) {
     let ri = REASONS.iter().position(|r| *r == reason);
     match (slots, ri) {
         (Some(slots), Some(ri)) if slots[ri].is_valid() => slots[ri].incr(),
-        _ => metrics::counter!(
-            crate::metrics::FAILOVERS_TOTAL,
-            "pool" => pool_label.to_owned(),
-            "reason" => reason
-        )
-        .increment(1),
+        _ => failover_on(pool_label, reason),
     }
+}
+
+/// `busbar_breaker_trips_total` for one logical Closed→Open trip on `(pool label, lane label)`: THE
+/// EMIT for this family on every plane, both labels operator-configured (see
+/// [`upstream_attempt_on`]).
+pub fn breaker_trip_on(pool_label: &str, lane_label: &str) {
+    metrics::counter!(
+        crate::metrics::BREAKER_TRIPS_TOTAL,
+        "pool" => pool_label.to_owned(),
+        "lane" => lane_label.to_owned()
+    )
+    .increment(1);
+}
+
+/// `busbar_failovers_total` for one failover event on `pool label`, by reason: THE EMIT for this
+/// family on every plane.
+pub fn failover_on(pool_label: &str, reason: &'static str) {
+    metrics::counter!(
+        crate::metrics::FAILOVERS_TOTAL,
+        "pool" => pool_label.to_owned(),
+        "reason" => reason
+    )
+    .increment(1);
+}
+
+/// `busbar_pool_queued`, the live wait-terminal depth of `pool label`: THE EMIT for a pool whose
+/// depth its walk keeps (a pool served through a plane's door; the engine's pools are read at
+/// scrape).
+pub fn pool_queued_on(pool_label: &str, depth: i64) {
+    metrics::gauge!(crate::metrics::POOL_QUEUED, "pool" => pool_label.to_owned()).set(depth as f64);
 }
 
 /// `busbar_translations_total` for one cross-protocol hop. Both names come from the fixed protocol

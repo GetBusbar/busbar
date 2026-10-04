@@ -38,8 +38,8 @@ use busbar_kernel_egress::walk::{Step, Taken, Walk, WalkPorts};
 use busbar_kernel_egress::wire::Shed;
 
 use crate::plane_driver::{
-    Egress, EgressFarEnd, FarEnd, FarPiece, MemberRoute, OutboundRequest, Pick, UnitRoute,
-    DEFAULT_ERROR_BODY_MAX,
+    Egress, EgressFarEnd, FarEnd, FarPiece, MemberRoute, OutboundRequest, Pick, ResponseKeep,
+    UnitRoute, DEFAULT_ERROR_BODY_MAX,
 };
 
 pub(crate) use harness::*;
@@ -204,6 +204,7 @@ impl Node {
                             base_url: format!("https://{lane}.test/"),
                             auth: None,
                             provider: (*lane).to_string(),
+                            keep: ResponseKeep::default(),
                         },
                     )
                 })

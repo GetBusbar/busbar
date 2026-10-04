@@ -363,6 +363,13 @@ pub const PRINCIPAL_REQUIRED: u32 = 1;
 /// [`ArriveOut::principal_need`]: verify one if the caller presents it.
 pub const PRINCIPAL_OPTIONAL: u32 = 2;
 
+/// [`ArriveOut::route`]: the entry names a POOL of the plane's section; the walk keys its state by
+/// (plane key, pool) and its rows carry the pool's label. The all-zero default.
+pub const ROUTE_POOL: u8 = 0;
+/// [`ArriveOut::route`]: the entry names one MODEL entry, routed directly; the walk keys its state by
+/// (plane key, model entry) and its meter and ledger rows carry 1.5.5's empty pool label.
+pub const ROUTE_DIRECT: u8 = 1;
+
 /// [`OnPieceIn::from`]: the piece is the caller's.
 pub const FROM_CALLER: u32 = 0;
 /// [`OnPieceIn::from`]: the piece is the far end's.
@@ -1248,6 +1255,16 @@ pub struct ArriveOut {
     /// documentation).
     /// `0` = not a cancel. Never set together with a non-zero [`ArriveOut::correlation`].
     pub cancels: u64,
+    /// On READY: the ENTRY the unit routes over, its name inside the plane's own config section
+    /// (ARCHITECT Q-SW6, 2026-10-02): a pool or a model entry, as [`ArriveOut::route`] says. The kernel
+    /// resolves (plane key, entry) and never parses the name; none named is refused. Plane memory,
+    /// valid until the instance's next call. A tail addition; absent on every other outcome.
+    pub pool: AbiStr,
+    /// On READY: [`ROUTE_POOL`] or [`ROUTE_DIRECT`], what [`ArriveOut::pool`] names (ARCHITECT Q-FL3,
+    /// 2026-10-02). A tail addition; [`ROUTE_POOL`] on every other outcome.
+    pub route: u8,
+    /// Alignment padding.
+    pub _route_reserved: [u8; 7],
 }
 
 /// `on_piece`'s `in`.

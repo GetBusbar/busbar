@@ -172,6 +172,7 @@ fn rig() -> Rig {
                 },
             )],
             scope_kinds: vec!["group".into(), "item".into()],
+            record_chains: Vec::new(),
         },
     )
     .unwrap();
@@ -482,6 +483,7 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
             }),
             trust: Vec::new(),
             scope_kinds: Vec::new(),
+            record_chains: Vec::new(),
         },
     )
     .unwrap();

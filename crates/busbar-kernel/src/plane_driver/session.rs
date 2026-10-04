@@ -35,7 +35,7 @@ use super::{
 };
 use crate::plane_driver::cancel::Facts;
 use crate::plane_driver::{PlaneDriver, PlaneUnits, UnitState};
-use crate::teller::{UnitCtx, Units};
+use crate::teller::UnitCtx;
 
 /// THE CALLER'S SIDE OF A DUPLEX SESSION, one trait for every carrier that holds a session open:
 /// its pieces go to the plane, and what the plane emits toward the caller is written to it (the
@@ -119,7 +119,9 @@ fn cause(end: &End) -> Option<ReasonCode> {
     }
 }
 
-impl<S: Units + Sync, F: FarEnd, C: SessionCaller> PlaneUnits<'_, S, F, C> {
+impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
+    PlaneUnits<'_, S, F, C>
+{
     /// THE SESSION, after `open_unit` admitted its unit: `token` and `sealed` are what the
     /// admission handed back. Both sides run until the session ends; `Ok` when it ended on its
     /// own (the caller's side ended, or the plane said its reply was done), else why it ended.

@@ -244,6 +244,48 @@ fn an_arrival_that_cancels_carries_no_correlation_of_its_own() {
     );
 }
 
+/// THE POOL AN ARRIVAL NAMES (ARCHITECT Q-SW6, 2026-10-02): the entry name inside the plane's own
+/// section, on a READY answer only. Absent is valid (the plane's single default entry); a length
+/// with no bytes is FAULT, and a refused or failed arrival naming a pool is a contradiction.
+#[test]
+fn an_arrival_names_its_pool_only_when_ready_and_only_with_bytes() {
+    let mut o: ArriveOut = z();
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "absent");
+    o.pool = s("entry");
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "named");
+    let long = "p".repeat(crate::abi::mechanism::call::MAX_TEXT + 1);
+    o.pool = AbiStr {
+        ptr: long.as_ptr(),
+        len: long.len(),
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::OverMax, "arrive.pool")
+    );
+    o.pool = AbiStr {
+        ptr: null(),
+        len: 5,
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::NullWithCount, "arrive.pool")
+    );
+    let mut o: ArriveOut = z();
+    o.refusal = 3;
+    o.refusal_status = 404;
+    o.pool = s("entry");
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.pool")
+    );
+    let mut o: ArriveOut = z();
+    o.pool = s("entry");
+    assert_eq!(
+        check_arrive(Failed, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.pool")
+    );
+}
+
 /// A REFUSED ARRIVAL'S WORDS are carried whole or not at all: up to `MAX_REFUSAL_TEXT` bytes pass,
 /// one byte more is a FAULT (never cut), a length with no bytes is a FAULT, and a READY arrival's
 /// head error is not judged here.
@@ -1961,4 +2003,35 @@ fn a_plane_naming_a_kernel_money_verdict_is_malformed_not_the_verdict() {
             "{reason:?}: a tail row naming it is malformed"
         );
     }
+}
+
+/// THE ROUTE CLASS (ARCHITECT Q-SW6 amended by Q-FL3, 2026-10-02): a READY arrival names whether its
+/// entry is a pool or a model routed directly; any other class is FAULT, and an answer that admits
+/// nothing names the default class only.
+#[test]
+fn an_arrivals_route_class_is_pool_or_direct() {
+    for class in [ROUTE_POOL, ROUTE_DIRECT] {
+        let mut o: ArriveOut = z();
+        o.route = class;
+        o.pool = s("entry");
+        assert_eq!(
+            check_arrive(Ready, &o, &[], 4, &bounds()),
+            Ok(()),
+            "{class}"
+        );
+    }
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_DIRECT + 1;
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::UnknownCode, "arrive.route")
+    );
+    let mut o: ArriveOut = z();
+    o.refusal = 3;
+    o.refusal_status = 404;
+    o.route = ROUTE_DIRECT;
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.pool")
+    );
 }

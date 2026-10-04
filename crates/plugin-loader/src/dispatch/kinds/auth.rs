@@ -80,6 +80,19 @@ pub struct AuthFacts {
     /// With `abi::auth::FACT_READS_CREDENTIALS`: the credential kinds `verify` reads through
     /// `records.secret`, the only kinds the host serves this instance.
     pub credential_kinds: Vec<String>,
+    /// With `abi::auth::CAP_OUTBOUND`: the outbound styles it serves, each judged at load.
+    pub styles: Vec<OutboundStyle>,
+}
+
+/// ONE OUTBOUND STYLE an auth plugin's tail states (`abi::auth::StyleDecl`), owned by the host.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OutboundStyle {
+    /// The style's name.
+    pub name: String,
+    /// `abi::auth::STYLE_*`.
+    pub flags: u32,
+    /// The auth points it needs.
+    pub points: u32,
 }
 
 /// A `'static` Statement string, copied; `None` when malformed.
@@ -181,9 +194,15 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
     if t.styles_len > MAX_STYLES || (t.styles.is_null() && t.styles_len != 0) {
         return Err(format!("the auth tail states {} styles", t.styles_len));
     }
+    let mut styles = Vec::with_capacity(t.styles_len);
     for i in 0..t.styles_len {
         // SAFETY: `styles` holds `styles_len` `'static` declarations (checked non-NULL above).
         let d = unsafe { t.styles.add(i).read_unaligned() };
+        styles.push(OutboundStyle {
+            name: owned(d.name).ok_or("an auth style name is over-long")?,
+            flags: d.flags,
+            points: d.points,
+        });
         check_style_decl(d.flags, d.points).map_err(|f| {
             format!(
                 "auth style {} is refused: flags {:#x}, points {:#x}: {f:?}",
@@ -217,6 +236,7 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
         inbound_points,
         operator_principal: operator.then_some(principal),
         credential_kinds,
+        styles,
     })
 }
 

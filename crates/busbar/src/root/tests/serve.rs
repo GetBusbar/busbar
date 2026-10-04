@@ -294,12 +294,12 @@ fn the_composed_kernel_services_are_kept_for_the_driver() {
     let late = LateServices::new();
     assert!(late.kernel().is_none(), "nothing before the compose");
     let composed = Arc::new(kernel(&[], false));
-    late.install_kernel(Arc::clone(&composed))
+    late.install_kernel(Arc::clone(&composed), composed.clone())
         .expect("the install");
     assert!(Arc::ptr_eq(&late.kernel().expect("kept"), &composed));
     assert!(late.is_installed());
     assert_eq!(
-        late.install_kernel(Arc::new(kernel(&[], false))),
+        late.install_kernel(Arc::new(kernel(&[], false)), Arc::new(kernel(&[], false))),
         Err(AlreadyInstalled)
     );
 }
@@ -354,8 +354,8 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     use busbar_kernel::trust::reverify::Policy;
     use busbar_kernel::trust::section::TrustEntry;
     let late = LateServices::new();
-    late.install_kernel(Arc::new(kernel(&[], false)))
-        .expect("the install");
+    let k = Arc::new(kernel(&[], false));
+    late.install_kernel(Arc::clone(&k), k).expect("the install");
     let k = late.kernel().expect("kept");
     let entry = TrustEntry {
         pin: None,

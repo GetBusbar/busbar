@@ -1755,7 +1755,10 @@ fn compute_layout() -> String {
             refusal_status,
             _reserved,
             correlation,
-            cancels
+            cancels,
+            pool,
+            route,
+            _route_reserved
         ]
     );
     record!(

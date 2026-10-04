@@ -1272,6 +1272,11 @@ pub struct DeployCfg {
     /// section no registered plane declares is still refused as an unknown field.
     #[serde(skip)]
     pub plane_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
+    /// Every declaring section its plane owns the grammar of ([`DeployCfg::declared`]), AS WRITTEN
+    /// (card and fees stripped): the settings that plane's door opens with when it is served through
+    /// its door, beside the parse its grammar made. See [`DeployCfg::door_sections`].
+    #[serde(skip)]
+    pub declared_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
     /// The durable store as `{ module, settings }`. Absent = the ephemeral RAM store.
     #[serde(default)]
     pub store: Option<StoreCfg>,
@@ -1341,6 +1346,19 @@ pub struct DeployCfg {
 }
 
 impl DeployCfg {
+    /// THE DOOR PLANES' SETTINGS: every registered plane's declaring section this document writes,
+    /// as written (card and fees stripped), whichever carrier holds it, raw or parsed. A plane served
+    /// through its door opens with its own (LAW 7: a section absent here opens nothing).
+    #[must_use]
+    pub fn door_sections(&self) -> std::collections::BTreeMap<&'static str, serde_yaml::Value> {
+        self.plane_raw
+            .iter()
+            .chain(&self.declared_raw)
+            .filter(|(_, v)| !v.is_null())
+            .map(|(k, v)| (*k, v.clone()))
+            .collect()
+    }
+
     /// The operator-declared `providers_file:` pointer, if any — read by the bin's 1.6.0
     /// providers-override startup notice (the `providers_file` field is `pub`, so the bin
     /// crate needs this accessor). `None` ⇒ the key is absent from config.yaml.
