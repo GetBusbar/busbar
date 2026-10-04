@@ -693,6 +693,9 @@ pub struct BuildCtx<'a> {
     // back inside its own module; no other plane reads it, and it is built and consumed synchronously
     // here, so the erased `&dyn Any` needs no `Send + Sync` bound.
     pub agent_defs: &'a dyn std::any::Any,
+    /// The `tools:` registry section, erased as `agent_defs` is (`RootCfg::tool_defs`): a door
+    /// plane whose verb it is reads the section its door judged off it.
+    pub tool_defs: &'a dyn std::any::Any,
     pub public_url: Option<&'a str>,
     /// THE PRIOR GENERATION'S SLOT MAP, or `None` on a fresh boot — the same neutral
     /// [`crate::plane_host::PlaneSlots`] seam `build_runtime` receives, so a plane's `build` can CARRY

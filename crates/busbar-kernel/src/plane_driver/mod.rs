@@ -70,7 +70,7 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     reason_code, ArriveIn, ArriveOut, OutField, RefusalIn, RefusalOut, RefusalStatus, UnitCount,
-    REFUSAL_ANY_DIALECT, REFUSAL_GATE, REFUSAL_KERNEL,
+    REFUSAL_ANY_DIALECT, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
@@ -412,6 +412,14 @@ pub trait DriverSteps: Units {
     /// The units the plane's `arrive` expects the unit to do (its admission estimate, THE DESIGN
     /// §7 `admission: estimate`), told with [`Self::decoded`]. An estimate never bills.
     fn expected(&self, _ctx: &UnitCtx, _units: &[UnitCount]) {}
+
+    /// THE STEPS' OWN WORDS for a refusal they decided with `reason`, handed to the plane's
+    /// `refusal` as [`busbar_contract::abi::plane::RefusalIn::text`] (as a limit names the bucket
+    /// that blocked); `None` = the reason's word. A `ROUTE_SCOPE` unit refused because several
+    /// entries reach names them here.
+    fn refusal_words(&self, _reason: ReasonCode) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// A refusal or failure the plane rendered, for the caller.
@@ -432,6 +440,8 @@ pub(crate) struct UnitState {
     decoded: Option<Decoded>,
     /// A REFUSED `arrive`'s own code and 4xx status.
     declined: Option<(u32, u32)>,
+    /// A REFUSED `arrive`'s own words (its `head.error`), for the plane's `refusal`.
+    declined_words: Option<Vec<u8>>,
     rendered: Option<Rendered>,
     facts: cancel::Facts,
     bill: Option<CancelBill>,
@@ -558,11 +568,24 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
                 i.units_buf = units.as_mut_ptr();
                 i.units_cap = units.len();
             });
+        let pool = self.driver.calls.arrived_pool(&o);
         if outcome == AbiOutcome::Refused {
-            // The dispatcher judged the answer: a nonzero code and a 4xx status.
-            self.lock().declined = Some((o.refusal, o.refusal_status));
+            // The dispatcher judged the answer: a nonzero code and a 4xx status (5xx for a
+            // refusal about an entry).
+            let words = self
+                .driver
+                .calls
+                .arrived_refusal(&o)
+                .filter(|w| !w.is_empty());
+            let mut st = self.lock();
+            st.declined = Some((o.refusal, o.refusal_status));
+            st.declined_words = words;
         }
-        (outcome == AbiOutcome::Ready).then(|| Decoded {
+        // A REFUSAL ABOUT AN ENTRY (abi/plane "A refused arrival", rule 6; ARCHITECT
+        // Q-DEL-A2A-GATE) decodes as the entry it names: the caller's grant over it is judged
+        // first, and the refusal is rendered at admission, before anything is charged.
+        let held = outcome == AbiOutcome::Refused && pool.is_some();
+        (outcome == AbiOutcome::Ready || held).then(|| Decoded {
             op_class: o.op_class,
             principal_need: o.principal_need,
             dialect: o.dialect,
@@ -571,11 +594,13 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
                 .take(o.units_written as usize)
                 .copied()
                 .collect(),
-            pool: self.driver.calls.arrived_pool(&o),
+            pool,
             route: o.route,
         })
     }
+}
 
+impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
     /// The plane renders a refusal (`refusal`, ticketless, one re-call when short); the kernel's
     /// generic failure, with no body, when it cannot.
     fn render(&self, reason: ReasonCode) -> Rendered {
@@ -591,11 +616,14 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
         walk: Option<(u32, Option<u32>)>,
         said: Option<&str>,
     ) -> Rendered {
-        let (unit, dialect, declined) = {
+        let (unit, dialect, declined, words) = {
             let st = self.lock();
             let dialect = st.decoded.as_ref().map_or(0, |d| d.dialect);
             let declined = st.declined.filter(|_| reason == ReasonCode::DecodeFailed);
-            (st.unit, dialect, declined)
+            // THE PLANE'S OWN WORDS for the arrival it refused (abi/plane "A refused arrival"): they
+            // reach the caller only through its `refusal`, as REFUSAL_ARRIVE, unparsed.
+            let words = declined.and(st.declined_words.clone());
+            (st.unit, dialect, declined, words)
         };
         // A refusal the plane's own `arrive` decided wears the status it stated; the walk's
         // terminal wears its own; every other one the plane's stated row or the kernel's default.
@@ -605,7 +633,15 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             (None, None) => self.driver.config.status(dialect, reason),
         };
         let retry_after_s = walk.and_then(|(_, r)| r).unwrap_or(0);
-        let text = said.unwrap_or(reason.as_str());
+        let steps_words = if words.is_none() {
+            self.steps.refusal_words(reason)
+        } else {
+            None
+        };
+        let text: &[u8] = words
+            .as_deref()
+            .or(steps_words.as_deref())
+            .unwrap_or(said.unwrap_or(reason.as_str()).as_bytes());
         let caps = self.driver.config.caps;
         let (mut reply, mut fields, mut arena) = (
             vec![0u8; caps.reply],
@@ -613,7 +649,9 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             vec![0u8; caps.arena],
         );
         let mut input = RefusalIn {
-            cause: if reason == ReasonCode::HookVeto {
+            cause: if words.is_some() {
+                REFUSAL_ARRIVE
+            } else if reason == ReasonCode::HookVeto {
                 REFUSAL_GATE
             } else {
                 REFUSAL_KERNEL
@@ -621,7 +659,7 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             status,
             dialect,
             reason: reason_code(reason),
-            text: AbiStr::over(text.as_bytes()),
+            text: AbiStr::over(text),
             reply_buf: reply.as_mut_ptr(),
             reply_cap: reply.len(),
             fields_buf: fields.as_mut_ptr(),
@@ -661,7 +699,8 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
                 .to_vec()
         };
         Rendered {
-            status,
+            // The status the plane's rendering carries, where it states one (`0` = the kernel's).
+            status: if o.status == 0 { status } else { o.status },
             fields: fields
                 .iter()
                 .take(o.fields_written as usize)
@@ -801,14 +840,32 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         authenticate(token: &Pass<Authenticate>, ctx: &UnitCtx) -> StepAnswer<Authenticate>;
         approve(token: &Pass<Approve>, ctx: &UnitCtx, principal: &PrincipalId,
             destinations: &[VerifiedDestination]) -> StepAnswer<Approve>;
-        admit(token: &Pass<Admit>, admit: &Grant<Admittance>, ctx: &UnitCtx, principal: &PrincipalId,
-            destinations: &[VerifiedDestination], leases: &GroupLeaseSlip) -> StepAnswer<Admit>;
         meter(token: &Pass<Meter>, usage: &Grant<Consumption>, ctx: &UnitCtx, provisional: &Outcome,
             destinations: &[VerifiedDestination]) -> StepAnswer<Meter>;
         audit(token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> StepAnswer<Audit>;
         audit_refused(token: &Pass<Audit>, ctx: &UnitCtx, refusal: &Refusal) -> StepAnswer<Audit>;
         evidence(ctx: &UnitCtx) -> Evidence;
         at_parent_exit(ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal>;
+    }
+
+    /// The kernel's admission, unless the plane's `arrive` refused the unit about the entry it
+    /// named (abi/plane "A refused arrival", rule 6): that refusal is rendered here, after the
+    /// caller's identity and grant were judged and before anything is charged (ARCHITECT
+    /// Q-DEL-A2A-GATE: "refused → audits the refusal; nothing was charged").
+    fn admit(
+        &self,
+        token: &Pass<Admit>,
+        admit: &Grant<Admittance>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+        leases: &GroupLeaseSlip,
+    ) -> StepAnswer<Admit> {
+        if self.lock().declined.is_some() {
+            return StepAnswer::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
+        }
+        self.steps
+            .admit(token, admit, ctx, principal, destinations, leases)
     }
 
     /// The kernel's verify, after which the unit's caller reference is derived under the node's

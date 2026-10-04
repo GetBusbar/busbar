@@ -1771,6 +1771,7 @@ fn probe_gemini_live_route() -> (&'static str, String) {
     let ctx = busbar_kernel::plane::registry::BuildCtx {
         endpoint_slot: None,
         agent_defs: &unit,
+        tool_defs: &unit,
         public_url: Some("https://gw.conform.example.com"),
         prior: None,
     };

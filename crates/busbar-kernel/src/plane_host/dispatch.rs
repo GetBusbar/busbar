@@ -364,6 +364,7 @@ fn run_content_gate(
         request_id: 0,
         key: None,
         incremental: None,
+        session: None,
     };
     match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -535,6 +536,7 @@ pub(crate) extern "C-unwind" fn gate_decide(
             request_id: s.request_id,
             key: key.as_ref(),
             incremental,
+            session: (!sid.is_empty()).then_some(sid.as_bytes()),
         };
         // Drive the ASYNC gate on a fresh current-thread runtime (the `run_content_gate` precedent). A
         // runtime that will not start is fail-closed (`out` already holds the reject).

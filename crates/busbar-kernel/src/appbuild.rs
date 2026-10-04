@@ -1557,6 +1557,7 @@ pub fn build_app_from_config(
                     // `BuildCtx` names no plane-owned config type; the `agents:` container plane's
                     // `build` closure downcasts it back to its own typed config.
                     agent_defs: cfg.agent_defs.as_any(),
+                    tool_defs: cfg.tool_defs.as_any(),
                     public_url: cfg.public_url.as_deref(),
                     // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated
                     // coordination off its own prior runtime object across this apply — the same

@@ -230,6 +230,48 @@ pub async fn answer(req: Request) -> Option<Response> {
     )
 }
 
+/// SERVE ONE ADMIN REQUEST by the published instance whose admin route names `method` and `path`
+/// (relative to the admin mount): the head fields `headers` (the contract's never-kept fields
+/// struck) and `body`. `None` when no published instance names it. The registry row of a door
+/// plane mounts its stated admin routes through this (its `admin_routes` handler), so the request is
+/// served by the instance's own `serve` op, as the router's fallback serves it.
+pub async fn served_at(
+    method: &str,
+    path: &str,
+    headers: &axum::http::HeaderMap,
+    body: Bytes,
+) -> Option<Result<Served, Unserved>> {
+    let (table, index) = {
+        let tables = TABLES.read().unwrap_or_else(PoisonError::into_inner);
+        tables.iter().find_map(|t| {
+            t.routes.iter().enumerate().find_map(|(i, r)| {
+                (r.flags & ROUTE_PUBLIC == 0
+                    && r.verb.eq_ignore_ascii_case(method)
+                    && fill(&r.target, path).is_some())
+                .then(|| (t.clone(), i))
+            })
+        })
+    }?;
+    let head: HeadFields = headers
+        .iter()
+        .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
+        .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
+        .collect();
+    let calls = &*table.calls;
+    Some(
+        serve(
+            calls,
+            table.caps,
+            table.routes.len(),
+            index as u32,
+            path.as_bytes(),
+            head,
+            body,
+        )
+        .await,
+    )
+}
+
 /// Why a request was not served.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unserved {

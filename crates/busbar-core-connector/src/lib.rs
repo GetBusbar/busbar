@@ -956,8 +956,13 @@ impl DeclaredConns for Connector {
         // into a trust anchor, refuses the need here, at declaration. An inbound need is recorded
         // (the listener binds it), and refused on an unserved scheme alike.
         let outbound = spec.direction == DIRECTION_OUTBOUND;
-        let unresolved = (!spec.target_from.is_empty() && target.is_none())
-            || (!spec.trust_from.is_empty() && trust.is_none());
+        // A member-target need (`settings.*.<key>`) is pinned by no one target: each member's route
+        // is sealed at its own, and dials it like any need the plugin names per open.
+        let per_member = |path: &str| busbar_contract::section::member_target(path).is_some();
+        let unresolved = (!spec.target_from.is_empty()
+            && !per_member(&spec.target_from)
+            && target.is_none())
+            || (!spec.trust_from.is_empty() && !per_member(&spec.trust_from) && trust.is_none());
         let credentialed = target.is_some_and(carries_userinfo);
         let anchored = match trust.filter(|_| outbound) {
             None => Ok(None),

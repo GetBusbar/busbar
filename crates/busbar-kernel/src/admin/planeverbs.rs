@@ -69,8 +69,40 @@ pub fn to_admin_error(plane: &'static str, name: &str, err: PlaneVerbError) -> A
             "{} `{name}`",
             crate::plane::plane_decl(plane).subject_noun
         )),
-        PlaneVerbError::Validation(msg) => AdminError::Validation(msg),
+        PlaneVerbError::Validation(msg) | PlaneVerbError::ValidationOf(msg, _) => {
+            AdminError::Validation(msg)
+        }
         PlaneVerbError::Internal(_) => AdminError::Internal,
+    }
+}
+
+/// THE WIRE ANSWER of a plane's refusal: [`to_admin_error`]'s envelope, condition-tagged when the
+/// plane named the condition ([`PlaneVerbError::ValidationOf`]).
+pub fn refusal_response(
+    plane: &'static str,
+    name: &str,
+    err: PlaneVerbError,
+) -> axum::response::Response {
+    let cond = match &err {
+        PlaneVerbError::ValidationOf(_, cond) => Some(*cond),
+        _ => None,
+    };
+    let e = to_admin_error(plane, name, err);
+    match cond {
+        Some(cond) => crate::admin::v1::json::err_json_cond(&e, cond_of(cond)),
+        None => crate::admin::v1::json::err_json(&e),
+    }
+}
+
+/// The frozen taxonomy condition a plane's neutral condition tag names.
+fn cond_of(
+    cond: busbar_kernel::admin_verbs::PlaneAdminCond,
+) -> crate::admin::v1::contract::taxonomy::Cond {
+    use crate::admin::v1::contract::taxonomy::Cond;
+    use busbar_kernel::admin_verbs::PlaneAdminCond;
+    match cond {
+        PlaneAdminCond::MalformedBody => Cond::MalformedBody,
+        PlaneAdminCond::InvalidConfig => Cond::InvalidConfig,
     }
 }
 
@@ -100,16 +132,9 @@ impl busbar_kernel::admin_verbs::PlaneAdminEnvelope for CorePlaneAdminEnvelope {
         msg: String,
         cond: Option<busbar_kernel::admin_verbs::PlaneAdminCond>,
     ) -> axum::response::Response {
-        use crate::admin::v1::contract::taxonomy::Cond;
-        use busbar_kernel::admin_verbs::PlaneAdminCond;
         let e = AdminError::Validation(msg);
         match cond {
-            Some(PlaneAdminCond::MalformedBody) => {
-                crate::admin::v1::json::err_json_cond(&e, Cond::MalformedBody)
-            }
-            Some(PlaneAdminCond::InvalidConfig) => {
-                crate::admin::v1::json::err_json_cond(&e, Cond::InvalidConfig)
-            }
+            Some(cond) => crate::admin::v1::json::err_json_cond(&e, cond_of(cond)),
             None => crate::admin::v1::json::err_json(&e),
         }
     }

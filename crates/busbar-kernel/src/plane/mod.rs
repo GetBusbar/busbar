@@ -92,6 +92,7 @@
 
 pub mod approvals;
 pub mod config;
+pub mod door;
 pub mod observe;
 pub(crate) mod quarantine;
 /// The durable demotion record, which the root attaches to the kernel's host services.

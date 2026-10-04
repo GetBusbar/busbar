@@ -146,7 +146,7 @@ fn load_open(
                 ptr: std::ptr::null(),
                 len: 0,
             },
-            owned: busbar_contract::abi::mechanism::call::Blob::ABSENT,
+            owned: NO_BLOB,
         },
         PlaneOpenOut {
             open: OpenOut {

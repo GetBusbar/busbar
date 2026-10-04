@@ -557,7 +557,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             openapi: NO_BLOB,
             audience: NO_STR,
             resource_metadata: NO_STR,
-            resource_facts: busbar_contract::abi::mechanism::call::Blob::ABSENT,
+            resource_facts: NO_BLOB,
         });
         let me = Box::new(Inst {
             wake,

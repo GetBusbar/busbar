@@ -148,6 +148,7 @@ fn configured(mut app: TestApp, cfg: &RootCfg, runtime: &Arc<dyn Any + Send + Sy
         let ctx = BuildCtx {
             endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),
             agent_defs: cfg.agent_defs.as_any(),
+            tool_defs: cfg.tool_defs.as_any(),
             public_url: None,
             prior: None,
         };

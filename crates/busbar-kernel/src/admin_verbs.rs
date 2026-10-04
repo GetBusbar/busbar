@@ -37,12 +37,12 @@ use busbar_contract::abi::mechanism::route::RouteMethod;
 use crate::plane_host::EngineHost;
 
 /// THE NEUTRAL PLANE-VERB ERROR — the three, and only three, shapes a plane's `resolve`/`look` ever
-/// produce. A plane never produces a `Forbidden`/`Scope` answer: authorization is enforced by the
-/// admin auth middleware BEFORE the handler runs, so a verb only ever refuses with a missing
-/// registration, an operator-configuration problem, or an internal failure. Core maps each variant
-/// back onto its frozen `AdminError` at the boundary (`NotFound` → `not_found`, `Validation` →
-/// `Validation`, `Internal` → `Internal`), so no plane names `AdminError` and `Scope` stays wholly
-/// core.
+/// produce (a validation refusal with or without its named condition). A plane never produces a
+/// `Forbidden`/`Scope` answer: authorization is enforced by the admin auth middleware BEFORE the
+/// handler runs, so a verb only ever refuses with a missing registration, an operator-configuration
+/// problem, or an internal failure. Core maps each variant back onto its frozen `AdminError` at the
+/// boundary (`NotFound` → `not_found`, `Validation` and `ValidationOf` → `Validation`, `Internal` →
+/// `Internal`), so no plane names `AdminError` and `Scope` stays wholly core.
 #[derive(Debug, Clone)]
 pub enum PlaneVerbError {
     /// The registration is missing (either half a plane needs is absent). Carries no message: the core
@@ -52,6 +52,10 @@ pub enum PlaneVerbError {
     /// The request is structurally invalid or the operator configuration makes the look impossible —
     /// core's `invalid_request` (400). The string is the human message, carried verbatim.
     Validation(String),
+    /// A [`PlaneVerbError::Validation`] whose condition the plane named, so core frames it
+    /// condition-tagged (an operation declaring two validation conditions is witnessed only by an
+    /// emission that says which one it is).
+    ValidationOf(String, PlaneAdminCond),
     /// An internal failure — core's `internal` (500). The string is diagnostic only; the wire message
     /// is core's generic one (details never leave the process).
     Internal(String),

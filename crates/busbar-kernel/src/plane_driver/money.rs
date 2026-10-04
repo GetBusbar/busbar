@@ -143,6 +143,13 @@ impl PlaneMoney {
         }
     }
 
+    /// The key its book lends a unit's caller reference under ([`GovState::caller_ref_key`]);
+    /// `None` when the book signs nothing.
+    #[must_use]
+    pub fn caller_refs(&self) -> Option<Arc<crate::auth::CallerRefKey>> {
+        self.gov.caller_ref_key().map(Arc::new)
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<UnitKey, Open>> {
         self.units
             .lock()
