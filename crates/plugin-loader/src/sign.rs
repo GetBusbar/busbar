@@ -907,11 +907,10 @@ pub fn validate_abi(
     match (supported.first(), supported.last()) {
         (Some(&floor), Some(&max)) if m.abi_version >= floor && m.abi_version <= max => {}
         (Some(&floor), Some(&max)) => {
-            // Below the floor is a plugin built against an older contract: say what fixes it.
-            let rebuild = match m.abi_version < floor {
-                true => format!(" — {}", crate::dispatch::load::REBUILD),
-                false => String::new(),
-            };
+            // This arm is reached only for a version OFF the supported window — older OR newer.
+            // C21/ABI-o1: each kind admits exactly its current version, so any mismatch is fixed the
+            // same way — rebuild the plugin against THIS host's (1.6.0) SDK. Both ends name it.
+            let rebuild = format!(" — {}", crate::dispatch::load::REBUILD);
             return Err(format!(
                 "manifest abi_version {} is not supported for kind '{}' by this binary (supported \
                  range v{floor}..=v{max}){rebuild}",

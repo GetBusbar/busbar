@@ -18,7 +18,10 @@ fn supported_abi_is_one_version_per_kind() {
     assert_eq!(supported_abi("store"), &[cold::ABI_VERSION]);
     assert_eq!(supported_abi("secret"), &[cold::SECRET_ABI_VERSION]);
     assert_eq!(supported_abi("auth"), &[cold::AUTH_ABI_VERSION]);
-    assert_eq!(supported_abi("hook"), &[busbar_contract::abi::hook::ABI_VERSION]);
+    assert_eq!(
+        supported_abi("hook"),
+        &[busbar_contract::abi::hook::ABI_VERSION]
+    );
     assert_eq!(
         supported_abi("export"),
         &[busbar_contract::abi::export::ABI_VERSION]
