@@ -20,17 +20,25 @@ use crate::dispatch::kinds::store::Store;
 use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
 use crate::store_v3::LoadedStore;
 
-/// A DURABLE store stand-in: every instance opened on this thread is the SAME backing store, as
-/// every open of one database file is. Its dedupe log outlives any handle, as a durable one does.
+/// A DURABLE store stand-in: every instance opened on the same settings (the same "database") is
+/// the SAME backing store, as every open of one database file is, whichever thread opens it. Its
+/// dedupe log outlives any handle, as a durable one does.
 struct Shared;
 
-thread_local! {
-    static BACKING: Arc<MemoryStore> = Arc::new(MemoryStore::new());
-}
+type Databases = std::collections::HashMap<Vec<u8>, Arc<MemoryStore>>;
+
+static BACKING: std::sync::Mutex<Option<Databases>> = std::sync::Mutex::new(None);
 
 impl Hooks for Shared {
-    fn open(_: &[u8], _: Option<Host>) -> Result<Arc<MemoryStore>, String> {
-        Ok(BACKING.with(Arc::clone))
+    fn open(settings: &[u8], _: Option<Host>) -> Result<Arc<MemoryStore>, String> {
+        let mut dbs = BACKING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(dbs
+            .get_or_insert_with(Default::default)
+            .entry(settings.to_vec())
+            .or_insert_with(|| Arc::new(MemoryStore::new()))
+            .clone())
     }
 }
 
@@ -52,7 +60,8 @@ macro_rules! boot {
     };
 }
 
-fn open(mint: OpIdMint) -> LoadedStore {
+/// The store on database `db`, minting from `mint`.
+fn open(db: &str, mint: OpIdMint) -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let p = load_linked::<Store>(
         &LinkedRow::of(shared::door).expect("the store states its Statement"),
@@ -65,7 +74,8 @@ fn open(mint: OpIdMint) -> LoadedStore {
         },
     )
     .expect("the door loads");
-    LoadedStore::open(p, d, b"{}", mint).expect("it opens")
+    let settings = format!("{{\"db\":\"{db}\"}}");
+    LoadedStore::open(p, d, settings.as_bytes(), mint).expect("it opens")
 }
 
 fn one() -> UsageDelta {
@@ -83,7 +93,10 @@ fn requests(s: &LoadedStore) -> i64 {
 #[test]
 fn two_handles_on_one_durable_store_both_land_their_writes() {
     boot!(this_boot, 0xb007_0001);
-    let (a, b) = (open(this_boot), open(this_boot));
+    let (a, b) = (
+        open("two-handles", this_boot),
+        open("two-handles", this_boot),
+    );
     a.add_usage("k", 60, &one())
         .expect("the first handle's write");
     b.add_usage("k", 60, &one())
@@ -99,10 +112,10 @@ fn two_handles_on_one_durable_store_both_land_their_writes() {
 fn a_write_after_a_restart_lands() {
     boot!(before, 0xb007_0002);
     boot!(after, 0xb007_0003);
-    open(before)
+    open("restart", before)
         .add_usage("k", 60, &one())
         .expect("the earlier boot's write");
-    let restarted = open(after);
+    let restarted = open("restart", after);
     restarted
         .add_usage("k", 60, &one())
         .expect("the new boot's write");
@@ -116,7 +129,7 @@ fn a_write_after_a_restart_lands() {
 #[test]
 fn a_true_replay_is_deduped() {
     boot!(this_boot, 0xb007_0004);
-    let s = open(this_boot);
+    let s = open("replay", this_boot);
     let op = this_boot();
     let cells = [("k", 60u64, one())];
     tokio::runtime::Builder::new_current_thread()
