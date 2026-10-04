@@ -1005,7 +1005,7 @@ impl OutboundAuths {
     /// (THE DESIGN #85).
     fn bind(&self, name: &str) -> crate::root::loader::dispatch::Bind {
         use crate::root::loader::dispatch::{EnvelopeSink, NoSink};
-        let sink: Arc<dyn EnvelopeSink> = crate::root::linked::plugin_logs()
+        let sink: Arc<dyn EnvelopeSink> = crate::root::boot::plugin_logs()
             .sink(
                 name,
                 busbar_contract::abi::mechanism::KindCode::Auth,

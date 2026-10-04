@@ -1526,6 +1526,16 @@ cite    = "ARCHITECTURE_ALLOWED root -> legacy (xtask/src/gates/kind_isolation.r
 why     = "busbar names busbar-voice: declared dev in the test graph (features test-support), 1 declaration(s) at this commit, beside the shipped edge. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "struck when P3 deletes the legacy crate busbar-voice: the edge goes with the crate, and a row naming a crate the tree no longer has is a dead allowance."
 
+[[dep]]
+from    = "busbar"
+to      = "busbar-auth-oauth"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE_ALLOWED root -> auth (xtask/src/gates/kind_isolation.rs:599); BUSBAR-1.6.0.md THE DESIGN, §9 (BUSBAR-1.6.0.md:1140): busbar is \"the binary and composition root\", which names every crate it links."
+why     = "busbar names busbar-auth-oauth: declared dev in the test graph so root::door_steps' tests bind a member under an oauth-client-credentials grant and present its minted, then refreshed, bearer through the REAL oauth plugin's door (TODO row 22, AUTH-SPLIT; THE DESIGN §6.5), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: BUSBAR-1.6.0.md grants this class (root -> auth). What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
 [[edge]]
 from = "kernel"
 to = "kernel"

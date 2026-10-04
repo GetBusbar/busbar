@@ -425,6 +425,7 @@ impl busbar_contract::conn::DeclaredConns for TokenEndpoint {
         need: busbar_contract::conn::NeedId,
         spec: &busbar_contract::abi::mechanism::rendering::ReadNeed,
         target: Option<&str>,
+        _trust: Option<&str>,
     ) -> Result<(), busbar_contract::conn::ConnError> {
         self.declared
             .lock()
@@ -492,6 +493,7 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
         _: busbar_contract::conn::InstanceId,
         _: busbar_contract::conn::ConnId,
         b: &[u8],
+        _: bool,
         _: bool,
     ) -> Result<usize, busbar_contract::conn::ConnError> {
         Ok(b.len())
