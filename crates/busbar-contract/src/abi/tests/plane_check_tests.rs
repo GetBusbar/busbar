@@ -12,9 +12,9 @@ use crate::abi::hook::{MessageView, SignalEntry, SignalValue, SIGNAL_TAG_BOOL, S
 use crate::abi::host::conn::connector::{
     Need, DIRECTION_OUTBOUND, KEEP_ALL_EXCEPT_DENIED, KEEP_NAMED, KEEP_RESPONSE_HEADERS_MAX,
 };
-use crate::abi::mechanism::call::AbiStr;
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
+use crate::abi::mechanism::call::{AbiStr, Blob};
 use crate::abi::mechanism::check::{check_needs, fault};
 use crate::abi::mechanism::door::{Section, SECTION_DECLARING, SECTION_REQUIRED};
 use crate::abi::plane::*;
@@ -922,6 +922,7 @@ fn dialect_auth_names_a_dialect_and_a_style() {
         dialect: 0,
         _reserved: 0,
         style: s("st"),
+        params: Blob::ABSENT,
     };
     assert_eq!(check_dialect_auth(&[d], 1), Ok(()));
     assert_eq!(
@@ -933,6 +934,27 @@ fn dialect_auth_names_a_dialect_and_a_style() {
     assert_eq!(
         check_dialect_auth(&[bad], 1),
         f(Rule::Missing, "dialect_auth.style")
+    ); // The style's parameters: a JSON object, a counted blob never NULL.
+    const PARAMS: &[u8] = br#"{"service":"s"}"#;
+    let mut with = d;
+    with.params = Blob {
+        ptr: PARAMS.as_ptr(),
+        len: PARAMS.len(),
+        fmt: crate::abi::mechanism::call::BLOB_JSON,
+        flags: 0,
+    };
+    assert_eq!(check_dialect_auth(&[with], 1), Ok(()));
+    let mut octets = with;
+    octets.params.fmt = crate::abi::mechanism::call::BLOB_OCTETS;
+    assert_eq!(
+        check_dialect_auth(&[octets], 1),
+        f(Rule::Contradiction, "dialect_auth.params.fmt")
+    );
+    let mut dangling = with;
+    dangling.params.ptr = null();
+    assert_eq!(
+        check_dialect_auth(&[dangling], 1),
+        f(Rule::NullWithCount, "dialect_auth.params")
     );
 }
 

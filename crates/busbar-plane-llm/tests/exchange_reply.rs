@@ -659,6 +659,7 @@ fn lane(dialect: &'static str) -> Lane {
         prompt_caching: false,
         caps: Default::default(),
         error_map: Default::default(),
+        statics: &[],
     }
 }
 

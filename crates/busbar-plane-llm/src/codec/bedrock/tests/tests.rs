@@ -6729,3 +6729,45 @@ fn the_served_tier_is_read_and_written() {
     });
     assert_eq!(tier.as_deref(), Some("flex"));
 }
+
+/// THE TAIL RESTATES THIS SCHEME as the `sigv4` style's parameters (ARCHITECT RULING 2026-10-03,
+/// Q-L6-AUTHPARAMS): the service, the content type, and the region read from the provider's host
+/// after the service labels the codec's rule reads, else its default with its warning.
+#[test]
+fn the_tails_sigv4_parameters_restate_the_signing_scheme() {
+    let Some(busbar_contract::protocol::EgressScheme::SigV4 {
+        service,
+        region_of_host,
+        default_region,
+        content_type,
+    }) = super::DECL.egress_scheme
+    else {
+        panic!("the signing dialect declares a SigV4 scheme");
+    };
+    let params: serde_json::Value =
+        serde_json::from_str(crate::dialect::SIGNED_PARAMS).expect("the parameters are JSON");
+    assert_eq!(params["service"], serde_json::json!(service));
+    assert_eq!(params["content_type"], serde_json::json!(content_type));
+    assert_eq!(
+        params["region"]["default"],
+        serde_json::json!(default_region)
+    );
+    let labels: Vec<&str> = params["region"]["host_label_after"]
+        .as_array()
+        .expect("the region is read after the service labels")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    // Every label the codec's rule reads a region after, and no other.
+    for label in &labels {
+        assert_eq!(
+            region_of_host(&format!("{label}.eu-west-3.amazonaws.com")),
+            Some("eu-west-3"),
+            "{label}"
+        );
+    }
+    assert_eq!(region_of_host("runtime.eu-west-3.amazonaws.com"), None);
+    assert!(params["region"]["unread"]
+        .as_str()
+        .is_some_and(|w| w.contains("defaulting SigV4 scope to us-east-1")));
+}

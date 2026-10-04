@@ -11,8 +11,9 @@
 //! The composition root links [`door`] on its `plane-door` axis under the llm fold's
 //! development-only switch `llm-on-driver` (`BUSBAR-1.6.0.md` Part 3, section 12, "The switch") and
 //! binds it through the loader's one load beside the dropped-in plane doors. The default build links
-//! no llm door, and with the switch on the root's existing llm row still answers every arrival until
-//! the serve path hands this door the arrivals it takes, so one arrival never has two servers.
+//! no llm door. With the switch on, the serve path composes this door with the kernel-owned sections
+//! it reads and mounts its claims as the data routes, ahead of the root's existing llm row, so every
+//! arrival this door claims is served through the plane driver and the row answers none of them.
 //!
 //! One unit, as the plane driver serves it:
 //!
@@ -42,11 +43,14 @@ use std::mem::size_of;
 use std::ptr;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use busbar_contract::abi::hook::{REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM};
 use busbar_contract::abi::host::conn::connector::{
     Need, DIRECTION_OUTBOUND, EGRESS_PROVIDER, KEEP_ALL_EXCEPT_DENIED,
 };
 use busbar_contract::abi::host::service::ClockReading;
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT};
+use busbar_contract::abi::mechanism::call::{
+    AbiStr, Blob, InHead, OutHead, Outcome, Span, BLOB_ABSENT,
+};
 use busbar_contract::abi::mechanism::door::{
     KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
 };
@@ -55,13 +59,14 @@ use busbar_contract::abi::mechanism::lifecycle::{
 };
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::plane::{
-    ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, OpClass, OutField, PlaneDriveIn,
-    PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
-    ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_ABORTED, CLAIM_EXACT,
-    CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
-    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_HAS_STATUS, PIECE_LAST,
-    PRINCIPAL_NONE, PRINCIPAL_REQUIRED, SHAPE_PIECEWISE, TAIL_FALLBACK, TAIL_PROBES,
-    UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
+    ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
+    PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
+    PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
+    CANCEL_ABORTED, CLAIM_EXACT, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER,
+    FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_HAS_STATUS,
+    PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, REFUSAL_GATE, ROUTE_DIRECT, ROUTE_POOL,
+    SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_REPORTED, VERDICT_HARD,
+    VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
@@ -79,7 +84,7 @@ use crate::exchange::arrive::{self, envelope_for, Arrived, Declined};
 use crate::exchange::attempt::{self, stream_intent, FarRequest};
 use crate::exchange::reply::{At, Piece, Reply, ReplyCtx, Units, Verdict};
 use crate::exchange::shaping::{sections, Shaping};
-use crate::exchange::{handler_of, probe, refuse};
+use crate::exchange::{handler_of, probe, project, refuse};
 use crate::LlmPlane;
 
 // ── the Statement ────────────────────────────────────────────────────────────────────────────────
@@ -92,6 +97,8 @@ const MAX_INFLIGHT: u32 = 1024;
 
 /// The human label.
 const LABEL: &str = "LLM";
+/// One registration of the `pools:` map.
+const POOL_NOUN: &str = "pool";
 
 /// The transport claim a far end is reached over.
 const TRANSPORT: &str = "http";
@@ -130,9 +137,19 @@ const fn op(i: usize) -> OpClass {
     OpClass { op: name, name }
 }
 
+/// THE TOKEN CLASSES' CARD NAMES, in [`METER`]'s order: the classes 1.5.5's `rate_card:` prices
+/// (`input`, `output`, `cache_read`, `cache_write`), which the previous release's plane declaration
+/// ledgered its four token tiers under, so a door-served count is priced by the card as written.
+pub const TOKEN_CLASSES: [&str; 4] = [
+    busbar_contract::records::UNIT_INPUT,
+    busbar_contract::records::UNIT_OUTPUT,
+    busbar_contract::records::UNIT_CACHE_READ,
+    busbar_contract::records::UNIT_CACHE_WRITE,
+];
+
 const fn billable(i: usize) -> BillableClass {
     BillableClass {
-        class: abi_str(METER[i].key.as_str()),
+        class: abi_str(TOKEN_CLASSES[i]),
         family: abi_str(METER[i].family),
     }
 }
@@ -174,17 +191,56 @@ const _: () = assert!(
     "the tail states every dialect, op class and token class the plane declares"
 );
 
-/// The egress-auth schemes the dialects decorate a far-end request with ([`DIALECTS`]'
-/// `egress_scheme`), each named once.
-pub const EGRESS_SCHEMES: &[&str] = &[DIALECTS[0].egress_scheme, DIALECTS[3].egress_scheme];
+/// THE OUTBOUND AUTH STYLES THE PLANE'S MEMBERS ARE BOUND UNDER (the design's auth points): each
+/// dialect's default ([`DIALECTS`]' `egress_style`), then the provider `auth:` overrides the
+/// configuration grammar accepts (`api-key` is also a dialect default), each named once. One
+/// outbound need per style ([`NEEDS`]): a member dials the need its resolved style names.
+pub const EGRESS_STYLES: &[&str] = &[
+    DIALECTS[1].egress_style,
+    DIALECTS[0].egress_style,
+    DIALECTS[2].egress_style,
+    DIALECTS[3].egress_style,
+    "jwt-bearer",
+    "oauth-client-credentials",
+];
 const _: () = assert!(
-    const_eq(DIALECTS[0].egress_scheme, DIALECTS[1].egress_scheme)
-        && const_eq(DIALECTS[0].egress_scheme, DIALECTS[2].egress_scheme)
-        && const_eq(DIALECTS[0].egress_scheme, DIALECTS[4].egress_scheme)
-        && const_eq(DIALECTS[0].egress_scheme, DIALECTS[5].egress_scheme)
-        && !const_eq(DIALECTS[0].egress_scheme, DIALECTS[3].egress_scheme),
-    "EGRESS_SCHEMES names every dialect's scheme, each once"
+    const_eq(DIALECTS[1].egress_style, DIALECTS[4].egress_style)
+        && const_eq(DIALECTS[1].egress_style, DIALECTS[5].egress_style)
+        && !const_eq(DIALECTS[0].egress_style, DIALECTS[1].egress_style)
+        && !const_eq(DIALECTS[2].egress_style, DIALECTS[1].egress_style)
+        && !const_eq(DIALECTS[3].egress_style, DIALECTS[1].egress_style),
+    "EGRESS_STYLES names every dialect's default style, each once"
 );
+
+const fn dialect_auth(i: usize) -> DialectAuth {
+    let params = DIALECTS[i].egress_params.as_bytes();
+    DialectAuth {
+        dialect: i as u32,
+        _reserved: 0,
+        style: abi_str(DIALECTS[i].egress_style),
+        // The default style's parameters (ARCHITECT RULING 2026-10-03, Q-L6-AUTHPARAMS).
+        params: if params.is_empty() {
+            Blob::ABSENT
+        } else {
+            Blob {
+                ptr: params.as_ptr(),
+                len: params.len(),
+                fmt: busbar_contract::abi::mechanism::call::BLOB_JSON,
+                flags: 0,
+            }
+        },
+    }
+}
+
+/// THE TAIL'S `dialect_auth`: each dialect's default outbound style (ARCHITECT Q-L1-AUTH (A)).
+const DIALECT_AUTH: &[DialectAuth] = &[
+    dialect_auth(0),
+    dialect_auth(1),
+    dialect_auth(2),
+    dialect_auth(3),
+    dialect_auth(4),
+    dialect_auth(5),
+];
 
 const fn const_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
@@ -241,9 +297,20 @@ const fn need(auth: &'static str) -> Need {
 }
 
 /// THE PLANE'S NEEDS: outbound to a configured provider over the claim's transport, one per
-/// egress-auth scheme a dialect decorates with ([`EGRESS_SCHEMES`]), as the decisions plane
-/// declares its one.
-pub const NEEDS: &[Need] = &[need(EGRESS_SCHEMES[0]), need(EGRESS_SCHEMES[1])];
+/// outbound style a member may be bound under ([`EGRESS_STYLES`]), each naming its style, as the
+/// decisions plane's one need names its.
+pub const NEEDS: &[Need] = &[
+    need(EGRESS_STYLES[0]),
+    need(EGRESS_STYLES[1]),
+    need(EGRESS_STYLES[2]),
+    need(EGRESS_STYLES[3]),
+    need(EGRESS_STYLES[4]),
+    need(EGRESS_STYLES[5]),
+];
+
+/// THE RESOURCE A GRANT NAMES on this plane: a pool (a key's `allowed_pools`, the previous release's
+/// `scope_kinds: ["pool"]`), so the kernel judges a route as named against the caller's grant.
+const SCOPE_KINDS: &[AbiStr] = &[abi_str("pool")];
 
 /// THE STATEMENT TAIL: the plane's static facts.
 pub const TAIL: &PlaneTail = &PlaneTail {
@@ -258,18 +325,20 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     _reserved: 0,
     scope: abi_str(sections::POOLS),
     label: abi_str(LABEL),
-    subject_noun: NONE,
-    admin_noun: NONE,
+    // What one registration of the `pools:` map is called, in a refusal naming it ("a pool may not
+    // be named `hooks`") and in the admin surface, as the previous release's declaration named it.
+    subject_noun: abi_str(POOL_NOUN),
+    admin_noun: abi_str(POOL_NOUN),
     audit_kind: NONE,
     signing_domain: NONE,
     signing_kid_prefix: NONE,
     cli_help: NONE,
     dialects: DIALECT_NAMES.as_ptr(),
     dialects_len: DIALECT_NAMES.len(),
-    dialect_auth: ptr::null(),
-    dialect_auth_len: 0,
-    scope_kinds: ptr::null(),
-    scope_kinds_len: 0,
+    dialect_auth: DIALECT_AUTH.as_ptr(),
+    dialect_auth_len: DIALECT_AUTH.len(),
+    scope_kinds: SCOPE_KINDS.as_ptr(),
+    scope_kinds_len: SCOPE_KINDS.len(),
     op_classes: OP_CLASSES.as_ptr(),
     op_classes_len: OP_CLASSES.len(),
     billable_classes: BILLABLE_CLASSES.as_ptr(),
@@ -383,6 +452,9 @@ struct UnitState {
     started: Option<u64>,
     /// The answer the driver's re-call is owed.
     pending: Option<Pending>,
+    /// `project` found the body unreadable: the unit's refusal reads the previous release's
+    /// unreadable-body sentence.
+    unreadable: bool,
 }
 
 impl UnitState {
@@ -398,6 +470,7 @@ impl UnitState {
             reply: None,
             started: None,
             pending: None,
+            unreadable: false,
         }
     }
 
@@ -505,6 +578,21 @@ fn dialect_index(name: &str) -> u32 {
         .position(|d| d.name == name)
         .and_then(|i| u32::try_from(i).ok())
         .unwrap_or(0)
+}
+
+/// THE ROUTE AN ARRIVAL NAMES (ARCHITECT Q-SW6 / Q-FL3, 2026-10-02): the model it asked for, as the
+/// entry inside the plane's own sections, and what that entry is. The previous release resolved the
+/// model as a pool first, then as a configured model (its by-model lane); the plane says which by its
+/// own tables, and the kernel resolves the entry. A model that is neither is named as a direct entry
+/// the kernel does not hold, so the kernel refuses it (`no_destination`, rendered as 1.5.5's 404).
+#[must_use]
+pub fn route_of<'a>(shaping: &Shaping, model: &'a str) -> (u8, &'a str) {
+    let class = if shaping.pools.contains_key(model) {
+        ROUTE_POOL
+    } else {
+        ROUTE_DIRECT
+    };
+    (class, model)
 }
 
 fn op_class_index(arrived: &Arrived) -> u32 {
@@ -952,6 +1040,8 @@ slot!(
                 out.set(|o| &o.op_class, op_class_index(&arrived));
                 out.set(|o| &o.dialect, dialect_index(arrived.dialect));
                 out.set(|o| &o.principal_need, PRINCIPAL_REQUIRED);
+                let (class, entry) = route_of(&unit.shaping, &arrived.model);
+                out.route(class, entry);
                 unit.arrived = Some(arrived);
                 guard(&door.units).insert(given.unit, unit);
                 Outcome::Ready
@@ -1040,7 +1130,9 @@ slot!(
                 // A model that resolved to no destination reads the previous release's not-found
                 // sentence, which names the model the caller asked for; every other refusal reads
                 // the kernel's own text.
+                let unreadable = held.as_ref().is_some_and(|u| u.unreadable);
                 let text = match arrived {
+                    _ if unreadable => project::UNREADABLE_BODY_MESSAGE.to_string(),
                     Some(a) if given.reason == crate::refusal::reason::NO_DESTINATION => {
                         refuse::model_not_found(
                             &a.model,
@@ -1051,13 +1143,12 @@ slot!(
                     }
                     _ => String::from_utf8_lossy(input.field(|i| &i.text).bytes()).into_owned(),
                 };
-                refuse::kernel_refusal(
-                    envelope,
-                    given.reason,
-                    u16::try_from(given.status).unwrap_or(500),
-                    &text,
-                    given.retry_after_s,
-                )
+                let status = u16::try_from(given.status).unwrap_or(500);
+                if given.cause == REFUSAL_GATE {
+                    refuse::gate_refusal(envelope, status, &text)
+                } else {
+                    refuse::kernel_refusal(envelope, given.reason, status, &text, given.retry_after_s)
+                }
             }
         };
         let (mut reply, mut fields, mut arena) =
@@ -1107,8 +1198,99 @@ slot!(
 );
 
 slot!(
-    /// `project`: not bound yet; the driver's hook stage answers it at the llm flip.
-    Project, ProjectIn, ProjectOut, |_, _, _| { Outcome::Refused }
+    /// `project`: the hook view of the unit's request ([`crate::exchange::project`]), its strings in
+    /// the host's arena and its turns in the host's turn buffer; with a request-stage hook's
+    /// rewrite, the rewrite applied to the unit's request first (kept as the unit's request, so
+    /// every attempt is written from it), the rewritten body answered and THAT body projected. A
+    /// body the operation's reader refuses is REFUSED, and the unit's refusal then reads the
+    /// previous release's unreadable-body sentence.
+    Project, ProjectIn, ProjectOut, |instance, input, mut out| {
+        let Some(door) = instance.get() else {
+            return Outcome::Failed;
+        };
+        let given = input.get();
+        let mut units = guard(&door.units);
+        // A unit that never arrived (or arrived declined, or as a probe) has nothing to project.
+        let Some(arrived) = units.get_mut(&given.unit).and_then(|u| u.arrived.as_mut()) else {
+            return Outcome::Refused;
+        };
+        let rewrite = input.field(|i| &i.rewrite).bytes();
+        let rewritten = if rewrite.is_empty() {
+            None
+        } else {
+            project::apply_rewrite(arrived, rewrite)
+        };
+        let view = match project::project(arrived) {
+            Ok(view) => view,
+            Err(project::Unreadable) => {
+                if let Some(unit) = units.get_mut(&given.unit) {
+                    unit.unreadable = true;
+                }
+                return Outcome::Refused;
+            }
+        };
+        let dialect = arrived.dialect;
+        let pool = arrived.model.clone();
+        drop(units);
+        let (signals, mut arena, mut turns) =
+            (input.signals_buf(), input.arena_buf(), input.messages_buf());
+        let pool = arena.span(pool.as_bytes());
+        let dialect = arena.span(dialect.as_bytes());
+        let system = view.system.as_deref().map(|s| arena.span(s.as_bytes()));
+        let end_user = view.end_user.as_deref().map(|s| arena.span(s.as_bytes()));
+        for (role, text) in &view.turns {
+            let role = arena.span(role.as_bytes());
+            let text = arena.span(text.as_bytes());
+            turns.push_turn(&arena, role, text);
+        }
+        let body = rewritten.as_deref().map(|b| arena.span(b));
+        let short = !(signals.fits() && arena.fits() && turns.fits());
+        let (sw, snd) = signals.settle(short);
+        let (aw, and) = arena.settle(short);
+        let (tw, tnd) = turns.settle(short);
+        out.set(|o| &o.signals_needed, snd as u32);
+        out.set(|o| &o.arena_written, aw as u64);
+        out.set(|o| &o.arena_needed, and as u64);
+        out.set(|o| &o.messages_needed, tnd as u32);
+        out.set(|o| &o.body, Span { offset: SPAN_ABSENT, len: 0 });
+        if short {
+            // The driver re-calls once with the buffers this named, the same rewrite with it:
+            // applying it again to the request it already rewrote writes the same body.
+            return Outcome::Failed;
+        }
+        let mut flags = 0;
+        if view.max_tokens.is_some() {
+            flags |= REQUEST_HAS_MAX_TOKENS;
+        }
+        if view.has_tools {
+            flags |= REQUEST_HAS_TOOLS;
+        }
+        if view.stream {
+            flags |= REQUEST_STREAM;
+        }
+        out.host_str(|o| &o.view.pool, &arena, pool);
+        out.host_str(|o| &o.view.ingress_dialect, &arena, dialect);
+        out.set(|o| &o.view.message_count, view.turn_count as u64);
+        out.set(|o| &o.view.total_chars, view.text_chars as u64);
+        out.set(|o| &o.view.max_tokens, view.max_tokens.unwrap_or(0));
+        out.set(|o| &o.view.flags, flags);
+        out.host_rows(|o| &o.view.signals, &signals);
+        out.set(|o| &o.view.signals_len, sw);
+        if let Some(system) = system {
+            out.host_str(|o| &o.prompt.system, &arena, system);
+        }
+        out.set(|o| &o.prompt.message_count, tw as u64);
+        out.host_rows(|o| &o.prompt.messages, &turns);
+        out.set(|o| &o.prompt.messages_len, tw);
+        if let Some(end_user) = end_user {
+            out.host_str(|o| &o.end_user, &arena, end_user);
+        }
+        out.set(
+            |o| &o.rewritten,
+            body.unwrap_or(Span { offset: SPAN_ABSENT, len: 0 }),
+        );
+        Outcome::Ready
+    }
 );
 
 busbar_contract::plugin_door! {

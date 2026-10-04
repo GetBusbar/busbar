@@ -788,6 +788,15 @@ pub struct DialectAuth {
     pub _reserved: u32,
     /// The style, an open string.
     pub style: AbiStr,
+    /// The style's parameters for this dialect, a [`super::mechanism::call::BLOB_JSON`] object the
+    /// host hands the auth plugin's `open_outbound` as its settings at seal, under the provider's
+    /// own (ARCHITECT RULING 2026-10-03, Q-L6-AUTHPARAMS; ruling 2026-09-28 "the kernel resolves the
+    /// dialect's declared parameters at seal into OpenOutboundIn::settings"). [`Blob::ABSENT`]: the
+    /// style takes none. A value `{"host_label_after": [labels], "default": word, "unread": text}`
+    /// is resolved at seal from the provider's base URL host: the dotted label after one of
+    /// `labels` when it reads as a dashed name ending in a number (`<word>-...-<digits>`, three
+    /// parts or more), else `default`, with `unread` logged as the operator's warning.
+    pub params: Blob,
 }
 
 /// One operation class the plane serves one level down, and the display name a refusal naming the

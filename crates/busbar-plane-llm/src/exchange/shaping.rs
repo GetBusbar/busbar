@@ -27,6 +27,14 @@ use serde_json::Value;
 
 use crate::codec::DECLS;
 
+/// The provider `auth:` overrides that present under a scheme of their own, not the dialect's, so
+/// carry none of its static fields (the previous release's `egress_auth::resolve`).
+const AUTH_API_KEY: &str = "api-key";
+/// See [`AUTH_API_KEY`].
+const AUTH_JWT_BEARER: &str = "jwt-bearer";
+/// See [`AUTH_API_KEY`].
+const AUTH_OAUTH_CLIENT_CREDENTIALS: &str = "oauth-client-credentials";
+
 /// The dialect a provider speaks when it names none.
 pub const DEFAULT_PROTOCOL: &str = "anthropic";
 /// The global output-token default when `limits` names none.
@@ -65,6 +73,12 @@ pub struct Lane {
     pub caps: LaneCaps,
     /// The provider's error-code map.
     pub error_map: HashMap<String, String>,
+    /// The far end's dialect's declared static fields (`ProtocolDecl::static_headers`, ARCHITECT
+    /// SD-3 (1) "anthropic S2-a"), written on every far request of a lane presented under the
+    /// dialect's own credential scheme; none under an operator's `auth:` override that is not the
+    /// dialect's scheme (`api-key`, `jwt-bearer`, `oauth-client-credentials`), whose declaration
+    /// carries none, as the previous release wrote them.
+    pub statics: &'static [(&'static str, &'static str)],
 }
 
 impl Lane {
@@ -174,6 +188,8 @@ struct ProviderCfg {
     project: Option<String>,
     #[serde(default)]
     error_map: HashMap<String, String>,
+    #[serde(default)]
+    auth: Option<String>,
     #[serde(default)]
     max_output_key: Option<MaxOutputKeyCfg>,
     #[serde(default)]
@@ -377,13 +393,17 @@ impl Shaping {
                 )
             })?;
             let asked = p.protocol.as_deref().unwrap_or(DEFAULT_PROTOCOL);
-            let dialect = DECLS
+            let decl = DECLS
                 .iter()
                 .find(|d| d.name == asked && d.codec.is_some())
-                .map(|d| d.name)
                 .ok_or_else(|| {
                     format!("provider '{}' uses unknown protocol '{asked}'", m.provider)
                 })?;
+            let dialect = decl.name;
+            let statics = match p.auth.as_deref() {
+                Some(AUTH_API_KEY | AUTH_JWT_BEARER | AUTH_OAUTH_CLIENT_CREDENTIALS) => &[][..],
+                _ => decl.static_headers,
+            };
             let wire = m.upstream_model.as_deref().unwrap_or(&name);
             let lane = Lane {
                 model: name.clone(),
@@ -400,6 +420,7 @@ impl Shaping {
                 prompt_caching: m.prompt_caching.unwrap_or(false),
                 caps: lane_caps(p, wire),
                 error_map: p.error_map.clone(),
+                statics,
             };
             lanes.insert(name, lane);
         }

@@ -34,10 +34,10 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Outcome};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome};
 use busbar_contract::abi::mechanism::call::{InHead, OutHead};
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
-use busbar_contract::abi::mechanism::door::{Statement, SECTION_DECLARING};
+use busbar_contract::abi::mechanism::door::{Statement, SECTION_CONSUMED, SECTION_DECLARING};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, CancelOut, DriveIn, OpenIn, RefreshIn,
 };
@@ -110,6 +110,9 @@ pub struct PlaneFacts {
 pub struct ServedFacts {
     /// The key of the one section the Statement declares.
     pub section: &'static str,
+    /// The keys of the sections the Statement reads beside it (`SECTION_CONSUMED`), in its order:
+    /// the plane opens with all of them, one `{section: value}` object (spec Part 1 §4).
+    pub consumed: Vec<&'static str>,
     /// The tail's operation classes, in order.
     pub op_classes: Vec<&'static str>,
     /// The tail's `audit_kind`.
@@ -130,8 +133,9 @@ pub struct ServedFacts {
     /// The tail's dialects, in order.
     pub dialects: Vec<&'static str>,
     /// The tail's `dialect_auth`: each dialect's default outbound style, by its dialect index
-    /// (THE DESIGN §6 step 2: a provider entry's `auth:`, else this).
-    pub dialect_auth: Vec<(u32, &'static str)>,
+    /// (THE DESIGN §6 step 2: a provider entry's `auth:`, else this), and the style's parameters
+    /// for it, a JSON object's text (empty: none; ARCHITECT RULING 2026-10-03, Q-L6-AUTHPARAMS).
+    pub dialect_auth: Vec<(u32, &'static str, &'static [u8])>,
 }
 
 /// ONE NEED'S RESPONSE-HEAD RULE, as its Statement declares it.
@@ -183,6 +187,12 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
         .collect();
     check_refusal_statuses(&refusal_statuses, tail.dialects_len as u64)
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    // Each dialect's default style and its parameters, judged before they are kept.
+    busbar_contract::abi::plane::check::check_dialect_auth(
+        &listed(tail.dialect_auth, tail.dialect_auth_len),
+        tail.dialects_len as u64,
+    )
+    .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     Ok(PlaneFacts {
         bounds: Bounds::of(&tail),
         refusal_statuses,
@@ -192,6 +202,11 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
                 .iter()
                 .find(|s| s.flags & SECTION_DECLARING != 0)
                 .map_or("", |s| kept(s.name)),
+            consumed: sections
+                .iter()
+                .filter(|s| s.flags & SECTION_CONSUMED != 0)
+                .map(|s| kept(s.name))
+                .collect(),
             op_classes: listed(tail.op_classes, tail.op_classes_len)
                 .into_iter()
                 .map(|c| kept(c.op))
@@ -229,7 +244,7 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
                 .collect(),
             dialect_auth: listed(tail.dialect_auth, tail.dialect_auth_len)
                 .into_iter()
-                .map(|d| (d.dialect, kept(d.style)))
+                .map(|d| (d.dialect, kept(d.style), kept_blob(d.params)))
                 .collect(),
         },
     })
@@ -244,6 +259,17 @@ fn kept(s: AbiStr) -> &'static str {
     // plugin data, read here while the plugin is loaded and copied.
     let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
     String::from_utf8_lossy(bytes).into_owned().leak()
+}
+
+/// A tail blob's bytes, kept for the process (empty when absent).
+fn kept_blob(b: Blob) -> &'static [u8] {
+    if b.ptr.is_null() || b.len == 0 {
+        return &[];
+    }
+    // SAFETY: `check_dialect_auth` judged the blob (`tail_facts`): a non-NULL span of `len` bytes of
+    // `'static` plugin data, read here while the plugin is loaded and copied.
+    let bytes = unsafe { std::slice::from_raw_parts(b.ptr, b.len) };
+    bytes.to_vec().leak()
 }
 
 /// A tail list of `n` `T`s at `p`, copied.

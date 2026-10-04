@@ -2356,6 +2356,7 @@ struct bb_plane_DialectAuth {
     uint32_t dialect;
     uint32_t _reserved;
     bb_mech_AbiStr style;
+    bb_mech_Blob params;
 };
 
 /* One operation class the plane serves one level down, and the display name a refusal naming the */
@@ -4583,11 +4584,12 @@ BB_ASSERT(offsetof(bb_plane_Ops, serve) == 104, "bb_plane_Ops.serve: offset");
 BB_ASSERT(offsetof(bb_plane_Ops, hydrate) == 112, "bb_plane_Ops.hydrate: offset");
 BB_ASSERT(offsetof(bb_plane_Ops, start) == 120, "bb_plane_Ops.start: offset");
 BB_ASSERT(offsetof(bb_plane_Ops, project) == 128, "bb_plane_Ops.project: offset");
-BB_ASSERT(sizeof(bb_plane_DialectAuth) == 24, "bb_plane_DialectAuth: size");
+BB_ASSERT(sizeof(bb_plane_DialectAuth) == 48, "bb_plane_DialectAuth: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_DialectAuth) == 8, "bb_plane_DialectAuth: alignment");
 BB_ASSERT(offsetof(bb_plane_DialectAuth, dialect) == 0, "bb_plane_DialectAuth.dialect: offset");
 BB_ASSERT(offsetof(bb_plane_DialectAuth, _reserved) == 4, "bb_plane_DialectAuth._reserved: offset");
 BB_ASSERT(offsetof(bb_plane_DialectAuth, style) == 8, "bb_plane_DialectAuth.style: offset");
+BB_ASSERT(offsetof(bb_plane_DialectAuth, params) == 24, "bb_plane_DialectAuth.params: offset");
 BB_ASSERT(sizeof(bb_plane_OpClass) == 32, "bb_plane_OpClass: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_OpClass) == 8, "bb_plane_OpClass: alignment");
 BB_ASSERT(offsetof(bb_plane_OpClass, op) == 0, "bb_plane_OpClass.op: offset");

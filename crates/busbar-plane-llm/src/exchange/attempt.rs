@@ -662,7 +662,14 @@ fn head_fields(
     // A native client's user-agent, never a UA-less request (1.5.5's bytes); a same-dialect
     // caller's own replaces it below.
     let user_agent = ("user-agent".to_string(), user_agent.as_bytes().to_vec());
-    let mut fields = vec![content_type, user_agent, accept];
+    // The dialect's declared static fields first, as the previous release's credential map led
+    // with them (SD-3 (1)); a same-dialect caller's own value replaces one below.
+    let mut fields: Vec<(String, Vec<u8>)> = lane
+        .statics
+        .iter()
+        .map(|(n, v)| ((*n).to_string(), v.as_bytes().to_vec()))
+        .collect();
+    fields.extend([content_type, user_agent, accept]);
     if arrived.dialect != egress {
         fields.extend(tenant);
         return Ok(fields);
@@ -675,10 +682,45 @@ fn head_fields(
             (!governed(&name)).then(|| (name, value.to_vec()))
         })
         .collect();
-    fields.retain(|(own, _)| !forwarded.iter().any(|(name, _)| name == own));
-    fields.extend(forwarded);
+    fields = forward_over(fields, forwarded);
     fields.extend(tenant);
     Ok(fields)
+}
+
+/// The caller's forwarded fields laid over busbar's own as the previous release's header map laid
+/// them (an `http::HeaderMap`, which keeps one position per name, the position the name was first
+/// inserted at): a name busbar already writes keeps busbar's position and takes the caller's values;
+/// a name it does not is appended, in the caller's order; every value of a repeated name is kept,
+/// together at its name's position.
+fn forward_over(
+    own: Vec<(String, Vec<u8>)>,
+    forwarded: Vec<(String, Vec<u8>)>,
+) -> Vec<(String, Vec<u8>)> {
+    let mut named: Vec<(String, Vec<Vec<u8>>)> = Vec::new();
+    let put = |named: &mut Vec<(String, Vec<Vec<u8>>)>, name: String, value: Vec<u8>| match named
+        .iter_mut()
+        .find(|(n, _)| *n == name)
+    {
+        Some((_, values)) => values.push(value),
+        None => named.push((name, vec![value])),
+    };
+    for (name, value) in own {
+        put(&mut named, name, value);
+    }
+    let mut replaced: Vec<String> = Vec::new();
+    for (name, value) in forwarded {
+        if !replaced.contains(&name) {
+            if let Some((_, values)) = named.iter_mut().find(|(n, _)| *n == name) {
+                values.clear();
+            }
+            replaced.push(name.clone());
+        }
+        put(&mut named, name, value);
+    }
+    named
+        .into_iter()
+        .flat_map(|(name, values)| values.into_iter().map(move |v| (name.clone(), v)))
+        .collect()
 }
 
 /// BUILD ONE ATTEMPT'S FAR-END REQUEST for `member` of `pool`.

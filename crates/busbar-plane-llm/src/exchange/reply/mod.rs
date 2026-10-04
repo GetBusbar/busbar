@@ -203,11 +203,24 @@ fn json_array(ctx: &ReplyCtx<'_>) -> bool {
         .is_some_and(|p| p.json_array)
 }
 
+/// A WHOLE answer, rendered here in full (a translated answer, a judged failure, a refusal): its head
+/// states its length, so the caller is sent it under that length, as the previous release sent a
+/// buffered answer; a relayed answer states none and is sent as it is relayed.
 fn answered<'a>(r: Rendered, units: Units, verdict: Verdict, fault: Option<Fault>) -> Piece<'a> {
+    let mut fields = r.fields;
+    if !fields
+        .iter()
+        .any(|(n, _)| n.eq_ignore_ascii_case("content-length"))
+    {
+        fields.push((
+            "content-length".to_string(),
+            r.body.len().to_string().into_bytes(),
+        ));
+    }
     Piece {
         head: Some(Head {
             status: r.status,
-            fields: r.fields,
+            fields,
         }),
         bytes: Cow::Owned(r.body),
         units,

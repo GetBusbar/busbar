@@ -804,6 +804,14 @@ pub fn check_dialect_auth(entries: &[DialectAuth], dialects_len: u64) -> Result<
     for d in entries {
         index(d.dialect, dialects_len, "dialect_auth.dialect")?;
         named(d.style, "dialect_auth.style")?;
+        crate::abi::mechanism::check::blob(
+            &d.params,
+            "dialect_auth.params",
+            "dialect_auth.params",
+        )?;
+        if d.params.len > 0 && d.params.fmt != crate::abi::mechanism::call::BLOB_JSON {
+            return Err(fault(Rule::Contradiction, "dialect_auth.params.fmt"));
+        }
     }
     Ok(())
 }

@@ -13,8 +13,9 @@
 
 use busbar_contract::abi::plane::reason_of;
 use busbar_contract::protocol::{
-    ProtocolDecl, APPLICATION_JSON, KIND_API_ERROR, KIND_INSUFFICIENT_QUOTA, KIND_INVALID_REQUEST,
-    KIND_NOT_FOUND, KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT, KIND_REQUEST_TOO_LARGE,
+    ProtocolDecl, APPLICATION_JSON, KIND_API_ERROR, KIND_AUTHENTICATION, KIND_INSUFFICIENT_QUOTA,
+    KIND_INVALID_REQUEST, KIND_NOT_FOUND, KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT,
+    KIND_REQUEST_TOO_LARGE, KIND_TIMEOUT,
 };
 use serde_json::Value;
 
@@ -99,6 +100,30 @@ pub fn kind_of(reason: &str, status: u16) -> &'static str {
         _ if status == 413 => KIND_REQUEST_TOO_LARGE,
         _ => KIND_INVALID_REQUEST,
     }
+}
+
+/// The kind a hook's refusal wears, by the status the hook chose (the previous release's
+/// `reject_kind_for_status`): a hook 429 reads as a rate limit, a 408 as a timeout, the 503 of a
+/// load-bearing hook that could not answer as overloaded (retryable), and a status with no natural
+/// kind as an invalid request.
+#[must_use]
+pub fn gate_kind(status: u16) -> &'static str {
+    match status {
+        401 => KIND_AUTHENTICATION,
+        403 => KIND_PERMISSION,
+        404 => KIND_NOT_FOUND,
+        408 => KIND_TIMEOUT,
+        429 => KIND_RATE_LIMIT,
+        503 => KIND_OVERLOADED,
+        _ => KIND_INVALID_REQUEST,
+    }
+}
+
+/// RENDER A HOOK'S REFUSAL in `envelope`'s dialect: the hook's own status and words, as the
+/// kernel's hook engine clamped and sanitised them.
+#[must_use]
+pub fn gate_refusal(envelope: &str, status: u16, text: &str) -> Rendered {
+    render(envelope, status, gate_kind(status), text, 0)
 }
 
 /// The sentence the previous release answered a model with when it named no pool and no configured

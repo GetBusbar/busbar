@@ -108,6 +108,7 @@ const DIALECT_AUTH: &[DialectAuth] = &[DialectAuth {
     dialect: tail::DIALECT_AUTH[0].0,
     _reserved: 0,
     style: abi_str(tail::DIALECT_AUTH[0].1),
+    params: Blob::ABSENT,
 }];
 
 const SCOPE_KINDS: &[AbiStr] = &[abi_str(tail::SCOPE_KINDS[0])];

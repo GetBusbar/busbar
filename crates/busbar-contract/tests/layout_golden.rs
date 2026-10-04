@@ -1642,7 +1642,7 @@ fn compute_layout() -> String {
         pkind::Ops,
         [head, arrive, on_piece, refusal, serve, hydrate, start, project]
     );
-    record!(s, pkind::DialectAuth, [dialect, _reserved, style]);
+    record!(s, pkind::DialectAuth, [dialect, _reserved, style, params]);
     record!(s, pkind::OpClass, [op, name]);
     record!(s, pkind::BillableClass, [class, family]);
     record!(s, pkind::RouteCost, [class, _reserved, weight]);

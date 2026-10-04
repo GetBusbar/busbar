@@ -10,8 +10,8 @@ use busbar_contract::abi::plane::{TAIL_FALLBACK, TAIL_PROBES, UNITS_REPORTED};
 use busbar_plane_llm::dialect::DIALECTS;
 use busbar_plane_llm::exchange::reply::Units;
 use busbar_plane_llm::plane_door::{
-    claims, counts, read_settings, DENY_RESPONSE_HEADERS, EGRESS_SCHEMES, NEEDS, OPEN_CLASSES,
-    STATEMENT, TAIL, VERSION,
+    claims, counts, read_settings, route_of, DENY_RESPONSE_HEADERS, EGRESS_STYLES, NEEDS,
+    OPEN_CLASSES, STATEMENT, TAIL, VERSION,
 };
 
 #[test]
@@ -43,22 +43,40 @@ fn the_tail_is_one_the_contract_accepts() {
     assert_eq!(OPEN_CLASSES, &[("search_units", "units")]);
 }
 
+/// ARCHITECT Q-L1-AUTH (A): every dialect states its default outbound style in the tail, and every
+/// style a member may be bound under (each dialect's default, the provider `auth:` overrides) has
+/// exactly one outbound need naming it.
 #[test]
-fn every_dialects_egress_scheme_has_its_one_outbound_need() {
+fn every_dialects_default_style_is_stated_and_every_style_has_its_one_outbound_need() {
     assert_eq!(check_needs(NEEDS), Ok(()));
     assert_eq!(STATEMENT.needs_len, NEEDS.len());
-    for d in DIALECTS {
+    assert_eq!(TAIL.dialect_auth_len, DIALECTS.len());
+    for (i, d) in DIALECTS.iter().enumerate() {
+        // SAFETY: the tail's `'static` dialect_auth list of `dialect_auth_len` entries.
+        let stated = unsafe { *TAIL.dialect_auth.add(i) };
+        assert_eq!(stated.dialect as usize, i);
+        // SAFETY: a `'static` str the door states (abi_str).
+        let style = unsafe { std::slice::from_raw_parts(stated.style.ptr, stated.style.len) };
+        assert_eq!(style, d.egress_style.as_bytes(), "{}", d.name);
         assert_eq!(
-            EGRESS_SCHEMES
+            EGRESS_STYLES
                 .iter()
-                .filter(|s| **s == d.egress_scheme)
+                .filter(|s| **s == d.egress_style)
                 .count(),
             1,
             "{}",
             d.name
         );
     }
-    assert_eq!(NEEDS.len(), EGRESS_SCHEMES.len());
+    for style in [
+        "api-key",
+        "bearer",
+        "jwt-bearer",
+        "oauth-client-credentials",
+    ] {
+        assert!(EGRESS_STYLES.contains(&style), "{style}");
+    }
+    assert_eq!(NEEDS.len(), EGRESS_STYLES.len());
 }
 
 #[test]
@@ -254,4 +272,23 @@ fn red_no_dialects_governed_response_field_leaks_through_a_need() {
             );
         }
     }
+}
+
+/// THE ROUTE AN ARRIVAL NAMES (ARCHITECT Q-SW6 / Q-FL3, 2026-10-02): its model, verbatim, as a pool
+/// when the plane's `pools` names it, else as a direct entry, the previous release's order (a pool
+/// first, then a configured model). A model that is neither is still named, as a direct entry the
+/// kernel does not hold, so the kernel refuses it (`no_destination`, 1.5.5's 404).
+#[test]
+fn an_arrival_routes_over_its_model_a_pool_first_then_a_direct_entry() {
+    use busbar_contract::abi::plane::{ROUTE_DIRECT, ROUTE_POOL};
+    let shaping = read_settings(
+        br#"{"providers":{"ant":{"protocol":"anthropic","base_url":"https://anthropic.example"}},
+        "models":{"claude":{"provider":"ant"},"both":{"provider":"ant"}},
+        "pools":{"p":{"members":["claude"]},"both":{"members":["claude"]}}}"#,
+    )
+    .expect("a well-formed generation reads");
+    assert_eq!(route_of(&shaping, "p"), (ROUTE_POOL, "p"));
+    assert_eq!(route_of(&shaping, "claude"), (ROUTE_DIRECT, "claude"));
+    assert_eq!(route_of(&shaping, "both"), (ROUTE_POOL, "both"));
+    assert_eq!(route_of(&shaping, "nope"), (ROUTE_DIRECT, "nope"));
 }
