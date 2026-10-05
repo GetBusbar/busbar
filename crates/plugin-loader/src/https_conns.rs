@@ -139,6 +139,11 @@ fn reached(target: &str, desc: &OpenDesc<'_>) -> String {
     }
 }
 
+/// A PEM's content: every character but whitespace.
+fn pem_content(pem: &str) -> String {
+    pem.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
 fn piece(kind: PieceKind, len: usize) -> Piece {
     Piece {
         kind,
@@ -192,8 +197,9 @@ impl Conns for HttpsConns {
             .get(&url)
             .cloned()
             .ok_or(ConnError::Refused)?;
-        // The peer is reached only over a need trusting the certificate it presents.
-        if trust.as_deref() != Some(far.cert_pem.as_str()) {
+        // The peer is reached only over a need trusting the certificate it presents (the PEM's
+        // content, as a TLS stack reads it: line breaks and surrounding space are not content).
+        if trust.as_deref().map(pem_content) != Some(pem_content(&far.cert_pem)) {
             return Err(ConnError::Refused);
         }
         self.slab.insert(
