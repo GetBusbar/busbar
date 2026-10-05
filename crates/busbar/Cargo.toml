@@ -129,7 +129,7 @@ busbar-secret-env = { workspace = true }
 busbar-secret-file = { workspace = true }
 # THE RANKING HOOKS (`cheapest`/`fastest`/`least_busy`/`usage`), linked through the `hooks` axis
 # under `hooks-ranking` — one row, the strategy spellings its aliases. The kernel names no hook.
-busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
+busbar-hook-ranking = { workspace = true, optional = true }
 # THE OPERATOR CREDENTIAL (`auth.admin_auth: [admin-tokens]`, the single operator admin token), a
 # first-party AUTH plugin linked through the `auths` axis under `auth-admin-tokens` — the same row a
 # signed tarball of it registers when dropped in (DECISIONS #2 rule (1); ARCHITECT 2026-09-27
@@ -336,7 +336,7 @@ auth-admin-tokens = ["dep:busbar-auth-admin-tokens-plugin"]
 # plugin serving a plane need's header style, on the `auths` axis. Off, a member whose style it serves
 # binds only when a signed tarball of the module is dropped into `plugins/`.
 auth-header = ["dep:busbar-auth-header"]
-hooks-ranking = ["dep:busbar-hooks-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
+hooks-ranking = ["dep:busbar-hook-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 
@@ -371,7 +371,7 @@ auth-header = "busbar-auth-header"
 # THE COLD-KIND AXIS's in-process rows: the default store (a required dependency: every build links
 # it) and the ranking hooks (under their feature).
 store-memory = "busbar-store-memory"
-hooks-ranking = "busbar-hooks-ranking"
+hooks-ranking = "busbar-hook-ranking"
 # THE SECRET AXIS: the env and file sources, required dependencies (every build links them; the key
 # names the row). Each is loaded only when a reference names it.
 secret-env = "busbar-secret-env"

@@ -628,24 +628,6 @@
    ]
   },
   {
-   "id": "crates/hooks-ranking/src",
-   "kind": "production",
-   "paths": [
-    "crates/hooks-ranking/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/hooks-ranking/src/tests"
-   ]
-  },
-  {
    "id": "crates/plane-example/src",
    "kind": "production",
    "paths": [
@@ -1307,36 +1289,6 @@
    "kind": "test",
    "paths": [
     "crates/busbar-voice/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/hooks-ranking/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/hooks-ranking/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/hooks-ranking/tests",
-   "kind": "test",
-   "paths": [
-    "crates/hooks-ranking/tests"
    ],
    "tree_hash": null,
    "audited_at": null,

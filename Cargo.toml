@@ -25,7 +25,6 @@ members = [
     "crates/busbar-plane-decisions",
     "crates/plugin-loader",
     "crates/plane-example",
-    "crates/hooks-ranking",
     "crates/store-memory",
     "crates/busbar-transport-stdio",
     "crates/busbar-auth-header",
@@ -98,6 +97,11 @@ busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-expo
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
 busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "86987e4030e6ed3ccae51f547964e4e94ff902c2" }
 busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "86987e4030e6ed3ccae51f547964e4e94ff902c2" }
+# THE RANKING HOOK (kind: hook), pulled at a pinned rev: the logic crate the root links on its hooks
+# axis (feature `hooks-ranking`). The same package at the same rev, under the role the kernel's test
+# build gives it (`fixture-hook`: a kernel source names no plugin). A rev bump moves both lines.
+busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "7e1285e2e3293627723ab2754b9ddbfddeba9c46" }
+fixture-hook = { package = "busbar-hook-ranking", git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "7e1285e2e3293627723ab2754b9ddbfddeba9c46" }
 # ── A2A, from the a2aproject's OWN crates ──────────────────────────────────────────────────────
 # THE OBVIOUS NAME IS THE WRONG ONE. `a2a-rs` on crates.io is `emillindfors/a2a-rs` (MIT, v0.5.0) —
 # a different author entirely. The a2aproject family is the `a2a-*-lf` / `a2a-pb` set, all

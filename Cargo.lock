@@ -325,7 +325,7 @@ dependencies = [
  "busbar-export-prometheus",
  "busbar-export-prometheus-plugin",
  "busbar-export-webhook",
- "busbar-hooks-ranking",
+ "busbar-hook-ranking",
  "busbar-kernel",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
@@ -682,11 +682,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-hooks-ranking"
+name = "busbar-hook-ranking"
 version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-hook-ranking?rev=7e1285e2e3293627723ab2754b9ddbfddeba9c46#7e1285e2e3293627723ab2754b9ddbfddeba9c46"
 dependencies = [
  "busbar-contract",
- "busbar-plugin-loader",
  "serde_json",
 ]
 
@@ -704,7 +704,7 @@ dependencies = [
  "busbar-auth-oidc-plugin",
  "busbar-contract",
  "busbar-export-prometheus",
- "busbar-hooks-ranking",
+ "busbar-hook-ranking",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
  "busbar-kernel-egress",
