@@ -63,6 +63,11 @@ pub struct OpenDesc<'a> {
     /// pins is held against them at the connect, before any byte is written, and one outside
     /// them refuses the open. Empty = no pin beyond the judgement's own.
     pub within: &'a [IpAddr],
+    /// The REGISTRATION this open reaches, by its name in its plane's declaring section, where the
+    /// opener names one (a member route's walk; a plane's own stream that names it,
+    /// `EstablishIn::member`); empty = none. What the host sealed for that registration alone (its
+    /// private reach, [`PollConns::seal_reach`]) applies to this open and to no other.
+    pub member: &'a str,
 }
 
 /// What a piece a connection delivered carries.
@@ -625,6 +630,35 @@ pub trait PollConns: Conns {
             Ok(())
         } else {
             Err(ConnError::Refused)
+        }
+    }
+
+    /// SEAL ONE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, SEAM-4k: keyed
+    /// per REGISTRATION, never per destination): `owner`'s `need` may dial a private address at
+    /// `target`'s authority on an open that names `member` ([`OpenDesc::member`]) and on no other,
+    /// as an allowlist entry naming that host would (cloud metadata stays refused; the need's class
+    /// is unchanged). `reach` false drops any earlier seal for the registration. Two registrations
+    /// at one `host:port` hold their own answers. Host-side only: the root seals what its
+    /// configuration states.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Refused`]: the need is not `owner`'s, the target is not one it reaches, or (the
+    /// default) the table cannot honour a reach at all — a reach nobody honours is refused, never
+    /// dropped.
+    fn seal_reach(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        member: &str,
+        target: &str,
+        reach: bool,
+    ) -> Result<(), ConnError> {
+        let _ = (owner, need, member, target);
+        if reach {
+            Err(ConnError::Refused)
+        } else {
+            Ok(())
         }
     }
 }

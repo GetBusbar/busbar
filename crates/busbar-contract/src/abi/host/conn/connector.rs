@@ -240,6 +240,11 @@ pub struct EstablishIn {
     /// was judged never receives the request). An entry that is not an IP literal refuses the
     /// call. Absent or empty = no pin beyond the judgement's own.
     pub within: AbiStr,
+    /// Appended (a head whose `size` ends before it names none): the REGISTRATION this stream
+    /// reaches, by its name in the plugin's declaring section; absent = none. What the host sealed
+    /// for that registration alone (its private reach, `abi::plane::TRUST_PRIVATE_REACH`) applies
+    /// to this stream and to no other.
+    pub member: AbiStr,
 }
 
 /// The separator between the addresses of [`EstablishIn::within`].

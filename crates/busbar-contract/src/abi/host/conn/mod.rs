@@ -426,6 +426,8 @@ extern "C-unwind" fn host_open(
                     head_target: bytes(d.head_target.ptr, d.head_target.len)?,
                     // A pin is stated through the connector's ESTABLISH (`EstablishIn::within`).
                     within: &[],
+                    // So is a registration (`EstablishIn::member`).
+                    member: "",
                 },
             )?;
             set(out_conn, conn.0)

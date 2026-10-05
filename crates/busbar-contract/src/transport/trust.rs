@@ -121,17 +121,17 @@ pub struct Anchors {
     pub key_pin: Option<String>,
     /// The client identity to present; `None` = present none.
     pub client_identity: Option<ClientIdentity>,
-    /// The destination's PRIVATE REACH for the need (`abi::plane::TRUST_PRIVATE_REACH`): a private
-    /// address it stands for is admitted, as an allowlist entry naming its host would; a
-    /// cloud-metadata address stays refused, and the need keeps its egress class.
+    /// The REGISTRATION's private reach for its need (`abi::plane::TRUST_PRIVATE_REACH`): carried
+    /// with the member's anchors, and sealed for that registration alone
+    /// (`conn::PollConns::seal_reach`), never per destination. It anchors no connection security.
     pub private_reach: bool,
 }
 
 impl Anchors {
-    /// Whether these anchor nothing.
+    /// Whether these anchor no connection security (the private reach is sealed on its own).
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        !self.secures() && !self.private_reach
+        !self.secures()
     }
 
     /// Whether these hold the connection's security to anything (a key pin or a client identity).

@@ -42,6 +42,8 @@ struct Recording {
     slab: ConnSlab<()>,
     declared: Mutex<Vec<Declared>>,
     opened: Mutex<Vec<(InstanceId, NeedId, String)>>,
+    /// The registration every open named (`OpenDesc::member`), in order.
+    named: Mutex<Vec<String>>,
     /// The schemes no loaded transport serves, as this table answers [`DeclaredConns::serves`].
     unserved: Vec<&'static str>,
     /// Every program declaration: owner, need and the program.
@@ -129,6 +131,7 @@ impl Conns for Recording {
             .lock()
             .unwrap()
             .push((caller, need, desc.target.to_owned()));
+        self.named.lock().unwrap().push(desc.member.to_owned());
         Ok(id)
     }
     fn write(
@@ -226,9 +229,28 @@ fn establish_on(
     target: &'static str,
     ticket: Ticket,
 ) -> ServiceOut {
+    establish_as(
+        p,
+        need,
+        target,
+        ticket,
+        None,
+        std::mem::size_of::<EstablishIn>(),
+    )
+}
+
+/// An `ESTABLISH` naming the registration `member`, its head stating `size` bytes.
+fn establish_as(
+    p: &Plugin<TestKind>,
+    need: u32,
+    target: &'static str,
+    ticket: Ticket,
+    member: Option<&'static str>,
+    size: usize,
+) -> ServiceOut {
     let i = EstablishIn {
         head: ServiceHead {
-            size: std::mem::size_of::<EstablishIn>() as u32,
+            size: size as u32,
             op: service::ESTABLISH,
             handle: CompletionHandle {
                 ticket,
@@ -240,6 +262,7 @@ fn establish_on(
         timeout_ms: 0,
         target: abi_str(target),
         within: NONE,
+        member: member.map_or(NONE, abi_str),
     };
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
@@ -892,6 +915,7 @@ fn pinned_stream(p: &Plugin<TestKind>, seq: u32, within: &'static str) -> Servic
         timeout_ms: 0,
         target: abi_str("127.0.0.1:9"),
         within: abi_str(within),
+        member: abi_str(""),
     };
     call(p, CONN_SLOTS.establish, &i)
 }
@@ -1591,5 +1615,41 @@ fn a_member_program_need_is_declared_with_each_registrations_program() {
                 env: Vec::new(),
             }
         )]
+    );
+}
+
+/// RED (SEAM-4k): an `ESTABLISH` that names a REGISTRATION (`EstablishIn::member`, appended) opens
+/// on the table under that name, so what the host sealed for that registration alone (its private
+/// reach) applies to the stream; a head whose `size` ends before the field names none and is
+/// still served.
+#[test]
+fn an_establish_names_its_registration_and_a_shorter_head_names_none() {
+    let table = Arc::new(Recording::default());
+    let p = bound(Box::leak(Box::new(NEEDS)), &table);
+    assert_eq!(
+        open_with(&p, br#"{"upstream":"127.0.0.1:9"}"#),
+        Outcome::Ready
+    );
+    let full = std::mem::size_of::<EstablishIn>();
+    let memberless = std::mem::offset_of!(EstablishIn, member);
+    let named = establish_as(&p, 0, "127.0.0.1:9", Ticket::NONE, Some("inside"), full);
+    assert_eq!(named.outcome, RawOutcome::of(Outcome::Ready));
+    let short = establish_as(
+        &p,
+        0,
+        "127.0.0.1:9",
+        Ticket::NONE,
+        Some("ignored"),
+        memberless,
+    );
+    assert_eq!(
+        short.outcome,
+        RawOutcome::of(Outcome::Ready),
+        "a shorter head is served"
+    );
+    assert_eq!(
+        table.named.lock().unwrap().as_slice(),
+        &["inside".to_owned(), String::new()],
+        "the named registration, then none"
     );
 }
