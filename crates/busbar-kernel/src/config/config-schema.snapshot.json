@@ -1083,7 +1083,7 @@
         },
         "transport": {
           "optional": true,
-          "type": "Transport"
+          "type": "ServerTransport"
         },
         "upstream_credentials": {
           "optional": true,
@@ -2282,6 +2282,15 @@
       "kind": "struct",
       "transparent": false
     },
+    "ServerTransport": {
+      "deny_unknown_fields": false,
+      "kind": "enum",
+      "transparent": false,
+      "variants": [
+        "stdio",
+        "streamable_http"
+      ]
+    },
     "SplitDocument": {
       "deserialize": "manual",
       "fields": {},
@@ -2489,15 +2498,6 @@
       "deserialize": "manual",
       "fields": {},
       "kind": "struct"
-    },
-    "Transport": {
-      "deny_unknown_fields": false,
-      "kind": "enum",
-      "transparent": false,
-      "variants": [
-        "stdio",
-        "streamable_http"
-      ]
     },
     "UpstreamCreds": {
       "deny_unknown_fields": false,
@@ -2717,6 +2717,10 @@
     "type Listeners": {
       "kind": "alias",
       "target": "Mutex<HashMap<(InstanceId, NeedId), Arc<Mutex<Listening>>>>"
+    },
+    "type Members": {
+      "kind": "alias",
+      "target": "HashMap<String, Arc<Member>>"
     },
     "type Opening": {
       "kind": "alias",
