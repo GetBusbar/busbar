@@ -19,6 +19,11 @@
 use std::sync::OnceLock;
 
 use busbar_contract::conn::{ConnError, PieceKind};
+use busbar_core_connector::{carrier, compose, framer, hostio};
+
+#[allow(dead_code, unsafe_code, unused_imports)]
+#[path = "../src/tests/support.rs"]
+mod support;
 use busbar_plugin_loader::sign::{sign, Manifest, SigningKey, TrustPolicy};
 
 /// What the dial answers today. The one edit that flips this witness once instances are handed their table.
@@ -260,6 +265,7 @@ fn open_stated(
                 claims: stated.claims,
                 role: stated.role,
                 composes_over: stated.composes_over,
+                ported: stated.ported,
             },
             plugin,
         }),
@@ -291,6 +297,7 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
         .await;
         let mut c = Connection::dial(
             door,
+            &support::via(),
             Dial {
                 target: format!("{scheme}://{far}/v1/probe"),
                 tls: None,
@@ -371,6 +378,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
         });
         let mut c = Connection::dial(
             door,
+            &support::via(),
             Dial {
                 target: far,
                 tls: None,
@@ -425,8 +433,9 @@ fn head_through_the_table(response: &'static str) -> (Pieces, Option<Vec<u8>>) {
     let door = composing_door();
     let scheme = door.facts().claims[0];
     // The connector serves a CARRIER beside the framer (no transport names another; the carrier is
-    // the connector's choice): the neutral frame door, which names no transport.
-    let layer = socket_framer_door().expect("a carrier door is built beside the test");
+    // the connector's choice): the test carrier over the process's host I/O.
+    let layer: std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> =
+        std::sync::Arc::new(support::TestDoor::identity("test-carrier"));
     let response = respond(scheme, response);
     // An IP literal is its own address: the judge the test needs, and no more.
     let judge = |dest: &str, _: u32, _: Judged| {

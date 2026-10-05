@@ -237,6 +237,24 @@ impl HostIo {
         }
     }
 
+    /// SHUT the write half of handle `id` (a stream's FIN; a program's input closed), as the layer a
+    /// detached stream moved on to ends its writing and keeps reading. A handle no longer held is
+    /// already shut.
+    pub fn shut_write(&self, id: u64) {
+        let Ok(e) = self.lookup(id) else {
+            return;
+        };
+        match &e.kind {
+            Kind::Stream { sock, .. } => {
+                let _ = sock.get_ref().shutdown(Shutdown::Write);
+            }
+            Kind::Program(p) => {
+                p.stdin.lock().unwrap_or_else(PoisonError::into_inner).take();
+            }
+            Kind::Listener(_) => {}
+        }
+    }
+
     /// Whether the program handle `id` runs has exited (without waiting for it); `false` for any
     /// other handle, and for one no longer held.
     #[must_use]

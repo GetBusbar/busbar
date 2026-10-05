@@ -49,7 +49,7 @@ async fn echo(mut conn: Connection) {
 }
 
 fn plain(door: Arc<TestDoor>, limits: AcceptLimits) -> Listening {
-    Listening::bind(door, "127.0.0.1:0", None, Vec::new(), limits).expect("binds")
+    Listening::bind(Some(door), &crate::support::via(), "127.0.0.1:0", None, Vec::new(), limits).expect("binds")
 }
 
 /// A client's bytes reach the framer begun on `SIDE_ACCEPT`, and the answer the host emits on the
@@ -115,7 +115,8 @@ fn tls_on_a_listener_is_the_connectors_server_with_the_framers_offer() {
     worker().block_on(async move {
         let door = Arc::new(TestDoor::identity("sec"));
         let mut l = Listening::bind(
-            door,
+            Some(door),
+            &crate::support::via(),
             "127.0.0.1:0",
             Some(server(leaf, key)),
             vec![b"x-framer".to_vec()],
@@ -236,7 +237,8 @@ fn a_silent_tls_client_is_dropped_at_the_handshake_deadline() {
     worker().block_on(async move {
         let door = Arc::new(TestDoor::identity("sec"));
         let mut l = Listening::bind(
-            door.clone(),
+            Some(door.clone()),
+            &crate::support::via(),
             "127.0.0.1:0",
             Some(server(leaf, key)),
             Vec::new(),
@@ -295,7 +297,9 @@ fn accept_errors_back_off_as_1_5_5s_did() {
 fn a_stream_listener_hands_up_the_socket_as_it_arrived_under_the_cap() {
     use busbar_kernel::tls::Admits;
     worker().block_on(async {
+        let via = crate::support::via();
         let mut l = Listening::bind_stream(
+            Some(&via),
             "127.0.0.1:0",
             AcceptLimits {
                 max_conns: 1,

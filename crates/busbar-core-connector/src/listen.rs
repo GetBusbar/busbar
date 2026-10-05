@@ -152,7 +152,7 @@ fn other(t: String) -> std::io::Error {
 
 /// The carrier's `listen` on `bind`, the host admitting exactly it: the listener and the address
 /// bound.
-fn listen_through(via: &Via, bind: &str) -> std::io::Result<(u64, Driven, SocketAddr)> {
+pub(crate) fn listen_through(via: &Via, bind: &str) -> std::io::Result<(u64, Driven, SocketAddr)> {
     let mut side = Driven::of(via.door.as_ref())
         .ok_or_else(|| other("the transport is no carrier the host drives".into()))?;
     via.io.admit(side.ticket(), Admission::Bind(bind.to_owned()));
@@ -353,20 +353,37 @@ impl Listening {
                     };
                     return Poll::Ready((got, peer, slot));
                 }
-                Err(_) => {
-                    let d = self
-                        .backoff
-                        .map_or(BACKOFF_FIRST, |prev| (prev * 2).min(BACKOFF_CAP));
-                    self.backoff = Some(d);
-                    self.sleep = Some(Box::pin(tokio::time::sleep(d)));
+                Err(e) => {
+                    if let Some(d) = self.next_delay(&std::io::Error::other(e)) {
+                        self.sleep = Some(Box::pin(tokio::time::sleep(d)));
+                    }
                 }
             }
         }
     }
 }
 
+impl Listening {
+    /// 1.5.5's accept backoff: `None` = retry now. An aborted or interrupted accept is the far
+    /// end's transient (the host retries it itself); anything else waits 5 ms, doubling to 250 ms.
+    fn next_delay(&mut self, e: &std::io::Error) -> Option<Duration> {
+        if matches!(
+            e.kind(),
+            std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::Interrupted
+        ) {
+            self.backoff = None;
+            return None;
+        }
+        let d = self
+            .backoff
+            .map_or(BACKOFF_FIRST, |prev| (prev * 2).min(BACKOFF_CAP));
+        self.backoff = Some(d);
+        Some(d)
+    }
+}
+
 /// What one accept came to.
-enum Got {
+pub(crate) enum Got {
     /// The carrier's connection.
     Carried(Carried),
     /// The host's own socket (a stream listener with no carrier).
@@ -374,7 +391,7 @@ enum Got {
 }
 
 /// The carrier's `accept` on its listener's side: the connection and its far end.
-fn accept_through(
+pub(crate) fn accept_through(
     via: &Via,
     listener: u64,
     side: &mut Driven,

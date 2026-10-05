@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use busbar_core_connector::compose::{Connection, Dial};
-use busbar_core_connector::framer;
+use busbar_core_connector::{carrier, compose, framer, hostio};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -108,7 +108,7 @@ fn no_thread_per_connection() {
         let door = Arc::new(TestDoor::identity("bytes"));
         let mut conns = Vec::new();
         for i in 0..64_u8 {
-            conns.push(Connection::dial(door.clone(), dial(&far, vec![i; 3])).unwrap());
+            conns.push(Connection::dial(door.clone(), &support::via(), dial(&far, vec![i; 3])).unwrap());
         }
         let during = thread_count();
         for (i, c) in conns.iter_mut().enumerate() {

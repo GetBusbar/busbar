@@ -70,18 +70,24 @@ async fn tls_far_end(leaf: Vec<u8>, key: Vec<u8>) -> String {
 /// admitted, and the default outbound trust (the public roots alone).
 fn secure_connector() -> Connector {
     crate::tls::install_crypto_provider();
-    let view = Transports::new(vec![Entry {
-        door: Arc::new(TestDoor::new(
-            "sec",
-            &["sec"],
-            &[],
-            Knobs {
-                secure_name: Some("localhost"),
-                ..Knobs::default()
-            },
-        )),
-        alpn: Vec::new(),
-    }])
+    let view = Transports::new(vec![
+        Entry {
+            door: Arc::new(TestDoor::new(
+                "sec",
+                &["sec"],
+                &[],
+                Knobs {
+                    secure_name: Some("localhost"),
+                    ..Knobs::default()
+                },
+            )),
+            alpn: Vec::new(),
+        },
+        Entry {
+            door: Arc::new(TestDoor::identity("carrier")),
+            alpn: Vec::new(),
+        },
+    ])
     .unwrap();
     let tls = crate::tls::client::build_client_config(&Default::default()).expect("the config");
     Connector::serving(

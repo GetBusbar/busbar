@@ -559,9 +559,13 @@ impl futures::io::AsyncWrite for CarrierStream {
         self.carried.poll_flush(cx)
     }
 
+    /// The layer above ends its writing: what the carrier took goes out, then the write half is
+    /// shut (the far end reads its end) and the stream keeps reading.
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         std::task::ready!(self.carried.poll_flush(cx))?;
-        self.carried.close();
+        if let Some(h) = self.carried.handle() {
+            self.carried.io.shut_write(h);
+        }
         Poll::Ready(Ok(()))
     }
 }

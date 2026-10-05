@@ -80,7 +80,7 @@ fn bytes_go_through_the_framer_both_ways_byte_exact() {
         let door = Arc::new(TestDoor::identity("bytes"));
         let mut d = dial(&far);
         d.opening = Some((Vec::new(), b"hello ".to_vec()));
-        let mut c = Connection::dial(door.clone(), d).expect("dials");
+        let mut c = Connection::dial(door.clone(), &crate::support::via(), d).expect("dials");
         let waker = std::task::Waker::noop();
         let sent: Vec<u8> = (0..=255_u8).cycle().take(100_000).collect();
         c.write(
@@ -113,7 +113,7 @@ fn the_far_ends_close_ends_the_connection() {
             s.write_all(b"bye").await.unwrap();
         });
         let door = Arc::new(TestDoor::identity("bytes"));
-        let mut c = Connection::dial(door, dial(&far)).unwrap();
+        let mut c = Connection::dial(door, &crate::support::via(), dial(&far)).unwrap();
         assert_eq!(gather(&mut c, 3).await, b"bye");
         assert_eq!(
             next(&mut c).await,
@@ -135,7 +135,7 @@ fn a_metadata_host_is_refused_before_any_socket_exists() {
             "0xa9fea9fe:80",
         ] {
             let door = Arc::new(TestDoor::identity("bytes"));
-            let r = Connection::dial(door.clone(), dial(target));
+            let r = Connection::dial(door.clone(), &crate::support::via(), dial(target));
             assert!(matches!(r, Err(Failure::Refused(_))), "{target}");
             assert_eq!(
                 door.count("locate"),
@@ -152,7 +152,7 @@ fn a_metadata_host_is_refused_before_any_socket_exists() {
                 ..Knobs::default()
             },
         ));
-        let r = Connection::dial(door.clone(), dial("127.0.0.1:9"));
+        let r = Connection::dial(door.clone(), &crate::support::via(), dial("127.0.0.1:9"));
         assert!(matches!(r, Err(Failure::Refused(_))));
         assert_eq!(door.count("begin"), 0, "no framing on a refused authority");
     });
@@ -174,7 +174,7 @@ fn a_silent_far_end_is_held_to_the_framers_deadline() {
             },
         ));
         let start = Instant::now();
-        let mut c = Connection::dial(door.clone(), dial(&far)).unwrap();
+        let mut c = Connection::dial(door.clone(), &crate::support::via(), dial(&far)).unwrap();
         let r = tokio::time::timeout(Duration::from_secs(10), next(&mut c))
             .await
             .expect("the deadline fires, the connection does not hang");
@@ -214,7 +214,7 @@ fn an_open_that_never_completes_is_held_to_its_timeout() {
         ));
         d.open_timeout = Duration::from_millis(300);
         let start = Instant::now();
-        let mut c = Connection::dial(door.clone(), d).unwrap();
+        let mut c = Connection::dial(door.clone(), &crate::support::via(), d).unwrap();
         assert_eq!(next(&mut c).await, Err(Failure::Timeout));
         assert!(start.elapsed() >= Duration::from_millis(300));
         assert_eq!(door.count("begin"), 0, "no framing before the handshake");
@@ -282,7 +282,7 @@ fn tls_and_the_protocol_offer_are_the_connectors() {
         ));
         d.alpn = vec![b"h2".to_vec()];
         d.opening = Some((Vec::new(), b"hello".to_vec()));
-        let mut c = Connection::dial(door, d).unwrap();
+        let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
         assert_eq!(gather(&mut c, 5).await, b"hello");
         assert_eq!(c.established().agreed_protocol.as_deref(), Some(&b"h2"[..]));
         assert_eq!(c.established().offered_name.as_deref(), Some("localhost"));
@@ -350,7 +350,7 @@ fn the_handshake_offers_what_the_framer_located() {
             ));
             d.alpn = registered;
             d.opening = Some((Vec::new(), b"hello".to_vec()));
-            let mut c = Connection::dial(door, d).unwrap();
+            let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
             assert_eq!(gather(&mut c, 5).await, b"hello");
             assert_eq!(
                 c.established().agreed_protocol.as_deref(),
@@ -375,7 +375,7 @@ fn a_malformed_protocol_offer_refuses_the_dial() {
                 ..Knobs::default()
             },
         ));
-        let got = Connection::dial(door, dial("127.0.0.1:9"));
+        let got = Connection::dial(door, &crate::support::via(), dial("127.0.0.1:9"));
         assert!(
             matches!(&got, Err(Failure::Refused(why)) if why.contains("protocol offer")),
             "{got:?}"
@@ -391,7 +391,7 @@ fn a_far_end_that_never_reads_fills_the_buffer_and_writes_are_refused_room() {
     worker().block_on(async {
         let far = silent().await;
         let door = Arc::new(TestDoor::identity("bytes"));
-        let mut c = Connection::dial(door, dial(&far)).expect("dials");
+        let mut c = Connection::dial(door, &crate::support::via(), dial(&far)).expect("dials");
         let waker = std::task::Waker::noop();
         let chunk = vec![7_u8; 64 * 1024];
         let mut full = false;
@@ -456,7 +456,7 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
             .expect_err("nothing listens")
             .to_string();
         let door = Arc::new(TestDoor::identity("bytes"));
-        let mut c = Connection::dial(door, dial(&closed.to_string())).unwrap();
+        let mut c = Connection::dial(door, &crate::support::via(), dial(&closed.to_string())).unwrap();
         assert!(matches!(next(&mut c).await, Err(Failure::Refused(_))));
         assert_eq!(
             c.cause(),
@@ -498,7 +498,7 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
                 ..Knobs::default()
             },
         ));
-        let mut c = Connection::dial(door.clone(), secure(&far)).unwrap();
+        let mut c = Connection::dial(door.clone(), &crate::support::via(), secure(&far)).unwrap();
         assert!(matches!(next(&mut c).await, Err(Failure::Refused(_))));
         let unknown = rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer);
         assert_eq!(
@@ -511,7 +511,7 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
         // A handshake that never finishes.
         let mut d = secure(&silent().await);
         d.open_timeout = Duration::from_millis(200);
-        let mut c = Connection::dial(door, d).unwrap();
+        let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
         assert_eq!(next(&mut c).await, Err(Failure::Timeout));
         assert_eq!(
             c.cause(),
