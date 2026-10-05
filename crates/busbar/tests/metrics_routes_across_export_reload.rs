@@ -6,7 +6,8 @@
 //! now (owner law 2026-09-27: they left core), but the owner law moved their OWNER, not their
 //! behaviour. Through the shipped binary, booted with a `module: prometheus` instance:
 //!
-//! * a reload that REMOVES the instance (`DELETE /api/v1/admin/export/<name>`) is live and reports
+//! * a reload that REMOVES the instance (`config.yaml` edited, `POST /api/v1/admin/config/reload`)
+//!   is live and reports
 //!   nothing awaiting a restart; `/metrics` then `404`s (1.5.5's plugin route resolved its owner
 //!   from the current snapshot) while `/metrics/hooks` keeps answering `200` under its own content
 //!   type (1.5.5's core route, mounted with the recorder at boot, answered for the process's life);
@@ -138,6 +139,30 @@ fn http(addr: &str, method: &str, path: &str, body: Option<&str>, token: Option<
     })
 }
 
+/// `POST /api/v1/admin/config/reload`: applied, and naming no well-known scrape path as awaiting a
+/// restart (the removal is live, and `/metrics` was mounted at boot).
+fn reload(admin: &str) -> Answer {
+    let r = http(
+        admin,
+        "POST",
+        "/api/v1/admin/config/reload",
+        None,
+        Some(ADMIN_TOKEN),
+    );
+    assert!(
+        (200..300).contains(&r.status),
+        "the reload applies: {} {}",
+        r.status,
+        r.body
+    );
+    assert!(
+        !r.body.contains("/metrics"),
+        "no scrape path awaits a restart: {}",
+        r.body
+    );
+    r
+}
+
 fn read_to_string(path: &Path) -> String {
     let mut s = String::new();
     if let Ok(mut f) = std::fs::File::open(path) {
@@ -228,25 +253,16 @@ fn a_reload_that_removes_the_scrape_sink_keeps_metrics_hooks_and_drops_metrics_a
         hooks.body
     );
 
-    // THE RELOAD THAT REMOVES IT: live, and nothing awaits a restart.
-    let removed = http(
-        &admin,
-        "DELETE",
-        "/api/v1/admin/export/metrics",
-        None,
-        Some(ADMIN_TOKEN),
+    // THE RELOAD THAT REMOVES IT: config.yaml loses its `export:` block and the admin API reloads
+    // it from disk — live, and nothing awaits a restart.
+    let config = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+    let without = config.replace(
+        "export:\n  metrics: { module: prometheus, settings: { buffer_seconds: 60 } }\n",
+        "",
     );
-    assert!(
-        (200..300).contains(&removed.status),
-        "the removal applies: {} {}",
-        removed.status,
-        removed.body
-    );
-    assert!(
-        !removed.body.contains("reload_to_apply"),
-        "a removal awaits no restart: {}",
-        removed.body
-    );
+    assert_ne!(without, config, "the fixture names the export block");
+    std::fs::write(dir.join("config.yaml"), &without).unwrap();
+    reload(&admin);
     let metrics = http(&data, "GET", "/metrics", None, Some(&token));
     assert_eq!(
         metrics.status, 404,
@@ -262,19 +278,15 @@ fn a_reload_that_removes_the_scrape_sink_keeps_metrics_hooks_and_drops_metrics_a
 
     // THE RELOAD THAT ADDS ONE BACK, under another name: /metrics serves again, and the path was
     // mounted at boot, so nothing awaits a restart.
-    let added = http(
-        &admin,
-        "PUT",
-        "/api/v1/admin/export/metrics2",
-        Some(r#"{"module":"prometheus","settings":{"buffer_seconds":60}}"#),
-        Some(ADMIN_TOKEN),
-    );
-    assert_eq!(added.status, 200, "{}", added.body);
-    assert!(
-        !added.body.contains("reload_to_apply"),
-        "the path was mounted at boot: {}",
-        added.body
-    );
+    std::fs::write(
+        dir.join("config.yaml"),
+        config.replace(
+            "  metrics: { module: prometheus",
+            "  metrics2: { module: prometheus",
+        ),
+    )
+    .unwrap();
+    reload(&admin);
     let metrics = settled(&data, "/metrics", &token);
     assert_eq!(
         (metrics.status, metrics.content_type.as_str()),
