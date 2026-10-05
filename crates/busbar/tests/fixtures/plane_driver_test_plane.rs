@@ -66,12 +66,13 @@ use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{
     AdminRoute, ArriveIn, ArriveOut, BillableClass, Claim, OnPieceIn, OnPieceOut, OpClass, Ops,
     OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneSnapshot, PlaneTail,
-    RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut, UnitCount, AUDIT_APPLIED, AUDIT_NONE,
-    AUDIT_REJECTED, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_OPEN,
-    EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION,
-    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_POOL,
-    ROUTE_PUBLIC, SHAPE_WHOLE, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    ProjectOut, RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut, UnitCount, AUDIT_APPLIED,
+    AUDIT_NONE, AUDIT_REJECTED, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, CLAIM_EXACT,
+    CLAIM_OPEN, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_FIELDS,
+    PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT,
+    ROUTE_DIRECT, ROUTE_POOL, ROUTE_PUBLIC, SHAPE_WHOLE, SPAN_ABSENT, UNITS_ESTIMATED,
+    UNITS_REPORTED, VERDICT_RETRY,
 };
 
 /// The plane's own refusal code and the status `/clock` refuses with when the host will not read
@@ -367,7 +368,7 @@ static OPS: Shared<Ops> = Shared(Ops {
     serve: Some(serve),
     hydrate: Some(ready),
     start: Some(ready),
-    project: Some(refused),
+    project: Some(project),
 });
 
 static DOOR: Shared<Door> = Shared(Door {
@@ -534,8 +535,19 @@ extern "C" fn ready(_: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOu
     unsafe { say(out, Outcome::Ready) }
 }
 
-extern "C" fn refused(_: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {
-    unsafe { say(out, Outcome::Refused) }
+/// `project`: an empty view (no pool, no dialect, no prompt turn, nothing rewritten), so a unit a
+/// hook binds is read and its hooks see the shape only.
+extern "C" fn project(_: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {
+    unsafe {
+        let o = &mut *out.cast::<ProjectOut>();
+        let absent = Span {
+            offset: SPAN_ABSENT,
+            len: 0,
+        };
+        o.body = absent;
+        o.rewritten = absent;
+        say(out, Outcome::Ready)
+    }
 }
 
 extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {

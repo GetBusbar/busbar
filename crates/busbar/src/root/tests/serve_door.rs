@@ -256,10 +256,13 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         &composed_services(),
         &sections,
         &plane_money,
-        Some(&DoorEgress {
-            reach: &reach,
-            journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
-        }),
+        (
+            Some(&DoorEgress {
+                reach: &reach,
+                journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
+            }),
+            None,
+        ),
     )
     .expect("the door plane composes, its egress sealed");
     let _ = std::fs::remove_file(&key_file);
@@ -377,7 +380,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
         &composed_services(),
         &sections,
         &money,
-        None,
+        (None, None),
     )
     .expect("the door plane composes");
     let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");

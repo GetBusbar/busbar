@@ -863,6 +863,13 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         &late_services,
         &deploy.door_sections(),
         &door_reach,
+        // THE DEPLOYMENT'S HOOKS REACH THE DOOR PLANES' UNITS (U22): the boot generation's engine
+        // host, as the health probers below re-anchor on it.
+        Some(root::serve::DoorHooks {
+            host: busbar_kernel::plane_host::engine_host(&app),
+            gov: app.governance.clone(),
+            cost: Arc::clone(&app.cost),
+        }),
     )
     .unwrap_or_else(|e| die(e));
     served.spawn_ticks();

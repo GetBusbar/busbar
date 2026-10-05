@@ -471,6 +471,7 @@ pub fn compose_served(
     late: &LateServices,
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
     reach: &crate::root::door_steps::DoorReach<'_>,
+    hooks: Option<DoorHooks>,
 ) -> Result<Served, String> {
     let Some(gov) = gov else {
         if !doors.is_empty() {
@@ -494,13 +495,20 @@ pub fn compose_served(
             reach,
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         };
-        let mut served = compose_planes(doors, dispatcher, late, sections, &money, Some(&egress))?;
+        let mut served = compose_planes(
+            doors,
+            dispatcher,
+            late,
+            sections,
+            &money,
+            (Some(&egress), hooks.as_ref()),
+        )?;
         served.post = Some(post);
         Ok(served)
     }
     #[cfg(not(linked_axis_node))]
     {
-        let _ = (gov, dispatcher, late, reach);
+        let _ = (gov, dispatcher, late, reach, hooks);
         match doors
             .iter()
             .find(|(_, plugin)| sections.contains_key(plugin.served().section))
@@ -523,6 +531,88 @@ pub struct DoorEgress<'a> {
     pub journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
 }
 
+/// THE DEPLOYMENT'S HOOK CONFIGURATION, AS THE DOOR PLANES BIND IT (ARCHITECT ruling on U22,
+/// 2026-10-05): the generation's engine host (its global and per-pool rewrites, gates, policies
+/// and taps, resolved from the operator's `hooks:` exactly as 1.5.5 resolved them), and what the
+/// hooks may know of a verified caller, read off the governance book and the cost model. Each door
+/// plane's driver binds a unit's hooks over it, so the request stage and the unit's in-session
+/// stage (`hook.call`, `content.scan`) run the configured hooks.
+pub struct DoorHooks {
+    /// The generation's engine host.
+    pub host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    /// The governance book, when the deployment governs.
+    pub gov: Option<Arc<busbar_kernel::governance::GovState>>,
+    /// The cost model a caller's headroom and budget chain are read through.
+    pub cost: Arc<busbar_kernel::cost::CostModel>,
+}
+
+/// What the hooks may know of a verified caller (the principal is its key's id), over the
+/// governance book: its key, its group (a tap's `groups:` scope), its rate headroom and its budget
+/// chain; a hook handed the prompt leaves its access amendment through the engine host.
+struct GovCaller {
+    host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    gov: Option<Arc<busbar_kernel::governance::GovState>>,
+    cost: Arc<busbar_kernel::cost::CostModel>,
+}
+
+impl GovCaller {
+    fn key(&self, principal: &str) -> Option<Arc<busbar_contract::records::VirtualKey>> {
+        self.gov.as_ref()?.lookup_by_sub(principal)
+    }
+}
+
+impl busbar_kernel::plane_driver::CallerFacts for GovCaller {
+    fn key(&self, principal: &str) -> Option<busbar_kernel::plane_driver::CallerKey> {
+        self.key(principal)
+            .map(|k| busbar_kernel::plane_driver::CallerKey {
+                id: k.id.clone(),
+                name: k.name.clone(),
+            })
+    }
+
+    fn in_groups(&self, principal: Option<&str>, groups: &[String]) -> bool {
+        let group = principal
+            .and_then(|p| self.key(p))
+            .and_then(|k| k.group.clone());
+        self.host.caller_in_hook_groups(group.as_deref(), groups)
+    }
+
+    fn rate_headroom(&self, principal: &str, pool: &str) -> Option<f64> {
+        let key = self.key(principal)?;
+        self.gov
+            .as_ref()?
+            .rate_headroom(&self.cost, &key, Some(pool), busbar_kernel::store::now())
+    }
+
+    fn budget(&self, principal: &str) -> Vec<busbar_contract::hooks::BudgetBucketState> {
+        match (self.gov.as_ref(), self.key(principal)) {
+            (Some(gov), Some(key)) => {
+                gov.budget_state(&self.cost, &key, busbar_kernel::store::now())
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool) {
+        self.host.hook_read(hook, principal, dialect, identity);
+    }
+}
+
+impl DoorHooks {
+    /// The binder of one door plane whose dialects are `dialects`, in its tail's order.
+    fn binder(&self, dialects: &[&str]) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
+        Arc::new(busbar_kernel::plane_driver::HostHooks {
+            host: Arc::clone(&self.host),
+            caller: Arc::new(GovCaller {
+                host: Arc::clone(&self.host),
+                gov: self.gov.clone(),
+                cost: Arc::clone(&self.cost),
+            }),
+            dialects: dialects.iter().map(|d| (*d).to_string()).collect(),
+        })
+    }
+}
+
 /// THE DOOR PLANES' COMPOSITION (ARCHITECT Q-SW4, 2026-10-02): every plane bound through its door
 /// (`root::boot::door_planes`) whose declared section this deployment writes (LAW 7: a plugin
 /// loads iff its section is present) is opened with that section as its settings, and composed:
@@ -532,7 +622,9 @@ pub struct DoorEgress<'a> {
 /// routes published on the admin router's table (`plane_driver::serve`, K-SERVE). A plane whose
 /// section is absent stays bound and unopened, as before. With `egress`, each plane's egress is
 /// sealed over it ([`crate::root::door_steps::member_routes`]); without, none is (every walk is
-/// exhausted at once). The data routes are the data router's construction ([`data_routes`]).
+/// exhausted at once). With `hooks`, each driver binds a unit's hooks over the deployment's hook
+/// configuration ([`DoorHooks`]); without, no hook binds. The data routes are the data router's
+/// construction ([`data_routes`]).
 ///
 /// # Errors
 ///
@@ -544,7 +636,7 @@ pub fn compose_planes(
     late: &LateServices,
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
     money: &dyn Fn() -> Arc<PlaneMoney>,
-    egress: Option<&DoorEgress<'_>>,
+    (egress, hooks): (Option<&DoorEgress<'_>>, Option<&DoorHooks>),
 ) -> Result<Served, String> {
     let mut served = Served::default();
     if doors.is_empty() {
@@ -595,6 +687,10 @@ pub fn compose_planes(
         )
         .map_err(|e| format!("{instance}: {e}"))?
         .with_records(Arc::clone(&kernel), caller);
+        let driver = match hooks {
+            Some(h) => driver.with_hooks(h.binder(&served_facts.dialects)),
+            None => driver,
+        };
         let routes = snapshot
             .admin_routes
             .iter()

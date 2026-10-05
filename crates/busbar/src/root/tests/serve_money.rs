@@ -53,6 +53,46 @@ fn governed_with(
     keys_chain: bool,
     budget: Option<u64>,
 ) -> Option<Governed> {
+    governed_hooked(instance, keys_chain, budget, None)
+}
+
+/// The deployment's `hooks:` as an operator writes it: one global `kind: gate` on the kernel's
+/// hook double (the 1.5.5 hook reply through the hook axis port), granted `prompt: ro`, rejecting
+/// any request whose projected text carries `token`.
+fn screening_gate(token: &str) -> busbar_kernel::test_support::TestApp {
+    let cfg: busbar_kernel::config::HookCfg = serde_json::from_value(serde_json::json!({
+        "kind": "gate",
+        "module": "test-hook",
+        "timeout_ms": 10_000,
+        "on_error": "weighted",
+        "prompt": "ro",
+        "priority": 0,
+        "settings": { "reject_if_contains": token },
+    }))
+    .expect("an operator's gate definition");
+    let needs = crate::root::loader::sign::HookNeeds {
+        prompt: crate::root::loader::sign::NeedLevel::Ro,
+        ..Default::default()
+    };
+    busbar_kernel::test_support::TestApp::new()
+        .hook_env(busbar_kernel::test_support::test_hook_env(
+            &["test-hook"],
+            needs,
+        ))
+        .hook("screen", cfg)
+        .global_hook("screen")
+        .resolve_global_gates()
+}
+
+/// [`governed_with`], with `screen`: the deployment configures [`screening_gate`] over `screen`,
+/// and the door plane's driver binds the deployment's hooks ([`super::DoorHooks`]) as the boot's
+/// does.
+fn governed_hooked(
+    instance: &'static str,
+    keys_chain: bool,
+    budget: Option<u64>,
+    screen: Option<&str>,
+) -> Option<Governed> {
     // The dispatcher serves its instances the composition's host services (`unit.nest` among
     // them), as the boot's does.
     let services = composed_services();
@@ -131,24 +171,29 @@ fn governed_with(
     let one = Arc::clone(&money);
     let mut sections = BTreeMap::new();
     sections.insert("test_plane", serde_yaml::from_str("m: {}").expect("yaml"));
+    let app = screen.map_or_else(busbar_kernel::test_support::TestApp::new, screening_gate);
+    let app = if keys_chain { app.keys_chain() } else { app };
+    let app = groups
+        .iter()
+        .fold(app, |app, (name, cfg)| app.group(name, cfg.clone()));
+    let app = app.governance(Arc::clone(&gov)).cost(cost).build();
+    let hooks = screen.map(|_| super::DoorHooks {
+        host: busbar_kernel::plane_host::engine_host(&app),
+        gov: Some(Arc::clone(&gov)),
+        cost: Arc::clone(&app.cost),
+    });
     let mut served = compose_planes(
         &[(instance.to_string(), plane)],
         &dispatcher,
         &services,
         &sections,
         &move || Arc::clone(&one),
-        None,
+        (None, hooks.as_ref()),
     )
     .expect("the door plane composes");
     served.post = Some(Arc::clone(&post));
     let routes = door_routes(served, || crate::root::kernel::ROOT_CARD.pin(), &[], &[])
         .expect("its claims mount");
-    let app = busbar_kernel::test_support::TestApp::new();
-    let app = if keys_chain { app.keys_chain() } else { app };
-    let app = groups
-        .iter()
-        .fold(app, |app, (name, cfg)| app.group(name, cfg.clone()));
-    let app = app.governance(Arc::clone(&gov)).cost(cost).build();
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), routes, 1 << 20, 0, false);
     Some(Governed {
@@ -339,6 +384,28 @@ async fn a_planes_unit_is_served_content_scan_hook_call_and_verify() {
     assert_eq!(
         (status, body.as_str()),
         (200, "scan=0 gate=0 rewrite=0 verify=2")
+    );
+    assert_eq!(g.money.open_units(), 0);
+}
+
+/// THE DEPLOYMENT'S GATE REACHES A DOOR PLANE'S UNIT (U22, ARCHITECT 2026-10-05): the operator's
+/// global `kind: gate` (the 1.5.5 hook double, through the hook axis port) is bound to the unit by
+/// the driver, as the boot binds it. The request itself carries nothing the gate screens, so the
+/// unit is admitted and served; the content the plane then passes through `content.scan` and
+/// `hook.call` carries the screened token, and the configured gate blocks it, with its own status.
+/// The control (the same deployment with no gate) is the test above: `scan=0 gate=0`.
+#[tokio::test]
+async fn a_configured_gate_blocks_in_session_content_through_a_dropped_in_plane() {
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed_hooked("serve-money-gated", true, None, Some("ping")) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let (status, body) = g.post("/call/services", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "scan=1 gate=403 rewrite=0 verify=2"),
+        "the gate blocks the screened content and stops the gated sub-operation"
     );
     assert_eq!(g.money.open_units(), 0);
 }
