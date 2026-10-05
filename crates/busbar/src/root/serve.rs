@@ -2612,8 +2612,10 @@ pub(crate) mod planes_tests;
 
 // The doors served end to end through this composition: the decisions plane's (under its feature)
 // and the MCP plane's (the `root-mcp` leg's loop cells, under the linked plane-door axis), each
-// gated item by item inside, so either plane's switch alone still compiles its own.
-#[cfg(test)]
+// gated item by item inside, so either plane's switch alone still compiles its own. Its MCP cells
+// reach the door_steps helpers that need the default build's linked auth rows (gated with the
+// node-axis plane that carries that build).
+#[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_door.rs"]
 mod door_tests;
 

@@ -442,10 +442,15 @@ async fn node_boot_hooks_arm() {
     // THE CONFIGURATION STEP, before the first app build (main.rs), then the boot build: the card
     // holder's opening entry.
     busbar_kernel::metrics::init();
+    // A deployment naming no plane at all (a door-only build links no protocol to name one), over
+    // the kernel's stand-in store.
     let cfg = || {
-        busbar_kernel::test_support::cfg_with_provider_api_key(
-            busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_NODE_HOOKS"),
-        )
+        let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
+            .expect("a minimal deployment");
+        let mut cfg =
+            busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        cfg.store = Some(busbar_kernel::test_support::stand_in_store());
+        cfg
     };
     let boot = cfg();
     for step in crate::ROOT_UNITS.iter().filter_map(|u| u.on_config) {
