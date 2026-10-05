@@ -12,6 +12,38 @@
 use busbar_plane_a2a::arrival::{self, Disposition};
 use busbar_plane_a2a::ops;
 
+/// The rig's own vocabulary table, read out of the file the rig imports it from.
+///
+/// Reading the rig's source rather than restating it is the whole point: a rig that starts sending a
+/// method this plane does not carry must fail HERE, at build time, rather than in a battery run that
+/// someone has to interpret.
+fn rig_vocabulary(table: &str) -> Vec<(String, String)> {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testing/a2a-supplement/a2asup/transport.py"),
+    )
+    .expect("the rig's vocabulary table is readable");
+    let start = source
+        .find(&format!("{table} = {{"))
+        .unwrap_or_else(|| panic!("the rig no longer declares {table}"));
+    let body = &source[start..];
+    let end = body.find('}').expect("the table closes");
+    let mut rows = Vec::new();
+    for line in body[..end].lines().skip(1) {
+        let line = line.trim().trim_end_matches(',');
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim().trim_matches('"');
+        let value = value.trim().trim_matches('"');
+        if !key.is_empty() && !value.is_empty() {
+            rows.push((key.to_string(), value.to_string()));
+        }
+    }
+    assert!(!rows.is_empty(), "the rig's {table} table read as empty");
+    rows
+}
+
 /// One request envelope of this protocol, with the method and identifier a caller would send.
 fn request(id: &str, method: &str) -> Vec<u8> {
     format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{{}}}}"#).into_bytes()
