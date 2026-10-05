@@ -139,8 +139,9 @@ busbar-auth-admin-tokens-plugin = { workspace = true, optional = true }
 # THE OUTBOUND HEADER STYLES (bearer, api-key, x-goog-api-key): the auth plugin a plane's outbound need
 # is bound under when its member's style is one of them (THE DESIGN §6 step 3: the auth plugin that
 # serves the style opens the binding), linked through the `auths` axis under `auth-header`
-# (ARCHITECT Q-L1-AUTH (A), 2026-10-03). Staged in-tree; its only busbar edge is `busbar-contract`.
-busbar-auth-header = { path = "../busbar-auth-header", optional = true }
+# (ARCHITECT Q-L1-AUTH (A), 2026-10-03). It lives in its own repo (GetBusbar/busbar-auth-header), pulled
+# at a pinned rev; its only busbar edge is `busbar-contract`.
+busbar-auth-header = { workspace = true, optional = true }
 # THE REQUEST-LOG FILE SINK (`module: request-log-file`), a first-party EXPORT plugin linked through
 # the `exports` axis (K9b) — the same row a signed tarball of it registers when dropped in. It lives
 # in its own repo (GetBusbar/busbar-export-file) and is pulled at a PINNED rev; the workspace `[patch]`
@@ -492,7 +493,7 @@ busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
 busbar-voice = { path = "../busbar-voice", features = ["test-support"] }
 # `root::door_steps` tests: a member bound under an OAuth grant, its credential minted by the real
 # token-style auth plugin through its own need (TODO row 22).
-busbar-auth-oauth = { path = "../busbar-auth-oauth" }
+busbar-auth-oauth = { workspace = true }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
 # through the kernel's test_support, exposed to dependents only behind this feature.
 busbar-kernel = { path = "../busbar-kernel", features = ["test-support"] }
