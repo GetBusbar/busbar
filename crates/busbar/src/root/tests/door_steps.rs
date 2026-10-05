@@ -3491,8 +3491,12 @@ mod upstream_ask_relay {
                 sent = Some(request);
             }
         }
-        let sent: serde_json::Value =
-            serde_json::from_str(&sent.expect("the retry reached the member")).expect("JSON");
+        // What was heard is the whole request, head included: its body follows the blank line.
+        let sent = sent.expect("the retry reached the member");
+        let body = sent
+            .split_once("\r\n\r\n")
+            .map_or(sent.as_str(), |(_, b)| b);
+        let sent: serde_json::Value = serde_json::from_str(body).expect("JSON");
         assert_eq!(sent["params"]["requestState"], "s", "{sent}");
         assert_eq!(
             sent["params"]["inputResponses"]["draft"]["content"]["text"], "the caller's own draft",
@@ -3502,8 +3506,11 @@ mod upstream_ask_relay {
         // RED: the state is spent once, and a forged one is refused.
         let (status, body) = call(&rig, &retry(&state)).await;
         assert_eq!(status, 400, "a spent state is refused: {body}");
+        // A forged state is not busbar's: on a tool with no rounds of busbar's own it is state
+        // nobody asked for, refused before anything is sent.
         let (status, body) = call(&rig, &retry("forged")).await;
-        assert_eq!(status, 400, "a forged state is refused: {body}");
+        assert_eq!(status, 403, "a forged state is refused: {body}");
+        assert_eq!(body["error"]["data"]["reason"], "ask_unsolicited_state", "{body}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
