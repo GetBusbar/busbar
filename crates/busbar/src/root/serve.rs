@@ -2404,9 +2404,27 @@ impl IngressReply {
             rendered = &mut unit => Err(rendered),
         };
         let rendered = match first {
+            // A WHOLE ANSWER goes out whole: an answer whose head states its length (one the plane
+            // rendered in full) is collected to its end and sent under the length of what was
+            // written, as the previous release sent a buffered answer; any other answer goes out
+            // piece by piece as the unit writes it.
+            Ok(Some(h)) if whole_answer(&h.1) => {
+                let whole = collect(body, unit).await;
+                return stated(unlengthed(h), Body::from(whole));
+            }
             Ok(Some(h)) => return stated(h, Body::new(ReplyBody(body, Some(unit)))),
             Ok(None) => unit.await,
             Err(rendered) => match head.try_recv() {
+                // The unit ended in the poll that stated its head: a whole answer is every piece it
+                // wrote, sent under its length.
+                Ok(h) if whole_answer(&h.1) => {
+                    let mut body = body;
+                    let mut whole = Vec::new();
+                    while let Ok(bytes) = body.try_recv() {
+                        whole.extend_from_slice(&bytes);
+                    }
+                    return stated(unlengthed(h), Body::from(whole));
+                }
                 Ok(h) => return stated(h, Body::new(ReplyBody(body, None))),
                 Err(_) => rendered,
             },
@@ -2429,6 +2447,54 @@ type UnitCaller = (
     Option<Arc<busbar_contract::records::VirtualKey>>,
     Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
 );
+
+/// Whether a reply head is a WHOLE answer's: it states its length and is no event stream (SSE, or
+/// the AWS event-stream framing, which the previous release relayed piece by piece).
+fn whole_answer(fields: &HeadFields) -> bool {
+    let named = |field: &[u8]| {
+        fields
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(field))
+            .map(|(_, value)| String::from_utf8_lossy(value).to_ascii_lowercase())
+    };
+    named(b"content-length").is_some()
+        && !named(b"content-type").is_some_and(|v| {
+            v.starts_with("text/event-stream")
+                || v.starts_with("application/vnd.amazon.eventstream")
+        })
+}
+
+/// A whole answer's head without its stated length: the response states the length of what was
+/// written.
+fn unlengthed((status, mut fields): Head) -> Head {
+    fields.retain(|(name, _)| !name.eq_ignore_ascii_case(b"content-length"));
+    (status, fields)
+}
+
+/// Every piece the unit writes until it ends, the unit driven meanwhile (its writes wait on this
+/// side), then whatever it wrote last.
+async fn collect(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Vec<u8> {
+    let mut whole = Vec::new();
+    loop {
+        tokio::select! {
+            biased;
+            piece = body.recv() => match piece {
+                Some(bytes) => whole.extend_from_slice(&bytes),
+                None => {
+                    let _ = unit.await;
+                    break;
+                }
+            },
+            _ = &mut unit => {
+                while let Ok(bytes) = body.try_recv() {
+                    whole.extend_from_slice(&bytes);
+                }
+                break;
+            }
+        }
+    }
+    whole
+}
 
 /// A unit the data door drives: what it rendered for its caller when it ended before any byte.
 pub type DrivenUnit = std::pin::Pin<Box<dyn std::future::Future<Output = Option<Rendered>> + Send>>;
