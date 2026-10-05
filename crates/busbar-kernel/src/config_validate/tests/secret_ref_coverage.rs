@@ -323,10 +323,10 @@ fn secret_refs_source() -> String {
     // `busbar_kernel::…` and the scan matches on that spelling. The impl is FOUND by its header
     // across the source tree rather than read from a spelled crate path, so this neutral test
     // names no plane crate — and a header that moved, vanished or was duplicated is still a panic.
-    let tools =
-        impl_block_in_tree("impl busbar_kernel::plane::config::PlaneCfg for ToolsSectionCfg");
+    // The `tools:` plane is served through its door (P3 DEL-MCP): its references are read at its
+    // door's declared paths (`SecretBearing::DoorDeclared`), with no typed impl to scan.
     let agents = impl_block_in_tree("impl busbar_kernel::plane::config::PlaneCfg for AgentsCfg");
-    let body = format!("{core}\n{tools}\n{agents}");
+    let body = format!("{core}\n{agents}");
     assert!(
         body.len() > 500,
         "the extracted secret_refs region is only {} bytes; the extraction is broken and the \
@@ -402,6 +402,18 @@ fn the_inventory_matches_what_secret_refs_actually_does() {
                      destructures it (`{ty} {{`). Either walk it or reclassify it."
                 );
                 walked += 1;
+            }
+            SecretBearing::DoorDeclared(reason) => {
+                assert!(
+                    !destructured,
+                    "SECRET_BEARING_TYPES calls `{ty}` a door plane's (\"{reason}\"), but \
+                     `secret_refs` destructures it. Reclassify it as Walked."
+                );
+                assert!(
+                    reason.contains("settings."),
+                    "`{ty}` is a door plane's with no declared path in its reason (\"{reason}\")"
+                );
+                excluded += 1;
             }
             SecretBearing::NotInResolvedConfig(reason) => {
                 assert!(

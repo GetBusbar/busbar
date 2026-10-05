@@ -149,3 +149,39 @@ fn distinct_names_across_nouns_and_pools_pass() {
     validate_unified_pool_names(&cfg, &mut errors);
     assert!(errors.is_empty(), "no collisions: {errors:?}");
 }
+
+/// THE `tools:` SECTION'S SECRET REFERENCES ARE ENUMERATED, so `--validate` and boot resolve each one
+/// (P3 DEL-MCP: the section is a door plane's, carried as written). Its owning plane's declaration
+/// names where references live — busbar's own RFC 8693 subject token, and a stdio child's
+/// environment values — and the section the registry lifted answers every reference at those paths,
+/// with its full config path, and nothing that is not a reference.
+#[test]
+fn the_tools_section_enumerates_every_secret_reference_its_plane_declares() {
+    linked::install();
+    let text = "providers: {}\nmodels: {}\ntools:\n  \
+        exchanged:\n    url: \"https://x.example/t\"\n    pin: { mechanism: unpinned }\n    \
+        aud: \"https://x.example\"\n    token_exchange:\n      \
+        token_url: \"https://as.example/token\"\n      \
+        subject_token: { env: BUSBAR_TEST_SUBJECT_TOKEN }\n  \
+        child:\n    transport: stdio\n    command: \"/usr/bin/true\"\n    \
+        pin: { mechanism: unpinned }\n    \
+        env:\n      API_KEY: { env: BUSBAR_TEST_CHILD_KEY }\n      MODE: \"plain\"\n";
+    let deploy = config::deploy_from_yaml_str(text)
+        .unwrap_or_else(|e| panic!("the section parses: {e}\n{text}"));
+    let mut found: Vec<String> = deploy
+        .tools
+        .0
+        .secret_refs()
+        .into_iter()
+        .map(|(at, _)| at)
+        .collect();
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            "tools.child.env.API_KEY",
+            "tools.exchanged.token_exchange.subject_token",
+        ],
+        "every reference at the plane's declared paths, and the plain value beside one is not one"
+    );
+}
