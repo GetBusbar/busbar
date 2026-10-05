@@ -79,6 +79,7 @@ fn a_door_route_is_recorded_at_the_bar_it_declares() {
         &app.plane_slots,
         app.oauth_as.as_ref(),
         vec![door(RouteAuth::Key)],
+        Vec::new(),
     )
     .1;
     let row = table

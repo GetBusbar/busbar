@@ -696,6 +696,72 @@ impl Node {
         true
     }
 
+    /// THE BORROWED SESSION OPEN (K6; ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03): one duplex session
+    /// unit whose steps, far end and caller live on the serving task (a plane driver's unit), run
+    /// through the loop's session opener ([`busbar_kernel::teller::open_unit`]: arrival to the door
+    /// and its audit, a session admitting at a zero hold, so nothing is held on the book and there is
+    /// no exit to settle) under this node's in-flight table, sweep and gauge. Its facts are opened on
+    /// `post` for the whole session. What the door said comes back with the unit's context and the
+    /// slot the session holds while it runs: [`SessionSlot::finish`] gives it back once the session
+    /// ended (its money is the session's one line, `PlaneMoney::session_ended`); dropping the slot
+    /// marks it for the sweep. `None` when the table would not take the unit.
+    pub fn open_borrowed<U: Units>(
+        &self,
+        key: UnitKey,
+        arrived: Arrived,
+        principal: &PrincipalId,
+        post: &'_ NodeEndPost,
+        units: &U,
+        history: Option<crate::root::kernel::PinnedHistory>,
+    ) -> Option<(busbar_kernel::teller::SessionOpen, UnitCtx, SessionSlot<'_>)> {
+        self.sweep(arrived);
+        post.open(key, principal.clone(), arrived, history);
+        let meter = Arc::new(AccrualMeter::new());
+        let hold =
+            busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
+        let Ok(slot) = self.inflight.insert(busbar_kernel::inflight::Enter {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            zero_hold_tick: false,
+            arrival: hold,
+            now: arrived.ms(),
+        }) else {
+            post.close(key);
+            return None;
+        };
+        let occupied = Occupied {
+            node: self,
+            slot: Arc::clone(&slot),
+            arrived,
+            reached_end: false,
+        };
+        let ctx = UnitCtx {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        };
+        let borrowed = Borrowed { units, post };
+        let opened = busbar_kernel::teller::open_unit(
+            &self.kernel,
+            &borrowed,
+            &ctx,
+            busbar_kernel::teller::Run {
+                cell: slot.cell(),
+                parent: None,
+                leases: slot.leases(),
+                gauge: &self.gauge,
+                canary: &self.canary,
+                meter: &meter,
+            },
+        );
+        Some((opened, ctx, SessionSlot { occupied, key }))
+    }
+
     /// Walk one handed unit through the loop and answer with what the terminal posted.
     ///
     /// The whole of the kernel's ten steps, two audit doors and one exit, for a unit a plane's
@@ -1516,6 +1582,29 @@ struct Occupied<'n> {
     arrived: Arrived,
     /// Set once the unit's end has been reached and settled on the ordinary path.
     reached_end: bool,
+}
+
+/// THE IN-FLIGHT SLOT A BORROWED SESSION HOLDS while it runs ([`Node::open_borrowed`]).
+#[must_use = "a session slot dropped unfinished is marked for the sweep"]
+pub struct SessionSlot<'n> {
+    occupied: Occupied<'n>,
+    key: UnitKey,
+}
+
+impl std::fmt::Debug for SessionSlot<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionSlot")
+            .field("key", &self.key)
+            .finish()
+    }
+}
+
+impl SessionSlot<'_> {
+    /// The session ended on its own path: its facts close on `post` and its slot is given back.
+    pub fn finish(mut self, post: &NodeEndPost) {
+        post.close(self.key);
+        self.occupied.reached_end = true;
+    }
 }
 
 impl Drop for Occupied<'_> {
