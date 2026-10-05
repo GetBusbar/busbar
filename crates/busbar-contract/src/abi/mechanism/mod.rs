@@ -44,11 +44,32 @@
 pub mod call;
 pub mod check;
 pub mod door;
+pub mod endpoint;
 pub mod extensions;
 pub mod lifecycle;
+pub mod observe;
 pub mod rendering;
 pub mod route;
 pub mod ticket;
+
+/// The seven kind WORDS: what a signed manifest's `kind` states, one per [`KindCode`]
+/// ([`KindCode::word`]). Plain `&str`s, none NUL-terminated.
+pub mod kind {
+    /// `abi/store/`.
+    pub const STORE: &str = "store";
+    /// `abi/secret/`.
+    pub const SECRET: &str = "secret";
+    /// `abi/auth/`.
+    pub const AUTH: &str = "auth";
+    /// `abi/hook/`.
+    pub const HOOK: &str = "hook";
+    /// `abi/export/`.
+    pub const EXPORT: &str = "export";
+    /// `abi/plane/`.
+    pub const PLANE: &str = "plane";
+    /// `abi/transport/`.
+    pub const TRANSPORT: &str = "transport";
+}
 
 /// The mechanism's version, stamped in every [`door::Door`]. v1.5.5 called it `TRANSPORT_VERSION`
 /// and shipped `1`; 1.6.0 ships `2` (the locked plugin ABI: every ABI is its v1.5.5 value + 1).
@@ -107,6 +128,26 @@ impl KindCode {
             7 => Some(KindCode::Transport),
             _ => None,
         }
+    }
+
+    /// The word a signed manifest's `kind` states for this kind ([`kind`]).
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            KindCode::Store => kind::STORE,
+            KindCode::Secret => kind::SECRET,
+            KindCode::Auth => kind::AUTH,
+            KindCode::Hook => kind::HOOK,
+            KindCode::Export => kind::EXPORT,
+            KindCode::Plane => kind::PLANE,
+            KindCode::Transport => kind::TRANSPORT,
+        }
+    }
+
+    /// The kind a manifest's `kind` word names, or `None` for a word no kind has.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<KindCode> {
+        KindCode::ALL.into_iter().find(|k| k.word() == word)
     }
 
     /// The ONE version of this kind's ABI the host accepts (no legacy loading: older and newer are

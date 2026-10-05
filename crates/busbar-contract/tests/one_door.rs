@@ -11,10 +11,10 @@
 use busbar_contract::abi::cold::STATUS_ERR;
 use busbar_contract::abi::sdk::__door;
 
-fn open(_cfg: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
+fn open(_cfg: &str) -> Result<Box<dyn busbar_contract::auth::AuthPlugin>, String> {
     Err("the one plugin refuses".into())
 }
-busbar_contract::abi::sdk::export_store_plugin!(open);
+busbar_contract::export_login_plugin!(open);
 
 #[test]
 fn the_frozen_symbols_answer_through_the_registered_plugin() {
@@ -29,7 +29,7 @@ fn the_frozen_symbols_answer_through_the_registered_plugin() {
     let kind = unsafe { std::ffi::CStr::from_ptr(kind.cast()) };
     assert_eq!(
         kind.to_str().unwrap(),
-        busbar_contract::abi::cold::kind::STORE
+        busbar_contract::abi::mechanism::kind::AUTH
     );
 
     let cfg = b"{}";
@@ -47,7 +47,7 @@ fn the_frozen_symbols_answer_through_the_registered_plugin() {
         assert!(text.contains("the one plugin refuses"), "{text}");
         assert!(
             __door::busbar_plane_decl().is_null(),
-            "a store image is not a plane"
+            "an auth image is not a plane"
         );
     }
 
