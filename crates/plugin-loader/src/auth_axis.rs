@@ -28,6 +28,7 @@ use busbar_contract::auth::{AuthModule, AuthVerdict};
 use busbar_contract::auth_calls::{
     AuthCalls, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest, Verifying,
 };
+use busbar_contract::conn::DeclaredConns;
 
 use crate::auth_door::{AuthInstance, AuthSink};
 use crate::dispatch::kinds::auth::{Auth, AuthFacts};
@@ -55,6 +56,9 @@ enum Door {
 pub struct AuthRows {
     registry: Arc<PluginRegistry>,
     dispatcher: Arc<Dispatcher>,
+    /// The host's one connection table, read when an instance OPENS to serve: it declares its needs
+    /// on it (a row only read for its facts binds with none).
+    conns: Option<fn() -> Arc<dyn DeclaredConns>>,
 }
 
 impl std::fmt::Debug for AuthRows {
@@ -70,7 +74,17 @@ impl AuthRows {
         Self {
             registry,
             dispatcher,
+            conns: None,
         }
+    }
+
+    /// Each instance opened to serve declares its needs on the table `conns` answers when it opens
+    /// (the process's one connector): a networked auth door (a directory over `tcp`) dials through
+    /// it.
+    #[must_use]
+    pub fn with_conns(mut self, conns: fn() -> Arc<dyn DeclaredConns>) -> Self {
+        self.conns = Some(conns);
+        self
     }
 
     /// The `kind: auth` row config names by `module`: the registry's name or manifest alias, else
@@ -92,7 +106,9 @@ impl AuthRows {
 
     /// Load `row`'s door for the instance `label`, bound to the dispatcher and admitted against
     /// the Statement the row states (a linked door's own rendering, a dropped plugin's signed one).
-    fn load(&self, row: &LoadablePlugin, label: &str) -> Result<Door, String> {
+    /// `serving`: the instance is opened to serve, and declares its needs on the host's table; one
+    /// only read for its facts binds with no table.
+    fn load(&self, row: &LoadablePlugin, label: &str, serving: bool) -> Result<Door, String> {
         let name = &row.manifest.name;
         let refused = |e: String| format!("auth plugin '{name}': {e}");
         let sink = AuthSink::new(name);
@@ -101,7 +117,11 @@ impl AuthRows {
             max_inflight_cap: MAX_INFLIGHT_CAP,
             sink: sink.bind(),
             dispatcher: self.dispatcher.adopter(),
-            conns: None,
+            conns: if serving {
+                self.conns.map(|c| c())
+            } else {
+                None
+            },
         };
         let loaded = match row.door() {
             Some(door) => LinkedRow::of(door).and_then(|r| load_linked::<Auth>(&r, bind)),
@@ -155,7 +175,7 @@ impl AuthRows {
             .chain(self.registry.loadable());
         rows.filter(|p| p.manifest.kind == AUTH).find_map(|row| {
             let alias = &row.manifest.alias;
-            let Ok(Door::Memory(plugin, _)) = self.load(row, alias) else {
+            let Ok(Door::Memory(plugin, _)) = self.load(row, alias, false) else {
                 return None;
             };
             let principal = plugin.context::<AuthFacts>()?.operator_principal.clone()?;
@@ -178,7 +198,7 @@ impl AuthRows {
             .chain(self.registry.loadable());
         let alias = &row.manifest.alias;
         for other in rows.filter(|p| p.manifest.kind == AUTH && p.manifest.alias != *alias) {
-            let Ok(Door::Memory(theirs, _)) = self.load(other, &other.manifest.alias) else {
+            let Ok(Door::Memory(theirs, _)) = self.load(other, &other.manifest.alias, false) else {
                 continue;
             };
             let Some(f) = theirs.context::<AuthFacts>() else {
@@ -208,7 +228,7 @@ impl AuthRows {
         let row = self
             .row(module)
             .ok_or_else(|| format!("no `kind: auth` plugin answers to '{module}'"))?;
-        match self.load(row, label)? {
+        match self.load(row, label, true)? {
             Door::Memory(plugin, sink) => {
                 let kinds = plugin
                     .context::<AuthFacts>()
