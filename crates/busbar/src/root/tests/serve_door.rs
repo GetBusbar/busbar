@@ -525,7 +525,7 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
 /// the caller's catalogue. The door rig is `door_steps`' own (`tool_door::Rig`), one composition
 /// per case.
 #[cfg(linked_axis_plane_door)]
-mod mcp {
+mod tools_door {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -663,7 +663,7 @@ mod mcp {
     async fn a_failing_tool_server_trips_its_breaker_cell_through_the_composed_door() {
         busbar_kernel::metrics::init();
         let _one = PUBLISHING.lock().await;
-        let instance = "serve-door-mcp-trip";
+        let instance = "serve-door-tools-trip";
         let _published = Published(instance);
         let (bad, mut bad_heard) = answering_calls_with(503).await;
         let (good, mut good_heard) = tool_server().await;
@@ -723,7 +723,7 @@ mod mcp {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tripped_tool_server_is_refused_before_dispatch_without_waiting() {
         let _one = PUBLISHING.lock().await;
-        let instance = "serve-door-mcp-fastfail";
+        let instance = "serve-door-tools-fastfail";
         let _published = Published(instance);
         let (port, mut heard) = answering_calls_with(503).await;
         let rig = rig_tools(instance, port, registration("flaky", port, ""), &|app| app);
@@ -765,7 +765,7 @@ mod mcp {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tripped_pool_member_reroutes_the_next_call_to_its_twin_through_the_walk() {
         let _one = PUBLISHING.lock().await;
-        let instance = "serve-door-mcp-reroute";
+        let instance = "serve-door-tools-reroute";
         let _published = Published(instance);
         let (bad, mut bad_heard) = answering_calls_with(503).await;
         let (good, mut good_heard) = tool_server().await;
@@ -829,7 +829,7 @@ mod mcp {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_rewrite_hook_rewrites_the_arguments_on_the_composed_door() {
         let _one = PUBLISHING.lock().await;
-        let instance = "serve-door-mcp-tap";
+        let instance = "serve-door-tools-tap";
         let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
         let arguments = serde_json::json!({ "path": "/home/caller/secret.txt" });
@@ -886,7 +886,7 @@ mod mcp {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_gate_hook_refuses_the_call_before_it_is_dispatched() {
         let _one = PUBLISHING.lock().await;
-        let instance = "serve-door-mcp-gate";
+        let instance = "serve-door-tools-gate";
         let _published = Published(instance);
         let (port, mut heard) = tool_server().await;
         let gated = hook_parity::rig(
@@ -954,7 +954,7 @@ mod mcp {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn every_call_is_chained_on_the_call_log_and_the_kernels_audit_chain() {
         let _one = PUBLISHING.lock().await;
-        let instance = "serve-door-mcp-audit";
+        let instance = "serve-door-tools-audit";
         let _published = Published(instance);
         let (port, _heard) = tool_server().await;
         let rig = rig_tools(instance, port, registration("audited", port, ""), &|app| {
@@ -1051,9 +1051,9 @@ mod mcp {
     async fn a_call_is_charged_to_the_presenting_key_and_a_spent_budget_refuses_it() {
         use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
         let _one = PUBLISHING.lock().await;
-        let instance = "serve-door-mcp-budget";
+        let instance = "serve-door-tools-budget";
         let _published = Published(instance);
-        let group = "serve-door-mcp-budget-group";
+        let group = "serve-door-tools-budget-group";
         let limit = LimitCfg {
             metric: LimitMetric::Budget,
             amount: 1,
@@ -1152,7 +1152,7 @@ mod mcp {
     async fn a_client_fault_answer_is_relayed_and_never_penalizes_the_member() {
         busbar_kernel::metrics::init();
         let _one = PUBLISHING.lock().await;
-        let instance = "serve-door-mcp-disposition";
+        let instance = "serve-door-tools-disposition";
         let _published = Published(instance);
         let (faulted, mut faulted_heard) = answering_calls_with(400).await;
         let (failing, mut failing_heard) = answering_calls_with(503).await;
@@ -1229,7 +1229,7 @@ mod mcp {
         use crate::root::door_steps::tests::door_boundary;
         busbar_kernel::metrics::init();
         let _one = PUBLISHING.lock().await;
-        let instance = "serve-door-mcp-metrics";
+        let instance = "serve-door-tools-metrics";
         let _published = Published(instance);
         let (port, _heard) = tool_server().await;
         let row = door_boundary::row();
@@ -1310,7 +1310,7 @@ mod mcp {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_rug_pulled_tool_is_detected_demoted_and_refused_before_it_is_sent() {
         let _one = PUBLISHING.lock().await;
-        let instance = "serve-door-mcp-trust";
+        let instance = "serve-door-tools-trust";
         let _published = Published(instance);
         let live = Arc::new(std::sync::Mutex::new(tool_listing()));
         let (port, mut heard) = tool_server_listing(Arc::clone(&live)).await;
@@ -1357,7 +1357,7 @@ mod mcp {
     async fn the_destination_guard_and_the_argument_guard_refuse_before_anything_is_sent() {
         use crate::root::door_steps::tests::tool_door::Ledger;
         let _one = PUBLISHING.lock().await;
-        let instance = "serve-door-mcp-netguard";
+        let instance = "serve-door-tools-netguard";
         let _published = Published(instance);
         let (walled, mut walled_heard) = tool_server().await;
         let (reached, mut reached_heard) = tool_server().await;
@@ -1430,7 +1430,7 @@ mod mcp {
     async fn each_member_presents_only_the_credential_its_registration_plans() {
         let _one = PUBLISHING.lock().await;
         std::env::set_var(SUBJECT, "busbar-own-subject");
-        let instance = "serve-door-mcp-egress";
+        let instance = "serve-door-tools-egress";
         let _published = Published(instance);
         let (plain, mut plain_heard) = tool_server().await;
         let (lent, mut lent_heard) = tool_server().await;
@@ -1505,7 +1505,7 @@ mod mcp {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn each_grant_sees_and_calls_only_its_own_catalogue() {
         let _one = PUBLISHING.lock().await;
-        let instance = "serve-door-mcp-catalogue";
+        let instance = "serve-door-tools-catalogue";
         let _published = Published(instance);
         let (port, mut heard) =
             tool_server_listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
