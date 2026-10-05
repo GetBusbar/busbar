@@ -1341,15 +1341,15 @@ mod transport_pin {
     }
 }
 
-/// RED (SEAM-4f, a registration's private reach, `abi::plane::TRUST_PRIVATE_REACH`): under a strict
-/// guard (private refused, nothing allowlisted) a provider-class need whose destination is sealed
-/// with a private reach dials that private destination, as an allowlist entry naming it would; a
-/// second need of the same owner, of the same class, to the same destination is still refused (the
-/// reach is that need's alone, the class unchanged); a reach never admits a cloud-metadata address;
-/// and a seal without it takes it back.
+/// RED (SEAM-4f/4k, a registration's private reach, `abi::plane::TRUST_PRIVATE_REACH`, sealed per
+/// REGISTRATION): under a strict guard (private refused, nothing allowlisted) a provider-class
+/// need's open that names a registration holding a reach dials that registration's private
+/// destination, as an allowlist entry naming it would; a second registration at the SAME
+/// authority without one, an open naming no registration, and another need are all still refused
+/// (the class is unchanged); a reach never admits a cloud-metadata address; and a seal without it
+/// takes it back.
 #[test]
-fn a_needs_private_reach_admits_its_own_destination_and_nothing_else() {
-    use busbar_contract::transport::trust::Anchors;
+fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
     worker().block_on(async {
         let (_listening, far) = far_end().await;
         let view = Transports::new(vec![Entry {
@@ -1368,37 +1368,65 @@ fn a_needs_private_reach_admits_its_own_destination_and_nothing_else() {
             )
             .expect("a served scheme declares");
         }
+        let open_as = |need: u32, target: &str, member: &str| {
+            c.open(
+                OWNER,
+                NeedId(need),
+                &OpenDesc {
+                    target,
+                    member,
+                    ..OpenDesc::default()
+                },
+            )
+        };
         assert_eq!(
-            open_in(&c, 0, &far),
+            open_as(0, &far, "inside"),
             Err(ConnError::Refused),
             "no reach yet"
         );
-        let reach = Anchors {
-            private_reach: true,
-            ..Anchors::default()
-        };
-        c.anchor(OWNER, NeedId(0), &far, &reach).expect("sealed");
-        let id = open_in(&c, 0, &far).expect("the reached private destination opens");
+        c.seal_reach(OWNER, NeedId(0), "inside", &far, true)
+            .expect("sealed");
+        c.seal_reach(OWNER, NeedId(0), "outside", &far, false)
+            .expect("nothing to seal");
+        let id = open_as(0, &far, "inside").expect("the registration's own open reaches");
         c.close(OWNER, id).unwrap();
         assert_eq!(
-            open_in(&c, 1, &far),
+            open_as(0, &far, "outside"),
             Err(ConnError::Refused),
-            "another need of the same class holds no reach"
+            "another registration at the same authority holds no reach"
+        );
+        assert_eq!(
+            open_as(0, &far, ""),
+            Err(ConnError::Refused),
+            "an open naming no registration holds none"
+        );
+        assert_eq!(
+            open_as(1, &far, "inside"),
+            Err(ConnError::Refused),
+            "the reach is the need's alone"
         );
         let metadata = "169.254.169.254:80";
-        c.anchor(OWNER, NeedId(0), metadata, &reach)
+        c.seal_reach(OWNER, NeedId(0), "inside", metadata, true)
             .expect("sealed");
         assert_eq!(
-            open_in(&c, 0, metadata),
+            open_as(0, metadata, "inside"),
             Err(ConnError::Refused),
             "a reach never admits cloud metadata"
         );
-        c.anchor(OWNER, NeedId(0), &far, &Anchors::default())
+        c.seal_reach(OWNER, NeedId(0), "inside", &far, true)
+            .expect("sealed");
+        c.seal_reach(OWNER, NeedId(0), "inside", &far, false)
             .expect("dropped");
         assert_eq!(
-            open_in(&c, 0, &far),
+            open_as(0, &far, "inside"),
             Err(ConnError::Refused),
             "a seal without the reach takes it back"
+        );
+        assert!(
+            Connector::new()
+                .seal_reach(OWNER, NeedId(0), "inside", &far, true)
+                .is_err(),
+            "an undeclared need holds no reach"
         );
     });
 }

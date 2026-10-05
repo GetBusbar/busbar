@@ -1037,8 +1037,9 @@ fn a_tail_with_unknown_bits_or_no_ingress_is_fault() {
     let mut t = tail();
     t.ingress = INGRESS_REQUEST_RESPONSE | (1 << 5);
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.ingress"));
+    // The first bit past the last one a tail may state (`TAIL_HOOKS_GATED`, bit 2, is known).
     let mut t = tail();
-    t.flags = 1 << 3;
+    t.flags = TAIL_HOOKS_GATED << 1;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
     let mut t = tail();
     t.dispatch_shape = 2;

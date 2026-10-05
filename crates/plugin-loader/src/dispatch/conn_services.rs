@@ -268,16 +268,45 @@ unsafe fn bytes<'a>(ptr: *mut u8, len: usize) -> Option<&'a mut [u8]> {
     }
 }
 
+/// How much of an [`EstablishIn`] a caller must state: everything before the appended
+/// [`EstablishIn::member`], which a shorter one states as none.
+const ESTABLISH_IN_MEMBERLESS: usize = std::mem::offset_of!(EstablishIn, member);
+
+/// The caller's `EstablishIn`, as much of it as its head's `size` states: one that ends before the
+/// appended `member` names none.
+///
+/// # Safety
+/// `input` names an `EstablishIn` whose head was checked to state at least
+/// [`ESTABLISH_IN_MEMBERLESS`] bytes, live for the call.
+unsafe fn read_establish(input: *const c_void) -> EstablishIn {
+    // SAFETY: the head is the struct's first field, covered by the checked size.
+    let size = unsafe { input.cast::<ServiceHead>().read_unaligned() }.size as usize;
+    // SAFETY: a plain repr(C) value of integers and pointer/length pairs: all-zero is every field
+    // absent (a NULL string of length 0).
+    let mut i: EstablishIn = unsafe { std::mem::zeroed() };
+    let n = size.min(size_of::<EstablishIn>());
+    // SAFETY: `n` bytes of the caller's, into a plain repr(C) value of at least `n` bytes.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            input.cast::<u8>(),
+            std::ptr::from_mut(&mut i).cast::<u8>(),
+            n,
+        );
+    }
+    i
+}
+
 extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     slot(
         ctx,
         input,
         out,
         service::ESTABLISH,
-        size_of::<EstablishIn>(),
+        ESTABLISH_IN_MEMBERLESS,
         |id, table, _| {
-            // SAFETY: the head covered an `EstablishIn`.
-            let i = unsafe { input.cast::<EstablishIn>().read_unaligned() };
+            // SAFETY: the head covered an `EstablishIn` up to its appended `member`; one whose
+            // `size` stops there names no registration.
+            let i = unsafe { read_establish(input) };
             // SAFETY: a checked range of the caller's, live for the call.
             let Some(target) = (unsafe { bytes(i.target.ptr.cast_mut(), i.target.len) }) else {
                 return Answer::with(Outcome::Fault, "");
@@ -293,6 +322,11 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                     "an address the dial must land on is not an IP literal",
                 );
             };
+            // SAFETY: a checked range of the caller's, live for the call.
+            let Some(member) = (unsafe { bytes(i.member.ptr.cast_mut(), i.member.len) }) else {
+                return Answer::with(Outcome::Fault, "");
+            };
+            let member = String::from_utf8_lossy(member).into_owned();
             if table.framed(id, NeedId(i.need)) {
                 // A FRAMED need opens when its request is whole (`WRITE_REQUEST`'s end): its
                 // request is the connection's opening message.
@@ -304,6 +338,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                             need: NeedId(i.need),
                             target: target.into_owned(),
                             within,
+                            member,
                             head: None,
                             body: Vec::new(),
                         },
@@ -317,6 +352,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 target: &target,
                 within: &within,
                 timeout_ms: u64::from(i.timeout_ms),
+                member: &member,
                 ..OpenDesc::default()
             };
             match table.open(id, NeedId(i.need), &desc) {
@@ -675,6 +711,8 @@ enum Conn {
         need: NeedId,
         target: String,
         within: Vec<IpAddr>,
+        /// The registration the stream names (`EstablishIn::member`); empty = none.
+        member: String,
         head: Option<Head>,
         body: Vec<u8>,
     },
@@ -693,6 +731,7 @@ struct Authing {
     need: NeedId,
     target: String,
     within: Vec<IpAddr>,
+    member: String,
     head: Head,
     body: Vec<u8>,
 }
@@ -753,11 +792,13 @@ fn resolve(
             need,
             target,
             within,
+            member,
             ..
         } => {
             let desc = OpenDesc {
                 target,
                 within,
+                member,
                 ..OpenDesc::default()
             };
             let opened = table.open(id, *need, &desc);
@@ -824,6 +865,7 @@ extern "C" fn write_request(
                 need,
                 target,
                 within,
+                member,
                 head,
                 body,
             } = &mut s.conn
@@ -885,14 +927,22 @@ extern "C" fn write_request(
                     // as the member's relayed calls do. The request is handed over whole; what
                     // became of it is the reply's to say.
                     s.conn = match table.auth_of(id, *need, target) {
-                        None => open_with(table, id, *need, target, within, &h, body, &[]),
+                        None => {
+                            open_with(table, id, *need, (target, within, member), &h, body, &[])
+                        }
                         Some(binding) => match auth_request(&binding, &h, target, body, scope) {
                             None => Conn::Failed(ConnError::Refused),
                             Some(request) => {
                                 match binding.auth.fields_now(binding.handle, &request) {
-                                    Some(Fields::Ready(auth)) => {
-                                        open_with(table, id, *need, target, within, &h, body, &auth)
-                                    }
+                                    Some(Fields::Ready(auth)) => open_with(
+                                        table,
+                                        id,
+                                        *need,
+                                        (target, within, member),
+                                        &h,
+                                        body,
+                                        &auth,
+                                    ),
                                     Some(Fields::Refused | Fields::Failed) => {
                                         Conn::Failed(ConnError::Refused)
                                     }
@@ -901,6 +951,7 @@ extern "C" fn write_request(
                                         need: *need,
                                         target: std::mem::take(target),
                                         within: std::mem::take(within),
+                                        member: std::mem::take(member),
                                         head: h,
                                         body: std::mem::take(body),
                                     })),
@@ -931,8 +982,7 @@ fn open_with(
     table: &Arc<dyn DeclaredConns>,
     id: InstanceId,
     need: NeedId,
-    target: &str,
-    within: &[IpAddr],
+    (target, within, member): (&str, &[IpAddr], &str),
     h: &Head,
     body: &[u8],
     auth: &[busbar_contract::auth_calls::AuthField],
@@ -959,6 +1009,7 @@ fn open_with(
         method: &h.method,
         head_target: &h.target,
         within,
+        member,
     };
     table
         .open(id, need, &desc)
@@ -1122,7 +1173,13 @@ fn reply(
             };
             let opened = match answered {
                 Fields::Ready(auth) => open_with(
-                    table, id, a.need, &a.target, &a.within, &a.head, &a.body, &auth,
+                    table,
+                    id,
+                    a.need,
+                    (&a.target, &a.within, &a.member),
+                    &a.head,
+                    &a.body,
+                    &auth,
                 ),
                 Fields::Refused | Fields::Failed => Conn::Failed(ConnError::Refused),
             };

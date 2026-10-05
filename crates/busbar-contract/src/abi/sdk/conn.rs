@@ -342,12 +342,27 @@ impl Connector<'_> {
         within: &str,
         timeout_ms: u32,
     ) -> Answer<u64> {
+        self.establish_as(need, target, within, timeout_ms, None)
+    }
+
+    /// [`Connector::establish_timed`] for the REGISTRATION `member` (its name in the plugin's
+    /// declaring section): what the host sealed for that registration alone (its private reach)
+    /// applies to this stream; `None` = the stream names none.
+    pub fn establish_as(
+        &mut self,
+        need: u32,
+        target: Option<&str>,
+        within: &str,
+        timeout_ms: u32,
+        member: Option<&str>,
+    ) -> Answer<u64> {
         let input = EstablishIn {
             head: blank_head(),
             need,
             timeout_ms,
             target: text(target),
             within: text(Some(within)),
+            member: text(member),
         };
         self.call(service::ESTABLISH, |s| s.establish, input)
             .map(|r| r.map(|o| o.value))
