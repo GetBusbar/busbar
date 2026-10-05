@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use super::*;
 use crate::abi::host::service::{
-    ABSENT, CLAIM_TAKEN, DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, MAX_RANDOM_FILL, NOT_ENTITLED,
-    SERVICES, TRUST_NEW, TRUST_SAME,
+    ABSENT, CLAIM_TAKEN, DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, HOOK_GATE, HOOK_REWRITE,
+    MAX_RANDOM_FILL, NOT_ENTITLED, SERVICES, TRUST_NEW, TRUST_SAME,
 };
 use crate::abi::mechanism::call::Span;
 use crate::abi::mechanism::ticket::Ticket;
@@ -1358,7 +1358,7 @@ extern "C" fn hooks(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -
 
 #[test]
 fn hook_call_reads_pass_rewrite_or_stop_and_refuses_a_bad_in_before_the_host() {
-    use crate::abi::host::service::{HOOK_FROM_MAX, HOOK_GATE, HOOK_REWRITE};
+    use crate::abi::host::service::HOOK_FROM_MAX;
     let t = HostSlots {
         hook_call: Some(hooks),
         ..table(None)
