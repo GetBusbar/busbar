@@ -96,6 +96,7 @@ fn write_config(dir: &Path, data_port: u16, admin_port: u16, auth_block: &str) -
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
+store: {{module: memory}}
 {catalog}pools: {{}}
 {auth_block}
 {section}"#,
