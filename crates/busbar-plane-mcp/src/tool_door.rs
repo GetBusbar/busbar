@@ -2735,7 +2735,8 @@ slot!(
                 "server `{name}` registers no `url:` this door can reach it at"
             )),
             None => {
-                let op = busbar_contract::abi::sdk::exchange::Op::new(&instance, plane.host.as_ref());
+                use busbar_contract::abi::sdk::conn::ConnFailure;
+                use busbar_contract::abi::sdk::exchange::{exchange, Exchange, Request};
                 let url = def.url.clone();
                 // A `token_exchange:` registration's binding exchanges for its approved set.
                 let scope = crate::tool_scope::exchanges(
@@ -2743,24 +2744,45 @@ slot!(
                     held.section.effective_upstream_credentials(name),
                 )
                 .then(|| crate::tool_scope::registration_scope(name, &def));
-                let answer = op.exchange(0, Some(&url), || {
-                    let mut request =
-                        crate::client::jsonrpc::tools_list(&url, CONNECT_REQUEST_ID, None);
-                    scoped(&mut request.headers, scope.as_deref());
-                    Ok(busbar_contract::abi::sdk::exchange::Request {
-                        method: b"POST".to_vec(),
-                        target: crate::call::path_of(&url).into_bytes(),
-                        fields: request
-                            .headers
-                            .iter()
-                            .map(|(n, v)| (n.as_bytes().to_vec(), v.as_bytes().to_vec()))
-                            .collect(),
-                        body: request.body,
-                        timeout_ms: CONNECT_TIMEOUT_MS,
-                    })
-                });
-                let std::task::Poll::Ready(answer) = answer else {
-                    return Outcome::Pending;
+                // THE FETCH REACHES THE REGISTRATION `name` (SEAM-4p): its own private reach
+                // (`allow_private:`, sealed per registration) applies to this dial.
+                let parked = instance.resume::<Exchange>().map(|e| *e);
+                let state = match parked {
+                    Some(state) => Ok(state),
+                    None => {
+                        let mut request =
+                            crate::client::jsonrpc::tools_list(&url, CONNECT_REQUEST_ID, None);
+                        scoped(&mut request.headers, scope.as_deref());
+                        Exchange::request(Request {
+                            method: b"POST".to_vec(),
+                            target: crate::call::path_of(&url).into_bytes(),
+                            fields: request
+                                .headers
+                                .iter()
+                                .map(|(n, v)| (n.as_bytes().to_vec(), v.as_bytes().to_vec()))
+                                .collect(),
+                            body: request.body,
+                            timeout_ms: CONNECT_TIMEOUT_MS,
+                        })
+                        .map(|e| e.as_member(name.as_str()))
+                    }
+                };
+                let answer = match (state, plane.host.as_ref()) {
+                    (Err(e), _) => Err(e),
+                    // No host tables: every exchange is unarmed, as the SDK's op answers it.
+                    (Ok(_), None) => Err(ConnFailure::Unarmed),
+                    (Ok(mut state), Some(host)) => {
+                        let answer =
+                            exchange(&mut host.connector(instance.ticket()), &mut state, 0, Some(&url));
+                        if answer.is_pending() {
+                            instance.park(state);
+                            return Outcome::Pending;
+                        }
+                        let std::task::Poll::Ready(answer) = answer else {
+                            return Outcome::Pending;
+                        };
+                        answer
+                    }
                 };
                 sighting_of(answer.map_err(|e| e.to_string()), CONNECT_REQUEST_ID)
             }
