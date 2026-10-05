@@ -15,14 +15,16 @@
 //! rejection a REFUSAL rather than a failure, and the sibling with no hooks (which reaches the peer
 //! and answers `200`) is what makes the fixture falsifiable.
 //!
-//! ## Why the gate is a real `dlopen`ed plugin
+//! ## Why the gate sits behind the kernel's hook port, not a `RoutingPolicy` stub
 //!
-//! The hook seam is a C ABI. A test double implementing `RoutingPolicy` in-process would prove that
-//! this file can construct a rejection, not that an operator's signed gate binary receives an MCP
-//! projection and can act on it. The plugin here is the hermetic `busbar-hook-test-plugin` cdylib
-//! loaded through the real scan/trust/load pipeline, and it makes its verdict by READING THE
-//! PROJECTION busbar sent it — which is what turns `mcp_content_reaches_the_gate` below into
-//! evidence about content rather than about plumbing.
+//! A test double implementing `RoutingPolicy` in-process would prove that this file can construct a
+//! rejection, not that the engine's hook seam builds an MCP projection and acts on the answer. The
+//! gate here is the kernel's hook double (`busbar_kernel::test_support::hook_double`) behind the
+//! contract's hook axis — the port a dropped-in plugin is opened through (OWNER 2026-10-03: no test
+//! plugins; the real plugins prove themselves in their own repos) — resolved from a registry row,
+//! and it makes its verdict by READING THE PROJECTION busbar sent it, as the fixed view and host
+//! buffers carry it — which is what turns `mcp_content_reaches_the_gate` below into evidence about
+//! content rather than about plumbing.
 
 use super::upstream_support::{
     call_as, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer,
@@ -34,7 +36,7 @@ const CANONICAL: &str = "https://gateway.example.com/mcp";
 const SUBJECT: &str = "busbar-own-subject-token-for-the-exchange";
 const ISSUED: &str = "downscoped-access-token-issued-by-the-as";
 
-/// The `hooks:` DEFINITION a test attaches: a `kind: gate` backed by the hermetic test cdylib,
+/// The `hooks:` DEFINITION a test attaches: a `kind: gate` backed by the kernel's hook double,
 /// holding the `prompt: ro` grant so the content projection is sent.
 fn gate(settings: serde_json::Value) -> serde_json::Value {
     // The `hooks.<name>:` DOCUMENT as an operator writes it — the engine's own parser turns it into
@@ -46,7 +48,7 @@ fn gate(settings: serde_json::Value) -> serde_json::Value {
         // (`a2a/tests/hook_gate_tests.rs`): under parallel-suite load the 1 ms deadline fires on
         // scheduling delay alone, and `on_error: "weighted"` turns the timed-out gate into a
         // PROCEED, flaking every verdict assertion here. The verdict is under test, not the
-        // deadline; 10 s cannot fire for an in-process dlopen call.
+        // deadline; 10 s cannot fire for an in-process hook call.
         "timeout_ms": 10_000,
         "on_error": "weighted",
         "prompt": "ro",
@@ -61,26 +63,13 @@ fn gate(settings: serde_json::Value) -> serde_json::Value {
     })
 }
 
-/// The env that loads the test cdylib under the alias `test-hook`, declaring the manifest intent
-/// (`prompt: rw`, `user: ro`) the operator grant is met against.
-///
-/// ITS ABSENCE IS A HARD FAILURE HERE, never a skip, and that is not the shared helper's default —
-/// it skips off CI. This battery refuses it for the reason `calllog_dispatch_tests` refuses it: a
-/// "skip: cdylib not built" line is how the coverage that would have caught the defect silently
-/// stops running while the run stays green and nobody reads the line. It is not hypothetical for
-/// THIS file: with the firing sites reverted and the cdylib missing, all four tests here reported
-/// `ok`. The panic names the command that fixes it.
+/// The env whose registry holds the `kind: hook` row `test-hook`, declaring the manifest intent
+/// (`prompt: rw`, `user: ro`) the operator grant is met against, answered by the kernel's hook double
+/// behind its hook axis port. It cannot be absent, so nothing here can skip.
 ///
 /// The acceptance criterion this battery answers, verbatim: "a hook fires on a non-LLM protocol".
 fn hook_env() -> HookEnvHandle {
-    engine()
-        .hook_env(&["test-hook"], HookNeed::Rw, HookNeed::Ro)
-    .expect(
-        "the busbar-hook-test-plugin cdylib is not built. This battery is the acceptance test for \
-         a hook firing on the MCP plane (the criterion is quoted on `hook_env`) and it CANNOT be skipped: with no gate to load, \
-         every assertion below is vacuous and reports a green. Build it: `cargo build -p \
-         busbar-hook-test-plugin`.",
-    )
+    engine().hook_env(&["test-hook"], HookNeed::Rw, HookNeed::Ro)
 }
 
 /// THE ACCEPTANCE TEST. `tools.hooks: [reject-all]` — the SECTION-level attach, which applies to

@@ -18,9 +18,10 @@
 //!   it and answers FAULT, which the hook axis answers as broken, never a verdict (PB-81).
 //!
 //! Both built doors state their tail ([`TAIL`]): a gate that asks for neither view.
-//! Every other hook op is REFUSED. The settings are `{"reject_over_messages": <n>}`, with an
-//! optional `"reject_session": "<octets>"` (the request view's opaque session, ARCHITECT RULING
-//! 2026-10-03).
+//! Every other hook op is REFUSED. The settings are `{"reject_over_messages": <n>}`, plus an
+//! optional `"sleep_ms"` the conforming `decide` sleeps before it answers (a slow gate, for the
+//! loader's own budget and `max_inflight` proofs), and an optional `"reject_session": "<octets>"`
+//! (the request view's opaque session, ARCHITECT RULING 2026-10-03).
 #![allow(dead_code)]
 
 use std::marker::PhantomData;
@@ -49,9 +50,12 @@ pub const PANICKING_NAME: &str = "both-ways-hook-panicking";
 /// The status a rejected request is answered with.
 pub const REJECT_STATUS: u16 = 429;
 
-/// The instance: the most messages a request may carry before it is rejected, and the session
-/// whose requests it rejects, if any.
-pub struct Gate(u64, Option<Vec<u8>>);
+/// Every door's Statement `max_inflight`.
+pub const MAX_INFLIGHT: u32 = 8;
+
+/// The instance: the most messages a request may carry before it is rejected, how long its
+/// `decide` sleeps first, and the session whose requests it rejects, if any.
+pub struct Gate(u64, u64, Option<Vec<u8>>);
 
 impl Life for Gate {
     const CANCEL: u32 = cancel::ABORTED;
@@ -72,6 +76,10 @@ impl Life for Gate {
 impl Gate {
     fn parse(settings: &[u8]) -> Result<Self, Refusal> {
         let settings = settings_object(settings)?;
+        let sleep_ms = settings
+            .get("sleep_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
         let over = settings
             .get("reject_over_messages")
             .and_then(serde_json::Value::as_u64)
@@ -80,7 +88,7 @@ impl Gate {
             .get("reject_session")
             .and_then(serde_json::Value::as_str)
             .map(|s| s.as_bytes().to_vec());
-        Ok(Gate(over, session))
+        Ok(Gate(over, sleep_ms, session))
     }
 }
 
@@ -100,9 +108,12 @@ impl SafeSlot for Decide {
         let Some(held) = instance.get() else {
             return Outcome::Refused;
         };
-        let session = input.field(|i| &i.request).field(|r| &r.session).bytes();
         let gate = held.life();
-        if input.request.message_count > gate.0 || gate.1.as_deref() == Some(session) {
+        if gate.1 > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(gate.1));
+        }
+        let session = input.field(|i| &i.request).field(|r| &r.session).bytes();
+        if input.request.message_count > gate.0 || gate.2.as_deref() == Some(session) {
             out.set(|o| &o.verbs, VERB_REJECT | VERB_HAS_REJECT_STATUS);
             out.set(|o| &o.reject_status, REJECT_STATUS);
         } else {
@@ -196,7 +207,7 @@ macro_rules! hook_door {
     ($name:expr, $decide:ty) => {
         hook_door!(
             @statement busbar_contract::abi::sdk::hook::statement_with_tail(
-                busbar_contract::abi::sdk::door::statement($name, "1.6.0", 8),
+                busbar_contract::abi::sdk::door::statement($name, "1.6.0", super::MAX_INFLIGHT),
                 super::TAIL,
             ),
             $decide
@@ -217,7 +228,11 @@ pub mod broken {
 /// The conforming plugin with NO hook tail: refused at load.
 pub mod untailed {
     hook_door!(
-        @statement busbar_contract::abi::sdk::door::statement(super::UNTAILED_NAME, "1.6.0", 8),
+        @statement busbar_contract::abi::sdk::door::statement(
+            super::UNTAILED_NAME,
+            "1.6.0",
+            super::MAX_INFLIGHT,
+        ),
         super::Decide
     );
 }

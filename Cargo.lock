@@ -698,16 +698,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-hook-test-plugin"
-version = "1.5.0"
-dependencies = [
- "busbar-contract",
- "serde",
- "serde_json",
- "tracing",
-]
-
-[[package]]
 name = "busbar-hooks-ranking"
 version = "1.6.0"
 dependencies = [
