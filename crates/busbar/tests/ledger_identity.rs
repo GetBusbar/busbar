@@ -69,6 +69,10 @@ use ledger_identity::{
     accumulate, describe, holds, reconcile, LedgerSnapshot, LegacyRow, LegacySnapshot, RowKey,
 };
 
+// The linked plane rows (build.rs), so the card's open classes are read off the real declarations
+// without naming a plane crate.
+include!(concat!(env!("OUT_DIR"), "/linked_planes.rs"));
+
 // ── the pinned figures ───────────────────────────────────────────────────────────────────────────
 //
 // Every number below is fixed by the fixture, not observed from the run, so a change in any of them
@@ -864,6 +868,24 @@ fn oracle_shim() -> PathBuf {
 /// The oracle's configuration, narrowed to the one dialect this cell needs: the same auth chain,
 /// the same two budget groups, the same priced card, and the same unused pool the out-of-scope key
 /// is confined to. A flat fee is added, for the reason `FEE_CENTS` gives.
+/// Every open class the fallback plane (the one the `models:` lane falls through to) declares, at 0
+/// (owner LEDGER-100: each reported count is a declared class, and a present card configures every
+/// one, Q29/Q35), read off the plane's own declaration so the card follows it; the plane is found
+/// on the linked rows by its `fallback` flag, never by name.
+fn free_open_units() -> String {
+    LINKED_PLANES
+        .iter()
+        .find(|decl| decl.fallback)
+        .expect("the build links the fallback plane the oracle's lane falls through to")
+        .billable_classes
+        .iter()
+        .map(|c| c.class)
+        .filter(|c| !busbar_contract::records::RESERVED_UNITS.contains(c))
+        .map(|c| format!("{c}: 0"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn write_configs(dir: &Path) {
     let (data_port, admin_port) = (PORTS.data, PORTS.admin);
     std::fs::write(
@@ -918,13 +940,14 @@ models:
   {LANE}:
     provider: {PROVIDER}
 rate_card:
-  {LANE}: {{ input_utok: {INPUT_UTOK}, output_utok: {OUTPUT_UTOK}, units: {{ search_units: 0 }} }}
+  {LANE}: {{ input_utok: {INPUT_UTOK}, output_utok: {OUTPUT_UTOK}, units: {{ {open_units} }} }}
 pools:
   oracle-unused:
     members:
       - model: {LANE}
 "#,
             key_file = dir.join("signing.key").display(),
+            open_units = free_open_units(),
         ),
     )
     .unwrap();

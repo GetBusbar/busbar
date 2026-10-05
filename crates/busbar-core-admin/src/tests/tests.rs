@@ -10367,7 +10367,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     let v_before = before["config_version"].as_u64().unwrap();
 
     // PUT live-swappable sections only. The card configures EVERY billable class the pools plane
-    // declares: `search_units` has no reserved tier, so it is
+    // declares: the open classes have no reserved tier, so each is
     // named under `units:` — 0 makes it free — or the whole PUT is refused 400.
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
@@ -10375,7 +10375,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             serde_json::json!({
                 "per_request_fee": 7,
                 "rate_card": { "m0": {
-                    "input_utok": 1.5, "output_utok": 2.0, "units": { "search_units": 0 }
+                    "input_utok": 1.5, "output_utok": 2.0, "units": free_open_units()
                 } },
                 "limits": { "tls_handshake_timeout_secs": 30 }
             })
@@ -10797,12 +10797,12 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
 
     // Both PUTs must APPLY — an unchecked refusal of the first one made the preservation assertion
     // below fail for a reason it never named. The card configures every billable class the pools
-    // plane declares: `search_units` under `units:`, 0 = free.
+    // plane declares: every open class under `units:`, 0 = free.
     let first = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
         .body(
             serde_json::json!({ "rate_card": { "m0": {
-                "input_utok": 9.0, "units": { "search_units": 0 }
+                "input_utok": 9.0, "units": free_open_units()
             } } })
             .to_string(),
         )
@@ -15765,4 +15765,23 @@ async fn a_memory_only_node_journals_no_claim_for_a_repeated_key_post_keys() {
     );
 
     handle.abort();
+}
+
+/// Every open class the fallback plane (the pools plane a `rate_card` lane falls through to)
+/// declares, at 0 (owner LEDGER-100: each reported count is a declared class, and a present card
+/// configures every one, Q29/Q35), read off the plane's own declaration; the plane is found among the
+/// linked test planes by its `fallback` flag, never by name.
+fn free_open_units() -> serde_json::Value {
+    crate::ensure_seam();
+    busbar_kernel::plane::registry::plane_decls()
+        .iter()
+        .find(|decl| decl.fallback)
+        .expect("the linked test planes carry the fallback plane")
+        .billable_classes
+        .iter()
+        .map(|c| c.class)
+        .filter(|c| !busbar_contract::records::RESERVED_UNITS.contains(c))
+        .map(|c| (c.to_string(), serde_json::json!(0)))
+        .collect::<serde_json::Map<_, _>>()
+        .into()
 }
