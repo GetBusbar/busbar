@@ -162,7 +162,7 @@ const MIN_PROVEN: usize = 20;
 /// An n/a "argument" shorter than this is a label, not an argument.
 const MIN_NA_REASON: usize = 60;
 
-/// THE FIVE ROOT LEGS, verbatim — one per `root-*` feature the composition root carries. Pinned
+/// THE SIX ROOT LEGS, verbatim — one per `root-*` feature the composition root carries. Pinned
 /// here for the same reason [`PLANES`] is: a leg that quietly left the list would take its whole
 /// column of root verdicts with it.
 fn root_legs() -> &'static [&'static str] {
@@ -699,7 +699,7 @@ fn verify_root(
         if cols.is_empty() {
             continue;
         }
-        if out.per_leg[leg].0 == 0 {
+        if out.per_leg[leg].0 == 0 && !owed_leg(doc, leg)? {
             return Err(format!(
                 "root leg `{leg}` answers to {cols:?} and proves ZERO cells over the loop. A leg \
                  with no watched cell is a leg nobody drove."
@@ -714,6 +714,127 @@ fn verify_root(
         ));
     }
     Ok(out)
+}
+
+/// AN OWED LEG (U14): a leg whose `owed` names the lane that will prove it may prove ZERO cells,
+/// but only while EVERY cell of its columns is `missing` with root `none` — the whole column is the
+/// named queue. The moment one of its cells claims anything, the owed mark no longer excuses it.
+/// An `owed` shorter than an argument is no excuse at all.
+fn owed_leg(doc: &serde_json::Value, leg: &str) -> Result<bool, String> {
+    let meta = &doc["root_legs"][leg];
+    let Some(owed) = meta.get("owed").and_then(serde_json::Value::as_str) else {
+        return Ok(false);
+    };
+    if owed.trim().len() < MIN_ROOT_REASON {
+        return Err(format!(
+            "root leg `{leg}` is `owed` {owed:?}: an owed leg names the lane that proves it, in an \
+             argument (>= {MIN_ROOT_REASON} chars)."
+        ));
+    }
+    let cols: BTreeSet<&str> = meta["columns"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    let all_queued = doc["cells"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["plane"].as_str().is_some_and(|p| cols.contains(p)))
+        .all(|c| c["state"] == "missing" && c["root"]["state"] == "none");
+    if !all_queued {
+        return Err(format!(
+            "root leg `{leg}` is `owed` but a cell of its columns {cols:?} claims something; an owed \
+             leg's whole column is the queue, and a claim ends the owing: prove a loop cell."
+        ));
+    }
+    Ok(true)
+}
+
+/// A DIALECT IS NEVER A COLUMN (U14): no declared ledger plane, nor the plane a directional column
+/// names (`<p>-client` / `<p>-server`), is one of `dialects`.
+fn refuse_dialect_columns(doc: &serde_json::Value, dialects: &[&str]) -> Result<(), String> {
+    for col in doc["planes"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(k, _)| k)
+    {
+        let base = col
+            .strip_suffix("-client")
+            .or_else(|| col.strip_suffix("-server"))
+            .unwrap_or(col);
+        if dialects.contains(&base) {
+            return Err(format!(
+                "column `{col}` names `{base}`, which is a plane's dialect, never a column: a \
+                 dialect rides its plane's column"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The doctrine's dialects (`dialect <name>` rows).
+fn dialects() -> Vec<&'static str> {
+    common::doctrine_rows("dialect")
+        .into_iter()
+        .map(|r| r[0])
+        .collect()
+}
+
+/// U14: the real ledger names no dialect as a column.
+#[test]
+fn no_dialect_is_a_ledger_column() {
+    refuse_dialect_columns(&real_doc(), &dialects()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(!dialects().is_empty(), "the doctrine names its dialects");
+}
+
+/// U14 RED ARM: a dialect named as a column (either direction) and a plane the doctrine does not
+/// list are both refused.
+#[test]
+fn selftest_a_dialect_or_an_unlisted_plane_is_refused_as_a_column() {
+    let doc = serde_json::json!({ "planes": { "d1-client": "x", "p1": "y" } });
+    assert!(refuse_dialect_columns(&doc, &["d1"])
+        .expect_err("a dialect column is refused")
+        .contains("d1-client"));
+    let doc = serde_json::json!({ "planes": { "d1": "x" } });
+    assert!(refuse_dialect_columns(&doc, &["d1"]).is_err());
+    refuse_dialect_columns(&serde_json::json!({ "planes": { "p1": "y" } }), &["d1"])
+        .expect("a plane column is not a dialect");
+    let root = scratch("unlisted");
+    let mut doc = fixture(&root);
+    doc["planes"]["p3"] = serde_json::json!("an unlisted fixture plane");
+    assert!(verify(&doc, &root, &["p1", "p2"], 2)
+        .expect_err("a plane the doctrine does not list is refused")
+        .contains("`p3` is declared but is not one of the doctrine's planes"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// U14 RED ARM: an owed leg may prove nothing only while its whole column is queued; a claim in
+/// it, or an owed with no argument, ends the excuse.
+#[test]
+fn selftest_an_owed_leg_excuses_only_a_fully_queued_column() {
+    let owed = "the lane that proves this leg's loop cells is named here, at argument length";
+    let mut doc = serde_json::json!({
+        "root_legs": { "root-q": { "columns": ["q"], "owed": owed } },
+        "cells": [ { "capability": "c", "plane": "q", "state": "missing",
+                     "root": { "state": "none" } } ]
+    });
+    assert_eq!(owed_leg(&doc, "root-q"), Ok(true));
+    doc["cells"][0]["state"] = serde_json::json!("not-applicable");
+    assert!(owed_leg(&doc, "root-q").is_err(), "a claim ends the owing");
+    doc["cells"][0]["state"] = serde_json::json!("missing");
+    doc["root_legs"]["root-q"]["owed"] = serde_json::json!("soon");
+    assert!(
+        owed_leg(&doc, "root-q").is_err(),
+        "an owed with no argument"
+    );
+    doc["root_legs"]["root-q"]
+        .as_object_mut()
+        .unwrap()
+        .remove("owed");
+    assert_eq!(owed_leg(&doc, "root-q"), Ok(false));
 }
 
 fn real_doc() -> serde_json::Value {
@@ -846,7 +967,8 @@ fn the_root_leg_matrix_runs_once_per_leg() {
             s.per_leg[*leg].0 > 0
                 || legs_obj[*leg]["columns"]
                     .as_array()
-                    .is_some_and(Vec::is_empty),
+                    .is_some_and(Vec::is_empty)
+                || owed_leg(&doc, leg).unwrap_or(false),
             "leg `{leg}` is compiled into this build, answers to ledger columns, and proves ZERO \
              cells over the loop. A leg nobody drove is not a leg."
         );
@@ -863,14 +985,15 @@ fn the_root_leg_matrix_runs_once_per_leg() {
 /// able to quietly narrow what the real gate demands.
 #[test]
 fn the_gates_own_constants_are_the_doctrines() {
-    // Seven directional planes: one single-direction plane and the three bidirectional protocols
-    // counted in both directions (`<p>-client` / `<p>-server`), and nothing else.
+    // The five planes (U14): two single-direction (llm, decisions: needs in one direction alone)
+    // and the three bidirectional ones counted in both directions (`<p>-client` / `<p>-server`):
+    // eight columns, and nothing else. A dialect is never a column.
     let planes = planes();
     assert_eq!(
         planes.len(),
-        7,
-        "the plane list is the owner's ruling (the one-direction plane plus both directions of the \
-         bidirectional three); changing it is a doctrine change, not a refactor: {planes:?}"
+        8,
+        "the plane list is the owner's ruling (the two one-direction planes plus both directions of \
+         the bidirectional three); changing it is a doctrine change, not a refactor: {planes:?}"
     );
     let singles: Vec<&&str> = planes
         .iter()
@@ -878,8 +1001,8 @@ fn the_gates_own_constants_are_the_doctrines() {
         .collect();
     assert_eq!(
         singles.len(),
-        1,
-        "exactly one one-direction plane: {planes:?}"
+        2,
+        "exactly two one-direction planes: {planes:?}"
     );
     for p in planes.iter().filter(|p| p.ends_with("-client")) {
         let server = format!("{}-server", p.trim_end_matches("-client"));
@@ -903,8 +1026,8 @@ fn the_gates_own_constants_are_the_doctrines() {
     let legs = root_legs();
     assert_eq!(
         legs.len(),
-        5,
-        "the five root legs are the composition root's own; changing the list is a doctrine change: \
+        6,
+        "the six root legs are the composition root's own; changing the list is a doctrine change: \
          {legs:?}"
     );
     assert!(
