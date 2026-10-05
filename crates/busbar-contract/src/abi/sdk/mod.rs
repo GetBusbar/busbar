@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLUGIN SDK: the typed Rust wrappers over the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN §11.5,
-//! `abi/sdk/`). A plugin of any kind writes its slots against [`door`] (`plugin_door!`) and exports
-//! its ONE door symbol through `export_door!`; compiled in or dropped in, the host calls the same
-//! table.
+//! THE PLUGIN SDK: the typed Rust wrappers over the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, one
+//! place for every ABI shape, `abi/sdk/`). A plugin of any kind writes its slots against [`door`]
+//! (`plugin_door!`) and exports its ONE door symbol through `export_door!`; compiled in or dropped
+//! in, the host calls the same table.
 //!
-//! M6-COLD-DELETE residue: two JSON-lane exports remain, over [`boundary`] — the hosted LOGIN half
-//! of a `kind: auth` plugin (`export_login_plugin!`), until the login moves onto the auth door, and
-//! the request-log file and webhook sinks (`export_export_plugin!`), until their door re-pins land.
+//! M6-COLD-DELETE residue: two JSON-lane exports remain, over [`boundary`] — a `kind: auth` plugin's
+//! (`export_login_plugin!`: its verify and its hosted login), until that plugin's door re-pin, and
+//! the request-log file and webhook sinks' (`export_export_plugin!`), until their door re-pins land.
 //! No store, secret or hook plugin has one.
 
 // The SDK's `unsafe fn` bodies were written under the crate default (edition 2021: an `unsafe fn`

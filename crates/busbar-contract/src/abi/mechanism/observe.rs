@@ -70,8 +70,8 @@
 //!
 //! ## Where this lives
 //!
-//! In the shared mechanism, because every kind's reply carries it (THE DESIGN §11.2: "every reply
-//! carries the metrics and diagnostics envelope"). Nothing here names the kernel, the ledger, or any
+//! In the shared mechanism, because every kind's reply carries it (THE DESIGN, the plugin ABI:
+//! "every reply carries the metrics and diagnostics envelope"). Nothing here names the kernel, the ledger, or any
 //! kind.
 
 use serde::{Deserialize, Serialize};
@@ -96,8 +96,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// # Versioning
 ///
-/// The envelope is part of each kind's own ABI version (THE DESIGN §11.2): a kind that grows it
-/// bumps its own version, never the mechanism's.
+/// The envelope is part of each kind's own ABI version (THE DESIGN, the plugin ABI's per-kind
+/// versions): a kind that grows it bumps its own version, never the mechanism's.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Envelope<R> {
     /// The kind-specific answer.

@@ -3,12 +3,12 @@
 
 //! M6-COLD-DELETE RESIDUE: the two JSON-lane paths that have not moved yet, and nothing else.
 //!
-//! THE DESIGN §11.1 abolished the COLD/JSON lane: no store, secret or hook plugin rides it, and an
-//! auth plugin's VERIFY rides the auth kind's memory ABI. What is left here: the six
-//! `extern "C-unwind"` symbols, JSON over ptr+len, and two wires —
+//! THE DESIGN's plugin ABI abolished the COLD/JSON lane: no store, secret or hook plugin rides it.
+//! What is left here: the six `extern "C-unwind"` symbols, JSON over ptr+len, and two wires —
 //!
-//! * [`auth`]: the hosted browser login (`identity-providers.<n>.browser_login`) of a `kind: auth`
-//!   plugin built on `export_login_plugin!`, until the login moves onto the auth door;
+//! * [`auth`]: the `kind: auth` plugin built on `export_login_plugin!` (its verify and its hosted
+//!   browser login, `identity-providers.<n>.browser_login`), until that plugin's door re-pin moves
+//!   both onto the auth door;
 //! * [`export`]: the request-log file and webhook sinks (`export_export_plugin!`), until their door
 //!   re-pins land with the host's disk lane and the export in-flight fixes.
 //!

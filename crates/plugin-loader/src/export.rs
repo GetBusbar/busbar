@@ -358,7 +358,7 @@ impl crate::PluginRegistry {
         name_or_alias: &str,
         cfg_json: &str,
     ) -> Result<crate::export::DynExport, String> {
-        let p = self.resolve_kind(name_or_alias, "export", "serve as a telemetry sink")?;
+        let p = self.resolve_kind(name_or_alias, abi_kind::EXPORT, "serve as a telemetry sink")?;
         let (name, declares) = (&p.manifest.name, &p.manifest.declares);
         crate::observe::grant_series(name, p.first_party(), &declares.metrics)?;
         crate::export::load_export_image(p.image(), cfg_json, name, &p.manifest.kind)?

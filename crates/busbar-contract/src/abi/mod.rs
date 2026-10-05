@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE busbar plugin interface** — the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN §11: plugins
-//! speak the memory ABI only) over the shared mechanism, one folder per kind, and the HOT lane the
-//! planes and transports still ride until each moves to its door.
+//! **THE busbar plugin interface** — the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, the plugin ABI:
+//! plugins speak the memory ABI only) over the shared mechanism, one folder per kind, and the HOT
+//! lane the planes and transports still ride until each moves to its door.
 //!
 //! * [`mechanism`] and `abi/<kind>/` — the ONE memory ABI: one door, one call shape, one
 //!   lifecycle, and each kind's own operations, shapes and version.
 //! * [`hot`] — the HOT lane (was `busbar-plane-abi`). A `#[repr(C)]` fn-pointer vtable the planes
-//!   and transports that have not yet moved to their door still speak; deleted with the last of them
-//!   (M6-HOT-PLANE). Its images answer the two-symbol handshake `busbar_abi` / `busbar_plugin_kind`
-//!   still defined beside the JSON lane's residue ([`cold`]).
-//!
-//! * [`cold`] — the residue of the COLD/JSON lane (THE DESIGN §11.1 abolished it): the hosted login's
-//!   auth wire and the two request-log export sinks' wire, each deleted with the last plugin on it.
-//!   No store, secret or hook plugin rides it, and a 1.5.5 JSON-contract plugin is refused at boot
-//!   naming the rebuild against the 1.6.0 SDK (§11.8).
+//!   and transports that have not yet moved to their door still speak; deleted with the last of
+//!   them (M6-HOT-PLANE). Its images answer the two-symbol handshake `busbar_abi` /
+//!   `busbar_plugin_kind` still defined beside the JSON lane's residue ([`cold`]).
+//! * [`cold`] — the residue of the COLD/JSON lane, which THE DESIGN's plugin ABI abolished: the
+//!   auth wire (the one auth plugin still on it, until its door re-pin) and the two request-log
+//!   export sinks' wire, each deleted with the last plugin on it. No store, secret or hook plugin
+//!   rides it, and a 1.5.5 JSON-contract plugin is refused at boot naming the rebuild against the
+//!   1.6.0 SDK (the plugin ABI's "no legacy loading").
 //!
 //! # The shared root (this module)
 //!
@@ -92,8 +92,7 @@ macro_rules! slot_table {
     };
 }
 
-/// M6-COLD-DELETE RESIDUE: the hosted login's and the two request-log sinks' JSON lane (see its
-/// module doc).
+/// M6-COLD-DELETE RESIDUE: the JSON lane's auth and request-log export wires (see its module doc).
 pub mod cold;
 pub mod host;
 pub mod hot;

@@ -8,9 +8,9 @@
 //! transports that have not moved to their door still ride ([`plane`], [`transport`]).
 //!
 //! M6-COLD-DELETE residue: the raw JSON-lane load below ([`Image`], `RawPlugin`) serves only the
-//! hosted LOGIN of a `kind: auth` plugin ([`auth`]), until the login moves onto the auth door, and
-//! the request-log file and webhook sinks ([`export`]), until their door re-pins land. No store,
-//! secret or hook plugin loads through it.
+//! `kind: auth` plugin still built on it ([`auth`]: its verify and its hosted login), until that
+//! plugin's door re-pin, and the request-log file and webhook sinks ([`export`]), until their door
+//! re-pins land. No store, secret or hook plugin loads through it.
 
 use busbar_contract::abi::cold::{
     symbol, CallFn, CloseFn, FreeFn, MAX_PLUGIN_RESPONSE_LEN, STATUS_ERR, STATUS_OK, STATUS_PANIC,
@@ -287,8 +287,8 @@ pub(crate) fn abi_symbol(
         .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))
 }
 
-/// THE PLUGIN-ABI HANDSHAKE, one home for every load path that still answers it: the hosted login's
-/// JSON lane, the upload vet, the HOT plane loader and the HOT transport loader. Calls `busbar_abi()` under
+/// THE PLUGIN-ABI HANDSHAKE, one home for every load path that still answers it: the JSON lane's
+/// residue, the upload vet, the HOT plane loader and the HOT transport loader. Calls `busbar_abi()` under
 /// the ffi guard (it runs plugin code, so a panic fails the load closed) and refuses a plugin whose
 /// plugin-ABI version is not the engine's, answering the version it verified. `noun` is how the
 /// refusal names it (`plugin`, `plane`, `transport`), so each path's text is unchanged byte for
@@ -356,8 +356,7 @@ fn reclaim_failed_open(
 
 /// The resolved core C fn pointers + the opaque handle + the mapped library + staging backing, shared
 /// by every kind's typed wrapper. The KIND is bound at construction (cross-checked against the signed
-/// manifest) and then carried by the typed `DynAuth` (the hosted login's JSON lane, the one kind
-/// still loaded this way).
+/// manifest) and then carried by the typed `DynAuth` / `DynExport` (the JSON lane's residue).
 struct RawPlugin {
     handle: *mut c_void,
     call: CallFn,
