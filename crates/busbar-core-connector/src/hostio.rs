@@ -81,7 +81,8 @@ enum Kind {
         connecting: AtomicBool,
     },
     Listener(Registered<TcpListener>),
-    Program(Pipes),
+    /// Boxed: a program is spawned once per member, its pipes are larger than a socket.
+    Program(Box<Pipes>),
 }
 
 struct Entry {
@@ -614,11 +615,11 @@ impl IoHost for HostIo {
             .map_err(|e| failed(&e))?;
         let id = self.hold(
             owner,
-            Kind::Program(Pipes {
+            Kind::Program(Box::new(Pipes {
                 child: Mutex::new(child),
                 stdin: Mutex::new(Some(stdin)),
                 stdout,
-            }),
+            })),
         );
         self.record(ticket, Some(id), None);
         Ok(id)
