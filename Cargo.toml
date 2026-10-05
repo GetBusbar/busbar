@@ -102,10 +102,10 @@ busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-trans
 busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "6ede2a5b1a27e6a265e3a76db7e5749cb5abce8a" }
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin.
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "360a0d2c469ddcd27bf22b165283004c00902bb2" }
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "aaeaad28ce132335c2ef46373d6f674ace681552" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin.
-busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "44937ba1d4a69c38001ceaa1f3c191c26e7151d7" }
+busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "2a13554733f7a2bcb0554e66e6a1f5907a8ea189" }
 # THE RANKING HOOK (kind: hook), pulled at a pinned rev: the logic crate the root links on its hooks
 # axis (feature `hooks-ranking`). The same package at the same rev, under the role the kernel's test
 # build gives it (`fixture-hook`: a kernel source names no plugin). A rev bump moves both lines.
