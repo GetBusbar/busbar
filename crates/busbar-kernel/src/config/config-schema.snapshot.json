@@ -2718,6 +2718,10 @@
       "kind": "alias",
       "target": "Mutex<HashMap<(InstanceId, NeedId), Arc<Mutex<Listening>>>>"
     },
+    "type Members": {
+      "kind": "alias",
+      "target": "HashMap<String, Arc<Member>>"
+    },
     "type Opening": {
       "kind": "alias",
       "target": "(Vec<(String, Vec<u8>)>, Vec<u8>)"

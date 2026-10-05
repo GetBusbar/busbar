@@ -607,8 +607,8 @@ deregister}` on the per-worker reactor.
 |---|---|---|
 | `provider` | plane upstreams | allow-list + `allow_metadata_hosts` |
 | `operator-infrastructure` | databases, vault, ldap | private, loopback and plaintext allowed; pinned; cloud metadata hosts refused (accepted difference, owner 2026-09-27) |
-| `open-web` | webhook; auth mint endpoints (`token_url`, `token_uri`) | public https only |
-| `loopback-allowed` | otlp, webrequest | https, or loopback plaintext; the node's own ports refused |
+| `open-web` | webhook | public https only |
+| `loopback-allowed` | otlp, webrequest; auth mint endpoints (`token_url`, `token_uri`: ARCHITECT 2026-10-04 parity ruling, https or loopback plaintext exactly as 1.5.5 validated them, the destination guard still applying) | https, or loopback plaintext; the node's own ports refused |
 
 **Destination guard — ONE check for every outbound connection (OWNER ruling, DESTINATION GUARD,
 2026-10-02; supersedes the Q130/Q131 detail).** Every outbound connection of any kind (providers,

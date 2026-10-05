@@ -151,10 +151,13 @@ fn oauth_client_credentials_mints_on_tick_and_honours_the_expired_token_rule() {
         );
         assert_eq!(
             sent[0].1,
-            [(
-                "content-type".to_string(),
-                "application/x-www-form-urlencoded".to_string()
-            )]
+            [
+                (
+                    "content-type".to_string(),
+                    "application/x-www-form-urlencoded".to_string()
+                ),
+                ("accept".to_string(), "*/*".to_string())
+            ]
         );
         assert_eq!(
             sent[0].2,

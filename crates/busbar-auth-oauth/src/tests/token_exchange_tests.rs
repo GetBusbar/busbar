@@ -149,7 +149,10 @@ fn the_exchange_request_is_the_previous_releases_form_with_the_stated_scope() {
     assert_eq!(req.target, "https://as.example/token");
     assert_eq!(
         req.fields,
-        [("content-type", "application/x-www-form-urlencoded")]
+        [
+            ("content-type", "application/x-www-form-urlencoded"),
+            ("accept", "*/*"),
+        ]
     );
     let expected = |scope: &str| {
         vec![

@@ -220,7 +220,10 @@ fn the_token_request_is_the_form_1_5_5_posted() {
     assert_eq!(req.target, "https://oauth2.googleapis.com/token");
     assert_eq!(
         req.fields,
-        vec![("content-type", "application/x-www-form-urlencoded")]
+        vec![
+            ("content-type", "application/x-www-form-urlencoded"),
+            ("accept", "*/*"),
+        ]
     );
     let assertion = signer.assertion(1_700_000_000).unwrap();
     assert_eq!(
