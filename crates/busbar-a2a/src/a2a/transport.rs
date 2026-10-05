@@ -280,16 +280,40 @@ impl ReqwestTransport {
 
     #[cfg(all(test, feature = "test-support"))]
     pub(crate) fn trusting_root(mut self, pem: &[u8]) -> Self {
-        self.extra_roots
-            .extend(busbar_core_connector::test_support::certs_from_pem(
-                std::str::from_utf8(pem).expect("a PEM certificate"),
-            ));
+        self.extra_roots.extend(pem_certificates(
+            std::str::from_utf8(pem).expect("a PEM certificate"),
+        ));
         // Re-register the FULL accumulated set (a fresh ref each time), so the desc's one ref resolves
         // to every root this transport was told to trust — the host owns the parsed certificates.
         self.trust_anchor_ref =
             busbar_kernel::plane_host::trust_anchor::register(self.extra_roots.clone());
         self
     }
+}
+
+/// TEST-ONLY: every `CERTIFICATE` section of a PEM bundle, DER. The roots a test hands
+/// [`ReqwestTransport::trusting_root`] are read with this plain walk: TLS lives only in the
+/// connector, so this crate names no TLS library, not even in a test.
+#[cfg(all(test, feature = "test-support"))]
+pub(crate) fn pem_certificates(pem: &str) -> Vec<Vec<u8>> {
+    use base64::Engine as _;
+    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+    const END: &str = "-----END CERTIFICATE-----";
+    pem.split(BEGIN)
+        .skip(1)
+        .map(|section| {
+            let body: String = section
+                .split(END)
+                .next()
+                .expect("a certificate section")
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            base64::engine::general_purpose::STANDARD
+                .decode(body)
+                .expect("a certificate section decodes")
+        })
+        .collect()
 }
 
 /// ONE PINNED HOP, shared by the card fetch and the relay.

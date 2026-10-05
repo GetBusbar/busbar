@@ -4,17 +4,15 @@
 //! THE CONNECTOR'S TLS TEST KIT: the TLS far ends and the recording TLS fixture server, for the
 //! tests that need a real handshake.
 //! TLS stays in the connector (THE DESIGN; 1.6.0-TODO P2), so no other crate names a TLS library —
-//! not even in a test — and only the composition root names the connector, so these serve the
-//! root's tests (`tests/engine_tls.rs`, `root::tests::connector_h2`) and, pending the ruling the lane
-//! file W3B records (Q-W3B-1), `busbar-a2a`'s real-handshake transport battery. Every type here is kernel-free (bytes, std
-//! and tokio streams, the contract's `ConnectionSecurity`), so a crate whose test build links a
-//! different build of the kernel than this crate does can use it all the same.
+//! not even in a test — and every row that needs a real handshake lives in this crate's own suite
+//! (`tls/engine_tests.rs` drives the kernel's engine and listener over this crate's wrap; a plane's
+//! transport battery rides the kernel's TLS test double instead).
 //!
-//! Test machinery only: compiled under `cfg(test)` for this crate's own suite and under the
-//! `test-support` feature for the dependent test binaries. Nothing in a shipped build reaches it.
-//! The gate below restates, on the file itself, the gate `lib.rs` puts on `pub mod test_support;`,
-//! so a per-file reader (`cargo xtask loc`) counts this file as the test machinery it is.
-#![cfg(any(test, feature = "test-support"))]
+//! Test machinery only: compiled under `cfg(test)` for this crate's own suite. Nothing in a shipped
+//! build reaches it. The gate below restates, on the file itself, the gate `lib.rs` puts on
+//! `pub mod test_support;`, so a per-file reader (`cargo xtask loc`) counts this file as the test
+//! machinery it is.
+#![cfg(test)]
 
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};

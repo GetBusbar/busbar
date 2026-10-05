@@ -739,6 +739,312 @@ async fn client_cert_fixture_accepts_only_the_carried_identity() {
     );
 }
 
+// ── THE REFUSALS A PLANE'S TRANSPORT ROWS STAND ON: the a2a card transport's batteries ride the
+// kernel's TLS double (that crate names no TLS), so each certificate-verification refusal they
+// once drove over a real handshake is proven here, one for one, through the same engine ──────────
+
+/// THE CHAIN CHECK STAYS ON UNDER THE PIN: a self-signed leaf no root vouches for, served at the
+/// pinned address, is refused at the handshake and the cause names the chain check
+/// (`UnknownIssuer`). The ClientHello still carried the hostname, and no request rode the refused
+/// handshake — no response, so no peer pin could ever be read off it. (The real handshake under
+/// a2a's `a_hop_with_no_extra_root_trusts_the_webpki_roots_alone_and_carries_the_refusal` and
+/// `a_refused_handshake_produces_no_card_and_therefore_no_pin`.)
+#[tokio::test]
+async fn an_untrusted_self_signed_leaf_is_refused_under_the_pin_naming_unknown_issuer() {
+    connector_tls();
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["untrusted.test".to_string()])
+            .expect("self-signed");
+    let fixture = spawn_tls(TlsServerSpec {
+        cert_chain_pem: cert.pem(),
+        key_pem: signing_key.serialize_pem(),
+        client_auth: ClientAuth::None,
+        response: CannedResponse::ok("never").render(),
+        max_requests_per_connection: 4,
+    });
+    let spec = EngineSpec::pinned(
+        Arc::from("untrusted.test"),
+        fixture.addr.ip(),
+        None,
+        Vec::new(),
+    );
+    let err = build_client(&spec)
+        .expect("builds")
+        .request(get(&format!(
+            "https://untrusted.test:{}/card",
+            fixture.addr.port()
+        )))
+        .await
+        .expect_err("an untrusted certificate must not produce a response");
+    assert!(err.is_connect(), "refused at the handshake, connect class");
+    let cause = busbar_kernel::egress::with_cause(&err);
+    assert!(
+        cause.contains("invalid peer certificate") && cause.contains("UnknownIssuer"),
+        "the refusal must be the certificate chain check, named: {cause}"
+    );
+    let records = fixture.records_when(|r| r.first().is_some_and(|c| c.sni.is_some()));
+    assert_eq!(
+        records[0].sni.as_deref(),
+        Some("untrusted.test"),
+        "the ClientHello carried the hostname even though the socket was pinned"
+    );
+    assert!(!records[0].handshake_ok);
+    assert!(
+        records.iter().all(|r| r.requests == 0),
+        "no request rode a refused handshake: {records:?}"
+    );
+}
+
+/// THE NAME CHECK, NAMED: the leaf's CA is trusted and the socket is the pinned one, so the only
+/// thing left to refuse on is the NAME — and the cause says so, naming both the hostname the hop
+/// verified against and the name the certificate carries. (The real handshake under a2a's
+/// `a_trusted_root_rides_the_hop_and_the_name_it_is_checked_against_is_the_hostname`.)
+#[tokio::test]
+async fn a_wrong_name_refusal_names_the_hostname_and_the_certificates_name() {
+    connector_tls();
+    let other = ca_and_leaf(&["attacker.test"]);
+    let fixture = spawn_tls(TlsServerSpec {
+        cert_chain_pem: other.leaf_pem.clone(),
+        key_pem: other.leaf_key_pem.clone(),
+        client_auth: ClientAuth::None,
+        response: CannedResponse::ok("never").render(),
+        max_requests_per_connection: 4,
+    });
+    let spec = EngineSpec::pinned(
+        Arc::from("pinned.test"),
+        fixture.addr.ip(),
+        None,
+        certs_from_pem(&other.ca_pem),
+    );
+    let err = build_client(&spec)
+        .expect("builds")
+        .request(get(&format!(
+            "https://pinned.test:{}/card",
+            fixture.addr.port()
+        )))
+        .await
+        .expect_err("a certificate for a different name must be refused");
+    assert!(err.is_connect(), "refused at the handshake, connect class");
+    let cause = busbar_kernel::egress::with_cause(&err);
+    assert!(
+        cause.contains("invalid peer certificate")
+            && cause.contains("certificate not valid for name \"pinned.test\"")
+            && cause.contains("attacker.test"),
+        "the CA is trusted and the socket is the same; the refusal must name the NAME: {cause}"
+    );
+}
+
+/// THE PIN READ OFF A REAL HANDSHAKE IS THE SERVING LEAF'S KEY: two leaves for the same name, each
+/// from its own CA, have different key pins, and the pin the engine reads off the verified
+/// handshake is the serving leaf's — never the look-alike's. That difference is what an operator's
+/// key pin refuses a look-alike endpoint on. (The real handshake under a2a's
+/// `a_card_served_under_a_certificate_whose_key_pin_does_not_match_the_pin_is_refused`,
+/// `a_mutual_tls_look_alike_endpoint_is_named_as_one_rather_than_as_a_missing_certificate`.)
+#[tokio::test]
+async fn the_pin_off_a_real_handshake_is_the_serving_leafs_key_and_not_a_look_alikes() {
+    connector_tls();
+    let serving = ca_and_leaf(&["pinned.test"]);
+    let look_alike = ca_and_leaf(&["pinned.test"]);
+    let fixture = spawn_tls(TlsServerSpec {
+        cert_chain_pem: serving.leaf_pem.clone(),
+        key_pem: serving.leaf_key_pem.clone(),
+        client_auth: ClientAuth::None,
+        response: CannedResponse::ok("card").render(),
+        max_requests_per_connection: 4,
+    });
+    let spec = EngineSpec::pinned(
+        Arc::from("pinned.test"),
+        fixture.addr.ip(),
+        None,
+        certs_from_pem(&serving.ca_pem),
+    );
+    let resp = build_client(&spec)
+        .expect("builds")
+        .request(get(&format!(
+            "https://pinned.test:{}/card",
+            fixture.addr.port()
+        )))
+        .await
+        .expect("the rooted hop answers");
+    assert_eq!(resp.status(), 200);
+    let expected = busbar_kernel::plane_host::spki::pin(&serving.leaf_der).expect("serving leaf");
+    let other = busbar_kernel::plane_host::spki::pin(&look_alike.leaf_der).expect("look-alike");
+    assert_ne!(expected, other, "two keys, two pins");
+    assert_eq!(
+        peer_key_pin(&resp),
+        Some(expected.as_str()),
+        "the pin is read off the handshake that served, so it is the serving leaf's key"
+    );
+}
+
+/// What a mutual-TLS far end decided about each connection: `Ok(n)` when the handshake completed
+/// with `n` client certificates presented, `Err(reason)` — this end's OWN refusal, as the TLS stack
+/// words it — when it did not.
+type PeerVerdicts = Arc<std::sync::Mutex<Vec<Result<usize, String>>>>;
+
+/// A REAL far end that REQUIRES a client certificate chaining to `client_ca_pem` (a
+/// `WebPkiClientVerifier`, as busbar's own mutual listener), recording its verdict on every
+/// connection and answering a completed one with `200 ok`.
+fn spawn_mtls_peer(
+    server: &busbar_kernel::egress::fixtures::CaLeaf,
+    client_ca_pem: &str,
+) -> (SocketAddr, PeerVerdicts) {
+    use std::io::{Read as _, Write as _};
+    let tls = crate::test_support::ServerTls::from_pem(
+        &server.leaf_pem,
+        &server.leaf_key_pem,
+        Some(client_ca_pem),
+        &[b"http/1.1"],
+    )
+    .expect("the peer's material");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    let verdicts: PeerVerdicts = Arc::default();
+    let recorder = Arc::clone(&verdicts);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { break };
+            let Ok(mut session) = tls.accept_std(stream) else {
+                continue;
+            };
+            if let Some(reason) = session.refusal() {
+                recorder
+                    .lock()
+                    .expect("verdicts")
+                    .push(Err(reason.to_string()));
+                continue;
+            }
+            recorder
+                .lock()
+                .expect("verdicts")
+                .push(Ok(session.peer_certs().len()));
+            let mut head = Vec::new();
+            let mut buf = [0_u8; 512];
+            while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                match session.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => head.extend_from_slice(&buf[..n]),
+                }
+            }
+            let _ = session
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok");
+            let _ = session.flush();
+            session.close();
+        }
+    });
+    (addr, verdicts)
+}
+
+/// The peer's verdicts once `n` have been recorded (a refused handshake's verdict can land just
+/// after the client hears the refusal). Panics at the bound.
+fn verdicts_when(verdicts: &PeerVerdicts, n: usize) -> Vec<Result<usize, String>> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let seen = verdicts.lock().expect("verdicts").clone();
+        if seen.len() >= n {
+            return seen;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the peer's verdicts never settled: {seen:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// The client identity the engine presents, from a leaf and its key.
+fn identity_of(material: &busbar_kernel::egress::fixtures::CaLeaf) -> ClientIdentity {
+    ClientIdentity::from_pem(format!("{}{}", material.leaf_pem, material.leaf_key_pem).as_bytes())
+        .expect("the identity parses")
+}
+
+/// AN mTLS PEER REFUSES A HOP THAT PRESENTS NOTHING, AND SAYS SO: the engine built with no identity
+/// presents none (it never forges one), the peer refuses at the handshake, and the peer's OWN
+/// reason is that no certificate was sent — not that a wrong one was. (The real handshake under
+/// a2a's `a_mutual_tls_peer_refuses_a_card_fetch_that_presents_no_client_certificate`.)
+#[tokio::test]
+async fn an_mtls_peer_refuses_a_hop_that_presents_no_client_certificate_for_that_reason() {
+    connector_tls();
+    let server = ca_and_leaf(&["mtls-peer.test"]);
+    let client = ca_and_leaf(&["engine.busbar.test"]);
+    let (addr, verdicts) = spawn_mtls_peer(&server, &client.ca_pem);
+    let spec = EngineSpec::pinned(
+        Arc::from("mtls-peer.test"),
+        addr.ip(),
+        None,
+        certs_from_pem(&server.ca_pem),
+    );
+    let res = build_client(&spec)
+        .expect("the identityless posture builds")
+        .request(get(&format!("https://mtls-peer.test:{}/card", addr.port())))
+        .await;
+    assert!(
+        res.is_err(),
+        "a peer that demands a client certificate must not answer a hop that has none"
+    );
+    let seen = verdicts_when(&verdicts, 1);
+    let [Err(reason)] = seen.as_slice() else {
+        panic!("the refusal must be the PEER's, at the handshake: {seen:?}");
+    };
+    assert!(
+        reason.contains("no certificates"),
+        "and the peer's objection must be that nothing was presented: {reason}"
+    );
+}
+
+/// AN mTLS PEER ADMITS ONLY ITS OWN CLIENT'S CERTIFICATE: the engine presenting the identity that
+/// chains to the peer's client CA completes (the peer saw exactly one certificate); the engine
+/// presenting another CA's identity is refused by the peer as an INVALID certificate — something
+/// was offered and refused, which is not the same refusal as nothing offered. (The real handshake
+/// under a2a's `each_registration_presents_its_own_certificate_and_not_another_registrations`,
+/// `a_mutual_tls_peer_accepts_the_card_fetch_when_the_registration_names_a_client_identity`,
+/// `the_verb_layers_probe_fetches_a_mutual_tls_vendors_card_with_that_registrations_certificate`,
+/// `a_mutual_tls_registration_that_presents_its_client_certificate_verifies`.)
+#[tokio::test]
+async fn an_mtls_peer_accepts_its_own_clients_certificate_and_refuses_a_foreign_one_as_invalid() {
+    connector_tls();
+    let server = ca_and_leaf(&["mtls-peer.test"]);
+    let own = ca_and_leaf(&["engine.busbar.test"]);
+    let foreign = ca_and_leaf(&["engine.busbar.test"]);
+    let (addr, verdicts) = spawn_mtls_peer(&server, &own.ca_pem);
+    let url = format!("https://mtls-peer.test:{}/card", addr.port());
+    let posture = |identity| {
+        EngineSpec::pinned(
+            Arc::from("mtls-peer.test"),
+            addr.ip(),
+            Some(identity),
+            certs_from_pem(&server.ca_pem),
+        )
+    };
+
+    let resp = build_client(&posture(identity_of(&own)))
+        .expect("builds")
+        .request(get(&url))
+        .await
+        .expect("the peer's own client certificate is admitted");
+    assert_eq!(resp.status(), 200);
+    let body = resp.into_body().collect().await.expect("body").to_bytes();
+    assert_eq!(&body[..], b"ok");
+    assert_eq!(verdicts_when(&verdicts, 1), vec![Ok(1)]);
+
+    let res = build_client(&posture(identity_of(&foreign)))
+        .expect("builds")
+        .request(get(&url))
+        .await;
+    assert!(
+        res.is_err(),
+        "another CA's certificate must not authenticate at this peer"
+    );
+    let seen = verdicts_when(&verdicts, 2);
+    let [Ok(1), Err(reason)] = seen.as_slice() else {
+        panic!("own admitted, foreign refused: {seen:?}");
+    };
+    assert!(
+        reason.contains("invalid peer certificate"),
+        "the foreign certificate is refused AS a certificate: {reason}"
+    );
+}
+
 // ── THE TLS LISTENER over the connector's production wrap ───────────────────────────────────────
 
 fn temp_pem(tag: &str, contents: &str) -> std::path::PathBuf {

@@ -21,8 +21,8 @@
 //! The fixtures live in `busbar_kernel::egress::fixtures` so the engine's own tests and this harness
 //! drive the SAME servers. The TLS rows (the known-leaf pin and SNI under the pin, the
 //! client-certificate fixture) need a REAL handshake, which is the connector's: TLS stays in the
-//! connector and only the composition root names it, so those rows are the root's
-//! `tests/engine_tls.rs`, over the same two stacks.
+//! connector, so those rows are the connector's own `tls/engine_tests.rs`, over the same two
+//! stacks.
 
 use std::net::SocketAddr;
 use std::sync::Arc;

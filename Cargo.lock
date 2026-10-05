@@ -390,7 +390,6 @@ dependencies = [
  "busbar-auth-admin-tokens-plugin",
  "busbar-contract",
  "busbar-core-admin",
- "busbar-core-connector",
  "busbar-kernel",
  "busbar-plane-a2a",
  "ed25519-dalek",

@@ -18,7 +18,7 @@
 //! (`busbar_kernel::egress::fixtures::TlsDouble`): the TLS itself is the connector's, which this crate
 //! cannot name, so what is proven here is this plane's side — the leaf the engine observed is the one
 //! compared to the operator's pin. That the engine observes the REAL handshake's leaf is the
-//! composition root's `tests/engine_tls.rs`. The one throw-away CA (`TEST_CA`) exists because MCP has
+//! connector's `tls/engine_tests.rs`. The one throw-away CA (`TEST_CA`) exists because MCP has
 //! no config-shaped way to name a private CA for a registration yet (unlike A2A's `client_identity:`
 //! path); see that module for why one CA correctly serves both the matching and the mismatched case
 //! below.

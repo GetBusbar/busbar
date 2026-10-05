@@ -481,8 +481,8 @@ pub(crate) fn scoped_dial() -> Option<ScopedDial> {
 /// engine's side of the seam: the server name and the ALPN offer it hands the wrap, the extra roots
 /// and the identity it asks for, the facts it reads back (the agreed protocol, the peer's leaf), and
 /// how a refused handshake surfaces. Real TLS — the ClientHello on the wire, certificate verification,
-/// a mutual handshake — is proven where TLS lives: the connector's own tests and the composition
-/// root's `tests/engine_tls.rs`, which drive this engine over the connector's wrap.
+/// a mutual handshake — is proven where TLS lives: the connector's own tests, its
+/// `tls/engine_tests.rs` among them, which drive this engine over the connector's wrap.
 #[derive(Clone, Default)]
 pub struct TlsDouble {
     hellos: Arc<Mutex<Vec<DoubleHello>>>,
@@ -518,7 +518,7 @@ impl TlsDouble {
 impl crate::secure::SecureLayer for TlsDouble {
     /// A plain PEM walk (certificates and one private key, the last key winning), enough for a test
     /// identity; the connector's walk, and its verdict parity with `reqwest::Identity::from_pem`, is
-    /// proven over the real wrap (the root's `tests/engine_tls.rs`).
+    /// proven over the real wrap (the connector's `tls/engine_tests.rs`).
     fn identity_from_pem(
         &self,
         pem: &[u8],
@@ -727,6 +727,10 @@ pub struct DoublePeer {
     pub alpn: Vec<Vec<u8>>,
     /// Refuse a client that presents no identity.
     pub require_identity: bool,
+    /// The client leaves (DER) this end accepts as an identity; empty = any. A presented identity
+    /// that is none of them is refused as an invalid certificate, as a mutual-TLS peer refuses a
+    /// client certificate chaining to a CA it does not trust.
+    pub accept_only: Vec<Vec<u8>>,
     /// Refuse every handshake with this cause.
     pub refuse: Option<String>,
 }
@@ -768,6 +772,15 @@ impl DoublePeer {
                 seen,
                 "REFUSE peer sent no certificates (the TLS double demands one)".to_string(),
             );
+        }
+        if let Some(leaf) = &seen.client_leaf {
+            if !self.accept_only.is_empty() && !self.accept_only.contains(leaf) {
+                return (
+                    seen,
+                    "REFUSE invalid peer certificate (the TLS double accepts other identities)"
+                        .to_string(),
+                );
+            }
         }
         seen.alpn = self.alpn.iter().find(|p| offer.contains(p)).cloned();
         seen.ok = true;

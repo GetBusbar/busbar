@@ -30,6 +30,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use busbar_kernel::egress::fixtures::{install_test_tls, DoublePeer, PeerHello, TlsDouble};
 use rcgen::{CertificateParams, CertifiedKey, IsCa, Issuer, KeyPair};
 
 use super::*;
@@ -149,43 +150,62 @@ fn spawn_http(status: u16, extra: Vec<(String, String)>, body: String) -> (Socke
 
 type Requests = Arc<Mutex<Vec<String>>>;
 
-/// What one TLS connection told us about itself. Recorded even when the handshake FAILS, because a
-/// client that rejects the certificate has already sent its `ClientHello` — which is where the
-/// server name lives, and is precisely what these tests need to read.
-pub(crate) type ObservedSni = Arc<Mutex<Vec<Option<String>>>>;
+/// What each connection's hello told the far end, and whether the handshake completed. Recorded
+/// even when the far end REFUSES, because the hello is where the server name, the trust the client
+/// was built with and the identity it presents live — precisely what these tests read.
+pub(crate) type ObservedHellos = Arc<Mutex<Vec<PeerHello>>>;
 
-/// A real TLS server (the connector's test far end) on an ephemeral loopback port. Records the SNI of every connection and, if
-/// the handshake completes, answers `body`.
-pub(crate) fn spawn_tls(cert_pem: &str, key_pem: &str, body: String) -> (SocketAddr, ObservedSni) {
-    busbar_core_connector::tls::engine::install();
-    let server =
-        busbar_core_connector::test_support::ServerTls::from_pem(cert_pem, key_pem, None, &[])
-            .expect("server config");
+/// THE TLS THIS TEST BINARY'S HOPS ARE SECURED WITH: the kernel's TLS test double, carried in the
+/// egress-trust capability the composition root installs at boot (first install wins). TLS lives
+/// only in the connector, which this crate does not name — not even in a test — so what these rows
+/// prove is the posture this plane hands the engine (the server name, the extra roots, the client
+/// identity, the peer leaf it reads a pin off). Every real-handshake refusal (an untrusted chain, a
+/// wrong name, a missing or foreign client certificate, a look-alike key) is proven where TLS
+/// lives: `busbar-core-connector`'s `tls/engine_tests.rs`, over the same engine.
+pub(crate) fn tls_double() {
+    install_test_tls(TlsDouble::default().layer());
+}
 
+/// A far end behind the TLS double on an ephemeral loopback port. Records every connection's hello
+/// and, if the handshake completes, answers `body`.
+pub(crate) fn spawn_tls(peer: DoublePeer, body: String) -> (SocketAddr, ObservedHellos) {
+    tls_double();
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind loopback");
     let addr = listener.local_addr().expect("local addr");
-    let sni: ObservedSni = Arc::new(Mutex::new(Vec::new()));
-    let recorder = Arc::clone(&sni);
+    let hellos: ObservedHellos = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&hellos);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
-            let Ok(stream) = stream else { break };
-            // Drive the handshake. It may FAIL (an untrusted certificate is rejected by the peer);
-            // the `ClientHello` has already been read either way, which is what is being observed.
-            let Ok(mut tls) = server.accept_std(stream) else {
-                continue;
-            };
-            recorder.lock().expect("record").push(tls.sni());
-            if !tls.handshake_ok() {
+            let Ok(mut stream) = stream else { break };
+            let seen = peer.accept(&mut stream);
+            let ok = seen.ok;
+            recorder.lock().expect("record").push(seen);
+            if !ok {
                 continue;
             }
-            let mut buf = [0u8; 4096];
-            let _ = tls.read(&mut buf);
-            let _ = tls.write_all(&http_response(200, "OK", &[], &body));
-            let _ = tls.flush();
-            tls.close();
+            let mut reader = BufReader::new(&stream);
+            let _ = read_request(&mut reader);
+            let mut w = &stream;
+            let _ = w.write_all(&http_response(200, "OK", &[], &body));
+            let _ = w.flush();
         }
     });
-    (addr, sni)
+    (addr, hellos)
+}
+
+/// A far end presenting `leaf_pem`'s certificate (DER) and asking nothing of the client.
+pub(crate) fn presenting(leaf_pem: &str) -> DoublePeer {
+    DoublePeer {
+        leaf: Some(der(leaf_pem)),
+        ..DoublePeer::default()
+    }
+}
+
+/// The one certificate in `pem`, DER.
+pub(crate) fn der(pem: &str) -> Vec<u8> {
+    let mut certs = crate::a2a::transport::pem_certificates(pem);
+    assert_eq!(certs.len(), 1, "one certificate");
+    certs.remove(0)
 }
 
 /// A CA plus a leaf certificate signed by it for `sans`. Returns (ca_pem, leaf_pem, leaf_key_pem).
@@ -331,25 +351,28 @@ fn the_clients_refusing_resolver_names_the_invariant_when_it_is_reached() {
 
 // ══ PINNING THE ADDRESS DOES NOT WEAKEN TLS ══════════════════════════════════════════════════════
 
-/// SNI carries the HOSTNAME, never the pinned address.
-///
-/// The socket goes to 127.0.0.1 and the server still sees `a2a.vendor.test` in the `ClientHello`.
-/// An implementation that pinned by rewriting the URL to the address — the other obvious way to
-/// make the connection go where you want — would send the address here and break every upstream
-/// that serves more than one name from one socket, silently.
+/// The socket goes to 127.0.0.1 and the wrap is still handed `a2a.vendor.test` as the server name
+/// (the SNI, and the name the certificate is verified against). An implementation that pinned by
+/// rewriting the URL to the address — the other obvious way to make the connection go where you
+/// want — would hand the wrap the address here and break every upstream that serves more than one
+/// name from one socket, silently. That the name reaches the real ClientHello, and that a
+/// certificate for another name is refused under the pin, is the connector's
+/// `sni_stays_on_the_hostname_and_a_wrong_name_cert_is_refused`.
 #[test]
 fn the_tls_handshake_sends_the_hostname_as_sni_not_the_pinned_address() {
-    let CertifiedKey { cert, signing_key } =
+    let CertifiedKey { cert, .. } =
         rcgen::generate_simple_self_signed(vec![HOST.to_string()]).expect("self-signed");
-    let (addr, sni) = spawn_tls(&cert.pem(), &signing_key.serialize_pem(), String::new());
+    let (addr, hellos) = spawn_tls(presenting(&cert.pem()), String::new());
 
     let policy = FetchPolicy::default();
     let transport = ReqwestTransport::new(&policy);
-    // The certificate is self-signed and NOT trusted, so this fetch fails — after the ClientHello.
     let _ = transport.get(&url("https", addr.port(), "/card"), LOOPBACK);
 
-    // The handshake runs on the server's own thread; give it a moment to record.
-    let observed = wait_for_sni(&sni);
+    // The far end runs on the server's own thread; give it a moment to record.
+    let observed: Vec<_> = wait_for_hellos(&hellos, 1)
+        .into_iter()
+        .map(|h| h.server_name)
+        .collect();
     assert_eq!(
         observed,
         vec![Some(HOST.to_string())],
@@ -358,38 +381,48 @@ fn the_tls_handshake_sends_the_hostname_as_sni_not_the_pinned_address() {
     );
 }
 
-/// Certificate verification is STILL ON. The pin decides where the socket goes and nothing else; a
-/// certificate no root vouches for is refused exactly as it would be without a pin.
+/// A transport no root was handed asks for the webpki roots ALONE — no extra anchor rides the hop —
+/// and a far end's refusal of the handshake comes back as the hop's error, with no card. The chain
+/// check that refuses a certificate no root vouches for, under the same pin, is the connector's
+/// `an_untrusted_self_signed_leaf_is_refused_under_the_pin_naming_unknown_issuer`.
 #[test]
-fn an_untrusted_certificate_is_still_refused_over_a_pinned_connection() {
-    let CertifiedKey { cert, signing_key } =
+fn a_hop_with_no_extra_root_trusts_the_webpki_roots_alone_and_carries_the_refusal() {
+    let CertifiedKey { cert, .. } =
         rcgen::generate_simple_self_signed(vec![HOST.to_string()]).expect("self-signed");
-    let (addr, _sni) = spawn_tls(
-        &cert.pem(),
-        &signing_key.serialize_pem(),
+    let (addr, hellos) = spawn_tls(
+        DoublePeer {
+            refuse: Some("invalid peer certificate: UnknownIssuer".to_string()),
+            ..presenting(&cert.pem())
+        },
         r#"{"name":"planner"}"#.to_string(),
     );
 
     let policy = FetchPolicy::default();
-    let transport = ReqwestTransport::new(&policy);
-    let err = transport
+    let err = ReqwestTransport::new(&policy)
         .get(&url("https", addr.port(), "/card"), LOOPBACK)
-        .expect_err("an untrusted certificate must not produce a card");
+        .expect_err("a refused handshake must not produce a card");
     assert!(
         err.contains("invalid peer certificate") && err.contains("UnknownIssuer"),
-        "the refusal must be the certificate chain check, named: {err}"
+        "the refusal comes back named: {err}"
     );
+    let hellos = wait_for_hellos(&hellos, 1);
+    assert!(
+        matches!(hellos[0].extra_roots, None | Some(0)),
+        "no root was handed, so none joined the webpki roots: {:?}",
+        hellos[0].extra_roots
+    );
+    assert!(!hellos[0].ok);
 }
 
-/// And the verification is against the HOSTNAME, not the address.
-///
-/// Both halves run against the SAME trusted CA and the SAME loopback socket, so the only thing that
-/// differs is the name on the certificate. The certificates carry no address in their SANs at all,
-/// so the accepted one can only have been accepted by name.
+/// A root handed to the transport rides the hop: the hello joins exactly that one anchor to the
+/// webpki roots, under the HOSTNAME, and the card arrives. That the extra root is what admits a
+/// private chain, and that a certificate for another name is refused even with its CA trusted, is
+/// the connector's `the_private_ca_fixture_is_accepted_only_with_the_extra_root` and
+/// `a_wrong_name_refusal_names_the_hostname_and_the_certificates_name`.
 #[test]
-fn a_trusted_certificate_is_accepted_for_the_hostname_and_refused_for_another_name() {
-    let (ca_pem, leaf_pem, leaf_key) = ca_and_leaf(vec![HOST.to_string()]);
-    let (right, _sni) = spawn_tls(&leaf_pem, &leaf_key, r#"{"name":"planner"}"#.to_string());
+fn a_trusted_root_rides_the_hop_and_the_name_it_is_checked_against_is_the_hostname() {
+    let (ca_pem, leaf_pem, _leaf_key) = ca_and_leaf(vec![HOST.to_string()]);
+    let (right, hellos) = spawn_tls(presenting(&leaf_pem), r#"{"name":"planner"}"#.to_string());
 
     let policy = FetchPolicy::default();
     let resp = ReqwestTransport::new(&policy)
@@ -400,34 +433,30 @@ fn a_trusted_certificate_is_accepted_for_the_hostname_and_refused_for_another_na
     assert!(String::from_utf8(resp.body)
         .expect("utf-8")
         .contains("planner"));
-
-    // Same CA, same trust, same socket — a certificate for somebody else's name.
-    let (other_ca, other_leaf, other_key) = ca_and_leaf(vec!["attacker.test".to_string()]);
-    let (wrong, _sni2) = spawn_tls(&other_leaf, &other_key, r#"{"name":"planner"}"#.to_string());
-    let err = ReqwestTransport::new(&policy)
-        .trusting_root(other_ca.as_bytes())
-        .get(&url("https", wrong.port(), "/card"), LOOPBACK)
-        .expect_err("a certificate for a different name must be refused");
-    assert!(
-        err.contains("invalid peer certificate")
-            && err.contains(&format!("certificate not valid for name \"{HOST}\""))
-            && err.contains("attacker.test"),
-        "the CA is trusted and the socket is the same; the only thing left to refuse on is the \
-         NAME, and the refusal must say so: {err}"
+    let hellos = wait_for_hellos(&hellos, 1);
+    assert_eq!(hellos[0].server_name.as_deref(), Some(HOST));
+    assert_eq!(
+        hellos[0].extra_roots,
+        Some(1),
+        "exactly the one root this transport was told to trust joined the webpki roots"
+    );
+    assert_eq!(
+        hellos[0].client_leaf, None,
+        "no identity was named, none rides"
     );
 }
 
-/// The server thread records SNI after its own handshake attempt returns; poll briefly rather than
-/// sleeping a fixed amount, so the test is neither flaky nor slow.
-fn wait_for_sni(sni: &ObservedSni) -> Vec<Option<String>> {
+/// The far end records after its own handshake returns; poll briefly rather than sleeping a fixed
+/// amount, so the test is neither flaky nor slow. Waits for `n` hellos.
+pub(crate) fn wait_for_hellos(hellos: &ObservedHellos, n: usize) -> Vec<PeerHello> {
     for _ in 0..200 {
-        let seen = sni.lock().expect("sni").clone();
-        if !seen.is_empty() {
+        let seen = hellos.lock().expect("hellos").clone();
+        if seen.len() >= n {
             return seen;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    Vec::new()
+    hellos.lock().expect("hellos").clone()
 }
 
 // ══ THE REST OF THE TRANSPORT CONTRACT ═══════════════════════════════════════════════════════════

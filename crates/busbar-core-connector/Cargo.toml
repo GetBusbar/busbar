@@ -26,13 +26,6 @@ license = "Apache-2.0"
 name = "busbar_core_connector"
 path = "src/lib.rs"
 
-[features]
-# THE TLS TEST KIT (`test_support`): the TLS far ends and the recording TLS fixture server the
-# composition root's tests take instead of naming a TLS library themselves.
-# Enabled from dev-dependencies only; never by a shipped build. Adds no dependency; it forwards the
-# kernel's own test seam (`secure::install_test_tls`), which `tls::engine::install` uses.
-test-support = ["busbar-kernel/test-support"]
-
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
 # One-way: this crate reads `busbar-kernel`'s `TlsCfg` config shape and its `SecretResolver` seam

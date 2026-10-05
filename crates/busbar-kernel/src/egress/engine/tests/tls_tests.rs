@@ -9,7 +9,7 @@
 //! wiped on the last handle's drop. The same postures over the REAL wrap — the R4 parity corpus of
 //! the identity PEM walk against `reqwest::Identity::from_pem`, the mutual handshake recording the
 //! engine identity's leaf, the private CA accepted only with its extra root, the garbage root
-//! failing the build — are the composition root's `tests/engine_tls.rs`.
+//! failing the build — are the connector's `tls/engine_tests.rs`.
 
 use std::sync::Arc;
 

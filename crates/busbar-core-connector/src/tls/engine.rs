@@ -26,10 +26,9 @@ use tokio::net::TcpStream;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// TEST SEAM: install this module as the TLS wrap every client of THIS test binary's kernel is
-/// built over, where no composition root installs the egress-trust capability (a dependent crate's
-/// own test binary, and this crate's own suite). Idempotent.
-#[cfg(any(test, feature = "test-support"))]
+/// TEST SEAM: install this module as the TLS wrap every client of THIS crate's test binary's kernel
+/// is built over, where no composition root installs the egress-trust capability. Idempotent.
+#[cfg(test)]
 pub fn install() {
     busbar_kernel::secure::install_test_tls(Arc::new(Layer));
 }

@@ -9,8 +9,8 @@
 //! cryptography): every accepted connection goes through the wrap, a connection the wrap refuses is
 //! dropped alone and the listener keeps serving. The same loop over the connector's REAL wrap — the
 //! trusted client's 200, the mutual handshake accepting a client certificate chaining to
-//! `client_ca` and refusing none or a foreign one, the `http/1.1`-only ALPN — is the composition
-//! root's `tests/engine_tls.rs`.
+//! `client_ca` and refusing none or a foreign one, the `http/1.1`-only ALPN — is the connector's
+//! `tls/engine_tests.rs`.
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};

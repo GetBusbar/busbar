@@ -141,11 +141,9 @@ tracing-subscriber = { workspace = true }
 # tests decode responses), unioned with the `http2` prod feature by the resolver.
 reqwest = { workspace = true, features = ["json"] }
 rcgen = { workspace = true, features = ["pem"] }
-# THE CONNECTOR'S TLS TEST KIT: the TLS far ends (plain and mutual) the transport batteries dial,
-# and the PEM walk `trusting_root` registers its extra roots with — TLS stays in the connector, so
-# this crate names no TLS library, not even in a test. Its `engine::install` puts the connector's
-# TLS wrap under the engine the hops ride, as the composition root does at boot.
-busbar-core-connector = { path = "../busbar-core-connector", features = ["test-support"] }
+# No TLS library and no connector, not even in a test: TLS lives only in the connector. The
+# transport batteries ride the kernel's TLS test double (`test-support`); the real handshakes they
+# stand on are the connector's own suite.
 # THE ADMIN JSON-REST SERVICE, dev-only — a dev-dep BACK-EDGE, not linked into any shipped target
 # (the same shape as busbar-mcp's `busbar-llm` back-edge). `/api/v1/admin/*` is served by
 # busbar-admin, which busbar-core nests through the runtime fn-pointer seam `busbar_core::admin::seam`;
