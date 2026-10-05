@@ -1435,12 +1435,14 @@ security:
 
 ## Minimal working example
 
-The smallest config that parses and resolves. `providers` and `models` are the only required top-level sections.
+The smallest config that parses and resolves. `providers`, `models` and `store` are the only required top-level sections.
 
 **`config.yaml`:**
 
 <!-- doc-check: config -->
 ```yaml
+store: { module: memory }
+
 providers:
   anthropic:
     api_key: { env: ANTHROPIC_KEY }
