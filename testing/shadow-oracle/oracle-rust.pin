@@ -252,8 +252,12 @@
 # acceptance gains ORDER specs (a named header's exact position in a header_order list), which register
 # entry S-16b uses for the relayed upstream server/date.
 #
+# 2026-10-05: moved f288a2c13d94 -> edd17921e320, the merge of busbar-release #163 into dev: the corpus
+# generator gains ops.scrape|reload|sink-removed (cells.json 2509 -> 2510 in the same busbar commit range; its
+# golden recorded from the published 1.5.5 by golden-add).
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=f288a2c13d94d47e6fa1b72c7a0bf3aa9d5f0810
+release_ref=edd17921e320776532548e7e2103631399985079
 crate=busbar-release-oracle
 bin=busbar-oracle
