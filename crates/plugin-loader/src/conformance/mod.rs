@@ -820,22 +820,37 @@ pub fn on_ticket<K: Kind, I: InFrame, O: OutFrame>(
     class: DeadlineClass,
     deadline_ns: u64,
 ) -> Called {
+    on_ticket_frame(p, d, s, f, class, deadline_ns).0
+}
+
+/// [`on_ticket`], and the frame back as the op left it (`None` when the op was faulted mid-crossing
+/// or the ticket could not be minted): an op whose answer is in its `out` (a `resolve`'s material).
+pub fn on_ticket_frame<K: Kind, I: InFrame, O: OutFrame>(
+    p: &Plugin<K>,
+    d: &Dispatcher,
+    s: u32,
+    f: Frame<I, O>,
+    class: DeadlineClass,
+    deadline_ns: u64,
+) -> (Called, Option<Box<Frame<I, O>>>) {
     let Some(ticket) = d.mint(0) else {
-        return Called {
+        let refused = Called {
             outcome: Outcome::Refused,
             error: None,
             lease: 0,
             recall: None,
         };
+        return (refused, None);
     };
     let done = d.submit(p, ticket, s, f, class, deadline_ns).wait_done();
     d.recycle(ticket);
-    Called {
+    let called = Called {
         outcome: done.outcome,
         error: done.error,
         lease: done.lease,
         recall: None,
-    }
+    };
+    (called, done.frame)
 }
 
 /// How long the suite waits for one resumed `open`: the store bridge's call deadline.
