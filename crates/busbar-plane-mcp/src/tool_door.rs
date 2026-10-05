@@ -2197,6 +2197,11 @@ slot!(
                 .flatten()
             })
         });
+        // The registration the refused call resolved to (its server), where the catalogue holds it.
+        let called_server = instance.get().and_then(|plane| {
+            let held = plane.current()?;
+            Some(held.catalogue.tool(called.as_deref()?)?.server.clone())
+        });
         // What the refused unit is to the tasks extension: a call that would have created a task
         // (its budget refusal is the served engine's task-path words), or a task's continuation
         // (its task fails).
@@ -2213,6 +2218,7 @@ slot!(
             door_tasks::continuation_refused(plane, given.unit, reference, message);
         }
         let mut audit: Option<crate::call::AuditRow> = None;
+        let mut retry_after: Option<u32> = None;
         let (status, body, allow) = if given.cause == REFUSAL_ARRIVE {
             match words_of(text) {
                 Some(Words::Rpc(refusal)) => (refusal.status, refusal.body(), false),
@@ -2253,7 +2259,30 @@ slot!(
                     .as_deref()
                     .map(|name| crate::call::AuditRow::tool(name, false));
             }
-            if let (true, Some(name)) = (ungranted, called.as_deref()) {
+            let breaker_open =
+                given.reason == busbar_contract::abi::plane::RefusalCode::BreakerOpen.code();
+            if let (true, Some(server)) = (breaker_open, called_server.as_deref()) {
+                // A TRIPPED SERVER (the walk found no member its breaker admits): the served
+                // engine's `503`, `-32030`, its sentence and data, and the wait the kernel's cell
+                // knows as `Retry-After`.
+                retry_after = Some(given.retry_after_s);
+                let refusal = crate::tool_arrival::Refusal {
+                    status: STATUS_UNAVAILABLE_UPSTREAM,
+                    id: unit_id.clone(),
+                    code: crate::codec::CODE_UPSTREAM_UNAVAILABLE,
+                    message: format!(
+                        "MCP server `{server}` is unavailable: its circuit breaker is open after \
+                         repeated failures; busbar did not dispatch this call. Retry after {}s.",
+                        given.retry_after_s
+                    ),
+                    data: Some(serde_json::json!({
+                        "reason": "upstream_unavailable",
+                        "server": server,
+                        "retry_after_ms": u64::from(given.retry_after_s).saturating_mul(1000),
+                    })),
+                };
+                (refusal.status, refusal.body(), false)
+            } else if let (true, Some(name)) = (ungranted, called.as_deref()) {
                 let refusal = crate::call::not_granted(
                     unit_id.as_ref().unwrap_or(&Value::Null),
                     name,
@@ -2305,6 +2334,12 @@ slot!(
             name: arena.span(CONTENT_TYPE.as_bytes()),
             value: arena.span(JSON.as_bytes()),
         });
+        if let Some(secs) = retry_after {
+            field_buf.push(OutField {
+                name: arena.span(b"retry-after"),
+                value: arena.span(secs.to_string().as_bytes()),
+            });
+        }
         let mut records = input.records_buf();
         if let Some(row) = &audit {
             records.push(RecordWrite {
@@ -2338,6 +2373,9 @@ slot!(
         Outcome::Ready
     }
 );
+
+/// The status of a call no member of its server's pool could be sent to (its breaker is open).
+const STATUS_UNAVAILABLE_UPSTREAM: u32 = 503;
 
 /// The server name a trust verb's target names (`/tools/{name}/<verb>`), its query cut.
 fn verb_subject(target: &[u8]) -> Option<String> {

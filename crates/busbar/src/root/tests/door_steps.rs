@@ -3510,7 +3510,10 @@ mod upstream_ask_relay {
         // nobody asked for, refused before anything is sent.
         let (status, body) = call(&rig, &retry("forged")).await;
         assert_eq!(status, 403, "a forged state is refused: {body}");
-        assert_eq!(body["error"]["data"]["reason"], "ask_unsolicited_state", "{body}");
+        assert_eq!(
+            body["error"]["data"]["reason"], "ask_unsolicited_state",
+            "{body}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
