@@ -1118,7 +1118,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=9050227f89e15c12633a9fe27a5f5ea4ab9502f0#9050227f89e15c12633a9fe27a5f5ea4ab9502f0"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=acf30119313d5778345c1b8dcb67d4dec7256b03#acf30119313d5778345c1b8dcb67d4dec7256b03"
 dependencies = [
  "busbar-contract",
  "futures",
