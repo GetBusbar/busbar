@@ -34,6 +34,8 @@ pub struct Knobs {
     pub head: bool,
     /// Every frame the framing yields is a text message (`PIECE_TEXT`), as ws states one.
     pub text: bool,
+    /// `locate` answers this protocol offer (ProtocolNameList bytes).
+    pub offer: Option<&'static [u8]>,
 }
 
 #[derive(Default)]
@@ -56,6 +58,8 @@ pub struct TestDoor {
     pub crossings: Mutex<Vec<&'static str>>,
     /// Every thread a crossing ran on.
     pub threads: Mutex<HashSet<ThreadId>>,
+    /// The neutral status every `refuse` crossing carried, in order.
+    pub refused_statuses: Mutex<Vec<u32>>,
 }
 
 impl TestDoor {
@@ -77,6 +81,7 @@ impl TestDoor {
             next: AtomicU64::new(1),
             crossings: Mutex::new(Vec::new()),
             threads: Mutex::new(HashSet::new()),
+            refused_statuses: Mutex::new(Vec::new()),
         }
     }
 
@@ -199,6 +204,17 @@ impl FramerDoor for TestDoor {
                     }
                     o.name_written = name.len() as u64;
                 }
+                if let Some(offer) = self.knobs.offer {
+                    // SAFETY: host buffer of `alpn_cap` bytes; the test's offers fit.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            offer.as_ptr(),
+                            i.alpn_buf,
+                            offer.len().min(i.alpn_cap),
+                        );
+                    }
+                    o.alpn_written = offer.len() as u64;
+                }
                 ("locate", ok)
             }
             Call::Begin(i, o) => {
@@ -267,6 +283,7 @@ impl FramerDoor for TestDoor {
             Call::Refuse(i, o) => match framings.get_mut(&i.framing) {
                 None => ("refuse", failed("no such framing")),
                 Some(st) => {
+                    self.refused_statuses.lock().unwrap().push(i.status);
                     st.outbound.extend(raw(i.bytes, i.len));
                     answer(st, &i.sink, o, silence);
                     ("refuse", ok)
