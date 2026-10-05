@@ -267,12 +267,18 @@ struct Script {
     pieces: Vec<(PieceKind, Option<u32>, Vec<u8>)>,
 }
 
+/// One need the fetch declared: owner, need, spec, configured target.
+type Declared = (InstanceId, NeedId, ReadNeed, Option<String>);
+
+/// One open the fetch made: owner, need, target, method, head target.
+type Opened = (InstanceId, NeedId, String, Vec<u8>, Vec<u8>);
+
 /// A connection table that records what the fetch asked of it and answers from a [`Script`].
 #[derive(Default)]
 struct Recorder {
     script: Mutex<Option<Script>>,
-    declared: Mutex<Vec<(InstanceId, NeedId, ReadNeed, Option<String>)>>,
-    opened: Mutex<Vec<(InstanceId, NeedId, String, Vec<u8>, Vec<u8>)>>,
+    declared: Mutex<Vec<Declared>>,
+    opened: Mutex<Vec<Opened>>,
     closed: Mutex<Vec<ConnId>>,
     refuse_declare: bool,
 }
