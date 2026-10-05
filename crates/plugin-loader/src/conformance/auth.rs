@@ -90,7 +90,7 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement, MARK_WORD_CARRIER};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::services::{
-    Caller, HostServices, Later, Ran, Reading, RecordsList, Stored, UNSERVED,
+    Caller, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored, UNSERVED,
 };
 
 mod outbound;
@@ -580,6 +580,21 @@ impl HostServices for CredentialHost {
     }
     fn random_fill(&self, _: u64) -> Stored {
         Stored::refused(UNSERVED)
+    }
+    fn unit_nest(&self, _: &Caller, _: Option<u64>, _: NestAsk, _: Later) -> Ran {
+        unserved()
+    }
+    fn work_open(&self, _: &Caller, _: Option<u64>, _: &str, _: &[u8], _: Later) -> Ran {
+        unserved()
+    }
+    fn work_find(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
+        unserved()
+    }
+    fn work_settle(&self, _: &Caller, _: u64, _: &[u8], _: Later) -> Ran {
+        unserved()
+    }
+    fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
+        unserved()
     }
     fn records_secret(&self, kind: &str, id: &str, _: Later) -> Ran {
         self.reads.fetch_add(1, Ordering::SeqCst);
