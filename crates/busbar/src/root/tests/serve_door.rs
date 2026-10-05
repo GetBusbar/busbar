@@ -555,7 +555,7 @@ fn session_door(
     instance: &'static str,
     dispatcher: &Arc<Dispatcher>,
     conns: Arc<dyn DeclaredConns>,
-) -> Option<Plane> {
+) -> Option<crate::root::loader::dispatch::Plugin<Plane>> {
     crate::LINKED.plane_doors.iter().find_map(|door| {
         let row = LinkedRow::of(*door).expect("the door states its Statement");
         let plane = load_linked::<Plane>(
