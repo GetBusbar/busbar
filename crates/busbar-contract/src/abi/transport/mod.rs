@@ -549,11 +549,6 @@ pub struct TransportTail {
     pub fault_rows_len: usize,
 }
 
-/// The transport tail's size before the fault table was appended: the frozen size a host still
-/// reads (THE KIND TAIL GROWTH RULE, [`crate::abi::mechanism::door::tail_read_len`]). A tail of
-/// this size reads its fault table as absent.
-pub const TRANSPORT_TAIL_FROZEN: usize = core::mem::offset_of!(TransportTail, fault_rows);
-
 // ── shared shapes ────────────────────────────────────────────────────────────────────────────────
 
 /// A carrier's destination, borrowed for the call.

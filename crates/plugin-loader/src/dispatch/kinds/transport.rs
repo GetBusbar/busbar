@@ -42,7 +42,7 @@ use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 /// The transport tail's last frozen size, before the fault table was appended (THE KIND TAIL
 /// GROWTH RULE, `abi::mechanism::door::tail_read_len`): a tail that predates the fault table loads
 /// and reads it as absent, and is then judged by [`check_fault_cover`] like any other.
-const TRANSPORT_TAIL_FROZEN: usize = transport::TRANSPORT_TAIL_FROZEN;
+const TRANSPORT_TAIL_FROZEN: usize = std::mem::offset_of!(TransportTail, fault_rows);
 
 /// WHAT A TRANSPORT STATES, read once at bind and checked by the kind's own `check_tail`,
 /// `check_claims`, `check_claim_rows` and `check_composes_over`: its role, every scheme it answers

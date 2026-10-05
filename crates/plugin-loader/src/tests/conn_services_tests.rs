@@ -954,6 +954,7 @@ fn piece(
         status_code: code,
         status_namespace: None,
         retry_after_secs: None,
+        fault: None,
         reason,
     }
 }

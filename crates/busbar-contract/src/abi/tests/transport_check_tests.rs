@@ -806,3 +806,91 @@ fn a_route_content_is_checked() {
         f(Rule::Contradiction, "route.field.value")
     );
 }
+
+fn fault_row(claim: u32, lo: u32, hi: u32, fault: u32) -> FaultRow {
+    FaultRow {
+        claim,
+        lo,
+        hi,
+        fault,
+    }
+}
+
+#[test]
+fn every_fault_row_is_checked() {
+    let hard = u32::from(FAULT_HARD);
+    assert_eq!(check_fault_rows(&[fault_row(0, 1, 9, hard)], 1), Ok(()));
+    assert_eq!(
+        check_fault_rows(&[fault_row(1, 1, 9, hard)], 1),
+        f(Rule::IndexOutOfRange, "fault_row.claim")
+    );
+    assert_eq!(
+        check_fault_rows(&[fault_row(0, 9, 1, hard)], 1),
+        f(Rule::Contradiction, "fault_row.lo_hi")
+    );
+    // A row that reads nothing is no row: a code off the table already reads none.
+    assert_eq!(
+        check_fault_rows(&[fault_row(0, 1, 9, u32::from(FAULT_NONE))], 1),
+        f(Rule::UnknownCode, "fault_row.fault")
+    );
+    assert_eq!(
+        check_fault_rows(&[fault_row(0, 1, 9, hard + 1)], 1),
+        f(Rule::UnknownCode, "fault_row.fault")
+    );
+}
+
+/// THE RED ARM AT LOAD: a claim that states status rows states fault rows too. A framer with status
+/// rows and no fault table would have every failure read as the caller's, and its destinations would
+/// never trip.
+#[test]
+fn a_claim_with_status_rows_and_no_fault_rows_is_refused() {
+    let status = [row(0, 200, 299, 1), row(1, 200, 299, 1)];
+    let caller = u32::from(FAULT_CALLER);
+    assert_eq!(
+        check_fault_cover(&status, &[]),
+        f(Rule::Missing, "tail.fault_rows")
+    );
+    assert_eq!(
+        check_fault_cover(&status, &[fault_row(0, 400, 499, caller)]),
+        f(Rule::Missing, "tail.fault_rows"),
+        "the second claim has none"
+    );
+    assert_eq!(
+        check_fault_cover(
+            &status,
+            &[
+                fault_row(0, 400, 499, caller),
+                fault_row(1, 400, 499, caller)
+            ]
+        ),
+        Ok(())
+    );
+    // A tail that classes nothing owes nothing.
+    assert_eq!(check_fault_cover(&[], &[]), Ok(()));
+}
+
+#[test]
+fn a_pieces_fault_reading_is_known_and_reads_its_code() {
+    let yielded = |frame_len: u64, pieces_len: u32| {
+        let mut o: FramerOut = z();
+        o.yielded.frame_len = frame_len;
+        o.yielded.pieces_len = pieces_len;
+        o
+    };
+    let mut p = piece(0, 1);
+    p.flags = PIECE_END_OF_FRAME | PIECE_HAS_CODE;
+    p.fault = FAULT_TRANSIENT;
+    assert_eq!(check_framer(Ready, &yielded(1, 1), &[p], 8, 8, 8), Ok(()));
+    p.fault = FAULT_HARD + 1;
+    assert_eq!(
+        check_framer(Ready, &yielded(1, 1), &[p], 8, 8, 8),
+        f(Rule::UnknownCode, "framer.piece.fault")
+    );
+    // A reading with no code to read is a contradiction.
+    p.fault = FAULT_CALLER;
+    p.flags = PIECE_END_OF_FRAME;
+    assert_eq!(
+        check_framer(Ready, &yielded(1, 1), &[p], 8, 8, 8),
+        f(Rule::Contradiction, "framer.piece.fault_without_code")
+    );
+}

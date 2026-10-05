@@ -456,6 +456,10 @@ extern "C" {
 #define BB_TRANSPORT_STATUS_CALLER_FAULT UINT8_C(2) /* Status class: the caller's fault. */
 #define BB_TRANSPORT_STATUS_FAR_END_FAULT UINT8_C(3) /* Status class: the far end's fault. */
 #define BB_TRANSPORT_STATUS_OTHER UINT8_C(4) /* Status class: other. */
+#define BB_TRANSPORT_FAULT_NONE UINT8_C(0) /* Fault reading: none stated. The breaker reads an answer with no fault reading as the caller's */
+#define BB_TRANSPORT_FAULT_CALLER UINT8_C(1) /* Fault reading: the caller's own fault. The destination is healthy and nothing is recorded. */
+#define BB_TRANSPORT_FAULT_TRANSIENT UINT8_C(2) /* Fault reading: a transient fault of the destination. Its cell counts it toward a trip, and the */
+#define BB_TRANSPORT_FAULT_HARD UINT8_C(3) /* Fault reading: the destination itself is down for every caller (its credential or its account */
 #define BB_TRANSPORT_STATUS_AT_NONE UINT8_C(0) /* [`Claim::status_at`]: no status. */
 #define BB_TRANSPORT_STATUS_AT_FIRST_FRAME UINT8_C(1) /* [`Claim::status_at`]: the first frame carries the status. */
 #define BB_TRANSPORT_STATUS_AT_TERMINAL UINT8_C(2) /* [`Claim::status_at`]: the terminal frame carries the status. */
@@ -876,6 +880,7 @@ typedef struct bb_plane_ProjectOut bb_plane_ProjectOut;
 typedef struct bb_transport_Ops bb_transport_Ops;
 typedef struct bb_transport_Claim bb_transport_Claim;
 typedef struct bb_transport_StatusRow bb_transport_StatusRow;
+typedef struct bb_transport_FaultRow bb_transport_FaultRow;
 typedef struct bb_transport_SettingDecl bb_transport_SettingDecl;
 typedef struct bb_transport_TransportTail bb_transport_TransportTail;
 typedef struct bb_transport_Destination bb_transport_Destination;
@@ -2772,6 +2777,14 @@ struct bb_transport_StatusRow {
     uint32_t class_;
 };
 
+/* One fault-table row: a code range of a claim's numbering and the fault reading it means to the */
+struct bb_transport_FaultRow {
+    uint32_t claim;
+    uint32_t lo;
+    uint32_t hi;
+    uint32_t fault;
+};
+
 /* One customer setting the transport reads, at its 1.5.5 path (the connector deals the value to */
 struct bb_transport_SettingDecl {
     bb_mech_AbiStr path;
@@ -2801,6 +2814,8 @@ struct bb_transport_TransportTail {
     size_t status_rows_len;
     const bb_transport_SettingDecl *settings;
     size_t settings_len;
+    const bb_transport_FaultRow *fault_rows;
+    size_t fault_rows_len;
 };
 
 /* A carrier's destination, borrowed for the call. */
@@ -2834,7 +2849,7 @@ struct bb_transport_FramePiece {
     uint64_t len;
     uint32_t code;
     uint8_t status_class;
-    uint8_t _reserved;
+    uint8_t fault;
     uint16_t flags;
     uint64_t retry_after_secs;
 };
@@ -3510,7 +3525,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn records_secret;
 };
 
-/* ---- layout proof: 260 of 263 structures are pinned by the golden ---- */
+/* ---- layout proof: 261 of 264 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -4943,13 +4958,19 @@ BB_ASSERT(offsetof(bb_transport_StatusRow, claim) == 0, "bb_transport_StatusRow.
 BB_ASSERT(offsetof(bb_transport_StatusRow, lo) == 4, "bb_transport_StatusRow.lo: offset");
 BB_ASSERT(offsetof(bb_transport_StatusRow, hi) == 8, "bb_transport_StatusRow.hi: offset");
 BB_ASSERT(offsetof(bb_transport_StatusRow, class_) == 12, "bb_transport_StatusRow.class_: offset");
+BB_ASSERT(sizeof(bb_transport_FaultRow) == 16, "bb_transport_FaultRow: size");
+BB_ASSERT(BB_ALIGNOF(bb_transport_FaultRow) == 4, "bb_transport_FaultRow: alignment");
+BB_ASSERT(offsetof(bb_transport_FaultRow, claim) == 0, "bb_transport_FaultRow.claim: offset");
+BB_ASSERT(offsetof(bb_transport_FaultRow, lo) == 4, "bb_transport_FaultRow.lo: offset");
+BB_ASSERT(offsetof(bb_transport_FaultRow, hi) == 8, "bb_transport_FaultRow.hi: offset");
+BB_ASSERT(offsetof(bb_transport_FaultRow, fault) == 12, "bb_transport_FaultRow.fault: offset");
 BB_ASSERT(sizeof(bb_transport_SettingDecl) == 40, "bb_transport_SettingDecl: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_SettingDecl) == 8, "bb_transport_SettingDecl: alignment");
 BB_ASSERT(offsetof(bb_transport_SettingDecl, path) == 0, "bb_transport_SettingDecl.path: offset");
 BB_ASSERT(offsetof(bb_transport_SettingDecl, kind) == 16, "bb_transport_SettingDecl.kind: offset");
 BB_ASSERT(offsetof(bb_transport_SettingDecl, _reserved) == 20, "bb_transport_SettingDecl._reserved: offset");
 BB_ASSERT(offsetof(bb_transport_SettingDecl, default_) == 24, "bb_transport_SettingDecl.default_: offset");
-BB_ASSERT(sizeof(bb_transport_TransportTail) == 168, "bb_transport_TransportTail: size");
+BB_ASSERT(sizeof(bb_transport_TransportTail) == 184, "bb_transport_TransportTail: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_TransportTail) == 8, "bb_transport_TransportTail: alignment");
 BB_ASSERT(offsetof(bb_transport_TransportTail, head) == 0, "bb_transport_TransportTail.head: offset");
 BB_ASSERT(offsetof(bb_transport_TransportTail, role) == 8, "bb_transport_TransportTail.role: offset");
@@ -4970,6 +4991,8 @@ BB_ASSERT(offsetof(bb_transport_TransportTail, status_rows) == 136, "bb_transpor
 BB_ASSERT(offsetof(bb_transport_TransportTail, status_rows_len) == 144, "bb_transport_TransportTail.status_rows_len: offset");
 BB_ASSERT(offsetof(bb_transport_TransportTail, settings) == 152, "bb_transport_TransportTail.settings: offset");
 BB_ASSERT(offsetof(bb_transport_TransportTail, settings_len) == 160, "bb_transport_TransportTail.settings_len: offset");
+BB_ASSERT(offsetof(bb_transport_TransportTail, fault_rows) == 168, "bb_transport_TransportTail.fault_rows: offset");
+BB_ASSERT(offsetof(bb_transport_TransportTail, fault_rows_len) == 176, "bb_transport_TransportTail.fault_rows_len: offset");
 BB_ASSERT(sizeof(bb_transport_Destination) == 72, "bb_transport_Destination: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_Destination) == 8, "bb_transport_Destination: alignment");
 BB_ASSERT(offsetof(bb_transport_Destination, kind) == 0, "bb_transport_Destination.kind: offset");
@@ -4997,7 +5020,7 @@ BB_ASSERT(offsetof(bb_transport_FramePiece, offset) == 8, "bb_transport_FramePie
 BB_ASSERT(offsetof(bb_transport_FramePiece, len) == 16, "bb_transport_FramePiece.len: offset");
 BB_ASSERT(offsetof(bb_transport_FramePiece, code) == 24, "bb_transport_FramePiece.code: offset");
 BB_ASSERT(offsetof(bb_transport_FramePiece, status_class) == 28, "bb_transport_FramePiece.status_class: offset");
-BB_ASSERT(offsetof(bb_transport_FramePiece, _reserved) == 29, "bb_transport_FramePiece._reserved: offset");
+BB_ASSERT(offsetof(bb_transport_FramePiece, fault) == 29, "bb_transport_FramePiece.fault: offset");
 BB_ASSERT(offsetof(bb_transport_FramePiece, flags) == 30, "bb_transport_FramePiece.flags: offset");
 BB_ASSERT(offsetof(bb_transport_FramePiece, retry_after_secs) == 32, "bb_transport_FramePiece.retry_after_secs: offset");
 BB_ASSERT(sizeof(bb_transport_FrameSpan) == 16, "bb_transport_FrameSpan: size");

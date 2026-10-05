@@ -502,3 +502,101 @@ fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
     };
     assert!(Transport::context(&one_name).is_err(), "two rows, one name");
 }
+
+/// THE FAULT TABLE AT BIND (busbar ARCHITECT breaker ruling Q1). A claim that classes its answers
+/// states what they mean to the breaker too: a tail with status rows and no fault table is refused,
+/// whether it was built before the table was appended (its size stops short of it, so the host
+/// reads it absent) or after (it states none). A claim with a fault table binds; a tail with no
+/// status rows owes none, so a carrier built before the append still binds.
+#[test]
+fn a_classed_claim_without_a_fault_table_is_refused_at_bind() {
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::abi::transport::{
+        Claim, FaultRow, StatusRow, TransportTail, FAULT_HARD, ROLE_CARRIER, ROLE_FRAMER,
+        STATUS_CALLER_FAULT,
+    };
+
+    let claims: [Claim; 1] = [Claim {
+        selector_forms: abi_str(""),
+        egress_selector_forms: abi_str(""),
+        facts: std::ptr::null(),
+        facts_len: 0,
+        status_namespace: abi_str("numbering"),
+        session: 0,
+        session_bound: 0,
+        unit0_trigger: 0,
+        status_at: 0,
+        _reserved: 0,
+    }];
+    let status = [StatusRow {
+        claim: 0,
+        lo: 1,
+        hi: 9,
+        class: u32::from(STATUS_CALLER_FAULT),
+    }];
+    let faults = [FaultRow {
+        claim: 0,
+        lo: 1,
+        hi: 9,
+        fault: u32::from(FAULT_HARD),
+    }];
+    let names = [abi_str("one")];
+    let bind = |tail: &TransportTail| {
+        let st = Statement {
+            kind_tail: std::ptr::from_ref(tail).cast::<KindTailHead>(),
+            claims: names.as_ptr(),
+            claims_len: names.len(),
+            ..statement("t", "0", 1)
+        };
+        Transport::context(&st).map(|_| ())
+    };
+    let mut tail: TransportTail = z();
+    tail.head = KindTailHead {
+        size: size_of::<TransportTail>() as u32,
+        _reserved: 0,
+    };
+    tail.role = ROLE_FRAMER;
+    tail.claim_rows = claims.as_ptr();
+    tail.claim_rows_len = 1;
+    tail.status_rows = status.as_ptr();
+    tail.status_rows_len = 1;
+
+    // RED: status rows, no fault table.
+    let refused = bind(&tail).expect_err("a classed claim with no fault table is refused");
+    assert!(refused.contains("fault_rows"), "{refused}");
+
+    // GREEN: the same claim with its fault table.
+    tail.fault_rows = faults.as_ptr();
+    tail.fault_rows_len = 1;
+    assert!(
+        bind(&tail).is_ok(),
+        "a classed claim with a fault table binds"
+    );
+
+    // A tail built before the append: the host reads its fault table as absent, so the same
+    // status rows refuse it...
+    tail.head.size = std::mem::offset_of!(TransportTail, fault_rows) as u32;
+    assert!(
+        bind(&tail).is_err(),
+        "a pre-append framer that classes is refused"
+    );
+    // ...and a pre-append carrier that classes nothing still binds.
+    tail.role = ROLE_CARRIER;
+    tail.status_rows = std::ptr::null();
+    tail.status_rows_len = 0;
+    assert!(
+        bind(&tail).is_ok(),
+        "a pre-append tail that owes no fault table binds"
+    );
+
+    // A fault row that reads nothing is no row: refused.
+    tail.head.size = size_of::<TransportTail>() as u32;
+    let none = [FaultRow {
+        fault: 0,
+        ..faults[0]
+    }];
+    tail.fault_rows = none.as_ptr();
+    tail.fault_rows_len = 1;
+    assert!(bind(&tail).is_err(), "a FAULT_NONE row is refused");
+}

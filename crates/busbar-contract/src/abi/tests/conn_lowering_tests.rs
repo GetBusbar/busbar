@@ -77,6 +77,7 @@ impl Conns for Echo {
             status_code: Some(200),
             status_namespace: Some("numbering".into()),
             retry_after_secs: None,
+            fault: None,
             reason,
         })
     }
