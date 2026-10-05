@@ -117,6 +117,10 @@ impl busbar_contract::export_calls::ExportAxis for StandIn {
     fn first_party(&self, module: &str) -> bool {
         rows().is_some_and(|r| r.first_party(module))
     }
+
+    fn one_instance(&self, module: &str) -> bool {
+        rows().is_some_and(|r| r.one_instance(module))
+    }
 }
 
 /// The axis every test in this binary resolves `export:` against — installed once, as the

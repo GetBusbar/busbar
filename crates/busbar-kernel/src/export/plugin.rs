@@ -78,6 +78,26 @@ pub(crate) fn first_party(module: &str) -> bool {
     axis().is_some_and(|axis| axis.first_party(module))
 }
 
+/// Whether `module`'s row states the `one_instance` mark (at most one instance may be configured).
+pub(crate) fn one_instance(module: &str) -> bool {
+    axis().is_some_and(|axis| axis.one_instance(module))
+}
+
+/// `module`'s own check across `instances` at the LIMITS phase, its findings verbatim — asked while
+/// the configuration is resolved, for a `one_instance` module configured more than once: the
+/// plugin words its own refusal.
+pub(crate) fn check_one_instance(module: &str, instances: &[(String, Value)]) -> Vec<String> {
+    axis()
+        .and_then(|axis| {
+            axis.check(
+                module,
+                busbar_contract::abi::export::CHECK_PHASE_LIMITS,
+                instances,
+            )
+        })
+        .unwrap_or_default()
+}
+
 /// The sinks' own checks across every instance of each axis module `cfg` configures, in
 /// configuration order (export ABI minors 8, 9) — run while the configuration is validated, at
 /// `phase` (among its limits' checks, or after them); each line joins `errors` verbatim.

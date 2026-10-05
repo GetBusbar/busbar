@@ -72,4 +72,8 @@ impl ExportAxis for RootExports {
     fn first_party(&self, module: &str) -> bool {
         rows().is_some_and(|r| r.first_party(module))
     }
+
+    fn one_instance(&self, module: &str) -> bool {
+        rows().is_some_and(|r| r.one_instance(module))
+    }
 }

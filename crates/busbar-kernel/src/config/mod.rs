@@ -1839,9 +1839,11 @@ pub struct PrometheusSettings {
 ///   build serves (never a silently-ignored sink);
 /// - a bad/typo'd key inside `settings:` is a boot error (each settings struct is
 ///   `deny_unknown_fields`, so the opaque bag is only opaque to the OUTER layer);
-/// - a SECOND instance of the scrape sink's module is a boot error (see [`ExportCfg`] — it is
-///   process-singleton by construction and a second one could only lose silently), and so, in
-///   1.5.5's words, is a second `module: otlp` instance;
+/// - a SECOND instance of a module whose row states the `one_instance` mark is that module's own
+///   refusal: the kernel asks the module's `check` at the limits phase, here (so it reports among
+///   the configuration's errors, before any sink opens), and renders its findings verbatim — the
+///   plugin words it (1.5.5's text for the scrape and trace sinks); the extra instance is not
+///   resolved;
 /// - the instance's PROJECTION (`streams:` / `fields:` / `durable:`) is resolved + validated by
 ///   [`crate::export::projection::resolve_projection`], which is where the HARD RULE lives: a stream
 ///   with no producer in this release, a stream the module cannot carry, a `fields:` list that omits
@@ -1849,8 +1851,9 @@ pub struct PrometheusSettings {
 ///   and delivers nothing.
 pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg {
     let mut out = ExportCfg::default();
-    // The instance that already claimed `module: otlp`, for 1.5.5's "named twice" refusal.
-    let mut otlp_owner: Option<&str> = None;
+    // The `one_instance` modules already configured once, and those whose refusal is already in.
+    let mut seen_once: Vec<&str> = Vec::new();
+    let mut refused: Vec<&str> = Vec::new();
 
     for (name, def) in defs {
         let settings = serde_json::Value::Object(def.settings.clone());
@@ -1868,42 +1871,37 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
             def.durable,
             errors,
         );
-        // 1.5.5 refused a second `module: otlp` instance HERE, as a configuration error, in these
-        // frozen words: the module is a sink on the export axis now, and the refusal keeps its
-        // words and its place among the configuration's errors.
-        if module == EXPORT_MODULE_OTLP {
-            if let Some(owner) = otlp_owner {
-                errors.push(format!(
-                    "export.{name}: a second `module: otlp` instance (already defined as \
-                     '{owner}'). OTLP installs the ONE process-global tracer subscriber, so a \
-                     second instance could only be silently ignored — keep a single instance."
-                ));
+        // A `one_instance` module configured again: its own `check` (limits phase) words the
+        // refusal, once, over every instance of it; the extra instance is not resolved.
+        if crate::export::plugin::one_instance(module) {
+            if seen_once.contains(&module) {
+                if !refused.contains(&module) {
+                    refused.push(module);
+                    let instances: Vec<(String, serde_json::Value)> = defs
+                        .iter()
+                        .filter(|(_, d)| d.module.trim() == module)
+                        .map(|(n, d)| (n.clone(), serde_json::Value::Object(d.settings.clone())))
+                        .collect();
+                    errors.extend(crate::export::plugin::check_one_instance(
+                        module, &instances,
+                    ));
+                }
                 continue;
             }
-            otlp_owner = Some(name);
+            seen_once.push(module);
         }
         match module {
             // THE EXPORT AXIS: a module some compiled-in or dropped-in export plugin registered.
             // An instance subscribed to `metrics` whose sink carries it and is granted FIRST-PARTY
-            // is the SCRAPE SINK — once: a second instance of that module could only be silently
-            // ignored. A third party may subscribe to `metrics`; it never renders busbar's own
-            // `/metrics` (#65).
+            // is the SCRAPE SINK — the first such instance. A third party may subscribe to
+            // `metrics`; it never renders busbar's own `/metrics` (#65).
             other if axis.is_some() => {
                 let metrics = busbar_contract::abi::export::ExportStream::Metrics;
                 let carries = declared.is_some_and(|d| d.contains(&metrics));
                 let first_party = crate::export::plugin::first_party(other);
                 let scrape = carries && first_party && projection.wants_stream(metrics);
-                let taken = out.plugins.iter().find(|p| p.scrape && scrape);
-                if let Some(owner) = taken.filter(|p| p.def.module.trim() == other) {
-                    errors.push(format!(
-                        "export.{name}: a second `module: {other}` instance (already defined as \
-                         '{}'). Prometheus serves the ONE well-known /metrics route, so a \
-                         second instance could only be silently ignored — keep a single instance.",
-                        owner.name
-                    ));
-                    continue;
-                }
-                let scrape = scrape && taken.is_none();
+                // The first scrape-sink instance renders `/metrics`; no other takes it over.
+                let scrape = scrape && !out.plugins.iter().any(|p| p.scrape);
                 if scrape {
                     out.recorder = serde_json::from_value(settings).ok();
                 }

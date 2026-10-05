@@ -334,6 +334,15 @@ pub trait ExportAxis: Send + Sync {
 
     /// Whether `module` names a FIRST-PARTY row: linked, or dropped in signed by the release key.
     fn first_party(&self, module: &str) -> bool;
+
+    /// Whether `module`'s row states the `one_instance` mark
+    /// ([`crate::abi::mechanism::door::MARK_ONE_INSTANCE`]): at most one instance may be
+    /// configured. The kernel then asks the module's own `check` at the limits phase while the
+    /// configuration is resolved, and renders its findings verbatim. None by default.
+    fn one_instance(&self, module: &str) -> bool {
+        let _ = module;
+        false
+    }
 }
 
 #[cfg(test)]

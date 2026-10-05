@@ -167,6 +167,20 @@ impl<'r> ExportRows<'r> {
         }
     }
 
+    /// Whether `module`'s row states the `one_instance` mark (at most one instance may be
+    /// configured): read off its Statement at bind. A row that will not load here, or a cold row,
+    /// states none.
+    #[must_use]
+    pub fn one_instance(&self, module: &str) -> bool {
+        let Some(row) = self.row(module) else {
+            return false;
+        };
+        match self.load(row, &label(module), false) {
+            Ok(Door::Memory(p)) => p.context::<ExportFacts>().is_some_and(|f| f.one_instance),
+            _ => false,
+        }
+    }
+
     /// The sink's own checks across `instances` of `module` at `phase`; `None` when `module` is
     /// not an export row.
     #[must_use]
