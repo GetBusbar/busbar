@@ -427,6 +427,13 @@ pub const ROUTE_ONCE: u8 = 1;
 /// one unit with one line. Unset, the unit's route is one request's.
 pub const ROUTE_SESSION: u8 = 2;
 
+/// [`ArriveOut::route_flags`]: the caller asked for its answer STREAMED (ARCHITECT Q1 ArriveOut,
+/// 2026-10-05). The plane states it, because only the plane reads its dialect's body; the kernel
+/// applies what a stream means to the walk from it: the stream ceiling bounds the whole send rather
+/// than the pool's request timeout, and once a byte of the answer has reached the caller a cut is
+/// not a refund (Part 2 #62). Unset, the answer is the caller's whole or not at all.
+pub const ROUTE_STREAM: u8 = 4;
+
 /// [`OnPieceIn::from`]: the piece is the caller's.
 pub const FROM_CALLER: u32 = 0;
 /// [`OnPieceIn::from`]: the piece is the far end's.
@@ -1399,11 +1406,17 @@ pub struct ArriveOut {
     /// [`ROUTE_POOL`] on every
     /// other outcome.
     pub route: u8,
-    /// On READY: `ROUTE_*` flag bits ([`ROUTE_ONCE`], [`ROUTE_SESSION`]); `0` on every other
-    /// outcome. A tail addition, in what was padding.
+    /// On READY: `ROUTE_*` flag bits ([`ROUTE_ONCE`], [`ROUTE_SESSION`], [`ROUTE_STREAM`]); `0`
+    /// on every other outcome. A tail addition, in what was padding.
     pub route_flags: u8,
     /// Alignment padding.
     pub _route_reserved: [u8; 6],
+    /// On READY: the unit's STICKY-ROUTING KEY, opaque to the kernel (ARCHITECT Q1 ArriveOut,
+    /// 2026-10-05): the plane computes it from what only it reads (its dialect's body, its own
+    /// section's settings), and the walk prefers one stable member for every unit stating the same
+    /// key, with no plane or protocol knowledge. Absent (NULL, `0`) = no affinity, and absent on
+    /// every other outcome. Plane memory, valid until the instance's next call. A tail addition.
+    pub affinity: AbiStr,
 }
 
 /// `on_piece`'s `in`.

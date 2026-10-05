@@ -19,7 +19,8 @@ use axum::body::Body;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
 use busbar_contract::caps::ReasonCode;
-use busbar_core_connector::framed_stream::{FieldLines, FramedStream};
+use busbar_core_connector::compose::HeadWords;
+use busbar_core_connector::framed_stream::FramedStream;
 use busbar_core_connector::framer::FramerDoor;
 use busbar_kernel::plane_driver::{CallerEnd, HeadFields, Rendered, SessionCaller};
 use tokio::sync::oneshot;
@@ -48,7 +49,7 @@ fn lock(s: &Shared) -> MutexGuard<'_, Option<FramedStream>> {
 
 /// A closing field block as an answer's head: its `:status` line, where it has one, and its
 /// fields (every other line, in order; a line the wire cannot carry is not sent).
-pub(super) fn block_head(block: &FieldLines) -> (Option<StatusCode>, HeaderMap) {
+pub(super) fn block_head(block: &[HeadWords]) -> (Option<StatusCode>, HeaderMap) {
     let mut status = None;
     let mut headers = HeaderMap::new();
     for (name, value) in block {
@@ -82,7 +83,7 @@ pub(super) fn refused(stream: &Shared, rendered: Option<Rendered>) -> Response {
 }
 
 /// An answer that is its closing block alone, under the block's `:status` (else `status`).
-pub(super) fn whole(status: u32, block: &FieldLines) -> Response {
+pub(super) fn whole(status: u32, block: &[HeadWords]) -> Response {
     let (code, headers) = block_head(block);
     let mut response = stated((status, Vec::new()), Body::empty());
     if let Some(code) = code {

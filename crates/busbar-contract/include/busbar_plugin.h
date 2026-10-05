@@ -374,6 +374,7 @@ extern "C" {
 #define BB_PLANE_ROUTE_SCOPE_SEPARATOR ", " /* What joins the reachable entries a [`ROUTE_SCOPE`] refusal's [`RefusalIn::text`] names. */
 #define BB_PLANE_ROUTE_ONCE UINT8_C(1) /* [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE (ARCHITECT round 4 */
 #define BB_PLANE_ROUTE_SESSION UINT8_C(2) /* [`ArriveOut::route_flags`]: the unit is served as a DUPLEX SESSION (K6; ARCHITECT round 5 */
+#define BB_PLANE_ROUTE_STREAM UINT8_C(4) /* [`ArriveOut::route_flags`]: the caller asked for its answer STREAMED (ARCHITECT Q1 ArriveOut, */
 #define BB_PLANE_FROM_CALLER UINT32_C(0) /* [`OnPieceIn::from`]: the piece is the caller's. */
 #define BB_PLANE_FROM_FAR_END UINT32_C(1) /* [`OnPieceIn::from`]: the piece is the far end's. */
 #define BB_PLANE_FROM_KERNEL UINT32_C(2) /* [`OnPieceIn::from`]: the piece is the kernel's. With [`OnPieceIn::attempt_no`] above `0` it */
@@ -2599,6 +2600,7 @@ struct bb_plane_ArriveOut {
     uint8_t route;
     uint8_t route_flags;
     uint8_t _route_reserved[6];
+    bb_mech_AbiStr affinity;
 };
 
 /* `on_piece`'s `in`. */
@@ -4836,7 +4838,7 @@ BB_ASSERT(offsetof(bb_plane_ArriveIn, body) == 136, "bb_plane_ArriveIn.body: off
 BB_ASSERT(offsetof(bb_plane_ArriveIn, units_buf) == 160, "bb_plane_ArriveIn.units_buf: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveIn, units_cap) == 168, "bb_plane_ArriveIn.units_cap: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveIn, method) == 176, "bb_plane_ArriveIn.method: offset");
-BB_ASSERT(sizeof(bb_plane_ArriveOut) == 168, "bb_plane_ArriveOut: size");
+BB_ASSERT(sizeof(bb_plane_ArriveOut) == 184, "bb_plane_ArriveOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ArriveOut) == 8, "bb_plane_ArriveOut: alignment");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, head) == 0, "bb_plane_ArriveOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, op_class) == 96, "bb_plane_ArriveOut.op_class: offset");
@@ -4853,6 +4855,7 @@ BB_ASSERT(offsetof(bb_plane_ArriveOut, pool) == 144, "bb_plane_ArriveOut.pool: o
 BB_ASSERT(offsetof(bb_plane_ArriveOut, route) == 160, "bb_plane_ArriveOut.route: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, route_flags) == 161, "bb_plane_ArriveOut.route_flags: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, _route_reserved) == 162, "bb_plane_ArriveOut._route_reserved: offset");
+BB_ASSERT(offsetof(bb_plane_ArriveOut, affinity) == 168, "bb_plane_ArriveOut.affinity: offset");
 BB_ASSERT(sizeof(bb_plane_OnPieceIn) == 312, "bb_plane_OnPieceIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_OnPieceIn) == 8, "bb_plane_OnPieceIn: alignment");
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, head) == 0, "bb_plane_OnPieceIn.head: offset");
