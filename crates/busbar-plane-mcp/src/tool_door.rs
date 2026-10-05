@@ -2381,6 +2381,11 @@ slot!(
                 );
                 (refusal.status, refusal.body(), false)
             } else {
+            // A BUDGET REFUSAL carries the wait the kernel's window reset names (ARCHITECT Q5:
+            // every plane's budget refusal renders it as `Retry-After`, never 0).
+            if budget && given.retry_after_s > 0 {
+                retry_after = Some(given.retry_after_s);
+            }
             let refusal = if budget && creates_task {
                 door_tasks::budget_refused(unit_id.clone(), message)
             } else if budget {

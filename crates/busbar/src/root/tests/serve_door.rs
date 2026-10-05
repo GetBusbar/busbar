@@ -534,8 +534,9 @@ mod tools_door {
 
     use crate::root::door_steps::tests::hook_parity;
     use crate::root::door_steps::tests::tool_door::{
-        protocol_version, rig_tools, send_as, surface, three_tools, tool_digest, tool_listing,
-        tool_server, tool_server_listing, tool_server_replying, Footing, Rig, TOOL_DESCRIPTION,
+        protocol_version, rig_tools, send_as, send_headed, surface, three_tools, tool_digest,
+        tool_listing, tool_server, tool_server_listing, tool_server_replying, Footing, Rig,
+        TOOL_DESCRIPTION,
     };
     use crate::root::serve::planes_tests::{Published, PUBLISHING};
 
@@ -1223,16 +1224,29 @@ mod tools_door {
         assert_eq!(requests(&rig.key.id), 0, "and to no other key");
         assert!(drain(&mut heard).contains(&"call"));
 
-        let (status, answer) = call(&rig, &token, "metered_read_file", serde_json::json!({})).await;
+        let (status, head, body) = send_headed(
+            &rig.router,
+            Some(&token),
+            &call_of("metered_read_file", serde_json::json!({})),
+            "tools/call",
+            Some("metered_read_file"),
+        )
+        .await;
+        let answer: serde_json::Value = serde_json::from_slice(&body).expect("a JSON-RPC answer");
         assert_eq!(status.as_u16(), 429, "the spent budget refuses: {answer}");
         assert_eq!(
             answer["error"]["data"]["reason"], "budget_exhausted",
             "refused as over budget, in the plane's words: {answer}"
         );
-        // (The admission's wait — `LimitBlocked`'s `retry_after`, carried on the root's `Refusal` —
-        // reaches the plane's `refusal` as `retry_after_s` (ARCHITECT Q5, the kernel driver), but
-        // the tool door's budget refusal does not render it, so neither a `Retry-After` head nor
-        // `retryAfterSeconds` is asserted here. Named in the ledger's cell note.)
+        // THE WAIT (ARCHITECT Q5): the admission's window reset reaches the plane's refusal as
+        // `retry_after_s` and the door renders it as `Retry-After`, a whole number of seconds and
+        // never 0.
+        let wait = head
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or_else(|| panic!("a budget refusal names its wait: {head:?}"));
+        assert!(wait > 0, "the wait is the window reset, never 0: {wait}");
         assert!(
             !drain(&mut heard).contains(&"call"),
             "the refused call never went out"

@@ -1007,6 +1007,18 @@ pub(crate) mod tool_door {
         method: &str,
         name: Option<&str>,
     ) -> (StatusCode, Vec<u8>) {
+        let (status, _, body) = send_headed(router, token, body, method, name).await;
+        (status, body)
+    }
+
+    /// [`send_as`], with the response's head fields.
+    pub(crate) async fn send_headed(
+        router: &axum::Router,
+        token: Option<&str>,
+        body: &str,
+        method: &str,
+        name: Option<&str>,
+    ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
         use tower::ServiceExt as _;
         let mut req = axum::http::Request::builder()
             .method("POST")
@@ -1030,10 +1042,11 @@ pub(crate) mod tool_door {
             .await
             .expect("the router answers");
         let status = response.status();
+        let headers = response.headers().clone();
         let bytes = axum::body::to_bytes(response.into_body(), 1 << 16)
             .await
             .expect("the body");
-        (status, bytes.to_vec())
+        (status, headers, bytes.to_vec())
     }
 
     /// A tool server on loopback answering every request with [`ANSWER`]; what it was sent comes back
