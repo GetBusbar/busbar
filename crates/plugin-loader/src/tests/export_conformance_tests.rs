@@ -84,7 +84,7 @@ use busbar_contract::conn::{
 use busbar_contract::export_calls::{Delivered, ExportCalls};
 use busbar_contract::ids::StreamId;
 use busbar_contract::services::{
-    Caller, DiskDest, DiskReport, HostServices, Later, Ran, Reading, RecordsList, Stored,
+    Caller, DiskDest, DiskReport, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
 };
 use busbar_contract::transport::ConnFacts;
 
@@ -339,6 +339,26 @@ impl HostServices for DiskHost {
     fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
         later(Self::append(dest, &bytes).stored());
         Ran::Later
+    }
+
+    fn unit_nest(&self, _: &Caller, _: Option<u64>, _: NestAsk, _: Later) -> Ran {
+        Ran::Now(Stored::refused("no nested units here"))
+    }
+
+    fn work_open(&self, _: &Caller, _: Option<u64>, _: &str, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::refused("no work book here"))
+    }
+
+    fn work_find(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::refused("no work book here"))
+    }
+
+    fn work_settle(&self, _: &Caller, _: u64, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::refused("no work book here"))
+    }
+
+    fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
+        Ran::Now(Stored::refused("no work book here"))
     }
 }
 
