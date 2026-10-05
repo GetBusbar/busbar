@@ -794,12 +794,14 @@ fn no_dialect_is_a_ledger_column() {
 /// list are both refused.
 #[test]
 fn selftest_a_dialect_or_an_unlisted_plane_is_refused_as_a_column() {
-    let doc = serde_json::json!({ "planes": { "voice-client": "x", "llm": "y" } });
-    assert!(refuse_dialect_columns(&doc, &["voice"])
+    let doc = serde_json::json!({ "planes": { "d1-client": "x", "p1": "y" } });
+    assert!(refuse_dialect_columns(&doc, &["d1"])
         .expect_err("a dialect column is refused")
-        .contains("voice-client"));
-    let doc = serde_json::json!({ "planes": { "voice": "x" } });
-    assert!(refuse_dialect_columns(&doc, &["voice"]).is_err());
+        .contains("d1-client"));
+    let doc = serde_json::json!({ "planes": { "d1": "x" } });
+    assert!(refuse_dialect_columns(&doc, &["d1"]).is_err());
+    refuse_dialect_columns(&serde_json::json!({ "planes": { "p1": "y" } }), &["d1"])
+        .expect("a plane column is not a dialect");
     let root = scratch("unlisted");
     let mut doc = fixture(&root);
     doc["planes"]["p3"] = serde_json::json!("an unlisted fixture plane");
