@@ -43,6 +43,8 @@ use std::sync::Arc;
 /// - **Removing** the scrape sink's instance takes effect immediately. The path stays registered on the
 ///   router, but [`crate::plugin_routes::plugin_route_dispatch`] resolves the owner from the CURRENT
 ///   snapshot on every request, finds nothing, and 404s. No rebuild needed.
+///   `/metrics/hooks` is the exception, as in 1.5.5 (a core route then, mounted with the recorder
+///   at boot): the boot's scrape sink keeps answering it until restart.
 /// - **Adding** it does NOT take effect until restart. Each declared PATH is registered on the axum
 ///   router once, at boot (`plugin_routes.rs`, `on(filter, plugin_route_dispatch)`), and a config
 ///   apply swaps only `Arc<App>` — the router is never rebuilt. If no `prometheus` instance existed

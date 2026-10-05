@@ -228,6 +228,12 @@ const METRICS_PATH: &str = "/metrics";
 /// The well-known path only the scrape sink may claim ([`RouteDecl::scrape`]).
 const SCRAPE_SINK_PATH: &str = "/metrics/hooks";
 
+/// Whether `path` is the well-known hook exposition path, which stays mounted for the process's
+/// life once the boot's scrape sink serves it (1.5.5's core route did).
+pub(crate) fn scrape_sink_path(path: &str) -> bool {
+    path == SCRAPE_SINK_PATH
+}
+
 /// Whether `path` is one of the scrape sink's well-known exposition paths — `/metrics` or
 /// `/metrics/hooks` — which only the scrape sink (first-party, #65) is granted.
 pub(crate) fn well_known(path: &str) -> bool {

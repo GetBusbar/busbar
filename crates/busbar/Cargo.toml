@@ -631,6 +631,11 @@ required-features = ["auth-admin-tokens"]
 name = "root_listeners_are_the_connectors"
 path = "tests/root_listeners_are_the_connectors.rs"
 required-features = ["auth-admin-tokens"]
+
+[[test]]
+name = "metrics_routes_across_export_reload"
+path = "tests/metrics_routes_across_export_reload.rs"
+required-features = ["auth-admin-tokens"]
 [package.metadata.busbar.legacy]
 # THE ROOT LEGACY TABLE (BUSBAR-1.6.0.md §2), @generated from plugins.yaml (`legacy:` and each
 # entry's `retired:`); src/root/tests/legacy.rs is red on an edit and prints the render to paste.

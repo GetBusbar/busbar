@@ -131,6 +131,9 @@ pub(super) struct PluginSink {
     name: String,
     module: String,
     sink: Arc<dyn ExportCalls>,
+    /// Whether this is the boot's SCRAPE SINK (the first-party instance subscribed to `metrics`):
+    /// it serves `/metrics/hooks` for the process's life ([`route_decls`]).
+    scrape: bool,
     pub(super) projection: Projection,
     /// Its admission, as it stated it when started ([`start`]).
     admission: OnceLock<Admission>,
@@ -211,6 +214,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             name: name.clone(),
             module: module.to_string(),
             sink,
+            scrape: p.scrape,
             projection,
             admission: OnceLock::new(),
         });
@@ -280,9 +284,15 @@ pub(crate) fn status() {
 /// ([`super::scrape::Granted`]): its `serve` reads the host snapshot service. Every other sink's are
 /// owned by its instance name and lent nothing, and a well-known exposition path one of them
 /// declares is not its to claim (only the first-party scrape sink serves `/metrics`, #65): it is
-/// dropped, with a warning. A scrape sink this process has not opened (a configuration apply added
-/// it) declares its row's routes, so the apply reports the paths awaiting a restart; nothing serves
-/// them until then.
+/// dropped, with a warning. A scrape instance a configuration apply added is served by the boot's
+/// scrape sink of its module when the boot opened one; when it did not, the instance declares its
+/// row's routes, so the apply reports the paths awaiting a restart, and nothing serves them until
+/// then.
+///
+/// `/metrics/hooks` FOLLOWS 1.5.5, where it was a core route mounted with the recorder at boot and
+/// answering for the process's life: it is the BOOT's scrape sink's, declared whether or not a
+/// configuration apply still names that instance (ARCHITECT 2026-10-05, Q-U2-4 follow-up), while
+/// `/metrics` follows the configuration, as 1.5.5's plugin route did (removed: `404`).
 pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
     let (scrape, rest): (Vec<_>, Vec<_>) = cfg.plugins.iter().partition(|p| p.scrape);
     let mut out = Vec::new();
@@ -292,24 +302,36 @@ pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
         } else {
             p.name.clone()
         };
-        let (routes, dispatch): (Vec<Route>, Arc<dyn PluginHttpDispatch>) =
-            match sinks().find(|s| s.name == p.name) {
-                Some(s) => {
-                    let served: Arc<dyn PluginHttpDispatch> = Arc::new(Served(s.sink.clone()));
-                    let dispatch: Arc<dyn PluginHttpDispatch> = if p.scrape {
-                        Arc::new(super::scrape::Granted(served))
-                    } else {
-                        served
-                    };
-                    (s.sink.routes().to_vec(), dispatch)
-                }
-                None if p.scrape => {
-                    let routes = axis().map_or_else(Vec::new, |a| a.routes(p.def.module.trim()));
-                    (routes, Arc::new(Unopened))
-                }
-                None => continue,
-            };
+        // A scrape instance this process did not open under its name (a configuration apply
+        // renamed or re-added it) is served by the boot's scrape sink of the same module, as
+        // 1.5.5's host-held recorder served `/metrics` whatever the instance was called.
+        let module = p.def.module.trim();
+        let opened = sinks().find(|s| s.name == p.name).or_else(|| {
+            p.scrape
+                .then(|| sinks().find(|s| s.scrape && s.module == module))
+                .flatten()
+        });
+        let (routes, dispatch): (Vec<Route>, Arc<dyn PluginHttpDispatch>) = match opened {
+            Some(s) => {
+                let served: Arc<dyn PluginHttpDispatch> = Arc::new(Served(s.sink.clone()));
+                let dispatch: Arc<dyn PluginHttpDispatch> = if p.scrape {
+                    Arc::new(super::scrape::Granted(served))
+                } else {
+                    served
+                };
+                (s.sink.routes().to_vec(), dispatch)
+            }
+            None if p.scrape => {
+                let routes = axis().map_or_else(Vec::new, |a| a.routes(module));
+                (routes, Arc::new(Unopened))
+            }
+            None => continue,
+        };
         for route in routes {
+            if crate::plugin_routes::scrape_sink_path(&route.path) {
+                // The boot's scrape sink's, below.
+                continue;
+            }
             if !p.scrape && crate::plugin_routes::well_known(&route.path) {
                 tracing::warn!(
                     instance = %p.name,
@@ -327,6 +349,23 @@ pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
                 dispatch: dispatch.clone(),
             });
         }
+    }
+    if let Some(s) = sinks().find(|s| s.scrape) {
+        let served: Arc<dyn PluginHttpDispatch> = Arc::new(Served(s.sink.clone()));
+        let dispatch: Arc<dyn PluginHttpDispatch> = Arc::new(super::scrape::Granted(served));
+        out.extend(
+            s.sink
+                .routes()
+                .iter()
+                .filter(|r| crate::plugin_routes::scrape_sink_path(&r.path))
+                .map(|route| RouteDecl {
+                    owner: s.module.clone(),
+                    kind: RouteKind::Export,
+                    route: route.clone(),
+                    scrape: true,
+                    dispatch: dispatch.clone(),
+                }),
+        );
     }
     out
 }
