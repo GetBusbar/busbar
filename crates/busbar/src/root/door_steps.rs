@@ -1489,10 +1489,21 @@ pub fn member_routes(
             let key = busbar_contract::section::member_target(path)?;
             Some((busbar_contract::conn::NeedId(u32::try_from(at).ok()?), key))
         });
+    // A PROGRAM MEMBER (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): where the plane's need states
+    // the member-program path, an entry whose registration names a program is reached at its own
+    // long-lived program, which the connector keeps per member (the loader declared each one from
+    // the instance's settings); its route's base is the member's own name, the open's target.
+    let member_program = served
+        .need_targets
+        .iter()
+        .position(|path| busbar_contract::section::member_program(path))
+        .and_then(|at| u32::try_from(at).ok())
+        .map(busbar_contract::conn::NeedId);
+    let mut programs = BTreeMap::new();
     for entry in pools.entries() {
         let Some(member) = member_entry(section, entry) else {
+            let registration = section.get(entry.as_str());
             if let Some((need, key)) = member_target {
-                let registration = section.get(entry.as_str());
                 if let Some((registration, target)) = registration
                     .and_then(|r| entry_text(r, key).filter(|t| !t.is_empty()).map(|t| (r, t)))
                 {
@@ -1502,6 +1513,17 @@ pub fn member_routes(
                         entry.clone(),
                         (need, origin_of(target).to_string(), anchors),
                     );
+                    continue;
+                }
+            }
+            // A PROGRAM MEMBER (Q-L3B-STDIO-UPSTREAM (A)): a registration that names a program is
+            // reached at its own long-lived child, the connector keeps it per member.
+            if let Some(need) = member_program {
+                if registration
+                    .and_then(|r| entry_text(r, busbar_contract::conn::PROGRAM_KEYS[0]))
+                    .is_some()
+                {
+                    programs.insert(entry.clone(), need);
                 }
             }
             continue;
@@ -1622,6 +1644,22 @@ pub fn member_routes(
                 provider: entry,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
                 anchors,
+            },
+        );
+    }
+    // Each program member: no auth binding (no credential rides a pipe), its metering rows naming
+    // the registration.
+    for (entry, need) in programs {
+        routes.insert(
+            entry.clone(),
+            MemberRoute {
+                rides: Vec::new(),
+                need,
+                base_url: entry.clone(),
+                auth: None,
+                provider: entry,
+                keep: busbar_kernel::plane_driver::ResponseKeep::default(),
+                anchors: busbar_contract::transport::trust::Anchors::default(),
             },
         );
     }

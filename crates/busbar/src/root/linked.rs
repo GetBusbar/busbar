@@ -352,6 +352,11 @@ pub fn register_stores(linked: &Linked) {
             std::process::exit(2);
         }
     }
+    // A member program's `env` secret references resolve through the same linked secret plugins
+    // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A): as the previous release resolved them).
+    crate::root::loader::dispatch::install_member_secrets(
+        busbar_kernel::config::secret::resolve_linked_string,
+    );
 }
 
 /// THE STORE AXIS the kernel opens its governance store through (WIRE-STORE Q8/Q9): the loader's

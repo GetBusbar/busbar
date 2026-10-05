@@ -583,6 +583,59 @@ impl Connection {
         Ok(conn)
     }
 
+    /// Whether the program a spawned connection runs has exited (without waiting for it); `false`
+    /// for a socket.
+    pub fn program_exited(&mut self) -> bool {
+        match &mut self.wire {
+            Wire::Program(p) => !matches!(p.child.try_wait(), Ok(None)),
+            Wire::Socket(_) => false,
+        }
+    }
+
+    /// Offer ONE WHOLE MESSAGE on the exchange: framed and queued all at once, or not at all while
+    /// what is already queued would leave it past [`WRITE_BUFFER_BYTES`] (`Ok(false)`, nothing
+    /// taken). A message alone in an empty queue is always taken, however long. Several writers
+    /// sharing one connection never interleave part of one message with another's.
+    ///
+    /// # Errors
+    ///
+    /// The connection is closed or failed, or the framer refused the bytes.
+    pub fn write_whole(&mut self, bytes: &[u8], cx: &mut Context<'_>) -> Result<bool, Failure> {
+        match &self.phase {
+            Phase::Failed(f) => return Err(f.clone()),
+            Phase::Ended => return Err(Failure::Closed),
+            _ => {}
+        }
+        if let Err(f) = self.drive(cx) {
+            self.phase = Phase::Failed(f.clone());
+            return Err(f);
+        }
+        let queued = self.buffered();
+        if queued > 0 && queued.saturating_add(bytes.len()) > WRITE_BUFFER_BYTES {
+            return Ok(false);
+        }
+        match &self.phase {
+            Phase::Failed(f) => return Err(f.clone()),
+            Phase::Ended => return Err(Failure::Closed),
+            Phase::Open => {
+                let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
+                let y = framing
+                    .emit(EXCHANGE_STREAM, bytes, true, false)
+                    .map_err(failed)?;
+                self.absorb(y)?;
+            }
+            Phase::Connecting | Phase::Handshaking => {
+                self.early
+                    .push((EXCHANGE_STREAM, bytes.to_vec(), true, false));
+            }
+        }
+        if let Err(f) = self.drive(cx) {
+            self.phase = Phase::Failed(f.clone());
+            return Err(f);
+        }
+        Ok(true)
+    }
+
     /// The process id of the program a spawned connection runs; `None` for a socket, or once the
     /// child was reaped.
     #[must_use]
