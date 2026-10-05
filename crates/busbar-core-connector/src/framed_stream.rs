@@ -16,13 +16,11 @@ use std::sync::Arc;
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::transport::{StatusRow, SIDE_ACCEPT_STREAM};
 
+use crate::compose::HeadWords;
 use crate::framer::{Established, FramerDoor, Framing, Refused, Yielded};
 
 /// The one stream a [`SIDE_ACCEPT_STREAM`] framing carries.
 pub const STREAM: u64 = 1;
-
-/// Field lines: `(name, value)`, in order.
-pub type FieldLines = Vec<(Vec<u8>, Vec<u8>)>;
 
 /// One accepted stream, framed by the framer that answers its claim.
 pub struct FramedStream {
@@ -133,7 +131,7 @@ impl FramedStream {
     /// # Errors
     ///
     /// The framer refused to render it, or its block is no field lines.
-    pub fn refuse(&mut self, bytes: &[u8], status: u32) -> Result<FieldLines, Refused> {
+    pub fn refuse(&mut self, bytes: &[u8], status: u32) -> Result<Vec<HeadWords>, Refused> {
         let y = self.framing.refuse(Some(STREAM), bytes, status)?;
         closing(&y)
     }
@@ -150,7 +148,7 @@ impl FramedStream {
         status: u32,
         message: &[u8],
         details: &[u8],
-    ) -> Result<FieldLines, Refused> {
+    ) -> Result<Vec<HeadWords>, Refused> {
         let y = self
             .framing
             .finish_final(status, message, details, &self.rows, self.claim)?;
@@ -159,7 +157,7 @@ impl FramedStream {
 }
 
 /// The closing field block an answer wrote, read as field lines.
-fn closing(y: &Yielded) -> Result<FieldLines, Refused> {
+fn closing(y: &Yielded) -> Result<Vec<HeadWords>, Refused> {
     field_lines(&y.wire)
 }
 
@@ -169,7 +167,7 @@ fn closing(y: &Yielded) -> Result<FieldLines, Refused> {
 /// # Errors
 ///
 /// A line with no name, or no `:`.
-pub fn field_lines(block: &[u8]) -> Result<FieldLines, Refused> {
+pub fn field_lines(block: &[u8]) -> Result<Vec<HeadWords>, Refused> {
     let mut out = Vec::new();
     for line in block.split(|b| *b == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
