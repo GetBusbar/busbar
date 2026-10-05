@@ -437,6 +437,64 @@ fn a_text_message_is_whole_and_not_empty() {
     );
 }
 
+/// RED (SEAM-4l additions): THE MESSAGE BOUNDARY is a known bit, valid on an answer toward the
+/// caller with bytes or without, never on a request bound for the far end.
+#[test]
+fn a_message_boundary_ends_a_message_toward_the_caller_only() {
+    let mut o: OnPieceOut = z();
+    o.flags = EMIT_MESSAGE_END;
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()), "a boundary alone");
+    o.emitted = 3;
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        Ok(()),
+        "with the message's last bytes"
+    );
+    o.flags |= EMIT_TO_FAR_END;
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.message_end_to_far_end")
+    );
+}
+
+/// RED (SEAM-4l additions): THE FINAL STATUS closes the reply (`EMIT_DONE`), its message and details
+/// inside the arena written; its fields are zero unless it is flagged.
+#[test]
+fn a_final_status_closes_the_reply_inside_the_arena() {
+    let at = |offset: u32, len: u32| crate::abi::mechanism::call::Span { offset, len };
+    let mut o: OnPieceOut = z();
+    o.flags = EMIT_DONE | EMIT_FINAL_STATUS;
+    o.final_status = 5;
+    o.arena_written = 10;
+    o.final_message = at(0, 8);
+    o.final_details = at(8, 2);
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    let mut open = o;
+    open.flags = EMIT_FINAL_STATUS;
+    assert_eq!(
+        piece(&open, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.final_status_not_closing")
+    );
+    let mut far = o;
+    far.flags |= EMIT_TO_FAR_END;
+    assert_eq!(
+        piece(&far, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.final_status_not_closing")
+    );
+    let mut outside = o;
+    outside.final_details = at(9, 2);
+    assert!(
+        piece(&outside, &[], &[], &[]).is_err(),
+        "details past the arena"
+    );
+    let mut unflagged = o;
+    unflagged.flags = EMIT_DONE;
+    assert_eq!(
+        piece(&unflagged, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.final_status_unflagged")
+    );
+}
+
 /// THE CATALOGUE WATCH: `EMIT_WATCH_CATALOGUE` and `EMIT_UNWATCH_CATALOGUE` are known bits, each
 /// valid alone, and an answer setting both is a contradiction.
 #[test]

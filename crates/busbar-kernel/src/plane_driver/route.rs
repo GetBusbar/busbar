@@ -27,8 +27,8 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span}
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, CLAIM_PROBE, EMIT_DONE,
-    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS,
-    PIECE_LAST, PIECE_OUT_TEXT, VERDICT_RETRY,
+    EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, ReasonCode, Route};
@@ -199,6 +199,33 @@ pub trait CallerEnd: Sync {
     /// with no text/binary distinction writes them as any bytes.
     fn write_text<'a>(&'a self, bytes: &'a [u8]) -> impl Future<Output = bool> + Send + 'a {
         self.write(bytes)
+    }
+    /// Write `bytes` as `write`/`write_text` do, `message_end` saying they END one message
+    /// (`EMIT_MESSAGE_END`: a carrier that frames messages frames one on this boundary, however
+    /// many writes its bytes spanned); `bytes` may be empty on a boundary alone. The default has
+    /// no messages: it writes the bytes and ignores the boundary.
+    fn write_piece<'a>(
+        &'a self,
+        bytes: &'a [u8],
+        text: bool,
+        message_end: bool,
+    ) -> impl Future<Output = bool> + Send + 'a {
+        let _ = message_end;
+        async move {
+            if bytes.is_empty() {
+                true
+            } else if text {
+                self.write_text(bytes).await
+            } else {
+                self.write(bytes).await
+            }
+        }
+    }
+    /// The reply's FINAL status (`EMIT_FINAL_STATUS` on its closing answer), in the numbering the
+    /// claim's transport declares, with its message and details bytes: a carrier that reports a
+    /// status after the reply's bytes reports this one. The default reports nothing.
+    fn final_status(&self, status: u32, message: &[u8], details: &[u8]) {
+        let _ = (status, message, details);
     }
 }
 
@@ -443,6 +470,9 @@ struct Answer {
     records_needed: u32,
     fields_needed: u32,
     arena_needed: u64,
+    final_status: u32,
+    final_message: Span,
+    final_details: Span,
 }
 
 impl Answer {
@@ -463,6 +493,9 @@ impl Answer {
             records_needed: o.records_needed,
             fields_needed: o.fields_needed,
             arena_needed: o.arena_needed,
+            final_status: o.final_status,
+            final_message: o.final_message,
+            final_details: o.final_details,
         }
     }
 }
@@ -1052,18 +1085,16 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         // a streamed body still flowing).
                         self.response_tap(false, out.reply_status);
                     }
-                    if n != 0 {
-                        run.lock().facts.streamed = true;
+                    let message_end = out.flags & EMIT_MESSAGE_END != 0;
+                    if n != 0 || message_end {
+                        if n != 0 {
+                            run.lock().facts.streamed = true;
+                        }
                         let left = run.left();
                         let Pumping { stop, bufs, .. } = &mut *run;
                         let emitted = &bufs.reply[..n];
-                        let written = async {
-                            if out.flags & PIECE_OUT_TEXT != 0 {
-                                self.caller.write_text(emitted).await
-                            } else {
-                                self.caller.write(emitted).await
-                            }
-                        };
+                        let text = out.flags & PIECE_OUT_TEXT != 0;
+                        let written = self.caller.write_piece(emitted, text, message_end);
                         match guarded(stop, left, written).await {
                             Ok(true) => {}
                             Ok(false) => {
@@ -1076,6 +1107,16 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             if checkpoint == Checkpoint::Cut {
                 return Step::End(End::Cancel(ReasonCode::OverBudget, None));
+            }
+            // THE REPLY'S FINAL STATUS, on its closing answer, for a carrier that reports one after
+            // the reply's bytes.
+            if out.flags & EMIT_FINAL_STATUS != 0 && out.flags & EMIT_DONE != 0 {
+                let bufs = &run.bufs;
+                self.caller.final_status(
+                    out.final_status,
+                    bufs.arena(out.final_message),
+                    bufs.arena(out.final_details),
+                );
             }
             if out.more == 1 {
                 piece = piece.continuation();
