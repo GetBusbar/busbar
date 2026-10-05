@@ -5,13 +5,14 @@
 //! answers with (the engine's `grpc_tests.rs`, ported).
 
 use super::*;
+use crate::proto::pb;
 
 /// THE PATH IS THE `.proto`'S: the generated service's own constant, never a literal typed twice.
 #[test]
 fn the_service_path_is_the_generated_services() {
     assert_eq!(
         SERVICE_PATH.strip_prefix('/'),
-        Some(a2a_pb::proto::a2a_service_server::SERVICE_NAME)
+        Some(crate::proto::SERVICE_NAME)
     );
     assert_eq!(
         crate::door::ROUTES
@@ -44,7 +45,7 @@ fn an_rpc_is_named_by_its_target_alone() {
 /// ProtoJSON as the params.
 #[test]
 fn a_request_message_composes_the_json_rpc_request_it_is() {
-    let message = proto::GetTaskRequest {
+    let message = pb::GetTaskRequest {
         id: "t-1".into(),
         history_length: Some(2),
         ..Default::default()
@@ -75,7 +76,7 @@ fn a_result_answers_the_rpcs_response_message() {
         "result": { "id": "t-1", "contextId": "c-1", "status": { "state": "TASK_STATE_COMPLETED" } },
     });
     let bytes = answer(Rpc::GetTask, 200, body.to_string().as_bytes()).expect("answers");
-    let task = proto::Task::decode(bytes.as_slice()).expect("a Task");
+    let task = pb::Task::decode(bytes.as_slice()).expect("a Task");
     assert_eq!(task.id, "t-1");
     assert_eq!(task.context_id, "c-1");
     // `google.protobuf.Empty` answers nothing.
@@ -203,7 +204,7 @@ fn an_event_is_one_stream_response() {
         })
     );
     let bytes = event(&frame).expect("an event").expect("a message");
-    let response = proto::StreamResponse::decode(bytes.as_slice()).expect("a StreamResponse");
+    let response = pb::StreamResponse::decode(bytes.as_slice()).expect("a StreamResponse");
     assert!(response.payload.is_some());
     assert!(event(": keep-alive").is_none());
     let failed = format!(

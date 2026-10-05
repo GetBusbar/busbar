@@ -34,6 +34,31 @@ fn walk(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
     }
 }
 
+/// THE GENERATED MESSAGES (`build.rs`, the gRPC line's `lf.a2a.v1` package): the plane's source
+/// includes them from the build's output directory, so the scans read them as the plane's own
+/// source and read the include line itself as what it is, a compile-time inclusion.
+const GENERATED: &[&str] = &["lf.a2a.v1.rs", "lf.a2a.v1.serde.rs"];
+
+/// Every source file of the plane: its own, then the generated messages it includes.
+fn each_source(f: &mut impl FnMut(&Path, &str)) {
+    walk(&src_dir(), f);
+    for name in GENERATED {
+        let path = Path::new(env!("OUT_DIR")).join(name);
+        let text = std::fs::read_to_string(&path).expect("the generated source is readable");
+        f(&path, &text);
+    }
+}
+
+/// The plane's inclusion of one [`GENERATED`] file, whose text [`each_source`] scans in its place.
+fn is_generated_include(line: &str) -> bool {
+    // The macro's name is spliced in so this file holds no include of its own for a scan of the
+    // crate's build inputs to read.
+    let t = line.trim();
+    GENERATED
+        .iter()
+        .any(|name| t == format!("{}!(concat!(env!(\"OUT_DIR\"), \"/{name}\"));", "include"))
+}
+
 /// A line that is only a comment says nothing about what the code does.
 fn is_comment(line: &str) -> bool {
     let t = line.trim_start();
@@ -65,9 +90,9 @@ fn the_plane_holds_no_interior_state() {
         "static mut",
     ];
     let mut offenders = Vec::new();
-    walk(&src_dir(), &mut |path, text| {
+    each_source(&mut |path, text| {
         for (n, line) in text.lines().enumerate() {
-            if is_comment(line) {
+            if is_comment(line) || is_generated_include(line) {
                 continue;
             }
             for name in forbidden {
@@ -107,9 +132,9 @@ fn the_plane_performs_no_input_or_output() {
         "eprintln!",
     ];
     let mut offenders = Vec::new();
-    walk(&src_dir(), &mut |path, text| {
+    each_source(&mut |path, text| {
         for (n, line) in text.lines().enumerate() {
-            if is_comment(line) {
+            if is_comment(line) || is_generated_include(line) {
                 continue;
             }
             for name in forbidden {
@@ -138,9 +163,9 @@ fn the_plane_names_no_kernel_side_crate() {
         "busbar_substrate",
     ];
     let mut offenders = Vec::new();
-    walk(&src_dir(), &mut |path, text| {
+    each_source(&mut |path, text| {
         for (n, line) in text.lines().enumerate() {
-            if is_comment(line) {
+            if is_comment(line) || is_generated_include(line) {
                 continue;
             }
             for name in forbidden {
@@ -287,9 +312,9 @@ fn the_plane_names_no_money_and_no_decision() {
         "auth_token_raw",
     ];
     let mut offenders = Vec::new();
-    walk(&src_dir(), &mut |path, text| {
+    each_source(&mut |path, text| {
         for (n, line) in text.lines().enumerate() {
-            if is_comment(line) {
+            if is_comment(line) || is_generated_include(line) {
                 continue;
             }
             // A lint attribute is an instruction to the compiler, not a decision about a

@@ -53,13 +53,18 @@ url = { workspace = true }
 # The frame reader's one diagnostic goes out through the contract's `diag_warn!`, which expands to
 # `tracing`.
 tracing = { workspace = true }
-# THE gRPC LINE (ARCHITECT ruling on FOLD-A2A, 2026-10-04, under the PLUGIN LIBRARIES ruling): the
-# a2aproject's own generated service messages and their ProtoJSON mapping (`a2a-pb`, over the typed
-# model `a2a-lf`, lib name `a2a`), decoded and encoded with `prost`, which also writes the error
-# model's `google.rpc.Status` details.
-a2a-pb = { workspace = true }
-a2a-lf = { workspace = true }
+# THE gRPC LINE (ARCHITECT rulings on FOLD-A2A, 2026-10-04, Q1 (C)): the a2aproject's service
+# messages, generated at build time from the vendored `proto/a2a.proto` (`build.rs`), decoded and
+# encoded with `prost`, which also writes the error model's `google.rpc.Status` details; their
+# ProtoJSON mapping is pbjson's (`pbjson`; the well-known types are the plane's own, `src/wkt.rs`).
 prost = { workspace = true, features = ["derive"] }
+pbjson = { workspace = true }
+
+[build-dependencies]
+# The message and ProtoJSON code generators `build.rs` runs, and the protoc they drive.
+prost-build = { workspace = true }
+pbjson-build = { workspace = true }
+protoc-bin-vendored = { workspace = true }
 
 [dev-dependencies]
 # The TEST-ONLY seal (#65). `busbar_contract::plugin::TestKernelSeal` is the one blessed

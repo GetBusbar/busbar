@@ -9,8 +9,8 @@
 //! JSON-RPC method, and A2A v1.0's JSON representation of a request message IS its ProtoJSON. So
 //! the line is a transcoding and nothing else:
 //!
-//! 1. [`compose`]: the call's one request message, decoded and transcoded to its canonical JSON
-//!    through the SDK's own conversions (`a2a_pb::pbconv`, `a2a_pb::protojson_conv`), framed as the
+//! 1. [`compose`]: the call's one request message, decoded, carried through the SDK's conversion
+//!    rules ([`crate::proto::Normal`]) and written as its ProtoJSON, framed as the
 //!    v1.0 JSON-RPC request the unit then serves exactly as the JSON-RPC line serves its own: the
 //!    same arrival, catalogue, admission, task store and relay, nothing skipped and nothing added.
 //! 2. [`answer`]: the JSON-RPC answer the unit wrote, transcoded back to the rpc's response
@@ -20,11 +20,11 @@
 //!    server-streaming rpc answers with.
 //!
 //! No A2A wire fact is hand-written here: the messages, the method names and the ProtoJSON mapping
-//! are `a2a-pb`'s. The status a call ends with is the gRPC numbering ([`Code`]) and its details the
+//! are generated from the a2aproject's own `a2a.proto` ([`crate::proto::pb`]). The status a call ends with is the gRPC numbering ([`Code`]) and its details the
 //! `google.rpc.Status` message carrying the error's `google.rpc.ErrorInfo` ([`Status::details`]),
 //! the bytes the engine's status carried as its details.
 
-use a2a_pb::{pbconv, proto, protojson_conv};
+use crate::proto::{pb, Normal};
 use prost::Message as _;
 use serde_json::Value;
 
@@ -279,44 +279,24 @@ pub fn unimplemented() -> Status {
 pub fn compose(rpc: Rpc, message: &[u8]) -> Result<Vec<u8>, Status> {
     let params = match rpc {
         Rpc::SendMessage | Rpc::SendStreamingMessage => {
-            let m = decode::<proto::SendMessageRequest>(message)?;
-            to_params(&pbconv::from_proto_send_message_request(&m))?
+            to_params::<pb::SendMessageRequest>(message)?
         }
-        Rpc::GetTask => {
-            let m = decode::<proto::GetTaskRequest>(message)?;
-            to_params(&pbconv::from_proto_get_task_request(&m))?
-        }
-        Rpc::ListTasks => {
-            let m = decode::<proto::ListTasksRequest>(message)?;
-            to_params(&pbconv::from_proto_list_tasks_request(&m))?
-        }
-        Rpc::CancelTask => {
-            let m = decode::<proto::CancelTaskRequest>(message)?;
-            to_params(&pbconv::from_proto_cancel_task_request(&m))?
-        }
-        Rpc::SubscribeToTask => {
-            let m = decode::<proto::SubscribeToTaskRequest>(message)?;
-            to_params(&pbconv::from_proto_subscribe_to_task_request(&m))?
-        }
+        Rpc::GetTask => to_params::<pb::GetTaskRequest>(message)?,
+        Rpc::ListTasks => to_params::<pb::ListTasksRequest>(message)?,
+        Rpc::CancelTask => to_params::<pb::CancelTaskRequest>(message)?,
+        Rpc::SubscribeToTask => to_params::<pb::SubscribeToTaskRequest>(message)?,
         Rpc::CreateTaskPushNotificationConfig => {
-            let m = decode::<proto::TaskPushNotificationConfig>(message)?;
-            to_params(&pbconv::from_proto_task_push_notification_config(&m))?
+            to_params::<pb::TaskPushNotificationConfig>(message)?
         }
         Rpc::GetTaskPushNotificationConfig => {
-            let m = decode::<proto::GetTaskPushNotificationConfigRequest>(message)?;
-            to_params(&pbconv::from_proto_get_task_push_notification_config_request(&m))?
+            to_params::<pb::GetTaskPushNotificationConfigRequest>(message)?
         }
         Rpc::ListTaskPushNotificationConfigs => {
-            let m = decode::<proto::ListTaskPushNotificationConfigsRequest>(message)?;
-            to_params(&pbconv::from_proto_list_task_push_notification_configs_request(&m))?
+            to_params::<pb::ListTaskPushNotificationConfigsRequest>(message)?
         }
-        Rpc::GetExtendedAgentCard => {
-            let m = decode::<proto::GetExtendedAgentCardRequest>(message)?;
-            to_params(&pbconv::from_proto_get_extended_agent_card_request(&m))?
-        }
+        Rpc::GetExtendedAgentCard => to_params::<pb::GetExtendedAgentCardRequest>(message)?,
         Rpc::DeleteTaskPushNotificationConfig => {
-            let m = decode::<proto::DeleteTaskPushNotificationConfigRequest>(message)?;
-            to_params(&pbconv::from_proto_delete_task_push_notification_config_request(&m))?
+            to_params::<pb::DeleteTaskPushNotificationConfigRequest>(message)?
         }
     };
     let envelope = serde_json::json!({
@@ -328,20 +308,35 @@ pub fn compose(rpc: Rpc, message: &[u8]) -> Result<Vec<u8>, Status> {
     Ok(envelope.to_string().into_bytes())
 }
 
-fn decode<M: prost::Message + Default>(message: &[u8]) -> Result<M, Status> {
-    M::decode(message).map_err(|e| Status::internal(e.to_string()))
+/// PROTOBUF IN, CANONICAL JSON OUT: `message` decoded as `M` (a parse error is `INTERNAL` with the
+/// decoder's words), carried through the model's rules, written as its ProtoJSON.
+fn to_params<M>(message: &[u8]) -> Result<Value, Status>
+where
+    M: prost::Message + Default + Normal + serde::Serialize,
+{
+    let mut m = M::decode(message).map_err(|e| Status::internal(e.to_string()))?;
+    m.normal()
+        .map_err(|e| Status::invalid_argument(format!("the request could not be read: {e}")))?;
+    serde_json::to_value(&m).map_err(|e| {
+        Status::invalid_argument(format!(
+            "the request could not be read: ProtoJSON error: {e}"
+        ))
+    })
 }
 
-/// PROTOBUF IN, CANONICAL JSON OUT, through the SDK's own conversions and nothing else.
-fn to_params<N: protojson_conv::ProtoJsonPayload>(native: &N) -> Result<Value, Status> {
-    protojson_conv::to_value(native)
-        .map_err(|e| Status::invalid_argument(format!("the request could not be read: {e}")))
-}
-
-/// CANONICAL JSON IN, the SDK's model OUT: the same mapping in the other direction.
-fn from_result<N: protojson_conv::ProtoJsonPayload>(result: Value) -> Result<N, Status> {
-    protojson_conv::from_value(result)
-        .map_err(|e| Status::internal(format!("the answer could not be rendered: {e}")))
+/// CANONICAL JSON IN, PROTOBUF OUT: the same mapping in the other direction.
+fn from_result<M>(result: Value) -> Result<Vec<u8>, Status>
+where
+    M: prost::Message + Normal + serde::de::DeserializeOwned,
+{
+    let mut m: M = serde_json::from_value(result).map_err(|e| {
+        Status::internal(format!(
+            "the answer could not be rendered: ProtoJSON error: {e}"
+        ))
+    })?;
+    m.normal()
+        .map_err(|e| Status::internal(format!("the answer could not be rendered: {e}")))?;
+    Ok(m.encode_to_vec())
 }
 
 /// THE JSON-RPC ANSWER OUT, the rpc's response message IN ITS PROTOBUF BYTES: `body` is the whole
@@ -364,39 +359,24 @@ pub fn answer(rpc: Rpc, status: u32, body: &[u8]) -> Result<Vec<u8>, Status> {
         .get("result")
         .cloned()
         .ok_or_else(|| status_for_http(status))?;
-    Ok(match rpc {
-        Rpc::SendMessage => {
-            let a: a2a::SendMessageResponse = from_result(result)?;
-            pbconv::to_proto_send_message_response(&a).encode_to_vec()
-        }
+    match rpc {
+        Rpc::SendMessage => from_result::<pb::SendMessageResponse>(result),
         Rpc::SendStreamingMessage | Rpc::SubscribeToTask => {
-            let e: a2a::StreamResponse = from_result(result)?;
-            pbconv::to_proto_stream_response(&e).encode_to_vec()
+            from_result::<pb::StreamResponse>(result)
         }
-        Rpc::GetTask | Rpc::CancelTask => {
-            let t: a2a::Task = from_result(result)?;
-            pbconv::to_proto_task(&t).encode_to_vec()
-        }
-        Rpc::ListTasks => {
-            let a: a2a::ListTasksResponse = from_result(result)?;
-            pbconv::to_proto_list_tasks_response(&a).encode_to_vec()
-        }
+        Rpc::GetTask | Rpc::CancelTask => from_result::<pb::Task>(result),
+        Rpc::ListTasks => from_result::<pb::ListTasksResponse>(result),
         Rpc::CreateTaskPushNotificationConfig | Rpc::GetTaskPushNotificationConfig => {
-            let c: a2a::TaskPushNotificationConfig = from_result(result)?;
-            pbconv::to_proto_task_push_notification_config(&c).encode_to_vec()
+            from_result::<pb::TaskPushNotificationConfig>(result)
         }
         Rpc::ListTaskPushNotificationConfigs => {
-            let a: a2a::ListTaskPushNotificationConfigsResponse = from_result(result)?;
-            pbconv::to_proto_list_task_push_notification_configs_response(&a).encode_to_vec()
+            from_result::<pb::ListTaskPushNotificationConfigsResponse>(result)
         }
-        Rpc::GetExtendedAgentCard => {
-            let c: a2a::AgentCard = from_result(narrowed_to_the_proto(result))?;
-            pbconv::to_proto_agent_card(&c).encode_to_vec()
-        }
+        Rpc::GetExtendedAgentCard => from_result::<pb::AgentCard>(narrowed_to_the_proto(result)),
         // `google.protobuf.Empty`: the JSON-RPC answer carries `null`, and there is nothing in
         // either to transcode.
-        Rpc::DeleteTaskPushNotificationConfig => Vec::new(),
-    })
+        Rpc::DeleteTaskPushNotificationConfig => Ok(Vec::new()),
+    }
 }
 
 /// ONE EVENT OF AN ANSWER IN EVENTS (one event-stream frame, its blank line excluded), as the
@@ -411,10 +391,7 @@ pub fn event(frame: &str) -> Option<Result<Vec<u8>, Status>> {
         return Some(Err(status_for_error(error, STATUS_INTERNAL)));
     }
     let result = envelope.get("result")?.clone();
-    Some(
-        from_result::<a2a::StreamResponse>(result)
-            .map(|e| pbconv::to_proto_stream_response(&e).encode_to_vec()),
-    )
+    Some(from_result::<pb::StreamResponse>(result))
 }
 
 /// The neutral status an event's error is read under (the engine read a stream's error at `500`).

@@ -69,6 +69,7 @@ pub mod meta;
 pub mod ops;
 pub mod plane;
 pub mod plane_door;
+pub mod proto;
 pub mod push;
 pub mod push_door;
 pub mod record;
@@ -83,6 +84,7 @@ pub mod task_door;
 pub mod task_hop;
 pub mod tasks;
 pub mod trust;
+pub mod wkt;
 
 pub use frame::{rewrite, Direction, Frame, Tap, Transform};
 

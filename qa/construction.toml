@@ -737,8 +737,12 @@ busbar-transport-stdio = ["tokio", "futures"]
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64"]
 # The same ruling applied to a plane: the `agents:` grammar keeps its registrations in the order an
-# operator wrote them (indexmap), and the plane reads its public base URL once (url).
-busbar-plane-a2a = ["indexmap", "url", "a2a-pb", "a2a-lf", "prost"]
+# operator wrote them (indexmap), and the plane reads its public base URL once (url). Its gRPC line
+# (ARCHITECT ruling Q1 (C), 2026-10-04) generates the a2aproject's messages from the vendored
+# a2a.proto at build time (prost-build driving protoc-bin-vendored's protoc, pbjson-build for the
+# ProtoJSON serde) and decodes, encodes and maps them at run time (prost, pbjson); no gRPC server
+# stack and no calendar crate enter its closure (dep-wall, denylist and source-denylist green).
+busbar-plane-a2a = ["indexmap", "url", "prost", "pbjson", "prost-build", "pbjson-build", "protoc-bin-vendored"]
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a

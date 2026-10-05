@@ -255,3 +255,202 @@ fn the_card_narrowing_removes_only_the_member_the_proto_has_no_field_for() {
         "an empty list means nothing is narrowed and the transcode fails again"
     );
 }
+
+/// THE PLANE'S gRPC LINE IS THIS BINDING, BYTE FOR BYTE (FOLD-A2A, ARCHITECT ruling Q1 (C)): the
+/// plane generates its own messages and ports the SDK's conversion rules, so the request params it
+/// composes, the response message it encodes and the status details it writes are compared here
+/// against this binding's, which is the 1.5.5 path.
+mod plane_parity {
+    use super::*;
+    use busbar_plane_a2a::framed::{self, Rpc};
+    use prost::Message as _;
+
+    fn engine_params<N: protojson_conv::ProtoJsonPayload>(native: &N) -> Value {
+        to_params(native).expect("the engine reads it")
+    }
+
+    fn plane_params(rpc: Rpc, message: &[u8]) -> Value {
+        let composed: Value =
+            serde_json::from_slice(&framed::compose(rpc, message).expect("the plane reads it"))
+                .expect("json");
+        composed["params"].clone()
+    }
+
+    #[test]
+    fn a_request_composes_the_engines_params() {
+        let send = proto::SendMessageRequest {
+            message: Some(proto::Message {
+                message_id: "m-1".into(),
+                context_id: "c-1".into(),
+                role: 99,
+                parts: vec![
+                    proto::Part {
+                        content: Some(proto::part::Content::Text("hello".into())),
+                        media_type: "text/plain".into(),
+                        ..Default::default()
+                    },
+                    proto::Part::default(),
+                    proto::Part {
+                        content: Some(proto::part::Content::Raw(vec![1, 2, 3])),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            configuration: Some(proto::SendMessageConfiguration {
+                accepted_output_modes: vec!["text/plain".into()],
+                history_length: Some(3),
+                return_immediately: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let bytes = send.encode_to_vec();
+        assert_eq!(
+            plane_params(Rpc::SendMessage, &bytes),
+            engine_params(&pbconv::from_proto_send_message_request(&send))
+        );
+        let list = proto::ListTasksRequest {
+            context_id: "c".into(),
+            status: 42,
+            page_size: Some(-1),
+            ..Default::default()
+        };
+        assert_eq!(
+            plane_params(Rpc::ListTasks, &list.encode_to_vec()),
+            engine_params(&pbconv::from_proto_list_tasks_request(&list))
+        );
+        let push = proto::TaskPushNotificationConfig {
+            task_id: "t".into(),
+            url: "https://example.test/hook".into(),
+            token: "tok".into(),
+            authentication: Some(proto::AuthenticationInfo {
+                scheme: "Bearer".into(),
+                credentials: "c".into(),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            plane_params(Rpc::CreateTaskPushNotificationConfig, &push.encode_to_vec()),
+            engine_params(&pbconv::from_proto_task_push_notification_config(&push))
+        );
+    }
+
+    #[test]
+    fn an_answer_encodes_the_engines_message() {
+        let task = serde_json::json!({
+            "id": "t-1", "contextId": "c-1",
+            "status": { "state": "TASK_STATE_COMPLETED", "timestamp": "2026-10-04T12:00:00Z" },
+            "artifacts": [{ "artifactId": "a", "parts": [{ "text": "done" }] }],
+            "history": [{ "messageId": "m", "role": "ROLE_AGENT", "parts": [{ "text": "hi" }] }],
+        });
+        let engine = {
+            let t: a2a::Task = from_result(task.clone()).expect("the engine renders it");
+            pbconv::to_proto_task(&t).encode_to_vec()
+        };
+        let body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": task });
+        assert_eq!(
+            framed::answer(Rpc::GetTask, 200, body.to_string().as_bytes()).expect("renders"),
+            engine
+        );
+        let statusless = serde_json::json!({ "statusUpdate": { "taskId": "t", "contextId": "c" } });
+        let engine = {
+            let e: a2a::StreamResponse = from_result(statusless.clone()).expect("renders");
+            pbconv::to_proto_stream_response(&e).encode_to_vec()
+        };
+        let body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": statusless });
+        assert_eq!(
+            framed::answer(Rpc::SubscribeToTask, 200, body.to_string().as_bytes())
+                .expect("renders"),
+            engine
+        );
+    }
+
+    #[test]
+    fn the_status_details_are_the_engines_bytes() {
+        let err = serde_json::json!({
+            "code": -32001,
+            "message": "no task with id t-404",
+            "data": [{
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "domain": "a2a-protocol.org",
+                "reason": "TASK_NOT_FOUND",
+                "metadata": { "taskId": "t-404" },
+            }],
+        });
+        let engine = status_for_error(&err, axum::http::StatusCode::NOT_FOUND);
+        let plane = framed::status_for_error(&err, 404);
+        assert_eq!(plane.code() as i32, engine.code() as i32);
+        assert_eq!(plane.message(), engine.message());
+        assert_eq!(plane.details(), engine.details());
+    }
+
+    /// THE TIMESTAMP'S RFC 3339 FORM, both ways, is the engine's (`pbjson-types` over `chrono`):
+    /// every string the engine reads the plane reads to the same instant, every one it refuses the
+    /// plane refuses, and every instant is written in the same words.
+    #[test]
+    fn the_timestamp_reads_and_writes_as_the_engines() {
+        let strings = [
+            "2016-11-08T20:07:09+05:00",
+            "2016-11-08t15:07:09z",
+            "2016-11-08 15:07:09Z",
+            "2016-11-08T15:07:09.5Z",
+            "2016-11-08T15:07:09.120Z",
+            "2016-11-08T15:07:09.1234567891Z",
+            "2016-11-08T10:07:09\u{2212}05:00",
+            "2016-12-31T23:59:60Z",
+            "2016-11-08T15:07:60+01:00",
+            "0000-01-01T00:00:00+01:00",
+            "9999-12-31T23:59:59-23:59",
+            "2000-02-29T00:00:00Z",
+            "1900-02-29T00:00:00Z",
+            "2016-11-08T15:07",
+            "2016-11-08X15:07:09Z",
+            "2016-13-08T15:07:09Z",
+            "2016-11-08T24:07:09Z",
+            "2016-11-08T15:07:61Z",
+            "2016-11-08T15:07:09",
+            "2016-11-08T15:07:09+05",
+            "2016-11-08T15:07:09+0500",
+            "2016-11-08T15:07:09+05:60",
+            "2016-11-08T15:07:09+24:00",
+            "2016-11-08T15:07:09Zx",
+            "2016-11-08T15:07:09.Z",
+            "2016-11-08T15:07:09.",
+        ];
+        for s in strings {
+            let doc = serde_json::json!({ "state": "TASK_STATE_WORKING", "timestamp": s });
+            let engine = serde_json::from_value::<a2a_pb::protojson::TaskStatus>(doc.clone());
+            let plane = serde_json::from_value::<busbar_plane_a2a::proto::pb::TaskStatus>(doc);
+            match (engine, plane) {
+                (Ok(e), Ok(p)) => assert_eq!(e.encode_to_vec(), p.encode_to_vec(), "{s}"),
+                (Err(e), Err(p)) => assert_eq!(e.to_string(), p.to_string(), "{s}"),
+                (e, p) => panic!("{s}: the engine read {e:?}, the plane {p:?}"),
+            }
+        }
+        let instants: [(i64, i32); 9] = [
+            (0, 0),
+            (-1, 999_999_999),
+            (1_478_617_629, 500_000_000),
+            (1_478_617_629, 1_000),
+            (1_478_617_629, 7),
+            (-62_167_219_201, 0),
+            (253_402_300_800, 0),
+            (1_483_228_799, 1_000_000_000),
+            (8_210_266_876_799, 0),
+        ];
+        for (seconds, nanos) in instants {
+            let plane = busbar_plane_a2a::proto::pb::TaskStatus {
+                timestamp: Some(busbar_plane_a2a::wkt::Timestamp { seconds, nanos }),
+                ..Default::default()
+            };
+            let engine: a2a_pb::protojson::TaskStatus =
+                prost::Message::decode(plane.encode_to_vec().as_slice()).expect("same wire");
+            assert_eq!(
+                serde_json::to_string(&engine).ok(),
+                serde_json::to_string(&plane).ok(),
+                "{seconds}.{nanos}"
+            );
+        }
+    }
+}
