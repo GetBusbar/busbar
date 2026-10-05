@@ -508,14 +508,14 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
     };
     let opened = axis
         .open(
-            // The build's default store, as boot opens it (the linked store axis's default row).
+            // The build's linked store, as boot opens a configured one (Q-STORE (B): no default
+            // row; the store axis's row is `(name, ephemeral, open, door)`).
             StoreDoor::Linked(
                 crate::LINKED
                     .stores
-                    .iter()
-                    .find(|s| s.2)
-                    .expect("the build links a default store")
-                    .4,
+                    .first()
+                    .expect("the build links a store")
+                    .3,
             ),
             "records-attach",
             b"{}",
