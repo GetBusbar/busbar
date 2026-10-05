@@ -17,7 +17,10 @@
 //!   the route's `audit_verb`, as the admin shim writes a plane verb's.
 //! - One short answer is re-called once; a second short answer or a FAULT answers 502. An index
 //!   past the snapshot never crosses.
-//! - A [`ROUTE_PUBLIC`] route is never on this table.
+//! - A [`ROUTE_PUBLIC`] route is never on the admin table: it is served on the DATA listener's
+//!   mount at its own target to a caller that presents no busbar credential ([`answer_public`],
+//!   SEAM-4o), by the same `serve` op, the data listener's arrival gates (its body cap and rate
+//!   gates) still applying; it meters nothing, and its audit row is written as an admin route's.
 
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
@@ -228,6 +231,69 @@ pub async fn answer(req: Request) -> Option<Response> {
             Err(unserved) => status_only(unserved.status()),
         },
     )
+}
+
+/// THE PUBLIC SERVE PATH (SEAM-4o; `abi::plane::ROUTE_PUBLIC`: "`serve` serves it to an
+/// unauthenticated caller; the arrival gate and the audit still run, it meters nothing"): a data
+/// request at `path` (its query in `target`) under `method`, answered by the published instance
+/// whose PUBLIC route names it, by its `serve` op. No caller credential is asked for or lent; the
+/// head fields cross with the contract's never-kept fields struck. A path no published public route
+/// names answers `404`; a plane fault the kernel's status.
+pub async fn answer_public(
+    method: &str,
+    path: &str,
+    target: &str,
+    headers: &axum::http::HeaderMap,
+    body: Bytes,
+) -> Response {
+    let found = {
+        let tables = TABLES.read().unwrap_or_else(PoisonError::into_inner);
+        tables.iter().find_map(|t| {
+            t.routes.iter().enumerate().find_map(|(i, r)| {
+                let name = fill(&r.target, path)?;
+                (r.flags & ROUTE_PUBLIC != 0 && r.verb.eq_ignore_ascii_case(method))
+                    .then(|| (t.clone(), i, name.to_string()))
+            })
+        })
+    };
+    let Some((table, index, name)) = found else {
+        return status_only(404);
+    };
+    let head: HeadFields = headers
+        .iter()
+        .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
+        .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
+        .collect();
+    let route = &table.routes[index];
+    let served = serve(
+        &*table.calls,
+        table.caps,
+        table.routes.len(),
+        index as u32,
+        target.as_bytes(),
+        head,
+        body,
+    )
+    .await;
+    match served.and_then(|s| reply(&s).map(|resp| (s.audit, resp))) {
+        Ok((audit, resp)) => {
+            let outcome = match audit {
+                AUDIT_APPLIED => Some(busbar_contract::vocab::OUTCOME_APPLIED),
+                AUDIT_REJECTED => Some(busbar_contract::vocab::OUTCOME_REJECTED),
+                _ => None,
+            };
+            if let Some(outcome) = outcome.filter(|_| !route.audit_verb.is_empty()) {
+                crate::audit_ring::AUDIT.record_by(
+                    &format!("{}.{}", table.audit_kind, route.audit_verb),
+                    &format!("{}:{name}", table.audit_kind),
+                    outcome,
+                    AuthPrincipal(None).actor_id(),
+                );
+            }
+            resp
+        }
+        Err(unserved) => status_only(unserved.status()),
+    }
 }
 
 /// SERVE ONE ADMIN REQUEST by the published instance whose admin route names `method` and `path`
