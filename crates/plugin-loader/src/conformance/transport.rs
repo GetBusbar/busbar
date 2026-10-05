@@ -30,9 +30,11 @@
 //!         "ingest_wire": "<what reading them writes>", /* optional: the far side closed in them
 //!                                                       and the close is answered (ws); the
 //!                                                       frames end there */
+//!         "ingest_ends": false,                     /* optional, default true: whether what
+//!                                                       ingest_wire writes ends the connection */
 //!         "finish": "<what finish writes>",         /* optional, default "" (ws's close) */
-//!         "deadline": true },                       /* optional: the emit arms the exchange's
-//!                                                       deadline (http), YIELD_HAS_DEADLINE */
+//!         "deadline": ["begin", "emit", "ingest"] },/* optional: the answers that carry
+//!                                                       YIELD_HAS_DEADLINE (`true`: the emit's) */
 //!     "encode": [{ "body": "<body>", "fields": [["<name>", "<value>"], ...],
 //!                  "wire": "<the rendering>" | null /* FAILED */ }, ...],
 //!     "refuse": "refused" /* a framer that frames DIALLED connections only: `begin` on the
@@ -40,6 +42,9 @@
 //!                            refuse on and none to upgrade; `detach` and `adopt` must then be
 //!                            "refused" too (and no "handoff" object) */ | {
 //!                 "bytes": "<a refusal>", "wire": "<the wire bytes it becomes>",
+//!                 "begin":   "<what begin on the accept side writes>",       /* optional (h2) */
+//!                 "refused": true, /* optional: the refuse op answers REFUSED (grpc refuses a
+//!                                     call, never a connection); "wire" is then "" */
 //!                 "ends": true,                                       /* optional: it closes */
 //!                 "opening": "<far bytes the accepted framing reads first>",  /* optional */
 //!                 "answer":  "<what reading them writes>" },                 /* optional */
@@ -658,6 +663,21 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let target = opt_text(&dial["target"], "dial.target");
     let opening = opt_text(&dial["opening"], "dial.opening");
     let mut tight = Sink::tight();
+    // A wire whose dialled framing holds a deadline (http: the attempt's one clock; grpc: the
+    // call's) states which answers carry YIELD_HAS_DEADLINE: `"deadline": ["begin", "emit",
+    // "ingest"]` (any of them), or `true` for the emit's alone.
+    let armed = |step: &str| -> u32 {
+        let on = match &dial["deadline"] {
+            serde_json::Value::Bool(b) => *b && step == "emit",
+            serde_json::Value::Array(a) => a.iter().any(|v| v.as_str() == Some(step)),
+            _ => false,
+        };
+        if on {
+            YIELD_HAS_DEADLINE
+        } else {
+            0
+        }
+    };
     // A wire that opens with bytes of its own writes them at begin, re-driven by `timer`.
     let token = r.step("begin dial", sinkfuls(opening.len(), TIGHT_WIRE), || {
         let y = pump(&p, 0, Op::Begin(SIDE_DIAL, &target), &mut tight);
@@ -665,7 +685,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     want.push((
         "begin dial".into(),
-        Want::Is(yielded_line(&opening, &[], &[], 0, true)),
+        Want::Is(yielded_line(&opening, &[], &[], armed("begin"), true)),
     ));
     // The far side's opening answer, read before the first frame: it writes and yields nothing.
     if !dial["answer"].is_null() {
@@ -681,16 +701,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("emit", sinkfuls(wire.len(), TIGHT_WIRE), || {
         pump(&p, token, Op::Emit(&emit, true), &mut tight).line()
     });
-    // A wire whose emit arms the exchange's deadline (http: the attempt's one clock) states
-    // `"deadline": true`; the answer then carries YIELD_HAS_DEADLINE.
-    let armed = if dial["deadline"].as_bool().unwrap_or(false) {
-        YIELD_HAS_DEADLINE
-    } else {
-        0
-    };
     want.push((
         "emit".into(),
-        Want::Is(yielded_line(&wire, &[], &[], armed, false)),
+        Want::Is(yielded_line(&wire, &[], &[], armed("emit"), false)),
     ));
     // What reading them writes back (a ws close answered), absent = nothing.
     let answered = opt_text(&dial["ingest_wire"], "dial.ingest_wire");
@@ -698,11 +711,10 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("ingest", ingest_calls, || {
         pump(&p, token, Op::Ingest(&ingest, false), &mut tight).line()
     });
-    let ingest_flags = if dial["ingest_wire"].is_null() {
-        0
-    } else {
-        YIELD_ENDED
-    };
+    // What reading them writes ends the connection (a ws close answered) unless the wire states
+    // `"ingest_ends": false` (h2: the settings acknowledged, the connection carries on).
+    let ends = !dial["ingest_wire"].is_null() && dial["ingest_ends"].as_bool().unwrap_or(true);
+    let ingest_flags = armed("ingest") | if ends { YIELD_ENDED } else { 0 };
     want.push((
         "ingest".into(),
         Want::Is(yielded_line(&answered, &frames, &[], ingest_flags, false)),
@@ -781,13 +793,20 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             text(&refuse["bytes"], "refuse.bytes"),
             text(&refuse["wire"], "refuse.wire"),
         );
-        let token = r.step("begin accept", 1, || {
-            let y = once(&p, 0, Op::Begin(SIDE_ACCEPT, b""), &mut tight);
-            (y.line(), y.framing)
-        });
+        // A wire whose accepted framing opens with bytes of its own (h2: the server's settings)
+        // states them as `refuse.begin`; begin is re-driven by `timer` while they do not fit.
+        let accept_opening = opt_text(&refuse["begin"], "refuse.begin");
+        let token = r.step(
+            "begin accept",
+            sinkfuls(accept_opening.len(), TIGHT_WIRE),
+            || {
+                let y = pump(&p, 0, Op::Begin(SIDE_ACCEPT, b""), &mut tight);
+                (y.line(), y.framing)
+            },
+        );
         want.push((
             "begin accept".into(),
-            Want::Is(yielded_line(&[], &[], &[], 0, true)),
+            Want::Is(yielded_line(&accept_opening, &[], &[], 0, true)),
         ));
         // A wire whose accepted framing must be opened before it can carry a refusal (ws: the upgrade
         // request, answered with the switch) reads its opening first.
@@ -802,6 +821,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
                 Want::Is(yielded_line(&answer, &[], &[], 0, false)),
             ));
         }
+        // A wire that refuses a call but never a connection (grpc) states `"refused": true`: the
+        // refuse op answers REFUSED and writes nothing.
+        let refuses_none = refuse["refused"].as_bool().unwrap_or(false);
         r.line("refuse", sinkfuls(wire.len(), TIGHT_WIRE), || {
             pump(&p, token, Op::Refuse(&bytes), &mut tight).line()
         });
@@ -811,7 +833,11 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         let ended = if ends { YIELD_ENDED } else { 0 };
         want.push((
             "refuse".into(),
-            Want::Is(yielded_line(&wire, &[], &[], ended, false)),
+            if refuses_none {
+                Want::Starts("Refused ")
+            } else {
+                Want::Is(yielded_line(&wire, &[], &[], ended, false))
+            },
         ));
         r.line("timer", 1, || pump(&p, token, Op::Timer, &mut tight).line());
         want.push((
