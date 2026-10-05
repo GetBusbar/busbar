@@ -1622,7 +1622,8 @@ mod tool_door {
             assert_eq!(chained.len(), 1, "the call's one chained record");
         }
         let rows = rig.book.durability.lock().expect("unpoisoned").read_back();
-        let lane = format!("{}{PLANE_LANE_SEP}fs", rig.plane_key);
+        // The unit's lane is the published tool it called (SEAM-L(j)), as predev ledgered a call.
+        let lane = format!("{}{PLANE_LANE_SEP}fs_read_file", rig.plane_key);
         let lines: Vec<_> = rows
             .iter()
             .filter(|p| p.counts.as_ref().is_some_and(|c| c.lane == lane))
@@ -3710,7 +3711,8 @@ mod task_continuation {
             .expect("every unit ended");
         assert_eq!(rig.admitted(), 2, "the creating unit and its continuation");
         let rows = rig.book.durability.lock().expect("unpoisoned").read_back();
-        let lane = format!("{}{PLANE_LANE_SEP}fs", rig.plane_key);
+        // The unit's lane is the published tool it called (SEAM-L(j)), as predev ledgered a call.
+        let lane = format!("{}{PLANE_LANE_SEP}fs_read_file", rig.plane_key);
         let calls: Vec<_> = rows
             .iter()
             .filter(|p| p.counts.as_ref().is_some_and(|c| c.lane == lane))
