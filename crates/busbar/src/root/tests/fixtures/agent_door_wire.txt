@@ -1,0 +1,13 @@
+# THE AGENT DOOR'S WIRE WORDS (serve.rs, the agent door's root leg) -- golden input data, one
+# `key = value` per line (`#` starts a comment). These are the linked plane's own words its
+# Statement does not carry, as the root's door cells use them: the section its grammar reads (the
+# door the cells drive is the linked plane door that owns it), its key (the `hooks:` container the
+# cells attach an agent's hooks under), the mount its claims sit under, and the resource type its
+# task rows are named by in a refusal's details.
+#
+# Copied from the line-served plane's own sources: lib.rs (CONFIG_SECTION, PLANE_KEY, MOUNT_PATH)
+# and the task row's ErrorInfo resource type.
+section = agents
+plane_key = a2a
+mount = /a2a
+task_resource_type = a2a.busbar/task
