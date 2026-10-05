@@ -73,6 +73,11 @@ pub mod tool_scope;
 /// SEP-2663, the tasks extension: a task's state, shapes, sweep and durable rows.
 pub mod tool_tasks;
 pub mod tools_config;
+
+/// THE PLANE'S DECLARED METADATA (`declares.json`): its manifest `declares` section, the static
+/// statement the root reads for this linked plugin as it reads every default-linked plugin's (the
+/// codes its catalog holds, [`diagnostics::DIAGNOSTICS`]). A test holds the two equal.
+pub const DECLARES: &str = include_str!("../declares.json");
 /// THE DOOR CRATE'S CONVENTIONAL PATH, `<crate>::plane_door::door`: what a test-linked `door:` row's
 /// generated table names (the build scripts of the crates that test-link this door). The door
 /// itself is [`tool_door::door`].

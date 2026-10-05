@@ -112,3 +112,32 @@ fn every_live_entry_documents_meaning_and_action() {
         );
     }
 }
+
+/// THE PLANE'S `declares.json` IS ITS CATALOG: the static declared metadata the root reads for this
+/// linked plugin (its `declares` section: every code this plane raises) states exactly the entries
+/// [`DIAGNOSTICS`] holds, field for field, so the two cannot drift.
+#[test]
+fn the_declares_file_states_the_catalog() {
+    let declared: serde_json::Value =
+        serde_json::from_str(crate::DECLARES).expect("declares.json is JSON");
+    let want: Vec<serde_json::Value> = DIAGNOSTICS
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "code": d.code,
+                "slug": d.slug,
+                "title": d.title,
+                "severity": d.severity.as_str(),
+                "summary": d.summary,
+                "action": d.action,
+                "since": d.since,
+            })
+        })
+        .collect();
+    assert_eq!(
+        declared,
+        serde_json::json!({ "diagnostics": want }),
+        "declares.json drifted from the catalog; expected:\n{}",
+        serde_json::to_string_pretty(&serde_json::json!({ "diagnostics": want })).unwrap()
+    );
+}

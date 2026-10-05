@@ -389,7 +389,7 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     audit_kind: abi_str(AUDIT_KIND),
     signing_domain: abi_str(ASK_SIGNING_DOMAIN),
     signing_kid_prefix: abi_str(ASK_KID_PREFIX),
-    cli_help: NONE,
+    cli_help: abi_str(crate::tool_meta::HELP_FLAGS),
     dialects: DIALECTS.as_ptr(),
     dialects_len: DIALECTS.len(),
     dialect_auth: std::ptr::null(),
