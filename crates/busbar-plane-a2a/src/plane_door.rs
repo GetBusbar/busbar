@@ -158,6 +158,9 @@ pub struct Hop {
     /// A gRPC send whose request carried no message: its first ATTEMPT mints the message's id
     /// ([`crate::framed::mints_message_id`]) before the task is opened.
     mint_message_id: bool,
+    /// The agent the latest ATTEMPT reached (its route entry): the unit's ledger lane and the
+    /// resource its audit row names.
+    member: String,
 }
 
 impl Hop {
@@ -183,6 +186,7 @@ impl Hop {
             left: false,
             rewritten: None,
             mint_message_id: false,
+            member: String::new(),
         }
     }
 
@@ -1335,8 +1339,21 @@ fn piece(
 ) -> (Outcome, bool) {
     let given = input.get();
     let bytes = input.field(|i| &i.bytes).bytes();
-    let member = input.field(|i| &i.member).as_str().unwrap_or_default();
+    let given_member = input.field(|i| &i.member).as_str().unwrap_or_default();
     let caller = input.field(|i| &i.caller_ref).as_str().unwrap_or_default();
+    // The agent the unit's ATTEMPT reached, kept for its later pieces (the far end's name none).
+    if let Some(hop) = unit.hop.as_mut() {
+        if given.from == FROM_KERNEL && !given_member.is_empty() {
+            hop.member = given_member.to_string();
+        }
+    }
+    let member_owned = unit
+        .hop
+        .as_ref()
+        .map(|h| h.member.clone())
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| given_member.to_string());
+    let member = member_owned.as_str();
     let url = url_of(unit, member).map(str::to_string);
     // THE AGENT'S REGISTRATION, as the unit's generation holds it: what the trust gates judge.
     let def = unit
@@ -1560,6 +1577,9 @@ fn piece(
             left,
         ));
     }
+    // THE UNIT'S LEDGER LANE (SEAM-L(j)): the agent it reached, as the engine's meter named it
+    // (`agent:<id>`), so the agent's rate card prices it and the metering rows read as 1.5.5's.
+    let lane = (!member.is_empty()).then(|| arena.span(door::agent_resource(member).as_bytes()));
     // A stream that already sent messages states the status it ends with on its closing answer:
     // its message and details are in the arena by then.
     let closing_final = ob
@@ -1626,6 +1646,9 @@ fn piece(
     if let (Some(v), Some(t)) = (verb, target) {
         out.set(|o| &o.verb, v);
         out.set(|o| &o.target, t);
+    }
+    if let Some(lane) = lane {
+        out.set(|o| &o.lane, lane);
     }
     out.set(|o| &o.emitted, n as u64);
     out.set(|o| &o.more, u32::from(more));
@@ -1746,6 +1769,18 @@ slot!(
             arrival::render(dialect, &refusal, true)
         } else {
             let text = std::str::from_utf8(text).unwrap_or_default();
+            // A refusal of the caller's governance (a spent budget, a request limit, a frozen
+            // group, a reached overdraft ceiling) in the engine's own words for it.
+            use busbar_contract::abi::plane::RefusalCode as Code;
+            let governance = [
+                Code::RateLimited,
+                Code::OverBudget,
+                Code::GroupFrozen,
+                Code::OverdraftCeiling,
+            ]
+            .iter()
+            .any(|c| c.code() == given.reason);
+            let text = if governance { arrival::BUDGET_SPENT } else { text };
             arrival::render(dialect, &arrival::kernel_refusal(given.status, text), false)
         };
         // ON THE gRPC LINE the rendered envelope is the status the call ends with, as the engine's

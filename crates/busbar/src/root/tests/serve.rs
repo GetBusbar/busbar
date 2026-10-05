@@ -593,7 +593,7 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
 /// through the loader's one load, opened with its `agents:` section and the deployment's public
 /// base URL, its claims mounted on the data router at its construction, a keyed caller's request
 /// admitted and charged by the door steps and answered by the door.
-#[cfg(all(linked_axis_node, linked_axis_plane_door))]
+#[cfg(linked_axis_node)]
 mod agent_door {
     use std::collections::BTreeMap;
     use std::sync::Arc;

@@ -62,8 +62,11 @@ pub struct Pass {
     /// The reply the windows write is one message (the gRPC line's).
     message: bool,
     /// The audit row the unit's answer writes with its first window: its resource, and whether
-    /// the unit was served ([`crate::door::AUDIT_ACTION`]).
+    /// the unit was served ([`crate::door::AUDIT_ACTION`]); its resource is also the unit's ledger
+    /// lane (SEAM-L(j)).
     pub(crate) audit: Option<(String, bool)>,
+    /// The agent the unit's ATTEMPT reached.
+    member: String,
 }
 
 /// A finished listing: the handle the piece's calls count on from after it, and its answer's status
@@ -450,6 +453,15 @@ pub fn on_piece(
     }
     // The ATTEMPT piece: the caller's body follows, and the answer comes on it.
     if input.get().from != FROM_CALLER {
+        // The agent the ATTEMPT reached, kept for the caller's piece.
+        let given = input.field(|i| &i.member).as_str().unwrap_or_default();
+        if !given.is_empty() {
+            plane.units.with(&unit, |u| {
+                if let Some(u) = u {
+                    u.pass.member = given.to_string();
+                }
+            });
+        }
         return Some(Outcome::Ready);
     }
     let host = plane.host.as_ref()?;
@@ -485,7 +497,16 @@ pub fn on_piece(
     // THE ADMISSION AND THE CATALOGUE (the engine's `receive::admit`, ahead of its local verbs): a
     // verb routed to an agent that is not `approved`, holds no card, or whose card the request does
     // not fit, is refused in the engine's words.
-    let member = input.field(|i| &i.member).as_str().unwrap_or_default();
+    let given_member = input.field(|i| &i.member).as_str().unwrap_or_default();
+    let held_member = plane
+        .units
+        .with(&unit, |u| u.map(|u| u.pass.member.clone()))
+        .unwrap_or_default();
+    let member = if given_member.is_empty() {
+        held_member.as_str()
+    } else {
+        given_member
+    };
     let refused = section
         .as_ref()
         .and_then(|s| s.agents.get(member))
@@ -1012,6 +1033,11 @@ fn window_core(
     if let Some((resource, applied)) = &audit {
         records.push(crate::door::audit_write(&mut arena, resource, *applied));
     }
+    // THE UNIT'S LEDGER LANE (SEAM-L(j)): the resource its row names (`agent:<id>`, or the plane
+    // pool for busbar's extended card), as the engine's meter named it.
+    let lane = audit
+        .as_ref()
+        .map(|(resource, _)| arena.span(resource.as_bytes()));
     let short = !(fields.fits() && records.fits() && arena.fits() && units.fits());
     let (fw, fnd) = fields.settle(short);
     let (rw, rnd) = records.settle(short);
@@ -1034,6 +1060,9 @@ fn window_core(
                 u.pass.audit = None;
             }
         });
+    }
+    if let Some(lane) = lane {
+        out.set(|o| &o.lane, lane);
     }
     let n = reply.stream(body);
     let rest = &body[n..];

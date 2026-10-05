@@ -442,6 +442,10 @@ pub fn render(dialect: Dialect, refusal: &Refusal, own_status: bool) -> Rendered
     }
 }
 
+/// The engine's words for a call its caller's governance refused (a spent budget, a request limit):
+/// `receive`'s `govern_admit_reason` refusal, `429`, `-32004`.
+pub const BUDGET_SPENT: &str = "this key's budget is spent";
+
 /// A refusal the kernel made (a key not live, a scope not held, a budget spent, a gate's no), as
 /// the plane words it: the engine's admission rendering, `-32004` with the kernel's text and no id,
 /// at the kernel's status.
