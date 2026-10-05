@@ -172,39 +172,6 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-a2a/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-a2a/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-a2a/src/tests"
-   ]
-  },
-  {
-   "id": "crates/busbar-a2a/build.rs",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-a2a/build.rs"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
    "id": "crates/busbar-contract/src",
    "kind": "production",
    "paths": [
@@ -785,21 +752,6 @@
    "kind": "test",
    "paths": [
     "crates/busbar/benches"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-a2a/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-a2a/src/tests"
    ],
    "tree_hash": null,
    "audited_at": null,

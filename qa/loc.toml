@@ -43,7 +43,6 @@ extra_crates = []
 # treated as zero: a group whose members have all been renamed measures nothing and reads clean.
 label = "the plane work 1.6.0 adds that v1.5.5 had no counterpart for"
 crates = [
-  "busbar-a2a",
   "busbar-mcp",
   "busbar-plane-a2a",
   "busbar-plane-decisions",

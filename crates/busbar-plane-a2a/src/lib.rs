@@ -260,6 +260,14 @@ pub const ERROR_INFO_TYPE: &str = "type.googleapis.com/google.rpc.ErrorInfo";
 /// reason tokens above are the specification's vocabulary and the domain says so.
 pub const ERROR_INFO_DOMAIN: &str = "a2a-protocol.org";
 
+/// THE ENTRY A COMPOSITION ROOT THAT LINKED THIS PLANE READS beside its door (the root's
+/// `[package.metadata.busbar.linked-axes]` row for this crate): the plane's diagnostics catalog. The
+/// door itself is `plane_door::door`, the plane-door row's entry.
+pub mod linked {
+    /// The diagnostics axis: the `A2A_*` catalog entries this plane owns.
+    pub use crate::diagnostics::DIAGNOSTICS;
+}
+
 use busbar_contract::ids::LaneId;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
 
