@@ -252,6 +252,57 @@ async fn the_ingress_caller_answers_with_the_units_head_and_bytes() {
     assert_eq!(&body[..], b"hello world");
 }
 
+/// A WHOLE ANSWER STATES ITS LENGTH (1.5.5 parity: a buffered answer went out under
+/// `content-length`, never chunked): a head that states its length (one the plane rendered in full)
+/// is collected to its end and sent under the length of what was written; an event stream, and an
+/// answer that states no length, go out piece by piece. RED before: every answer streamed.
+#[tokio::test]
+async fn a_whole_answer_is_sent_under_its_length_and_a_stream_piece_by_piece() {
+    use http_body::Body as _;
+    let cases: [(HeadFields, Option<u64>); 3] = [
+        (
+            vec![
+                (b"content-type".to_vec(), b"application/json".to_vec()),
+                (b"content-length".to_vec(), b"99".to_vec()),
+            ],
+            Some(11),
+        ),
+        (
+            vec![
+                (b"content-type".to_vec(), b"text/event-stream".to_vec()),
+                (b"content-length".to_vec(), b"11".to_vec()),
+            ],
+            None,
+        ),
+        (
+            vec![(b"content-type".to_vec(), b"application/json".to_vec())],
+            None,
+        ),
+    ];
+    for (fields, length) in cases {
+        let (caller, reply) = IngressCaller::new();
+        let caller = Arc::new(caller);
+        let writer = Arc::clone(&caller);
+        let unit: DrivenUnit = Box::pin(async move {
+            writer.head(200, fields);
+            assert!(writer.write(b"hello ").await);
+            assert!(writer.write(b"world").await);
+            None
+        });
+        drop(caller);
+        let response = reply.answer(unit).await;
+        assert_eq!(
+            response.body().size_hint().exact(),
+            length,
+            "the length stated, or none"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("the body");
+        assert_eq!(&body[..], b"hello world");
+    }
+}
+
 /// A write resolves only once the body has taken the piece before it: one piece in flight.
 #[tokio::test]
 async fn an_ingress_write_waits_for_the_body_to_take_the_piece_before_it() {
