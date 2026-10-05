@@ -232,12 +232,13 @@
 # binary on the 1.6 line (which has the destination guard) is handed `advanced.allow_destinations: ["127.0.0.1"]`,
 # the address every oracle mock binds; 1.5.5 refuses that key, so the golden side is not given it.
 #
-# 2026-10-04: moved 0a1aa7c0dc9a -> c7de1ab97982 (busbar-release main, the merge of #155), the merge
-# commit of the head above, as that note asked; promote.yml RELEASE_REF moves to the same sha in the same
-# commit, so CI and lane proofs run ONE engine.
+# 2026-10-04: moved 0a1aa7c0dc9a -> 4a7a7bba2cef (busbar-release DEV, the merge of #156 = the same three
+# commits as #155). The engine lives on dev (2ada212 is an ancestor); #155's merge into busbar-release main
+# (c7de1ab) lacks dev's engine fixes and is NOT pinned. promote.yml RELEASE_REF moves to the same sha in the
+# same commit, so CI and lane proofs run ONE engine.
 #
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=c7de1ab97982d790be6b02277afd681a3d9c2ba4
+release_ref=4a7a7bba2cef472ab4078ab3b50afc5b99c2c4ac
 crate=busbar-release-oracle
 bin=busbar-oracle
