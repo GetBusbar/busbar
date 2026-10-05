@@ -584,7 +584,8 @@ extern "C" {
 #define BB_HSVC_OP_NEED_ADMIT UINT32_C(19) /* `need.admit`. */
 #define BB_HSVC_OP_TRUST_VERIFY UINT32_C(20) /* `trust.verify`. */
 #define BB_HSVC_OP_RECORDS_SECRET UINT32_C(21) /* `records.secret`. */
-#define BB_HSVC_SERVICES UINT32_C(22) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_SESSION_EMIT UINT32_C(22) /* `session.emit`. */
+#define BB_HSVC_SERVICES UINT32_C(23) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
 #define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
@@ -629,6 +630,7 @@ extern "C" {
 #define BB_HSVC_MAX_RANDOM_FILL UINT64_C(1024) /* The most bytes one `random.fill` answers. */
 #define BB_HSVC_CONTENT_PASS UINT64_C(0) /* `content.scan`: the content passes. */
 #define BB_HSVC_CONTENT_BLOCK UINT64_C(1) /* `content.scan`: the gate blocked it. */
+#define BB_HSVC_CARRIER_SESSION_FIELD "busbar-carrier-session" /* The head field a CARRIER SESSION's arrivals carry, naming the session they arrived over: the */
 
 /* ---- enumerations ---- */
 /* What an op answered. */
@@ -980,6 +982,7 @@ typedef struct bb_hsvc_RandomFillIn bb_hsvc_RandomFillIn;
 typedef struct bb_hsvc_ContentScanIn bb_hsvc_ContentScanIn;
 typedef struct bb_hsvc_HookCallIn bb_hsvc_HookCallIn;
 typedef struct bb_hsvc_NeedAdmitIn bb_hsvc_NeedAdmitIn;
+typedef struct bb_hsvc_SessionEmitIn bb_hsvc_SessionEmitIn;
 typedef struct bb_hsvc_HostSlots bb_hsvc_HostSlots;
 
 /* ---- scalar and function-pointer types ---- */
@@ -3555,6 +3558,13 @@ struct bb_hsvc_NeedAdmitIn {
     uint32_t _reserved;
 };
 
+/* [`op::SESSION_EMIT`]'s `in`: write `bytes`, UNSOLICITED, on the open carrier session `session` */
+struct bb_hsvc_SessionEmitIn {
+    bb_hsvc_ServiceHead head;
+    uint64_t session;
+    bb_mech_Blob bytes;
+};
+
 /* THE HOST SERVICES TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is a service */
 struct bb_hsvc_HostSlots {
     uint32_t size;
@@ -3581,9 +3591,10 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn need_admit;
     bb_hsvc_ServiceFn trust_verify;
     bb_hsvc_ServiceFn records_secret;
+    bb_hsvc_ServiceFn session_emit;
 };
 
-/* ---- layout proof: 262 of 265 structures are pinned by the golden ---- */
+/* ---- layout proof: 263 of 266 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -5596,7 +5607,12 @@ BB_ASSERT(BB_ALIGNOF(bb_hsvc_NeedAdmitIn) == 4, "bb_hsvc_NeedAdmitIn: alignment"
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, head) == 0, "bb_hsvc_NeedAdmitIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, need) == 24, "bb_hsvc_NeedAdmitIn.need: offset");
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, _reserved) == 28, "bb_hsvc_NeedAdmitIn._reserved: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 184, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_SessionEmitIn) == 56, "bb_hsvc_SessionEmitIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_SessionEmitIn) == 8, "bb_hsvc_SessionEmitIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_SessionEmitIn, head) == 0, "bb_hsvc_SessionEmitIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_SessionEmitIn, session) == 24, "bb_hsvc_SessionEmitIn.session: offset");
+BB_ASSERT(offsetof(bb_hsvc_SessionEmitIn, bytes) == 32, "bb_hsvc_SessionEmitIn.bytes: offset");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 192, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -5622,6 +5638,7 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, random_fill) == 152, "bb_hsvc_HostSlots.ra
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, need_admit) == 160, "bb_hsvc_HostSlots.need_admit: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_verify) == 168, "bb_hsvc_HostSlots.trust_verify: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, records_secret) == 176, "bb_hsvc_HostSlots.records_secret: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, session_emit) == 184, "bb_hsvc_HostSlots.session_emit: offset");
 #endif
 
 #ifdef __cplusplus

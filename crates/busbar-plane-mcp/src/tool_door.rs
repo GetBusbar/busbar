@@ -188,6 +188,12 @@ pub struct McpDoor {
     tasks: Keyed<String, crate::tool_tasks::Task>,
     /// The result chunks of dropped tasks still to strike, by `taskId`: how many.
     strikes: Keyed<String, u32>,
+    /// THE LIVE ASK ROUNDS on carrier sessions, by `(session, ask number)` ([`door_line`]).
+    live_asks: Keyed<(u64, u64), crate::line::LiveAsk>,
+    /// The subscriptions kept on carrier sessions, by `(session, request id)` ([`door_line`]).
+    line_listens: Keyed<(u64, String), door_line::LineListen>,
+    /// The last number busbar spelled one of its own requests on a carrier session in.
+    ask_seq: Keyed<(), u64>,
 }
 
 impl McpDoor {
@@ -295,6 +301,9 @@ slot!(
             roots: Keyed::new(),
             greeted: Keyed::new(),
             answered: Keyed::new(),
+            live_asks: Keyed::new(),
+            line_listens: Keyed::new(),
+            ask_seq: Keyed::new(),
         };
         let spec = door::snapshot_spec_with(plane.admitted.clone(), plane.facts.clone());
         let held = Held::pooled(generation, cfg, pools);
@@ -340,9 +349,10 @@ slot!(
     /// [`door_listen::POLL_NS`].
     Tick, TickIn, TickOut, |instance, input, mut out| {
         let given = input.get();
-        let next = instance
-            .get()
-            .map_or(0, |plane| door_listen::tick(plane, given.head.ticket, given.now_ns));
+        let next = instance.get().map_or(0, |plane| {
+            door_line::tick(plane, given.head.ticket, given.now_ns);
+            door_listen::tick(plane, given.head.ticket, given.now_ns)
+        });
         out.set(|o| &o.next_tick_ns, next);
         Outcome::Ready
     }
@@ -446,6 +456,8 @@ struct CallUnit {
     readied: Option<u32>,
     /// What the unit is to the tasks extension ([`door_tasks`]).
     task: Option<door_tasks::TaskUnit>,
+    /// What the unit is to the line carrier: its session and what its line was ([`door_line`]).
+    line: Option<door_line::LineUnit>,
 }
 
 /// A relayed `tools/call`: what was admitted, the round in flight and the far end's answer so far.
@@ -710,6 +722,12 @@ fn refused_arrival(out: &mut Out<'_, ArriveOut>, status: u32, text: String) -> O
 /// The words of an arrival on a verb the endpoint does not serve.
 const NOT_ALLOWED_TEXT: &str = r#"{"allow":"POST"}"#;
 
+/// The status a line naming no carrier session is refused with.
+const STATUS_BAD_REQUEST: u32 = 400;
+
+/// A line that names no carrier session: the host states one on every line it opens a unit for.
+const NO_SESSION_TEXT: &str = r#"{"status":400,"id":null,"code":-32600,"message":"a line of the line carrier names no carrier session"}"#;
+
 /// The words of an arrival from a browser origin the deployment does not admit.
 const FORBIDDEN_ORIGIN_TEXT: &str = r#"{"origin":"forbidden"}"#;
 
@@ -812,7 +830,41 @@ slot!(
             .and_then(|(_, _, call)| serde_json::from_slice::<Value>(call).ok())
             .map(|v| crate::codec::mirrored(&v))
             .unwrap_or_default();
-        let body: &[u8] = task_body.as_deref().unwrap_or(body);
+        // A LINE OF THE LINE CARRIER (ARCHITECT Q1a): what it is to the carrier session it arrived
+        // over, and the bytes the one dispatch decides on (none: the unit answers its preset).
+        let line_route = input.get().claim as usize == door::LINE_ROUTE;
+        let line_arrival = line_route.then(|| {
+            let session = fields
+                .iter()
+                .find(|f| {
+                    f.field(|f| &f.name).as_str().is_ok_and(|n| {
+                        n.eq_ignore_ascii_case(
+                            busbar_contract::abi::host::service::CARRIER_SESSION_FIELD,
+                        )
+                    })
+                })
+                .and_then(|f| f.field(|f| &f.value).as_str().ok()?.trim().parse::<u64>().ok())
+                .unwrap_or(0);
+            door_line::arrive(plane, session, body)
+        });
+        if line_arrival.as_ref().is_some_and(|a| a.unit.session == 0) {
+            return refused_arrival(&mut out, STATUS_BAD_REQUEST, NO_SESSION_TEXT.to_string());
+        }
+        let line_dispatch = line_arrival.as_ref().map(|a| a.dispatch.clone());
+        let line_silent = matches!(line_dispatch, Some(None));
+        let line_body = line_dispatch.flatten();
+        let mirrored = match &line_body {
+            Some(b) => serde_json::from_slice::<Value>(b)
+                .ok()
+                .map(|v| crate::codec::mirrored(&v))
+                .unwrap_or_default(),
+            None => mirrored,
+        };
+        let line_unit = line_arrival.map(|a| a.unit);
+        let body: &[u8] = line_body
+            .as_deref()
+            .or(task_body.as_deref())
+            .unwrap_or(body);
         let field = |name: &str| {
             fields
                 .iter()
@@ -829,7 +881,22 @@ slot!(
                         .map(|(_, v)| v.as_str())
                 })
         };
-        let disposition = crate::tool_arrival::decide(body, field);
+        let disposition = if line_silent {
+            // A line the carrier answers itself: nothing for the one dispatch to decide.
+            Disposition::Notice {
+                method: String::new(),
+            }
+        } else {
+            match crate::tool_arrival::decide(body, field) {
+                // A notification is never answered on the line, refused or not.
+                Disposition::Refused(_) if line_route && door_line::is_notification(body) => {
+                    Disposition::Notice {
+                        method: String::new(),
+                    }
+                }
+                decided => decided,
+            }
+        };
         if let Disposition::Refused(refusal) = &disposition {
             return refused_arrival(&mut out, refusal.status, refusal_text(refusal));
         }
@@ -840,8 +907,9 @@ slot!(
         out.set(|o| &o.principal_need, PRINCIPAL_REQUIRED);
         out.set(|o| &o.dialect, 0);
         let value = serde_json::from_slice::<Value>(body).ok();
+        // A line's answer is one line: never an event stream.
         let framing = match (&disposition, value.as_ref()) {
-            (Disposition::Request { row, .. }, Some(v)) => {
+            (Disposition::Request { row, .. }, Some(v)) if !line_route => {
                 Framing::of(field("accept"), row.method, v)
             }
             _ => None,
@@ -898,8 +966,11 @@ slot!(
         }
         // THE SUBSCRIPTION ON THE HTTP CARRIER (ARCHITECT round 5 Q-L3B-K6-HTTP (a)): a K6 session,
         // the long-lived response its caller leg ([`door_listen`]).
-        if matches!(&disposition, Disposition::Request { row, .. }
-            if row.op == crate::tool_ops::OP_SUBSCRIPTIONS_LISTEN)
+        // On the line carrier the subscription is kept on the carrier session instead
+        // ([`door_line::listen`]).
+        if !line_route
+            && matches!(&disposition, Disposition::Request { row, .. }
+                if row.op == crate::tool_ops::OP_SUBSCRIPTIONS_LISTEN)
         {
             out.session();
         }
@@ -944,6 +1015,7 @@ slot!(
             program: None,
             readied: None,
             task: task_run.map(|(reference, params, _)| door_tasks::TaskUnit::run(reference, params)),
+            line: line_unit,
         };
         keep(&plane.units, MAX_UNITS, input.get().unit, unit);
         Outcome::Ready
@@ -1248,6 +1320,16 @@ fn answer_body(
     } else {
         caller
     };
+    // A LINE the carrier answers itself (an era verb, an answer busbar asked for), and a line's
+    // subscription, kept on its carrier session ([`door_line`]).
+    if let Some(pending) = door_line::preset(plane, ticket, unit) {
+        unit.pending = Some(pending);
+        return Some(Step::Write);
+    }
+    if let Some(pending) = door_line::listen(plane, ticket, unit) {
+        unit.pending = Some(pending);
+        return Some(Step::Write);
+    }
     // A TASK'S CONTINUATION runs its own phases; a `tasks/*` verb is answered from the task.
     if door_tasks::is_run(unit) {
         return Some(door_tasks::begin(plane, ticket, principal, unit));
@@ -2026,6 +2108,16 @@ slot!(
             Some(Step::Write) => {
                 let finished = plane.units.with(&key, |unit| {
                     let unit = unit?;
+                    // A line's `input_required` answer is put to its caller as live requests on
+                    // the carrier session ([`door_line::liven`]), before its first byte goes.
+                    if unit.line.is_some() && unit.pending.as_ref().is_some_and(|p| !p.headed) {
+                        let principal = if caller.is_empty() {
+                            crate::ask::UNGOVERNED
+                        } else {
+                            caller.as_str()
+                        };
+                        door_line::liven(plane, ticket, principal, unit);
+                    }
                     let pending = unit.pending.as_mut()?;
                     Some(write(&input, &mut out, pending))
                 });
@@ -2197,6 +2289,11 @@ slot!(
                 .flatten()
             })
         });
+        // The registration the refused call resolved to (its server), where the catalogue holds it.
+        let called_server = instance.get().and_then(|plane| {
+            let held = plane.current()?;
+            Some(held.catalogue.tool(called.as_deref()?)?.server.clone())
+        });
         // What the refused unit is to the tasks extension: a call that would have created a task
         // (its budget refusal is the served engine's task-path words), or a task's continuation
         // (its task fails).
@@ -2213,6 +2310,7 @@ slot!(
             door_tasks::continuation_refused(plane, given.unit, reference, message);
         }
         let mut audit: Option<crate::call::AuditRow> = None;
+        let mut retry_after: Option<u32> = None;
         let (status, body, allow) = if given.cause == REFUSAL_ARRIVE {
             match words_of(text) {
                 Some(Words::Rpc(refusal)) => (refusal.status, refusal.body(), false),
@@ -2253,7 +2351,30 @@ slot!(
                     .as_deref()
                     .map(|name| crate::call::AuditRow::tool(name, false));
             }
-            if let (true, Some(name)) = (ungranted, called.as_deref()) {
+            let breaker_open =
+                given.reason == busbar_contract::abi::plane::RefusalCode::BreakerOpen.code();
+            if let (true, Some(server)) = (breaker_open, called_server.as_deref()) {
+                // A TRIPPED SERVER (the walk found no member its breaker admits): the served
+                // engine's `503`, `-32030`, its sentence and data, and the wait the kernel's cell
+                // knows as `Retry-After`.
+                retry_after = Some(given.retry_after_s);
+                let refusal = crate::tool_arrival::Refusal {
+                    status: STATUS_UNAVAILABLE_UPSTREAM,
+                    id: unit_id.clone(),
+                    code: crate::codec::CODE_UPSTREAM_UNAVAILABLE,
+                    message: format!(
+                        "MCP server `{server}` is unavailable: its circuit breaker is open after \
+                         repeated failures; busbar did not dispatch this call. Retry after {}s.",
+                        given.retry_after_s
+                    ),
+                    data: Some(serde_json::json!({
+                        "reason": "upstream_unavailable",
+                        "server": server,
+                        "retry_after_ms": u64::from(given.retry_after_s).saturating_mul(1000),
+                    })),
+                };
+                (refusal.status, refusal.body(), false)
+            } else if let (true, Some(name)) = (ungranted, called.as_deref()) {
                 let refusal = crate::call::not_granted(
                     unit_id.as_ref().unwrap_or(&Value::Null),
                     name,
@@ -2305,6 +2426,12 @@ slot!(
             name: arena.span(CONTENT_TYPE.as_bytes()),
             value: arena.span(JSON.as_bytes()),
         });
+        if let Some(secs) = retry_after {
+            field_buf.push(OutField {
+                name: arena.span(b"retry-after"),
+                value: arena.span(secs.to_string().as_bytes()),
+            });
+        }
         let mut records = input.records_buf();
         if let Some(row) = &audit {
             records.push(RecordWrite {
@@ -2338,6 +2465,9 @@ slot!(
         Outcome::Ready
     }
 );
+
+/// The status of a call no member of its server's pool could be sent to (its breaker is open).
+const STATUS_UNAVAILABLE_UPSTREAM: u32 = 503;
 
 /// The server name a trust verb's target names (`/tools/{name}/<verb>`), its query cut.
 fn verb_subject(target: &[u8]) -> Option<String> {
@@ -2770,6 +2900,10 @@ busbar_contract::plugin_door! {
 /// so it reads the door's own unit and answer state.
 #[path = "door_listen.rs"]
 mod door_listen;
+
+/// The line carrier's units: a process's own stdin/stdout, one carrier session, one unit per line.
+#[path = "door_line.rs"]
+mod door_line;
 /// THE STDIO SERVERS' LEG (Q-L3B-STDIO-UPSTREAM (A)): a child of the door, so it reads the door's own
 /// unit and relay state.
 #[path = "door_program.rs"]

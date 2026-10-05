@@ -423,6 +423,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.need_admit,
         HOST_SLOTS.trust_verify,
         HOST_SLOTS.records_secret,
+        HOST_SLOTS.session_emit,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
     for (service, f) in (0..SERVICES).zip(slots) {
@@ -444,6 +445,10 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
                 busbar_contract::conn::ConnError::UndeclaredNeed.text(),
                 "service {service}"
             );
+        } else if service == op::SESSION_EMIT {
+            // An emit naming no session and nothing to write is refused before the provider.
+            assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
+            assert_eq!(error(&o), EMIT_NOTHING, "service {service}");
         } else if !matches!(
             service,
             op::CLOCK_NOW

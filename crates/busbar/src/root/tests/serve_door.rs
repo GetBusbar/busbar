@@ -738,10 +738,17 @@ mod mcp {
         let (status, answer) =
             call(&rig, &rig.token, "flaky_read_file", serde_json::json!({})).await;
         let took = started.elapsed();
+        // The served engine's tripped-server refusal: `503`, `-32030`, `upstream_unavailable`.
         assert_eq!(status.as_u16(), 503, "{answer}");
+        assert_eq!(answer["error"]["code"], -32030, "{answer}");
         assert_eq!(
-            answer["error"]["message"],
-            busbar_contract::caps::ReasonCode::BreakerOpen.as_str(),
+            answer["error"]["data"]["reason"], "upstream_unavailable",
+            "{answer}"
+        );
+        assert!(
+            answer["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("circuit breaker is open")),
             "{answer}"
         );
         assert!(

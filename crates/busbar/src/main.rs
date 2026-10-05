@@ -969,6 +969,15 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Every config apply refreshes each served door plane onto the generation it installed
     // (ARCHITECT Q-DEL-A2A-APPLY), bound on the handle once the routers are built.
     let door_appliers = served.appliers();
+    // THE LINE CARRIER (SEAM-S1, `root::serve::lines`): with the stdio serve mode asked for and a
+    // served plane claiming the stdio transport, the served planes are kept for the process's own
+    // stdin/stdout, and the data router is built with none of them (it is never bound in this mode).
+    #[cfg(linked_axis_node)]
+    let mut served = served;
+    #[cfg(linked_axis_node)]
+    let line_served = (stdio_serve_requested(std::env::args())
+        && root::serve::lines::line_claim(&served).is_some())
+    .then(|| std::mem::take(&mut served));
     let (doors, sessions) = root::serve::data_mounts(
         served,
         &data_chain,
@@ -1190,6 +1199,20 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // tail: the final budget/metering flush, then the tracer.
     // The mode exists only when a linked entry serves it. With none there is no dispatch to serve on
     // stdin/stdout, so the mode is not offered and the build falls through to its listener path.
+    #[cfg(linked_axis_node)]
+    if let Some(served) = line_served {
+        let code = root::serve::lines::serve_lines(served, app_handle.clone(), || {
+            root::kernel::ROOT_CARD.pin()
+        })
+        .await;
+        if let Some(gov) = app_handle.load().governance.clone() {
+            let n = gov.flush_budgets();
+            tracing::info!(flushed = n, "budget counters flushed on shutdown");
+            let m = gov.flush_metering();
+            tracing::info!(flushed = m, "metering rows flushed on shutdown");
+        }
+        std::process::exit(code);
+    }
     let stdio_serve = LINKED.stdio_serve.first().copied();
     if let Some(serve) = stdio_serve.filter(|_| stdio_serve_requested(std::env::args())) {
         // The neutral host factory, minted core-side and threaded into the stdio transport so the plane
