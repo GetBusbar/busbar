@@ -1823,7 +1823,7 @@ fn the_host_frames_the_prelude_in_the_declared_framing_and_joins_the_planes_byte
         1,
     );
     input.extend_from_slice(b"suffix");
-    let want: String = Sha256::digest(&input)
+    let want: String = <sha2::Sha256 as sha2::Digest>::digest(&input)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
