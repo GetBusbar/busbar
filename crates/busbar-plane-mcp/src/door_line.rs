@@ -186,14 +186,17 @@ pub(super) fn preset(plane: &McpDoor, ticket: Ticket, unit: &mut CallUnit) -> Op
     if let Some(n) = line_unit.next_ask.take() {
         if let Some(mut live) = plane.live_asks.remove(&(session, n)) {
             let fresh = next_ask(plane);
-            match live.issue(fresh) {
-                Some(ask) if emit(plane, ticket, unit.issued, session, &ask) => {
-                    plane.live_asks.insert((session, fresh), live);
+            if let Some(ask) = live.issue(fresh) {
+                // Kept before it is asked: its answer may arrive before the emit returns.
+                let fallback = live.fallback.clone();
+                plane.live_asks.insert((session, fresh), live);
+                if !emit(plane, ticket, unit.issued, session, &ask) {
+                    plane.live_asks.remove(&(session, fresh));
+                    line_unit.preset = Some(fallback);
                 }
+            } else {
                 // The next ask cannot be put to the caller: it is handed the result itself.
-                _ => {
-                    line_unit.preset = Some(live.fallback);
-                }
+                line_unit.preset = Some(live.fallback);
             }
             unit.issued += 1;
         }
@@ -241,10 +244,13 @@ pub(super) fn liven(plane: &McpDoor, ticket: Ticket, principal: &str, unit: &mut
     };
     let seq = unit.issued;
     unit.issued += 1;
+    // KEPT BEFORE IT IS ASKED: the caller's answer is a line of its own, and may arrive before
+    // the emit returns.
+    plane.live_asks.insert((session, n), live);
     if !emit(plane, ticket, seq, session, &ask) {
+        plane.live_asks.remove(&(session, n));
         return;
     }
-    plane.live_asks.insert((session, n), live);
     if let Some(pending) = unit.pending.as_mut() {
         pending.bytes.clear();
         pending.fields.clear();

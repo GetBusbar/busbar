@@ -3477,8 +3477,12 @@ mod upstream_ask_relay {
                 sent = Some(request);
             }
         }
-        let sent: serde_json::Value =
-            serde_json::from_str(&sent.expect("the retry reached the member")).expect("JSON");
+        // The server heard the whole request: its body is what follows the head.
+        let sent = sent.expect("the retry reached the member");
+        let body = sent
+            .split_once("\r\n\r\n")
+            .map_or(sent.as_str(), |(_, b)| b);
+        let sent: serde_json::Value = serde_json::from_str(body).expect("JSON");
         assert_eq!(sent["params"]["requestState"], "s", "{sent}");
         assert_eq!(
             sent["params"]["inputResponses"]["draft"]["content"]["text"], "the caller's own draft",
@@ -3489,7 +3493,12 @@ mod upstream_ask_relay {
         let (status, body) = call(&rig, &retry(&state)).await;
         assert_eq!(status, 400, "a spent state is refused: {body}");
         let (status, body) = call(&rig, &retry("forged")).await;
-        assert_eq!(status, 400, "a forged state is refused: {body}");
+        // A state busbar did not mint, on a tool that asks nothing of its own: unsolicited.
+        assert_eq!(status, 403, "a forged state is refused: {body}");
+        assert_eq!(
+            body["error"]["data"]["reason"], "ask_unsolicited_state",
+            "{body}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
