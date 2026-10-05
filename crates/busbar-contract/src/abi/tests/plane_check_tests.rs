@@ -437,6 +437,64 @@ fn a_text_message_is_whole_and_not_empty() {
     );
 }
 
+/// RED (SEAM-4l additions): THE MESSAGE BOUNDARY is a known bit, valid on an answer toward the
+/// caller with bytes or without, never on a request bound for the far end.
+#[test]
+fn a_message_boundary_ends_a_message_toward_the_caller_only() {
+    let mut o: OnPieceOut = z();
+    o.flags = EMIT_MESSAGE_END;
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()), "a boundary alone");
+    o.emitted = 3;
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        Ok(()),
+        "with the message's last bytes"
+    );
+    o.flags |= EMIT_TO_FAR_END;
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.message_end_to_far_end")
+    );
+}
+
+/// RED (SEAM-4l additions): THE FINAL STATUS closes the reply (`EMIT_DONE`), its message and details
+/// inside the arena written; its fields are zero unless it is flagged.
+#[test]
+fn a_final_status_closes_the_reply_inside_the_arena() {
+    let at = |offset: u32, len: u32| crate::abi::mechanism::call::Span { offset, len };
+    let mut o: OnPieceOut = z();
+    o.flags = EMIT_DONE | EMIT_FINAL_STATUS;
+    o.final_status = 5;
+    o.arena_written = 10;
+    o.final_message = at(0, 8);
+    o.final_details = at(8, 2);
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    let mut open = o;
+    open.flags = EMIT_FINAL_STATUS;
+    assert_eq!(
+        piece(&open, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.final_status_not_closing")
+    );
+    let mut far = o;
+    far.flags |= EMIT_TO_FAR_END;
+    assert_eq!(
+        piece(&far, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.final_status_not_closing")
+    );
+    let mut outside = o;
+    outside.final_details = at(9, 2);
+    assert!(
+        piece(&outside, &[], &[], &[]).is_err(),
+        "details past the arena"
+    );
+    let mut unflagged = o;
+    unflagged.flags = EMIT_DONE;
+    assert_eq!(
+        piece(&unflagged, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.final_status_unflagged")
+    );
+}
+
 /// THE CATALOGUE WATCH: `EMIT_WATCH_CATALOGUE` and `EMIT_UNWATCH_CATALOGUE` are known bits, each
 /// valid alone, and an answer setting both is a contradiction.
 #[test]
@@ -696,6 +754,74 @@ fn a_ledger_lane_rides_the_arena() {
     );
     o.lane = sp(0, 0);
     assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+}
+
+/// SEAM-L(o), A REFUSAL'S RECORD WRITES: judged as an `on_piece` answer's, under the short-buffer
+/// rule over the host's `records_buf`: an audit row inside the arena passes; a write past the cap,
+/// an unknown op or a span outside the arena is FAULT. RED: a refusal had no record slot.
+#[test]
+fn a_refusals_record_writes_are_judged_as_an_answers() {
+    let mut o: RefusalOut = z();
+    o.records_written = 1;
+    o.arena_written = 8;
+    let mut r: RecordWrite = z();
+    r.op = RECORD_AUDIT;
+    r.kind = AUDIT_REJECTED;
+    r.key = sp(0, 4);
+    r.value = sp(4, 4);
+    assert_eq!(check_refusal_records(Ready, &o, &[r], 1, &bounds()), Ok(()));
+    assert_eq!(
+        check_refusal_records(Ready, &o, &[r], 0, &bounds()),
+        f(Rule::OverCap, "refusal.records")
+    );
+    let mut bad = r;
+    bad.op = 4;
+    assert_eq!(
+        check_refusal_records(Ready, &o, &[bad], 1, &bounds()),
+        f(Rule::UnknownCode, "record.op")
+    );
+    let mut bad = r;
+    bad.value = sp(6, 4);
+    assert_eq!(
+        check_refusal_records(Ready, &o, &[bad], 1, &bounds()),
+        f(Rule::SpanOutOfBounds, "record.value")
+    );
+    let none: RefusalOut = z();
+    assert_eq!(
+        check_refusal_records(Ready, &none, &[], 0, &bounds()),
+        Ok(())
+    );
+}
+
+/// SEAM-L(t), A SERVED REQUEST'S RECORD WRITES: judged as an answer's: a put of a declared kind
+/// inside the arena passes; a short buffer is a short answer; a kind past the tail is FAULT. RED: a
+/// served request had no record slot.
+#[test]
+fn a_served_requests_record_writes_are_judged_as_an_answers() {
+    let mut o: ServeOut = z();
+    o.records_written = 1;
+    o.arena_written = 8;
+    let mut r: RecordWrite = z();
+    r.op = RECORD_PUT;
+    r.key = sp(0, 4);
+    r.value = sp(4, 4);
+    assert_eq!(check_serve_records(Ready, &o, &[r], 1, &bounds()), Ok(()));
+    let mut bad = r;
+    bad.kind = 1;
+    assert_eq!(
+        check_serve_records(Ready, &o, &[bad], 1, &bounds()),
+        f(Rule::IndexOutOfRange, "record.kind")
+    );
+    let mut short: ServeOut = z();
+    short.records_needed = 2;
+    assert_eq!(
+        check_serve_records(Failed, &short, &[], 1, &bounds()),
+        Ok(())
+    );
+    assert_eq!(
+        check_serve_records(Ready, &short, &[], 1, &bounds()),
+        f(Rule::NeededNotFailed, "serve.records")
+    );
 }
 
 // ── refusal, serve, cancel ──

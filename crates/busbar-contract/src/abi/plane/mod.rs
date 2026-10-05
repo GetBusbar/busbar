@@ -473,6 +473,19 @@ pub const EMIT_WATCH_CATALOGUE: u32 = 1 << 3;
 /// [`EMIT_WATCH_CATALOGUE`].
 pub const EMIT_UNWATCH_CATALOGUE: u32 = 1 << 4;
 
+/// [`OnPieceOut::flags`]: MESSAGE BOUNDARY. The bytes this answer emits toward the caller END one
+/// message: a carrier that frames messages (a length-prefixed message stream) frames ONE message on
+/// this boundary, however many answers its bytes spanned (a message past one reply buffer is still
+/// one message); a carrier with no message framing ignores it. An answer may carry it with no bytes
+/// of its own (the boundary after bytes already emitted). Not on a request bound for the far end.
+pub const EMIT_MESSAGE_END: u32 = 1 << 5;
+/// [`OnPieceOut::flags`]: FINAL STATUS. On the closing answer ([`EMIT_DONE`]): the reply ends with
+/// the status [`OnPieceOut::final_status`] states, its message and details in the arena, in the
+/// numbering the claim's transport declares for its own statuses. A carrier that reports a reply's
+/// status AFTER its bytes (trailing fields) reports this one there, so a reply that fails after its
+/// first message still ends with its own status; any other carrier ignores it.
+pub const EMIT_FINAL_STATUS: u32 = 1 << 6;
+
 /// Whether every flag in `flags` is one bit and no two share it. Each flag set below is asserted
 /// with it, so two lanes that pick the same bit for different flags fail to compile.
 const fn one_bit_each(flags: &[u32]) -> bool {
@@ -501,6 +514,8 @@ const _: () = assert!(one_bit_each(&[
     PIECE_OUT_TEXT,
     EMIT_WATCH_CATALOGUE,
     EMIT_UNWATCH_CATALOGUE,
+    EMIT_MESSAGE_END,
+    EMIT_FINAL_STATUS,
 ]));
 
 /// [`OnPieceOut::verdict`]: no verdict; the walk's status table alone decides.
@@ -1517,6 +1532,16 @@ pub struct OnPieceOut {
     /// the last one an answer of the unit named holds, and a unit whose answers name none is laned
     /// by the entry its route picked. UTF-8, without control characters. A tail addition.
     pub lane: Span,
+    /// With [`EMIT_FINAL_STATUS`]: the reply's final status number, in the numbering the claim's
+    /// transport declares for its own statuses. A tail addition.
+    pub final_status: u32,
+    /// Alignment padding.
+    pub _final_reserved: u32,
+    /// With [`EMIT_FINAL_STATUS`]: the final status's message, in the arena; a zero length = none.
+    pub final_message: Span,
+    /// With [`EMIT_FINAL_STATUS`]: the final status's details, opaque bytes the carrier hands on
+    /// verbatim, in the arena; a zero length = none.
+    pub final_details: Span,
 }
 
 /// `refusal`'s `in`.
@@ -1561,6 +1586,15 @@ pub struct RefusalIn {
     /// authenticates first): the plane then chooses its envelope from the target by its own rule;
     /// the kernel never picks a dialect.
     pub target: AbiStr,
+    /// HOST buffer for record writes: the refusal's record writes, as an `on_piece` answer's
+    /// ([`RecordWrite`], their bytes in the arena), so a plane writes its declared audit row
+    /// ([`RECORD_AUDIT`]) for a unit the kernel refused. A tail addition.
+    pub records_buf: *mut RecordWrite,
+    /// Its capacity.
+    pub records_cap: usize,
+    /// With [`REFUSAL_GATE`]: the name of the hook that vetoed the unit, opaque bytes; absent on
+    /// every other refusal. A tail addition.
+    pub hook: AbiStr,
 }
 
 /// `refusal`'s `out`.
@@ -1586,6 +1620,10 @@ pub struct RefusalOut {
     /// The status number the rendered reply carries, in [`RefusalIn::status`]'s space; the
     /// transport maps it to its wire. `0` = keep [`RefusalIn::status`].
     pub status: u32,
+    /// Record writes written to `records_buf`. A tail addition.
+    pub records_written: u32,
+    /// Short answer: the record writes `records_buf` needs.
+    pub records_needed: u32,
 }
 
 /// `serve`'s `in`.
@@ -1618,6 +1656,13 @@ pub struct ServeIn {
     pub arena_buf: *mut u8,
     /// Its capacity.
     pub arena_cap: usize,
+    /// HOST buffer for record writes: the served request's record writes, as an `on_piece`
+    /// answer's ([`RecordWrite`], their bytes in the arena), so a route (a public callback among
+    /// them) writes the state transition it recorded to the plane's record chain itself. A tail
+    /// addition.
+    pub records_buf: *mut RecordWrite,
+    /// Its capacity.
+    pub records_cap: usize,
 }
 
 /// `serve`'s `out`.
@@ -1642,6 +1687,10 @@ pub struct ServeOut {
     pub fields_needed: u32,
     /// `AUDIT_*`: the row the kernel audits the request with, under the route's `audit_verb`.
     pub audit: u32,
+    /// Record writes written to `records_buf`. A tail addition.
+    pub records_written: u32,
+    /// Short answer: the record writes `records_buf` needs.
+    pub records_needed: u32,
 }
 
 /// The plane's `drive` `in`: the lifecycle's, plus a HOST buffer for the sessions with output

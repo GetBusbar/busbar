@@ -865,7 +865,7 @@ pub fn compose_planes(
             (served_facts.section, section),
         )
         .map_err(|e| format!("{instance}: {e}"))?
-        .with_records(Arc::clone(&kernel), caller);
+        .with_records(Arc::clone(&kernel), caller.clone());
         // THE HOOK STAGE IN THE PLANE'S OWN ORDER (spec Part 3 section 12 "Hooks"): a plane whose
         // tail states the gate-first order has its entries' gates and rewrites bound, filed under
         // its registry key.
@@ -896,6 +896,7 @@ pub fn compose_planes(
                 calls,
                 caps: BufferCaps::default(),
                 routes,
+                records: Some((Arc::clone(&kernel), caller)),
             },
             &[],
         )
