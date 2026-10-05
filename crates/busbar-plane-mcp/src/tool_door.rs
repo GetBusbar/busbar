@@ -46,10 +46,10 @@ use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn,
     PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, ProjectIn, ProjectOut, RecordWrite, RefusalIn,
-    RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END,
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_REQUIRED,
-    RECORD_PUT, REFUSAL_ARRIVE, REFUSAL_GATE, ROUTE_DIRECT, ROUTE_POOL, UNITS_REPORTED,
-    VERDICT_RETRY,
+    RefusalOut, ServeIn, ServeOut, UnitCount, AUDIT_APPLIED, AUDIT_REJECTED, CANCEL_ABORTED,
+    EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS,
+    PIECE_LAST, PRINCIPAL_REQUIRED, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE, REFUSAL_GATE,
+    ROUTE_DIRECT, ROUTE_POOL, UNITS_REPORTED, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::life::Refusal;
@@ -479,6 +479,13 @@ struct Pending {
     done: bool,
     /// The record writes that ride with its first call: `(kind, key, value)`.
     records: Vec<(u32, Vec<u8>, Vec<u8>)>,
+    /// The unit's admin audit rows, written with its first call as `RECORD_AUDIT` writes (the
+    /// kernel folds them into its own audit chain under the principal it verified).
+    audits: Vec<crate::call::AuditRow>,
+    /// The unit's ledger lane, named with its first call: the published tool a call resolved to
+    /// (`{server}_{tool}`), the identity the rate card prices and the usage rows read; `None` = the
+    /// route entry the walk picked.
+    lane: Option<String>,
     /// The counts its first call reports (the unit's cumulative usage, read off the far end).
     units: Vec<UnitCount>,
 }
@@ -537,6 +544,24 @@ impl Pending {
         if let (Some(line), Some(ts)) = (line, ts) {
             self.records.push(call_record(line, scope, generation, ts));
         }
+        if let Some(line) = line {
+            self.audits.extend(line.audit.clone());
+            if !line.server.is_empty() {
+                self.lane = Some(line.tool.clone());
+            }
+        }
+        self
+    }
+
+    /// With the admin audit row `row`.
+    pub(super) fn audited(mut self, row: crate::call::AuditRow) -> Self {
+        self.audits.push(row);
+        self
+    }
+
+    /// Laned by the published tool `tool`.
+    fn laned(mut self, tool: &str) -> Self {
+        self.lane = Some(tool.to_string());
         self
     }
 
@@ -581,6 +606,8 @@ impl Pending {
             headed: false,
             done: true,
             records: Vec::new(),
+            audits: Vec::new(),
+            lane: None,
             units,
         }
     }
@@ -608,6 +635,8 @@ impl Pending {
             headed: false,
             done: false,
             records: Vec::new(),
+            audits: Vec::new(),
+            lane: None,
             units: Vec::new(),
         }
     }
@@ -1428,7 +1457,7 @@ fn answer_body(
                         exchange_scope(services, ticket, unit, &held, &member, &relay.admitted);
                     scoped(&mut outbound.fields, relay.scope.as_deref());
                 }
-                unit.pending = Some(Pending::far(outbound));
+                unit.pending = Some(Pending::far(outbound).laned(&relay.admitted.entry.namespaced));
                 unit.relay = Some(relay);
                 Step::Write
             }
@@ -1449,6 +1478,8 @@ fn answer_body(
         &admit,
         quarantined,
     );
+    // Busbar's ask of its caller for a prompt is audited (asked, or its answer refused).
+    let mut audit = None;
     let (status, body) = match answer {
         Answer::Here { status, body } => (status, body),
         Answer::Far => match &disposition {
@@ -1478,6 +1509,7 @@ fn answer_body(
                         (200, crate::reads::prompts_get(prompt, id, params.as_ref()))
                     }
                     AskDecision::Refuse(refusal) => {
+                        audit = Some(crate::call::AuditRow::prompt_ask(&prompt.namespaced, false));
                         let r = refusal.refusal(id);
                         (r.status, r.body())
                     }
@@ -1485,16 +1517,21 @@ fn answer_body(
                         asks,
                         request_state,
                         ..
-                    } => (
-                        200,
-                        crate::ask::input_required_result(id, &asks, &request_state),
-                    ),
+                    } => {
+                        audit = Some(crate::call::AuditRow::prompt_ask(&prompt.namespaced, true));
+                        (
+                            200,
+                            crate::ask::input_required_result(id, &asks, &request_state),
+                        )
+                    }
                 }
             }
             _ => return Some(Step::Declined),
         },
     };
-    unit.pending = Some(Pending::answer(status, body, unit.framing.as_ref(), &[]));
+    let mut pending = Pending::answer(status, body, unit.framing.as_ref(), &[]);
+    pending.audits.extend(audit);
+    unit.pending = Some(pending);
     Some(Step::Write)
 }
 
@@ -2149,6 +2186,22 @@ fn write(
                 value: arena.span(value),
             });
         }
+        for row in &pending.audits {
+            records.push(RecordWrite {
+                kind: if row.applied {
+                    AUDIT_APPLIED
+                } else {
+                    AUDIT_REJECTED
+                },
+                op: RECORD_AUDIT,
+                key: arena.span(row.action.as_bytes()),
+                value: arena.span(row.resource.as_bytes()),
+            });
+        }
+        let lane = pending
+            .lane
+            .as_ref()
+            .map(|lane| arena.span(lane.as_bytes()));
         let mut units = input.units_buf();
         for count in &pending.units {
             units.push(*count);
@@ -2172,6 +2225,9 @@ fn write(
         if let Some((verb, target)) = request {
             out.set(|o| &o.verb, verb);
             out.set(|o| &o.target, target);
+        }
+        if let Some(lane) = lane {
+            out.set(|o| &o.lane, lane);
         }
         out.set(|o| &o.reply_status, pending.status);
         pending.headed = true;

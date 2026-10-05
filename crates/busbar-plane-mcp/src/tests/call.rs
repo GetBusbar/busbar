@@ -75,6 +75,10 @@ fn a_call_with_no_name_is_malformed_and_logged_with_no_tool() {
         (line.tool.as_str(), line.reason.as_str()),
         ("", "malformed_params")
     );
+    assert_eq!(
+        line.audit, None,
+        "the served engine audited no malformed call"
+    );
 }
 
 #[test]
@@ -104,7 +108,9 @@ fn an_unknown_and_an_ungranted_tool_read_the_same_and_log_apart() {
         &mut proceed,
     ));
     assert_eq!(unknown.status, 404);
-    assert_eq!(line.expect("logged").reason, "unknown_tool");
+    let line = line.expect("logged");
+    assert_eq!(line.reason, "unknown_tool");
+    assert_eq!(line.audit, Some(AuditRow::tool("fs_nope", false)));
     let (hidden, line) = refused(admit_call(
         &catalogue(),
         &json!(1),
@@ -155,6 +161,10 @@ fn a_mirrored_parameter_must_agree_with_the_body() {
     assert!(r.message.contains("`Mcp-Param-Path`"));
     let line = line.expect("logged");
     assert_eq!(
+        line.audit, None,
+        "a header mismatch is malformed, never audited"
+    );
+    assert_eq!(
         (
             line.server.as_str(),
             line.tool.as_str(),
@@ -201,7 +211,9 @@ fn a_required_task_needs_the_extension() {
         (r.status, r.code),
         (400, crate::codec::CODE_MISSING_CLIENT_CAPABILITY)
     );
-    assert_eq!(line.expect("logged").reason, REASON_TASKS_UNDECLARED);
+    let line = line.expect("logged");
+    assert_eq!(line.reason, REASON_TASKS_UNDECLARED);
+    assert_eq!(line.audit, Some(AuditRow::tool("fs_batch", false)));
     let declared = json!({ "name": "fs_batch", "arguments": {},
         "_meta": { crate::codec::META_CLIENT_CAPABILITIES: { "extensions": { TASKS_EXTENSION_ID: {} } } } });
     go(admit_call(
@@ -334,6 +346,7 @@ fn a_result_is_normalised_stamped_and_dispatched() {
     assert_eq!(body["id"], json!(7));
     assert_eq!(body["result"]["resultType"], json!("complete"));
     assert_eq!((line.outcome, line.reason.as_str()), ("dispatched", ""));
+    assert_eq!(line.audit, Some(AuditRow::tool("fs_read_file", true)));
 }
 
 #[test]
@@ -360,6 +373,11 @@ fn an_upstream_error_is_a_tool_failure_naming_the_server() {
     assert_eq!(
         (line.outcome, line.reason.as_str()),
         ("dispatched", "upstream_failed")
+    );
+    assert_eq!(
+        line.audit,
+        Some(AuditRow::tool("fs_read_file", false)),
+        "the call went out and did not succeed: rejected"
     );
 }
 
@@ -504,5 +522,44 @@ fn a_rewrite_replaces_the_arguments_by_the_invoke_contract() {
             br#"{"messages":[{"role":"user","content":{"path":"/x"}}]}"#
         ),
         None
+    );
+}
+
+/// THE AUDIT ROW OF BUSBAR'S OWN ASK (SEAM-L(k)): an ask of the caller is `mcp.caller_ask` applied on
+/// the tool; a task created is the call applied; a task that could not start is rejected.
+#[test]
+fn an_ask_of_the_caller_and_a_task_are_audited_in_the_engines_words() {
+    let mut ask = |_: &ToolEntry, _: &Value| crate::ask::AskDecision::Ask {
+        asks: Vec::new(),
+        request_state: "s".to_string(),
+        round: 1,
+    };
+    let line = match admit_call(
+        &catalogue(),
+        &json!(1),
+        Some(&params("fs_confirm", json!({}))),
+        &no_header,
+        &everyone,
+        &mut ask,
+    ) {
+        Admission::Asked(_, line) => line,
+        other => panic!("asked: {other:?}"),
+    };
+    assert_eq!(
+        line.audit,
+        Some(AuditRow {
+            action: ACTION_CALLER_ASK,
+            resource: "mcp_tool:fs_confirm".to_string(),
+            applied: true,
+        })
+    );
+    let entry = catalogue().tool("fs_batch").expect("registered").clone();
+    assert_eq!(
+        task_line(&entry, busbar_contract::vocab::REASON_TASK_CREATED).audit,
+        Some(AuditRow::tool("fs_batch", true))
+    );
+    assert_eq!(
+        task_line(&entry, "task_unavailable").audit,
+        Some(AuditRow::tool("fs_batch", false))
     );
 }

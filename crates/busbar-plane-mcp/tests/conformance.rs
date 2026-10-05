@@ -1242,6 +1242,11 @@ mod both_ways {
         snapshot: Option<OwnedSnapshot>,
         /// The record writes the answers carried: `(kind, key, value)`.
         records: Vec<(u32, Vec<u8>, Vec<u8>)>,
+        /// The audit rows the answers carried (`RECORD_AUDIT` writes): `(outcome, action,
+        /// resource)`.
+        audits: Vec<(u32, String, String)>,
+        /// The last ledger lane an answer named.
+        lane: Option<String>,
         /// The counts the answers reported: `(class, amount)`.
         units: Vec<(u32, u64)>,
     }
@@ -1257,6 +1262,8 @@ mod both_ways {
                 detail: String::new(),
                 snapshot: None,
                 records: Vec::new(),
+                audits: Vec::new(),
+                lane: None,
                 units: Vec::new(),
             }
         }
@@ -1387,11 +1394,17 @@ mod both_ways {
                 let at = s.offset as usize;
                 arena[at..at + s.len as usize].to_vec()
             };
-            out.records.extend(
-                records[..f.out.records_written as usize]
-                    .iter()
-                    .map(|r| (r.kind, span(r.key), span(r.value))),
-            );
+            for r in &records[..f.out.records_written as usize] {
+                if r.op == busbar_contract::abi::plane::RECORD_AUDIT {
+                    out.audits
+                        .push((r.kind, at(&arena, r.key), at(&arena, r.value)));
+                } else {
+                    out.records.push((r.kind, span(r.key), span(r.value)));
+                }
+            }
+            if f.out.lane.len != 0 {
+                out.lane = Some(at(&arena, f.out.lane));
+            }
             calls += 1;
             first = false;
             out.outcome = c.outcome;
@@ -2395,6 +2408,23 @@ mod both_ways {
                 ),
             )],
             "one call record"
+        );
+        // THE AUDIT ROW (SEAM-L(k)): the dispatched call's one `mcp_tool.call` row, applied, on the
+        // published tool; and THE LEDGER LANE (SEAM-L(j)): the published tool, as the served engine
+        // priced and ledgered a call.
+        assert_eq!(
+            ok.audits,
+            vec![(
+                busbar_contract::abi::plane::AUDIT_APPLIED,
+                "mcp_tool.call".to_string(),
+                "mcp_tool:fs_read_file".to_string()
+            )],
+            "one applied audit row"
+        );
+        assert_eq!(
+            send.lane.as_deref(),
+            Some("fs_read_file"),
+            "the call's lane"
         );
 
         let error = step(&t, "answer error");

@@ -940,7 +940,7 @@ fn call(
             "server `{member}` registers no `url:` this door can reach it at"
         )));
     };
-    unit.pending = Some(Pending::far(outbound));
+    unit.pending = Some(Pending::far(outbound).laned(&admitted.entry.namespaced));
     unit.relay = Some(Relay::of(admitted));
     run.phase = Phase::Far;
     Ok(Step::Write)
@@ -1068,9 +1068,17 @@ fn verbing(
             None => ack(unit),
         };
     }
-    // `tasks/cancel`: idempotent on a settled task.
+    // `tasks/cancel`: idempotent on a settled task, and audited either way (the served engine's
+    // `mcp_task.cancel` row on every cancel of a task the caller holds).
+    let cancel_ack = |unit: &mut CallUnit| {
+        let step = ack(unit);
+        if let Some(p) = unit.pending.take() {
+            unit.pending = Some(p.audited(crate::call::AuditRow::task_cancel(&task.id)));
+        }
+        step
+    };
     if task.status().is_terminal() {
-        return ack(unit);
+        return cancel_ack(unit);
     }
     let mut cancelled = task.clone();
     cancelled.cancel(at);
@@ -1095,7 +1103,7 @@ fn verbing(
             wake(plane, &t);
         }
     }
-    ack(unit)
+    cancel_ack(unit)
 }
 
 /// The task `task_id` names FOR THIS CALLER: `work.find` (scoped to the instance and the principal;

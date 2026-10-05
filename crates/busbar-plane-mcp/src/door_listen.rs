@@ -88,6 +88,8 @@ fn frame(bytes: Vec<u8>, done: bool, headed: bool) -> Pending {
         headed,
         done,
         records: Vec::new(),
+        audits: Vec::new(),
+        lane: None,
         units,
     }
 }

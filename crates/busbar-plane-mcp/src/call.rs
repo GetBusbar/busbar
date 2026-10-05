@@ -81,9 +81,65 @@ pub struct CallLine {
     pub outcome: &'static str,
     /// The reason token; empty on a plain dispatch.
     pub reason: String,
+    /// The admin audit row the call writes as it ends; `None` for a refusal the served engine
+    /// audited nothing for (a malformed request, a header that disagrees with its body).
+    pub audit: Option<AuditRow>,
+}
+
+/// The audit action of a `tools/call` decision.
+pub const ACTION_TOOL_CALL: &str = "mcp_tool.call";
+/// The audit action of busbar's own ask of its caller (asked, or the answer refused).
+pub const ACTION_CALLER_ASK: &str = "mcp.caller_ask";
+/// The audit action of a task a caller cancelled.
+pub const ACTION_TASK_CANCEL: &str = "mcp_task.cancel";
+
+/// ONE ADMIN AUDIT ROW, in the served engine's words: the action, the resource it names, and whether
+/// the action was applied or rejected. The kernel writes it on its own audit chain under the
+/// principal it verified (a `RECORD_AUDIT` write on the unit's answer).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditRow {
+    /// The action word.
+    pub action: &'static str,
+    /// The resource it names.
+    pub resource: String,
+    /// `applied` (true) or `rejected` (false).
+    pub applied: bool,
+}
+
+impl AuditRow {
+    /// A `tools/call` decision on the tool `name`.
+    #[must_use]
+    pub fn tool(name: &str, applied: bool) -> Self {
+        AuditRow {
+            action: ACTION_TOOL_CALL,
+            resource: format!("mcp_tool:{name}"),
+            applied,
+        }
+    }
+
+    /// Busbar's ask of its caller for the prompt `namespaced`.
+    #[must_use]
+    pub fn prompt_ask(namespaced: &str, applied: bool) -> Self {
+        AuditRow {
+            action: ACTION_CALLER_ASK,
+            resource: format!("mcp_prompt:{namespaced}"),
+            applied,
+        }
+    }
+
+    /// A task the caller cancelled.
+    #[must_use]
+    pub fn task_cancel(task_id: &str) -> Self {
+        AuditRow {
+            action: ACTION_TASK_CANCEL,
+            resource: format!("mcp_task:{task_id}"),
+            applied: true,
+        }
+    }
 }
 
 impl CallLine {
+    /// A refusal before the name resolved: audited as a rejected call of the name asked for.
     fn asked(name: &str, reason: &str) -> Self {
         CallLine {
             server: String::new(),
@@ -91,9 +147,12 @@ impl CallLine {
             tool_digest: String::new(),
             outcome: vocab::OUTCOME_REFUSED,
             reason: reason.to_string(),
+            audit: Some(AuditRow::tool(name, false)),
         }
     }
 
+    /// A call that resolved to `entry`: audited applied only for a plain dispatch (a dispatch with a
+    /// reason came back badly; a refusal never went).
     fn resolved(entry: &ToolEntry, outcome: &'static str, reason: &str) -> Self {
         CallLine {
             server: entry.server.clone(),
@@ -101,7 +160,27 @@ impl CallLine {
             tool_digest: entry.schema_hash.clone().unwrap_or_default(),
             outcome,
             reason: reason.to_string(),
+            audit: Some(AuditRow::tool(
+                &entry.namespaced,
+                outcome == vocab::OUTCOME_DISPATCHED && reason.is_empty(),
+            )),
         }
+    }
+
+    /// No audit row: a refusal the served engine audited nothing for.
+    fn unaudited(mut self) -> Self {
+        self.audit = None;
+        self
+    }
+
+    /// The row is busbar's ask of its caller (`applied`: asked; rejected: its answer refused), on
+    /// the same tool.
+    fn asking(mut self, applied: bool) -> Self {
+        if let Some(row) = &mut self.audit {
+            row.action = ACTION_CALLER_ASK;
+            row.applied = applied;
+        }
+        self
     }
 }
 
@@ -338,7 +417,7 @@ pub fn admit_trusted(
                 "`params.name` is required and must be a string.".to_string(),
                 None,
             ),
-            Some(CallLine::asked("", vocab::REASON_MALFORMED)),
+            Some(CallLine::asked("", vocab::REASON_MALFORMED).unaudited()),
         );
     };
     if name.len() > MAX_TOOL_NAME_BYTES {
@@ -418,7 +497,10 @@ pub fn admit_trusted(
     let header_mismatch =
         |message: String| error(STATUS_BAD_REQUEST, id, CODE_HEADER_MISMATCH, message, None);
     if let Some(message) = custom_param_mismatch(entry, &arguments, header) {
-        return Admission::Refused(header_mismatch(message), line(REASON_CUSTOM_PARAM_MISMATCH));
+        return Admission::Refused(
+            header_mismatch(message),
+            line(REASON_CUSTOM_PARAM_MISMATCH).map(CallLine::unaudited),
+        );
     }
     let meta = params.and_then(|p| p.get("_meta"));
     let capabilities = meta.and_then(|m| m.get(META_CLIENT_CAPABILITIES));
@@ -432,7 +514,10 @@ pub fn admit_trusted(
     match ask(entry, &arguments) {
         crate::ask::AskDecision::Proceed => {}
         crate::ask::AskDecision::Refuse(refusal) => {
-            return Admission::Refused(refusal.refusal(id), line(refusal.audit_reason()));
+            return Admission::Refused(
+                refusal.refusal(id),
+                line(refusal.audit_reason()).map(|l| l.asking(false)),
+            );
         }
         crate::ask::AskDecision::Ask {
             asks,
@@ -445,7 +530,8 @@ pub fn admit_trusted(
                     entry,
                     vocab::OUTCOME_REFUSED,
                     vocab::REASON_CALLER_ASK_PENDING,
-                ),
+                )
+                .asking(true),
             );
         }
     }
@@ -491,7 +577,7 @@ pub fn admit_trusted(
         if let Some(message) = custom_param_mismatch(entry, &arguments, header) {
             return Admission::Refused(
                 header_mismatch(message),
-                line(REASON_CUSTOM_PARAM_MISMATCH),
+                line(REASON_CUSTOM_PARAM_MISMATCH).map(CallLine::unaudited),
             );
         }
     }
@@ -1096,10 +1182,15 @@ pub fn leg_of(status: u32, raw: &[u8], sse: bool, round: u32) -> Leg {
 
 /// The call-log line of a call answered on the task path under `reason`: `refused`, because at the
 /// moment the caller is answered nothing has gone out (the served engine recorded a task it created
-/// as `refused`/`task_created`).
+/// as `refused`/`task_created`). Its audit row is applied for a task created (the action — starting
+/// the work — was), rejected otherwise.
 #[must_use]
 pub fn task_line(entry: &ToolEntry, reason: &str) -> CallLine {
-    CallLine::resolved(entry, vocab::OUTCOME_REFUSED, reason)
+    let mut line = CallLine::resolved(entry, vocab::OUTCOME_REFUSED, reason);
+    if let Some(row) = &mut line.audit {
+        row.applied = reason == vocab::REASON_TASK_CREATED;
+    }
+    line
 }
 
 /// The ask judged: the bound, then the grant, then the satisfier.
