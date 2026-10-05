@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use busbar_contract::transport::wire::{CloseReason, TransportError};
-use busbar_contract::transport::{Carrier, CarrierFacts, CarrierPoll, Dest};
+use busbar_contract::transport::{Carrier, CarrierFacts, CarrierPoll, Chunk, Dest};
 use busbar_contract::{AbiVersion, Kind, Plugin};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -291,7 +291,7 @@ impl Carrier for StdioCarrier {
         }
     }
 
-    fn poll_read(&self, conn: u64, cx: &mut Context<'_>, buf: &mut [u8]) -> CarrierPoll<usize> {
+    fn poll_read(&self, conn: u64, cx: &mut Context<'_>, buf: &mut [u8]) -> CarrierPoll<Chunk> {
         let Some(pipe) = self.pipe(conn) else {
             return Poll::Ready(Err(TransportError::Closed));
         };
@@ -305,12 +305,18 @@ impl Carrier for StdioCarrier {
         let mut filled = ReadBuf::new(buf);
         match std::pin::Pin::new(&mut **half).poll_read(cx, &mut filled) {
             Poll::Pending => Poll::Pending,
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(filled.filled().len())),
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(Chunk::stream(filled.filled().len()))),
             Poll::Ready(Err(e)) => Poll::Ready(Err(map_io(&e))),
         }
     }
 
-    fn poll_write(&self, conn: u64, cx: &mut Context<'_>, bytes: &[u8]) -> CarrierPoll<usize> {
+    fn poll_write(
+        &self,
+        conn: u64,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+        _end_of_frame: bool,
+    ) -> CarrierPoll<usize> {
         self.poll_writer(conn, cx, |half, cx| half.poll_write(cx, bytes))
     }
 

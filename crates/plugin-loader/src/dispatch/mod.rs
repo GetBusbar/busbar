@@ -28,6 +28,8 @@
 pub mod answer;
 pub mod auth_outbound;
 pub mod conn_services;
+pub mod inline;
+pub mod io_slots;
 pub mod kinds;
 pub mod load;
 pub mod log_file;
@@ -68,6 +70,7 @@ pub use plugin::{
     Metric, NoSink, Plugin, Recall, MAX_LOG_BYTES, MAX_LOG_RECORDS,
 };
 pub use services::{HostServices, Later, Ran, Reading, Stored};
+pub use inline::{InlineTicket, InlineTickets};
 pub use ticket::{Completions, Redeem};
 pub use validate::Violation;
 pub use worker::{Adopter, Budgets, DispatchConfig, DispatchStats, Dispatcher, Done, Lent, Reply};

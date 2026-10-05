@@ -77,6 +77,9 @@ pub const fn check_arrival(outcome: Outcome, out: &ArrivalOut, peer_cap: u64) ->
 ///
 /// The rule the answer breaks.
 pub const fn check_io(out: &IoOut, cap: u64) -> Result<(), Fault> {
+    if out.flags & !super::READ_END_OF_FRAME != 0 {
+        return Err(fault(Rule::UnknownCode, "io.flags"));
+    }
     within(out.len, cap, "io.len")
 }
 

@@ -59,6 +59,7 @@ pub mod out;
 pub use out::{Out, Scalar};
 // A PLUGIN'S CONNECTIONS: the host connector for one op on one ticket, Ready|Pending, and exchange().
 pub mod conn;
+pub mod io;
 // ONE REQUEST, ONE REPLY over the connector: exchange() (framed) and send_and_ack() (any transport).
 /// A plane's reads of a body by declared pointer, one copy for every plane.
 pub mod body;

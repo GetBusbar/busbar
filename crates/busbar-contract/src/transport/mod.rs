@@ -25,7 +25,7 @@ pub mod trust;
 pub mod wire;
 
 pub use stack::{
-    role_of, BytesOut, Carrier, CarrierFacts, CarrierPoll, Claim, ConnFacts, Dest, Framed, Framer,
+    role_of, BytesOut, Carrier, CarrierFacts, CarrierPoll, Chunk, Claim, ConnFacts, Dest, Framed, Framer,
     FramerOut, HostTime, Located, Role, Side, TransportRow,
 };
 

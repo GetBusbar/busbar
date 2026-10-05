@@ -157,6 +157,11 @@ pub(crate) struct Env {
     /// lands on the per-worker reactor (THE DESIGN, the connections section). Taken from the first
     /// submit made inside a runtime (the dispatcher is built before the runtime starts).
     pub(crate) runtime: std::sync::OnceLock<tokio::runtime::Handle>,
+    /// THE HOST'S I/O (`io.*`) the instances of this dispatcher are served from; unset = none, and
+    /// every `io` slot answers REFUSED.
+    pub(crate) io: std::sync::OnceLock<Arc<dyn busbar_contract::io_host::IoHost>>,
+    /// The tickets of ops driven inline on the calling thread (a carrier's connection sides).
+    pub(crate) inline: Arc<super::inline::InlineTickets>,
 }
 
 /// One op's completion.
@@ -610,6 +615,10 @@ pub(crate) struct Pool {
 impl WakeRoute for Pool {
     /// Route a wake to the worker its slot names. Never blocks on the plugin: a channel push.
     fn wake(&self, t: Ticket) {
+        if super::inline::is_inline(t) {
+            self.env.inline.wake(t);
+            return;
+        }
         let (w, _) = decode(t.slot);
         match self.slots.get(w as usize) {
             Some(slot) => {
@@ -626,6 +635,14 @@ impl WakeRoute for Pool {
             store: Arc::clone(&self.env.services),
             provider: Arc::clone(self.env.provider.as_ref()?),
         })
+    }
+
+    fn io(&self) -> Option<Arc<dyn busbar_contract::io_host::IoHost>> {
+        self.env.io.get().cloned()
+    }
+
+    fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
+        self.env.inline.waker_of(t)
     }
 }
 
@@ -1284,7 +1301,8 @@ impl Dispatcher {
     }
 
     fn build(config: DispatchConfig, provider: Option<Arc<dyn HostServices>>) -> Self {
-        let n = config.workers.clamp(1, MAX_WORKERS);
+        // The last worker index names the inline tickets (`inline::INLINE_WORKER`), never a worker.
+        let n = config.workers.clamp(1, MAX_WORKERS - 1);
         let env = Arc::new(Env {
             budgets: config.budgets,
             stats: Arc::default(),
@@ -1294,6 +1312,8 @@ impl Dispatcher {
             runtime: tokio::runtime::Handle::try_current()
                 .map(std::sync::OnceLock::from)
                 .unwrap_or_default(),
+            io: std::sync::OnceLock::new(),
+            inline: Arc::default(),
         });
         let mut started = Vec::new();
         let slots = (0..n)
@@ -1364,6 +1384,19 @@ impl Dispatcher {
     /// Bind `inst`'s wakes to this dispatcher; `false` when it is bound to another.
     fn adopt(&self, inst: &Arc<Instance>) -> bool {
         self.adopter().adopt(inst)
+    }
+
+    /// Serve every instance of this dispatcher the HOST'S I/O (`io.*`) from `io`; the first install
+    /// stands. `false` when one was installed already.
+    pub fn install_io(&self, io: Arc<dyn busbar_contract::io_host::IoHost>) -> bool {
+        self.pool.env.io.set(io).is_ok()
+    }
+
+    /// A ticket for ops driven INLINE on the calling thread ([`super::inline`]): one per side of a
+    /// carrier's connection. `None` when every inline slot is held.
+    #[must_use]
+    pub fn inline_ticket(&self) -> Option<super::inline::InlineTicket> {
+        self.pool.env.inline.mint()
     }
 
     /// The handle a [`super::Bind`] carries to be adopted by this dispatcher at bind.
