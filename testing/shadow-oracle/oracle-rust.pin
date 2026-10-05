@@ -221,17 +221,19 @@
 # read rides along.
 #
 # 2026-10-04 (OWNER Q-STEP7-a D1 "the oracle baseline names its store"; ARCHITECT ruling on the mechanism):
-# moved 7b039b65795c -> 4657608c7de5 (busbar-release `rel-qstore-d1`, PR #155 into main, cut from main 7d34f5b,
+# moved 7b039b65795c -> 0a1aa7c0dc9a (busbar-release `rel-qstore-d1`, PR #155 into main, cut from main 7d34f5b,
 # which carries 7b039b65795c). The engine names `store: {module: memory}` in every config it hands a binary at
 # run time (recorder/store_baseline.rs): the configs it writes and boots, a boot mutation's output, a capture
 # cell's config, the admin config-apply/validate bodies and `upgrade-config` (every script cell's config step).
 # No cells.json definition moves and no golden is re-recorded. The range also carries main's corpus generator,
 # which adds three neutrality|routes|*-shaped-404 cells this cells.json does not hold yet (`cells --check`
 # reports them; RELEASE_REF 2ada212 already carries that generator). Feature branch head; re-pin to the merge
-# commit when it lands.
+# commit when it lands. The same head also carries the second owner-approved (2026-10-04) run-time input: a
+# binary on the 1.6 line (which has the destination guard) is handed `advanced.allow_destinations: ["127.0.0.1"]`,
+# the address every oracle mock binds; 1.5.5 refuses that key, so the golden side is not given it.
 #
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=4657608c7de58bde44ba042a856e03e535b3a4d4
+release_ref=0a1aa7c0dc9a7770f937fade6c850919e95954e9
 crate=busbar-release-oracle
 bin=busbar-oracle
