@@ -511,8 +511,12 @@ pub const ADMIN_ROUTES: &[AdminRoute] = &[
 ];
 
 /// THE TRUST VERBS' OpenAPI FRAGMENT, each path relative to the admin mount (the kernel keys it
-/// under the mount): the served engine's text.
-pub const ADMIN_OPENAPI: &str = r#"{"/agents/{name}/connect":{"post":{"summary":"Fetch a registered agent's card, verify it against the operator's out-of-band root, and report the fingerprint. Approves nothing and writes nothing","security":[{"adminToken":[]}],"parameters":[{"name":"name","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"OK (the derived trust state and the fingerprint a human is being asked to approve; a card that could not be authenticated is still a 200 — the reason is in `failure` and the state is `error`)"}}}},"/agents/{name}/approve":{"post":{"summary":"Lock a registered agent to the card fingerprint the operator has SEEN. The card is re-fetched and re-verified, and an approval naming any other fingerprint is refused","security":[{"adminToken":[]}],"parameters":[{"name":"name","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"OK (the registration's state AFTER the approval, read off the live registry)"}}}}}"#;
+/// under the mount): the served engine's text. Each verb's `200` names its typed body by `$ref`, and
+/// the neutral `components.schemas` key carries that body (`A2aTrustView`) as data, since a door
+/// links no schema generator; the kernel's fold inserts it into the admin document's
+/// `#/components/schemas` (ARCHITECT Q2). It is the committed admin `openapi.json`'s entry
+/// verbatim, which the admin crate's drift test holds.
+pub const ADMIN_OPENAPI: &str = r##"{"/agents/{name}/connect":{"post":{"summary":"Fetch a registered agent's card, verify it against the operator's out-of-band root, and report the fingerprint. Approves nothing and writes nothing","security":[{"adminToken":[]}],"parameters":[{"name":"name","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"OK (the derived trust state and the fingerprint a human is being asked to approve; a card that could not be authenticated is still a 200 — the reason is in `failure` and the state is `error`)","content":{"application/json":{"schema":{"$ref":"#/components/schemas/A2aTrustView"}}}}}}},"/agents/{name}/approve":{"post":{"summary":"Lock a registered agent to the card fingerprint the operator has SEEN. The card is re-fetched and re-verified, and an approval naming any other fingerprint is refused","security":[{"adminToken":[]}],"parameters":[{"name":"name","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"OK (the registration's state AFTER the approval, read off the live registry)","content":{"application/json":{"schema":{"$ref":"#/components/schemas/A2aTrustView"}}}}}}},"components":{"schemas":{"A2aTrustView":{"description":"THE TRUST VIEW of one registered agent — what both verbs answer with.\n\nThe sibling of `busbar_mcp::mcp::admin_view::McpTrustView` and shaped like it on purpose: an\noperator console rendering both planes should be rendering one component. It is NOT the same\ntype, because the two planes' capability vocabularies differ (a `tools:` entry has an approved\ndigest per tool; an `agents:` entry has a skill set on a card) and merging them would mean one\nof the planes filling in fields that mean nothing to it.","properties":{"added":{"description":"Offered now, never ruled on.","items":{"type":"string"},"type":"array"},"changed":{"description":"Approved, but offered at a DIFFERENT digest. THIS IS THE RUG-PULL ROW.","items":{"type":"string"},"type":"array"},"failure":{"description":"Why the contact failed, when it did.","type":["string","null"]},"fingerprint":{"description":"THE CANONICAL CARD FINGERPRINT AN OPERATOR IS BEING ASKED TO APPROVE. Surfaced explicitly\nrather than left for a caller to dig out, because this is the one string that goes in front\nof the human and `approve` refuses anything else.","type":["string","null"]},"name":{"type":"string"},"observed_skills":{"description":"How many skills the observation carried.","format":"uint","minimum":0,"type":"integer"},"pin_changed":{"description":"The presented identity is not the locked one. Its own axis: adopting a new identity is a\ndifferent act from adopting new content.","type":"boolean"},"pin_mechanism":{"description":"The operator's word for the authenticity root, as the OBSERVED pin names it. Never\ninterpreted by the machine.","type":"string"},"removed":{"description":"Approved, and no longer offered.","items":{"type":"string"},"type":"array"},"state":{"description":"`pending`, `approved`, `quarantined`, `suspended` or `error`. DERIVED on every read from the\nstanding approval and the sighting, so there is no stored state to go stale.","type":"string"}},"required":["name","state","pin_mechanism","fingerprint","pin_changed","added","changed","removed","observed_skills","failure"],"type":"object"}}}}"##;
 
 /// THE TRUST VERBS' OpenAPI FRAGMENT ([`ADMIN_OPENAPI`]), each path keyed under `admin_prefix`
 /// (the door's snapshot passes none and states the paths relative to the admin mount).
@@ -524,7 +528,14 @@ pub fn openapi_fragment(admin_prefix: &str) -> serde_json::Value {
     serde_json::Value::Object(
         paths
             .into_iter()
-            .map(|(rel, item)| (format!("{admin_prefix}{rel}"), item))
+            .map(|(rel, item)| {
+                // The `components` key is no path: it is the bodies the paths' `$ref`s name.
+                if rel == "components" {
+                    (rel, item)
+                } else {
+                    (format!("{admin_prefix}{rel}"), item)
+                }
+            })
             .collect(),
     )
 }
