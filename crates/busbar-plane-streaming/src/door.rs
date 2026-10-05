@@ -77,7 +77,7 @@ use busbar_contract::plane::{PER_SESSION, TOKEN_FAMILY};
 
 use crate::claims::{Dialect, HTTP_TRANSPORT, WS_TRANSPORT};
 use crate::config::StreamsCfg;
-use crate::driven::{Door, Steps};
+use crate::driven::{Door, Steps, FIELD_CONTENT_LENGTH};
 use crate::meta;
 use crate::provider::{GEMINI_LIVE, OPENAI_REALTIME};
 use crate::request_unit::{self, Answer, Piece, RequestUnit};
@@ -869,7 +869,12 @@ fn answer_piece(
         Answer::ToCaller(reply) => {
             let (mut fields, units, mut arena) =
                 (input.fields_buf(), input.units_buf(), input.arena_buf());
-            push_fields(&mut fields, &mut arena, &reply.fields);
+            // A one-request door's answer is WHOLE: its head states its length, so the caller is
+            // answered under it, never chunked (1.6.0-pre's bytes; the serve path sends a whole
+            // answer under the length its head states).
+            let mut head = reply.fields.clone();
+            head.push((FIELD_CONTENT_LENGTH, reply.body.len().to_string()));
+            push_fields(&mut fields, &mut arena, &head);
             if piece::settle(out, &fields, &units, &arena) {
                 held.short = Some(Answer::ToCaller(reply));
                 return (Outcome::Failed, false);

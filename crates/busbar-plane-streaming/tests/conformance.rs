@@ -559,8 +559,9 @@ fn unit_expected() -> Vec<String> {
         format!("mint caller Ready emitted= more=0 far=false done=false status=0 {none}"),
         format!(
             "mint far_end Ready emitted={} more=0 far=false done=true status=200 verb= target= \
-             fields=[\"content-type=application/json\"]",
-            String::from_utf8_lossy(&minted.body)
+             fields=[\"content-type=application/json\", \"content-length={}\"]",
+            String::from_utf8_lossy(&minted.body),
+            minted.body.len()
         ),
         "sdp attempt Ready emitted= more=0 far=true done=false status=0 verb=POST \
          target=/v1/realtime/calls fields=[\"content-type=application/sdp\"]"
@@ -571,8 +572,10 @@ fn unit_expected() -> Vec<String> {
         ),
         format!(
             "sdp far_end Ready emitted={} more=0 far=false done=true status=201 verb= target= \
-             fields=[\"content-type=application/sdp\", \"location={LOCATION}\"]",
-            String::from_utf8_lossy(SDP_ANSWER)
+             fields=[\"content-type=application/sdp\", \"location={LOCATION}\", \
+             \"content-length={}\"]",
+            String::from_utf8_lossy(SDP_ANSWER),
+            SDP_ANSWER.len()
         ),
     ];
     t.push(format!(

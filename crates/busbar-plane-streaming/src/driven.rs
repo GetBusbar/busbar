@@ -26,6 +26,8 @@ pub const JSON_CONTENT_TYPE: &str = "application/json";
 pub const FIELD_CONTENT_TYPE: &str = "content-type";
 /// The head field naming where a created call lives.
 pub const FIELD_LOCATION: &str = "location";
+/// The head field a whole answer states its length in.
+pub const FIELD_CONTENT_LENGTH: &str = "content-length";
 
 /// The door a claim is, by its index in the snapshot's claims (`crate::door::ROUTES`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
