@@ -591,7 +591,7 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
     );
 
     // 7. The approval was ONE-SHOT: replaying the same authorization request goes back to the
-    //    consent screen rather than minting a second code from a decision made once.
+    //    consent screen rather than minting a second code from an approval given once.
     let (status, headers, body) =
         send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
     assert_eq!(status, 302, "{body}");
@@ -985,7 +985,7 @@ async fn an_unauthenticated_visitor_is_never_shown_the_consent_screen() {
 /// The PATH after it stays plain ASCII, so the mounted `/authorize` route is perfectly ordinary and
 /// reachable — only the Location this plane builds for ITS OWN login redirect is broken.
 ///
-/// Before the fix, `redirect`'s `Err` arm answered `ApprovalDecision::Deny`, which `oauth-as` turns
+/// Before the fix, `redirect`'s `Err` arm answered `Deny` to the library, which `oauth-as` turns
 /// into an ordinary `access_denied` redirect to the CLIENT's `redirect_uri` (RFC 6749 §4.1.2.1) —
 /// the broken server silently completing the flow as though the resource owner had refused, having
 /// never actually sent anyone to log in. That is "proceeding" rather than refusing. The fix answers

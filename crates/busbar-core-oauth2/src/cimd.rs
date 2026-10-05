@@ -4,7 +4,7 @@
 //! CLIENT ID METADATA DOCUMENTS: the `client_id`-that-is-a-URL mechanism, served at the
 //! `Storage::get_client` seam.
 //!
-//! The `2026-07-28` MCP revision lists CIMD as the `SHOULD` among the three ways a client obtains
+//! The `2026-07-28` authorization revision lists CIMD as the `SHOULD` among the three ways a client obtains
 //! a `client_id`. The shape here is the one `oauth_as/mod.rs` records: a `client_id` that parses
 //! as an HTTPS URL and is absent from the store is FETCHED, validated (`client_id` equal to the
 //! URL it was fetched from, `redirect_uris` taken from the document and exact-matched by
@@ -112,6 +112,14 @@ pub(crate) fn document_need() -> ReadNeed {
 /// plane built before the connector answers nothing it could not stand behind.
 pub(crate) struct ConnectorFetch {
     pub(crate) table: fn() -> Option<Table>,
+}
+
+/// The fetch of a server built with no connection table ([`crate::NoConnections`]): every document
+/// fetch fails closed, so every metadata-document client is unknown.
+pub(crate) fn unconnected() -> Arc<dyn CimdFetch> {
+    Arc::new(ConnectorFetch {
+        table: <crate::NoConnections as crate::Connections>::table,
+    })
 }
 
 /// Closes the exchange's connection however the fetch ends, so a refused, failed or oversized
