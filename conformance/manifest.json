@@ -1,7 +1,7 @@
 {
   "_generated": "by `cargo xtask gate conformance-sync --write`; DO NOT EDIT — the drift gate is fatal",
-  "commit": "",
-  "generated_at": "2026-09-28T19:37:44Z",
+  "commit": "3da73b2250bfa45e8df21c20c89ca21cdd1dfe71",
+  "generated_at": "2026-10-05T16:10:44Z",
   "release": "1.6.0",
   "schema": "busbar.conformance.manifest/1",
   "suites": [
@@ -36,14 +36,17 @@
       "tier": "conformant"
     },
     {
-      "claim": null,
+      "claim": "Spec-conformant — jev decision plane",
+      "commit": "3da73b2250bfa45e8df21c20c89ca21cdd1dfe71",
+      "evidence": "target/conformance-record/jev",
       "plan": "plane battery + served POST /v1/systemone on a booted busbar (systemone only; GET /v1/models keeps its 1.5.5 bytes)",
       "public": true,
-      "reason": "not served: POST /v1/systemone answers 404, the absence code on this boot; the decisions plane is registered and configured but no route serves its operation (the kernel plane driver serves it)",
+      "spec_version": "",
       "standard": "jev decision plane",
-      "status": "fail",
+      "status": "pass",
       "suite": "jev",
-      "tier": "spec-conformant"
+      "tier": "spec-conformant",
+      "verified_at": "2026-10-05T16:10:44Z"
     },
     {
       "claim": null,
