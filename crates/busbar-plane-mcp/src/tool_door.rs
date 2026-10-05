@@ -1185,7 +1185,7 @@ fn verify_on_call(
                     held.section.effective_upstream_credentials(server),
                 )
                 .then(|| crate::tool_scope::registration_scope(server, def));
-                let answer = exchange_at(instance, plane.host.as_ref(), base, &url, || {
+                let answer = exchange_at(instance, plane.host.as_ref(), base, &url, server, || {
                     let mut request =
                         crate::client::jsonrpc::tools_list(&url, CONNECT_REQUEST_ID, None);
                     scoped(&mut request.headers, scope.as_deref());
@@ -1943,6 +1943,7 @@ slot!(
                                     plane.host.as_ref(),
                                     base,
                                     &def.url,
+                                    &member,
                                     || busbar_contract::abi::sdk::exchange::Request {
                                         method: outbound.verb.as_bytes().to_vec(),
                                         target: outbound.target.into_bytes(),
@@ -2574,6 +2575,7 @@ fn exchange_at(
     host: Option<&busbar_contract::abi::sdk::conn::Host>,
     base: u32,
     url: &str,
+    member: &str,
     request: impl FnOnce() -> busbar_contract::abi::sdk::exchange::Request,
 ) -> std::task::Poll<
     Result<
@@ -2587,8 +2589,9 @@ fn exchange_at(
     };
     let mut state = match instance.resume::<Exchange>() {
         Some(parked) => *parked,
+        // The exchange reaches the REGISTRATION `member` (SEAM-4p): its own private reach applies.
         None => match Exchange::request(request()) {
-            Ok(s) => s,
+            Ok(s) => s.as_member(member),
             Err(e) => return std::task::Poll::Ready(Err(e)),
         },
     };
