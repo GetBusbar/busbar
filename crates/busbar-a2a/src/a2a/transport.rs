@@ -233,7 +233,7 @@ pub(crate) struct ReqwestTransport {
     /// Additional trust anchors (DER), accumulated by [`Self::trusting_root`] (test-only) so the full set
     /// can be re-registered as one host-side [`busbar_kernel::plane_host::trust_anchor`] ref. EMPTY in
     /// production — the platform's roots are the roots.
-    extra_roots: Vec<rustls_pki_types::CertificateDer<'static>>,
+    extra_roots: Vec<Vec<u8>>,
     /// THE OPAQUE host-side trust-anchor ref (`0` = platform roots only). Registered ONCE, when the
     /// transport is built, and carried on every per-hop [`EgressDesc`](busbar_contract::abi::hot::EgressDesc);
     /// the host resolves it to the parsed roots — the certificate bytes never cross the seam.
@@ -280,20 +280,40 @@ impl ReqwestTransport {
 
     #[cfg(all(test, feature = "test-support"))]
     pub(crate) fn trusting_root(mut self, pem: &[u8]) -> Self {
-        {
-            use rustls_pki_types::pem::PemObject;
-            self.extra_roots.extend(
-                rustls_pki_types::CertificateDer::pem_slice_iter(pem)
-                    .collect::<Result<Vec<_>, _>>()
-                    .expect("a PEM certificate"),
-            );
-        }
+        self.extra_roots.extend(pem_certificates(
+            std::str::from_utf8(pem).expect("a PEM certificate"),
+        ));
         // Re-register the FULL accumulated set (a fresh ref each time), so the desc's one ref resolves
         // to every root this transport was told to trust — the host owns the parsed certificates.
         self.trust_anchor_ref =
             busbar_kernel::plane_host::trust_anchor::register(self.extra_roots.clone());
         self
     }
+}
+
+/// TEST-ONLY: every `CERTIFICATE` section of a PEM bundle, DER. The roots a test hands
+/// [`ReqwestTransport::trusting_root`] are read with this plain walk: TLS lives only in the
+/// connector, so this crate names no TLS library, not even in a test.
+#[cfg(all(test, feature = "test-support"))]
+pub(crate) fn pem_certificates(pem: &str) -> Vec<Vec<u8>> {
+    use base64::Engine as _;
+    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+    const END: &str = "-----END CERTIFICATE-----";
+    pem.split(BEGIN)
+        .skip(1)
+        .map(|section| {
+            let body: String = section
+                .split(END)
+                .next()
+                .expect("a certificate section")
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            base64::engine::general_purpose::STANDARD
+                .decode(body)
+                .expect("a certificate section decodes")
+        })
+        .collect()
 }
 
 /// ONE PINNED HOP, shared by the card fetch and the relay.

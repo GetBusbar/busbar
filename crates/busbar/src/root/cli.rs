@@ -402,7 +402,8 @@ fn list_plugins_command() -> i32 {
     let providers_override = providers_override();
     let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
     // Best-effort config read (lenient env): a missing/broken config falls back to the default
-    // plugins block so the inventory still works pre-deployment.
+    // plugins block so the inventory still works pre-deployment. A config with no `store:` block
+    // selects no store row (Q-STORE = (B): no row is a default).
     let (plugins_cfg, store_ref) = match load_config_from_disk(
         &config_path,
         providers_override.as_deref(),
@@ -410,12 +411,7 @@ fn list_plugins_command() -> i32 {
         config::EnvSubst::Lenient,
     ) {
         Ok(l) => {
-            let store = l
-                .deploy
-                .store
-                .as_ref()
-                .map(|g| g.module.clone())
-                .unwrap_or_else(config::default_governance_store);
+            let store = l.deploy.store.as_ref().map(|g| g.module.clone());
             (l.deploy.plugins, store)
         }
         Err(e) => {
@@ -423,10 +419,7 @@ fn list_plugins_command() -> i32 {
                 "[warn] {}: config not readable ({e}); using the default plugins block",
                 diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.banner()
             );
-            (
-                config::PluginsCfg::default(),
-                config::default_governance_store(),
-            )
+            (config::PluginsCfg::default(), None)
         }
     };
     plugins_cfg.warn_invalid_floors();
@@ -469,10 +462,10 @@ fn list_plugins_command() -> i32 {
             })
             .unwrap_or_else(|| ("-".into(), "-".into(), "-".into(), "-".into()));
         // Which row the configured governance store selects (only meaningful when it would load).
-        let selected = plugins_cfg.enabled
-            && row.status == "ready"
-            && (name == store_ref || alias == store_ref);
-        let status = if selected {
+        let selected = store_ref.as_deref().filter(|s| {
+            plugins_cfg.enabled && row.status == "ready" && (name == *s || alias == *s)
+        });
+        let status = if let Some(store_ref) = selected {
             format!("LOADS (store.module: {store_ref})")
         } else if !plugins_cfg.enabled && row.status == "ready" {
             "ready (inert: plugins.enabled is false)".to_string()

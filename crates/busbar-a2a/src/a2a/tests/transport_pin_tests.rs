@@ -10,13 +10,19 @@
 //! Refusing was the right call — a fetch that succeeded is not a transport binding that was checked
 //! — but the consequence was that an unsigned vendor had no root at all.
 //!
-//! ## Every test here runs a REAL TLS HANDSHAKE
+//! ## Every test here drives the PRODUCTION transport over a real socket
 //!
-//! Not a fixture that hands back a certificate. The certificate under test is one a real `rustls`
-//! server presented, over a real socket, to the real production client, and the pin is read off the
-//! response that handshake produced. That matters because the entire safety argument is an
-//! ORDERING: the certificate is observable only because the chain-and-name check already accepted
-//! it. A fixture could not fail that ordering and so could not test it — and
+//! The certificate under test is the one a far end presented, over a real loopback socket, to the
+//! real production client, and the pin is read off the response that hop produced. The TLS under
+//! the hop is the kernel's TLS test double (`transport_tests::tls_double`): TLS lives only in the
+//! connector, which this crate does not name, so what is proven here is this plane's side — the
+//! leaf the engine read off the hop is the one compared to the operator's pin. The entire safety
+//! argument is an ORDERING: the certificate is observable only because the chain-and-name check
+//! already accepted it. That ordering over a REAL handshake — a refused chain yields no response
+//! and so no pin, and the pin read is the serving leaf's own key and not a look-alike's — is
+//! proven where TLS lives, the connector's `tls/engine_tests.rs`
+//! (`an_untrusted_self_signed_leaf_is_refused_under_the_pin_naming_unknown_issuer`,
+//! `the_pin_off_a_real_handshake_is_the_serving_leafs_key_and_not_a_look_alikes`), and
 //! [`no_path_in_this_crate_obtains_a_pin_by_switching_verification_off`] is the ratchet that keeps
 //! the ordering from being "fixed" by the obvious shortcut.
 //!
@@ -31,7 +37,9 @@ use rcgen::{CertificateParams, IsCa, Issuer, KeyPair, PublicKeyData};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use super::transport_tests::{spawn_tls, url, HOST, LOOPBACK};
+use super::transport_tests::{
+    presenting, spawn_tls, url, wait_for_hellos, DoublePeer, HOST, LOOPBACK,
+};
 use super::*;
 use crate::a2a::config::{AgentPinCfg, PinMechanism};
 use crate::a2a::fetch::FetchPolicy;
@@ -44,7 +52,6 @@ use busbar_kernel::trust::{Approval, Observation, Sighting};
 struct Endpoint {
     ca_pem: String,
     leaf_pem: String,
-    leaf_key_pem: String,
     /// The expected `sha256/…` value, from `rcgen`'s own SPKI encoding of the leaf key. NOT from
     /// anything in `crate::a2a::key_info`.
     expected_pin: String,
@@ -66,7 +73,6 @@ fn endpoint_for(sans: Vec<String>) -> Endpoint {
     Endpoint {
         ca_pem: ca_cert.pem(),
         leaf_pem: leaf_cert.pem(),
-        leaf_key_pem: leaf_kp.serialize_pem(),
         // COMPUTED FROM RCGEN'S OWN SPKI ENCODING, never from `crate::a2a::key_info`. This is the
         // oracle; a test whose expectation came from the code under test would agree with a walk
         // that read the wrong member.
@@ -86,7 +92,7 @@ fn an_unsigned_card() -> Value {
     })
 }
 
-/// FETCH THE CARD OVER A REAL HANDSHAKE and hand back what the connection proved.
+/// FETCH THE CARD OVER THE HOP and hand back what the connection proved.
 ///
 /// The two steps the driver performs for one hop, against the production transport: the guard's
 /// address, then the transport with it. Loopback is INTERNAL and the SSRF guard refuses it with no
@@ -94,9 +100,8 @@ fn an_unsigned_card() -> Value {
 /// adding a "test addresses are fine" escape hatch to the guard would be a hole in production to
 /// make a test pass.
 fn observed_pin_over_tls(endpoint: &Endpoint, card: &Value) -> (Value, Option<String>) {
-    let (addr, _sni) = spawn_tls(
-        &endpoint.leaf_pem,
-        &endpoint.leaf_key_pem,
+    let (addr, _hellos) = spawn_tls(
+        presenting(&endpoint.leaf_pem),
         serde_json::to_string(card).expect("serialize"),
     );
     let policy = FetchPolicy::default();
@@ -135,7 +140,7 @@ fn transport_pin_cfg(mechanism: PinMechanism, pin: &str) -> AgentPinCfg {
 // ══ THE PIN IS READ, AND IT IS THE RIGHT ONE ═════════════════════════════════════════════════════
 
 #[test]
-fn the_pin_read_off_a_real_handshake_is_the_leaf_keys_own_key_pin_hash() {
+fn the_pin_read_off_the_hop_is_the_leaf_keys_own_key_pin_hash() {
     let endpoint = endpoint_for(vec![HOST.to_string()]);
     let (_card, observed) = observed_pin_over_tls(&endpoint, &an_unsigned_card());
     assert_eq!(
@@ -358,21 +363,21 @@ fn loopback_policy() -> FetchPolicy {
 /// THE PROPERTY THE BUILD DID NOT HAVE: an `mtls` registration that DOES present its client
 /// certificate verifies.
 ///
-/// The whole pass is driven — guard, hop, verification, ledger — against a peer built with
-/// `WebPkiClientVerifier`, so the mutual half is a fact the peer enforced rather than a flag a
-/// fixture set. Until this test existed, `verify_document` returned `MutualTlsNotPresented` for
+/// The whole pass is driven — guard, hop, verification, ledger — against a peer that demands this
+/// registration's client certificate, so the mutual half is a fact the peer enforced rather than a
+/// flag a fixture set (a real `WebPkiClientVerifier` peer doing the same is the connector's
+/// `client_cert_fixture_accepts_only_the_carried_identity`). Until this test existed, `verify_document` returned `MutualTlsNotPresented` for
 /// EVERY `mtls` registration, justified by a comment claiming the `agents:` grammar named no client
 /// certificate — which stopped being true when `client_identity:` landed.
 #[test]
 fn a_mutual_tls_registration_that_presents_its_client_certificate_verifies() {
     let endpoint = endpoint_for(vec![HOST.to_string()]);
-    let (client_ca, client_leaf, client_key) =
+    let (_client_ca, client_leaf, client_key) =
         super::transport_tests::ca_and_leaf(vec!["busbar.example".to_string()]);
     let card = an_unsigned_card();
     let (addr, seen) = super::transport_mutual_tls_tests::spawn_mutual_tls(
         &endpoint.leaf_pem,
-        &endpoint.leaf_key_pem,
-        &client_ca,
+        &client_leaf,
         serde_json::to_string(&card).expect("serialize"),
     );
 
@@ -416,11 +421,14 @@ fn a_mutual_tls_registration_that_presents_its_client_certificate_verifies() {
         "the recorded pin is the mutual mechanism, carrying the identity the network established \
          and the card that identity served"
     );
-    assert_eq!(
-        super::transport_mutual_tls_tests::wait_for_conns(&seen),
-        vec![Ok(1)],
-        "and the mutual half is the PEER's finding: it completed the handshake against exactly one \
-         certificate of busbar's"
+    let conns = wait_for_hellos(&seen, 1);
+    assert!(
+        conns.len() == 1
+            && conns[0].ok
+            && conns[0].client_leaf.as_deref()
+                == Some(super::transport_tests::der(&client_leaf).as_slice()),
+        "and the mutual half is the PEER's finding: it completed the handshake against exactly the \
+         certificate this registration names: {conns:?}"
     );
 }
 
@@ -434,9 +442,8 @@ fn a_mutual_tls_registration_that_presents_its_client_certificate_verifies() {
 fn a_mutual_tls_registration_whose_hop_presented_no_client_certificate_is_still_refused() {
     let endpoint = endpoint_for(vec![HOST.to_string()]);
     let card = an_unsigned_card();
-    let (addr, _sni) = spawn_tls(
-        &endpoint.leaf_pem,
-        &endpoint.leaf_key_pem,
+    let (addr, _hellos) = spawn_tls(
+        presenting(&endpoint.leaf_pem),
         serde_json::to_string(&card).expect("serialize"),
     );
 
@@ -503,24 +510,28 @@ fn a_mutual_tls_look_alike_endpoint_is_named_as_one_rather_than_as_a_missing_cer
 // ══ THE ORDERING THAT MAKES ALL OF THIS SAFE ═════════════════════════════════════════════════════
 
 #[test]
-fn an_untrusted_certificate_produces_no_card_and_therefore_no_pin() {
-    // THE SAFETY ARGUMENT, EXECUTED. The pin is readable only off a response, and a handshake the
-    // chain check refused produces no response. So there is no arrangement of certificates under
-    // which busbar records a transport pin for a connection it did not verify.
+fn a_refused_handshake_produces_no_card_and_therefore_no_pin() {
+    // THE SAFETY ARGUMENT, EXECUTED ON THIS PLANE'S SIDE. The pin is readable only off a response,
+    // and a handshake the chain check refused produces no response. So there is no arrangement of
+    // certificates under which busbar records a transport pin for a connection it did not verify.
+    // The chain check refusing an untrusted certificate over a real handshake is the connector's
+    // `an_untrusted_self_signed_leaf_is_refused_under_the_pin_naming_unknown_issuer`.
     let endpoint = endpoint_for(vec![HOST.to_string()]);
-    let (addr, _sni) = spawn_tls(
-        &endpoint.leaf_pem,
-        &endpoint.leaf_key_pem,
+    let (addr, _hellos) = spawn_tls(
+        DoublePeer {
+            refuse: Some("invalid peer certificate: UnknownIssuer".to_string()),
+            ..presenting(&endpoint.leaf_pem)
+        },
         r#"{"name":"planner"}"#.to_string(),
     );
     let policy = FetchPolicy::default();
-    // The same server, the same certificate, the same socket — and its CA is NOT trusted.
+    // The same far end, the same certificate, the same socket — and its CA is NOT trusted.
     let err = ReqwestTransport::new(&policy)
         .get(&url("https", addr.port(), "/card"), LOOPBACK)
         .expect_err("an untrusted certificate must not produce a response");
     assert!(
         err.contains("invalid peer certificate"),
-        "the refusal must be the chain check: {err}"
+        "the refusal must be the chain check's: {err}"
     );
 }
 

@@ -294,7 +294,7 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
 /// [`DeployCfg::plane_fees`] — and prices that plane's rows alone (#42 "scoped per plane"). The
 /// fallback (`pools:`) plane's card and fee are still the flat top-level `rate_card:` and
 /// `per_request_fee:`, loaded byte-identically.
-const PLANE_CARD_KEYS: [&str; 2] = ["rate_card", "fees"];
+pub(crate) const PLANE_CARD_KEYS: [&str; 2] = ["rate_card", "fees"];
 
 /// Lift a plane section: strip its core-owned sub-keys (see [`plane_remainder`]), then parse the
 /// REMAINDER through the section's own carrier exactly as before — the plane's parse error reaches
