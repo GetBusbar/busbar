@@ -69,7 +69,7 @@ fn resolve(p: &Plugin<Secret>, settings: &[u8], material: &[u8]) -> (String, u64
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = s.kind_inputs("secret");
     assert!(k.is_object(), "conformance.json has no `secret` inputs");
-    let settings = s.settings();
+    let settings = leg.settings(s);
     let bad: Vec<Vec<u8>> = k["bad_settings"]
         .as_array()
         .expect("conformance.json: secret.bad_settings must be an array")

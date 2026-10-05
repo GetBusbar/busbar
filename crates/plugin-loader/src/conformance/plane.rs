@@ -346,7 +346,7 @@ fn generation(p: &Plugin<Plane>, s: u32, generation: u64) -> String {
 
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = Inputs::of(s.kind_inputs("plane"));
-    let settings = s.settings();
+    let settings = leg.settings(s);
     let head: Vec<Field> = k
         .head
         .iter()

@@ -212,13 +212,28 @@ impl Subject {
             .expect("the cdylib exports busbar_plugin_door")
     }
 
-    /// The settings the plugin opens over (`inputs.settings`, a JSON value, serialized).
+    /// The settings the plugin opens over (`inputs.settings`, a JSON value, serialized), its
+    /// [`FOLD`] placeholder filled with a namespace of its own ([`fold_namespace`]`("suite")`).
     #[must_use]
     pub fn settings(&self) -> Vec<u8> {
-        match self.inputs.get("settings") {
+        self.settings_in(&fold_namespace("suite"))
+    }
+
+    /// The settings the plugin opens over, every [`FOLD`] placeholder in them replaced by
+    /// `namespace` (Q-P4-8: each fold writes into its own schema or key prefix). Settings that name
+    /// no placeholder are exactly `inputs.settings`.
+    #[must_use]
+    pub fn settings_in(&self, namespace: &str) -> Vec<u8> {
+        let raw = match self.inputs.get("settings") {
             None | Some(serde_json::Value::Null) => b"{}".to_vec(),
             Some(serde_json::Value::String(s)) => s.as_bytes().to_vec(),
             Some(v) => v.to_string().into_bytes(),
+        };
+        let text = String::from_utf8_lossy(&raw);
+        if text.contains(FOLD) {
+            text.replace(FOLD, namespace).into_bytes()
+        } else {
+            raw
         }
     }
 
@@ -352,6 +367,37 @@ pub fn cdylib_of(crate_snake: &str) -> PathBuf {
         .unwrap_or_else(|| panic!("the plugin's cdylib ({name}) is not built under {profile:?}"))
 }
 
+/// THE PER-FOLD NAMESPACE PLACEHOLDER (Q-P4-8): `{fold}` anywhere in `conformance.json`'s
+/// `settings` (a schema name, a key prefix, a database name) is filled per fold with a namespace
+/// no other fold uses ([`fold_namespace`]), so two folds of one store, in one run or in two (CI's
+/// debug, release and RED runs), never see each other's rows or tombstones. The store ABI offers no
+/// op that drops a namespace, so the suite leaves it: a plugin's settings name a THROWAWAY backend
+/// (a test database or a key space it may litter), never one that holds data.
+pub const FOLD: &str = "{fold}";
+
+/// A namespace no other fold uses: `bbconf_<pid>_<tag>_<n>`, the process, the fold's tag (its leg)
+/// and a counter of this process's; lower-case letters, digits and `_` only, so it is a valid
+/// schema name and key prefix as it stands.
+#[must_use]
+pub fn fold_namespace(tag: &str) -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let tag: String = tag
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!(
+        "bbconf_{}_{tag}_{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    )
+}
+
 /// How a leg reaches the plugin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Leg {
@@ -359,6 +405,18 @@ pub enum Leg {
     Linked,
     /// The dropped-in library, admitted against the Statement its manifest states.
     Dropped,
+}
+
+impl Leg {
+    /// The settings this leg's fold opens over: `s`'s, its [`FOLD`] filled with a namespace of
+    /// the fold's own.
+    #[must_use]
+    pub fn settings(self, s: &Subject) -> Vec<u8> {
+        s.settings_in(&fold_namespace(match self {
+            Self::Linked => "linked",
+            Self::Dropped => "dropped",
+        }))
+    }
 }
 
 /// A dispatcher of the leg's own.

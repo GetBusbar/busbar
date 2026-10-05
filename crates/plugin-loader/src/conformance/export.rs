@@ -371,7 +371,7 @@ fn stream(d: &serde_json::Value) -> u8 {
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = s.kind_inputs(ROOT);
     assert!(k.is_object(), "conformance.json has no `export` inputs");
-    let settings = s.settings();
+    let settings = leg.settings(s);
     let empty = Vec::new();
     let arr = |key: &str| {
         k.get(key)

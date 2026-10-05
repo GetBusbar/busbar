@@ -307,7 +307,7 @@ impl<'a> Inputs<'a> {
 
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let i = Inputs::of(s.kind_inputs(ROOT));
-    let settings = s.settings();
+    let settings = leg.settings(s);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

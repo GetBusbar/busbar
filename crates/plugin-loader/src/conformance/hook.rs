@@ -435,7 +435,7 @@ fn recall_again(p: &Plugin<Hook>, r: &Request, op: u32, order_cap: usize) -> Str
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = s.kind_inputs("hook");
     assert!(k.is_object(), "conformance.json has no `hook` inputs");
-    let settings = s.settings();
+    let settings = leg.settings(s);
     let bad: Vec<Vec<u8>> = k["bad_settings"]
         .as_array()
         .expect("conformance.json: hook.bad_settings must be an array")

@@ -319,7 +319,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
          suite fails rather than pass a family it did not run",
         st.caps
     );
-    let settings = s.settings();
+    let settings = leg.settings(s);
     let bad: Vec<Vec<u8>> = k["bad_settings"]
         .as_array()
         .expect("conformance.json: auth.bad_settings must be an array")

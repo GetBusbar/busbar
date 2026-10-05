@@ -420,3 +420,75 @@ fn the_store_script_writes_the_only_credential_kind_the_shipped_schemas_hold() {
     assert_eq!(CREDENTIAL_KIND, "sigv4");
     assert_eq!(secret("c1", "k1", "pub1").meta.kind, "sigv4");
 }
+
+// ── THE PER-FOLD NAMESPACE (Q-P4-8) ──
+
+mod fold_namespace {
+    use super::super::{fold_namespace, Leg, Subject, FOLD};
+
+    fn subject(settings: &str) -> Subject {
+        extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
+            std::ptr::null()
+        }
+        Subject::new(no_door, "unused", &format!(r#"{{"settings": {settings}}}"#))
+    }
+
+    /// Settings that name no placeholder are exactly the plugin's.
+    #[test]
+    fn settings_without_the_placeholder_are_unchanged() {
+        let s = subject(r#"{"url": "postgres://127.0.0.1/db"}"#);
+        assert_eq!(
+            Leg::Linked.settings(&s),
+            br#"{"url":"postgres://127.0.0.1/db"}"#.to_vec()
+        );
+    }
+
+    /// RED: two folds, the two legs of one run and folds run in parallel, each fill the
+    /// placeholder with a namespace no other fold uses, so neither reads the other's rows or
+    /// tombstones; each is a valid schema name (`[a-z0-9_]`) naming the process and its leg.
+    #[test]
+    fn red_two_parallel_folds_never_share_a_namespace() {
+        let s = std::sync::Arc::new(subject(r#"{"schema": "{fold}", "prefix": "{fold}:"}"#));
+        let linked = String::from_utf8(Leg::Linked.settings(&s)).unwrap();
+        let dropped = String::from_utf8(Leg::Dropped.settings(&s)).unwrap();
+        assert!(
+            !linked.contains(FOLD) && !dropped.contains(FOLD),
+            "{linked} {dropped}"
+        );
+        assert_ne!(linked, dropped, "the two legs of one run");
+        let pid = std::process::id().to_string();
+        assert!(
+            linked.contains(&format!("bbconf_{pid}_linked_")),
+            "{linked}"
+        );
+        assert!(
+            dropped.contains(&format!("bbconf_{pid}_dropped_")),
+            "{dropped}"
+        );
+
+        let parallel: Vec<String> = (0..8)
+            .map(|_| {
+                let s = std::sync::Arc::clone(&s);
+                std::thread::spawn(move || String::from_utf8(Leg::Linked.settings(&s)).unwrap())
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect();
+        let mut distinct = parallel.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            parallel.len(),
+            "parallel folds of one leg: {parallel:?}"
+        );
+        for n in [fold_namespace("linked"), fold_namespace("RED run")] {
+            assert!(
+                n.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                "{n}"
+            );
+        }
+    }
+}
