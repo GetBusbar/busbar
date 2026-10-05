@@ -13,6 +13,9 @@
 //! 2. THE REWRITE CHAIN attached to that entry runs, each rewrite handed back to the plane, which
 //!    applies it and projects again.
 //!
+//! Both run at the unit's SCREEN, before the door admits it (`teller::RouteAwait::screen`): a
+//! refusal admits nothing and is answered before any budget refusal, as 1.5.5 answered it.
+//!
 //! No stage tap and no route policy fires: the routed order (the rewrite chain, the request taps,
 //! the route decision) is the default ([`HookOrder::Routed`]). The kernel names no plane: which
 //! order a plane's units run in is the plane's own tail statement, and which hooks are attached is
@@ -20,7 +23,6 @@
 
 use std::sync::Arc;
 
-use busbar_contract::caps::{Pass, Route};
 use busbar_contract::hooks::TransformOutcome;
 
 use super::super::{FarEnd, PlaneUnits};
@@ -115,11 +117,7 @@ impl HookBinder for HostGatedHooks {
 impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     /// THE GATE-FIRST REQUEST STAGE (module doc): the entry's gates over the projection, then its
     /// rewrite chain. Nothing is bound for the entry: the unit pays nothing more.
-    pub(crate) async fn gated_stage(
-        &self,
-        binder: &dyn HookBinder,
-        _token: &Pass<Route>,
-    ) -> Result<(), Stopped> {
+    pub(crate) async fn gated_stage(&self, binder: &dyn HookBinder) -> Result<(), Stopped> {
         let mut view: Projection = self.project(None)?;
         let principal = self
             .lock()
