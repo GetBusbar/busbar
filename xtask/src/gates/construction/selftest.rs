@@ -1568,10 +1568,20 @@ fn money_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
                 );
             }
         }
-        None => r.note_infra_failure(
-            "no reviewed site carries `verdict = \"double\"`, so the doubles ratchet cannot be \
-             planted against",
-        ),
+        // NO REVIEWED DOUBLE REMAINS (the ratchet reached 0, p6-ledger-fix), so there is no site to
+        // add a second construction to. The honest plant is the ratchet's own failure: review the
+        // planted file's construction AS a double, which is one more than a ceiling of zero allows.
+        None => match cx.read("qa/construction.toml") {
+            Ok(text) => ov.set(
+                "qa/construction.toml",
+                format!(
+                    "{text}\n[rules.no-test-doubles-in-production.known_sites.zz-planted-double]\n\
+                     file = \"crates/busbar/src/zz_planted_double.rs\"\nsymbol = \"NullShipper\"\n\
+                     verdict = \"double\"\nbecause = \"a planted reviewed double\"\n"
+                ),
+            ),
+            Err(e) => r.note_infra_failure(&format!("qa/construction.toml unreadable: {e}")),
+        },
     }
     // item 381 (Q11/Q32): `rules.legacy-reach.prefixes` struck the two dead prefixes
     // (busbar_core, busbar_substrate — 0 hits forever) and added the three live retiring engines
