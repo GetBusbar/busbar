@@ -401,7 +401,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
                 .iter()
                 .map(|i| (field(i, "name").to_string(), text(&i["settings"])))
                 .collect(),
-            None => vec![("conformance".to_string(), settings.clone())],
+            None => vec![("conformance".to_string(), settings.to_vec())],
         };
     let instances: Vec<CheckInstance> = instance_settings
         .iter()

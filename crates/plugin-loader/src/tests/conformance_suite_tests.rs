@@ -482,7 +482,7 @@ mod fold_namespace {
     fn settings_without_the_placeholder_are_unchanged() {
         let s = subject(r#"{"url": "db://127.0.0.1/db"}"#);
         assert_eq!(
-            Leg::Linked.settings(&s),
+            Leg::Linked.settings(&s).to_vec(),
             br#"{"url":"db://127.0.0.1/db"}"#.to_vec()
         );
     }
@@ -493,8 +493,8 @@ mod fold_namespace {
     #[test]
     fn red_two_parallel_folds_never_share_a_namespace() {
         let s = std::sync::Arc::new(subject(r#"{"schema": "{fold}", "prefix": "{fold}:"}"#));
-        let linked = String::from_utf8(Leg::Linked.settings(&s)).unwrap();
-        let dropped = String::from_utf8(Leg::Dropped.settings(&s)).unwrap();
+        let linked = String::from_utf8(Leg::Linked.settings(&s).to_vec()).unwrap();
+        let dropped = String::from_utf8(Leg::Dropped.settings(&s).to_vec()).unwrap();
         assert!(
             !linked.contains(FOLD) && !dropped.contains(FOLD),
             "{linked} {dropped}"
@@ -513,7 +513,9 @@ mod fold_namespace {
         let parallel: Vec<String> = (0..8)
             .map(|_| {
                 let s = std::sync::Arc::clone(&s);
-                std::thread::spawn(move || String::from_utf8(Leg::Linked.settings(&s)).unwrap())
+                std::thread::spawn(move || {
+                    String::from_utf8(Leg::Linked.settings(&s).to_vec()).unwrap()
+                })
             })
             .collect::<Vec<_>>()
             .into_iter()
@@ -534,5 +536,128 @@ mod fold_namespace {
                 "{n}"
             );
         }
+    }
+}
+
+// ── THE PER-FOLD NAMESPACE HOOKS (Q-P4-8) ──
+
+mod namespace_hooks {
+    use std::sync::Mutex;
+
+    use super::super::{Leg, Subject};
+
+    /// Every hook call: (`create` or `drop`, the namespace, the filled settings).
+    static CALLS: Mutex<Vec<(&'static str, String, String)>> = Mutex::new(Vec::new());
+
+    fn create(ns: &str, settings: &[u8]) {
+        let settings = String::from_utf8_lossy(settings).into_owned();
+        CALLS
+            .lock()
+            .unwrap()
+            .push(("create", ns.to_owned(), settings));
+    }
+
+    fn drop_ns(ns: &str, settings: &[u8]) {
+        let settings = String::from_utf8_lossy(settings).into_owned();
+        CALLS
+            .lock()
+            .unwrap()
+            .push(("drop", ns.to_owned(), settings));
+    }
+
+    fn calls_for(ns: &str) -> Vec<&'static str> {
+        CALLS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, n, _)| n == ns)
+            .map(|(what, _, _)| *what)
+            .collect()
+    }
+
+    fn subject() -> Subject {
+        extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
+            std::ptr::null()
+        }
+        Subject::new(
+            no_door,
+            "unused",
+            r#"{"settings": {"options": "-c search_path={fold}"}}"#,
+        )
+        .with_namespace(create, drop_ns)
+    }
+
+    /// A hook-made namespace is created once before its fold's open and dropped once after the
+    /// fold (also when the fold fails); two parallel folds get distinct namespaces; the hooks are
+    /// handed the fold's FILLED settings.
+    #[test]
+    fn a_hook_made_namespace_is_created_and_dropped_once_per_fold() {
+        let s = std::sync::Arc::new(subject());
+        let ns = {
+            let f = Leg::Linked.settings(&s);
+            assert_eq!(
+                calls_for(f.namespace()),
+                ["create"],
+                "created before the fold opens"
+            );
+            assert_eq!(
+                &*f,
+                format!(r#"{{"options":"-c search_path={}"}}"#, f.namespace()).as_bytes()
+            );
+            f.namespace().to_owned()
+        };
+        assert_eq!(
+            calls_for(&ns),
+            ["create", "drop"],
+            "dropped once, at the fold's end"
+        );
+
+        let parallel: Vec<String> = [Leg::Linked, Leg::Dropped, Leg::Linked, Leg::Dropped]
+            .into_iter()
+            .map(|leg| {
+                let s = std::sync::Arc::clone(&s);
+                std::thread::spawn(move || leg.settings(&s).namespace().to_owned())
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect();
+        let mut distinct = parallel.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(distinct.len(), 4, "{parallel:?}");
+        for n in &parallel {
+            assert_eq!(calls_for(n), ["create", "drop"], "{n}");
+        }
+
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let f = Leg::Dropped.settings(&s);
+            let ns = f.namespace().to_owned();
+            *FAILED.lock().unwrap() = ns;
+            panic!("the fold fails");
+        }));
+        assert!(failed.is_err());
+        let ns = FAILED.lock().unwrap().clone();
+        assert_eq!(
+            calls_for(&ns),
+            ["create", "drop"],
+            "a failed fold's namespace is dropped"
+        );
+    }
+
+    static FAILED: Mutex<String> = Mutex::new(String::new());
+
+    /// Without hooks, nothing is called and the settings are filled as before.
+    #[test]
+    fn without_hooks_a_fold_is_filled_and_nothing_is_called() {
+        extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
+            std::ptr::null()
+        }
+        let s = Subject::new(no_door, "unused", r#"{"settings": {"schema": "{fold}"}}"#);
+        let f = Leg::Linked.settings(&s);
+        let ns = f.namespace().to_owned();
+        assert_eq!(&*f, format!(r#"{{"schema":"{ns}"}}"#).as_bytes());
+        drop(f);
+        assert!(calls_for(&ns).is_empty());
     }
 }

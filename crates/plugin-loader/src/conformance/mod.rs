@@ -135,6 +135,63 @@ pub struct Subject {
     /// TEST TRUST ANCHORS (CA certificates, PEM) for the HOST connector's TLS
     /// (`conformance_suite! { …, tls: … }`): never handed to the plugin.
     pub anchors: Option<String>,
+    /// THE PER-FOLD NAMESPACE HOOKS (`conformance_suite! { …, namespace: (create, drop) }`):
+    /// `create` makes a fold's namespace before its open, `drop` removes it after the fold.
+    pub namespace: Option<(NamespaceHook, NamespaceHook)>,
+}
+
+/// A per-fold namespace hook: called with the fold's namespace (what [`FOLD`] was filled with) and
+/// the fold's filled settings. The PLUGIN implements it with its own test client (a store that never
+/// creates a schema on demand: `CREATE SCHEMA` / `DROP SCHEMA … CASCADE`); nothing in the store's
+/// behaviour changes.
+pub type NamespaceHook = fn(&str, &[u8]);
+
+/// One fold's settings, its [`FOLD`] filled with a namespace of its own, created by the subject's
+/// `create` hook when it was made and dropped by its `drop` hook when this goes (the fold's end,
+/// its failure included). Reads as the settings bytes.
+pub struct FoldSettings<'s> {
+    subject: &'s Subject,
+    namespace: String,
+    settings: Vec<u8>,
+}
+
+impl FoldSettings<'_> {
+    /// The fold's namespace.
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+}
+
+impl std::fmt::Debug for FoldSettings<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FoldSettings")
+            .field("namespace", &self.namespace)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::ops::Deref for FoldSettings<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.settings
+    }
+}
+
+impl Drop for FoldSettings<'_> {
+    fn drop(&mut self) {
+        let Some((_, drop)) = self.subject.namespace else {
+            return;
+        };
+        if std::thread::panicking() {
+            // The fold failed: drop its namespace still, never turning the failure into an abort.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                drop(&self.namespace, &self.settings);
+            }));
+        } else {
+            drop(&self.namespace, &self.settings);
+        }
+    }
 }
 
 /// The suite's HOST CONNECTOR, as the busbar side builds it for one leg: its parked reads woken
@@ -159,6 +216,32 @@ impl Subject {
             inputs,
             host: None,
             anchors: None,
+            namespace: None,
+        }
+    }
+
+    /// Each fold's namespace is made by `create` before its open and removed by `drop` after it
+    /// (Q-P4-8).
+    #[must_use]
+    pub fn with_namespace(mut self, create: NamespaceHook, drop: NamespaceHook) -> Self {
+        self.namespace = Some((create, drop));
+        self
+    }
+
+    /// One fold's settings, tagged `tag` (its leg, or the RED arm that opens): [`FOLD`] filled with
+    /// a namespace no other fold uses ([`fold_namespace`]), made by the `create` hook now and
+    /// removed by the `drop` hook when the returned settings go.
+    #[must_use]
+    pub fn fold_settings(&self, tag: &str) -> FoldSettings<'_> {
+        let namespace = fold_namespace(tag);
+        let settings = self.settings_in(&namespace);
+        if let Some((create, _)) = self.namespace {
+            create(&namespace, &settings);
+        }
+        FoldSettings {
+            subject: self,
+            namespace,
+            settings,
         }
     }
 
@@ -368,9 +451,14 @@ pub fn cdylib_of(crate_snake: &str) -> PathBuf {
 /// THE PER-FOLD NAMESPACE PLACEHOLDER (Q-P4-8): `{fold}` anywhere in `conformance.json`'s
 /// `settings` (a schema name, a key prefix, a database name) is filled per fold with a namespace
 /// no other fold uses ([`fold_namespace`]), so two folds of one store, in one run or in two (CI's
-/// debug, release and RED runs), never see each other's rows or tombstones. The store ABI offers no
-/// op that drops a namespace, so the suite leaves it: a plugin's settings name a THROWAWAY backend
-/// (a test database or a key space it may litter), never one that holds data.
+/// debug, release and RED runs), never see each other's rows or tombstones.
+///
+/// The store ABI offers no op that makes or drops a namespace, so a plugin whose backend never
+/// creates one on demand (a schema) names HOOKS that do, with its own test client
+/// (`conformance_suite! { …, namespace: (create, drop) }`, [`Subject::with_namespace`]): the suite
+/// creates each fold's namespace before its open and drops it after the fold, its failure
+/// included. Without hooks the suite leaves the namespace: a plugin's settings name a THROWAWAY
+/// backend (a test database or a key space it may litter), never one that holds data.
 pub const FOLD: &str = "{fold}";
 
 /// A namespace no other fold uses: `bbconf_<pid>_<tag>_<n>`, the process, the fold's tag (its leg)
@@ -407,13 +495,13 @@ pub enum Leg {
 
 impl Leg {
     /// The settings this leg's fold opens over: `s`'s, its [`FOLD`] filled with a namespace of
-    /// the fold's own.
+    /// the fold's own, made and removed by the subject's namespace hooks ([`Subject::fold_settings`]).
     #[must_use]
-    pub fn settings(self, s: &Subject) -> Vec<u8> {
-        s.settings_in(&fold_namespace(match self {
+    pub fn settings(self, s: &Subject) -> FoldSettings<'_> {
+        s.fold_settings(match self {
             Self::Linked => "linked",
             Self::Dropped => "dropped",
-        }))
+        })
     }
 }
 
@@ -1094,7 +1182,7 @@ pub fn red_ready(s: &Subject) {
         ready: Some(ready_fails),
         ..real
     });
-    let settings = s.settings();
+    let settings = s.fold_settings("red");
     if s.kind() == KindCode::Store {
         let d = dispatcher();
         let row = LinkedRow::of(ready_fails_door).expect("the restated door states its Statement");
@@ -1242,6 +1330,7 @@ macro_rules! conformance_suite {
         inputs: $inputs:expr
         $(, host: $host:path)?
         $(, tls: $tls:expr)?
+        $(, namespace: ($create:path, $drop:path))?
         $(,)?
     ) => {
         fn __busbar_conformance_subject() -> $crate::conformance::Subject {
@@ -1249,6 +1338,7 @@ macro_rules! conformance_suite {
             let mut s = $crate::conformance::Subject::new($door, $cdylib, $inputs);
             $(s = s.with_host($host);)?
             $(s = s.with_anchors($tls);)?
+            $(s = s.with_namespace($create, $drop);)?
             s
         }
 
