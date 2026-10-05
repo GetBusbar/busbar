@@ -457,6 +457,7 @@ extern "C" {
 #define BB_TRANSPORT_FACT_DECODES_PAYLOAD UINT32_C(2) /* [`TransportTail::facts`]: the framer decodes the payload. */
 #define BB_TRANSPORT_SIDE_ACCEPT UINT32_C(0) /* `side`: the accepting end. */
 #define BB_TRANSPORT_SIDE_DIAL UINT32_C(1) /* `side`: the dialing end. */
+#define BB_TRANSPORT_SIDE_ACCEPT_STREAM UINT32_C(2) /* `side`: the accepting end of ONE STREAM whose connection and head the host's own framer carries */
 #define BB_TRANSPORT_CLOSE_NORMAL UINT32_C(0) /* Close reason: normal. */
 #define BB_TRANSPORT_CLOSE_PEER_CLOSED UINT32_C(1) /* Close reason: the far end closed. */
 #define BB_TRANSPORT_CLOSE_DRAIN UINT32_C(2) /* Close reason: drain. */
@@ -3142,6 +3143,12 @@ struct bb_transport_FinishIn {
     uint32_t reason;
     uint32_t _reserved;
     bb_transport_FramerSink sink;
+    uint32_t final_status;
+    uint32_t _final_reserved;
+    bb_mech_Span final_message;
+    bb_mech_Span final_details;
+    const uint8_t *final_bytes;
+    size_t final_bytes_len;
 };
 
 /* `detach`'s and `timer`'s `in`. */
@@ -5290,13 +5297,19 @@ BB_ASSERT(offsetof(bb_transport_RefuseIn, len) == 120, "bb_transport_RefuseIn.le
 BB_ASSERT(offsetof(bb_transport_RefuseIn, sink) == 128, "bb_transport_RefuseIn.sink: offset");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, status) == 208, "bb_transport_RefuseIn.status: offset");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, _reserved2) == 212, "bb_transport_RefuseIn._reserved2: offset");
-BB_ASSERT(sizeof(bb_transport_FinishIn) == 184, "bb_transport_FinishIn: size");
+BB_ASSERT(sizeof(bb_transport_FinishIn) == 224, "bb_transport_FinishIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FinishIn) == 8, "bb_transport_FinishIn: alignment");
 BB_ASSERT(offsetof(bb_transport_FinishIn, head) == 0, "bb_transport_FinishIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, framing) == 88, "bb_transport_FinishIn.framing: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, reason) == 96, "bb_transport_FinishIn.reason: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, _reserved) == 100, "bb_transport_FinishIn._reserved: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, sink) == 104, "bb_transport_FinishIn.sink: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_status) == 184, "bb_transport_FinishIn.final_status: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, _final_reserved) == 188, "bb_transport_FinishIn._final_reserved: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_message) == 192, "bb_transport_FinishIn.final_message: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_details) == 200, "bb_transport_FinishIn.final_details: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_bytes) == 208, "bb_transport_FinishIn.final_bytes: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_bytes_len) == 216, "bb_transport_FinishIn.final_bytes_len: offset");
 BB_ASSERT(sizeof(bb_transport_FramingIn) == 176, "bb_transport_FramingIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FramingIn) == 8, "bb_transport_FramingIn: alignment");
 BB_ASSERT(offsetof(bb_transport_FramingIn, head) == 0, "bb_transport_FramingIn.head: offset");
