@@ -425,6 +425,7 @@ struct Answer {
     verb: Span,
     target: Span,
     need: u32,
+    lane: Span,
     units_needed: u32,
     records_needed: u32,
     fields_needed: u32,
@@ -445,6 +446,7 @@ impl Answer {
             verb: o.verb,
             target: o.target,
             need: o.need,
+            lane: o.lane,
             units_needed: o.units_needed,
             records_needed: o.records_needed,
             fields_needed: o.fields_needed,
@@ -908,6 +910,15 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 drop(st);
                 self.driver.money.checkpoint(run.ctx, units)
             };
+            // THE UNIT'S LEDGER LANE, where the answer names one (SEAM-L(j)): the money steps
+            // lane the unit by it from here. A lane that is not UTF-8 is a plane fault.
+            let lane = run.bufs.arena(out.lane);
+            if !lane.is_empty() && run.billed() {
+                match std::str::from_utf8(lane) {
+                    Ok(lane) => self.driver.money.laned(run.ctx, lane),
+                    Err(_) => return Step::End(End::Failed(ReasonCode::PlanePanic)),
+                }
+            }
             if let Err(end) = run.write_records(out.records_written).await {
                 return Step::End(end);
             }

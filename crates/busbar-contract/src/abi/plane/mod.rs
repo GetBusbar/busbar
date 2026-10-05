@@ -1485,6 +1485,13 @@ pub struct OnPieceOut {
     pub need: u32,
     /// Alignment padding.
     pub _need_reserved: u32,
+    /// THE UNIT'S LEDGER LANE, in the arena; a zero length = none named. The billing identity the
+    /// unit's units are priced, ledgered and metered under, which is not the route entry the walk
+    /// picked (a call of one tool on a pooled server is the tool's lane, not the server's). The
+    /// kernel qualifies it with the plane's own key, so a plane names lanes of its own card alone;
+    /// the last one an answer of the unit named holds, and a unit whose answers name none is laned
+    /// by the entry its route picked. UTF-8, without control characters. A tail addition.
+    pub lane: Span,
 }
 
 /// `refusal`'s `in`.

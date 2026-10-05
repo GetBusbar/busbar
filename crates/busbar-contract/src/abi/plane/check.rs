@@ -330,6 +330,13 @@ pub fn check_on_piece(
     }
     verdict(outcome, out.verdict)?;
     request(out)?;
+    // The unit's ledger lane, where the answer names one: inside the arena written.
+    span(
+        out.lane.offset,
+        out.lane.len,
+        out.arena_written,
+        "on_piece.lane",
+    )?;
     units(bufs.0, u64::from(out.units_written), b)?;
     records(bufs.1, u64::from(out.records_written), out.arena_written, b)?;
     fields(bufs.2, u64::from(out.fields_written), out.arena_written)

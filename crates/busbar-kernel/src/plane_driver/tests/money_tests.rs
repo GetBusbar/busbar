@@ -380,6 +380,71 @@ fn a_plane_lane_unit_meters_on_the_planes_row() {
     );
 }
 
+/// SEAM-L(j), THE LEDGER LANE IS NOT THE ROUTE ENTRY: a unit opened on its plane's route entry
+/// (`tp\u{1f}srv`) whose plane names the lane `srv_read` ledgers, meters and prices under the
+/// plane-qualified lane `tp\u{1f}srv_read`, its row `(srv_read, tp)`; the serving member that
+/// answers after it does not take it back, and a lane naming a control character (the qualifier's
+/// separator among them) names nothing. RED: the unit ledgered and metered under its route entry.
+#[test]
+fn a_plane_named_lane_is_the_units_ledger_lane_not_its_route_entry() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    r.money.open(
+        UnitKey::new(1),
+        UnitMoney {
+            model: "tp\u{1f}srv".into(),
+            ..r.unit.clone()
+        },
+    );
+    let _ = r.money.checkpoint(&ctx(1), &reported(5));
+    r.money.laned(&ctx(1), "other\u{1f}x");
+    assert_eq!(
+        r.money.serving(UnitKey::new(1)).as_deref(),
+        Some("tp\u{1f}srv"),
+        "a lane carrying the separator names nothing"
+    );
+    r.money.laned(&ctx(1), "srv_read");
+    r.money.served(&ctx(1), "tp\u{1f}srv", "srv");
+    assert_eq!(
+        r.money.serving(UnitKey::new(1)).as_deref(),
+        Some("tp\u{1f}srv_read"),
+        "the plane's lane, qualified by its own key, holds over the serving member"
+    );
+    r.money.settle_end(UnitKey::new(1), 200);
+    let rows = metering_rows(&r);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        (
+            rows[0].model.as_str(),
+            rows[0].provider.as_str(),
+            rows[0].requests
+        ),
+        ("srv_read", "tp", 1)
+    );
+    let models: Vec<String> = r
+        .gov
+        .bucket_model_tokens(&r.cost, &r.key.id, WINDOW_TOTAL, NOW)
+        .into_iter()
+        .map(|(model, _)| model)
+        .collect();
+    assert_eq!(
+        models,
+        vec!["tp\u{1f}srv_read".to_string()],
+        "ledgered under the lane"
+    );
+}
+
+/// A unit whose plane names no lane is laned by its route entry, as before (the serving member's).
+#[test]
+fn a_unit_naming_no_lane_keeps_its_route_entry() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    r.money.laned(&ctx(1), "");
+    r.money.served(&ctx(1), "tp\u{1f}srv", "srv");
+    assert_eq!(
+        r.money.serving(UnitKey::new(1)).as_deref(),
+        Some("tp\u{1f}srv")
+    );
+}
+
 /// An undelivered end meters nothing (1.5.5 metered delivered responses only).
 #[test]
 fn an_undelivered_end_meters_nothing() {

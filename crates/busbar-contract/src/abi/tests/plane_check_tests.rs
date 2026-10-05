@@ -625,6 +625,28 @@ fn a_record_write_that_is_not_a_put_is_fault() {
     }
 }
 
+/// SEAM-L(j), THE UNIT'S LEDGER LANE: an answer may name the lane its units are priced under, in
+/// the arena written, on any answer; none named is a zero length. RED: the answer had no lane.
+#[test]
+fn a_ledger_lane_rides_the_arena() {
+    let mut o: OnPieceOut = z();
+    o.arena_written = 8;
+    o.lane = sp(2, 6);
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    o.lane = sp(4, 6);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::SpanOutOfBounds, "on_piece.lane")
+    );
+    o.lane = sp(SPAN_ABSENT, 1);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::SpanNotAbsent, "on_piece.lane")
+    );
+    o.lane = sp(0, 0);
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+}
+
 // ── refusal, serve, cancel ──
 
 #[test]
