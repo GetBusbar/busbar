@@ -279,7 +279,7 @@ impl Yielded {
 enum Op<'a> {
     Begin(u32, &'a [u8]),
     Ingest(&'a [u8], bool),
-    Emit(&'a [u8]),
+    Emit(&'a [u8], bool),
     Refuse(&'a [u8]),
     Encode(&'a [u8], &'a [Field]),
     Adopt(&'a [u8]),
@@ -294,7 +294,8 @@ impl Op<'_> {
     fn again(self) -> Self {
         match self {
             Op::Ingest(_, end) => Op::Ingest(&[], end),
-            Op::Emit(_) => Op::Emit(&[]),
+            // The host's re-call carries no bytes and completes no frame (as the connector's does).
+            Op::Emit(..) => Op::Emit(&[], false),
             Op::Refuse(_) => Op::Refuse(&[]),
             Op::Adopt(_) | Op::Begin(..) => Op::Timer,
             other => other,
@@ -327,10 +328,10 @@ fn cross(p: &Plugin<Transport>, framing: u64, op: Op<'_>, sink: &mut Sink) -> (C
                 (framing, bytes.as_ptr(), bytes.len(), u32::from(end), raw);
             go(p, slot::INGEST, i)
         }
-        Op::Emit(bytes) => {
+        Op::Emit(bytes, end) => {
             let mut i: EmitIn = input();
             (i.framing, i.bytes, i.len, i.end_of_frame, i.sink) =
-                (framing, bytes.as_ptr(), bytes.len(), 1, raw);
+                (framing, bytes.as_ptr(), bytes.len(), u32::from(end), raw);
             go(p, slot::EMIT, i)
         }
         Op::Refuse(bytes) => {
@@ -664,7 +665,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         ));
     }
     r.line("emit", sinkfuls(wire.len(), TIGHT_WIRE), || {
-        pump(&p, token, Op::Emit(&emit), &mut tight).line()
+        pump(&p, token, Op::Emit(&emit, true), &mut tight).line()
     });
     want.push((
         "emit".into(),
