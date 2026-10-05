@@ -43,6 +43,7 @@
 pub mod compose;
 pub mod dtls;
 pub mod endpoint;
+pub mod framed_stream;
 pub mod framer;
 pub mod guard;
 pub mod io;

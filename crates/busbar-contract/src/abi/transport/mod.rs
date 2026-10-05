@@ -306,9 +306,10 @@ pub const SIDE_ACCEPT: u32 = 0;
 pub const SIDE_DIAL: u32 = 1;
 /// `side`: the accepting end of ONE STREAM whose connection and head the host's own framer carries
 /// (ARCHITECT 4l, 2026-10-05: one listener port carries every claim's streams, so a claim's framer
-/// frames the stream, not the connection). `begin` takes the stream's target and its head fields
-/// ([`BeginIn::fields`]); `ingest` takes the stream's body bytes and yields each message as a piece
-/// that ends its frame; `emit` takes one message's bytes (`end_of_frame` = it ends) and yields the
+/// frames the stream, not the connection). Its one stream is stream `1`. `begin` takes the stream's
+/// target and its head fields ([`BeginIn::fields`]); `ingest` takes the stream's body bytes and
+/// yields each message as a piece that ends its frame (no piece ends the stream: the host's framer
+/// knows where its body ended); `emit` takes one message's bytes (`end_of_frame` = it ends) and yields the
 /// stream's body bytes in `wire`; `refuse` and `finish` yield the stream's CLOSING FIELD BLOCK in
 /// `wire`, as field lines (`name: value` CRLF each), which the host sends verbatim: after a head as
 /// its trailers, before one as the fields of an answer that is nothing else. `finish` states the
