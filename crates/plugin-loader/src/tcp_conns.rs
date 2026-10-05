@@ -126,6 +126,15 @@ impl TcpConns {
             .clone()
     }
 
+    /// How many needs have been declared on this table, by every owner.
+    #[must_use]
+    pub fn declarations(&self) -> usize {
+        self.classes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+
     /// A table waking a parked read's ticket through `wake` (the dispatcher's
     /// [`conn_waker`](crate::dispatch::Dispatcher::conn_waker)); `upgrade_secure` is refused.
     #[must_use]

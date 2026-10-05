@@ -157,7 +157,7 @@ async fn transcript(
 ) -> String {
     let rows = AuthRows::new(Arc::new(registry), dispatcher());
     let rows = match conns {
-        Some(c) => rows.with_conns(c),
+        Some(c) => rows.with_table(c),
         None => rows,
     };
     let opened: Arc<dyn AuthCalls> = rows
