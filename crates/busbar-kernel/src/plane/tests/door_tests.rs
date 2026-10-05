@@ -256,6 +256,21 @@ fn a_door_rows_claims_and_audience_are_what_its_open_faced_the_world_with() {
         (decl.admission)(&unbound).is_none(),
         "no public base, no audience"
     );
+    // RED ARM: a door that binds no audience mounts NO audience claim (its claims are served on
+    // the plain data plane), so the mounted-implies-admitted ratchet never sees a claim without one.
+    assert!(
+        (decl.claims)(&unbound).is_empty(),
+        "an unbound door mounts nothing on the plane dispatch"
+    );
+    let slots: std::collections::BTreeMap<&'static str, &dyn std::any::Any> =
+        [(decl.key, &unbound as &dyn std::any::Any)]
+            .into_iter()
+            .collect();
+    let built = crate::plane::registry::build_dispatch(&[decl], &slots);
+    assert!(
+        built.is_ok(),
+        "an unbound door does not refuse the boot: {built:?}"
+    );
     assert!((decl.claims)(&"not a door slot").is_empty());
 }
 

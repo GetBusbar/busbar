@@ -32,9 +32,7 @@
 //! found","param":null,"type":"not_found_error"}}`. So with zero or several models the driver serves
 //! no `systemone` claim for this generation (the snapshot publishes [`served_claims`], empty) and the request falls
 //! through to that same 404; there is no boot check and no new refusal. Only exactly one model
-//! mounts the claim, and only in a deployment that states its public base URL: the claim is
-//! admitted against an audience read off it ([`admission`]), as every door plane's is, and with no
-//! audience to bind the generation claims nothing.
+//! mounts the claim.
 //!
 //! WHAT THIS PLANE DOES NOT CLAIM: `GET /v1/models`. That path keeps its 1.5.5 bytes (the model
 //! list busbar already serves there), so [`tail::CLAIMS`] and [`tail::OP_CLASSES`] carry `systemone` alone and
@@ -117,41 +115,6 @@ pub fn served_claims(models: usize) -> &'static [(&'static str, &'static str)] {
     } else {
         &[]
     }
-}
-
-/// THE PROTECTED-RESOURCE METADATA PATH of the served operation: the RFC 9728 well-known prefix
-/// joined to the operation's path ([`ops::PATH_SYSTEMONE`]). The kernel renders the document there
-/// from the audience and metadata URL a generation binds ([`admission`]).
-pub const METADATA_PATH: &str = "/.well-known/oauth-protected-resource/v1/systemone";
-
-/// `path` on the origin of `public_url` (its scheme and authority; any path, query or fragment it
-/// carries is replaced), or `None` when `public_url` names no origin.
-#[must_use]
-pub fn absolute(public_url: &str, path: &str) -> Option<String> {
-    let (scheme, rest) = public_url.split_once("://")?;
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    if scheme.is_empty() || authority.is_empty() {
-        return None;
-    }
-    Some(format!("{scheme}://{authority}{path}"))
-}
-
-/// WHAT A GENERATION ADMITS A CALLER AGAINST: the audience a token presented at the served
-/// operation must carry and the metadata URL a refused caller is pointed at, both read off the
-/// deployment's public base URL — or `None`, and then the generation claims nothing: an operation
-/// served with no audience bound would admit a token minted for any other resource (the kernel's
-/// mounted-implies-admitted rule), and a deployment with no public URL fronts nothing, as every door
-/// plane's does. `None` too when `models` mounts no operation ([`served_claims`]).
-#[must_use]
-pub fn admission(models: usize, public_url: Option<&str>) -> Option<(String, String)> {
-    if served_claims(models).is_empty() {
-        return None;
-    }
-    let public_url = public_url.filter(|u| !u.is_empty())?;
-    Some((
-        absolute(public_url, ops::PATH_SYSTEMONE)?,
-        absolute(public_url, METADATA_PATH)?,
-    ))
 }
 
 /// Whether the kernel must verify a principal before the first piece.

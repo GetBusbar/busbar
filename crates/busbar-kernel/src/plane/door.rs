@@ -406,10 +406,20 @@ fn mount_of(target: &str) -> String {
     literal.trim_end_matches('/').to_string()
 }
 
+/// The door's AUDIENCE MOUNTS: its claims, mounted on the plane dispatch so a credential presented on
+/// one is judged for the audience the door binds. A door that binds NO audience mounts none: its
+/// claims are served on the plain data plane (the serve path's routes, each line authenticated by
+/// the operator's data chain), where an audience-bound token is refused and a keyed caller is judged
+/// as on any data-plane path — the llm plane's shape. So the mounted-implies-admitted ratchet
+/// (`build_dispatch`) holds for every audience a door states, and a door is never mounted without
+/// one.
 fn claims<const I: usize>(slot: &dyn std::any::Any) -> Vec<(String, &'static str)> {
     let Some(s) = slot.downcast_ref::<DoorSlot>() else {
         return Vec::new();
     };
+    if s.facing.admission.is_none() {
+        return Vec::new();
+    }
     let mut out: Vec<(String, &'static str)> = Vec::new();
     for (target, dialect) in &s.facing.claims {
         let path = mount_of(target);

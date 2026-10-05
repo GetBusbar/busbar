@@ -52,10 +52,6 @@ static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
         holder
     });
 
-/// The deployment's public base URL: the door binds its served operation's audience off it, and a
-/// deployment with none fronts nothing (`busbar_plane_decisions::driven::admission`).
-const PUBLIC_URL: &str = "https://busbar.example";
-
 /// The decisions plane's one claim, with one model configured.
 const CLAIMED: &str = "/v1/systemone";
 
@@ -260,7 +256,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         &dispatcher,
         &composed_services(),
         &sections,
-        Some(PUBLIC_URL),
+        None,
         &plane_money,
         Some(&DoorEgress {
             reach: &reach,
@@ -387,7 +383,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
         &dispatcher,
         &composed_services(),
         &sections,
-        Some(PUBLIC_URL),
+        None,
         &money,
         None,
         None,
@@ -458,7 +454,7 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
         &dispatcher,
         &composed_services(),
         &sections,
-        Some(PUBLIC_URL),
+        None,
         &money,
         None,
         None,

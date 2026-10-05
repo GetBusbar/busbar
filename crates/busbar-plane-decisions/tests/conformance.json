@@ -5,11 +5,7 @@
     "refresh_settings": {
       "models": { "a": { "provider": "typesafe" }, "b": { "provider": "typesafe" } }
     },
-    "public_url": "https://busbar.example",
-    "open_claims": [
-      ["POST", "/v1/systemone"],
-      ["GET", "/.well-known/oauth-protected-resource/v1/systemone"]
-    ],
+    "open_claims": [["POST", "/v1/systemone"]],
     "refresh_claims": [],
     "member": "jev",
     "claimed": { "unit": 7, "method": "POST", "target": "/v1/systemone" },
