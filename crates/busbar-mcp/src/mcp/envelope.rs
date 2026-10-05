@@ -636,10 +636,31 @@ fn request_log(
 ) -> Vec<crate::mcp::sse::LogRecord> {
     let target = name_source_of(method)
         .and_then(|source| envelope.get("params").and_then(|p| p.get(source)).cloned());
+    let status = response.status().as_u16();
     // The STATUS, not the body: the body has already been consumed into the response and re-reading
     // it here would mean buffering the answer twice. The status/code pair is one contract
     // (`error_response` builds both together), so the status is a faithful statement of the outcome.
-    busbar_plane_mcp::framing::request_log(method, target, u32::from(response.status().as_u16()))
+    let ok = response.status() == StatusCode::OK;
+    vec![
+        crate::mcp::sse::LogRecord {
+            level: "debug",
+            logger: "busbar.mcp.dispatch",
+            data: serde_json::json!({
+                "message": "dispatching MCP method",
+                "method": method,
+                "target": target,
+            }),
+        },
+        crate::mcp::sse::LogRecord {
+            level: if ok { "info" } else { "warning" },
+            logger: "busbar.mcp.dispatch",
+            data: serde_json::json!({
+                "message": if ok { "MCP method completed" } else { "MCP method refused" },
+                "method": method,
+                "httpStatus": status,
+            }),
+        },
+    ]
 }
 
 /// Which `params` member `Mcp-Name` mirrors for `method`, or `None` when the header is not required.

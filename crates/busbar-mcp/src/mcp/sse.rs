@@ -61,18 +61,142 @@
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-// THE FRAMING ITSELF IS THE PLANE'S (`busbar_plane_mcp::framing`): the level vocabulary, the
-// preference ranking, the log records and the event bytes, pure. What stays here is the axum
-// adapter the engine's routes answer through.
-pub(crate) use busbar_plane_mcp::framing::{
-    level_allows, requested_level, LogRecord, META_LOGGING_LEVEL,
-};
+/// The `params._meta` key naming the minimum severity of `notifications/message` the client wants on
+/// this request's response stream.
+///
+/// In BUSBAR'S OWN namespace, not `io.modelcontextprotocol/`. That namespace belongs to the spec, and
+/// a key invented inside it would be busbar legislating for every other implementation — the same
+/// reason `io.busbar/schemaHash` is spelled the way it is in `tools/list`. A client that sends
+/// nothing gets [`DEFAULT_LEVEL`], which is the level an operator reading a log expects by default.
+pub(crate) const META_LOGGING_LEVEL: &str = "io.busbar/loggingLevel";
 
-/// Whether the caller's `Accept` header prefers an event stream ([`busbar_plane_mcp::framing::prefers_event_stream`]).
+/// The level a request that names none is served at.
+pub(crate) const DEFAULT_LEVEL: &str = "info";
+
+/// The RFC 5424 severities MCP names, ORDERED least to most severe. The index IS the comparison, so
+/// there is no second table mapping a name to a number that could disagree with this one.
+///
+/// A name not in this list is not silently ranked: [`severity_of`] answers `None` and the caller
+/// falls back to the default, because a request that asks for level `verbose` has asked for nothing
+/// this server can honour and inventing a rank for it would filter records by a guess.
+const SEVERITIES: &[&str] = &[
+    "debug",
+    "info",
+    "notice",
+    "warning",
+    "error",
+    "critical",
+    "alert",
+    "emergency",
+];
+
+fn severity_of(name: &str) -> Option<usize> {
+    SEVERITIES.iter().position(|s| *s == name)
+}
+
+/// ONE `notifications/message` record, before it is framed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LogRecord {
+    /// An RFC 5424 severity from [`SEVERITIES`].
+    pub(crate) level: &'static str,
+    /// The emitting component, so an operator reading a client's log can tell busbar's own records
+    /// from an upstream's. Always prefixed `busbar.` for that reason.
+    pub(crate) logger: &'static str,
+    /// The payload. STRUCTURED rather than a formatted string: a client that wants to filter on the
+    /// method should not have to parse English to do it.
+    pub(crate) data: serde_json::Value,
+}
+
+impl LogRecord {
+    /// The JSON-RPC NOTIFICATION envelope. No `id`, ever — a notification with an id is a request,
+    /// and `BASE.NOTIF.NO-ID` is a MUST NOT. That is why this builds the envelope rather than
+    /// leaving each call site to remember.
+    fn envelope(&self) -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/message",
+            "params": {
+                "level": self.level,
+                "logger": self.logger,
+                "data": self.data,
+            },
+        })
+    }
+}
+
+/// The minimum severity this request asked for, read from `params._meta`.
+///
+/// An unrecognised name falls back to [`DEFAULT_LEVEL`] rather than being refused. The level is a
+/// PREFERENCE about diagnostics, not a statement the request depends on: failing a `tools/call`
+/// because the caller spelled a log level wrong would refuse real work over a debugging knob.
+pub(crate) fn requested_level(meta: Option<&serde_json::Value>) -> &'static str {
+    let named = meta
+        .and_then(|m| m.get(META_LOGGING_LEVEL))
+        .and_then(|v| v.as_str());
+    match named.and_then(severity_of) {
+        Some(i) => SEVERITIES[i],
+        None => DEFAULT_LEVEL,
+    }
+}
+
+/// Whether a record at `level` is at or above the `requested` minimum.
+///
+/// Both names are looked up in [`SEVERITIES`]; an unknown one on either side answers `true`, which
+/// is fail-OPEN and is correct here and only here: the failure mode of a mis-ranked log filter is a
+/// record the client did not ask for, and the failure mode of the other choice is a record — possibly
+/// the one explaining a refusal — silently dropped.
+pub(crate) fn level_allows(requested: &str, level: &str) -> bool {
+    match (severity_of(requested), severity_of(level)) {
+        (Some(min), Some(at)) => at >= min,
+        _ => true,
+    }
+}
+
+/// Whether the caller PREFERRED a `text/event-stream` response over `application/json`.
+///
+/// See the module header: this is a preference comparison, not a membership test. `q` decides first
+/// (an explicit `q=0` is a refusal, and is honoured as one); the client's own ordering breaks a tie,
+/// which is the ordinary reading of an `Accept` list. A wildcard `*/*` matches neither branch — a
+/// client that expressed no preference between the two is not asking for a stream.
 pub(crate) fn prefers_event_stream(headers: &HeaderMap) -> bool {
-    busbar_plane_mcp::framing::prefers_event_stream(
-        headers.get("accept").and_then(|v| v.to_str().ok()),
-    )
+    let Some(accept) = headers.get("accept").and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    let mut sse: Option<(f32, usize)> = None;
+    let mut json: Option<(f32, usize)> = None;
+    for (position, entry) in accept.split(',').enumerate() {
+        let mut parts = entry.split(';');
+        let media = parts.next().unwrap_or("").trim().to_ascii_lowercase();
+        // Absent `q` is 1.0, per RFC 9110. A malformed one is treated as absent rather than as zero:
+        // reading `q=high` as a refusal would drop a media type the client did offer.
+        let q = parts
+            .filter_map(|p| p.trim().strip_prefix("q=").map(str::trim))
+            .find_map(|v| v.parse::<f32>().ok())
+            .unwrap_or(1.0);
+        match media.as_str() {
+            "text/event-stream" => sse = sse.or(Some((q, position))),
+            "application/json" => json = json.or(Some((q, position))),
+            _ => {}
+        }
+    }
+    let Some((sse_q, sse_pos)) = sse else {
+        return false;
+    };
+    if sse_q <= 0.0 {
+        return false;
+    }
+    match json {
+        // Named alone: the client asked for a stream and nothing else.
+        None => true,
+        // Named alongside: higher `q` wins, and equal `q` is decided by which the client wrote first.
+        Some((json_q, json_pos)) => {
+            if (sse_q - json_q).abs() > f32::EPSILON {
+                sse_q > json_q
+            } else {
+                sse_pos < json_pos
+            }
+        }
+    }
 }
 
 /// RE-FRAME a `200` JSON-RPC response as an SSE stream, with `logs` delivered AHEAD of the result.
@@ -110,9 +234,23 @@ pub(crate) async fn as_event_stream(
             None,
         );
     };
-    let Some(out) = busbar_plane_mcp::framing::event_stream(&bytes, logs, progress) else {
+    let Ok(result) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
         return Response::from_parts(parts, axum::body::Body::from(bytes));
     };
+
+    let mut out = String::new();
+    // PROGRESS FIRST, and it is not a style choice: a progress frame reports work that happened
+    // BEFORE the result existed, so emitting it after the result would describe the past in the
+    // future tense to a client reading the stream in order. The logs follow for the same reason —
+    // they describe the completed handling.
+    for frame in progress {
+        push_event(&mut out, frame);
+    }
+    for log in logs {
+        push_event(&mut out, &log.envelope());
+    }
+    push_event(&mut out, &result);
+
     // Built through the explicit builder rather than a `(StatusCode, headers, String)` tuple. A
     // `String` body sets `content-type: text/plain` on its way through `IntoResponse`, and whether a
     // header tuple then REPLACES that or merely appends beside it is a property of the framework's
@@ -120,12 +258,24 @@ pub(crate) async fn as_event_stream(
     // type; it should not depend on which of two headers a client picks first.
     Response::builder()
         .status(StatusCode::OK)
-        .header("content-type", busbar_plane_mcp::framing::EVENT_STREAM)
+        .header("content-type", "text/event-stream")
         // A stream of one request's own answer is never a shared cache's business, and the catalogue
         // answers are computed under the CALLER'S GRANT — the same reasoning `method::CACHE_SCOPE`
         // states for the JSON form, restated at the transport because a cache reads the header and
         // not the body.
-        .header("cache-control", busbar_plane_mcp::framing::NO_STORE)
+        .header("cache-control", "no-cache, no-store")
         .body(axum::body::Body::from(out))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// One `message` event. `serde_json` emits no raw newline, so the single-line `data:` framing is
+/// exact rather than lucky — but the value is written through `to_string` here rather than
+/// interpolated so that stays true by construction.
+fn push_event(out: &mut String, value: &serde_json::Value) {
+    use std::fmt::Write as _;
+    let _ = write!(
+        out,
+        "event: message\ndata: {}\n\n",
+        serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
+    );
 }

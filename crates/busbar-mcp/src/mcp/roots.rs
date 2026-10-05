@@ -45,9 +45,8 @@ use std::sync::Mutex;
 
 /// The wire method, spelled once. `rmcp`'s constant for this name lives on the CLIENT leg's
 /// classifier ([`crate::mcp::client::peer`]); this is the SERVER direction of the same message, and
-/// the two directions deliberately read one spelling each way on their own plane. Spelled in the
-/// plane (`busbar_plane_mcp::ask`).
-pub(crate) use busbar_plane_mcp::ask::NOTIFY_ROOTS_LIST_CHANGED as METHOD_NOTIFY_ROOTS_LIST_CHANGED;
+/// the two directions deliberately read one spelling each way on their own plane.
+pub(crate) const METHOD_NOTIFY_ROOTS_LIST_CHANGED: &str = "notifications/roots/list_changed";
 
 /// The per-principal roots epochs. One instance per deployment, carried across config applies on
 /// the engine snapshot exactly as the spent-approval ledger is, and for the same reason: a bump

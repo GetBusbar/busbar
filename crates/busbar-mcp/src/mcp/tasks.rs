@@ -63,8 +63,8 @@ use super::config::AskRoundCfg;
 /// The extension identifier, spelled once. It appears in three places that must agree — the
 /// server's `capabilities.extensions` advertisement, the client-capability probe, and the
 /// `requiredCapabilities` payload on the `-32021` refusal — and three literals would be three
-/// chances for one of them to drift. Spelled in the plane (`busbar_plane_mcp::answer`).
-pub(crate) use busbar_plane_mcp::answer::TASKS_EXTENSION_ID;
+/// chances for one of them to drift.
+pub(crate) const TASKS_EXTENSION_ID: &str = "io.modelcontextprotocol/tasks";
 
 /// How long a task stays readable through `tasks/get` after it is created.
 ///
@@ -110,9 +110,30 @@ const ACTIVE_TASK_ABANDON_MS: u64 = 86_400_000;
 /// (`stdio_serve::MAX_RESOURCE_SUBS`, `method::MAX_TOOL_NAME_BYTES`).
 pub(crate) const MAX_TASK_ANSWERS: usize = 256;
 
-/// Whether the caller declared the tasks extension in its `_meta` client capabilities: the plane's
-/// (`busbar_plane_mcp::call::client_declares_tasks`).
-pub(crate) use busbar_plane_mcp::call::client_declares_tasks;
+/// Has this caller declared the tasks extension?
+///
+/// Reads `capabilities.extensions[TASKS_EXTENSION_ID]`, and PRESENCE is the declaration: the value
+/// is a per-extension settings object and `{}` is a complete statement of support. `null` is
+/// deliberately not a declaration, matching `callerask::declared` — it is what a client sends when
+/// it means "no".
+///
+/// There is exactly one caller-capability source in this revision, so this function is also the
+/// whole of SEP-2575's per-request opt-in: a `tools/call` whose own `_meta` carries the extension
+/// arrives here indistinguishable from a session that declared it, because on a protocol with no
+/// handshake those are the same statement.
+pub(crate) fn client_declares_tasks(capabilities: &serde_json::Value) -> bool {
+    capabilities
+        .get("extensions")
+        .and_then(|e| e.get(TASKS_EXTENSION_ID))
+        .is_some_and(|v| !v.is_null())
+}
+
+/// The `data.requiredCapabilities` payload on a `-32021` refusal — the shape
+/// `MissingRequiredClientCapabilityError` fixes for it, so a client can validate the error against
+/// the schema and read what to add without out-of-band documentation.
+pub(crate) fn required_tasks_capability() -> serde_json::Value {
+    serde_json::json!({ "extensions": { TASKS_EXTENSION_ID: {} } })
+}
 
 /// A task's lifecycle state, as the wire spells it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
