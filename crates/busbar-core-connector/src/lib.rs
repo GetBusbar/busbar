@@ -58,7 +58,7 @@ pub mod tls;
 pub mod udp;
 pub mod wire;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -114,6 +114,19 @@ pub trait DialJudge: Send + Sync {
         class: u32,
         done: Judged,
     ) -> Option<Result<SocketAddr, Verdict>>;
+
+    /// [`DialJudge::judge_dial`] for a destination the dialling need holds a PRIVATE REACH to (the
+    /// registration's `abi::plane::TRUST_PRIVATE_REACH`, sealed by [`PollConns::anchor`]): a
+    /// private address is admitted as an allowlist entry naming the host would; cloud metadata
+    /// never is; the class is unchanged. The default honours no reach (fail-closed).
+    fn judge_dial_reaching(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Judged,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        self.judge_dial(dest, class, done)
+    }
 }
 
 /// Any function of the judge's shape is a judge: [`process::judge`] joins the deployment's one
@@ -145,6 +158,23 @@ impl DialJudge for LiteralsOnly {
         Some(
             self.0
                 .judge_answer(&at.ip().to_string(), &[at.ip()], class)
+                .map(|()| at)
+                .map_err(|r| r.verdict),
+        )
+    }
+
+    fn judge_dial_reaching(
+        &self,
+        dest: &str,
+        class: u32,
+        _: Judged,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        let Some(at) = socket::address_of(dest) else {
+            return Some(Err(busbar_contract::abi::host::service::DEST_UNRESOLVABLE));
+        };
+        Some(
+            self.0
+                .judge_answer_with(&at.ip().to_string(), &[at.ip()], class, false, true)
                 .map(|()| at)
                 .map_err(|r| r.verdict),
         )
@@ -221,6 +251,8 @@ struct Redial {
     dial: Dial,
     egress_class: u32,
     judged_class: u32,
+    /// The need's private reach to the destination ([`DialJudge::judge_dial_reaching`]).
+    reach: bool,
     /// The bytes the line's socket had taken when the exchange was lent it.
     mark: u64,
 }
@@ -307,6 +339,10 @@ pub struct Connector {
     pools: Pools,
     /// The trust anchors each sealed destination's connections are held to.
     anchored: Anchored,
+    /// The destinations a need holds a PRIVATE REACH to (`abi::plane::TRUST_PRIVATE_REACH`), by the
+    /// need's owner, the need and the destination's authority (lower-case, `host:port`), sealed
+    /// with its anchors ([`PollConns::anchor`]).
+    reaching: Mutex<HashSet<(InstanceId, NeedId, String)>>,
     /// Each member's auth binding, by (instance, need, target origin): what a plugin's own request
     /// to that member is authenticated with ([`DeclaredConns::bind_auth`]).
     auths: Mutex<HashMap<(InstanceId, NeedId, String), busbar_contract::conn::ConnAuth>>,
@@ -331,6 +367,7 @@ impl Default for Connector {
             listeners: Mutex::new(HashMap::new()),
             pools: Pools::new(PoolPosture::NONE),
             anchored: Mutex::new(HashMap::new()),
+            reaching: Mutex::new(HashSet::new()),
             auths: Mutex::new(HashMap::new()),
         }
     }
@@ -831,20 +868,26 @@ impl Connector {
         egress_class: u32,
         judged_class: u32,
         within: &[IpAddr],
+        reach: bool,
     ) -> Result<(Option<Connection>, Option<Judging>), ConnError> {
         let answer: Answer = Arc::new(Mutex::new((None, None)));
         let answering = Arc::clone(&answer);
-        let judged = self.judge.judge_dial(
-            planned.authority(),
-            judged_class,
-            Box::new(move |v| {
-                let mut a = answering.lock().expect("judgement");
-                a.0 = Some(v);
-                if let Some(w) = a.1.take() {
-                    w.wake();
-                }
-            }),
-        );
+        let done: Judged = Box::new(move |v| {
+            let mut a = answering.lock().expect("judgement");
+            a.0 = Some(v);
+            if let Some(w) = a.1.take() {
+                w.wake();
+            }
+        });
+        // A destination the need holds a private reach to is judged with it (the one guard, as an
+        // allowlist entry naming it; the class unchanged).
+        let judged = if reach {
+            self.judge
+                .judge_dial_reaching(planned.authority(), judged_class, done)
+        } else {
+            self.judge
+                .judge_dial(planned.authority(), judged_class, done)
+        };
         Ok(match judged {
             // Decided at once: a refusal answers the open, as 1.5.5 answered it.
             Some(Err(_)) => return Err(ConnError::Refused),
@@ -885,7 +928,7 @@ impl Connector {
         *held.line.lock().expect("line") = None;
         self.let_go(held, &line, stream, false);
         let planned = Planned::locate(r.door, r.dial).map_err(|f| map(&f))?;
-        match self.dial_judged(planned, r.egress_class, r.judged_class, &[])? {
+        match self.dial_judged(planned, r.egress_class, r.judged_class, &[], r.reach)? {
             (Some(conn), _) => {
                 self.ride(held, conn);
             }
@@ -1426,6 +1469,13 @@ impl Conns for Connector {
             return Err(ConnError::Refused);
         }
         let planned = planned.anchored(anchors);
+        // THE DESTINATION'S PRIVATE REACH for this need (`abi::plane::TRUST_PRIVATE_REACH`, sealed
+        // with its anchors): its dial is judged with it.
+        let reach = self.reaching.lock().expect("reach").contains(&(
+            caller,
+            need,
+            planned.authority().to_ascii_lowercase(),
+        ));
         // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (THE DESIGN §5 egress-class
         // table, owner-signed 2026-09-27): in a request-data class its address is judged as
         // operator infrastructure. A provider need keeps its class: it is refused a private
@@ -1461,6 +1511,7 @@ impl Conns for Connector {
                     secure: planned.secure(),
                     name: planned.name().map(str::to_owned),
                     class: (judged_class, egress_class),
+                    reach,
                 },
             )
         });
@@ -1472,6 +1523,7 @@ impl Conns for Connector {
                     dial: planned.dial().clone(),
                     egress_class,
                     judged_class,
+                    reach,
                     mark: line.flushed(),
                 };
                 let (opening, words) = planned.into_opening();
@@ -1491,7 +1543,8 @@ impl Conns for Connector {
                 }
             }
         }
-        let (conn, judging) = self.dial_judged(planned, egress_class, judged_class, desc.within)?;
+        let (conn, judging) =
+            self.dial_judged(planned, egress_class, judged_class, desc.within, reach)?;
         let held = Held::over(None, judging, pooled);
         if let Some(conn) = conn {
             self.ride(&held, conn);
@@ -1661,16 +1714,28 @@ impl PollConns for Connector {
             // Nothing to hold: any earlier seal for the destination is dropped.
             if let Some(at) = at {
                 self.anchored.lock().expect("anchors").remove(&at);
+                self.reaching.lock().expect("reach").remove(&at);
             }
             return Ok(());
         }
         let at = at.ok_or(ConnError::Refused)?;
-        let sealed =
-            tls::client::seal(self.tls.as_deref(), anchors).map_err(|_| ConnError::Refused)?;
-        self.anchored
-            .lock()
-            .expect("anchors")
-            .insert(at, Arc::new(sealed));
+        if anchors.secures() {
+            let sealed =
+                tls::client::seal(self.tls.as_deref(), anchors).map_err(|_| ConnError::Refused)?;
+            self.anchored
+                .lock()
+                .expect("anchors")
+                .insert(at.clone(), Arc::new(sealed));
+        } else {
+            self.anchored.lock().expect("anchors").remove(&at);
+        }
+        // The private reach rides beside the security anchors: a seal without it drops it.
+        let mut reaching = self.reaching.lock().expect("reach");
+        if anchors.private_reach {
+            reaching.insert(at);
+        } else {
+            reaching.remove(&at);
+        }
         Ok(())
     }
 }
