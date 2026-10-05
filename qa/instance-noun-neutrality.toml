@@ -102,3 +102,11 @@ file = "crates/busbar/src/root/serve.rs"
 count = 1
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
+file = "crates/busbar/src/main.rs"
+count = 1
+category = "composition-root"
+wave = "keystone / composition-root — register_planes both-ways self-registration"
