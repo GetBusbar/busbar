@@ -89,7 +89,8 @@ pub use far_end::{
 };
 pub use hooks::{
     Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, GroupScope,
-    HookBinder, HookRead, HostHooks, Projection, Restrict, RewriteChain, StageTaps, UnitHooks,
+    HookBinder, HookRead, HostHooks, Projection, Restrict, RewriteChain, SessionStage, StageTaps,
+    UnitHooks, CONTENT_ROLE, GATE_UNAVAILABLE, GATE_UNAVAILABLE_STATUS, STAGE_GONE,
 };
 pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
@@ -217,6 +218,8 @@ pub struct PlaneDriver {
     sessions: Mutex<HashMap<u64, Arc<Notify>>>,
     /// Which hooks bind to a unit of this plane; `None` = none ever does.
     hooks: Option<Arc<dyn HookBinder>>,
+    /// The instance's label, as admitted to the services.
+    label: Arc<str>,
 }
 
 impl Drop for PlaneDriver {
@@ -289,6 +292,7 @@ impl PlaneDriver {
             services,
             sessions: Mutex::default(),
             hooks: None,
+            label: Arc::from(&*d.label),
         })
     }
 
@@ -681,6 +685,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
     async fn route_async(&self, token: &Pass<Route>, ctx: &UnitCtx) -> StepAnswer<Route> {
         let d = self.driver;
         d.sweep();
+        self.state_stage(token);
         if let Err(stopped) = self.request_stage(token).await {
             let reason = match stopped {
                 hooks::Stopped::Veto(veto) => {

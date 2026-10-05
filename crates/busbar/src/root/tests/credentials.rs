@@ -129,6 +129,24 @@ impl HostServices for Inner {
     fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
         Ran::Now(Stored::ready(16))
     }
+    fn verify_lookup(&self, _: &Caller, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::ready(17))
+    }
+    fn verify_store(&self, _: &Caller, _: &[u8], _: &[u8], _: u64) -> Stored {
+        Stored::ready(18)
+    }
+    fn content_scan(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::ready(19))
+    }
+    fn hook_call(
+        &self,
+        _: &Caller,
+        _: Option<u64>,
+        _: busbar_contract::services::HookAsk,
+        _: Later,
+    ) -> Ran {
+        Ran::Now(Stored::ready(20))
+    }
 }
 
 /// A source answering `kind:id`, live for an id starting `live`.

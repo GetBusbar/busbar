@@ -238,6 +238,7 @@ pub mod hooks;
 pub mod host_claims;
 pub mod host_records;
 pub mod host_units;
+pub mod host_verify;
 pub mod host_work;
 pub mod ingress;
 pub mod ir;

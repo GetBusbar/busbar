@@ -27,7 +27,7 @@ use busbar_contract::caps::{OpClassId, ReasonCode};
 use busbar_contract::plane::{declares_record_kind, PlaneDeclaration};
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::{
-    Caller, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    Caller, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
 };
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
@@ -356,6 +356,40 @@ impl HostServices for LateServices {
     fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran {
         match self.served() {
             Ok(s) => s.work_resume(caller, unit, handle, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.verify_lookup(caller, key, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
+        match self.served() {
+            Ok(s) => s.verify_store(caller, key, entry, ttl_ms),
+            Err(r) => r,
+        }
+    }
+
+    fn content_scan(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        content: &[u8],
+        later: Later,
+    ) -> Ran {
+        match self.served() {
+            Ok(s) => s.content_scan(caller, unit, content, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.hook_call(caller, unit, ask, later),
             Err(r) => Ran::Now(r),
         }
     }
