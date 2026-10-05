@@ -245,11 +245,14 @@ pub(crate) fn voice_provider_bearer(
     key: &str,
 ) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
     use busbar_contract::header::{is_legal_header_value, token_value};
+    #[cfg(feature = "runtime")]
     use busbar_kernel::diagnostics::{diag_debug, PROTO_AUTH_INVALID_HEADER_BYTES as BAD_BYTES};
     let value = is_legal_header_value(key)
         .then(|| axum::http::HeaderValue::from_str(&token_value(key)).ok())
         .flatten();
     let Some(value) = value else {
+        // The coded line rides the runtime's logging (the serving build's).
+        #[cfg(feature = "runtime")]
         diag_debug!(
             BAD_BYTES,
             protocol = OPENAI_REALTIME,
