@@ -155,6 +155,23 @@ async fn h2c_far_end() -> (u16, Arc<FarEnd>) {
 /// the protocols each ClientHello offers, agrees `h2` (else `http/1.1`) and serves HTTP/2 when
 /// `h2` was agreed.
 async fn tls_far_end() -> (u16, Arc<FarEnd>, Vec<u8>) {
+    let (config, ca) = tls_server();
+    let l = TcpListener::bind("127.0.0.1:0").await.expect("a port");
+    let port = l.local_addr().expect("its address").port();
+    let far = Arc::new(FarEnd::default());
+    let seen = Arc::clone(&far);
+    tokio::spawn(async move {
+        while let Ok((s, _)) = l.accept().await {
+            seen.accepted.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(serve_tls(s, Arc::clone(&seen), Arc::clone(&config)));
+        }
+    });
+    (port, far, ca)
+}
+
+/// A TLS server config for `127.0.0.1` agreeing `h2` (else `http/1.1`), and the DER of the CA that
+/// issued its certificate.
+fn tls_server() -> (Arc<rustls::ServerConfig>, Vec<u8>) {
     let ca_key = rcgen::KeyPair::generate().expect("a CA key");
     let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("CA params");
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -174,37 +191,37 @@ async fn tls_far_end() -> (u16, Arc<FarEnd>, Vec<u8>) {
         )
         .expect("a server config");
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    let config = Arc::new(config);
-    let l = TcpListener::bind("127.0.0.1:0").await.expect("a port");
-    let port = l.local_addr().expect("its address").port();
-    let far = Arc::new(FarEnd::default());
-    let seen = Arc::clone(&far);
-    tokio::spawn(async move {
-        while let Ok((s, _)) = l.accept().await {
-            seen.accepted.fetch_add(1, Ordering::SeqCst);
-            let (seen, config) = (Arc::clone(&seen), Arc::clone(&config));
-            tokio::spawn(async move {
-                let acceptor =
-                    tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), s);
-                let Ok(start) = acceptor.await else { return };
-                let offered: Vec<Vec<u8>> = start
-                    .client_hello()
-                    .alpn()
-                    .map(|names| names.map(<[u8]>::to_vec).collect())
-                    .unwrap_or_default();
-                seen.offered.lock().expect("offered").push(offered);
-                let Ok(tls) = start.into_stream(config).await else {
-                    return;
-                };
-                let agreed = tls.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
-                seen.agreed.lock().expect("agreed").push(agreed.clone());
-                if agreed.as_deref() == Some(b"h2") {
-                    serve_h2(tls, seen).await;
-                }
-            });
+    (Arc::new(config), ca.der().to_vec())
+}
+
+/// Accept TLS on `s`: the protocols its ClientHello offered and the one agreed are recorded, and
+/// the agreed TLS stream is answered (`None`: the handshake failed).
+async fn accept_tls(
+    s: tokio::net::TcpStream,
+    seen: &FarEnd,
+    config: Arc<rustls::ServerConfig>,
+) -> Option<tokio_rustls::server::TlsStream<tokio::net::TcpStream>> {
+    let acceptor = tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), s);
+    let start = acceptor.await.ok()?;
+    let offered: Vec<Vec<u8>> = start
+        .client_hello()
+        .alpn()
+        .map(|names| names.map(<[u8]>::to_vec).collect())
+        .unwrap_or_default();
+    seen.offered.lock().expect("offered").push(offered);
+    let tls = start.into_stream(config).await.ok()?;
+    let agreed = tls.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
+    seen.agreed.lock().expect("agreed").push(agreed);
+    Some(tls)
+}
+
+/// Serve one TLS connection: HTTP/2 as [`serve_h2`] serves it when `h2` was agreed.
+async fn serve_tls(s: tokio::net::TcpStream, seen: Arc<FarEnd>, config: Arc<rustls::ServerConfig>) {
+    if let Some(tls) = accept_tls(s, &seen, config).await {
+        if tls.get_ref().1.alpn_protocol() == Some(b"h2") {
+            serve_h2(tls, seen).await;
         }
-    });
-    (port, far, ca.der().to_vec())
+    }
 }
 
 /// A cleartext HTTP/1.1 far end that keeps its connections alive: each request answered `200`
@@ -760,16 +777,19 @@ async fn a_request_whose_bytes_left_is_not_redialled() {
     );
 }
 
-/// An h2c far end whose FIRST connection takes its first request, says nothing, and on `break_in`
-/// writes a frame no HTTP/2 peer may send (a SETTINGS frame five bytes long, RFC 9113 6.5:
-/// FRAME_SIZE_ERROR) and reads on, recording every frame; it answers on `wrote` once the frame
-/// is on the wire. Every connection after it is served as [`serve_h2`] serves.
+/// A TLS far end agreeing `h2` whose FIRST connection takes its first request, says nothing, and
+/// on `break_in` writes a record no TLS peer can open (an application-data record that fails its
+/// AEAD check) on the socket UNDER the TLS layer, then reads on through TLS, recording every frame;
+/// it answers on `wrote` once the record is on the wire. Every connection after it is served as
+/// [`serve_tls`] serves.
 async fn breaking_far_end() -> (
     u16,
     Arc<FarEnd>,
+    Vec<u8>,
     tokio::sync::mpsc::Sender<()>,
     tokio::sync::oneshot::Receiver<()>,
 ) {
+    let (config, ca) = tls_server();
     let l = TcpListener::bind("127.0.0.1:0").await.expect("a port");
     let port = l.local_addr().expect("its address").port();
     let far = Arc::new(FarEnd::default());
@@ -777,29 +797,33 @@ async fn breaking_far_end() -> (
     let (break_in, mut broken) = tokio::sync::mpsc::channel::<()>(1);
     let (wrote_tx, wrote) = tokio::sync::oneshot::channel::<()>();
     tokio::spawn(async move {
-        let Ok((mut s, _)) = l.accept().await else {
+        let Ok((s, _)) = l.accept().await else {
             return;
         };
         seen.accepted.fetch_add(1, Ordering::SeqCst);
-        let first = Arc::clone(&seen);
+        let (first, first_config) = (Arc::clone(&seen), Arc::clone(&config));
         tokio::spawn(async move {
+            let Some(mut tls) = accept_tls(s, &first, first_config).await else {
+                return;
+            };
             let mut pre = [0_u8; 24];
-            if s.read_exact(&mut pre).await.is_err() {
+            if tls.read_exact(&mut pre).await.is_err() {
                 return;
             }
-            let _ = s.write_all(&frame(4, 0, 0, &[])).await;
+            let _ = tls.write_all(&frame(4, 0, 0, &[])).await;
             let mut wrote_tx = Some(wrote_tx);
             // `read` (not `read_exact`) under the select, so the break never drops a byte read.
             let (mut got, mut buf) = (Vec::new(), [0_u8; 4096]);
             loop {
                 tokio::select! {
-                    r = s.read(&mut buf) => match r {
+                    r = tls.read(&mut buf) => match r {
                         Ok(0) | Err(_) => return,
                         Ok(n) => got.extend_from_slice(&buf[..n]),
                     },
                     Some(()) = broken.recv() => {
-                        let _ = s.write_all(&frame(4, 0, 0, &[0; 5])).await;
-                        let _ = s.flush().await;
+                        let mut record = vec![0x17, 0x03, 0x03, 0x00, 0x20];
+                        record.extend_from_slice(&[0_u8; 0x20]);
+                        let _ = tls.get_mut().0.write_all(&record).await;
                         if let Some(tx) = wrote_tx.take() {
                             let _ = tx.send(());
                         }
@@ -822,31 +846,32 @@ async fn breaking_far_end() -> (
         });
         while let Ok((s, _)) = l.accept().await {
             seen.accepted.fetch_add(1, Ordering::SeqCst);
-            tokio::spawn(serve_h2(s, Arc::clone(&seen)));
+            tokio::spawn(serve_tls(s, Arc::clone(&seen), Arc::clone(&config)));
         }
     });
-    (port, far, break_in, wrote)
+    (port, far, ca, break_in, wrote)
 }
 
 /// NO DOUBLE SEND, the open's own drive: a request lent a pooled h2 line whose failure is met in
 /// the same drive that flushed its opening (the bytes left, THEN the line failed) is not
-/// redialled. The far end's break is on the wire before the open and nothing drives the line
-/// meanwhile, so the open's write goes out and its read meets the break: the order a loaded host
-/// gives [`a_request_whose_bytes_left_is_not_redialled`] by chance is given here every time.
+/// redialled. The far end's unopenable record is on the wire before the open and nothing drives
+/// the line meanwhile, so the open's write goes out and its read meets the record: the order a
+/// loaded host gives [`a_request_whose_bytes_left_is_not_redialled`] by chance is given here every
+/// time.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn a_request_whose_opening_left_before_the_line_failed_is_not_redialled() {
-    let (port, far, break_in, wrote) = breaking_far_end().await;
-    let settings = pooled(TransportSettings {
-        upstream_h2_prior_knowledge: true,
-        ..TransportSettings::default()
-    });
-    let c = connector(&settings, &EgressTrust::default());
-    let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+    let (port, far, ca, break_in, wrote) = breaking_far_end().await;
+    let trust = EgressTrust {
+        extra_anchors: vec![ca],
+        ..EgressTrust::default()
+    };
+    let c = connector(&pooled(TransportSettings::default()), &trust);
+    let url = format!("https://127.0.0.1:{port}/v1/chat/completions");
     let a = start(&c, &url);
     drive_until(&c, a, || far.request_streams().len() == 1).await;
     break_in.send(()).await.expect("the break");
-    wrote.await.expect("the break is on the wire");
-    // The break reaches this side; nothing drives the line meanwhile.
+    wrote.await.expect("the record is on the wire");
+    // The record reaches this side; nothing drives the line meanwhile.
     tokio::time::sleep(Duration::from_millis(200)).await;
     let b = start(&c, &url);
     let mut buf = [0_u8; 1024];
