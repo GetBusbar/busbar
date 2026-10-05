@@ -73,8 +73,12 @@ pub fn pack_stated(kind: &str, name: &str, lib: &[u8], publisher: &str) -> Vec<u
 /// `m` states the Statement rendering `lib`'s door answers (what the packer signs into a
 /// memory-ABI plugin's manifest).
 pub fn state(m: &mut Manifest, lib: &[u8]) {
+    // One staging file per call: two tests of one binary may state the same plugin name at once,
+    // and one must not unlink or overwrite the library the other is mapping.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "busbar-stated-{}-{}{}",
+        "busbar-stated-{}-{n}-{}{}",
         std::process::id(),
         m.name,
         std::env::consts::DLL_SUFFIX

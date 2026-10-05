@@ -136,6 +136,7 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream: u16) {
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
 admin_require_mtls: false
+store: {{module: memory}}
 auth:
   chain: []
 providers:
