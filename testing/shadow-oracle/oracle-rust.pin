@@ -220,8 +220,16 @@
 # a capture cell may name its plugins' release line. da60cad9 (above) is an ancestor, so the --version first-line
 # read rides along.
 #
+# 2026-10-05 (P6 ORACLE-STRICT, ARCHITECT rulings 2026-10-05): moved on to 99780d72d1ae (busbar-release
+# `p6-engine-oracle`, PR #158 into dev, cut from dev 4a7a7bba2c, which carries the 1.6 mock allowlist and
+# the store baseline). 4b212f4: a skipped cell of an unwritable variant still resets the config for the
+# next cell (the admin.ops PostGroups/PostConfigApply reds were overlay left by earlier cells). 6a9cbe5:
+# a capture cell that addresses its own mock by `localhost` has that name allowlisted, for that cell
+# only (wire.tls|client-hello|*). 99780d7: the precise single-header acceptance (no register entry uses
+# it yet). Feature branch head; re-pin to the merge commit when #158 lands.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=7b039b65795cb4ce4935c9f32ef3263e65e20f1a
+release_ref=99780d72d1ae003fb6ca3f1667fcf88dda442a58
 crate=busbar-release-oracle
 bin=busbar-oracle
