@@ -19,7 +19,10 @@
 //! 3. a correctly signed request under an UNKNOWN AccessKeyId is refused with the byte-identical
 //!    response (no oracle between "bad signature" and "no such key");
 //! 4. the key's own signed token carried as `Authorization: Bearer` on the same route is still
-//!    admitted (the plugin passes a non-SigV4 credential, the `keys` bearer path admits it).
+//!    admitted (the plugin passes a non-SigV4 credential, the `keys` bearer path admits it);
+//! 5. a body over the size cap under a MALFORMED SigV4 authorization line is refused AT THE CAP
+//!    (413), before any verdict, and nothing reaches the upstream: the body the kernel holds for the
+//!    `HeadBody` verify is bounded by the cap (ARCHITECT ruling D1 2026-10-05, inbound buffering).
 #![cfg(unix)]
 // A bootable data plane with the bedrock path ingress, the admin listener, the admin-token door and
 // the SigV4 auth plugin must all be linked.
@@ -204,8 +207,40 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
     }
     assert_outbound_signed(&node, &seen[1], &vk_akid);
 
+    // ── 5. over the cap, under a malformed SigV4 line: refused at the cap, before a verdict ──────
+    let bogus = vec![
+        (
+            "authorization".to_string(),
+            "AWS4-HMAC-SHA256 not-a-credential-at-all".to_string(),
+        ),
+        ("x-amz-date".to_string(), "20260101T000000Z".to_string()),
+        (
+            "x-amz-content-sha256".to_string(),
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        ),
+        ("content-type".to_string(), "application/json".to_string()),
+    ];
+    let over = vec![b'x'; BODY_CAP + 1];
+    let at_cap = send(data_port, &host, &path, &bogus, &over);
+    assert_eq!(
+        at_cap.status,
+        413,
+        "a body over the cap under a malformed SigV4 line is refused at the cap (413), before any \
+         verdict: {}\nlog:\n{}",
+        at_cap.text,
+        node.log()
+    );
+    assert_eq!(
+        upstream.captured().len(),
+        2,
+        "an over-cap request must never reach the upstream"
+    );
+
     drop(node);
 }
+
+/// The node's `limits.request_body_max_bytes`: the size gate the `HeadBody` buffer is bounded by.
+const BODY_CAP: usize = 64 * 1024;
 
 /// The request the upstream received carries busbar's OWN outbound SigV4 — the lane credential,
 /// the `bedrock` service — and that signature verifies under the lane secret over what arrived.
@@ -594,6 +629,8 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream_port: u16
 admin_listen: "127.0.0.1:{admin_port}"
 advanced:
   allow_destinations: ["127.0.0.1"]
+limits:
+  request_body_max_bytes: {cap}
 admin_require_mtls: false
 identity-providers:
   admin-tokens:
@@ -611,7 +648,8 @@ models:
     provider: bedrock-lane
     upstream_model: "{WIRE_MODEL}"
 "#,
-            signing = dir.join("signing.key").display()
+            signing = dir.join("signing.key").display(),
+            cap = BODY_CAP,
         ),
     )
     .unwrap();
