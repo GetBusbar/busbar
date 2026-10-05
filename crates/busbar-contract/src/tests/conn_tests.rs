@@ -72,3 +72,80 @@ fn an_undeclared_need_opens_nothing() {
         "the plugin did not declare this need"
     );
 }
+
+#[test]
+fn a_program_is_read_from_its_settings_and_refused_when_it_cannot_be_spawned_as_written() {
+    use super::{Program, ProgramRefused};
+    let read = |v: serde_json::Value| Program::from_settings(&v);
+    assert_eq!(
+        read(serde_json::json!({
+            "command": "/usr/bin/server",
+            "args": ["--serve", "-v"],
+            "env": {"TOKEN": "s3cr3t"}
+        })),
+        Ok(Program {
+            command: "/usr/bin/server".into(),
+            args: vec!["--serve".into(), "-v".into()],
+            env: vec![("TOKEN".into(), "s3cr3t".into())],
+        })
+    );
+    assert_eq!(
+        read(serde_json::json!({"command": "/bin/cat"})),
+        Ok(Program {
+            command: "/bin/cat".into(),
+            args: Vec::new(),
+            env: Vec::new(),
+        })
+    );
+    let refused = [
+        (serde_json::json!("/bin/cat"), ProgramRefused::NoCommand),
+        (serde_json::json!({"args": []}), ProgramRefused::NoCommand),
+        (
+            serde_json::json!({"command": "cat"}),
+            ProgramRefused::NotAbsolute,
+        ),
+        (
+            serde_json::json!({"command": "/bin/cat", "args": "x"}),
+            ProgramRefused::Args,
+        ),
+        (
+            serde_json::json!({"command": "/bin/cat", "args": [1]}),
+            ProgramRefused::Args,
+        ),
+        (
+            serde_json::json!({"command": "/bin/cat", "env": ["A"]}),
+            ProgramRefused::Env,
+        ),
+        (
+            serde_json::json!({"command": "/bin/cat", "env": {"A": 1}}),
+            ProgramRefused::Env,
+        ),
+        (
+            serde_json::json!({"command": "/bin/cat", "shell": true}),
+            ProgramRefused::UnknownKey,
+        ),
+        (
+            serde_json::json!({"command": "/bin/c\u{0}at"}),
+            ProgramRefused::Nul,
+        ),
+        (
+            serde_json::json!({"command": "/bin/cat", "env": {"A=B": "c"}}),
+            ProgramRefused::Nul,
+        ),
+    ];
+    for (value, why) in refused {
+        assert_eq!(read(value.clone()), Err(why), "{value}");
+    }
+}
+
+#[test]
+fn a_programs_environment_never_prints() {
+    let p = super::Program {
+        command: "/usr/bin/server".into(),
+        args: vec!["--serve".into()],
+        env: vec![("TOKEN".into(), "s3cr3t-value".into())],
+    };
+    let printed = format!("{p:?}");
+    assert!(printed.contains("TOKEN") && printed.contains("/usr/bin/server"));
+    assert!(!printed.contains("s3cr3t-value"), "{printed}");
+}

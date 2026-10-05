@@ -42,8 +42,11 @@ fn ws_door() -> Arc<dyn FramerDoor> {
         .and_then(|row| load_linked::<TransportKind>(&row, doors::row_bind(key)))
         .unwrap_or_else(|e| panic!("ws-conformance-subject: the ws door is refused: {e}"));
     Arc::new(
-        doors::Dispatched::open(plugin)
-            .unwrap_or_else(|e| panic!("ws-conformance-subject: the ws door would not open: {e}")),
+        doors::Dispatched::open(
+            plugin,
+            &busbar_contract::transport::TransportSettings::default(),
+        )
+        .unwrap_or_else(|e| panic!("ws-conformance-subject: the ws door would not open: {e}")),
     )
 }
 

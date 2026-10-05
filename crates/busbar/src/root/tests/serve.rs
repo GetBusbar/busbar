@@ -50,6 +50,21 @@ impl HostServices for Judges {
     fn records_secret(&self, _: &str, _: &str, _: Later) -> Ran {
         Ran::Now(Stored::ready(11))
     }
+    fn unit_nest(&self, _: &Caller, _: Option<u64>, _: NestAsk, _: Later) -> Ran {
+        Ran::Now(Stored::ready(12))
+    }
+    fn work_open(&self, _: &Caller, _: Option<u64>, _: &str, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::ready(13))
+    }
+    fn work_find(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::ready(14))
+    }
+    fn work_settle(&self, _: &Caller, _: u64, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::ready(15))
+    }
+    fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
+        Ran::Now(Stored::ready(16))
+    }
 }
 
 fn judged(s: &LateServices) -> Stored {

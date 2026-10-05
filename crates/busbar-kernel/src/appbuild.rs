@@ -64,7 +64,7 @@ pub const ENV_UPSTREAM_HTTP1_ONLY: &str = "BUSBAR_UPSTREAM_HTTP1_ONLY";
 
 /// A deprecated boolean env override on top of a config value: an UNSET var defers to the config
 /// value; a set var wins, with anything other than empty/`"0"` reading as `true`.
-fn upstream_bool_env_override(env: Option<std::ffi::OsString>, config_val: bool) -> bool {
+pub fn upstream_bool_env_override(env: Option<std::ffi::OsString>, config_val: bool) -> bool {
     match env {
         Some(v) => v != "0" && !v.is_empty(),
         None => config_val,
