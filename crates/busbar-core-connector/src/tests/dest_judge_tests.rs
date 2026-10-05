@@ -525,3 +525,55 @@ fn dest_judge_refuses_private_reach_when_asked_and_names_what_decided_it() {
         (svc::DEST_UNRESOLVABLE, "no such host".to_string())
     );
 }
+
+/// RED (SEAM-4f): the deployment's one judge, asked for a dial a need holds a PRIVATE REACH to
+/// (`DestJudge::judge_reaching`), admits a private address (a literal, and a name's private answer)
+/// in the provider class, which refuses both without it; a cloud-metadata address is refused either
+/// way, a reach being a host entry, never an IP one.
+#[test]
+fn a_private_reach_admits_a_private_address_in_its_class_and_never_metadata() {
+    use busbar_kernel::host_services::DestJudge;
+    let resolver = Arc::new(HandResolver::default());
+    let judge = GuardJudge::new(
+        Guard::from_config(&Destinations {
+            block_private_addresses: true,
+            ..Destinations::default()
+        })
+        .expect("a valid guard"),
+        resolver.clone(),
+    );
+    let never = || -> Box<dyn FnOnce(busbar_kernel::host_services::Admitted) + Send> {
+        Box::new(|_| panic!("a literal answers at once"))
+    };
+    let private = "http://10.1.2.3:8080";
+    assert!(matches!(
+        judge.judge(private, P, false, never()),
+        Some(Err(_))
+    ));
+    let admitted = judge.judge_reaching(private, P, never());
+    assert_eq!(
+        admitted.expect("at once").expect("admitted").0,
+        "10.1.2.3:8080".parse::<SocketAddr>().unwrap()
+    );
+    let metadata = "http://169.254.169.254";
+    assert!(matches!(
+        judge.judge_reaching(metadata, P, never()),
+        Some(Err(r)) if r.verdict == svc::DEST_METADATA
+    ));
+    // A name whose answer is private: admitted under the reach once it resolves.
+    let got = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&got);
+    assert!(judge
+        .judge_reaching(
+            "https://agent.internal",
+            P,
+            Box::new(move |v| *slot.lock().unwrap() = Some(v.map(|(at, _)| at))),
+        )
+        .is_none());
+    let done = resolver.held.lock().unwrap().pop().expect("asked once");
+    done(Ok(vec!["192.168.7.9".parse().unwrap()]));
+    assert_eq!(
+        got.lock().unwrap().take().expect("answered").ok(),
+        Some("192.168.7.9:443".parse().unwrap())
+    );
+}
