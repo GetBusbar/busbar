@@ -230,6 +230,8 @@ pub(crate) struct Book {
     abandoned: AtomicU64,
     /// Every serving member the driver named, in order.
     served: Mutex<Vec<(String, String)>>,
+    /// Every ledger lane the driver named, in order.
+    laned: Mutex<Vec<String>>,
     /// The production money steps every call is also handed to, when set.
     forward: Option<Arc<dyn MoneySeam>>,
     /// Sessions whose one cleanup ran (the book admits every session).
@@ -271,6 +273,13 @@ impl MoneySeam for Book {
         }
         (self.served.lock().unwrap()).push((model.to_string(), provider.to_string()));
     }
+
+    fn laned(&self, ctx: &UnitCtx, lane: &str) {
+        if let Some(f) = &self.forward {
+            f.laned(ctx, lane);
+        }
+        self.laned.lock().unwrap().push(lane.to_string());
+    }
 }
 
 impl Book {
@@ -280,6 +289,11 @@ impl Book {
 
     fn served(&self) -> Vec<(String, String)> {
         self.served.lock().unwrap().clone()
+    }
+
+    /// Every ledger lane the driver named, in order.
+    pub(crate) fn laned(&self) -> Vec<String> {
+        self.laned.lock().unwrap().clone()
     }
 }
 

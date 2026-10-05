@@ -26,9 +26,10 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, CLAIM_PROBE, EMIT_DONE,
-    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS,
-    PIECE_LAST, PIECE_OUT_TEXT, VERDICT_RETRY,
+    FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, AUDIT_APPLIED,
+    AUDIT_REJECTED, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
+    FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, RECORD_AUDIT,
+    VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, ReasonCode, Route};
@@ -573,17 +574,26 @@ impl<'u> Pumping<'u> {
     /// completes only once the store took every one ([`RecordWrite`]: "a write is DURABLE before
     /// the op that carried it completes ... a write the store refuses fails the op"). An empty
     /// value is a tombstone, written like any value.
+    ///
+    /// A [`RECORD_AUDIT`] write is the unit's audit row, not a record of the plane's: it is folded
+    /// into the kernel's own audit chain ([`super::AuditSink`]) under the unit's principal, in the
+    /// plane's order, and needs no record path. An action or resource that is not UTF-8 fails the
+    /// unit (a plane fault, never a row the kernel guesses at).
     async fn write_records(&mut self, written: u32) -> Result<(), End> {
         let n = (written as usize).min(self.bufs.records.len());
         if n == 0 {
             return Ok(());
         }
         let refused = || End::Failed(ReasonCode::DurabilityUnavailable);
-        let Some((services, caller)) = self.driver.records.as_ref() else {
-            return Err(refused());
-        };
         let mut acks = Vec::with_capacity(n);
         for w in &self.bufs.records[..n] {
+            if w.op == RECORD_AUDIT {
+                self.audit(w)?;
+                continue;
+            }
+            let Some((services, caller)) = self.driver.records.as_ref() else {
+                return Err(refused());
+            };
             let (tx, rx) = tokio::sync::oneshot::channel();
             let kind = services.record_kind(caller, w.kind);
             let value = RecordBytes::new(self.bufs.arena(w.value).to_vec());
@@ -605,6 +615,28 @@ impl<'u> Pumping<'u> {
                 Err(cause) => return Err(End::Cancel(cause, None)),
             }
         }
+        Ok(())
+    }
+
+    /// THE UNIT'S AUDIT ROW (SEAM-L(k)): a [`RECORD_AUDIT`] write's action (`key`), resource
+    /// (`value`) and outcome (`kind`), written on the kernel's audit chain under the principal the
+    /// kernel verified for the unit (the plane never sees it; an unverified unit's is anonymous).
+    /// The kernel names no record kind: the row's words are the plane's.
+    fn audit(&self, w: &RecordWrite) -> Result<(), End> {
+        let fault = || End::Failed(ReasonCode::PlanePanic);
+        let outcome = match w.kind {
+            AUDIT_APPLIED => busbar_contract::vocab::OUTCOME_APPLIED,
+            AUDIT_REJECTED => busbar_contract::vocab::OUTCOME_REJECTED,
+            _ => return Err(fault()),
+        };
+        let action = std::str::from_utf8(self.bufs.arena(w.key)).map_err(|_| fault())?;
+        let resource = std::str::from_utf8(self.bufs.arena(w.value)).map_err(|_| fault())?;
+        if action.is_empty() {
+            return Err(fault());
+        }
+        let principal = (self.lock().principal.clone())
+            .unwrap_or_else(busbar_contract::caps::PrincipalId::anonymous);
+        (self.driver.audit).record(action, resource, outcome, principal.as_str());
         Ok(())
     }
 
