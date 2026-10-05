@@ -1903,6 +1903,13 @@ impl FarEnd for DoorFar<'_, '_> {
             None => None,
         }
     }
+
+    async fn write(&self, token: &Pass<Route>, request: OutboundRequest) -> bool {
+        match self.far() {
+            Some(far) => far.write(token, request).await,
+            None => false,
+        }
+    }
 }
 
 // ── the driver's caller side over today's ingress ────────────────────────────────────────────────
