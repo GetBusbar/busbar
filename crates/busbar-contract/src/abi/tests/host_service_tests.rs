@@ -738,7 +738,7 @@ fn the_snapshot_alignment_is_the_scrape_layouts() {
         (align_of::<ScrapeSample>(), size_of::<ScrapeSample>()),
         (align_of::<ScrapeLabel>(), size_of::<ScrapeLabel>()),
     ] {
-        assert!(align <= SNAPSHOT_ALIGN && SNAPSHOT_ALIGN % align == 0);
+        assert!(align <= SNAPSHOT_ALIGN && SNAPSHOT_ALIGN.is_multiple_of(align));
         assert_eq!(size % SNAPSHOT_ALIGN, 0);
     }
 }

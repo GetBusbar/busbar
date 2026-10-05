@@ -463,6 +463,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
                 | op::ENTITLEMENT_CHECK
                 | op::RANDOM_FILL
                 | op::TRUST_VERIFY
+                | op::SNAPSHOT_READ
         ) {
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), UNIMPLEMENTED, "service {service}");
