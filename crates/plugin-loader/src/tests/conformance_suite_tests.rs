@@ -13,6 +13,7 @@ fn step(label: &str, answer: &str, crossed: u64, pinned: u64) -> Step {
         answer: answer.into(),
         crossed,
         pinned,
+        resumes: 0,
     }
 }
 
@@ -267,4 +268,41 @@ mod suite_conns {
         assert_eq!(&got, b"ping");
         table.close(p.instance(), conn).expect("closed");
     }
+}
+
+// ── FIRST INVOCATIONS PINNED, RESUMES REPORTED (Q-P4-5) ──
+
+/// A fold whose dialing step resumed: pinned at one first invocation each.
+fn dialled() -> Vec<Step> {
+    let mut f = honest();
+    f[0].resumes = 26;
+    f[2].resumes = 2;
+    f
+}
+
+#[test]
+fn resumes_are_never_pinned_a_moved_first_invocation_count_still_fails() {
+    // Resumes, however many, are not crossings the comparator pins.
+    assert_eq!(exact(&dialled()), Ok(()));
+    let mut moved = dialled();
+    moved[0].crossed = 2;
+    let e = exact(&moved).expect_err("a second first invocation of `open`");
+    assert!(e.contains("'open': 2 crossing(s), pinned 1"), "{e}");
+    assert!(e.contains("26 resume(s)"), "{e}");
+}
+
+/// RED: a networked door is held to its resumes: a dialing step that answered at once (no resume)
+/// is refused, and a networked fold with no resume at all; a door with no need is not held to it.
+#[test]
+fn red_a_networked_fold_whose_dialing_step_never_resumed_is_refused() {
+    use super::resumed;
+    let dialing = vec!["open".to_owned(), "read".to_owned()];
+    assert_eq!(resumed(&dialled(), true, &dialing), Ok(()));
+    let mut lazy = dialled();
+    lazy[2].resumes = 0;
+    let e = resumed(&lazy, true, &dialing).expect_err("`read` dials and never resumed");
+    assert!(e.contains("dialing step 'read' never resumed"), "{e}");
+    let e = resumed(&honest(), true, &[]).expect_err("a networked fold with no resume");
+    assert!(e.contains("resumed no op"), "{e}");
+    assert_eq!(resumed(&honest(), false, &[]), Ok(()));
 }

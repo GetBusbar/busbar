@@ -348,8 +348,13 @@ pub(crate) struct Instance {
     /// crosses (and kept once it closed). `close` enters only when nothing else is crossing, and
     /// nothing enters while it is set, so no crossing ever meets a freed instance.
     gate: AtomicU32,
-    /// Crossings actually made (the witness of "without a crossing").
+    /// Crossings actually made (the witness of "without a crossing"), RESUMES included.
     pub(crate) crossings: AtomicU64,
+    /// Of [`Instance::crossings`], the RESUME re-invocations ([`FLAG_RESUME`]: the same op
+    /// re-entered on its ticket after it answered PENDING; THE DESIGN §11.2, A.3 "Resume"). An
+    /// op's FIRST invocations are `crossings - resumes`: "one op = one crossing", however often
+    /// the op pends.
+    pub(crate) resumes: AtomicU64,
     /// The ticket-less crossings in progress, for the watchdog: `(id, started, slot)`.
     pub(crate) calls: Mutex<Vec<(u64, Instant, u32)>>,
     next_call: AtomicU64,
@@ -660,11 +665,15 @@ impl Instance {
             return Crossed::host(Outcome::Fault);
         }
         // SAFETY: the caller's contract.
-        let (ticket, instance) = unsafe {
+        let (ticket, instance, resumed) = unsafe {
             let head = &mut *input;
             head.op = s;
             head.host = self.ctx();
-            (head.ticket, self.ptr.load(Ordering::Acquire))
+            (
+                head.ticket,
+                self.ptr.load(Ordering::Acquire),
+                head.flags & busbar_contract::abi::mechanism::call::FLAG_RESUME != 0,
+            )
         };
         // A `validate`, of every kind, is lent a reason buffer for its crossing alone (it never
         // pends): it names what it wrote in `head.error`, read below while the buffer lives.
@@ -714,6 +723,9 @@ impl Instance {
             _ => self.slots[s as usize],
         };
         self.crossings.fetch_add(1, Ordering::Relaxed);
+        if resumed {
+            self.resumes.fetch_add(1, Ordering::Relaxed);
+        }
         // SAFETY: the host wrote `in.size` itself.
         let in_size = unsafe { (*input).size } as usize;
         // The unit this crossing serves, for the host services it calls.
@@ -1162,6 +1174,7 @@ impl<K: Kind> Plugin<K> {
                 closed: AtomicBool::new(false),
                 gate: AtomicU32::new(0),
                 crossings: AtomicU64::new(0),
+                resumes: AtomicU64::new(0),
                 calls: Mutex::new(Vec::new()),
                 next_call: AtomicU64::new(0),
                 inflight: AtomicU32::new(0),

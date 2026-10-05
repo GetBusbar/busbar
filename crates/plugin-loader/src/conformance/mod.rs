@@ -392,40 +392,66 @@ pub fn load<K: Kind>(s: &Subject, leg: Leg, b: Bind) -> Result<Plugin<K>, LoadEr
     }
 }
 
-/// The crossings `p` has made, by the dispatcher's own crossing gate.
-pub(crate) fn crossings<K: Kind>(p: &Plugin<K>) -> &AtomicU64 {
-    &p.inner.crossings
+/// The crossings `p` has made, by the dispatcher's own crossing gate: every crossing, and of them
+/// the RESUME re-invocations, counted apart (Q-P4-5).
+pub(crate) fn crossings<K: Kind>(p: &Plugin<K>) -> Counts<'_> {
+    Counts {
+        total: &p.inner.crossings,
+        resumes: &p.inner.resumes,
+    }
+}
+
+/// One instance's crossing counters, as the dispatcher keeps them.
+#[derive(Clone, Copy)]
+pub struct Counts<'a> {
+    total: &'a AtomicU64,
+    resumes: &'a AtomicU64,
+}
+
+impl Counts<'_> {
+    /// (first invocations, resumes) so far: "one op = one crossing", however often it pended.
+    #[must_use]
+    pub fn read(&self) -> (u64, u64) {
+        let resumes = self.resumes.load(Ordering::SeqCst);
+        (self.total.load(Ordering::SeqCst) - resumes, resumes)
+    }
 }
 
 // ---- the fold ----
 
 /// One step of a kind's script: what it is, what it answered (as the host reads it), the crossings
-/// it made and the crossings the script pins for it.
+/// it made and the crossings the script pins for it. THE PIN IS FIRST INVOCATIONS (Q-P4-5; THE
+/// DESIGN §11.2 Ready | Pending(wake), A.3 "Resume"): one op is one crossing however often it
+/// pends; the RESUME re-invocations an op made on its ticket after it answered PENDING are counted
+/// apart and reported (`resumes`), never pinned: how often a real backend makes an op wait is the
+/// network's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
     /// The step's label.
     pub label: String,
     /// Its answer, one transcript line.
     pub answer: String,
-    /// The crossings the instance made while it ran.
+    /// The FIRST-INVOCATION crossings the instance made while it ran.
     pub crossed: u64,
-    /// The crossings the kind's script pins for it.
+    /// The crossings the kind's script pins for it (first invocations).
     pub pinned: u64,
+    /// The RESUME re-invocations it made while it ran (reported, not pinned).
+    pub resumes: u64,
 }
 
 /// A leg's fold: its steps, in script order.
 pub type Fold = Vec<Step>;
 
-/// Records a script's steps against one instance's crossing counter.
+/// Records a script's steps against one instance's crossing counters.
 pub struct Recorder<'a> {
-    counter: &'a AtomicU64,
+    counter: Counts<'a>,
     steps: Fold,
 }
 
 impl<'a> Recorder<'a> {
     /// A recorder over `counter` (the instance's crossing gate).
     #[must_use]
-    pub fn new(counter: &'a AtomicU64) -> Self {
+    pub fn new(counter: Counts<'a>) -> Self {
         Self {
             counter,
             steps: Vec::new(),
@@ -434,14 +460,15 @@ impl<'a> Recorder<'a> {
 
     /// Run `f` as step `label`, pinned at `pinned` crossings; its answer is what `f` returns.
     pub fn step<T>(&mut self, label: &str, pinned: u64, f: impl FnOnce() -> (String, T)) -> T {
-        let before = self.counter.load(Ordering::SeqCst);
+        let (first, resumed) = self.counter.read();
         let (answer, value) = f();
-        let crossed = self.counter.load(Ordering::SeqCst) - before;
+        let (first_after, resumed_after) = self.counter.read();
         self.steps.push(Step {
             label: label.to_string(),
             answer,
-            crossed,
+            crossed: first_after - first,
             pinned,
+            resumes: resumed_after - resumed,
         });
         value
     }
@@ -472,8 +499,8 @@ pub fn exact(fold: &[Step]) -> Result<(), String> {
     for s in fold {
         if s.crossed != s.pinned {
             return Err(format!(
-                "step '{}': {} crossing(s), pinned {} (answer: {})",
-                s.label, s.crossed, s.pinned, s.answer
+                "step '{}': {} crossing(s), pinned {} ({} resume(s); answer: {})",
+                s.label, s.crossed, s.pinned, s.resumes, s.answer
             ));
         }
     }
@@ -488,8 +515,8 @@ pub fn same(linked: &[Step], dropped: &[Step]) -> Result<(), String> {
     for (l, d) in linked.iter().zip(dropped) {
         if (&l.label, &l.answer, l.crossed) != (&d.label, &d.answer, d.crossed) {
             return Err(format!(
-                "the two doors part at '{}':\n  linked:  {} [{} crossing(s)]\n  dropped: {} [{} crossing(s)]",
-                l.label, l.answer, l.crossed, d.answer, d.crossed
+                "the two doors part at '{}':\n  linked:  {} [{} crossing(s), {} resume(s)]\n  dropped: {} [{} crossing(s), {} resume(s)]",
+                l.label, l.answer, l.crossed, l.resumes, d.answer, d.crossed, d.resumes
             ));
         }
     }
@@ -499,6 +526,39 @@ pub fn same(linked: &[Step], dropped: &[Step]) -> Result<(), String> {
             linked.len(),
             dropped.len()
         ));
+    }
+    Ok(())
+}
+
+/// THE NETWORKED DOOR'S RESUMES (Q-P4-5): a door whose Statement declares a need the suite's table
+/// serves reaches a REAL endpoint through it, so the ops that dial answer PENDING and are
+/// RESUMED on their ticket (THE DESIGN §11.2 Ready | Pending(wake)): each step `dialing` names
+/// (`conformance.json`'s `dialing_steps`) resumed at least once, or, when it names none, at least
+/// one step of the fold did. A door that declares no need is not held to it.
+///
+/// # Errors
+/// The first dialing step that never resumed, or a networked fold with no resume at all.
+pub fn resumed(fold: &[Step], networked: bool, dialing: &[String]) -> Result<(), String> {
+    if !networked {
+        return Ok(());
+    }
+    for label in dialing {
+        match fold.iter().find(|st| &st.label == label) {
+            None => return Err(format!("dialing step '{label}' is not in the fold")),
+            Some(st) if st.resumes == 0 => {
+                return Err(format!(
+                    "dialing step '{label}' never resumed: a networked op answered READY on its \
+                     first invocation (answer: {})",
+                    st.answer
+                ))
+            }
+            Some(_) => {}
+        }
+    }
+    if dialing.is_empty() && fold.iter().all(|st| st.resumes == 0) {
+        return Err(
+            "a networked door's fold resumed no op: nothing answered PENDING on the network".into(),
+        );
     }
     Ok(())
 }
@@ -619,19 +679,10 @@ pub fn close<K: Kind>(p: &Plugin<K>) -> Called {
 
 /// THE `ready` STEP every kind's script runs right after its `open` answered READY (the
 /// mechanism's discovery at boot, awaited before any listener binds). A door that states no
-/// `ready` is not called: pinned at 0 crossings. One that states it is pinned at the plugin's own
-/// `inputs.ready_crossings` (1 when it answers at once; 2 when it pends once and is resumed).
-///
-/// # Panics
-/// When the door states `ready` and the inputs pin no count for it.
-pub fn ready_step<K: Kind>(rec: &mut Recorder<'_>, s: &Subject, p: &Plugin<K>, d: &Dispatcher) {
-    let pinned = if p.has_ready() {
-        s.inputs["ready_crossings"].as_u64().unwrap_or_else(|| {
-            panic!("the door states `ready`: conformance.json must pin `ready_crossings`")
-        })
-    } else {
-        0
-    };
+/// `ready` is not called: pinned at 0 crossings. One that states it is pinned at ONE first
+/// invocation, its resumes reported (Q-P4-5; `inputs.ready_crossings` is no longer read).
+pub fn ready_step<K: Kind>(rec: &mut Recorder<'_>, _s: &Subject, p: &Plugin<K>, d: &Dispatcher) {
+    let pinned = u64::from(p.has_ready());
     rec.line("ready", pinned, || {
         format!(
             "has_ready={} {:?}",
@@ -671,6 +722,17 @@ pub fn both_ways(s: &Subject) {
         "the dropped-in library must state exactly the linked door's Statement"
     );
     let red = std::env::var(RED_ENV).is_ok_and(|v| v == "count");
+    // Networked: its needs are SERVED by the suite's table (it dials a real endpoint); a door whose
+    // needs the suite cannot serve binds as a probe and dials nothing.
+    let networked = s.conns(&dispatcher()).is_some();
+    let dialing: Vec<String> = s.inputs["dialing_steps"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
     let mut folds = Vec::new();
     for leg in [Leg::Linked, Leg::Dropped] {
         let mut f = fold(s, leg);
@@ -684,6 +746,9 @@ pub fn both_ways(s: &Subject) {
             f = perturbed(f, 0);
         }
         if let Err(e) = exact(&f) {
+            panic!("{leg:?}: {e}");
+        }
+        if let Err(e) = resumed(&f, networked, &dialing) {
             panic!("{leg:?}: {e}");
         }
         folds.push(f);
@@ -927,13 +992,13 @@ pub fn red_ready(s: &Subject) {
         assert!(p.has_ready());
         let o = open(&p, &settings);
         assert_eq!(o.outcome, Outcome::Ready, "open: {}", called(&o));
-        let before = crossings(&p).load(Ordering::SeqCst);
+        let (before, _) = crossings(&p).read();
         let refused = p.ready(&d, READY_DEADLINE).expect_err("a failing ready refuses the boot");
         assert_eq!(
             refused,
             format!("plugin '{}' ready failed: {READY_FAILURE}", p.name())
         );
-        assert_eq!(crossings(&p).load(Ordering::SeqCst) - before, 1, "one crossing, not retried");
+        assert_eq!(crossings(&p).read().0 - before, 1, "one crossing, not retried");
     });
 }
 

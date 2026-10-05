@@ -38,8 +38,8 @@
 //!   (one crossing). The typed `heads` is leased the same way. The request-path reads
 //!   (`record_get`, `get_plane_record`, the lists into host buffers) write into the host's
 //!   buffers and hold none;
-//! * the `open` step is [`LoadedStore::open`]: the `open` crossing, plus `inputs.ready_crossings`
-//!   when the door states `ready` (the kernel awaits it inside `open`); [`super::ready_step`]
+//! * the `open` step is [`LoadedStore::open`]: the `open` crossing, plus one `ready` crossing when
+//!   the door states `ready` (the kernel awaits it inside `open`), first invocations both; [`super::ready_step`]
 //!   runs right after it, on the opened store's plugin (a door that states `ready` is awaited a
 //!   second time there; one that states none, 0);
 //! * the facts and the wrong-kind load make no crossing (0).
@@ -330,13 +330,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         };
         format!("refused={right}")
     });
-    let open_pin = 1 + if p.has_ready() {
-        s.inputs["ready_crossings"].as_u64().unwrap_or_else(|| {
-            panic!("the door states `ready`: conformance.json must pin `ready_crossings`")
-        })
-    } else {
-        0
-    };
+    // ONE first invocation for `open`, and one for the `ready` the kernel awaits inside it; their
+    // resumes are reported (Q-P4-5).
+    let open_pin = 1 + u64::from(p.has_ready());
     let st = r.step("open", open_pin, || {
         // The bridge mints its writes' op ids from this leg's allocator, on this node's half.
         MINT_NODE.store(i.node, std::sync::atomic::Ordering::Relaxed);
