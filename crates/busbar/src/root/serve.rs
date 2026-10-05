@@ -423,6 +423,7 @@ pub struct ApplyReach {
     conns: Arc<dyn busbar_contract::conn::PollConns>,
     journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
     stream_ceiling_secs: u64,
+    upgrades: Vec<&'static str>,
 }
 
 /// A CONFIG APPLY ON ONE SERVED DOOR PLANE (ARCHITECT Q-DEL-A2A-APPLY; THE DESIGN §11, plugin
@@ -507,6 +508,7 @@ impl DoorApply {
                     auths: Arc::clone(&r.auths),
                     conns: Arc::clone(&r.conns),
                     stream_ceiling_secs: r.stream_ceiling_secs,
+                    upgrades: r.upgrades.clone(),
                 };
                 let routes = crate::root::door_steps::member_routes(
                     section,
@@ -856,7 +858,7 @@ pub fn compose_planes(
             (served_facts.section, section),
         )
         .map_err(|e| format!("{instance}: {e}"))?
-        .with_records(Arc::clone(&kernel), caller);
+        .with_records(Arc::clone(&kernel), caller.clone());
         // THE HOOK STAGE IN THE PLANE'S OWN ORDER (spec Part 3 section 12 "Hooks"): a plane whose
         // tail states the gate-first order has its entries' gates and rewrites bound, filed under
         // its registry key.
@@ -887,6 +889,7 @@ pub fn compose_planes(
                 calls,
                 caps: BufferCaps::default(),
                 routes,
+                records: Some((Arc::clone(&kernel), caller)),
             },
             &[],
         )
@@ -968,6 +971,7 @@ pub fn compose_planes(
             conns: Arc::clone(&e.reach.conns),
             journal: Arc::clone(&e.journal),
             stream_ceiling_secs: e.reach.stream_ceiling_secs,
+            upgrades: e.reach.upgrades.clone(),
         });
         let live = Arc::new(DoorApply {
             plugin: plugin.clone(),
@@ -1514,8 +1518,14 @@ pub fn door_mounts(
             };
             vec![target, line.route.path.clone()]
         };
+        // One mount per (path, method): a plane's claims on one verb and path that differ only by
+        // the carrier they arrive over (an endpoint answered as a document or as an event stream)
+        // are one route on the data listener, the first in the plane's claim order; which carrier
+        // answers is the plane's to decide from the request, as the data door never compared it.
         for path in paths {
-            mounts.push((path, method, auth, door));
+            if !mounts.iter().any(|(p, m, ..)| *p == path && *m == method) {
+                mounts.push((path, method, auth, door));
+            }
         }
         of_line.insert((instances[door.0].clone(), line.route.rung), (auth, door));
     }
@@ -1736,7 +1746,8 @@ fn resource_documents(
             scopes_supported: list("scopes_supported"),
         });
         for (i, claim) in snapshot.claims.iter().enumerate() {
-            if claim.flags & CLAIM_OPEN != 0 && claim.verb == "GET" && claim.target == path {
+            let open = claim.flags & busbar_contract::abi::plane::CLAIM_OPEN != 0;
+            if open && claim.verb == "GET" && claim.target == path {
                 if let Ok(rung) = u32::try_from(i) {
                     out.insert((p, rung), Arc::clone(&doc));
                 }

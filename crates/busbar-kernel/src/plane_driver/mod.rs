@@ -87,7 +87,8 @@ use tokio::sync::{watch, Notify};
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
 pub use far_end::{
-    AuthBinding, Egress, EgressFarEnd, MemberRoute, ResponseKeep, UnitRoute, DEFAULT_ERROR_BODY_MAX,
+    AuthBinding, Egress, EgressFarEnd, MemberRoute, ResponseKeep, Ride, UnitRoute,
+    DEFAULT_ERROR_BODY_MAX,
 };
 pub use hooks::{
     Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, GroupScope,
@@ -220,6 +221,57 @@ pub struct PlaneDriver {
     sessions: Mutex<HashMap<u64, Arc<Notify>>>,
     /// Which hooks bind to a unit of this plane; `None` = none ever does.
     hooks: Option<Arc<dyn HookBinder>>,
+    /// Where a unit's audit row (a `RECORD_AUDIT` write) is written: the kernel's own audit chain.
+    audit: Arc<dyn AuditSink>,
+}
+
+/// WHERE A DOOR UNIT'S AUDIT ROW GOES (ARCHITECT SEAM-L(k)): a plane writes its unit's audit row
+/// as a `RECORD_AUDIT` record write on its `on_piece` answer (no host op of its own), and the
+/// driver folds it into the kernel's one audit chain, under the principal the kernel verified. The
+/// row's action, resource and outcome are the plane's words; the kernel names none.
+pub trait AuditSink: Send + Sync {
+    /// Write one row: `action` on `resource`, with `outcome` (`applied` or `rejected`), by
+    /// `principal`. Fire-and-forget: a store that refuses it never fails the unit.
+    fn record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str);
+}
+
+/// THE KERNEL'S OWN AUDIT CHAIN (`audit::journal`, read by `GET /audit`): the sink every driver
+/// writes a unit's audit row to unless built with another ([`PlaneDriver::with_audit`]). The same
+/// chokepoint a plane's admin-audit emit reached before it was served through its door.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CoreAudit;
+
+/// ONE AUDIT ROW a plane wrote (`RECORD_AUDIT`) onto `sink`: its outcome code, its action (`key`)
+/// and resource (`value`), under `principal` (anonymous when none). `Err` = a plane fault (an
+/// unknown outcome, an empty action, words that are not UTF-8); nothing is written.
+pub(crate) fn audit_row_to(
+    sink: &dyn AuditSink,
+    outcome: u32,
+    key: &[u8],
+    value: &[u8],
+    principal: Option<&PrincipalId>,
+) -> Result<(), ()> {
+    use busbar_contract::abi::plane::{AUDIT_APPLIED, AUDIT_REJECTED};
+    let outcome = match outcome {
+        AUDIT_APPLIED => busbar_contract::vocab::OUTCOME_APPLIED,
+        AUDIT_REJECTED => busbar_contract::vocab::OUTCOME_REJECTED,
+        _ => return Err(()),
+    };
+    let action = std::str::from_utf8(key).map_err(|_| ())?;
+    let resource = std::str::from_utf8(value).map_err(|_| ())?;
+    if action.is_empty() {
+        return Err(());
+    }
+    let anonymous = PrincipalId::anonymous();
+    let principal = principal.unwrap_or(&anonymous);
+    sink.record(action, resource, outcome, principal.as_str());
+    Ok(())
+}
+
+impl AuditSink for CoreAudit {
+    fn record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
+        crate::audit::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
+    }
 }
 
 impl Drop for PlaneDriver {
@@ -292,6 +344,7 @@ impl PlaneDriver {
             services,
             sessions: Mutex::default(),
             hooks: None,
+            audit: Arc::new(CoreAudit),
         })
     }
 
@@ -322,6 +375,67 @@ impl PlaneDriver {
     #[must_use]
     pub fn with_hooks(mut self, binder: Arc<dyn HookBinder>) -> Self {
         self.hooks = Some(binder);
+        self
+    }
+
+    /// ONE AUDIT ROW a plane wrote (`RECORD_AUDIT`): its outcome code (`kind`), its action (`key`)
+    /// and resource (`value`), written on the audit sink under `principal` (anonymous when none
+    /// was verified). `Err` = a plane fault: an unknown outcome, an empty action, or words that are
+    /// not UTF-8; nothing is written.
+    pub(crate) fn audit_row(
+        &self,
+        outcome: u32,
+        key: &[u8],
+        value: &[u8],
+        principal: Option<&PrincipalId>,
+    ) -> Result<(), ()> {
+        audit_row_to(&*self.audit, outcome, key, value, principal)
+    }
+
+    /// THE RECORD WRITES OF AN ANSWER THAT ENDS NOTHING FURTHER (a refusal's, SEAM-L(o)): each
+    /// audit row folded as [`Self::audit_row`], each put handed to the record write path, its
+    /// acknowledgement not awaited (the refusal has nothing left to fail). A write the plane got
+    /// wrong, or a put with no record path, is logged and dropped: the caller's answer stands.
+    fn fold_records(
+        &self,
+        writes: &[busbar_contract::abi::plane::RecordWrite],
+        arena: &[u8],
+        principal: Option<&PrincipalId>,
+    ) {
+        use busbar_contract::abi::plane::{RECORD_AUDIT, RECORD_PUT};
+        let bytes = |s: Span| {
+            let start = s.offset as usize;
+            arena
+                .get(start..start.saturating_add(s.len as usize))
+                .unwrap_or_default()
+        };
+        for w in writes {
+            let written = match w.op {
+                RECORD_AUDIT => self.audit_row(w.kind, bytes(w.key), bytes(w.value), principal),
+                RECORD_PUT => self.records.as_ref().map_or(Err(()), |(services, caller)| {
+                    let kind = services.record_kind(caller, w.kind).ok_or(())?;
+                    let value = busbar_contract::kinds::RecordBytes::new(bytes(w.value).to_vec())
+                        .map_err(|_| ())?;
+                    services
+                        .record_write(caller, kind.as_str(), bytes(w.key), value, Box::new(|_| {}))
+                        .map_err(|_| ())
+                }),
+                _ => Err(()),
+            };
+            if written.is_err() {
+                tracing::warn!(
+                    op = w.op,
+                    "a plane's record write on a refusal could not be applied; the refusal stands"
+                );
+            }
+        }
+    }
+
+    /// Write a unit's audit row (a `RECORD_AUDIT` record write) to `sink` instead of the kernel's
+    /// own audit chain ([`CoreAudit`]).
+    #[must_use]
+    pub fn with_audit(mut self, sink: Arc<dyn AuditSink>) -> Self {
+        self.audit = sink;
         self
     }
 
@@ -456,7 +570,8 @@ pub(crate) struct UnitState {
     bill: Option<CancelBill>,
     /// The caller's opaque reference, derived at verify (never the principal itself).
     caller_ref: Vec<u8>,
-    /// The principal the kernel verified, for the hooks the unit binds (never a plane input).
+    /// The principal the kernel verified, for the hooks the unit binds and its audit row (never a
+    /// plane input).
     principal: Option<PrincipalId>,
     /// A gate-first plane's hooks screened the unit before the door ([`RouteAwait::screen`]).
     screened: bool,
@@ -507,6 +622,13 @@ const ZERO_UNIT: UnitCount = UnitCount {
     amount: 0,
 };
 const NO_SPAN: Span = Span { offset: 0, len: 0 };
+pub(crate) const NO_RECORD: busbar_contract::abi::plane::RecordWrite =
+    busbar_contract::abi::plane::RecordWrite {
+        kind: 0,
+        op: 0,
+        key: NO_SPAN,
+        value: NO_SPAN,
+    };
 const NO_FIELD: OutField = OutField {
     name: NO_SPAN,
     value: NO_SPAN,
@@ -616,7 +738,7 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
     /// The plane renders a refusal (`refusal`, ticketless, one re-call when short); the kernel's
     /// generic failure, with no body, when it cannot.
     fn render(&self, reason: ReasonCode) -> Rendered {
-        self.render_as(reason, None, None)
+        self.render_as(reason, None, None, None)
     }
 
     /// [`Self::render`], or under the status and Retry-After the walk chose (an exhaustion
@@ -627,6 +749,7 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
         reason: ReasonCode,
         walk: Option<(u32, Option<u32>)>,
         said: Option<&str>,
+        hook: Option<&str>,
     ) -> Rendered {
         let (unit, dialect, declined, words) = {
             let st = self.lock();
@@ -660,6 +783,7 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             vec![NO_FIELD; caps.fields],
             vec![0u8; caps.arena],
         );
+        let mut records = vec![NO_RECORD; caps.records];
         let mut input = RefusalIn {
             cause: if words.is_some() {
                 REFUSAL_ARRIVE
@@ -682,8 +806,14 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             plane_code: declined.map_or(0, |(code, _)| code),
             retry_after_s,
             target: AbiStr::over(&self.arrival.target),
+            records_buf: records.as_mut_ptr(),
+            records_cap: records.len(),
             ..blank_in()
         };
+        // The vetoing hook's name, on a gate refusal alone (absent = NULL otherwise).
+        if let Some(hook) = hook {
+            input.hook = AbiStr::over(hook.as_bytes());
+        }
         let mut o: RefusalOut = blank_out();
         let outcome = self
             .driver
@@ -692,6 +822,11 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
                 reply.resize((short.reply_needed as usize).max(reply.len()), 0);
                 fields.resize((short.fields_needed as usize).max(fields.len()), NO_FIELD);
                 arena.resize((short.arena_needed as usize).max(arena.len()), 0);
+                records.resize(
+                    (short.records_needed as usize).max(records.len()),
+                    NO_RECORD,
+                );
+                (i.records_buf, i.records_cap) = (records.as_mut_ptr(), records.len());
                 (i.reply_buf, i.reply_cap) = (reply.as_mut_ptr(), reply.len());
                 (i.fields_buf, i.fields_cap) = (fields.as_mut_ptr(), fields.len());
                 (i.arena_buf, i.arena_cap) = (arena.as_mut_ptr(), arena.len());
@@ -702,6 +837,18 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
                 fields: Vec::new(),
                 body: Vec::new(),
             };
+        }
+        // THE REFUSAL'S RECORD WRITES (SEAM-L(o)): the plane's audit row for the unit the kernel
+        // refused, and any put it writes beside it.
+        let written = (o.records_written as usize).min(records.len());
+        if written != 0 {
+            let principal = self.lock().principal.clone();
+            let arena_written = (o.arena_written as usize).min(arena.len());
+            self.driver.fold_records(
+                &records[..written],
+                &arena[..arena_written],
+                principal.as_ref(),
+            );
         }
         let span = |s: Span| {
             let start = s.offset as usize;
@@ -738,6 +885,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                     ReasonCode::HookVeto,
                     Some((veto.status, None)),
                     Some(veto.text.as_str()),
+                    veto.hook.as_deref(),
                 );
                 self.lock().rendered = Some(rendered);
                 self.response_tap(true, veto.status);
@@ -822,15 +970,23 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             route::End::Exhausted(status, retry_after) => {
                 // THE WALK'S EXHAUSTION TERMINAL: its status and its Retry-After floor, handed to
                 // the plane's `refusal` (RefusalIn.retry_after_s), which renders them in its dialect.
-                let rendered =
-                    self.render_as(ReasonCode::BreakerOpen, Some((status, retry_after)), None);
+                let rendered = self.render_as(
+                    ReasonCode::BreakerOpen,
+                    Some((status, retry_after)),
+                    None,
+                    None,
+                );
                 self.lock().rendered = Some(rendered);
                 StepAnswer::refuse(token, Refusal::new(ReasonCode::BreakerOpen))
             }
             route::End::Vetoed(status, text) => {
                 // THE WALK'S REFUSAL FOR A HOOK'S RESTRICTION: answered as the hook would be.
-                let rendered =
-                    self.render_as(ReasonCode::HookVeto, Some((status, None)), Some(&text));
+                let rendered = self.render_as(
+                    ReasonCode::HookVeto,
+                    Some((status, None)),
+                    Some(&text),
+                    None,
+                );
                 self.lock().rendered = Some(rendered);
                 StepAnswer::refuse(token, Refusal::new(ReasonCode::HookVeto))
             }
@@ -923,9 +1079,9 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         if let Some(key) = &self.driver.config.caller_refs {
             self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
         }
-        if self.driver.hooks.is_some() {
-            self.lock().principal = Some(principal.clone());
-        }
+        // The verified principal: the hooks the unit binds read it, and the unit's audit row is
+        // written under it (never a plane input).
+        self.lock().principal = Some(principal.clone());
         self.steps.verify(token, trust, ctx, principal)
     }
 

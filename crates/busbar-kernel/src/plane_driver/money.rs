@@ -129,8 +129,11 @@ struct Open {
     session: bool,
     /// The provider of the member that served the unit, once its answering attempt committed
     /// ([`MoneySeam::served`]); `None` while no member has answered. The served model replaces
-    /// [`UnitMoney::model`] in `money` at the same moment.
+    /// [`UnitMoney::model`] in `money` at the same moment, unless the plane named the unit's lane.
     provider: Option<String>,
+    /// The plane named the unit's ledger lane ([`MoneySeam::laned`]): it is [`UnitMoney::model`]
+    /// in `money` from then on, and a serving member no longer replaces it.
+    laned: bool,
 }
 
 /// THE KERNEL'S MONEY STEPS for one plane instance's units.
@@ -176,6 +179,7 @@ impl PlaneMoney {
                 finished: false,
                 session: false,
                 provider: None,
+                laned: false,
             },
         );
     }
@@ -234,9 +238,10 @@ impl PlaneMoney {
             .unwrap_or_default()
     }
 
-    /// The key unit `key` is ledgered, metered and priced under: its serving member's once its
-    /// answer committed ([`MoneySeam::served`]), else the member it was opened with; `None` when no
-    /// money facts are open for it.
+    /// The key unit `key` is ledgered, metered and priced under: the ledger lane its plane named
+    /// ([`MoneySeam::laned`]), else its serving member's once its answer committed
+    /// ([`MoneySeam::served`]), else the member it was opened with; `None` when no money facts are
+    /// open for it.
     #[must_use]
     pub fn serving(&self, key: UnitKey) -> Option<String> {
         self.lock().get(&key).map(|o| o.money.model.clone())
@@ -510,8 +515,30 @@ impl MoneySeam for PlaneMoney {
     /// delivered response is attributed to a model ... `lane` is the SERVING lane").
     fn served(&self, ctx: &UnitCtx, model: &str, provider: &str) {
         if let Some(open) = self.lock().get_mut(&ctx.key) {
-            open.money.model = model.to_string();
+            if !open.laned {
+                open.money.model = model.to_string();
+            }
             open.provider = Some(provider.to_string());
+        }
+    }
+
+    /// THE LEDGER LANE THE PLANE NAMED (ARCHITECT SEAM-L(j): the ledger lane is not the route
+    /// entry): from here every ledgering, metering and cut-stream pricing of the unit is under it,
+    /// qualified by the same plane key the unit was opened under (`"<plane>\u{1f}<lane>"`), so a
+    /// plane names lanes of its own card alone. A lane that is empty, or carries a control
+    /// character (the qualifier's separator among them), names nothing.
+    fn laned(&self, ctx: &UnitCtx, lane: &str) {
+        if lane.is_empty() || lane.chars().any(char::is_control) {
+            return;
+        }
+        if let Some(open) = self.lock().get_mut(&ctx.key) {
+            let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(&open.money.model);
+            open.money.model = if plane.is_empty() {
+                lane.to_string()
+            } else {
+                format!("{plane}{}{lane}", crate::governance::PLANE_LANE_SEP)
+            };
+            open.laned = true;
         }
     }
 }

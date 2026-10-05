@@ -67,6 +67,12 @@ pub struct ServeTable {
     pub caps: BufferCaps,
     /// The snapshot's admin routes, in its order.
     pub routes: Vec<ServeRoute>,
+    /// The kernel's record write path and the instance a served request's record writes are keyed
+    /// by (SEAM-L(t)); `None` = none: a request whose answer writes a record then answers 502.
+    pub records: Option<(
+        Arc<crate::host_services::KernelServices>,
+        busbar_contract::services::Caller,
+    )>,
 }
 
 impl std::fmt::Debug for ServeTable {
@@ -209,6 +215,18 @@ pub async fn answer(req: Request) -> Option<Response> {
     let calls = &*table.calls;
     let at = index as u32;
     let served = serve(calls, table.caps, routes, at, target.as_bytes(), head, body).await;
+    let actor = principal.clone().unwrap_or(AuthPrincipal(None));
+    let served = match served {
+        Ok(s) => write_served_records(
+            table.records.as_ref(),
+            &super::CoreAudit,
+            &s,
+            actor.actor_id(),
+        )
+        .await
+        .map(|()| s),
+        Err(e) => Err(e),
+    };
     Some(
         match served.and_then(|s| reply(&s).map(|resp| (s.audit, resp))) {
             Ok((audit, resp)) => {
@@ -324,18 +342,82 @@ pub async fn served_at(
         .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
         .collect();
     let calls = &*table.calls;
-    Some(
-        serve(
-            calls,
-            table.caps,
-            table.routes.len(),
-            index as u32,
-            path.as_bytes(),
-            head,
-            body,
-        )
-        .await,
+    let served = serve(
+        calls,
+        table.caps,
+        table.routes.len(),
+        index as u32,
+        path.as_bytes(),
+        head,
+        body,
     )
+    .await;
+    Some(match served {
+        Ok(s) => write_served_records(
+            table.records.as_ref(),
+            &super::CoreAudit,
+            &s,
+            AuthPrincipal(None).actor_id(),
+        )
+        .await
+        .map(|()| s),
+        Err(e) => Err(e),
+    })
+}
+
+/// A SERVED REQUEST'S RECORD WRITES (SEAM-L(t)), in the plane's order, before its reply goes: an
+/// audit row onto the kernel's audit chain under `actor`; a put through the kernel's record write
+/// path, keyed by the instance (a chained kind appended to its chain), awaited until the store
+/// took it. A write the plane got wrong, a put with no record path, or one the store refuses answers
+/// the request 502 (a write is never dropped).
+///
+/// `records` is the instance's record path ([`ServeTable::records`]) and `sink` the audit chain.
+///
+/// # Errors
+///
+/// [`Unserved::Fault`], as above.
+pub async fn write_served_records(
+    records: Option<&(
+        Arc<crate::host_services::KernelServices>,
+        busbar_contract::services::Caller,
+    )>,
+    sink: &dyn super::AuditSink,
+    served: &Served,
+    actor: &str,
+) -> Result<(), Unserved> {
+    use busbar_contract::abi::plane::{RECORD_AUDIT, RECORD_PUT};
+    let mut acks = Vec::new();
+    for (kind, op, key, value) in &served.records {
+        match *op {
+            RECORD_AUDIT => {
+                let principal = busbar_contract::caps::PrincipalId::new(actor);
+                super::audit_row_to(sink, *kind, key, value, Some(&principal))
+                    .map_err(|()| Unserved::Fault)?;
+            }
+            RECORD_PUT => {
+                let (services, caller) = records.ok_or(Unserved::Fault)?;
+                let schema = services.record_kind(caller, *kind).ok_or(Unserved::Fault)?;
+                let bytes = busbar_contract::kinds::RecordBytes::new(value.clone())
+                    .map_err(|_| Unserved::Fault)?;
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let acked: crate::host_records::Acked = Box::new(move |r| {
+                    let _ = tx.send(r);
+                });
+                services
+                    .record_write(caller, schema.as_str(), key, bytes, acked)
+                    .map_err(|_| Unserved::Fault)?;
+                acks.push(rx);
+            }
+            _ => return Err(Unserved::Fault),
+        }
+    }
+    for rx in acks {
+        match rx.await {
+            Ok(Ok(())) => {}
+            _ => return Err(Unserved::Fault),
+        }
+    }
+    Ok(())
 }
 
 /// Why a request was not served.
@@ -371,6 +453,8 @@ pub struct Served {
     pub body: Vec<u8>,
     /// `AUDIT_*`, as the plane reported it.
     pub audit: u32,
+    /// The answer's record writes, `(kind, op, key, value)`, in the plane's order (SEAM-L(t)).
+    pub records: Vec<(u32, u32, Vec<u8>, Vec<u8>)>,
 }
 
 /// One request's host buffers, lent to every crossing of it.
@@ -381,6 +465,7 @@ struct Bufs {
     reply: Vec<u8>,
     fields: Vec<OutField>,
     arena: Vec<u8>,
+    records: Vec<busbar_contract::abi::plane::RecordWrite>,
 }
 
 impl Bufs {
@@ -397,6 +482,8 @@ impl Bufs {
             fields_cap: self.fields.len(),
             arena_buf: self.arena.as_mut_ptr(),
             arena_cap: self.arena.len(),
+            records_buf: self.records.as_mut_ptr(),
+            records_cap: self.records.len(),
             ..blank_in()
         };
         (input, blank_out())
@@ -453,6 +540,7 @@ pub async fn serve(
         reply: vec![0; caps.reply],
         fields: vec![NO_FIELD; caps.fields],
         arena: vec![0; caps.arena],
+        records: vec![super::NO_RECORD; caps.records],
     }));
     let lock = || keep.lock().unwrap_or_else(PoisonError::into_inner);
     for recall in [false, true] {
@@ -467,11 +555,15 @@ pub async fn serve(
                 let b = lock();
                 let reply = b.reply.get(..o.reply_written as usize).unwrap_or_default();
                 let fields = b.fields.iter().take(o.fields_written as usize);
+                let records = b.records.iter().take(o.records_written as usize);
                 return Ok(Served {
                     status: o.status,
                     fields: fields.map(|f| (b.span(f.name), b.span(f.value))).collect(),
                     body: reply.to_vec(),
                     audit: o.audit,
+                    records: records
+                        .map(|w| (w.kind, w.op, b.span(w.key), b.span(w.value)))
+                        .collect(),
                 });
             }
             (AbiOutcome::Failed, Some(o)) if done.short && !recall => {
@@ -480,9 +572,11 @@ pub async fn serve(
                 let reply = b.reply.len().max(o.reply_needed as usize);
                 let fields = b.fields.len().max(o.fields_needed as usize);
                 let arena = b.arena.len().max(o.arena_needed as usize);
+                let records = b.records.len().max(o.records_needed as usize);
                 b.reply.resize(reply, 0);
                 b.fields.resize(fields, NO_FIELD);
                 b.arena.resize(arena, 0);
+                b.records.resize(records, super::NO_RECORD);
             }
             _ => break,
         }

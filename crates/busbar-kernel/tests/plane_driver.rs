@@ -27,10 +27,11 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, ProjectIn, ProjectOut, RecordWrite,
-    RefusalIn, RefusalOut, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE,
-    EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
-    PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_PUT,
-    REFUSAL_ARRIVE, ROUTE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    RefusalIn, RefusalOut, UnitCount, AUDIT_APPLIED, CANCEL_ABORTED, CANCEL_FAILED,
+    CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
+    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
+    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE, REFUSAL_KERNEL,
+    ROUTE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{ServeIn, ServeOut};
 use busbar_contract::caps::OpClassId;
@@ -314,6 +315,32 @@ impl Double {
                     let n = u.body.len().min(i.reply_cap);
                     std::ptr::copy_nonoverlapping(u.body.as_ptr(), i.reply_buf, n);
                     o.emitted = n as u64;
+                    o.flags = EMIT_DONE;
+                    return (ready(Outcome::Ready), Hold::No);
+                }
+                if head.as_slice() == b"/audit" {
+                    // A plane that audits its unit and names its ledger lane (SEAM-L(j), (k)): one
+                    // reported unit, the lane `tool_x`, one audit row `thing.call` on `thing:x`
+                    // applied, answered locally with nothing.
+                    let mut at = 0;
+                    let key = put(i, &mut at, b"thing.call");
+                    let value = put(i, &mut at, b"thing:x");
+                    *i.records_buf = RecordWrite {
+                        kind: AUDIT_APPLIED,
+                        op: RECORD_AUDIT,
+                        key,
+                        value,
+                    };
+                    o.records_written = 1;
+                    o.lane = put(i, &mut at, b"tool_x");
+                    *i.units_buf = UnitCount {
+                        class: 0,
+                        source: UNITS_REPORTED,
+                        amount: 1,
+                    };
+                    o.units_written = 1;
+                    o.arena_written = at as u64;
+                    o.reply_status = 200;
                     o.flags = EMIT_DONE;
                     return (ready(Outcome::Ready), Hold::No);
                 }
@@ -617,7 +644,8 @@ impl PlaneCalls for Double {
         // (the plane's own words for an arrival it refused are its text, not the kernel's).
         let named =
             busbar_contract::abi::plane::reason_of(input.reason).map(|r| r.as_str().as_bytes());
-        if input.cause != REFUSAL_ARRIVE && named != Some(unsafe { text(input.text) }) {
+        // A gate refusal's text is the vetoing hook's own words.
+        if input.cause == REFUSAL_KERNEL && named != Some(unsafe { text(input.text) }) {
             return Outcome::Fault;
         }
         let mut body = [
@@ -646,18 +674,61 @@ impl PlaneCalls for Double {
         if input.plane_code != 0 {
             body.extend_from_slice(format!(":{}@{}", input.plane_code, input.unit).as_bytes());
         }
+        // A HOOK VETO (SEAM-L(o), (p)): this plane names the vetoing hook and writes its audit row,
+        // rejected, for the unit the kernel refused.
+        let hook = unsafe { text(input.hook) }.to_vec();
+        if !hook.is_empty() {
+            body.extend_from_slice(b":hook=");
+            body.extend_from_slice(&hook);
+        }
+        let (row_key, row_value) = (b"thing.call".as_slice(), b"thing:x".as_slice());
+        let rows = usize::from(!hook.is_empty());
         let (name, value) = (b"content-type".as_slice(), b"text/plain".as_slice());
-        let arena = name.len() + value.len();
+        let arena = name.len() + value.len() + rows * (row_key.len() + row_value.len());
         for call in 0..2 {
-            if body.len() > input.reply_cap || input.fields_cap < 1 || arena > input.arena_cap {
+            if body.len() > input.reply_cap
+                || input.fields_cap < 1
+                || arena > input.arena_cap
+                || rows > input.records_cap
+            {
                 if call == 1 {
                     return Outcome::Fault;
                 }
                 out.reply_needed = body.len() as u64;
                 out.fields_needed = 1;
                 out.arena_needed = arena as u64;
+                out.records_needed = rows as u32;
                 grow(out, input);
                 continue;
+            }
+            if rows == 1 {
+                let at = name.len() + value.len();
+                // SAFETY: the driver's arena and records buffer, of the capacities checked above.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        row_key.as_ptr(),
+                        input.arena_buf.add(at),
+                        row_key.len(),
+                    );
+                    std::ptr::copy_nonoverlapping(
+                        row_value.as_ptr(),
+                        input.arena_buf.add(at + row_key.len()),
+                        row_value.len(),
+                    );
+                    *input.records_buf = RecordWrite {
+                        kind: busbar_contract::abi::plane::AUDIT_REJECTED,
+                        op: RECORD_AUDIT,
+                        key: Span {
+                            offset: at as u32,
+                            len: row_key.len() as u32,
+                        },
+                        value: Span {
+                            offset: (at + row_key.len()) as u32,
+                            len: row_value.len() as u32,
+                        },
+                    };
+                }
+                out.records_written = 1;
             }
             // SAFETY: the driver's buffers, of the capacities checked above.
             unsafe {
@@ -985,6 +1056,103 @@ async fn a_record_write_with_no_record_path_fails_the_unit() {
     assert!(
         !matches!(o, busbar_contract::caps::Outcome::Completed),
         "{o:?}"
+    );
+}
+
+/// The audit rows a driver wrote, as its sink saw them.
+#[derive(Default)]
+struct AuditRows(Mutex<Vec<(String, String, &'static str, String)>>);
+
+impl busbar_kernel::plane_driver::AuditSink for AuditRows {
+    fn record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
+        self.0.lock().unwrap().push((
+            action.to_string(),
+            resource.to_string(),
+            outcome,
+            principal.to_string(),
+        ));
+    }
+}
+
+/// SEAM-L(k), THE DOOR UNIT'S AUDIT ROW: a plane's `RECORD_AUDIT` write on its answer is one row
+/// on the kernel's audit chain, in the plane's words, under the principal the kernel verified,
+/// with no record path (it is no record of the plane's); SEAM-L(j): the lane the same answer names
+/// reaches the money steps. RED: the write failed the unit as an unknown record op, and the lane
+/// was never read.
+#[tokio::test]
+async fn a_units_audit_row_reaches_the_kernels_chain_and_its_lane_the_money_steps() {
+    let mut r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let rows = Arc::new(AuditRows::default());
+    r.driver = r.driver.with_audit(rows.clone());
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&[], &[]),
+        cases::Caller::default(),
+    );
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, cases::arrival("/audit", b"x"), 0);
+    let o = cases::drive(&units).await;
+    assert!(
+        matches!(o, busbar_contract::caps::Outcome::Completed),
+        "{o:?}"
+    );
+    assert_eq!(
+        *rows.0.lock().unwrap(),
+        vec![(
+            "thing.call".to_string(),
+            "thing:x".to_string(),
+            busbar_contract::vocab::OUTCOME_APPLIED,
+            common::principal().as_str().to_string(),
+        )],
+        "one row, the plane's words, the kernel's principal"
+    );
+    assert_eq!(r.book.laned(), vec!["tool_x".to_string()]);
+}
+
+/// SEAM-L(t), A SERVED REQUEST'S RECORD WRITES: a put reaches the instance's records (read back
+/// through `records.get`) and an audit row reaches the audit sink under the request's actor, in the
+/// plane's order; a put with no record path, or an unknown op, answers 502. RED: the served answer
+/// carried no record writes.
+#[tokio::test]
+async fn a_served_requests_record_writes_reach_the_records_and_the_audit_chain() {
+    use busbar_kernel::plane_driver::serve::{write_served_records, Served, Unserved};
+    let s = records();
+    let rows = AuditRows::default();
+    let served = Served {
+        status: 200,
+        fields: Vec::new(),
+        body: Vec::new(),
+        audit: 0,
+        records: vec![
+            (0, RECORD_PUT, b"cb".to_vec(), b"done".to_vec()),
+            (
+                AUDIT_APPLIED,
+                RECORD_AUDIT,
+                b"thing.callback".to_vec(),
+                b"thing:x".to_vec(),
+            ),
+        ],
+    };
+    let path = (Arc::clone(&s), instance());
+    write_served_records(Some(&path), &rows, &served, "acct:caller")
+        .await
+        .expect("written");
+    let cb = get(&s, b"cb");
+    assert_eq!((cb.value, cb.bytes.as_slice()), (svc::FOUND, &b"done"[..]));
+    assert_eq!(
+        *rows.0.lock().unwrap(),
+        vec![(
+            "thing.callback".to_string(),
+            "thing:x".to_string(),
+            busbar_contract::vocab::OUTCOME_APPLIED,
+            "acct:caller".to_string(),
+        )]
+    );
+    assert_eq!(
+        write_served_records(None, &rows, &served, "acct:caller").await,
+        Err(Unserved::Fault),
+        "a put with no record path is never dropped"
     );
 }
 
@@ -1659,4 +1827,39 @@ async fn a_planes_message_boundaries_and_final_status_reach_the_callers_side() {
             "{member}: the bytes are unchanged"
         );
     }
+}
+
+/// SEAM-L(o), (p): A KERNEL REFUSAL'S RECORD WRITES AND THE VETOING HOOK. A gate's veto hands the
+/// plane's `refusal` the vetoing hook's name, which the plane renders (predev's
+/// `{"reason":"hook_rejected","hook":<name>}`), and the refusal's `RECORD_AUDIT` write is one
+/// rejected row on the kernel's audit chain under the verified principal. RED: the refusal had no
+/// record slot and named no hook.
+#[tokio::test]
+async fn a_vetoed_units_refusal_names_the_hook_and_writes_its_rejected_row() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let rows = Arc::new(AuditRows::default());
+    let binder = Arc::new(GateFirst {
+        gate: Arc::new(Refuses::default()),
+        asked: Mutex::new(Vec::new()),
+    });
+    let driver = r.driver.with_hooks(binder).with_audit(rows.clone());
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["ok"], &[]),
+        cases::Caller::default(),
+    );
+    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
+    let _ = cases::drive(&units).await;
+    let rendered = units.take_rendered().expect("the veto is rendered");
+    let body = String::from_utf8_lossy(&rendered.body).to_string();
+    assert!(body.ends_with(":hook=entry-gate"), "{body}");
+    assert_eq!(
+        *rows.0.lock().unwrap(),
+        vec![(
+            "thing.call".to_string(),
+            "thing:x".to_string(),
+            busbar_contract::vocab::OUTCOME_REJECTED,
+            common::principal().as_str().to_string(),
+        )]
+    );
 }
