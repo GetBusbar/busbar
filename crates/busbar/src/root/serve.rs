@@ -1207,6 +1207,14 @@ pub fn data_routes(
     }
 }
 
+/// What the data router is built with for the door planes ([`data_mounts`]): their request routes,
+/// their session routes, and their request routes' unit-less refusals.
+pub type DataMounts = (
+    Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
+    Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+    Vec<PlaneRefusalSpec>,
+);
+
 /// [`data_routes`], and the door planes' session routes beside them (ARCHITECT Q-L5B-SESSION-SERVE;
 /// TRANSITIONAL: deleted when INBOUND-LISTEN's accepted::Caller serves): what the data router is
 /// built with.
@@ -1223,14 +1231,7 @@ pub fn data_mounts(
         busbar_contract::abi::mechanism::route::RouteAuth,
     )],
     upgrades: &[&str],
-) -> Result<
-    (
-        Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
-        Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
-        Vec<PlaneRefusalSpec>,
-    ),
-    String,
-> {
+) -> Result<DataMounts, String> {
     if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
         return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
