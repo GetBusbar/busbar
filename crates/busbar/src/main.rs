@@ -45,8 +45,8 @@ use axum::Router;
 // checks without booting, and the last two are the config/providers path precedence the scanners
 // there answer for boot AND for every command.
 use busbar_kernel::{
-    build_app_from_config, build_split_routers_serving, load_config_from_disk, LoadedConfig,
-    ENV_CONFIG,
+    build_app_from_config, build_split_routers_serving_sessions, load_config_from_disk,
+    LoadedConfig, ENV_CONFIG,
 };
 use busbar_kernel::{config, config_validate, diagnostics, export, metrics, tls};
 // The root's own binds listen through the connector's listener (the one listener source).
@@ -876,6 +876,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         ),
         catalog: Some(&deploy.models),
     };
+    // The kernel's own App through its swap handle once it exists (a config apply replaces the
+    // generation a unit's hooks are read off), the boot App's until then.
+    let door_live_handle: std::sync::Arc<
+        std::sync::OnceLock<std::sync::Arc<busbar_kernel::state::AppHandle>>,
+    > = std::sync::Arc::default();
     let served = root::serve::compose_served(
         app.governance.clone(),
         root::boot::door_planes(),
@@ -884,6 +889,19 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         &root::serve::with_pools(deploy.door_sections(), &door_pools),
         deploy.public_url.as_deref(),
         &door_reach,
+        Some({
+            let (live, boot) = (
+                std::sync::Arc::clone(&door_live_handle),
+                std::sync::Arc::clone(&app),
+            );
+            std::sync::Arc::new(move || {
+                busbar_kernel::plane_host::engine_host(
+                    &live
+                        .get()
+                        .map_or_else(|| std::sync::Arc::clone(&boot), |h| h.load()),
+                )
+            })
+        }),
     )
     .unwrap_or_else(|e| die(e));
     served.spawn_ticks();
@@ -951,20 +969,23 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Every config apply refreshes each served door plane onto the generation it installed
     // (ARCHITECT Q-DEL-A2A-APPLY), bound on the handle once the routers are built.
     let door_appliers = served.appliers();
-    let doors = root::serve::data_routes(
+    let (doors, sessions) = root::serve::data_mounts(
         served,
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
+        &root::serve::upgrade_carriers(LINKED.transports),
     )
     .unwrap_or_else(|e| die(e));
-    let (data_router, admin_router, app_handle) = build_split_routers_serving(
+    let (data_router, admin_router, app_handle) = build_split_routers_serving_sessions(
         app,
         doors,
+        sessions,
         req_body_max,
         max_inbound,
         response_headers_cfg.server_timing,
     );
     credential_handle.set(std::sync::Arc::clone(&app_handle));
+    let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
     app_handle.on_apply(Box::new(move |app| door_appliers.apply(app)));
     // A door unit's entitlement is judged against its principal AS IT STANDS (re-resolved over the
     // live snapshot per ask): a long-lived response re-asks per frame.

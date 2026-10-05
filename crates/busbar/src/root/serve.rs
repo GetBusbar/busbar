@@ -628,6 +628,7 @@ impl Served {
 /// A configured plane that will not compose ([`compose_planes`]), or, in a build that links no
 /// node to post a unit's money on, any configured door plane at all, which the boot refuses rather
 /// than leaving its claims unserved.
+#[allow(clippy::too_many_arguments)]
 pub fn compose_served(
     gov: Option<Arc<busbar_kernel::governance::GovState>>,
     doors: &[(String, DoorPlane)],
@@ -636,6 +637,7 @@ pub fn compose_served(
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
     public_url: Option<&str>,
     reach: &crate::root::door_steps::DoorReach<'_>,
+    host: Option<busbar_kernel::plane_driver::GenerationHost>,
 ) -> Result<Served, String> {
     let Some(gov) = gov else {
         if !doors.is_empty() {
@@ -648,6 +650,10 @@ pub fn compose_served(
         let post = Arc::new(crate::root::plane_node::NodeEndPost::new(
             crate::root::plane_node::node(),
         ));
+        let stage = host.map(|host| HookStage {
+            host,
+            gov: Arc::clone(&gov),
+        });
         let site = Arc::clone(&post);
         let money = move || {
             Arc::new(PlaneMoney::new(
@@ -667,13 +673,14 @@ pub fn compose_served(
             public_url,
             &money,
             Some(&egress),
+            stage.as_ref(),
         )?;
         served.post = Some(post);
         Ok(served)
     }
     #[cfg(not(linked_axis_node))]
     {
-        let _ = (gov, dispatcher, late, reach, public_url);
+        let _ = (gov, dispatcher, late, reach, public_url, host);
         match doors
             .iter()
             .find(|(_, plugin)| sections.contains_key(plugin.served().section))
@@ -684,6 +691,30 @@ pub fn compose_served(
             )),
             None => Ok(Served::default()),
         }
+    }
+}
+
+/// THE KERNEL'S HOOK STAGE as a door plane's units bind it: the current generation's engine host
+/// (its hook registry), read per unit so a config apply reaches the next unit, and the governance
+/// state a verified principal's key is read from.
+pub struct HookStage {
+    /// The current generation's engine host.
+    pub host: busbar_kernel::plane_driver::GenerationHost,
+    /// The governance state.
+    pub gov: Arc<busbar_kernel::governance::GovState>,
+}
+
+impl HookStage {
+    /// The GATE-FIRST binder of the plane registered under `plane_key` (its tail states
+    /// `abi::plane::TAIL_HOOKS_GATED`): the gates and rewrites the deployment attached to the
+    /// entry the plane's projection names, filed under the plane's registry key.
+    fn gated(&self, plane_key: &str) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
+        let gov = Arc::clone(&self.gov);
+        Arc::new(busbar_kernel::plane_driver::HostGatedHooks {
+            host: Arc::clone(&self.host),
+            plane_key: plane_key.to_string(),
+            keys: Arc::new(move |principal: &str| gov.lookup_by_sub(principal)),
+        })
     }
 }
 
@@ -760,6 +791,7 @@ pub struct DoorEgress<'a> {
 ///
 /// A plane that will not open, publish a snapshot, be admitted, publish its admin routes or seal
 /// its members' routes, named: the boot refuses it, as it refuses a plane that will not bind.
+#[allow(clippy::too_many_arguments)]
 pub fn compose_planes(
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
@@ -768,6 +800,7 @@ pub fn compose_planes(
     public_url: Option<&str>,
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
+    hooks: Option<&HookStage>,
 ) -> Result<Served, String> {
     let mut served = Served::default();
     if doors.is_empty() {
@@ -831,6 +864,17 @@ pub fn compose_planes(
         )
         .map_err(|e| format!("{instance}: {e}"))?
         .with_records(Arc::clone(&kernel), caller);
+        // THE HOOK STAGE IN THE PLANE'S OWN ORDER (spec Part 3 section 12 "Hooks"): a plane whose
+        // tail states the gate-first order has its entries' gates and rewrites bound, filed under
+        // its registry key.
+        let driver = match hooks {
+            Some(stage)
+                if served_facts.tail_flags & busbar_contract::abi::plane::TAIL_HOOKS_GATED != 0 =>
+            {
+                driver.with_hooks(stage.gated(plugin.name()))
+            }
+            _ => driver,
+        };
         let routes = snapshot
             .admin_routes
             .iter()
@@ -1221,6 +1265,53 @@ pub fn data_routes(
     }
 }
 
+/// [`data_routes`], and the door planes' session routes beside them (ARCHITECT Q-L5B-SESSION-SERVE;
+/// TRANSITIONAL: deleted when INBOUND-LISTEN's accepted::Caller serves): what the data router is
+/// built with.
+///
+/// # Errors
+///
+/// As [`data_routes`].
+pub fn data_mounts(
+    served: Served,
+    data_chain: &[String],
+    core: &[(
+        String,
+        busbar_contract::abi::mechanism::route::RouteMethod,
+        busbar_contract::abi::mechanism::route::RouteAuth,
+    )],
+    upgrades: &[&str],
+) -> Result<
+    (
+        Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
+        Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+    ),
+    String,
+> {
+    if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    #[cfg(linked_axis_node)]
+    {
+        door_mounts(
+            served,
+            || crate::root::kernel::ROOT_CARD.pin(),
+            data_chain,
+            core,
+            upgrades,
+        )
+        .map(|m| (m.routes, m.sessions))
+    }
+    #[cfg(not(linked_axis_node))]
+    {
+        let _ = (data_chain, core, upgrades);
+        Err(
+            "a door plane's units are driven on the process's node, and this build links none"
+                .to_string(),
+        )
+    }
+}
+
 /// ONE DATA REQUEST on a door plane's claim, as its route handed it over: the credentials the auth
 /// gate consumed already struck, its verdict on the caller, and the generation serving it (its cost
 /// model, governance book and groups).
@@ -1260,6 +1351,24 @@ fn line_auth(flags: u32, data_chain: &[String]) -> busbar_kernel::guest::LineAut
 #[cfg(linked_axis_node)]
 const CORE_CLAIMANT: &str = "core";
 
+/// The data listener's own framer: a claim over a carrier that composes over it is an upgrade line.
+const DATA_CARRIER: &str = "http";
+
+/// THE UPGRADE CARRIERS: the linked wires that compose over the data listener's own framer, whose
+/// claims are upgrade lines (their connection handed over after the head) and served as sessions.
+#[must_use]
+pub fn upgrade_carriers(transports: &[crate::root::linked::LinkedTransport]) -> Vec<&'static str> {
+    transports
+        .iter()
+        .filter(|t| t.composes_over.contains(&DATA_CARRIER))
+        .map(|t| t.key)
+        .collect()
+}
+
+/// How many messages a session route's pipe queues each way before the sender waits.
+#[cfg(linked_axis_node)]
+const SESSION_QUEUE: usize = 64;
+
 /// The name of a subtree claim's tail capture.
 #[cfg(linked_axis_node)]
 const SUBTREE: &str = "rest";
@@ -1282,6 +1391,7 @@ fn claim_line(
     rung: u32,
     claim: &crate::root::loader::dispatch::kinds::plane::OwnedClaim,
     data_chain: &[String],
+    upgrades: &[&str],
 ) -> Result<(busbar_kernel::guest::Line, RouteMethod), String> {
     use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
     let method = METHODS
@@ -1313,7 +1423,12 @@ fn claim_line(
         claimant: busbar_kernel::guest::Claimant::Plane(instance.to_string()),
         dialect: u32::from(claim.refusal_dialect),
         auth: line_auth(claim.flags, data_chain),
-        upgrade: None,
+        // A claim over a carrier that composes over the data listener's own framer is an UPGRADE
+        // line: the connection is handed to that carrier after the head, served as a duplex
+        // session.
+        upgrade: upgrades
+            .contains(&claim.carrier.as_str())
+            .then(|| claim.carrier.clone()),
     };
     Ok((line, method))
 }
@@ -1341,19 +1456,64 @@ pub fn door_routes(
     data_chain: &[String],
     core: &[(String, RouteMethod, RouteAuth)],
 ) -> Result<Vec<PlaneRouteSpec>, String> {
+    door_mounts(served, pin, data_chain, core, &[]).map(|m| m.routes)
+}
+
+/// WHAT THE DATA ROUTER MOUNTS FOR THE DOOR PLANES at its construction: their request routes, and
+/// their duplex SESSION routes (an upgrade line's claim; ARCHITECT Q-L5B-SESSION-SERVE, TRANSITIONAL:
+/// deleted when INBOUND-LISTEN's accepted::Caller serves).
+#[cfg(linked_axis_node)]
+pub struct DoorMounts {
+    /// The request routes.
+    pub routes: Vec<PlaneRouteSpec>,
+    /// The session routes.
+    pub sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+}
+
+#[cfg(linked_axis_node)]
+impl std::fmt::Debug for DoorMounts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DoorMounts")
+            .field("routes", &self.routes.len())
+            .field("sessions", &self.sessions.len())
+            .finish()
+    }
+}
+
+/// [`door_routes`], and the door planes' session routes beside them ([`DoorMounts`]): a claim on an
+/// upgrade line is mounted as a GET session route, every other claim as the request route it was.
+///
+/// # Errors
+///
+/// As [`door_routes`].
+#[cfg(linked_axis_node)]
+pub fn door_mounts(
+    served: Served,
+    pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
+    data_chain: &[String],
+    core: &[(String, RouteMethod, RouteAuth)],
+    upgrades: &[&str],
+) -> Result<DoorMounts, String> {
     use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
     use busbar_kernel::guest::{Claimant, GuestList, GuestRefusal, LineAuth, Matched};
     use std::collections::HashMap;
     if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
-        return Ok(Vec::new());
+        return Ok(DoorMounts {
+            routes: Vec::new(),
+            sessions: Vec::new(),
+        });
     }
+    let mut upgraded: std::collections::HashSet<DoorClaim> = std::collections::HashSet::new();
     let mut lines = Vec::new();
     let mut doors: Vec<(busbar_kernel::guest::Line, RouteMethod, DoorClaim)> = Vec::new();
     for (p, plane) in served.planes.iter().enumerate() {
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
             let rung =
                 u32::try_from(i).map_err(|_| format!("{}: too many claims", plane.instance))?;
-            let (line, method) = claim_line(&plane.instance, rung, claim, data_chain)?;
+            let (line, method) = claim_line(&plane.instance, rung, claim, data_chain, upgrades)?;
+            if line.upgrade.is_some() {
+                upgraded.insert((p, rung));
+            }
             lines.push(line.clone());
             doors.push((line, method, (p, rung)));
         }
@@ -1466,7 +1626,40 @@ pub fn door_routes(
             runtime,
         }));
     }
-    Ok(mounts
+    let mut sessions = Vec::new();
+    let mut requests = Vec::new();
+    for mount in mounts {
+        let (path, method, auth, door) = mount;
+        if !upgraded.contains(&door) {
+            requests.push((path, method, auth, door));
+            continue;
+        }
+        // An upgrade is an HTTP GET: the session route answers that verb alone.
+        if method != RouteMethod::Get {
+            continue;
+        }
+        let routes = Arc::clone(&routes);
+        let (plane, claim) = door;
+        sessions.push(busbar_kernel::plane_routes::PlaneSessionSpec {
+            path,
+            auth,
+            handler: Arc::new(
+                move |ctx: PlaneReqCtx| -> busbar_kernel::plane_routes::PlaneSessionFuture {
+                    let routes = Arc::clone(&routes);
+                    Box::pin(async move {
+                        match DoorRequest::of(ctx) {
+                            Some(req) => routes.open_session(plane, claim, req).await,
+                            None => busbar_kernel::plane_routes::SessionAnswer::Refused(stated(
+                                (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+                                Body::empty(),
+                            )),
+                        }
+                    })
+                },
+            ),
+        });
+    }
+    let routes_of = requests
         .into_iter()
         .map(|(path, method, auth, (plane, claim))| {
             // THE PROTECTED-RESOURCE DOCUMENT (ARCHITECT Q-L3B-RFC9728): rendered by the kernel's
@@ -1509,7 +1702,11 @@ pub fn door_routes(
                 }),
             }
         })
-        .collect())
+        .collect();
+    Ok(DoorMounts {
+        routes: routes_of,
+        sessions,
+    })
 }
 
 /// A door plane's RFC 9728 facts: its audience and the authorization servers and scopes it states.
@@ -1591,6 +1788,160 @@ impl DoorRequest {
 
 #[cfg(linked_axis_node)]
 impl DataRoutes {
+    /// ONE DUPLEX SESSION ARRIVAL (K6; ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03, TRANSITIONAL with
+    /// the session routes): the caller's head delivered once at `arrive`, as a request's is; the
+    /// session's unit opened on the node (its steps to the door, one admission) on its own task,
+    /// which holds the unit for the session's whole life. A refusal answers before any upgrade, in
+    /// the plane's rendering; an admission hands the core the pipe its upgraded socket is bridged
+    /// onto, whose other ends are the session's [`PipeCaller`].
+    async fn open_session(
+        self: Arc<Self>,
+        plane: usize,
+        claim: u32,
+        req: DoorRequest,
+    ) -> busbar_kernel::plane_routes::SessionAnswer {
+        use busbar_kernel::plane_routes::{SessionAnswer, SessionPipe};
+        let DoorRequest {
+            method,
+            uri,
+            headers,
+            body,
+            gov,
+            credential,
+            app,
+        } = req;
+        let fields: HeadFields = headers
+            .iter()
+            .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
+            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
+            .collect();
+        let target = uri.path_and_query().map_or(uri.path(), |t| t.as_str());
+        let arrival = Arrival {
+            claim,
+            method: method.as_str().as_bytes().to_vec(),
+            target: target.as_bytes().to_vec(),
+            fields,
+            body: Arc::from(&body[..]),
+        };
+        let principal = match gov.key() {
+            Some(key) => PrincipalId::new(key.id.as_str()),
+            None => PrincipalId::new(AuthPrincipal(None).actor_id()),
+        };
+        let open = self.served.planes[plane]
+            .snapshot
+            .claims
+            .get(claim as usize)
+            .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
+        let key = gov.key.clone();
+        let (from_caller, from_rx) = mpsc::channel(SESSION_QUEUE);
+        let (to_tx, to_caller) = mpsc::channel(SESSION_QUEUE);
+        let caller = PipeCaller {
+            from: tokio::sync::Mutex::new(from_rx),
+            to: to_tx,
+        };
+        let (verdict, said) = oneshot::channel();
+        let door = SessionDoor {
+            plane,
+            app,
+            principal,
+            key,
+            open,
+            credential,
+        };
+        tokio::spawn(self.session(door, caller, arrival, verdict));
+        match said.await {
+            Ok(Ok(())) => SessionAnswer::Accepted(SessionPipe {
+                from_caller,
+                to_caller,
+            }),
+            Ok(Err(Some(rendered))) => SessionAnswer::Refused(stated(
+                (rendered.status, rendered.fields),
+                Body::from(rendered.body),
+            )),
+            Ok(Err(None)) | Err(_) => SessionAnswer::Refused(stated(
+                (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+                Body::empty(),
+            )),
+        }
+    }
+
+    /// THE SESSION, on its own task: its unit's kernel steps over the plane's tail, pools and money,
+    /// its far end the plane's egress (the turn legs' one dial, held), opened on the node through the
+    /// session opener; `verdict` told what the door said before the session runs; the session pumped
+    /// through the plane driver's two tickets until either side ends; its slot given back, and its
+    /// money settled (the session's one line was written at its end; the fee by the plane's report).
+    async fn session(
+        self: Arc<Self>,
+        door: SessionDoor,
+        caller: PipeCaller,
+        arrival: Arrival,
+        verdict: oneshot::Sender<Result<(), Option<Rendered>>>,
+    ) {
+        use busbar_kernel::teller::SessionOpen;
+        let served = &self.served.planes[door.plane];
+        let live = served.live.current();
+        let node = self.post.node();
+        let unit = node.mint();
+        let arrived = node.arrived();
+        let steps = DoorSteps::new(
+            &served.facts,
+            &live.pools,
+            node.resolver(),
+            door.app,
+            Some(&*served.money),
+            DoorCaller {
+                principal: door.principal.clone(),
+                key: door.key,
+                open: door.open,
+                arrived: arrived.secs(),
+                records: Some(Arc::clone(served.kernel.units())),
+                depth: 0,
+                credential: door.credential.clone(),
+            },
+        );
+        let far = DoorFar {
+            egress: live.egress.as_deref(),
+            steps: &steps,
+            unit,
+            credential: door.credential,
+            far: OnceLock::new(),
+        };
+        let units = served.driver.unit(&steps, &far, &caller, arrival, 0);
+        let Some((opened, ctx, slot)) = node.open_borrowed(
+            unit,
+            arrived,
+            &door.principal,
+            &self.post,
+            &units,
+            (self.pin)(),
+        ) else {
+            let _ = verdict.send(Err(None));
+            return;
+        };
+        let status = match opened {
+            // The open's hook stage (K5, ARCHITECT Q-L5B-PROJECT) runs before the caller is
+            // answered: a hook that stops it is answered in the plane's rendering, never upgraded.
+            SessionOpen::Admitted {
+                route,
+                destinations,
+            } if units.open_hooks(&route, &ctx).await.is_ok() => {
+                let _ = verdict.send(Ok(()));
+                let _ended = units.session(&route, &ctx, &destinations).await;
+                SWITCHED
+            }
+            _ => {
+                let rendered = units.take_rendered();
+                let status = rendered
+                    .as_ref()
+                    .map_or_else(|| refusal_status(ReasonCode::PlanePanic), |r| r.status);
+                let _ = verdict.send(Err(rendered));
+                status
+            }
+        };
+        slot.finish(&self.post);
+        served.money.settle_end(unit, status);
+    }
+
     /// ONE CLAIMED ARRIVAL, SERVED: the caller's head (the credentials the auth gate consumed and
     /// the fields never kept struck), delivered once at `arrive`; the caller the auth gate
     /// resolved; the unit driven inside the response, so a caller that goes away drops it.
@@ -1922,6 +2273,73 @@ impl FarEnd for DoorFar<'_, '_> {
             Some(far) => far.next(token).await,
             None => None,
         }
+    }
+
+    async fn write(&self, token: &Pass<Route>, request: OutboundRequest) -> bool {
+        match self.far() {
+            Some(far) => far.write(token, request).await,
+            None => false,
+        }
+    }
+}
+
+// ── a session's caller side over today's upgrade (TRANSITIONAL) ──────────────────────────────────
+
+/// The status a session's caller was answered with: the upgrade (`101 Switching Protocols`).
+#[cfg(linked_axis_node)]
+const SWITCHED: u32 = 101;
+
+/// What a session arrival was admitted as: its plane, the generation serving it, and its caller.
+#[cfg(linked_axis_node)]
+struct SessionDoor {
+    plane: usize,
+    app: Arc<busbar_kernel::state::App>,
+    principal: PrincipalId,
+    key: Option<Arc<busbar_contract::records::VirtualKey>>,
+    open: bool,
+    /// The caller's verified credential, lent to a passthrough member alone.
+    credential: Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
+}
+
+/// THE CALLER'S SIDE OF A DUPLEX SESSION over today's hyper upgrade (K6's one `SessionCaller`;
+/// ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03, the `IngressCaller` pattern; TRANSITIONAL: deleted when
+/// INBOUND-LISTEN's `accepted::Caller` serves, 1.6.0-TODO "TRANSITIONAL ROWS"). Its pieces are the
+/// caller's messages as the core's bridge hands them over; every frame the plane writes toward the
+/// caller is one message, text when the plane said so. The caller's close ends its reads; a write after
+/// the socket went answers `false`.
+#[cfg(linked_axis_node)]
+struct PipeCaller {
+    from: tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>,
+    to: mpsc::Sender<busbar_kernel::plane_routes::SessionOut>,
+}
+
+#[cfg(linked_axis_node)]
+impl CallerEnd for PipeCaller {
+    /// The upgrade was the session's head: nothing more is stated.
+    fn head(&self, _status: u32, _fields: HeadFields) {}
+
+    async fn write(&self, bytes: &[u8]) -> bool {
+        let out = busbar_kernel::plane_routes::SessionOut {
+            bytes: bytes.to_vec(),
+            text: false,
+        };
+        self.to.send(out).await.is_ok()
+    }
+
+    async fn write_text(&self, bytes: &[u8]) -> bool {
+        let out = busbar_kernel::plane_routes::SessionOut {
+            bytes: bytes.to_vec(),
+            text: true,
+        };
+        self.to.send(out).await.is_ok()
+    }
+}
+
+#[cfg(linked_axis_node)]
+impl busbar_kernel::plane_driver::SessionCaller for PipeCaller {
+    /// Cancel-safe: a receive dropped before it resolved loses no message.
+    async fn read(&self) -> Option<Vec<u8>> {
+        self.from.lock().await.recv().await
     }
 }
 
