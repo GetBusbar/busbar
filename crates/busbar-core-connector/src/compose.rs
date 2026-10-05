@@ -409,7 +409,14 @@ impl Planned {
         };
         let sock = Sock::Tcp(socket::connect(addr).map_err(failed)?);
         let offered_name = tls.as_ref().and(located.name.clone());
-        Connection::open_dialled(door, sock, dial, (tls, presented), offered_name, &located.offer)
+        Connection::open_dialled(
+            door,
+            sock,
+            dial,
+            (tls, presented),
+            offered_name,
+            &located.offer,
+        )
     }
 }
 
