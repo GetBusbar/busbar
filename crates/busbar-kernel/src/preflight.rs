@@ -42,13 +42,12 @@ pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
 }
 
 type StoreOpen = fn(&str) -> Result<Box<dyn governance::RecordStore>, String>;
-/// A linked STORE's entry: `(name, ephemeral, default, open, door)` — the name `governance.store`
-/// selects it by, whether what it holds is lost on restart, whether it claims to be the store a
-/// deployment that configures none runs on, its in-process open, and its store v3 door (the door
-/// boot opens it through, on the root's [`RootInstall::store_axis`]).
+/// A linked STORE's entry: `(name, ephemeral, open, door)` — the name `store.module` selects it by,
+/// whether what it holds is lost on restart, its in-process open, and its store v3 door (the door
+/// boot opens it through, on the root's [`RootInstall::store_axis`]). No row is a default: the store
+/// is the one config names (Q-STORE = (B)).
 pub type LinkedStore = (
     &'static str,
-    bool,
     bool,
     StoreOpen,
     busbar_contract::abi::mechanism::door::DoorFn,
@@ -107,19 +106,16 @@ pub type PluginsFetch = fn(
     &dyn Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<Fetched>, Vec<String>>;
 
-/// WHAT THE COMPOSITION ROOT INSTALLS into the kernel, by name: its linked entries, the default
-/// store it resolved and its registry build — and, as each kind's axis lands, that kind's
+/// WHAT THE COMPOSITION ROOT INSTALLS into the kernel, by name: its linked entries and its registry
+/// build — and, as each kind's axis lands, that kind's
 /// `<kind>_axis` field (ARCHITECT ruling Q8: the kernel receives contract `<Kind>Axis` seams from
 /// the root, never the loader). A field is added by name; nothing is positional. Nothing
-/// installed ([`Default`]): no linked rows, no default store, and a build and a fetch that refuse,
-/// naming the missing root.
+/// installed ([`Default`]): no linked rows, and a build and a fetch that refuse, naming the missing
+/// root.
 #[derive(Clone, Copy, Default)]
 pub struct RootInstall {
     /// The build's linked in-process stores.
     pub stores: &'static [LinkedStore],
-    /// The governance store a deployment that configures none runs on: the linked store row that
-    /// declares itself the default (empty when no row claims it).
-    pub default_store_module: &'static str,
     /// The root's registry build.
     pub registry_build: Option<RegistryBuild>,
     /// The root's `plugins.fetch`.
@@ -150,12 +146,10 @@ pub type HookAxisBuild =
     ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String>;
 
 /// A test build has no root: its store and ranking fixtures stand in for the root's entries, the
-/// stand-in store (which claims the default) as the default, the shipped secret sources as the
-/// secret axis, and the test axis for the exports.
+/// shipped secret sources as the secret axis, and the test axis for the exports.
 #[cfg(any(test, feature = "test-support"))]
 const STAND_IN: RootInstall = RootInstall {
     stores: &[fixture_store::linked::STORE],
-    default_store_module: fixture_store::linked::STORE.0,
     registry_build: Some(crate::test_support::registry_stand_in),
     plugins_fetch: Some(crate::test_support::fetch_stand_in),
     hook_axis: Some(crate::test_support::hook_axis_stand_in),
@@ -173,21 +167,19 @@ pub(crate) const STAND_IN_HOOK_DOORS: &[busbar_contract::abi::mechanism::door::D
 ];
 
 /// The composition root's linked store and hook entries (the build's in-process stores and, when
-/// compiled in, its ranking hooks), its resolved default store and its registry build, installed
-/// once before the first resolution.
+/// compiled in, its ranking hooks) and its registry build, installed once before the first
+/// resolution.
 static ROOT_ROWS: std::sync::OnceLock<RootInstall> = std::sync::OnceLock::new();
 
-/// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries, the
-/// default store the root resolved from the stores' claims and the root's registry build (the first
-/// install stands). The kernel names none of the plugins it registers, and no default store (#2
-/// rule (1), #40).
+/// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries and the
+/// root's registry build (the first install stands). The kernel names none of the plugins it
+/// registers, and no store is a default (#2 rule (1), #40; Q-STORE = (B)).
 pub fn install_linked_rows(rows: RootInstall) {
     let _ = ROOT_ROWS.set(rows);
 }
 
-/// The installed root rows (a test build stands its fixtures in). `.2` is the governance store a
-/// deployment that configures none runs on: the linked row that declares itself the default. Admin's
-/// store catalog lists `.0`, the stores this build links.
+/// The installed root rows (a test build stands its fixtures in). Admin's store catalog lists
+/// `stores`, the stores this build links.
 pub fn root_rows() -> RootInstall {
     #[cfg(any(test, feature = "test-support"))]
     let _ = ROOT_ROWS.set(STAND_IN);
@@ -237,7 +229,9 @@ pub(crate) fn linked_auth_axis() -> Option<Arc<dyn busbar_contract::auth_calls::
 /// takes (DECISIONS #2 rule (1)).
 fn linked_rows() -> Vec<LinkedPlugin> {
     let RootInstall { stores, .. } = root_rows();
-    let store = |s: &LinkedStore| LinkedPlugin::store(s.0, s.3, s.1).with_store_door(s.4);
+    let store = |&(name, ephemeral, open, door): &LinkedStore| {
+        LinkedPlugin::store(name, open, ephemeral).with_store_door(door)
+    };
     let rows = stores.iter().map(store);
     let auths = busbar_kernel_identity::operator::linked().iter();
     rows.chain(auths.map(|&(name, door)| LinkedPlugin::auth_door(name, door)))
@@ -383,10 +377,12 @@ pub fn plugins_preflight(
         l.rotate_mb,
         l.keep,
     )?;
-    let store_ref = store_cfg.map_or_else(config::default_governance_store, |g| g.module.clone());
+    // The store config names; an absent block names none and resolves nothing here (Q-STORE = (B):
+    // `config_validate::validate` refuses it, on every path that reaches this pre-flight).
+    let store_ref = store_cfg.map(|g| g.module.clone()).unwrap_or_default();
     // Resolved on the store AXIS: a row this build links opens in-process; any other name is a
     // `kind: store` plugin the plugins directory must supply.
-    let store_is_plugin = linked()?.resolve(&store_ref).is_none();
+    let store_is_plugin = store_cfg.is_some() && linked()?.resolve(&store_ref).is_none();
 
     // Every non-builtin `auth.chain` module is a `kind: auth` plugin — the same manifest-only
     // pre-flight the store ref gets, so `--validate` catches a missing/wrong-kind/untrusted auth

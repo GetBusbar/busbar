@@ -1754,16 +1754,20 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         }
     }
 
-    // store: the module name must be non-empty; a non-memory module additionally requires the
-    // plugin subsystem (checked with the registry in `plugins_preflight`, the shared boot path).
-    if let Some(store) = &cfg.store {
-        if store.module.trim().is_empty() {
+    // store: REQUIRED (Q-STORE = (B)): exactly one store resolves, from config, and no linked row
+    // stands in for an absent block. The module name must be non-empty; a module no linked row
+    // answers to additionally requires the plugin subsystem (checked with the registry in
+    // `plugins_preflight`, the shared boot path).
+    match &cfg.store {
+        None => errors.push(crate::config::store_required()),
+        Some(store) if store.module.trim().is_empty() => {
             errors.push(format!(
                 "store.module must be non-empty; use `memory` (the compiled-in RAM store) or a \
                  store plugin name/alias ({} | <third-party>)",
                 crate::config::migrate::legacy_store_text("module_examples")
             ));
         }
+        Some(_) => {}
     }
 
     // SECRET REFERENCES: every secret's MODULE must be resolvable BY NAME. The built-ins are
@@ -2091,6 +2095,7 @@ pub fn metadata_denylist_entries() -> Vec<String> {
     .collect()
 }
 
+pub mod deal;
 /// Enumerating every secret reference in the resolved config, and the two-layer guard that makes
 /// forgetting one impossible rather than merely discouraged. Its own module because the guard is a
 /// cohesive unit (the walk, the exhaustive destructures, and the type inventory the coverage test
@@ -2568,3 +2573,7 @@ fn validate_provider_protocol_with(
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/store_required_tests.rs"]
+mod store_required_tests;
