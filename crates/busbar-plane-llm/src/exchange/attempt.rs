@@ -608,6 +608,13 @@ fn legal_field_value(v: &[u8]) -> bool {
     v.iter().all(|b| *b == b'\t' || (0x20..0x7f).contains(b))
 }
 
+/// The `accept` field: busbar's own, the answer framing it reads the far end's reply in (the
+/// operation's single answer or its dialect's stream framing), written on every far request exactly
+/// as 1.5.5 wrote it (its reqwest client sent its own `accept` and never fell back to a transport
+/// default), and never replaced by a same-dialect caller's value (1.5.5's bytes: the oracle's
+/// same-dialect cells carry busbar's `application/json`, not the caller's `*/*`).
+const ACCEPT: &str = "accept";
+
 /// The head fields a native client of `lane`'s dialect sends,
 /// then, when the caller speaks that dialect, every field the caller sent but the ones busbar
 /// governs ([`governed`]):
@@ -648,7 +655,7 @@ fn head_fields(
         d.egress_stream_accept
     });
     let accept = (
-        "accept".to_string(),
+        ACCEPT.to_string(),
         handler
             .egress_accept(stream_accept, wants_stream)
             .as_bytes()
@@ -683,7 +690,7 @@ fn head_fields(
         .iter()
         .filter_map(|(name, value)| {
             let name = std::str::from_utf8(name).ok()?.to_ascii_lowercase();
-            (!governed(&name)).then(|| (name, value.to_vec()))
+            (!governed(&name) && name != ACCEPT).then(|| (name, value.to_vec()))
         })
         .collect();
     fields = forward_over(fields, forwarded);

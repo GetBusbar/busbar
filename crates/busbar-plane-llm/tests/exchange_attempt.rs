@@ -541,3 +541,21 @@ fn a_same_dialect_callers_fields_keep_busbars_positions() {
     );
     assert_eq!(field(&r, "x-trace"), [b"a".as_slice(), b"b".as_slice()]);
 }
+
+/// THE `accept` FIELD IS BUSBAR'S OWN (1.5.5's bytes: the oracle's same-dialect cells, e.g.
+/// `llm|openai|openai|request|ok`, carry `accept: application/json` though the caller sent `*/*`):
+/// every far request carries the answer framing busbar reads the reply in, a same-dialect caller's
+/// `accept` never replaces it, and the transport is left no default to fill.
+#[test]
+fn a_same_dialect_callers_accept_never_replaces_busbars_own() {
+    let h = head(&[("accept", "*/*"), ("x-trace", "a")]);
+    let body = r#"{"model":"gpt","messages":[{"role":"user","content":"hi"}]}"#;
+    let a = arrived("/v1/chat/completions", &h, body);
+    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    assert_eq!(field(&r, "accept"), [b"application/json".as_slice()]);
+    assert_eq!(field(&r, "x-trace"), [b"a".as_slice()]);
+    let streamed = r#"{"model":"gpt","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
+    let a = arrived("/v1/chat/completions", &h, streamed);
+    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    assert_eq!(field(&r, "accept"), [b"text/event-stream".as_slice()]);
+}
