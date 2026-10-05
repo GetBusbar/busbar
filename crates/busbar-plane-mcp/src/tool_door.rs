@@ -62,7 +62,9 @@ use crate::ask::AskDecision;
 use crate::call::{Admission, AdmittedCall, Settled};
 use crate::catalogue::Catalogue;
 use crate::door;
-use crate::framing::{Framing, CACHE_CONTROL, CONTENT_TYPE, EVENT_STREAM, JSON, NO_STORE};
+use crate::framing::{
+    Framing, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, EVENT_STREAM, JSON, NO_STORE,
+};
 use crate::tool_arrival::Disposition;
 use crate::tools_config::ToolsCfg;
 
@@ -530,7 +532,12 @@ impl Pending {
         } else if bytes.is_empty() {
             Vec::new()
         } else {
-            vec![(CONTENT_TYPE.to_string(), JSON.to_string())]
+            // A WHOLE answer states its length, as the served engine's JSON answers did (an event
+            // stream is relayed piece by piece and states none).
+            vec![
+                (CONTENT_TYPE.to_string(), JSON.to_string()),
+                (CONTENT_LENGTH.to_string(), bytes.len().to_string()),
+            ]
         };
         // THE FEE UNIT: earned by an answer the caller is served with a success (1.5.5 refunded the
         // per-request fee of an end whose caller status was not a success).
@@ -2124,6 +2131,9 @@ struct Sighted(crate::trust::Sighting);
 /// issues on the request's ticket.
 const SIGHT_SEQ: u32 = 1 << 30;
 
+/// The completion handle a `connect`'s clock reading is issued on: past `trust.sight`'s.
+const CONNECT_CLOCK_SEQ: u32 = SIGHT_SEQ + 1;
+
 /// The first handle verify-on-call's fetch numbers its connector services from on a unit's ticket:
 /// clear of the unit's own handles (counted from `0`) and of the further rounds'.
 const VERIFY_SEQ: u32 = 1 << 29;
@@ -2480,6 +2490,19 @@ slot!(
             }
         }
         plane.sightings.insert(name.clone(), sighting.clone());
+        // THE FRESHNESS CLOCK records that the operator's connect LOOKED, whatever it saw (the
+        // served engine's settle stamped `last_checked_ms` on every observation): a call within
+        // `verify_ttl` of it reuses this sighting rather than fetching the list again.
+        if let Some(services) = plane.services {
+            let handle = CompletionHandle {
+                ticket: instance.ticket(),
+                seq: CONNECT_CLOCK_SEQ,
+                _reserved: 0,
+            };
+            if let Ok(now) = services.clock_now(handle) {
+                plane.checked.insert(name.clone(), now.wall_ns / 1_000_000);
+            }
+        }
         let view = crate::trust::trust_view(name, &def, &sighting);
         served(&input, &mut out, 200, view.as_bytes(), JSON, AUDIT_APPLIED)
     }

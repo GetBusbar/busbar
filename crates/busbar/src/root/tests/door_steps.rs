@@ -2838,6 +2838,31 @@ mod door_boundary {
             "the server was asked for its tool list"
         );
 
+        // ── A CALL WITHIN `verify_ttl` OF THE CONNECT reuses its look (the served engine's settle
+        // stamped the freshness clock on every observation): the server hears the call alone. ──
+        // The caller's token bound to the door's resource (its audience-bound mount admits no other).
+        let audience = (row.admission)(&*slot).expect("an audience").audience;
+        let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
+        let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
+            .verify(&rig.token, 1_700_000_000, None)
+            .expect("plain claims")
+            .generation;
+        let bound = signer.mint_for_audience(
+            &rig.key.id,
+            4_000_000_000,
+            generation.as_deref(),
+            &audience,
+            Some("client-1"),
+        );
+        let (status, body) =
+            super::tool_door::send(&rig.router, Some(&bound), super::tool_door::CALL).await;
+        assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&body));
+        let heard_now: Vec<String> = std::iter::from_fn(|| heard.try_recv().ok()).collect();
+        assert!(
+            heard_now.len() == 1 && heard_now[0].contains("\"tools/call\""),
+            "the connect's look is fresh, so the call fetches no list: {heard_now:?}"
+        );
+
         // ── HEALTH ────────────────────────────────────────────────────────────────────────────────
         let (status, body) = admin(&rig, "GET", "/tools/fs/health").await;
         assert_eq!(status, 200, "{body}");
@@ -2871,20 +2896,7 @@ mod door_boundary {
         // ── HEALTH stops serving, and the call is refused as a quarantine ─────────────────────────
         let (_, body) = admin(&rig, "GET", "/tools/fs/health").await;
         assert_eq!(body["serving"], false, "{body}");
-        // The caller's token bound to the door's resource (its audience-bound mount admits no other).
-        let audience = (row.admission)(&*slot).expect("an audience").audience;
-        let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
-        let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
-            .verify(&rig.token, 1_700_000_000, None)
-            .expect("plain claims")
-            .generation;
-        let bound = signer.mint_for_audience(
-            &rig.key.id,
-            4_000_000_000,
-            generation.as_deref(),
-            &audience,
-            Some("client-1"),
-        );
+        // The caller's token bound to the door's resource, as above.
         let (status, body) =
             super::tool_door::send(&rig.router, Some(&bound), super::tool_door::CALL).await;
         assert_eq!(status.as_u16(), 403, "{}", String::from_utf8_lossy(&body));

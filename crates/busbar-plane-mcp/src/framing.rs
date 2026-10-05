@@ -40,6 +40,9 @@ const SEVERITIES: &[&str] = &[
 /// The head field that names an answer's media type.
 pub const CONTENT_TYPE: &str = "content-type";
 
+/// The head field a whole answer states its length in.
+pub const CONTENT_LENGTH: &str = "content-length";
+
 /// The head field that carries an event-stream answer's cache directive.
 pub const CACHE_CONTROL: &str = "cache-control";
 

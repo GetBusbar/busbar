@@ -1628,6 +1628,11 @@ mod both_ways {
         ("content-type".to_string(), "application/json".to_string())
     }
 
+    /// A whole answer's stated length (the served engine's JSON answers stated theirs).
+    fn length_of(reply: &[u8]) -> (String, String) {
+        ("content-length".to_string(), reply.len().to_string())
+    }
+
     fn step<'a>(t: &'a [Step], what: &str) -> &'a Step {
         t.iter()
             .find(|s| s.what == what)
@@ -1769,7 +1774,11 @@ mod both_ways {
         let want = catalogue.tools_list(&json!(9), &|_: &str, _: &str| false, |_| false);
         assert_eq!(answer.reply, want, "the catalogue's own bytes");
         assert_eq!(document(&answer.reply)["id"], json!(9));
-        assert_eq!(answer.fields, vec![json_type()], "a JSON document says so");
+        assert_eq!(
+            answer.fields,
+            vec![json_type(), length_of(&answer.reply)],
+            "a JSON document says so, and states its length"
+        );
 
         // A notification: acknowledged, no body.
         let a = step(&t, "arrive notice");
@@ -2343,7 +2352,7 @@ mod both_ways {
             document(&ok.reply)["result"]["resultType"],
             json!("complete")
         );
-        assert_eq!(ok.fields, vec![json_type()]);
+        assert_eq!(ok.fields, vec![json_type(), length_of(&ok.reply)]);
         assert!(ok.detail.contains("done=true far=false"), "{}", ok.detail);
         // THE METER: a call the server answered is counted, once, as one tool call (tail class 0),
         // and the success earns its fee unit (tail class 2, `per_request`).
