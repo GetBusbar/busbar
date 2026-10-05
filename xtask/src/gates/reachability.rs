@@ -282,10 +282,12 @@ const ROSTER: &[Plane] = &[
         key: "a2a",
         on_disk: "a2a",
         module: "units_a2a",
-        linked_crate: "busbar-a2a",
-        register_tokens: &["A2aPlane"],
-        note: "served by `busbar_a2a::LINKED` on the kernel loop through the #28 rider; \
-               `root/units_a2a.rs` is the superseded sibling the 2026-09-22 money findings were in",
+        linked_crate: "busbar-plane-a2a",
+        register_tokens: &["busbar_plane_a2a"],
+        note: "a DOOR plane since FLIP-A2A deleted the `busbar-a2a` engine: served through its \
+               `plane-door` row (busbar-plane-a2a's `plane_door`), the one composition's driver \
+               and the data route driving it, as `decision` is. `root/units_a2a.rs` was the \
+               superseded sibling the 2026-09-22 money findings were in",
     },
     Plane {
         key: "streaming",
@@ -2681,7 +2683,7 @@ impl Gate for ReachabilityGate {
                 ov.set(INSTALL_RS, FIXTURE_GREEN_INSTALL.replace(A2A_FLIP_LINE, ""));
                 ov
             },
-            "no non-test line routes a `busbar_a2a::…` key",
+            "no non-test line routes a `busbar_plane_a2a::…` key",
         ));
         // A PLANE WITH NEITHER A RIDER NOR A UNITS EXPORT — the real tree's decisions plane: a linked
         // entry that is declaration only.
@@ -3061,11 +3063,11 @@ impl Gate for ReachabilityGate {
                 let mut ov = claims_name_no_plane();
                 ov.set(
                     CRATE_MANIFEST,
-                    FIXTURE_LINKED_MANIFEST.replace("plane-a2a = \"busbar-a2a\"\n", ""),
+                    FIXTURE_LINKED_MANIFEST.replace("plane-a2a = \"busbar-plane-a2a\"\n", ""),
                 );
                 ov
             },
-            "no linked-table row for `busbar-a2a` on the `plane` axis",
+            "no linked-table row for `busbar-plane-a2a` on the `plane` axis",
         ));
         report.push(red_over(
             self,
@@ -3169,7 +3171,7 @@ const FIXTURE_GREEN_KERNEL: &str =
     include_str!("../../fixtures/reachability-green/crates/busbar/src/root/gauntlet_kernel.rs");
 const FIXTURE_GREEN_DECISION: &str =
     include_str!("../../fixtures/reachability-green/crates/busbar/src/root/plane_decisions.rs");
-const A2A_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_a2a::PLANE_KEY);\n";
+const A2A_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_plane_a2a::PLANE_KEY);\n";
 const MCP_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_mcp::PLANE_KEY);\n";
 const VOICE_FLIP_LINE: &str = "    flip_session_to_kernel(busbar_voice::PLANE_KEY);\n";
 const INSTALL_CALL_LINE: &str = "    root::gauntlet_install::install();\n";

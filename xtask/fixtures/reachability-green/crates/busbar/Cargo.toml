@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 busbar-llm = { path = "../busbar-llm", optional = true }
 busbar-mcp = { path = "../busbar-mcp", optional = true }
-busbar-a2a = { path = "../busbar-a2a", optional = true }
+busbar-plane-a2a = { path = "../busbar-plane-a2a", optional = true }
 busbar-voice = { path = "../busbar-voice", optional = true }
 busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
 
@@ -18,7 +18,7 @@ busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
 [package.metadata.busbar.linked]
 proto-llm = "busbar-llm"
 plane-mcp = "busbar-mcp"
-plane-a2a = "busbar-a2a"
+plane-a2a = "busbar-plane-a2a"
 plane-streaming = "busbar-voice"
 plane-decisions = "busbar-plane-decisions"
 
