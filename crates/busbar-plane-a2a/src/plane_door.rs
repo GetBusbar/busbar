@@ -1463,7 +1463,9 @@ fn judge_hop(
     allow_private: bool,
     base: u32,
 ) -> Poll<Result<(u32, String), String>> {
-    use busbar_contract::abi::host::conn::connector::{EGRESS_OPEN_WEB, EGRESS_PROVIDER};
+    use busbar_contract::abi::host::conn::connector::{
+        EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+    };
     use busbar_contract::abi::host::service::{
         ItemSpan, DEST_ALLOWED, DEST_EXPLAIN, DEST_REFUSE_PRIVATE,
     };
@@ -1471,8 +1473,13 @@ fn judge_hop(
     let Some(services) = at.plane.services else {
         return Poll::Ready(Ok((base, String::new())));
     };
+    // A REACHED agent (`allow_private: true`) is judged as the operator's own destination: its
+    // private or loopback address passes, a metadata host and the deployment's extra refusals never
+    // do, in the engine's words. The address set is left to the dial, which the one guard judges
+    // again holding the agent's private reach (SEAM-4f1): the plane-callable judgement names no
+    // need, so its `within` is not the reached dial's.
     let (class, flags) = if allow_private {
-        (EGRESS_PROVIDER, DEST_EXPLAIN)
+        (EGRESS_OPERATOR_INFRASTRUCTURE, DEST_EXPLAIN)
     } else {
         (EGRESS_OPEN_WEB, DEST_EXPLAIN | DEST_REFUSE_PRIVATE)
     };
@@ -1495,9 +1502,14 @@ fn judge_hop(
     Poll::Ready(match judged {
         Poll::Pending => return Poll::Pending,
         Poll::Ready(Err(e)) => Err(format!("agent card fetch of `{url}` failed: {e:?}")),
-        Poll::Ready(Ok(judged)) if judged.verdict == DEST_ALLOWED => {
-            Ok((base + 1, judged.within()))
-        }
+        Poll::Ready(Ok(judged)) if judged.verdict == DEST_ALLOWED => Ok((
+            base + 1,
+            if allow_private {
+                String::new()
+            } else {
+                judged.within()
+            },
+        )),
         Poll::Ready(Ok(judged)) => Err(crate::trust::refused_judgement(
             url,
             judged.verdict,

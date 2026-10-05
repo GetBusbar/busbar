@@ -28,7 +28,7 @@ use busbar_contract::abi::plane::{
     AdminRoute, BillableClass, OpClass, PinMechanism, PlaneTail, TrustKey, CLAIM_EXACT, CLAIM_OPEN,
     CLAIM_PATTERN, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, MECHANISM_PEER_KEY,
     MECHANISM_ROOT, PIN_FINGERPRINT, SHAPE_PIECEWISE, TAIL_HOOKS_GATED, TRUST_PIN,
-    TRUST_RECOVERY_BACKOFF, TRUST_REVERIFY_TTL,
+    TRUST_PRIVATE_REACH, TRUST_RECOVERY_BACKOFF, TRUST_REVERIFY_TTL,
 };
 use busbar_contract::abi::sdk::door::abi_str;
 use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec};
@@ -180,8 +180,10 @@ const PIN_MECHANISMS: &[PinMechanism] = &[
     },
 ];
 
-/// The kernel-owned trust keys of one entry, the ABI spelling of
-/// [`crate::a2a::config::TRUST_KEYS`]; declaration order is judgement order.
+/// The kernel-owned trust keys of one entry: the ABI spelling of
+/// [`crate::a2a::config::TRUST_KEYS`], then the registration's private reach, which the door path
+/// hands the host (the grammar keeps reading `allow_private` itself); declaration order is
+/// judgement order.
 const TRUST_KEYS: &[TrustKey] = &[
     TrustKey {
         key: abi_str("pin"),
@@ -207,7 +209,22 @@ const TRUST_KEYS: &[TrustKey] = &[
         mechanisms: std::ptr::null(),
         mechanisms_len: 0,
     },
+    // THE REGISTRATION'S PRIVATE REACH (1.5.5's per-agent `allow_private: true`, ARCHITECT ruling
+    // on FLIP-A2A, SEAM-4f1): the host seals it into the agent's anchors and the one guard admits
+    // the agent's own private or loopback destination on [`NEED_AGENT`]; never a metadata address.
+    // An agent without it is refused every private address by the guard.
+    TrustKey {
+        key: abi_str(PRIVATE_REACH_KEY),
+        role: TRUST_PRIVATE_REACH,
+        flags: 0,
+        default: NONE,
+        mechanisms: std::ptr::null(),
+        mechanisms_len: 0,
+    },
 ];
+
+/// The per-registration key holding an agent's private reach (`allow_private`).
+pub const PRIVATE_REACH_KEY: &str = "allow_private";
 
 /// The [`NEEDS`] index of the plane's own outbound hops to a caller's push callback, each to the
 /// target the plane names at the dial.

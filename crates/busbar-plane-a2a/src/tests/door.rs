@@ -39,6 +39,7 @@ fn known_bytes(a: AbiStr) -> &'static [u8] {
         "pin",
         "reverify_ttl",
         "recovery_backoff",
+        PRIVATE_REACH_KEY,
         DEFAULT_REVERIFY_TTL,
         DEFAULT_RECOVERY_BACKOFF,
         "jws_issuer_key",
@@ -81,13 +82,21 @@ fn the_tail_states_the_planes_nouns() {
 #[test]
 fn the_abi_trust_keys_are_the_grammars_trust_keys() {
     let grammar = crate::a2a::config::TRUST_KEYS;
-    assert_eq!(TRUST_KEYS.len(), grammar.len());
+    assert_eq!(TRUST_KEYS.len(), grammar.len() + 1);
+    let reach = TRUST_KEYS[grammar.len()];
+    assert_eq!(
+        (s(reach.key), reach.role, reach.flags, reach.mechanisms_len),
+        (PRIVATE_REACH_KEY, TRUST_PRIVATE_REACH, 0, 0),
+        "the private reach rides last, on the key the grammar reads"
+    );
+    assert!(reach.default.ptr.is_null());
     for (abi, decl) in TRUST_KEYS.iter().zip(grammar) {
         assert_eq!(s(abi.key), decl.key);
         let role = match decl.role {
             TrustRole::Pin => TRUST_PIN,
             TrustRole::ReverifyTtl => TRUST_REVERIFY_TTL,
             TrustRole::RecoveryBackoff => TRUST_RECOVERY_BACKOFF,
+            TrustRole::PrivateReach => TRUST_PRIVATE_REACH,
         };
         assert_eq!(abi.role, role, "{}", decl.key);
         assert_eq!(
