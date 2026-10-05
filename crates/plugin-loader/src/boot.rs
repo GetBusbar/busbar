@@ -790,17 +790,37 @@ pub fn resolve_secrets(
     resolver: &dyn busbar_contract::secret::SecretResolve,
 ) -> Result<Vec<Vec<u8>>, String> {
     keys.iter()
-        .map(|key| {
-            let Some(found) = take_path(block, key) else {
+        .map(|path| {
+            let Some(found) = take_path(block, path) else {
                 return Ok(Vec::new());
             };
+            // The decoder's own text is withheld (`not_a_reference`): a value that is not a
+            // reference may be the secret itself, pasted where its reference belongs.
             let r: busbar_contract::secret_ref::SecretRef = serde_json::from_value(found)
-                .map_err(|e| format!("settings.{key}: not a secret reference: {e}"))?;
+                .map_err(not_a_reference(format!("settings.{path}")))?;
             resolver
                 .resolve(&r)
-                .map_err(|e| format!("settings.{key}: the secret did not resolve: {e}"))
+                .map_err(|e| format!("settings.{path}: the secret did not resolve: {e}"))
         })
         .collect()
+}
+
+/// The `map_err` for a settings value that should be a secret REFERENCE and does not decode as one.
+/// `serde_json::Error`'s own `Display` is withheld: a data error quotes the offending value, and a
+/// value that is not a reference may be the secret itself, pasted inline where its reference
+/// belongs (secret-hygiene #53, Check 3: redact at the format site). What survives is WHERE (`at`,
+/// the settings path) and the CLASS of the failure.
+pub(crate) fn not_a_reference(at: String) -> impl FnOnce(serde_json::Error) -> String {
+    move |e: serde_json::Error| {
+        let class = match e.classify() {
+            serde_json::error::Category::Io => "the value could not be read",
+            serde_json::error::Category::Syntax | serde_json::error::Category::Eof => {
+                "it is not well-formed"
+            }
+            serde_json::error::Category::Data => "a field is missing or has the wrong type",
+        };
+        format!("{at}: not a secret reference: {class} (the decoder's text is withheld)")
+    }
 }
 
 /// Remove and answer the value at the `.`-separated `path` of `v`, if set.

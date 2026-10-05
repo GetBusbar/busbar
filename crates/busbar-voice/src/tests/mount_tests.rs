@@ -642,7 +642,7 @@ async fn spawn_failing_provider(
     });
     super::ProviderEndpoint {
         base_url: format!("http://{addr}"),
-        api_key: "sk-test".to_string(),
+        api_key: "sk-test".to_string().into(),
     }
 }
 
@@ -733,7 +733,7 @@ async fn an_unreachable_provider_refunds_the_session_fee_on_each_one_shot_pass()
     let host = host_with_one_kept_session(&rt).await;
     let down = super::ProviderEndpoint {
         base_url: "http://127.0.0.1:9".to_string(),
-        api_key: "sk-test".to_string(),
+        api_key: "sk-test".to_string().into(),
     };
     for (ingress, call) in [
         (Ingress::Mint, "call-mint-down"),
