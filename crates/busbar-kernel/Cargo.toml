@@ -27,9 +27,12 @@ path = "src/lib.rs"
 # THE TEST-LINKED PLANES (SEAM-T, N02 ruling): the dev-dependency plane crates the cross-plane
 # integration tests install and loop. build.rs emits `$OUT_DIR/test_linked.rs` from this list and
 # `tests/linked/mod.rs` includes it, so the tests' sources name none of these crates; they address a
-# plane by what its declaration states, read back from the registry.
+# plane by what its declaration states, read back from the registry. A `door:` row is a plane crate
+# served through its memory-ABI door only: build.rs emits its `plane_door::door` and
+# `tests/linked/mod.rs` folds its registry row from its Statement, as the composition root does
+# (`root::linked::door_rows`). The list is the install order (the planes' layering order).
 [package.metadata.busbar]
-test-linked = ["busbar-llm", "busbar-a2a"]
+test-linked = ["busbar-llm", "door:busbar-plane-mcp", "busbar-a2a"]
 
 [dependencies]
 # ── ABSORBED from the pre-1.6.0 busbar-kernel crate (W4.a #19/#37) ────────────────────────────────
@@ -285,6 +288,10 @@ busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
 # `#[path]` dual-compile of its source. `busbar-llm` normal-depends on `busbar-core`; a dev-dep the
 # other way is not a build cycle (lib built first, then dev-deps, then the test binary).
 busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
+# THE MCP PLANE, served through its memory-ABI door only (P3 DEL-MCP): a `door:` row of
+# `test-linked` above, its registry row folded from its Statement in the cross-plane tests as the
+# composition root folds it. A pure plane crate (it names the contract alone): no engine rides in.
+busbar-plane-mcp = { path = "../busbar-plane-mcp" }
 # The export axis this crate's config tests resolve `module: prometheus` against: the scrape sink,
 # LINKED into the test binary exactly as the composition root links it into the shipped one (the
 # kernel names no export module; its tests need one on the axis). Pulled from its own repo at the SAME

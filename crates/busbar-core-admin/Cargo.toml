@@ -26,8 +26,10 @@ path = "src/lib.rs"
 
 # THE LINKED TEST-SEAM LIST: the dev-dependency crates whose `testkit::TEST_SEAM` entry this crate's
 # unit tests register and loop (build.rs emits the table; the sources name none of these crates).
+# A `door:` row is a plane crate served through its memory-ABI door only: its registry row is folded
+# from its Statement, as the composition root folds it. The list is the install order.
 [package.metadata.busbar]
-test-linked = ["busbar-llm", "busbar-a2a"]
+test-linked = ["busbar-llm", "door:busbar-plane-mcp", "busbar-a2a"]
 # THE TEST REGISTRY ROW for the operator credential: the auth plugin dev-dependency whose SDK boundary
 # this crate's unit tests link onto the auth axis (build.rs emits it; the sources name no auth plugin),
 # as the composition root links it into the shipped binary.
@@ -93,6 +95,9 @@ busbar-kernel = { path = "../busbar-kernel", default-features = false, features 
 # on these edges.
 busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
+# THE MCP PLANE, through its memory-ABI door only (P3 DEL-MCP; a `door:` row of `test-linked` above):
+# a pure plane crate (it names the contract alone), so no engine rides in.
+busbar-plane-mcp = { path = "../busbar-plane-mcp" }
 # THE OPERATOR CREDENTIAL'S TEST REGISTRY ROW (`test-operator-auth` above): the admin e2e tests
 # authenticate through the auth plugin the composition root links for it, from its own repo, at the
 # SAME pinned rev plugin-loader's both-ways proof drives. Dev-only: the library names no auth plugin.
