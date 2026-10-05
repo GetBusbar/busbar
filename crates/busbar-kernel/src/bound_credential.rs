@@ -9,7 +9,9 @@
 //! `open_outbound`), and the plugin keeps the binding and its cache (a header built once, a minted
 //! token refreshed ahead of expiry on `tick`, a SigV4 day key); the kernel keeps only the handle.
 //! For every request the lane's writer asks [`CredentialProvider::headers_for`], which is ONE
-//! memory-ABI call (`fields`) to that plugin. The writer then adds the dialect's own static fields.
+//! memory-ABI call (`fields`) to that plugin; a binding whose answer cannot vary per request (a
+//! style that presents the key over the head alone) is asked once, at boot, as the lane froze a
+//! static header before ([`prebuild_auth`]). The writer then adds the dialect's own static fields.
 //!
 //! [`CredentialProvider`] is the shape the request path asks; this module holds no credential
 //! logic of its own: a binding no plugin serves is [`NoCredential`] (no auth header, so the
@@ -119,6 +121,16 @@ pub struct BoundCredential {
 }
 
 impl BoundCredential {
+    /// Whether the plugin's answer for this binding in `Own` mode is a pure function of the bound
+    /// credential: a style that presents the key (it does not mint) and reads only the head (it
+    /// does not sign the body). The lane's writer then asks once, at boot ([`prebuild_auth`]),
+    /// exactly as it froze a static scheme's header before.
+    fn lane_constant(&self) -> bool {
+        self.uses_key && !self.points.has(AuthPoint::HeadBody)
+    }
+}
+
+impl BoundCredential {
     /// The one `fields` request for `ctx`: a POST of the body to its canonical path (the request a
     /// lane's writer signs), at the style's request point, with the caller's credential for a
     /// passthrough request on a style that presents the key.
@@ -171,6 +183,10 @@ impl CredentialProvider for BoundCredential {
 
     fn is_ready(&self) -> bool {
         self.auth.ready(self.handle)
+    }
+
+    fn is_lane_constant(&self) -> bool {
+        self.lane_constant()
     }
 
     fn uses_key(&self) -> bool {
