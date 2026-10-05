@@ -240,6 +240,8 @@ public_url: "http://127.0.0.1:$public_port"
 providers: {}
 models: {}
 pools: {}
+# A 1.6.0 config names its store (Q-STORE (B)); in-memory is what 1.5.5 ran with no store: block.
+store: { module: memory }
 identity-providers:
   admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
 auth:
