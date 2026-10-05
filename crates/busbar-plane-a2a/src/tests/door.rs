@@ -332,9 +332,11 @@ fn the_tail_declares_the_op_class_of_every_method_arrive_can_name() {
 fn a_dealt_validate_blob_is_unwrapped_to_its_section() {
     let dealt =
         br#"{"agents":{"probe":{"url":"https://a.example/","pin":{"mechanism":"unpinned"}}}}"#;
+    let section: serde_json::Value =
+        serde_json::from_slice(&crate::door::dealt_section(dealt)).expect("JSON");
     assert_eq!(
-        &*crate::door::dealt_section(dealt),
-        br#"{"probe":{"url":"https://a.example/","pin":{"mechanism":"unpinned"}}}"#
+        section,
+        serde_json::json!({"probe": {"url": "https://a.example/", "pin": {"mechanism": "unpinned"}}})
     );
     let bare = br#"{"probe":{"url":"https://a.example/"},"hooks":[]}"#;
     assert_eq!(&*crate::door::dealt_section(bare), &bare[..]);
