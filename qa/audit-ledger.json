@@ -195,6 +195,36 @@
    "paths": [
     "crates/busbar-a2a/build.rs"
    ],
+   "tree_hash": "c83f08b43391af3ceb387e5233af49ed1c7c675e26a58c1392204b87ccf4854f",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "Generates an extern-crate import of an auth plugin for the plane's admin tests: a test-only lateral plugin edge kept out of source scans by moving the name into manifest metadata. The generator is correct and emits nothing into the production library. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "c83f08b43391af3ceb387e5233af49ed1c7c675e26a58c1392204b87ccf4854f",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "Generates an extern-crate import of an auth plugin for the plane's admin tests: a test-only lateral plugin edge kept out of source scans by moving the name into manifest metadata. The generator is correct and emits nothing into the production library. Read fully."
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-auth-header/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-header/src"
+   ],
    "tree_hash": null,
    "audited_at": null,
    "round": null,
@@ -202,7 +232,64 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-auth-header/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-auth-oauth/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-oauth/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-auth-oauth/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-auth-sigv4/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-sigv4/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-auth-sigv4/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-auth-webhook-signature/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-webhook-signature/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-auth-webhook-signature/src/tests"
+   ]
   },
   {
    "id": "crates/busbar-contract/src",
@@ -246,14 +333,29 @@
    "paths": [
     "crates/busbar-core-admin/build.rs"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "1a4108f5d7e90b1278140efc9fcb944f88700c8dda8b3d66b4b38bed67b0acea",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1
+   },
+   "report": "Generates a table that installs three plane crates and an auth plugin into a neutral cleanliness crate's unit tests, with the names held in manifest metadata so no source names them; neutral-crate tests are to use kind-neutral doubles. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "1a4108f5d7e90b1278140efc9fcb944f88700c8dda8b3d66b4b38bed67b0acea",
+     "counts": {
+      "HIGH": 1
+     },
+     "report": "Generates a table that installs three plane crates and an auth plugin into a neutral cleanliness crate's unit tests, with the names held in manifest metadata so no source names them; neutral-crate tests are to use kind-neutral doubles. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-core-connector/src",
@@ -271,6 +373,41 @@
    "fixed_at": null,
    "exclude": [
     "crates/busbar-core-connector/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-core-oauth2/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-core-oauth2/src"
+   ],
+   "tree_hash": "c407fe6773553182a28f5ccfceddc12bc4baccbe35e1466251cb5ec96cda8304",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "LOW": 6
+   },
+   "report": "The authorization server checks destinations itself with scattered net_guard calls and dials client metadata documents through the kernel egress engine rather than the connector, bypassing the operator allowlist; its comments name a plane in a neutral crate. A per-reload sweeper leaks old servers, the consent return check accepts a tab-prefixed path that redirects off-site, and state is in-memory per node. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-core-oauth2/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "c407fe6773553182a28f5ccfceddc12bc4baccbe35e1466251cb5ec96cda8304",
+     "counts": {
+      "HIGH": 3,
+      "LOW": 6
+     },
+     "report": "The authorization server checks destinations itself with scattered net_guard calls and dials client metadata documents through the kernel egress engine rather than the connector, bypassing the operator allowlist; its comments name a plane in a neutral crate. A per-reload sweeper leaks old servers, the consent return check accepts a tab-prefixed path that redirects off-site, and state is in-memory per node. Read fully."
+    }
    ]
   },
   {
@@ -297,14 +434,29 @@
    "paths": [
     "crates/busbar-kernel/build.rs"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "d5e94abe951d549a14509f05154aec470659f1819c2498aef60cc256370d8789",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1
+   },
+   "report": "Generates a table that installs three plane crates into the kernel's integration tests, names held in manifest metadata; the kernel still tests plugins instead of kind-neutral doubles. The production library never includes the file. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "d5e94abe951d549a14509f05154aec470659f1819c2498aef60cc256370d8789",
+     "counts": {
+      "HIGH": 1
+     },
+     "report": "Generates a table that installs three plane crates into the kernel's integration tests, names held in manifest metadata; the kernel still tests plugins instead of kind-neutral doubles. The production library never includes the file. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-kernel-audit/src",
@@ -312,16 +464,33 @@
    "paths": [
     "crates/busbar-kernel-audit/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "74889e16f979be05153dd6cece65aa1ebd096198e8410ac94232f55da9ac18c2",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "LOW": 5
+   },
+   "report": "Fixed record schema holds with no content and no price; chain, window, head walks, signatures and amendments verify. Breaks the no-static-seam rule: the amendment journal and its durable sink are process-global statics. Head anchors reset on every restart and the anchor read is never served; the record has no node field; a duplicate digest framing arm is dead. Read fully.",
+   "auditor": "opus-q128-architecture",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-audit/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "74889e16f979be05153dd6cece65aa1ebd096198e8410ac94232f55da9ac18c2",
+     "counts": {
+      "HIGH": 1,
+      "LOW": 5
+     },
+     "report": "Fixed record schema holds with no content and no price; chain, window, head walks, signatures and amendments verify. Breaks the no-static-seam rule: the amendment journal and its durable sink are process-global statics. Head anchors reset on every restart and the anchor read is never served; the record has no node field; a duplicate digest framing arm is dead. Read fully."
+    }
    ]
   },
   {
@@ -330,16 +499,33 @@
    "paths": [
     "crates/busbar-kernel-breaker/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "18c6f43cf5645d31ca39ba88e43c42ac28d00aff63105dfadad56c746fcaf3a3",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "LOW": 2
+   },
+   "report": "The kernel breaker understands protocols: it classifies HTTP status bands and gRPC status codes, parses the Retry-After header, and names a vendor, a plane and a dialect error code, breaking Law 1 and the kernel byte-pump rule. Two error normalizers ship and disagree on a status-less failure; the probe journal and warn-once diagnostics are never constructed. Read fully.",
+   "auditor": "opus-q128-architecture",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-breaker/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "18c6f43cf5645d31ca39ba88e43c42ac28d00aff63105dfadad56c746fcaf3a3",
+     "counts": {
+      "HIGH": 2,
+      "LOW": 2
+     },
+     "report": "The kernel breaker understands protocols: it classifies HTTP status bands and gRPC status codes, parses the Retry-After header, and names a vendor, a plane and a dialect error code, breaking Law 1 and the kernel byte-pump rule. Two error normalizers ship and disagree on a status-less failure; the probe journal and warn-once diagnostics are never constructed. Read fully."
+    }
    ]
   },
   {
@@ -384,16 +570,33 @@
    "paths": [
     "crates/busbar-kernel-ledger/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "51b9216e06ab492dabd72cd38d5ea02612daa74bb146e6bf2694d1e91e9858be",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 4,
+    "LOW": 5
+   },
+   "report": "The statement read prices a line whose lane or class the card does not price at fee-only or zero instead of listing it as unpriceable, and the served totals view trusts that list; the metering fold is never constructed in production; the production legacy-row recorder keeps every settlement posting in memory forever; doc comments name plane and vendor instances in a neutral crate. Read fully.",
+   "auditor": "opus-q128-architecture",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-ledger/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "51b9216e06ab492dabd72cd38d5ea02612daa74bb146e6bf2694d1e91e9858be",
+     "counts": {
+      "HIGH": 4,
+      "LOW": 5
+     },
+     "report": "The statement read prices a line whose lane or class the card does not price at fee-only or zero instead of listing it as unpriceable, and the served totals view trusts that list; the metering fold is never constructed in production; the production legacy-row recorder keeps every settlement posting in memory forever; doc comments name plane and vendor instances in a neutral crate. Read fully."
+    }
    ]
   },
   {
@@ -402,16 +605,31 @@
    "paths": [
     "crates/busbar-kernel-scope/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "b87c09ea7f941d7e4ab39afcc4c44ca88c3c3709035f48735ea0f44940d385d5",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 5
+   },
+   "report": "Keeps a second copy of the scope lattice and a second enforced admin scope matrix beside the kernel's; the claim and op-class policy lookup is never consulted in production; egress refusal audit helpers have no caller; one plane skips the key-liveness check its sibling enforces. No socket, TLS, static seam or unsafe code. Read fully.",
+   "auditor": "opus-q128-architecture",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-scope/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "b87c09ea7f941d7e4ab39afcc4c44ca88c3c3709035f48735ea0f44940d385d5",
+     "counts": {
+      "LOW": 5
+     },
+     "report": "Keeps a second copy of the scope lattice and a second enforced admin scope matrix beside the kernel's; the claim and op-class policy lookup is never consulted in production; egress refusal audit helpers have no caller; one plane skips the key-liveness check its sibling enforces. No socket, TLS, static seam or unsafe code. Read fully."
+    }
    ]
   },
   {
@@ -420,16 +638,31 @@
    "paths": [
     "crates/busbar-kernel-wal/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "0e8320fb87318e57e420d5f609dab71cacadea983570b9cac3e76abfe1dd662c",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 3
+   },
+   "report": "Fixed-size frames with header and body checks, one-write one-sync group commit, segment poisoning on failed sync, quarantine before cut, no static seam or unsafe code. Gaps: still reads a never-released frame version whose digest failures are cut as torn tails, new segment files are not directory-fsynced, and the memory-mode store-durability claim is not what ships. Read fully.",
+   "auditor": "opus-q128-architecture",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-wal/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "0e8320fb87318e57e420d5f609dab71cacadea983570b9cac3e76abfe1dd662c",
+     "counts": {
+      "LOW": 3
+     },
+     "report": "Fixed-size frames with header and body checks, one-write one-sync group commit, segment poisoning on failed sync, quarantine before cut, no static seam or unsafe code. Gaps: still reads a never-released frame version whose digest failures are cut as torn tails, new segment files are not directory-fsynced, and the memory-mode store-durability claim is not what ships. Read fully."
+    }
    ]
   },
   {
@@ -474,31 +707,30 @@
    "paths": [
     "crates/busbar-mcp/build.rs"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-core-oauth2/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-core-oauth2/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "78de62bef2ac4976ecd42c1129e7128c10d8ab9de253b3bfe81814823e389198",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "LOW": 1
+   },
+   "report": "Generates an extern-crate import of the sibling language-model plane so the plane's tests can prove busbar answering upstream sampling requests, breaking Law 2 and Law 11; a second generated table imports an auth plugin. Both names live in manifest metadata so no source scan sees them. Read fully.",
+   "auditor": "opus-q128-architecture",
    "fixed_at": null,
-   "exclude": [
-    "crates/busbar-core-oauth2/src/tests"
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "78de62bef2ac4976ecd42c1129e7128c10d8ab9de253b3bfe81814823e389198",
+     "counts": {
+      "HIGH": 1,
+      "LOW": 1
+     },
+     "report": "Generates an extern-crate import of the sibling language-model plane so the plane's tests can prove busbar answering upstream sampling requests, breaking Law 2 and Law 11; a second generated table imports an auth plugin. Both names live in manifest metadata so no source scan sees them. Read fully."
+    }
    ]
   },
   {
@@ -651,16 +883,33 @@
    "paths": [
     "crates/plane-example/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "4c07ebc296f8347e2be5318db93c596af1b1f8c55d0718333195db290afbadc2",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "LOW": 2
+   },
+   "report": "An in-repo fixture plane plugin linked only by tests, exercising the retiring HOT plane lane with C-unwind doors, where the repo is to hold no plugin source or fixture plugin and one memory ABI. It blocks the request worker with a caller-chosen sleep while declaring inline-safe dispatch, and as a copy-me template it branches on request headers. Read fully.",
+   "auditor": "opus-q128-architecture",
    "fixed_at": null,
    "exclude": [
     "crates/plane-example/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "4c07ebc296f8347e2be5318db93c596af1b1f8c55d0718333195db290afbadc2",
+     "counts": {
+      "HIGH": 2,
+      "LOW": 2
+     },
+     "report": "An in-repo fixture plane plugin linked only by tests, exercising the retiring HOT plane lane with C-unwind doors, where the repo is to hold no plugin source or fixture plugin and one memory ABI. It blocks the request worker with a caller-chosen sleep while declaring inline-safe dispatch, and as a copy-me template it branches on request headers. Read fully."
+    }
    ]
   },
   {
@@ -687,14 +936,31 @@
    "paths": [
     "crates/plugin-loader/build.rs"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "452cdc8a0bc789215c25334611c4c22c75711fe19d9196774ef68c240cf78252",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "LOW": 1
+   },
+   "report": "Generates the loader's both-ways fixture tables on three ABI lanes (cold entry, HOT declaration, memory door), so the loader's conformance proofs still exercise lanes retired in favour of one memory ABI; it also exports fixture crate names into every compile for a test-support harness. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "452cdc8a0bc789215c25334611c4c22c75711fe19d9196774ef68c240cf78252",
+     "counts": {
+      "HIGH": 1,
+      "LOW": 1
+     },
+     "report": "Generates the loader's both-ways fixture tables on three ABI lanes (cold entry, HOT declaration, memory door), so the loader's conformance proofs still exercise lanes retired in favour of one memory ABI; it also exports fixture crate names into every compile for a test-support harness. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/store-memory/src",
@@ -768,6 +1034,66 @@
    "paths": [
     "crates/busbar/benches"
    ],
+   "tree_hash": "b7b5d4f3bd440466f56834804970bb940963dd9dce09330d823f5f93166eb275",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 2
+   },
+   "report": "Boots the real shipped binary and times a no-hook request against a loopback stub, so it measures the shipped path; but it names a dialect in composition-root source, no longer measures any hook despite its name, and its header quotes readings for removed cells. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "b7b5d4f3bd440466f56834804970bb940963dd9dce09330d823f5f93166eb275",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "Boots the real shipped binary and times a no-hook request against a loopback stub, so it measures the shipped path; but it names a dialect in composition-root source, no longer measures any hook despite its name, and its header quotes readings for removed cells. Read fully."
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-a2a/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-a2a/src/tests"
+   ],
+   "tree_hash": "0f80dba5d71d26a0fabd12959300a2897cd86f6d9eb87d243ed1eb33c4d6ca18",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 2
+   },
+   "report": "The SSE reader tests are sound, but exist because the legacy plane carries its own SSE framer duplicating the transport's; the diagnostics-page gate imports the plane plugin sideways and vanishes with the legacy crate. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "0f80dba5d71d26a0fabd12959300a2897cd86f6d9eb87d243ed1eb33c4d6ca18",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "The SSE reader tests are sound, but exist because the legacy plane carries its own SSE framer duplicating the transport's; the diagnostics-page gate imports the plane plugin sideways and vanishes with the legacy crate. Read fully."
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-auth-header/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-header/src/tests"
+   ],
    "tree_hash": null,
    "audited_at": null,
    "round": null,
@@ -778,10 +1104,100 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-a2a/src/tests",
+   "id": "crates/busbar-auth-header/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-a2a/src/tests"
+    "crates/busbar-auth-header/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-oauth/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-oauth/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-oauth/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-oauth/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-sigv4/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-sigv4/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-sigv4/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-sigv4/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-webhook-signature/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-webhook-signature/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-webhook-signature/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-webhook-signature/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -843,14 +1259,29 @@
    "paths": [
     "crates/busbar-core-admin/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "a8f2d33cda8eb8818a76e85b58805d2c6d4e76d9cef26422665160d9947ea7fc",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "A one-word fixture holding the OpenAPI responses key, loaded so the word is not spelled in scanned source: it sidesteps a vocabulary scanner that should have been scoped instead, and the same test module still imports a dialect constant. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "a8f2d33cda8eb8818a76e85b58805d2c6d4e76d9cef26422665160d9947ea7fc",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "A one-word fixture holding the OpenAPI responses key, loaded so the word is not spelled in scanned source: it sidesteps a vocabulary scanner that should have been scoped instead, and the same test module still imports a dialect constant. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-core-connector/src/tests",
@@ -872,6 +1303,21 @@
    "kind": "test",
    "paths": [
     "crates/busbar-core-connector/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-core-oauth2/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-core-oauth2/src/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -918,14 +1364,29 @@
    "paths": [
     "crates/busbar-kernel/benches"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "b778782ff7f82ab9b478c022ffd215c1b1028ac9ddf53182bc6746768be7a857",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 3
+   },
+   "report": "Names no plugin, but none measures the shipped path: they time bench-local stub vtables on the retiring HOT lane or a hand copy of an accessor, and the per-token crossing check can only fail on its own injected crossing. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "b778782ff7f82ab9b478c022ffd215c1b1028ac9ddf53182bc6746768be7a857",
+     "counts": {
+      "LOW": 3
+     },
+     "report": "Names no plugin, but none measures the shipped path: they time bench-local stub vtables on the retiring HOT lane or a hand copy of an accessor, and the per-token crossing check can only fail on its own injected crossing. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-kernel-audit/src/tests",
@@ -933,14 +1394,25 @@
    "paths": [
     "crates/busbar-kernel-audit/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "384948f4651e7718fce8a13f75603b76f1a981c1edc382033a3adb1c6171347a",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "zero",
    "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "report": "Tests pin the frozen on-disk tag vocabulary and refuse non-canonical outcome tags through the shipped decoder; no plugin or dialect instance is named; sealing, chain-walk and signature batteries live with the kernel. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "384948f4651e7718fce8a13f75603b76f1a981c1edc382033a3adb1c6171347a",
+     "counts": {},
+     "report": "Tests pin the frozen on-disk tag vocabulary and refuse non-canonical outcome tags through the shipped decoder; no plugin or dialect instance is named; sealing, chain-walk and signature batteries live with the kernel. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-kernel-breaker/src/tests",
@@ -948,14 +1420,29 @@
    "paths": [
     "crates/busbar-kernel-breaker/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "96726610d2fe7c4bf4dcec9f1b0e96e0f65fe71dbd50acd25087934906f1e56c",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 3
+   },
+   "report": "Tests exercise the real state machine and classifier including races and saturation, but pin gRPC and HTTP status semantics as kernel behaviour, a comment names a plane, and the module header claims retry-after tests, a signature and a dependency shape that are not true. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "96726610d2fe7c4bf4dcec9f1b0e96e0f65fe71dbd50acd25087934906f1e56c",
+     "counts": {
+      "LOW": 3
+     },
+     "report": "Tests exercise the real state machine and classifier including races and saturation, but pin gRPC and HTTP status semantics as kernel behaviour, a comment names a plane, and the module header claims retry-after tests, a signature and a dependency shape that are not true. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-kernel-egress/src/tests",
@@ -963,14 +1450,29 @@
    "paths": [
     "crates/busbar-kernel-egress/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "12bd3d105ae4d55b7feb3330f660d29d15b07885f8495d8286ccc5b51285f454",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 2
+   },
+   "report": "The egress unit's tests use kind-neutral doubles and name no plugin instance, but two files test capabilities production never calls (pinned-arity reroute, query-parameter auth append and redact), and the pick-order file's header promises ranking, drain and affinity claims it does not test. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "12bd3d105ae4d55b7feb3330f660d29d15b07885f8495d8286ccc5b51285f454",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "The egress unit's tests use kind-neutral doubles and name no plugin instance, but two files test capabilities production never calls (pinned-arity reroute, query-parameter auth append and redact), and the pick-order file's header promises ranking, drain and affinity claims it does not test. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-kernel-egress/tests",
@@ -978,14 +1480,29 @@
    "paths": [
     "crates/busbar-kernel-egress/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "83d279eaf9929c128967e1e24b041c07fdac4fd3931513173ee1b2a0d2040705",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 2
+   },
+   "report": "The allocation test proves zero allocation on a weighted selector production never constructs, leaving the shipped selector unmeasured; the prose-scan test has an off-by-one that misses a single-digit binding id at line end, skips the manifest, and keeps hand-listed seam and allow lists. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "83d279eaf9929c128967e1e24b041c07fdac4fd3931513173ee1b2a0d2040705",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "The allocation test proves zero allocation on a weighted selector production never constructs, leaving the shipped selector unmeasured; the prose-scan test has an off-by-one that misses a single-digit binding id at line end, skips the manifest, and keeps hand-listed seam and allow lists. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-kernel-identity/src/tests",
@@ -1008,14 +1525,29 @@
    "paths": [
     "crates/busbar-kernel-ledger/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "982e0ebac914045f61e0187bd68f018417318b6bfcc15cbd3520d5a2cb4c072d",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 3
+   },
+   "report": "Kind-neutral batteries pin identity, migration, checkpoint and overflow, but none cuts a statement over an unpriced lane or class, none proves every sealed checkpoint figure is under the digest (the fee count is not), and the settle file tests no settlement. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "982e0ebac914045f61e0187bd68f018417318b6bfcc15cbd3520d5a2cb4c072d",
+     "counts": {
+      "LOW": 3
+     },
+     "report": "Kind-neutral batteries pin identity, migration, checkpoint and overflow, but none cuts a statement over an unpriced lane or class, none proves every sealed checkpoint figure is under the digest (the fee count is not), and the settle file tests no settlement. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-kernel-ledger/tests",
@@ -1023,14 +1555,29 @@
    "paths": [
     "crates/busbar-kernel-ledger/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "620db347a807ed6a64cf6ee663df5f644e5de79a158e4ba24ed272c6ca1cde31",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "The allocation test proves a rate-card lookup allocates nothing but never measures the shipped pricing path, which builds a vector and owned strings for every priced line. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "620db347a807ed6a64cf6ee663df5f644e5de79a158e4ba24ed272c6ca1cde31",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "The allocation test proves a rate-card lookup allocates nothing but never measures the shipped pricing path, which builds a vector and owned strings for every priced line. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-kernel-scope/src/tests",
@@ -1038,14 +1585,29 @@
    "paths": [
     "crates/busbar-kernel-scope/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "1597f439ea758fe23fb96832110ed23c8d678fc7431bb9a3affb6c815b258369",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 2
+   },
+   "report": "Thorough lattice and egress-gate tests over a neutral queue double, but the policy-lookup double uses the language-model plane's chat and completion vocabulary, the lattice tests prove a duplicate type no production path uses, and the matrix-equality test never calls the enforced matrix. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "1597f439ea758fe23fb96832110ed23c8d678fc7431bb9a3affb6c815b258369",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "Thorough lattice and egress-gate tests over a neutral queue double, but the policy-lookup double uses the language-model plane's chat and completion vocabulary, the lattice tests prove a duplicate type no production path uses, and the matrix-equality test never calls the enforced matrix. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-kernel-wal/src/tests",
@@ -1053,14 +1615,29 @@
    "paths": [
     "crates/busbar-kernel-wal/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "c5b2628e1f2bb0da1220a71e4d7e32d373b6acd2db2b22105117186e036c003a",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 2
+   },
+   "report": "Kind-neutral doubles, SHA-256 checked against an independent implementation, good durable-publish fault matrix; but two module docs describe batteries living in another crate, and the edit-every-byte test cannot reach the frame-version downgrade or tell a torn verdict from a corrupt one. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "c5b2628e1f2bb0da1220a71e4d7e32d373b6acd2db2b22105117186e036c003a",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "Kind-neutral doubles, SHA-256 checked against an independent implementation, good durable-publish fault matrix; but two module docs describe batteries living in another crate, and the edit-every-byte test cannot reach the frame-version downgrade or tell a torn verdict from a corrupt one. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-llm/src/tests",
@@ -1068,14 +1645,31 @@
    "paths": [
     "crates/busbar-llm/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "e2812772368412392f6bdc4b8cd18c777e103096f4c51e78d678640e51b37fdc",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "LOW": 1
+   },
+   "report": "Breaks Law 1 and Law 5: the legacy plane's tests pin its dialect list to the kernel's dialect registry and ask the kernel for a default dialect and a dialect-specific stream shim key. The webhook tests cover a receiver no build constructs and accept a years-old signed timestamp because the verifier has no replay window. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "e2812772368412392f6bdc4b8cd18c777e103096f4c51e78d678640e51b37fdc",
+     "counts": {
+      "HIGH": 1,
+      "LOW": 1
+     },
+     "report": "Breaks Law 1 and Law 5: the legacy plane's tests pin its dialect list to the kernel's dialect registry and ask the kernel for a default dialect and a dialect-specific stream shim key. The webhook tests cover a receiver no build constructs and accept a years-old signed timestamp because the verifier has no replay window. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-llm/tests",
@@ -1083,14 +1677,29 @@
    "paths": [
     "crates/busbar-llm/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "3248acbb80847aee8182bf4fc1b7401d974ec0a33f19db962814dbb459dc666b",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 2
+   },
+   "report": "The refusal-status parity test claims every recorded refusal but its cells are hand-typed and omit the six recorded out-of-scope refusals; it lives in the legacy plane crate, imports the plane plugin crate sideways, and proves the driver path rather than the default shipped path. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "3248acbb80847aee8182bf4fc1b7401d974ec0a33f19db962814dbb459dc666b",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "The refusal-status parity test claims every recorded refusal but its cells are hand-typed and omit the six recorded out-of-scope refusals; it lives in the legacy plane crate, imports the plane plugin crate sideways, and proves the driver path rather than the default shipped path. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-mcp/src/tests",
@@ -1098,29 +1707,29 @@
    "paths": [
     "crates/busbar-mcp/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-core-oauth2/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-core-oauth2/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "d286a6e30752009925858533201b8a0cb92bdf6d5cda7f125867116d545232fc",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 2
+   },
+   "report": "The legacy crate's tests pin the plane plugin's wire method names and diagnostics pages by importing the plugin sideways, so both checks vanish with the legacy crate; the read-side check claims SDK and codec both accept the extra metadata member but asserts only the SDK. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "d286a6e30752009925858533201b8a0cb92bdf6d5cda7f125867116d545232fc",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "The legacy crate's tests pin the plane plugin's wire method names and diagnostics pages by importing the plugin sideways, so both checks vanish with the legacy crate; the read-side check claims SDK and codec both accept the extra metadata member but asserts only the SDK. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-a2a/src/tests",
@@ -1308,14 +1917,29 @@
    "paths": [
     "crates/busbar-voice/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "27678970dab2b48bfbfe23ac71daf9d50d748b1b3600370629cdc6ada8839f52",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 2
+   },
+   "report": "Proves the plane composes a process-global open-call table onto the served door; the table waits on model tool-call ids and refuses client replies by id, branching on carried content that needs a ruling under Law 11, while the runtime on the same door still answers tool calls with an echo executor. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "27678970dab2b48bfbfe23ac71daf9d50d748b1b3600370629cdc6ada8839f52",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "Proves the plane composes a process-global open-call table onto the served door; the table waits on model tool-call ids and refuses client replies by id, branching on carried content that needs a ruling under Law 11, while the runtime on the same door still answers tool calls with an echo executor. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/hooks-ranking/src/tests",
@@ -1383,14 +2007,31 @@
    "paths": [
     "crates/store-memory/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "9a7a4f99234583680f164304391f1729f3474af17393e8a4d58a2c066dfe3506",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "LOW": 2
+   },
+   "report": "Breaks the rule that an active work handle is never evicted: the memory store's tests assert that a task record written through the record leg is deleted after 31 days on write age alone with no settled check, contradicting the crate's own conformance suite. The tests also use a contract test kit, and their prose names sibling stores and a plane. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "9a7a4f99234583680f164304391f1729f3474af17393e8a4d58a2c066dfe3506",
+     "counts": {
+      "HIGH": 1,
+      "LOW": 2
+     },
+     "report": "Breaks the rule that an active work handle is never evicted: the memory store's tests assert that a task record written through the record leg is deleted after 31 days on write age alone with no settled check, contradicting the crate's own conformance suite. The tests also use a contract test kit, and their prose names sibling stores and a plane. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/store-memory/tests",
@@ -1398,14 +2039,29 @@
    "paths": [
     "crates/store-memory/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "a697c86e91de21dd589af336b5fe93d373ef76a2614d1a45dbbaf830f3802848",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 4
+   },
+   "report": "Thorough conformance and round-trip tests reaching no kernel internals, but the only door-level test drives the retired cold JSON door and nothing drives the shipped store door; the suite pins plane-instance row shapes, names sibling stores, describes the ask ledger as making a tool execute once, and carries stale prose. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "a697c86e91de21dd589af336b5fe93d373ef76a2614d1a45dbbaf830f3802848",
+     "counts": {
+      "LOW": 4
+     },
+     "report": "Thorough conformance and round-trip tests reaching no kernel internals, but the only door-level test drives the retired cold JSON door and nothing drives the shipped store door; the suite pins plane-instance row shapes, names sibling stores, describes the ask ledger as making a tool execute once, and carries stale prose. Read fully."
+    }
+   ]
   },
   {
    "id": "scripts",
@@ -1458,14 +2114,29 @@
    "paths": [
     ".githooks"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "d3d3645863af823b7a6a8bc8b5d9390ba5d7de195c575da13c1f16aa1328c05a",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "The pre-push artifact audit treats a configured but non-executable audit path as no audit, so a misconfigured hook passes silently instead of refusing. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "d3d3645863af823b7a6a8bc8b5d9390ba5d7de195c575da13c1f16aa1328c05a",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "The pre-push artifact audit treats a configured but non-executable audit path as no audit, so a misconfigured hook passes silently instead of refusing. Read fully."
+    }
+   ]
   },
   {
    "id": ".github/scripts",
@@ -1473,14 +2144,29 @@
    "paths": [
     ".github/scripts"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "d8e7d6c494b39925a9eb94da6d1f731f4d4b96b3e1968ed8b39ff72c1f9c6ab9",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "The changelog roller documented for the release cannot run against the current changelog: it requires an Unreleased section that does not exist and refuses the version heading that does; both scripts cite a deleted release workflow. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "d8e7d6c494b39925a9eb94da6d1f731f4d4b96b3e1968ed8b39ff72c1f9c6ab9",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "The changelog roller documented for the release cannot run against the current changelog: it requires an Unreleased section that does not exist and refuses the version heading that does; both scripts cite a deleted release workflow. Read fully."
+    }
+   ]
   },
   {
    "id": "assets/readme",
@@ -1488,14 +2174,25 @@
    "paths": [
     "assets/readme"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "c3da25edb008d47cc29c8d7eb77eb70dfe4a2d377fcb87d8790043463733b472",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "zero",
    "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "report": "README figures are generated from data.json and install.json and match the data; every figure is labelled with the build and date it measured; no secrets or home paths. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "c3da25edb008d47cc29c8d7eb77eb70dfe4a2d377fcb87d8790043463733b472",
+     "counts": {},
+     "report": "README figures are generated from data.json and install.json and match the data; every figure is labelled with the build and date it measured; no secrets or home paths. Read fully."
+    }
+   ]
   },
   {
    "id": "examples",
@@ -1503,14 +2200,29 @@
    "paths": [
     "examples"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "28a1a069b8d0ad5e76b7126daec8f80a014e6edcba798b8ecf1b890aaf98e2a3",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 2
+   },
+   "report": "The smart-router example tells operators to run a Unix-socket hook binary busbar can no longer reach and cites probes that no longer exist; the Bedrock demo config omits the required store section, is validated by no test, and uses a placeholder bearer the signed-key chain refuses. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "28a1a069b8d0ad5e76b7126daec8f80a014e6edcba798b8ecf1b890aaf98e2a3",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "The smart-router example tells operators to run a Unix-socket hook binary busbar can no longer reach and cites probes that no longer exist; the Bedrock demo config omits the required store section, is validated by no test, and uses a placeholder bearer the signed-key chain refuses. Read fully."
+    }
+   ]
   },
   {
    "id": ".github",
@@ -1518,18 +2230,35 @@
    "paths": [
     ".github"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "dbd9aab61f1f62e9fb9cc0053241daee3949a402bc0c89f21de57fde17f64fbb",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "LOW": 3
+   },
+   "report": "The release contract requires a published 1.5-era store plugin to load as ready on every 1.6.0 target, which the no-legacy-loading rule forbids; the downstream notify list is an unread hand-kept old roster; the fleet dependency policy approves database and directory drivers that open their own sockets against its own socket ban. Read fully.",
+   "auditor": "opus-q128-architecture",
    "fixed_at": null,
    "exclude": [
     ".github/workflows",
     ".github/scripts",
     ".github/ISSUE_TEMPLATE"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "dbd9aab61f1f62e9fb9cc0053241daee3949a402bc0c89f21de57fde17f64fbb",
+     "counts": {
+      "HIGH": 1,
+      "LOW": 3
+     },
+     "report": "The release contract requires a published 1.5-era store plugin to load as ready on every 1.6.0 target, which the no-legacy-loading rule forbids; the downstream notify list is an unread hand-kept old roster; the fleet dependency policy approves database and directory drivers that open their own sockets against its own socket ban. Read fully."
+    }
    ]
   },
   {
@@ -1538,14 +2267,29 @@
    "paths": [
     "testing/a2a-governance"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "f9f3d8b1f1fcb871d7d7d7e1d07314272df48803568d7379041f8218617069f8",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 2
+   },
+   "report": "The governance probe is only ever run against the third-party control agent, never against busbar, so busbar's quarantine, card re-check and outbound-cap behaviour is never observed; its documented harness flag selects nothing. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "f9f3d8b1f1fcb871d7d7d7e1d07314272df48803568d7379041f8218617069f8",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "The governance probe is only ever run against the third-party control agent, never against busbar, so busbar's quarantine, card re-check and outbound-cap behaviour is never observed; its documented harness flag selects nothing. Read fully."
+    }
+   ]
   },
   {
    "id": "testing/a2a-harness",
@@ -1553,14 +2297,29 @@
    "paths": [
     "testing/a2a-harness"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "95999ff682d011a4adb888f8d3d314bd0ab2a7cae672a56057f61bb95813b380",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 5
+   },
+   "report": "Drives a release busbar built from the commit with a test floor equal to the registered count and checked control-only deviation records; but a hanging subscribe scores pass, a stale deviation record prints red yet exits green, a peer-request stub always reports zero calls, and the card canonicalizer formats numbers outside the required form. Code read fully, baselines sampled.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "95999ff682d011a4adb888f8d3d314bd0ab2a7cae672a56057f61bb95813b380",
+     "counts": {
+      "LOW": 5
+     },
+     "report": "Drives a release busbar built from the commit with a test floor equal to the registered count and checked control-only deviation records; but a hanging subscribe scores pass, a stale deviation record prints red yet exits green, a peer-request stub always reports zero calls, and the card canonicalizer formats numbers outside the required form. Code read fully, baselines sampled."
+    }
+   ]
   },
   {
    "id": "testing/a2a-supplement",
@@ -1568,14 +2327,29 @@
    "paths": [
     "testing/a2a-supplement"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "381d35c5b9431380d2281a7bba06772cf17d13a8ff8f5d290789bab6a5d0d810",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 5
+   },
+   "report": "Checks are written from the specification with self-tests, but the suite is wired to nothing so it never judges the shipped build; its README reports a cross-tenant task read as live while code says fixed and no gated run proves it; the plan has no floor or set check; control legs swallow could-not-start. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "381d35c5b9431380d2281a7bba06772cf17d13a8ff8f5d290789bab6a5d0d810",
+     "counts": {
+      "LOW": 5
+     },
+     "report": "Checks are written from the specification with self-tests, but the suite is wired to nothing so it never judges the shipped build; its README reports a cross-tenant task read as live while code says fixed and no gated run proves it; the plan has no floor or set check; control legs swallow could-not-start. Read fully."
+    }
+   ]
   },
   {
    "id": "testing/a2a-tck",
@@ -1583,14 +2357,31 @@
    "paths": [
     "testing/a2a-tck"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "ac50d746d5a76e6e56ffa1db1eeb26fe95568af15043fb4e5375d77dead7b13f",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "LOW": 3
+   },
+   "report": "Breaks Law 10: the subject gate forgives the three push-delivery failures by id without evaluating the stated reason, and silently excuses every SKIPPED requirement, including any the control executes. The waiver ledger cites moved source paths and records the plane running its own webhook guard and delivery socket. Code read fully, baselines sampled.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "ac50d746d5a76e6e56ffa1db1eeb26fe95568af15043fb4e5375d77dead7b13f",
+     "counts": {
+      "HIGH": 2,
+      "LOW": 3
+     },
+     "report": "Breaks Law 10: the subject gate forgives the three push-delivery failures by id without evaluating the stated reason, and silently excuses every SKIPPED requirement, including any the control executes. The waiver ledger cites moved source paths and records the plane running its own webhook guard and delivery socket. Code read fully, baselines sampled."
+    }
+   ]
   },
   {
    "id": "testing/fleet-fixtures",
@@ -1598,14 +2389,29 @@
    "paths": [
     "testing/fleet-fixtures"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "bfef7799c1ed735be59dd9209a5a2b3503e37ae86020cf3994f8395f19a3820a",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 4
+   },
+   "report": "Verdict machinery is sound and images are pinned by digest, but the store persistence probe is wired to nothing, valkey run namespaces can collide and flush each other, and several comments point at scripts and workflows that are gone. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "bfef7799c1ed735be59dd9209a5a2b3503e37ae86020cf3994f8395f19a3820a",
+     "counts": {
+      "LOW": 4
+     },
+     "report": "Verdict machinery is sound and images are pinned by digest, but the store persistence probe is wired to nothing, valkey run namespaces can collide and flush each other, and several comments point at scripts and workflows that are gone. Read fully."
+    }
+   ]
   },
   {
    "id": "testing/llm-conformance",
@@ -1613,14 +2419,29 @@
    "paths": [
     "testing/llm-conformance"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "13effa0ecde77cebe30cf366626f2ac295e8abca1bfd8f23d2de5a3bb9a511da",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 4
+   },
+   "report": "Judges recordings against digest-pinned provider specs and refuses stale forgiveness, but its skip ceiling ignores the rows its own named-gap list forgives so a full run cannot go green, its owed set has no floor, and an uncompilable spec pattern passes silently. Code read fully, data sampled.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "13effa0ecde77cebe30cf366626f2ac295e8abca1bfd8f23d2de5a3bb9a511da",
+     "counts": {
+      "LOW": 4
+     },
+     "report": "Judges recordings against digest-pinned provider specs and refuses stale forgiveness, but its skip ceiling ignores the rows its own named-gap list forgives so a full run cannot go green, its owed set has no floor, and an uncompilable spec pattern passes silently. Code read fully, data sampled."
+    }
+   ]
   },
   {
    "id": "testing/mcp-conformance",
@@ -1628,14 +2449,29 @@
    "paths": [
     "testing/mcp-conformance"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "bde9b5e3b34f176b65b73bcb314bcf417d3d83e9bfc14e651ca8ddace598b7b6",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 3
+   },
+   "report": "Subject-neutral and well guarded, but busbar answering an upstream sampling request on the caller's behalf is only an advisory note and never fails, a seam recommendation pushes busbar to act on carried content, and wedged negative-control modes pass silently. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "bde9b5e3b34f176b65b73bcb314bcf417d3d83e9bfc14e651ca8ddace598b7b6",
+     "counts": {
+      "LOW": 3
+     },
+     "report": "Subject-neutral and well guarded, but busbar answering an upstream sampling request on the caller's behalf is only an advisory note and never fails, a seam recommendation pushes busbar to act on carried content, and wedged negative-control modes pass silently. Read fully."
+    }
+   ]
   },
   {
    "id": "testing/plane-copies",
@@ -1643,14 +2479,31 @@
    "paths": [
     "testing/plane-copies"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "ca12226cb59599e34633b44cf7a4270cca60cede7ced41e31da7f66407755fa9",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "LOW": 2
+   },
+   "report": "The credential fixture pins the kernel still presenting six named vendors' outbound credentials with kernel tests naming them, breaking Law 1; two files are now one-sided goldens of deleted kernel code still described as two-copy drift guards, and consumers floor at a single row. Data sampled.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "ca12226cb59599e34633b44cf7a4270cca60cede7ced41e31da7f66407755fa9",
+     "counts": {
+      "HIGH": 1,
+      "LOW": 2
+     },
+     "report": "The credential fixture pins the kernel still presenting six named vendors' outbound credentials with kernel tests naming them, breaking Law 1; two files are now one-sided goldens of deleted kernel code still described as two-copy drift guards, and consumers floor at a single row. Data sampled."
+    }
+   ]
   },
   {
    "id": "testing/shadow-oracle",
@@ -1673,14 +2526,31 @@
    "paths": [
     "testing/voice-conformance"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "97a3346bc37b24dffb98b00a67591191912c0ac516f9664a174bc7011d3c2647",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "LOW": 4
+   },
+   "report": "Breaks Law 11 and Law 3: one leg certifies in-process tool execution and requires busbar to intercept and drop client tool replies by content; two legs certify the plane dialing its own provider socket behind a plane-local destination guard. All legs drive a legacy crate over a test double, the leg floor sits far under today's count, and the budget hard-close check cannot fail. Code read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "97a3346bc37b24dffb98b00a67591191912c0ac516f9664a174bc7011d3c2647",
+     "counts": {
+      "HIGH": 2,
+      "LOW": 4
+     },
+     "report": "Breaks Law 11 and Law 3: one leg certifies in-process tool execution and requires busbar to intercept and drop client tool replies by content; two legs certify the plane dialing its own provider socket behind a plane-local destination guard. All legs drive a legacy crate over a test double, the leg floor sits far under today's count, and the budget hard-close check cannot fail. Code read fully."
+    }
+   ]
   },
   {
    "id": "testing/ws-conformance",
@@ -1703,13 +2573,15 @@
    "paths": [
     "testing"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "a23bd8aff1b1adbd28228237cf71701c3bb825fe64c1bf80223bcde81e2ce377",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 2
+   },
+   "report": "The root testing README describes a deleted workflow and only the A2A batteries, and justifies a non-failing A2A subject leg with the claim that busbar does not serve A2A, a premise no longer true and checked by nothing. Read fully.",
+   "auditor": "opus-q128-architecture",
    "fixed_at": null,
    "exclude": [
     "testing/a2a-governance",
@@ -1723,6 +2595,19 @@
     "testing/shadow-oracle",
     "testing/voice-conformance",
     "testing/ws-conformance"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "a23bd8aff1b1adbd28228237cf71701c3bb825fe64c1bf80223bcde81e2ce377",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "The root testing README describes a deleted workflow and only the A2A batteries, and justifies a non-failing A2A subject leg with the claim that busbar does not serve A2A, a premise no longer true and checked by nothing. Read fully."
+    }
    ]
   }
  ]
