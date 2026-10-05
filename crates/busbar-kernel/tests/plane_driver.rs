@@ -1923,7 +1923,8 @@ async fn a_gate_first_plane_screens_its_entry_before_the_far_end_and_stops_at_th
             .contains(&busbar_contract::caps::StepName::Admit),
         "a veto admits nothing: the door was never asked"
     );
-    assert_eq!(*binder.asked.lock().unwrap(), vec![String::new()]);
+    // The entry the plane's projection names (this double projects `pool-a`).
+    assert_eq!(*binder.asked.lock().unwrap(), vec!["pool-a".to_string()]);
     assert!(far.sent().is_empty(), "nothing reached the far end");
     let rendered = units.take_rendered().expect("the veto is rendered");
     assert_eq!(rendered.status, 451);
