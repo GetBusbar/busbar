@@ -646,24 +646,6 @@
    ]
   },
   {
-   "id": "crates/plane-example/src",
-   "kind": "production",
-   "paths": [
-    "crates/plane-example/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/plane-example/src/tests"
-   ]
-  },
-  {
    "id": "crates/plugin-loader/src",
    "kind": "production",
    "paths": [

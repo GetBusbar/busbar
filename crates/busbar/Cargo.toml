@@ -526,10 +526,6 @@ futures = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
-# The plane axis's both-doors proof (`src/root/tests/linked.rs`): a `["cdylib", "rlib"]` fixture, so
-# the test links its `PLANE_DECL` (the linked door) and drops its cdylib into a temp `plugins/`
-# directory (the dropped-in door) and requires the two to install byte-identical registry rows.
-busbar-plugin-example-plane = { path = "../plane-example" }
 # The dropped-in export plugin's end-to-end proof (`tests/export_plugin_dropped_in_serves.rs`): the
 # FILE sink's repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-file` edge
 # above, dropped into `plugins/` as the library a tarball of the sink carries. The sink's own
