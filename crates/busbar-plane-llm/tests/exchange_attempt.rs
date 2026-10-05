@@ -229,6 +229,33 @@ fn a_same_dialect_unknown_body_member_goes_out() {
     assert_eq!(v["x_vendor_flag"], true, "the unknown member, unchanged");
 }
 
+/// A body-model caller that smuggles busbar's own array-stream router key into its body is not a
+/// JSON-array caller (only a path-model arrival's URL makes one), and the key never reaches the far
+/// end: 1.5.5 stripped every dialect's router key before every upstream call (v1.5.5
+/// `crates/busbar/src/proxy/wire.rs` `strip_router_shim_keys`; the retired legacy cover
+/// `test_gemini_json_array_shim_ignored_for_body_model_ingress`).
+#[test]
+fn a_body_model_callers_smuggled_router_key_never_reaches_the_far_end() {
+    let h = head(&[("content-type", "application/json")]);
+    let a = arrived(
+        "/v1/chat/completions",
+        &h,
+        r#"{"model":"gpt","stream":true,"__busbar_gemini_json_array":true,"messages":[]}"#,
+    );
+    assert!(
+        !a.path_model.as_ref().is_some_and(|p| p.json_array),
+        "a body key never makes a JSON-array caller"
+    );
+    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    assert!(!r.pristine, "the router key is a governed member");
+    let v: Value = busbar_plane_llm::codec::json::parse(&r.body).expect("json");
+    assert!(v.get("__busbar_gemini_json_array").is_none(), "{v}");
+    assert_eq!(
+        v["stream"], true,
+        "a body-model far end keeps the caller's stream"
+    );
+}
+
 #[test]
 fn a_translated_route_drops_a_member_the_far_dialect_cannot_carry() {
     let h = head(&[("content-type", "application/json")]);
