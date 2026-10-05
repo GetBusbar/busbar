@@ -385,3 +385,23 @@ fn the_grpc_rendering_is_the_envelope_at_the_neutral_status() {
     assert_eq!(out.status, 0);
     assert_eq!(out, render(Dialect::JsonRpc, &kernel, false));
 }
+
+/// THE OPEN BREAKER'S REFUSAL is 1.5.5's `BreakerOpen` client text: `503`, `-32004`, the agent
+/// named, the request id echoed, and the seconds the `Retry-After` field repeats.
+#[test]
+fn an_open_breaker_refusal_names_the_agent_and_the_seconds_to_wait() {
+    let refusal = breaker_refusal("probe", Some(serde_json::json!(7)), 12);
+    assert_eq!(refusal.status, 503);
+    assert_eq!(refusal.code, CODE_UNSUPPORTED_OPERATION);
+    assert_eq!(refusal.id, Some(serde_json::json!(7)));
+    assert_eq!(
+        refusal.message,
+        "a2a.hop.breaker_open: agent `probe` is unavailable: its circuit breaker is open after \
+         repeated backend failures; busbar did not dispatch this request. Retry after 12s"
+    );
+    let rendered = render(Dialect::JsonRpc, &refusal, true);
+    assert_eq!(rendered.status, 503);
+    let doc: serde_json::Value = serde_json::from_slice(&rendered.body).expect("json");
+    assert_eq!(doc["id"], 7);
+    assert_eq!(doc["error"]["code"], -32004);
+}

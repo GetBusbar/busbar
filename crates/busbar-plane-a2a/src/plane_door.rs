@@ -851,6 +851,10 @@ slot!(
             );
             return Outcome::Ready;
         }
+        // AT MOST ONCE (1.5.5's relay): an agent that ANSWERED with a failure is not retried on
+        // another; its failure is the unit's answer, surfaced per attempt, while the walk still
+        // moves past a member whose breaker is open before anything was sent.
+        out.once();
         match &agent {
             Some(agent) => {
                 out.route(ROUTE_DIRECT, agent);
@@ -1757,7 +1761,30 @@ slot!(
             _ => return Outcome::Refused,
         };
         let text = input.field(|i| &i.text).bytes();
-        let rendered = if scoped {
+        // A unit its agent's open breaker refused before it dialled: 1.5.5's words for it, naming
+        // the agent and the seconds until it may be dialled again, which `Retry-After` repeats.
+        let retry_after = given.retry_after_s.max(1);
+        let tripped = (given.reason
+            == busbar_contract::abi::plane::RefusalCode::BreakerOpen.code())
+        .then(|| {
+            instance.get().and_then(|plane| {
+                plane.units.with(&given.unit, |u| {
+                    let u = u?;
+                    let id = match &u.disposition {
+                        Disposition::Request { id, .. } | Disposition::Unlisted { id, .. } => {
+                            (!id.is_null()).then(|| id.clone())
+                        }
+                        _ => None,
+                    };
+                    let agent = u.agent.clone()?;
+                    Some(arrival::breaker_refusal(&agent, id, retry_after))
+                })
+            })
+        })
+        .flatten();
+        let rendered = if let Some(refusal) = &tripped {
+            arrival::render(dialect, refusal, true)
+        } else if scoped {
             let reachable = std::str::from_utf8(text).unwrap_or_default();
             let serving = instance
                 .get()
@@ -1803,11 +1830,11 @@ slot!(
                 .collect::<Vec<_>>();
             (reply.body, head, reply.code)
         } else {
-            (
-                rendered.body,
-                vec![("content-type", rendered.content_type.to_string())],
-                rendered.status,
-            )
+            let mut head = vec![("content-type", rendered.content_type.to_string())];
+            if tripped.is_some() {
+                head.push(("retry-after", retry_after.to_string()));
+            }
+            (rendered.body, head, rendered.status)
         };
         // THE UNIT'S AUDIT ROW, rejected, for a refusal the engine made after its admission (a
         // gate's veto, a spent budget, an open breaker), naming the unit's agent (or busbar's

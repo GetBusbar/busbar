@@ -1,4 +1,4 @@
-# THE AGENT DOOR'S WIRE WORDS (serve.rs, the agent door's root leg) -- golden input data, one
+# THE AGENT DOOR'S WIRE WORDS (serve_door.rs, the agent door's root leg) -- golden input data, one
 # `key = value` per line (`#` starts a comment). These are the linked plane's own words its
 # Statement does not carry, as the root's door cells use them: the section its grammar reads (the
 # door the cells drive is the linked plane door that owns it), its key (the `hooks:` container the
@@ -11,3 +11,7 @@ section = agents
 plane_key = a2a
 mount = /a2a
 task_resource_type = a2a.busbar/task
+# The unit's audit row (door.rs AUDIT_ACTION, agent_resource): its action, and the kind its
+# resource names the agent under (`<resource_kind>:<agent id>`).
+audit_action = agent.call
+resource_kind = agent

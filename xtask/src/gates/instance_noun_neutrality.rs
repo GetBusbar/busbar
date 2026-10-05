@@ -121,7 +121,7 @@ struct Noun {
 
 // ── PLANES (DECISION #1 / #18 / #48) ──────────────────────────────────────────────────────────
 const FAM_MCP: &[&str] = &["busbar-mcp", "busbar-plane-mcp"];
-const FAM_A2A: &[&str] = &["busbar-a2a", "busbar-plane-a2a"];
+const FAM_A2A: &[&str] = &["busbar-plane-a2a"];
 const FAM_LLM: &[&str] = &["busbar-llm", "busbar-plane-llm"];
 // The streaming family. `busbar-streaming-codec` is named by the owner's map but does not exist in
 // this tree; `busbar-plane-voice` was DELETED into `busbar-plane-streaming` (#18/#83 — one plane per
@@ -163,7 +163,6 @@ const FAM_AUTH: &[&str] = &["auth-admin-tokens", "busbar-core-oauth2"];
 /// own unambiguous scheme spelling (a plugin crate identifier), and that spelling
 /// (not bare `gcp`) is what should be tracked.
 const GCP_GENERIC_MENTION_FILES: &[&str] = &[
-    "crates/busbar-a2a/src/a2a/tests/fetch_tests.rs",
     "crates/busbar-kernel/src/diagnostics/mod.rs",
 ];
 

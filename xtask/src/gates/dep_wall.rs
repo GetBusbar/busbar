@@ -57,7 +57,6 @@ const BANNED_PATHS: &[&str] = &["std::net", "tokio::net"];
 const LEGACY: &[&str] = &[
     "crates/busbar-llm",
     "crates/busbar-mcp",
-    "crates/busbar-a2a",
     "crates/busbar-voice",
 ];
 

@@ -362,7 +362,7 @@ static KINDS: &[KindDef] = &[
     KindDef {
         kind: "legacy",
         family: Family::Plane,
-        matchers: &["=busbar-llm", "=busbar-mcp", "=busbar-a2a", "=busbar-voice"],
+        matchers: &["=busbar-llm", "=busbar-mcp", "=busbar-voice"],
     },
 ];
 
@@ -440,7 +440,7 @@ const PENDING_EDGES: &[(&str, &str)] = &[
 ];
 
 /// The retiring 1.5.x crates, named so the ratchet can check they still exist.
-const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"];
+const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-voice"];
 
 /// THE MANIFESTS IN THIS REPOSITORY THAT ARE NOT CRATES OF THE TREE, each with the sentence that
 /// says why, and each on the expiry ratchet every allowance in this file lives under: an entry that
@@ -8012,7 +8012,7 @@ impl Gate for KindIsolationGate {
         if !self.ship {
             let mut ov = Overlay::new();
             ov.set(
-                "crates/busbar-a2a/src/planted_second_transport.rs",
+                "crates/plugin-loader/src/planted_second_transport.rs",
                 "pub struct Second;\nimpl Transport for Second {}\n",
             );
             report.push(prove_rows_red(
@@ -8021,7 +8021,7 @@ impl Gate for KindIsolationGate {
                 "a second implementation of a reviewed foreign face is a landing that grew it",
                 &[ROW_FACES],
                 ov,
-                &["face-ratchet", "busbar-a2a", "Transport"],
+                &["face-ratchet", "busbar-plugin-loader", "Transport"],
             ));
 
             // AND A ROW WHOSE IMPLEMENTATION IS GONE IS A DEAD ALLOWANCE.
@@ -8031,10 +8031,10 @@ impl Gate for KindIsolationGate {
                 "a reviewed face row that covers no implementation any more is struck",
                 &[ROW_FACES],
                 Ok((
-                    "crate = \"busbar-a2a\"\nface = \"Transport\"".to_string(),
-                    "crate = \"busbar-a2a-planted\"\nface = \"Transport\"".to_string(),
+                    "crate = \"busbar-plugin-loader\"\nface = \"Transport\"".to_string(),
+                    "crate = \"busbar-plugin-loader-planted\"\nface = \"Transport\"".to_string(),
                 )),
-                &["dead-face", "busbar-a2a-planted", "Strike the row"],
+                &["dead-face", "busbar-plugin-loader-planted", "Strike the row"],
             ));
         }
 
@@ -8673,14 +8673,14 @@ impl Gate for KindIsolationGate {
 
         // THE LEGACY RATCHET, proven by retiring one.
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-a2a/Cargo.toml");
+        ov.remove("crates/busbar-llm/Cargo.toml");
         report.push(prove_rows_red(
             cx,
             subject,
             "a legacy exemption that outlived its crate is refused",
             &[ROW_REGISTRY],
             ov,
-            &["legacy-retired", "busbar-a2a"],
+            &["legacy-retired", "busbar-llm"],
         ));
 
         // THE THREE TRUTHS, each planted in the file that carries it.

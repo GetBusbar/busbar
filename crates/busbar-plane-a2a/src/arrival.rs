@@ -454,6 +454,27 @@ pub fn kernel_refusal(status: u32, text: &str) -> Refusal {
     Refusal::unnamed(status, CODE_UNSUPPORTED_OPERATION, text)
 }
 
+/// The status a unit refused by its agent's open breaker answers with.
+pub const STATUS_UNAVAILABLE: u32 = 503;
+
+/// THE OPEN BREAKER'S REFUSAL (1.5.5's `RelayRefusal::BreakerOpen`, rendered by its
+/// `client_text`): the agent `agent` the unit addressed is not dialled while its breaker is open,
+/// and the caller is told the seconds until it may be, `retry_after_s` (the same figure the
+/// `Retry-After` field carries); `503`, `-32004`, echoing the request id `id`.
+#[must_use]
+pub fn breaker_refusal(agent: &str, id: Option<Value>, retry_after_s: u32) -> Refusal {
+    Refusal {
+        status: STATUS_UNAVAILABLE,
+        id,
+        code: CODE_UNSUPPORTED_OPERATION,
+        message: format!(
+            "a2a.hop.breaker_open: agent `{agent}` is unavailable: its circuit breaker is open \
+             after repeated backend failures; busbar did not dispatch this request. Retry after \
+             {retry_after_s}s"
+        ),
+    }
+}
+
 /// `-32602`: the request's parameters cannot be served as given.
 pub const CODE_INVALID_PARAMS: i64 = -32602;
 

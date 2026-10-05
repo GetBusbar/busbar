@@ -490,11 +490,7 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
     },
     CountRoot {
         area: "the agent codec, node and plane",
-        homes: &[
-            "crates/busbar-a2a/src/a2a",
-            "crates/busbar-a2a/src",
-            "crates/busbar-plane-a2a/src",
-        ],
+        homes: &["crates/busbar-plane-a2a/src"],
         floor: 40,
     },
     CountRoot {
@@ -2738,8 +2734,8 @@ mod tests {
     #[test]
     fn a_nested_home_is_counted_once_against_the_area_floor() {
         let cx = cx();
-        const OUTER: &[&str] = &["crates/busbar-a2a/src"];
-        let inner = "crates/busbar-a2a/src/a2a";
+        const OUTER: &[&str] = &["crates/busbar-plane-a2a/src"];
+        let inner = "crates/busbar-plane-a2a/src/a2a";
         let alone = walk_area(
             &cx,
             &CountRoot {
@@ -2755,8 +2751,10 @@ mod tests {
             .count();
         assert!(nested_count > 0, "the control needs a populated inner home");
         let floor = alone.len() + 1;
-        let homes: &'static [&'static str] =
-            &["crates/busbar-a2a/src/a2a", "crates/busbar-a2a/src"];
+        let homes: &'static [&'static str] = &[
+            "crates/busbar-plane-a2a/src/a2a",
+            "crates/busbar-plane-a2a/src",
+        ];
         let got = walk_area(
             &cx,
             &CountRoot {

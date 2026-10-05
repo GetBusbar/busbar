@@ -213,10 +213,6 @@ pub const PLANE_CRATES: &[PlaneCrate] = &[
         placement: "#83 SPLIT -> def 16-20",
     },
     PlaneCrate {
-        dir: "busbar-a2a",
-        placement: "#83 SPLIT -> def 16-20",
-    },
-    PlaneCrate {
         dir: "busbar-voice",
         placement: "#83 SPLIT -> def 16-20",
     },
