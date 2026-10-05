@@ -27,6 +27,7 @@ use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::slot;
 use busbar_core_connector::{
+    carrier::{Carry, Side},
     framer::{Call, Crossed, DoorFacts, FramerDoor},
     wire::HostWire,
 };
@@ -154,7 +155,10 @@ impl Dispatched {
             claims: stated.claims,
             role: stated.role,
             composes_over: stated.composes_over,
+            ported: stated.ported,
         };
+        // A carrier moves bytes over the host's I/O (`io.*`): the process's one, the connector's.
+        let _ = dispatcher().install_io(busbar_core_connector::hostio::process());
         Ok(Self { plugin, facts })
     }
 }
@@ -171,9 +175,68 @@ fn go<I: InFrame, O: OutFrame>(p: &Plugin<TransportKind>, s: u32, i: &mut I, o: 
     }
 }
 
+/// One side of a carried connection: an inline ticket of the process's one dispatcher, the one
+/// every transport door is adopted by (its wakes route there).
+struct InlineSide(super::loader::dispatch::InlineTicket);
+
+impl Side for InlineSide {
+    fn ticket(&self) -> busbar_contract::abi::mechanism::ticket::Ticket {
+        self.0.ticket()
+    }
+
+    fn register(&self, waker: &std::task::Waker) {
+        self.0.register(waker);
+    }
+}
+
+/// One INLINE crossing on `ticket` (a RESUME when `resume`): the host's `in`/`out` copied in, the
+/// answer copied back.
+fn go_inline<I: InFrame, O: OutFrame>(
+    p: &Plugin<TransportKind>,
+    ticket: busbar_contract::abi::mechanism::ticket::Ticket,
+    resume: bool,
+    s: u32,
+    i: &mut I,
+    o: &mut O,
+) -> Crossed {
+    let mut f = Frame::new(*i, *o);
+    let c = p.call_inline(ticket, resume, s, &mut f);
+    *i = f.input;
+    *o = f.out;
+    Crossed {
+        outcome: c.outcome,
+        error: c.error,
+    }
+}
+
 impl FramerDoor for Dispatched {
     fn facts(&self) -> &DoorFacts {
         &self.facts
+    }
+
+    fn side(&self) -> Option<Box<dyn Side>> {
+        if self.facts.role != busbar_contract::abi::transport::ROLE_CARRIER {
+            return None;
+        }
+        dispatcher()
+            .inline_ticket()
+            .map(|t| Box::new(InlineSide(t)) as Box<dyn Side>)
+    }
+
+    fn carry(&self, side: &dyn Side, resume: bool, call: Carry<'_>) -> Crossed {
+        let (p, t) = (&self.plugin, side.ticket());
+        match call {
+            Carry::Listen(i, o) => go_inline(p, t, resume, slot::LISTEN, i, o),
+            Carry::Accept(i, o) => go_inline(p, t, resume, slot::ACCEPT, i, o),
+            Carry::Dial(i, o) => go_inline(p, t, resume, slot::DIAL, i, o),
+            Carry::Read(i, o) => go_inline(p, t, resume, slot::READ, i, o),
+            Carry::Write(i, o) => go_inline(p, t, resume, slot::WRITE, i, o),
+            Carry::Flush(i, o) => go_inline(p, t, resume, slot::FLUSH, i, o),
+            Carry::Shut(i, o) => go_inline(p, t, resume, slot::SHUT, i, o),
+            Carry::Arrival(i, o) => go_inline(p, t, resume, slot::ARRIVAL, i, o),
+            // `cancel` is made on no ticket: the ticket it cancels rides its `in`.
+            Carry::Cancel(i, o) => go(p, life::CANCEL, i, o),
+        }
     }
 
     fn cross(&self, call: Call<'_>) -> Crossed {

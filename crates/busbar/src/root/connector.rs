@@ -157,10 +157,15 @@ pub fn boot(
         eprintln!("busbar: the connector did not build: {refusal}");
         std::process::exit(2);
     });
-    install(connector).unwrap_or_else(|_| {
+    let one = install(connector).unwrap_or_else(|_| {
         eprintln!("busbar: a second connector was built; the process has one");
         std::process::exit(2);
-    })
+    });
+    // The process's address carrier: what a framed connection on the legacy wire seam rides.
+    if let Some(via) = one.address_via() {
+        let _ = busbar_core_connector::carrier::install_address_carrier(via.door);
+    }
+    one
 }
 
 // TRANSITIONAL: the connector's own I/O thread exists because synchronous governance callers wait

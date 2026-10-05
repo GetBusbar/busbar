@@ -1262,7 +1262,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             &shutdown_tx,
             worker_shutdown_rx,
         );
-        let admin_listener = Listening::bind_stream(&admin_at, ROOT_BIND_LIMITS)
+        // The root's own binds listen through the process's address carrier (TRANSPORT-STACK (2):
+        // the accept loop is the carrier's); each accepted stream is handed up to the kernel.
+        let admin_via = root::connector::the().address_via();
+        let admin_listener = Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS)
             .unwrap_or_else(|e| die(format!("cannot bind listen address '{admin_listen}': {e}")));
         tracing::debug!(listen = %admin_listen, "admin listening through the connector");
         serve_listener(
@@ -1468,7 +1471,8 @@ fn serve_thread_per_core(
                     // runs after placement, in the serving loop (pinning at accept would change
                     // 1.5.5's per-core placement).
                     // TRANSITIONAL: drains at K1 U6/U7 (1.6.0-TODO.md).
-                    let listener = Listening::bind_stream(&bind_at, ROOT_BIND_LIMITS)
+                    let via = crate::root::connector::the().address_via();
+                    let listener = Listening::bind_stream(via.as_ref(), &bind_at, ROOT_BIND_LIMITS)
                         .unwrap_or_else(|e| {
                             die(format!(
                                 "cannot bind SO_REUSEPORT data listener on '{listen}' (per-core \
