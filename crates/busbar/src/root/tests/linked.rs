@@ -55,7 +55,6 @@ pub(super) fn linked(
         ws_arrivals: &[],
         on_host: &[],
         compose: &[],
-        stdio_serve: &[],
         cli_help: &[],
         exports: &[],
         export_doors: &[],

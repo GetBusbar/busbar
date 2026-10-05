@@ -8,17 +8,15 @@
 //! ## The coupling this gate mechanises
 //!
 //! `crates/busbar-kernel/src/plane_host/mod.rs` declares the universal host seam `EngineHost` as
-//! the SUM of ~13 capability-slice supertraits (`BreakerHost`, `LanePoolHost`, `MeteringHost`,
+//! the SUM of ~12 capability-slice supertraits (`BreakerHost`, `LanePoolHost`, `MeteringHost`,
 //! `ClockHost`, `TelemetryHost`, `JournalHost`, `MountHost`, `RegistryHost`, `HookConfigHost`,
-//! `BudgetHost`, `IdentityHost`, `AdmissionHost`, `CompletionHost`). Every plane holds an
-//! `Arc<dyn EngineHost>` and inherits EVERY method of EVERY slice. Some of those methods are
-//! SINGLE-PLANE-PURPOSED — `JournalHost::call_log_emit`/`call_log_emit_hostless` (payload
-//! `plane::calllog::CallInput` carries MCP vocabulary: `server`/`tool`/`tool_digest`/`pin_generation`),
-//! `IdentityHost::quarantine_settle`/`approval_redeem`/`ask_state_sealer` (MCP durable trust/audit),
-//! `CompletionHost::synthesize_completion` (LLM completion, reached only by MCP's sampling bridge). They
-//! are GENERICALLY NAMED, so the token-level plane-purity gates (F1/plane-abi-neutrality) are
-//! structurally blind to them: the coupling is SEMANTIC (what the method is FOR), not lexical. A NEW
-//! single-plane method could be added to the universal trait and no token gate would catch it.
+//! `BudgetHost`, `IdentityHost`, `AdmissionHost`). Every plane holds an `Arc<dyn EngineHost>` and
+//! inherits EVERY method of EVERY slice. Some of those methods were SINGLE-PLANE-PURPOSED — the MCP
+//! call-log emitters, durable trust/audit seams and the sampling bridge's completion seam, each
+//! deleted with `busbar-mcp` (ARCHITECT Q1c). Such methods are GENERICALLY NAMED, so the
+//! token-level plane-purity gates (F1/plane-abi-neutrality) are structurally blind to them: the
+//! coupling is SEMANTIC (what the method is FOR), not lexical. A NEW single-plane method could be
+//! added to the universal trait and no token gate would catch it.
 //!
 //! ## The mechanical question this gate answers
 //!
@@ -62,9 +60,10 @@ use std::path::{Path, PathBuf};
 /// The host-seam trait definition file. Its slice supertraits + `EngineHost` are the universe scanned.
 const HOST_TRAIT_FILE: &str = "crates/busbar-kernel/src/plane_host/mod.rs";
 
-/// The capability-slice supertraits of `EngineHost`, plus `EngineHost` itself (its provided
-/// `run_gauntlet`). A slice added/removed on the universal sum is ONE edit here — and the enumeration
-/// floor below bites if this list silently stops matching the trait file.
+/// The capability-slice supertraits of `EngineHost`, plus `EngineHost` itself (it declares no
+/// method of its own today; a method added directly on it is scanned). A slice added/removed on the
+/// universal sum is ONE edit here — and the enumeration floor below bites if this list silently
+/// stops matching the trait file.
 const SLICE_TRAITS: &[&str] = &[
     "BreakerHost",
     "LanePoolHost",
@@ -78,7 +77,6 @@ const SLICE_TRAITS: &[&str] = &[
     "BudgetHost",
     "IdentityHost",
     "AdmissionHost",
-    "CompletionHost",
     "EngineHost",
 ];
 
@@ -258,8 +256,8 @@ fn trait_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
 /// Every method NAME declared in a trait body: each `fn <ident>` token whose `fn` sits on an identifier
 /// boundary. Robust to `#[allow(...)]`/doc/attribute lines (those carry no `fn` keyword) and to generic
 /// params (we read only the name after `fn`). The traits here declare no nested `fn` inside a method
-/// body (the one provided method, `EngineHost::run_gauntlet`, calls the free `run_gauntlet` — a call,
-/// not an `fn` decl), so scanning the whole body for the `fn` keyword yields exactly the methods.
+/// body (a provided method's body makes calls, not `fn` decls), so scanning the whole body for the
+/// `fn` keyword yields exactly the methods.
 fn method_names(body: &str) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     // Work on chars for boundary logic — total even if the file ever gains non-ASCII.
@@ -445,8 +443,8 @@ fn run_scan() -> Scan {
 fn no_unjustified_single_plane_method_on_universal_engine_host() {
     let scan = run_scan();
 
-    // Enumeration floor: the ~13 slices carry ~75 methods. A parse regression that found almost
-    // nothing would make the whole gate vacuous. (75 today; floored well below to tolerate churn.)
+    // Enumeration floor: the ~12 slices carry ~67 methods. A parse regression that found almost
+    // nothing would make the whole gate vacuous. (67 today; floored below to tolerate churn.)
     assert!(
         scan.methods.len() >= 60,
         "enumerated only {} universal-EngineHost methods from {HOST_TRAIT_FILE} — the trait-body \
@@ -528,15 +526,13 @@ fn no_unjustified_single_plane_method_on_universal_engine_host() {
 fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
     let scan = run_scan();
 
-    // (1) Enumeration sees the specific F3 methods + a per-slice sampling — not a vacuous empty set.
+    // (1) Enumeration sees a per-slice sampling — not a vacuous empty set.
     for expect in [
-        "synthesize_completion", // CompletionHost
-        "call_log_emit",         // JournalHost
-        "quarantine_settle",     // IdentityHost
-        "clock_now_secs",        // ClockHost
-        "breaker_admit",         // BreakerHost
-        "run_gauntlet",          // EngineHost provided method
-        "plane_defs",            // RegistryHost
+        "settle_residual",   // JournalHost
+        "verify_token_test", // IdentityHost
+        "clock_now_secs",    // ClockHost
+        "breaker_admit",     // BreakerHost
+        "plane_defs",        // RegistryHost
     ] {
         assert!(
             scan.methods.contains(expect),

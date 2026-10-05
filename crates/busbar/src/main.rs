@@ -104,10 +104,10 @@ fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == "--safe-mode")
 }
 
-/// Whether `--mcp-stdio` was passed: boot everything, bind NOTHING, and serve the MCP plane on the
-/// process's own stdin/stdout (see `mcp::stdio_serve`). A scanner like `safe_mode_requested`
-/// rather than a `handle_cli_flags` exit arm, because it modifies how `run()` serves rather than
-/// replacing the run.
+/// Whether `--mcp-stdio` was passed: boot everything, bind NOTHING, and serve the plane claiming
+/// the stdio transport on the process's own stdin/stdout (see `root::serve::lines`). A scanner like
+/// `safe_mode_requested` rather than a `handle_cli_flags` exit arm, because it modifies how `run()`
+/// serves rather than replacing the run.
 fn stdio_serve_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == "--mcp-stdio") // noun-neutrality: frozen-literal pinned-by=crates/busbar/tests/mcp_stdio_serve.rs operator CLI flag (CHANGELOG 1.6.0)
 }
@@ -1205,20 +1205,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             root::kernel::ROOT_CARD.pin()
         })
         .await;
-        if let Some(gov) = app_handle.load().governance.clone() {
-            let n = gov.flush_budgets();
-            tracing::info!(flushed = n, "budget counters flushed on shutdown");
-            let m = gov.flush_metering();
-            tracing::info!(flushed = m, "metering rows flushed on shutdown");
-        }
-        std::process::exit(code);
-    }
-    let stdio_serve = LINKED.stdio_serve.first().copied();
-    if let Some(serve) = stdio_serve.filter(|_| stdio_serve_requested(std::env::args())) {
-        // The neutral host factory, minted core-side and threaded into the stdio transport so the plane
-        // re-mints the host over each frame's live snapshot without naming the core factory itself.
-        let factory = busbar_kernel::plane_host::live_host_factory(app_handle.clone());
-        let code = serve(factory).await;
         if let Some(gov) = app_handle.load().governance.clone() {
             let n = gov.flush_budgets();
             tracing::info!(flushed = n, "budget counters flushed on shutdown");
