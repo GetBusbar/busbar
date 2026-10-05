@@ -169,19 +169,13 @@ pub enum Stage {
     Done,
 }
 
-/// ONE MIRROR across its piece's PENDING entries: what it issues, to whom, and the request in
-/// flight.
-pub struct Flight {
-    /// Where it stands.
-    pub stage: Stage,
-    /// The mirrored verb.
-    pub method: &'static str,
-    /// The agent's own id for the task.
-    pub backend_task: String,
-    /// The create, for a re-arm.
-    pub create: Value,
-    /// The agent: its registration name, its url, whether its registration reaches private
-    /// addresses, its binding, and the version the hop declares.
+/// ONE REQUEST BUSBAR ORIGINATES to an agent, across its piece's PENDING entries: the agent (its
+/// registration name, url, private reach, binding and the version the request declares), the
+/// handle the next host call takes, and the request in flight.
+pub struct Originated {
+    /// The agent's registration name: the dial names it ([`Exchange::as_member`]).
+    ///
+    /// [`Exchange::as_member`]: busbar_contract::abi::sdk::exchange::Exchange::as_member
     pub agent: String,
     /// The agent's url.
     pub url: String,
@@ -197,15 +191,30 @@ pub struct Flight {
     pub exchange: Option<(u32, Box<busbar_contract::abi::sdk::exchange::Exchange>)>,
 }
 
-impl std::fmt::Debug for Flight {
+impl std::fmt::Debug for Originated {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Flight")
-            .field("stage", &self.stage)
-            .field("method", &self.method)
+        f.debug_struct("Originated")
             .field("agent", &self.agent)
+            .field("seq", &self.seq)
             .field("in_flight", &self.exchange.is_some())
             .finish_non_exhaustive()
     }
+}
+
+/// ONE MIRROR: where it stands, the verb it mirrors, the agent's own id for the task, the create a
+/// re-arm issues, and the requests it originates.
+#[derive(Debug)]
+pub struct Flight {
+    /// Where it stands.
+    pub stage: Stage,
+    /// The mirrored verb.
+    pub method: &'static str,
+    /// The agent's own id for the task.
+    pub backend_task: String,
+    /// The create, for a re-arm.
+    pub create: Value,
+    /// The requests.
+    pub hop: Originated,
 }
 
 impl Flight {
@@ -218,6 +227,12 @@ impl Flight {
         }
     }
 
+    /// The params this stage issues.
+    #[must_use]
+    pub fn params(&self) -> Value {
+        params_for(self.issuing(), &self.backend_task, &self.create)
+    }
+
     /// The stage after this one's request was answered (`answered` = its status and body, `None`
     /// when it was not answered or could not be framed).
     pub fn advance(&mut self, answered: Option<(u16, &[u8])>) {
@@ -227,7 +242,7 @@ impl Flight {
                     self.method,
                     method::GET_PUSH_CONFIG | method::LIST_PUSH_CONFIGS
                 );
-                if read && drifted(self.binding, answered, &config_id(&self.backend_task)) {
+                if read && drifted(self.hop.binding, answered, &config_id(&self.backend_task)) {
                     Stage::Rearm
                 } else {
                     Stage::Done
@@ -236,6 +251,56 @@ impl Flight {
             Stage::Rearm | Stage::Done => Stage::Done,
         };
     }
+}
+
+/// `ListTasks`, as busbar issues it to refresh its own rows from the agent (the engine's
+/// `originate::refresh_listed_tasks`): no paging members, the agent's default page.
+pub const LIST_TASKS: &str = "ListTasks";
+
+/// WHAT A LISTING TAUGHT BUSBAR: for each entry of the agent's answer whose id is the agent's own
+/// id for a task in `ours` (agent id to busbar id), the state it reports, read STRICTLY (an entry
+/// whose state cannot be read taught nothing). An entry busbar cannot match is ignored in silence:
+/// that is what stops one tenant's list from moving another's row.
+#[must_use]
+pub fn listed_states(
+    binding: Binding,
+    answered: Option<(u16, &[u8])>,
+    ours: &std::collections::BTreeMap<String, String>,
+) -> Vec<(String, crate::a2a::task::TaskState)> {
+    let Some((status, body)) = answered else {
+        return Vec::new();
+    };
+    if !(200..300).contains(&status) {
+        return Vec::new();
+    }
+    let id = Value::String(ORIGINATED_RPC_ID.into());
+    let envelope = match binding {
+        Binding::HttpJson => crate::binding::rewrap(body, &id).ok(),
+        Binding::JsonRpc => Some(body.to_vec()),
+    };
+    let Some(result) = envelope
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| v.get("result").cloned())
+    else {
+        return Vec::new();
+    };
+    let listed = result
+        .get("tasks")
+        .and_then(Value::as_array)
+        .or_else(|| result.as_array())
+        .cloned()
+        .unwrap_or_default();
+    listed
+        .iter()
+        .filter_map(|entry| {
+            let busbar = ours.get(entry.get("id")?.as_str()?)?;
+            let state = entry
+                .pointer("/status/state")
+                .and_then(Value::as_str)
+                .and_then(crate::identity::wire_state)?;
+            Some((busbar.clone(), state))
+        })
+        .collect()
 }
 
 #[cfg(test)]

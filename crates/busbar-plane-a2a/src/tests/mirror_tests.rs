@@ -135,13 +135,7 @@ fn a_read_that_does_not_find_busbars_registration_re_arms() {
         method: method::GET_PUSH_CONFIG,
         backend_task: "b-1".into(),
         create: Value::Null,
-        agent: "planner".into(),
-        url: "https://agent.example".into(),
-        allow_private: false,
-        binding: Binding::JsonRpc,
-        version: "1.0",
-        seq: 0,
-        exchange: None,
+        hop: hop(),
     };
     assert_eq!(flight.issuing(), method::GET_PUSH_CONFIG);
     flight.advance(Some((200, gone.as_bytes())));
@@ -156,8 +150,50 @@ fn a_read_that_does_not_find_busbars_registration_re_arms() {
     let mut create = Flight {
         stage: Stage::Mirror,
         method: method::CREATE_PUSH_CONFIG,
-        ..flight
+        backend_task: "b-1".into(),
+        create: Value::Null,
+        hop: hop(),
     };
     create.advance(None);
     assert_eq!(create.stage, Stage::Done, "only a read reconciles");
+}
+
+fn hop() -> Originated {
+    Originated {
+        agent: "planner".into(),
+        url: "https://agent.example".into(),
+        allow_private: false,
+        binding: Binding::JsonRpc,
+        version: "1.0",
+        seq: 0,
+        exchange: None,
+    }
+}
+
+/// A listing moves only the rows busbar can match, by the state each reports strictly.
+#[test]
+fn a_listing_moves_only_what_busbar_can_match() {
+    use crate::a2a::task::TaskState;
+    let ours: std::collections::BTreeMap<String, String> =
+        [("b-1".to_string(), "t-1".to_string())].into();
+    let answer = serde_json::json!({ "jsonrpc": "2.0", "id": ORIGINATED_RPC_ID, "result": {
+        "tasks": [
+            { "id": "b-1", "status": { "state": "TASK_STATE_COMPLETED" } },
+            { "id": "b-2", "status": { "state": "completed" } },
+            { "id": "b-1", "status": { "state": "nonsense" } },
+        ] } })
+    .to_string();
+    assert_eq!(
+        listed_states(Binding::JsonRpc, Some((200, answer.as_bytes())), &ours),
+        vec![("t-1".to_string(), TaskState::Completed)]
+    );
+    let bare = serde_json::json!({ "jsonrpc": "2.0", "id": ORIGINATED_RPC_ID,
+        "result": [ { "id": "b-1", "status": { "state": "working" } } ] })
+    .to_string();
+    assert_eq!(
+        listed_states(Binding::JsonRpc, Some((200, bare.as_bytes())), &ours).len(),
+        1
+    );
+    assert!(listed_states(Binding::JsonRpc, Some((502, b"")), &ours).is_empty());
+    assert!(listed_states(Binding::JsonRpc, None, &ours).is_empty());
 }

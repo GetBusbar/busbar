@@ -53,7 +53,17 @@ pub struct Pass {
     /// A local answer decided and held while busbar's own callback is mirrored onto the agent
     /// ([`crate::mirror`]): its status, its body, its record writes, and the mirror in flight.
     held: Option<Held>,
+    /// `ListTasks`'s refresh from the agent ([`refresh_listed`]): the listing in flight, then its
+    /// answer and the handle the piece's calls count on from after it, and how many of the moves it
+    /// recorded have queued their deliveries.
+    listing: Option<Box<crate::mirror::Originated>>,
+    listed: Option<Listed>,
+    refreshed_queued: usize,
 }
+
+/// A finished listing: the handle the piece's calls count on from after it, and its answer's status
+/// and body (`None` = not answered).
+type Listed = (u32, Option<(u16, Vec<u8>)>);
 
 /// A local answer held across the mirror's PENDING entries.
 #[derive(Debug)]
@@ -417,7 +427,7 @@ pub fn on_piece(
             });
             return Some(Outcome::Pending);
         }
-        let issued = held.flight.seq;
+        let issued = held.flight.hop.seq;
         let answer = local::Answer {
             status: held.status,
             body: held.body,
@@ -490,6 +500,30 @@ pub fn on_piece(
             status: refusal.status,
             body: serde_json::to_vec(&refusal.envelope()).unwrap_or_default(),
         })),
+        // `ListTasks` refreshes this caller's rows on the agent from the agent's own list first (the
+        // engine's `refresh_listed_tasks`), then answers busbar's rows as they now stand.
+        None if verb == local::LocalVerb::ListTasks => {
+            match refresh_listed(
+                plane,
+                instance,
+                unit,
+                &mut via,
+                (caller, member),
+                (section.as_deref(), generation, entry.now, version),
+                &mut writes,
+            ) {
+                Err(Halt::Pending) => return Some(Outcome::Pending),
+                Err(Halt::Failed(_)) | Ok(()) => {}
+            }
+            let staged = writes.clone();
+            local::list_answer(
+                &mut tasks::Staged::new(&mut via, &staged),
+                &envelope,
+                caller,
+                entry.now,
+            )
+            .map(Some)
+        }
         None => local::answer(&mut via, verb, &envelope, caller, entry.now, &mut writes),
     };
     let answer = match answered {
@@ -541,7 +575,7 @@ pub fn on_piece(
             });
             return Some(Outcome::Pending);
         }
-        let issued = flight.seq;
+        let issued = flight.hop.seq;
         return Some(answered_window(
             plane,
             unit,
@@ -564,6 +598,142 @@ pub fn on_piece(
         &writes,
         issued,
     ))
+}
+
+/// REFRESH WHAT BUSBAR LAST SAW from the agent doing the work (the engine's
+/// `originate::refresh_listed_tasks`): the caller's live rows on this agent whose agent ids busbar
+/// learnt are the whitelist; the agent is asked `ListTasks` (its default page) only when there is
+/// one; each matched entry's strictly-read state moves its row through the one transition table,
+/// and each move queues its delivery. Nothing from the answer is rendered. Across PENDING entries
+/// the listing is held on the unit and every host call replays in its order; `via` counts on past
+/// the listing's calls when it returns.
+#[allow(clippy::too_many_arguments)]
+fn refresh_listed<'h>(
+    plane: &'h A2aDoor,
+    instance: &Instance<'_, A2aDoor>,
+    unit: u64,
+    via: &mut Via<'h>,
+    (caller, member): (&str, &str),
+    (section, generation, now, version): (
+        Option<&crate::a2a::config::AgentsCfg>,
+        u64,
+        u64,
+        &'static str,
+    ),
+    writes: &mut Vec<Write>,
+) -> Result<(), Halt> {
+    let Some(def) = section.and_then(|s| s.agents.get(member)) else {
+        return Ok(());
+    };
+    let ours: std::collections::BTreeMap<String, String> = tasks::list(via, caller, now)?
+        .iter()
+        .filter_map(|row| crate::a2a::task::Task::from_row(row).ok())
+        .filter(|t| t.agent_id == member && !t.state.is_terminal())
+        .filter_map(|t| Some((plane.backend_of(caller, &t.task_id)?, t.task_id)))
+        .collect();
+    if ours.is_empty() {
+        return Ok(());
+    }
+    let (Some(host), ticket) = (plane.host.as_ref(), instance.ticket()) else {
+        return Ok(());
+    };
+    let held = plane.units.with(&unit, |u| {
+        u.map(|u| {
+            (
+                u.pass.listed.clone(),
+                u.pass.listing.take(),
+                u.pass.refreshed_queued,
+            )
+        })
+    });
+    let Some((listed, listing, queued)) = held else {
+        return Ok(());
+    };
+    let (after, answered) = match listed {
+        Some(done) => done,
+        None => {
+            let card = plane.cards.at(member, generation);
+            let Some(binding) =
+                crate::binding::speakable(&crate::binding::binding_of(card.as_deref()))
+            else {
+                return Ok(());
+            };
+            let mut hop = listing.unwrap_or_else(|| {
+                Box::new(crate::mirror::Originated {
+                    agent: member.to_string(),
+                    url: def.url.clone(),
+                    allow_private: def.allow_private,
+                    binding,
+                    version,
+                    seq: via.issued(),
+                    exchange: None,
+                })
+            });
+            let params = serde_json::json!({});
+            match crate::plane_door::drive_originated(
+                plane,
+                ticket,
+                &mut hop,
+                crate::mirror::LIST_TASKS,
+                &params,
+            ) {
+                Poll::Pending => {
+                    plane.units.with(&unit, |u| {
+                        if let Some(u) = u {
+                            u.pass.listing = Some(hop);
+                        }
+                    });
+                    return Err(Halt::Pending);
+                }
+                Poll::Ready(answered) => {
+                    let done = (hop.seq, answered);
+                    plane.units.with(&unit, |u| {
+                        if let Some(u) = u {
+                            u.pass.listed = Some(done.clone());
+                        }
+                    });
+                    done
+                }
+            }
+        }
+    };
+    *via = Via::new(host, plane.services, ticket, after, &plane.grown);
+    let card = plane.cards.at(member, generation);
+    let binding =
+        crate::binding::speakable(&crate::binding::binding_of(card.as_deref())).unwrap_or_default();
+    let states = crate::mirror::listed_states(
+        binding,
+        answered.as_ref().map(|(s, b)| (*s, b.as_slice())),
+        &ours,
+    );
+    let at = tasks::Step {
+        caller,
+        request_id: "",
+        now,
+    };
+    let mut moved = Vec::new();
+    for (busbar_id, state) in states {
+        // A refusal is the table doing its job (a re-reported or forbidden move), never the
+        // caller's error.
+        match tasks::transition(via, &at, &busbar_id, state, writes) {
+            Err(Halt::Pending) => return Err(Halt::Pending),
+            Err(Halt::Failed(_)) | Ok(None) => {}
+            Ok(Some(row)) => moved.push(row),
+        }
+    }
+    for (i, row) in moved.iter().enumerate() {
+        let config =
+            local::held_config(&mut tasks::Staged::new(via, writes), caller, &row.task_id)?;
+        if i >= queued {
+            crate::push_door::queue(&plane.deliveries, row, config.as_ref());
+            plane.units.with(&unit, |u| {
+                if let Some(u) = u {
+                    u.pass.refreshed_queued = i + 1;
+                }
+            });
+        }
+    }
+    Ok(())
 }
 
 /// THE MIRROR a successful push-config verb owes ([`crate::mirror`]), or `None` when it owes none:
@@ -620,13 +790,15 @@ fn mirror_flight(
         method,
         backend_task,
         create,
-        agent: member.to_string(),
-        url: def.url.clone(),
-        allow_private: def.allow_private,
-        binding,
-        version,
-        seq: signer.seq,
-        exchange: None,
+        hop: crate::mirror::Originated {
+            agent: member.to_string(),
+            url: def.url.clone(),
+            allow_private: def.allow_private,
+            binding,
+            version,
+            seq: signer.seq,
+            exchange: None,
+        },
     })))
 }
 
@@ -678,6 +850,9 @@ fn answered_window(
             if let Some(u) = u {
                 u.pass.issued = issued;
                 u.pass.entry = None;
+                u.pass.listing = None;
+                u.pass.listed = None;
+                u.pass.refreshed_queued = 0;
             }
         });
     }

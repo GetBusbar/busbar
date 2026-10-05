@@ -166,6 +166,21 @@ pub fn answer(
     Ok(Some(answered))
 }
 
+/// `ListTasks`'s answer over `rec` (the refreshed rows, seen through the piece's own writes).
+///
+/// # Errors
+/// [`Halt`].
+pub(crate) fn list_answer(
+    rec: &mut dyn Records,
+    envelope: &Value,
+    caller: &str,
+    now: u64,
+) -> Result<Answer, Halt> {
+    let rpc_id = envelope.get("id").cloned().unwrap_or(Value::Null);
+    let params = envelope.get("params").cloned().unwrap_or(Value::Null);
+    list_tasks(rec, &params, &rpc_id, caller, now)
+}
+
 // ══ THE TASK PROJECTION ══════════════════════════════════════════════════════════════════════════
 
 /// The protocol's spelling of a task state (the `TASK_STATE_*` tokens of the A2A v1.0 schema).
