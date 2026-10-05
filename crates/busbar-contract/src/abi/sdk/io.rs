@@ -18,6 +18,7 @@ use crate::abi::host::io::{
 use crate::abi::host::service::{ServiceFn, ServiceHead, ServiceOut};
 use crate::abi::mechanism::call::{AbiStr, Field, Outcome, RawOutcome};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
+use crate::abi::sdk::lent::HostBuf;
 
 pub use crate::abi::host::io::{DIR_BOTH, DIR_READ, DIR_WRITE, MAX_ADDR};
 
@@ -250,6 +251,72 @@ impl<'h> Io<'h> {
             .map(|r| r.and_then(|o| count(o.len, cap)))
     }
 
+    /// `io.read` STRAIGHT INTO THE HOST'S BUFFER (a carrier's `read` answering the host's own
+    /// `buf`): the bytes land at `buf`'s next free place and are counted there; how many (`0` =
+    /// the clean end, or no room left). `Pending` when none is ready.
+    pub fn read_host(&mut self, handle: u64, buf: &mut HostBuf<'_, u8>) -> Poll<IoAnswer<usize>> {
+        let (ptr, cap) = buf.room();
+        let i = ReadIn {
+            head: head(),
+            handle,
+            buf: ptr,
+            cap,
+        };
+        let r = self
+            .call(op::READ, |s| s.read, i)
+            .map(|r| r.and_then(|o| count(o.len, cap)));
+        if let Poll::Ready(Ok(n)) = r {
+            buf.advance(n);
+        }
+        r
+    }
+
+    /// The address-writing slots, into a HOST buffer (a carrier's `listen`/`accept`/`arrival`
+    /// answering the host's own address buffer): the address lands at `addr`'s next free place.
+    fn addr_in(handle: u64, addr: &mut HostBuf<'_, u8>) -> (AddrIn, usize) {
+        let (ptr, cap) = addr.room();
+        (
+            AddrIn {
+                head: head(),
+                handle,
+                addr_buf: ptr,
+                addr_cap: cap,
+            },
+            cap,
+        )
+    }
+
+    /// [`Io::listen`], the address bound written into the host's buffer `addr`; the handle.
+    ///
+    /// # Errors
+    ///
+    /// As [`Io::listen`].
+    pub fn listen_host(&mut self, bind: &str, addr: &mut HostBuf<'_, u8>) -> IoAnswer<u64> {
+        let (ptr, cap) = addr.room();
+        let i = ListenIn {
+            head: head(),
+            bind: text(bind),
+            addr_buf: ptr,
+            addr_cap: cap,
+        };
+        let o = self.now(op::LISTEN, |s| s.listen, i)?;
+        addr.advance(count(o.len, cap)?);
+        Ok(o.value)
+    }
+
+    /// [`Io::accept`], the far end's address written into the host's buffer `peer`; the handle.
+    pub fn accept_host(&mut self, listener: u64, peer: &mut HostBuf<'_, u8>) -> Poll<IoAnswer<u64>> {
+        let (i, cap) = Self::addr_in(listener, peer);
+        match self.call(op::ACCEPT, |s| s.accept, i) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Ready(Ok(o)) => Poll::Ready(count(o.len, cap).map(|n| {
+                peer.advance(n);
+                o.value
+            })),
+        }
+    }
+
     /// `io.write`: how many of `bytes` the handle took; `Pending` when it took none.
     pub fn write(&mut self, handle: u64, bytes: &[u8]) -> Poll<IoAnswer<usize>> {
         let i = WriteIn {
@@ -317,6 +384,28 @@ impl<'h> Io<'h> {
             args_len: args.len(),
             env: env.as_ptr(),
             env_len: env.len(),
+        };
+        self.now(op::SPAWN, |s| s.spawn, i).map(|o| o.value)
+    }
+
+    /// [`Io::spawn`] of the program a carrier's `dial` was lent (`abi::transport::Destination`,
+    /// `DEST_PROGRAM`), passed through as the host lent it: its path, arguments and environment.
+    ///
+    /// # Errors
+    ///
+    /// As [`Io::spawn`].
+    pub fn spawn_dest(
+        &mut self,
+        dest: crate::abi::sdk::Lent<'_, crate::abi::transport::Destination>,
+    ) -> IoAnswer<u64> {
+        let d = dest.get();
+        let i = SpawnIn {
+            head: head(),
+            program: d.program,
+            args: d.args,
+            args_len: d.args_len,
+            env: d.env,
+            env_len: d.env_len,
         };
         self.now(op::SPAWN, |s| s.spawn, i).map(|o| o.value)
     }
