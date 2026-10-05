@@ -58,7 +58,7 @@ pub mod tls;
 pub mod udp;
 pub mod wire;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -339,10 +339,10 @@ pub struct Connector {
     pools: Pools,
     /// The trust anchors each sealed destination's connections are held to.
     anchored: Anchored,
-    /// The destinations a need holds a PRIVATE REACH to (`abi::plane::TRUST_PRIVATE_REACH`), by the
-    /// need's owner, the need and the destination's authority (lower-case, `host:port`), sealed
-    /// with its anchors ([`PollConns::anchor`]).
-    reaching: Mutex<HashSet<(InstanceId, NeedId, String)>>,
+    /// The REGISTRATIONS holding a PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`), by the need's
+    /// owner, the need and the registration's name, each with the authority (lower-case,
+    /// `host:port`) of its own target ([`PollConns::seal_reach`]).
+    reaching: Mutex<HashMap<(InstanceId, NeedId, String), String>>,
     /// Each member's auth binding, by (instance, need, target origin): what a plugin's own request
     /// to that member is authenticated with ([`DeclaredConns::bind_auth`]).
     auths: Mutex<HashMap<(InstanceId, NeedId, String), busbar_contract::conn::ConnAuth>>,
@@ -367,7 +367,7 @@ impl Default for Connector {
             listeners: Mutex::new(HashMap::new()),
             pools: Pools::new(PoolPosture::NONE),
             anchored: Mutex::new(HashMap::new()),
-            reaching: Mutex::new(HashSet::new()),
+            reaching: Mutex::new(HashMap::new()),
             auths: Mutex::new(HashMap::new()),
         }
     }
@@ -1469,13 +1469,16 @@ impl Conns for Connector {
             return Err(ConnError::Refused);
         }
         let planned = planned.anchored(anchors);
-        // THE DESTINATION'S PRIVATE REACH for this need (`abi::plane::TRUST_PRIVATE_REACH`, sealed
-        // with its anchors): its dial is judged with it.
-        let reach = self.reaching.lock().expect("reach").contains(&(
-            caller,
-            need,
-            planned.authority().to_ascii_lowercase(),
-        ));
+        // THE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, sealed per
+        // registration): an open that names a registration holding one, to that registration's own
+        // authority, is judged with it; no other open is.
+        let reach = !desc.member.is_empty()
+            && self
+                .reaching
+                .lock()
+                .expect("reach")
+                .get(&(caller, need, desc.member.to_owned()))
+                .is_some_and(|at| at.eq_ignore_ascii_case(planned.authority()));
         // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (THE DESIGN §5 egress-class
         // table, owner-signed 2026-09-27): in a request-data class its address is judged as
         // operator infrastructure. A provider need keeps its class: it is refused a private
@@ -1714,28 +1717,50 @@ impl PollConns for Connector {
             // Nothing to hold: any earlier seal for the destination is dropped.
             if let Some(at) = at {
                 self.anchored.lock().expect("anchors").remove(&at);
-                self.reaching.lock().expect("reach").remove(&at);
             }
             return Ok(());
         }
         let at = at.ok_or(ConnError::Refused)?;
-        if anchors.secures() {
-            let sealed =
-                tls::client::seal(self.tls.as_deref(), anchors).map_err(|_| ConnError::Refused)?;
-            self.anchored
-                .lock()
-                .expect("anchors")
-                .insert(at.clone(), Arc::new(sealed));
-        } else {
-            self.anchored.lock().expect("anchors").remove(&at);
+        let sealed =
+            tls::client::seal(self.tls.as_deref(), anchors).map_err(|_| ConnError::Refused)?;
+        self.anchored
+            .lock()
+            .expect("anchors")
+            .insert(at, Arc::new(sealed));
+        Ok(())
+    }
+
+    /// The registration's own target's authority is read by the need's entry, as a dial reads it;
+    /// the reach is kept under the registration's name, so two registrations at one authority hold
+    /// their own answers.
+    fn seal_reach(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        member: &str,
+        target: &str,
+        reach: bool,
+    ) -> Result<(), ConnError> {
+        let key = (owner, need, member.to_owned());
+        if !reach {
+            self.reaching.lock().expect("reach").remove(&key);
+            return Ok(());
         }
-        // The private reach rides beside the security anchors: a seal without it drops it.
-        let mut reaching = self.reaching.lock().expect("reach");
-        if anchors.private_reach {
-            reaching.insert(at);
-        } else {
-            reaching.remove(&at);
+        let door = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .map(|d| Arc::clone(&d.door))
+            .ok_or(ConnError::Refused)?;
+        let located = framer::locate(door.as_ref(), target).map_err(|_| ConnError::Refused)?;
+        if member.is_empty() {
+            return Err(ConnError::Refused);
         }
+        self.reaching
+            .lock()
+            .expect("reach")
+            .insert(key, located.authority.to_ascii_lowercase());
         Ok(())
     }
 }

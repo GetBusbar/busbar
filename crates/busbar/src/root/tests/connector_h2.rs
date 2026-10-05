@@ -302,6 +302,7 @@ fn start(c: &Connector, url: &str) -> ConnId {
             method: b"POST",
             head_target: b"/v1/chat/completions",
             within: &[],
+            member: "",
         },
     )
     .expect("the open")
@@ -429,6 +430,7 @@ async fn the_http1_only_key_offers_http1_alone() {
                 method: b"GET",
                 head_target: b"/v1/chat/completions",
                 within: &[],
+                member: "",
             },
         )
         .expect("the open");
