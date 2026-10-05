@@ -125,13 +125,27 @@ fn build_with_hook_makes_a_plane_attach_live() {
             .parse_section
             .expect("the plane parses its own section");
         let cfg = parse(&section).expect("the `tools:` section parses");
-        let build = tools
-            .build_runtime
-            .expect("the plane builds its runtime from its section");
-        builder.install_plane_runtime(
-            busbar_kernel::state::runtime_slot_key(tools.key),
-            build(cfg.as_any(), None),
-        );
+        match tools.build_runtime {
+            Some(build) => {
+                builder.install_plane_runtime(
+                    busbar_kernel::state::runtime_slot_key(tools.key),
+                    build(cfg.as_any(), None),
+                );
+            }
+            // A plane served through its door builds its slot through its own `build`, the slot
+            // its `reresolve_gates` re-reads the registry off.
+            None => {
+                let ctx = busbar_kernel::plane::registry::BuildCtx {
+                    endpoint_slot: None,
+                    agent_defs: &(),
+                    tool_defs: cfg.as_any(),
+                    public_url: None,
+                    prior: None,
+                };
+                let slot = (tools.build)(&ctx).expect("the plane builds from its section");
+                builder.install_plane_runtime(tools.key, slot);
+            }
+        }
     }
     let app = builder.build();
     assert!(

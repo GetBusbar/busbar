@@ -2575,10 +2575,7 @@ pub(crate) mod door_boundary {
         row: &'static PlaneDecl,
         value: serde_yaml::Value,
     ) -> Arc<dyn std::any::Any + Send + Sync> {
-        let tools = busbar_kernel::plane::door::DoorSection {
-            section: row.config_section,
-            value,
-        };
+        let tools = busbar_kernel::plane::door::DoorSection::new(row.config_section, value);
         (row.build)(&BuildCtx {
             endpoint_slot: None,
             agent_defs: &(),

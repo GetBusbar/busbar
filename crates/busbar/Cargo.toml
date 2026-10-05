@@ -467,6 +467,13 @@ busbar-export-otlp = "busbar_export_otlp::door"
 [package.metadata.busbar.linked-declares]
 plane-mcp-door = "busbar_plane_mcp::DECLARES"
 
+# Each linked plane door's DECLARING section (the one its Statement flags `SECTION_DECLARING`): the
+# build sets `linked_section_<section>` when the row's feature is on, so a test that needs "the plane
+# that declares this section is linked" gates on the section rather than on a feature that spells one
+# plugin. Held to each door's own Statement by `root::linked`'s tests.
+[package.metadata.busbar.linked-section]
+plane-mcp-door = "tools"
+
 [package.metadata.busbar.linked-name]
 auth-admin-tokens = "admin-tokens"
 auth-header = "busbar-auth-header"

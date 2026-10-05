@@ -13299,6 +13299,7 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     drive_plugin_inspect_errors().await;
     drive_key_cap_and_delegation_errors().await;
     drive_named_map_errors().await;
+    drive_door_verb_errors().await;
     drive_unpriced_usage_reads().await;
     // Every linked plane's own error-surface driver (its trust verbs), called here for the same reason
     // as every line above it: a condition witnessed only by a sibling test is witnessed nowhere. Looped
@@ -14034,16 +14035,31 @@ async fn named_map_app_opts(
         )
     };
     // `tools:` — a per-generation runtime built through the plane's own `build_runtime`, installed
-    // under its runtime slot.
+    // under its runtime slot; a plane served through its door (its row folded from its Statement)
+    // has none, and builds its slot through its own `build` instead, as `appbuild` does — the slot
+    // its named-map reads project.
     {
         let (decl, cfg) = parse("tools");
-        let build = decl
-            .build_runtime
-            .expect("the `tools:` plane builds its runtime from its section");
-        builder.install_plane_runtime(
-            busbar_kernel::state::runtime_slot_key(decl.key),
-            build(cfg.as_any(), None),
-        );
+        match decl.build_runtime {
+            Some(build) => {
+                builder.install_plane_runtime(
+                    busbar_kernel::state::runtime_slot_key(decl.key),
+                    build(cfg.as_any(), None),
+                );
+            }
+            None => {
+                let ctx = busbar_kernel::plane::registry::BuildCtx {
+                    endpoint_slot: None,
+                    agent_defs: &(),
+                    tool_defs: cfg.as_any(),
+                    public_url: Some("https://busbar.example"),
+                    prior: None,
+                };
+                if let Some(slot) = (decl.build)(&ctx) {
+                    builder.install_plane_runtime(decl.key, slot);
+                }
+            }
+        }
     }
     // `agents:` — the App's type-erased named-definition handle (the admin agents named-map reads
     // it), and the plane object its admin verbs re-read the registry off, built from the SAME
@@ -14949,6 +14965,116 @@ async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
     assert_eq!(after.status().as_u16(), 404, "and is gone");
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A TEST-LINKED DOOR PLANE'S INSTANCE, opened over `settings` and published on the kernel's serve
+/// table as the composition root publishes it (K-SERVE): the instance serving its stated admin
+/// routes for as long as the guard lives. The door is the one whose folded row owns `section`.
+struct PublishedDoor(String);
+
+impl Drop for PublishedDoor {
+    fn drop(&mut self) {
+        busbar_kernel::plane_driver::serve::withdraw(&self.0);
+    }
+}
+
+fn publish_door(section: &str, settings: &str) -> PublishedDoor {
+    use busbar_plugin_loader::dispatch::kinds::plane::{open_door, Plane};
+    use busbar_plugin_loader::dispatch::{
+        load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
+    };
+    crate::ensure_seam();
+    let owner = busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+        .unwrap_or_else(|| panic!("a test-linked plane owns `{section}:`"));
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let (instance, plane) = crate::test_seams::linked_doors()
+        .iter()
+        .find_map(|(label, door)| {
+            let row = LinkedRow::of(*door).ok()?;
+            let instance = format!("{label}-published");
+            let plane = load_linked::<Plane>(
+                &row,
+                Bind {
+                    instance: Arc::from(instance.as_str()),
+                    max_inflight_cap: 64,
+                    sink: Arc::new(NoSink),
+                    dispatcher: dispatcher.adopter(),
+                    conns: None,
+                },
+            )
+            .ok()?;
+            (plane.served().section == owner.config_section).then_some((instance, plane))
+        })
+        .expect("the owning plane's door is test-linked");
+    let snapshot = open_door(&plane, settings.as_bytes(), b"", None).expect("the door opens");
+    let routes = snapshot
+        .admin_routes
+        .iter()
+        .map(|r| busbar_kernel::plane_driver::serve::ServeRoute {
+            verb: r.verb.clone(),
+            target: r.target.clone(),
+            flags: r.flags,
+            audit_verb: r.audit_verb.clone(),
+        })
+        .collect();
+    let audit_kind = plane.served().audit_kind.to_string();
+    let calls = Arc::new(
+        busbar_plugin_loader::dispatch::plane_calls::PlaneInstance::new(plane, dispatcher, 0),
+    );
+    busbar_kernel::plane_driver::serve::publish(
+        busbar_kernel::plane_driver::serve::ServeTable {
+            instance: instance.clone(),
+            audit_kind,
+            calls,
+            caps: busbar_kernel::plane_driver::BufferCaps::default(),
+            routes,
+            records: None,
+        },
+        &[],
+    )
+    .expect("its admin routes publish");
+    PublishedDoor(instance)
+}
+
+/// THE DOOR PLANE'S TRUST VERBS' DECLARED ERRORS, produced through the admin router by the door's
+/// own `serve` op (ARCHITECT Q-L3B-VERBS; P3 DEL-MCP: the deleted engine's error-surface driver
+/// witnessed these): an unregistered name is `404 not_found` on every verb, and `connect` on a
+/// `passthrough` registration is `400 invalid_request` (its credential belongs to a caller, and an
+/// operator's refresh has none).
+async fn drive_door_verb_errors() {
+    let _published = publish_door(
+        "tools",
+        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "pinned_pubkey", "key": "sha256/K="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
+    );
+    let (_dir, _overlay, addr, handle) = named_map_app("door-verbs", false).await;
+    let client = reqwest::Client::new();
+    let send = |method: reqwest::Method, path: &str| {
+        client
+            .request(method, format!("http://{addr}/api/v1/admin{path}"))
+            .header("x-admin-token", "admintok")
+            .send()
+    };
+    for (method, path) in [
+        (reqwest::Method::POST, "/tools/nope/connect"),
+        (reqwest::Method::GET, "/tools/nope/changes"),
+        (reqwest::Method::GET, "/tools/nope/health"),
+    ] {
+        let r = send(method.clone(), path).await.unwrap();
+        assert_eq!(r.status(), 404, "{method} {path}");
+        let body: serde_json::Value = r.json().await.unwrap();
+        assert_eq!(body.pointer("/error/code").unwrap(), "not_found", "{body}");
+    }
+    let r = send(reqwest::Method::POST, "/tools/base-tools/connect")
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(
+        body.pointer("/error/code").unwrap(),
+        "invalid_request",
+        "{body}"
+    );
+    handle.abort();
 }
 
 /// WITNESS DRIVER for the generic named-map surface: produces EVERY `(operation, ErrKind, Cond)`

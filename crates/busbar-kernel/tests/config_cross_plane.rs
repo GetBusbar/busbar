@@ -140,8 +140,10 @@ fn resolve_refuses_a_publish_as_collision_so_validate_and_boot_agree() {
     register_planes();
     // The SUBTLE collision — an override against a namespaced default nobody typed — because it is
     // the one that survives a partial implementation of the rule.
-    let deploy = deploy_yaml(
-        r#"
+    // The section is judged by its plane's own `validate` where it is read (a door plane's section
+    // is judged as it is lifted), so the one read `--validate` and boot share refuses it — at the
+    // lift or at `resolve`, whichever owns the rule; never not at all.
+    let colliding = r#"
 tools:
   foo:
     url: "https://foo/"
@@ -151,14 +153,12 @@ tools:
     url: "https://other/"
     pin: { mechanism: unpinned }
     tools_allow: { anything: { publish_as: foo_bar } }
-"#,
-    );
-    let errors = resolve(&deploy, &HashMap::new())
-        .expect_err("resolve must refuse a config whose published names are not unique");
-    assert!(
-        errors.iter().any(|e| e.contains("published as `foo_bar`")),
-        "{errors:?}"
-    );
+"#;
+    let refused = deploy_from_yaml_str(&format!("providers: {{}}\nmodels: {{}}\n{colliding}"))
+        .map(|deploy| resolve(&deploy, &HashMap::new()).map(|_| ()))
+        .map_or_else(|e| Some(e.to_string()), |r| r.err().map(|e| e.join("\n")))
+        .expect("a config whose published names are not unique is refused");
+    assert!(refused.contains("published as `foo_bar`"), "{refused}");
 
     // GREEN, same shape, one name changed: the refusal is about the collision and nothing else.
     let deploy = deploy_yaml(
@@ -175,6 +175,40 @@ tools:
 "#,
     );
     resolve(&deploy, &HashMap::new()).expect("distinct published names must resolve");
+}
+
+/// THE EFFECTIVE REGISTRY IS JUDGED WHOLE AT `resolve`: a door section holding entries no parse ever
+/// read together (the file's, plus what the management surface wrote) is held to its door's
+/// section-wide rules there, so an applied registration whose published name collides with another's
+/// is refused exactly as the same file would be. RED without `DoorSection::validate_registry` running
+/// the door's `validate`; GREEN for the same section with distinct names.
+#[test]
+fn a_door_sections_effective_registry_is_judged_whole_at_resolve() {
+    use busbar_kernel::plane::config::PlaneCfg;
+    register_planes();
+    let effective = |publish: &str| -> serde_yaml::Value {
+        serde_yaml::from_str(&format!(
+            r#"
+foo:
+  url: "https://foo/"
+  pin: {{ mechanism: unpinned }}
+  tools_allow: {{ bar: {{}} }}
+other:
+  url: "https://other/"
+  pin: {{ mechanism: unpinned }}
+  tools_allow: {{ anything: {{ publish_as: {publish} }} }}
+"#
+        ))
+        .expect("yaml")
+    };
+    let section = busbar_kernel::plane::door::DoorSection::new("tools", effective("foo_bar"));
+    let refused = section
+        .validate_registry()
+        .expect_err("an effective registry whose published names collide is refused");
+    assert!(refused.contains("published as `foo_bar`"), "{refused}");
+    busbar_kernel::plane::door::DoorSection::new("tools", effective("other_name"))
+        .validate_registry()
+        .expect("distinct published names pass");
 }
 
 /// A member naming nothing is an operator believing a request has somewhere to go when it does not.

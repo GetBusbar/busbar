@@ -230,11 +230,11 @@ impl SpentTokenLedger {
 #[path = "tests/askstate_tests.rs"]
 mod askstate_tests;
 
-// ONE APPROVAL, REDEEMED ONCE — across a restart and across a fleet. MOVED to
-// `tests/spentledger_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle cleanup): it crosses the
-// real plugin ABI into a real durable store and is judged through a linked plane's SERVED front
-// door, which only type-checks with ONE `busbar_kernel` in the graph — an integration-test target,
-// never this `#[cfg(test)]` unit module. See that file's header.
+// ONE APPROVAL, REDEEMED ONCE — across a restart and across a fleet. Judged through the served
+// door at the composition root (`crates/busbar/src/root/tests/door_steps.rs`, `spent_ledger`;
+// ARCHITECT Q-L3B-ASK): the plane door mints and redeems the sealed state over the host's `sign`
+// and spends it by the host's one-time `records.claim`, and only the root composes a door's
+// served path (P3 DEL-MCP).
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;

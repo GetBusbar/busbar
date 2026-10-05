@@ -1,8 +1,7 @@
 # THE SEALED CLAIM ORDER of the shipped composition, most specific first — one row per claim:
 # `<plane key> <selector as Debug>`. Read by root/tests/registry.rs
-# (`the_sealed_order_of_the_fifty_one_claims_is_pinned`). A change here is a change to which plane answers
+# (`the_sealed_order_of_the_forty_seven_claims_is_pinned`). A change here is a change to which plane answers
 # which request, and has to be made on purpose, with the new order visible in the same diff.
-mcp ExactPath("/.well-known/oauth-protected-resource/mcp")
 a2a ExactPath("/.well-known/oauth-protected-resource/a2a")
 a2a ExactPath("/.well-known/agent-card.json")
 a2a ExactPath("/a2a/extendedAgentCard")
@@ -13,8 +12,6 @@ a2a ExactPath("/a2a/tasks")
 decision ExactPath("/v1/models")
 a2a ExactPath("/a2a/push")
 a2a ExactPath("/a2a/")
-mcp ExactPath("/mcp")
-mcp ExactPath("/mcp")
 a2a ExactPath("/a2a")
 a2a PathPattern([Lit("a2a"), Lit("tasks"), Var, Lit("pushNotificationConfigs"), Var])
 a2a PathPattern([Lit("a2a"), Lit("tasks"), Var, Lit("pushNotificationConfigs")])
@@ -52,4 +49,3 @@ llm PathContains("/converse")
 llm PathSuffix("/v2/chat")
 llm PathSuffix("/v1/chat")
 llm PathContains(":predict")
-mcp StreamName("mcp")

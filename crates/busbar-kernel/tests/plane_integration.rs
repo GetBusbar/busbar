@@ -116,7 +116,9 @@ fn configured(mut app: TestApp, sections: &str, public_url: Option<&str>) -> Tes
 }
 
 /// The path `decl` claims for its JSON-RPC front door, read off the object its `build` constructs
-/// from `sections`.
+/// from `sections`: the JSON-RPC claim at the path of the resource its admission binds (a plane
+/// that refuses in one dialect states that dialect on every claim, its RFC 9728 metadata document
+/// included, so the front door is the claim its audience names), else its first JSON-RPC claim.
 fn jsonrpc_mount(decl: &'static PlaneDecl, sections: &str) -> String {
     let mut cfg = resolved(sections);
     cfg.public_url = Some("https://busbar.example".to_string());
@@ -124,11 +126,39 @@ fn jsonrpc_mount(decl: &'static PlaneDecl, sections: &str) -> String {
         .into_iter()
         .find(|(d, _)| d.key == decl.key)
         .unwrap_or_else(|| panic!("the `{}` plane builds from its section", decl.key));
-    (decl.claims)(&*obj)
+    let audience_path = (decl.admission)(&*obj)
+        .and_then(|a| url::Url::parse(&a.audience).ok())
+        .map(|u| u.path().trim_end_matches('/').to_string());
+    let jsonrpc: Vec<String> = (decl.claims)(&*obj)
         .into_iter()
-        .find(|(_, wire)| *wire == busbar_kernel::plane::WIRE_JSONRPC)
+        .filter(|(_, wire)| *wire == busbar_kernel::plane::WIRE_JSONRPC)
         .map(|(path, _)| path)
+        .collect();
+    jsonrpc
+        .iter()
+        .find(|path| Some(path.as_str()) == audience_path.as_deref())
+        .or_else(|| jsonrpc.first())
+        .cloned()
         .unwrap_or_else(|| panic!("the `{}` plane claims a JSON-RPC front door", decl.key))
+}
+
+/// Whether `slot` is a plane served through its memory-ABI door: its claims are mounted, and its
+/// door arm judged, by the composition root at the data router's construction (ARCHITECT
+/// Q-L3B-KHARNESS), so the kernel's router mounts none of them.
+fn served_by_root(slot: &Arc<dyn std::any::Any + Send + Sync>) -> bool {
+    slot.downcast_ref::<busbar_kernel::plane::door::DoorSlot>()
+        .is_some()
+}
+
+/// Whether `decl`, configured by `sections`, is a plane served through its memory-ABI door
+/// ([`served_by_root`]), read off the object its `build` constructs.
+fn door_served_by_root(decl: &'static PlaneDecl, sections: &str) -> bool {
+    let mut cfg = resolved(sections);
+    cfg.public_url = Some("https://busbar.example".to_string());
+    built_planes(&cfg)
+        .into_iter()
+        .find(|(d, _)| d.key == decl.key)
+        .is_some_and(|(_, obj)| served_by_root(&obj))
 }
 
 /// THE CARRIED VERIFY GATE of the `agents:` plane. The gate is a field of that plane's runtime
@@ -304,6 +334,12 @@ fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
             !claims.is_empty(),
             "the `{key}` plane claims its JSON-RPC door"
         );
+        // A plane served through its memory-ABI door has its claims mounted by the composition
+        // root at the data router's construction (ARCHITECT Q-L3B-KHARNESS), not by the kernel's
+        // router; the root's `door_boundary` suite holds that half for it under this test's name.
+        if served_by_root(&slot) {
+            continue;
+        }
         for path in claims {
             assert!(
                 routes.iter().any(|(p, _, _)| *p == path),
@@ -664,16 +700,25 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     // this list is exercised in both directions: an audience-bound token is admitted here and
     // nowhere else, and a plain data-plane token is admitted everywhere else and not here.
     let admissible: Vec<String> = vec![jsonrpc_mount(door, &sections)];
+    // A plane served through its memory-ABI door: the composition root mounts its claims and the
+    // root's `door_boundary` suite walks its door arm (ARCHITECT Q-L3B-KHARNESS). The kernel's
+    // router then mounts none of them, and the walk below holds the kernel's half: the
+    // audience-bound token buys nothing on any route the kernel mounts.
+    let by_root = door_served_by_root(door, &sections);
     // Core routes declared `RouteAuth::None`: unauthenticated by design, so no token of any kind
     // is consulted there. `/healthz` is a liveness probe; `/auth/token` runs the auth chain in its
     // own handler; the RFC 9728 metadata document for the door's resource must be readable by a
     // caller that has no token yet, because that caller is the entire population the document
     // exists for.
-    let declared_public: Vec<String> = vec![
-        "/healthz".to_string(),
-        "/auth/token".to_string(),
-        format!("/.well-known/oauth-protected-resource{}", admissible[0]),
-    ];
+    let mut declared_public: Vec<String> = vec!["/healthz".to_string(), "/auth/token".to_string()];
+    // The door's RFC 9728 document is one of its claims: the kernel mounts it for a plane whose
+    // claims it mounts, and the composition root for a door plane (whose suite holds it there).
+    if !by_root {
+        declared_public.push(format!(
+            "/.well-known/oauth-protected-resource{}",
+            admissible[0]
+        ));
+    }
 
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
@@ -739,6 +784,15 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     // plane-boundary test if the router actually mounted the plane. Without this, deleting the door
     // mount would leave every assertion below trivially satisfied and the test would still pass.
     for path in &admissible {
+        if by_root {
+            assert!(
+                !core_routes.iter().any(|(p, _, _)| p == path),
+                "{path} is claimed by the `{}` door plane, whose claims the composition root \
+                 mounts; the kernel's router must not mount it as well",
+                door.key
+            );
+            continue;
+        }
         assert!(
             core_routes.iter().any(|(p, _, _)| p == path),
             "{path} is claimed by the `{}` plane but no core route mounts it — the walk would \
@@ -955,7 +1009,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
          was mounted with an auth level that skipped the arm"
     );
     assert!(
-        door_checked > 0,
+        by_root || door_checked > 0,
         "no door-plane route was walked, so the reciprocal half of the boundary was never asserted"
     );
     assert!(
