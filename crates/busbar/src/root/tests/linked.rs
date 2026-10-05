@@ -1403,3 +1403,14 @@ fn a_key_two_doors_register_refuses_the_boot_naming_both() {
         "{refusal}"
     );
 }
+
+/// ONE DISPATCHER PER PROCESS: a door row's probe binds on the process's one dispatcher, so a door
+/// in the build spawns no second set of `busbar-dispatch` threads (the boot test reads the count).
+/// RED: the probe had a dispatcher of its own, built with the default shape.
+#[test]
+fn a_door_rows_probe_binds_on_the_processs_one_dispatcher() {
+    assert!(Arc::ptr_eq(
+        &door_probe_dispatcher(),
+        &crate::root::dispatch::dispatcher()
+    ));
+}

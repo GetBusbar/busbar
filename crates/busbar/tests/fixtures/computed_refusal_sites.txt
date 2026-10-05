@@ -10,3 +10,8 @@ busbar/src/root/units_admin/mod.rs	verbs_reason(refusal.reason)
 busbar-kernel/src/plane_driver/mod.rs	reason
 busbar-kernel/src/plane_driver/mod.rs	reason
 busbar-kernel/src/plane_driver/mod.rs	cause
+# teller.rs `screened` (SEAM-4j, Mode B): a gate-first plane's screen stops the unit at the
+# Approve seat BEFORE the door, so nothing was admitted and no money ends; both sites carry the
+# screen's own reason (the hook veto).
+busbar-kernel/src/teller.rs	reason
+busbar-kernel/src/teller.rs	reason

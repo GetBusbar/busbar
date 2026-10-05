@@ -4525,6 +4525,11 @@ const DOOR_ENTRY_KINDS: &[&str] = &["transport", "auth"];
 ///
 /// End state: once no shipped crate implements `Transport` directly, the transport entry is the
 /// door alone and the `impl` half of this sum reads zero everywhere.
+///
+/// EVERY OTHER KIND (ARCHITECT ruling 2026-10-04, t-h2host; spec Part 2 #2, one contract, one
+/// loading path): a crate whose exported door ([`door_carries`]) is built over its OWN `impl
+/// <Kind>` states ONE entry — the impl is the door's body, not a second surface — so the count is
+/// the larger of the two, never their sum ([`door_or_impls`]). Two `impl` blocks still read two.
 fn entry_count(idx: &SourceIndex, dir: &str, kind: &str, want_trait: &str) -> usize {
     let impls = idx
         .impls
@@ -4532,21 +4537,28 @@ fn entry_count(idx: &SourceIndex, dir: &str, kind: &str, want_trait: &str) -> us
         .and_then(|m| m.get(want_trait))
         .copied()
         .unwrap_or(0);
-    // A door-entry kind counts its door TAILS (a crate building two tables states two entries); any
-    // other kind counts its exported door once ([`door_carries`]).
-    let doors = if DOOR_ENTRY_KINDS.contains(&kind) {
-        idx.doors.get(dir).copied().unwrap_or(0)
+    // A door-entry kind counts its door TAILS (a crate building two tables states two entries) on
+    // top of its `impl` blocks; any other kind's exported door is one entry with the impl it wraps.
+    if DOOR_ENTRY_KINDS.contains(&kind) {
+        impls + idx.doors.get(dir).copied().unwrap_or(0)
     } else {
-        usize::from(door_carries(idx, dir, kind))
-    };
-    impls + doors
+        door_or_impls(idx, dir, kind, impls)
+    }
+}
+
+/// A non-door-entry kind's entries: its `impl` blocks, or — where it exports a door of the kind —
+/// that door, which is built over them and so is the same entry: `impls.max(door)`. One impl and a
+/// door over it read 1; a door alone reads 1; two impls read 2 with or without a door.
+fn door_or_impls(idx: &SourceIndex, dir: &str, kind: &str, impls: usize) -> usize {
+    impls.max(usize::from(door_carries(idx, dir, kind)))
 }
 
 /// How many entries of `kind` `dir` states AS A BATTERY SUBJECT: its `impl` blocks, plus — for a
 /// door-entry kind — its door tails ONLY once the door is EXPORTED through the SDK door macro. An
 /// unexported door tail is a stated entry ([`entry_count`], which `:shape` counts) but not a usable
-/// implementor, so the battery it would be about has no subject. Any other kind counts its exported
-/// door once, as [`entry_count`] does.
+/// implementor, so the battery it would be about has no subject. Any other kind counts its `impl`
+/// blocks or the exported door over them, whichever is larger ([`door_or_impls`]), as
+/// [`entry_count`] does.
 fn implementor_count(idx: &SourceIndex, dir: &str, kind: &str, want_trait: &str) -> usize {
     let impls = idx
         .impls
@@ -4554,16 +4566,16 @@ fn implementor_count(idx: &SourceIndex, dir: &str, kind: &str, want_trait: &str)
         .and_then(|m| m.get(want_trait))
         .copied()
         .unwrap_or(0);
-    let doors = if DOOR_ENTRY_KINDS.contains(&kind) {
-        if idx.door_exports.contains(dir) {
+    if DOOR_ENTRY_KINDS.contains(&kind) {
+        let tails = if idx.door_exports.contains(dir) {
             idx.doors.get(dir).copied().unwrap_or(0)
         } else {
             0
-        }
+        };
+        impls + tails
     } else {
-        usize::from(door_carries(idx, dir, kind))
-    };
-    impls + doors
+        door_or_impls(idx, dir, kind, impls)
+    }
 }
 
 /// How [`entry_count`] reads `kind`'s entries, for a finding's text.
@@ -4571,7 +4583,7 @@ fn entry_note(kind: &str) -> &'static str {
     if DOOR_ENTRY_KINDS.contains(&kind) {
         " (its `impl` blocks plus its door tails)"
     } else {
-        " (its `impl` blocks plus its exported door)"
+        " (its `impl` blocks, or the exported door built over them)"
     }
 }
 
@@ -10983,6 +10995,86 @@ mod plant_tests {
             "an exported door is the battery's subject: {}",
             kit.detail
         );
+    }
+
+    fn plane_crate(name: &str) -> CrateInfo {
+        CrateInfo {
+            kind: Some("plane"),
+            family: Family::Plane,
+            ..transport_crate(name)
+        }
+    }
+
+    /// An index holding `c` with `impls` blocks of `want_trait` in shipped source and, where
+    /// `door`, an exported door of `kind` built over them (one tail for a door-entry kind).
+    fn index_with(
+        c: &CrateInfo,
+        kind: &'static str,
+        want_trait: &str,
+        impls: usize,
+        door: bool,
+    ) -> SourceIndex {
+        let mut idx = empty_index();
+        idx.has_lib.insert(c.dir.clone());
+        if impls > 0 {
+            idx.impls
+                .insert(c.dir.clone(), [(want_trait.to_string(), impls)].into());
+        }
+        if door {
+            idx.doors.insert(c.dir.clone(), 1);
+            idx.door_exports.insert(c.dir.clone());
+            idx.door_builders.insert(c.dir.clone());
+            idx.door_kinds.insert(c.dir.clone(), [kind].into());
+        }
+        idx
+    }
+
+    /// ONE IMPL AND THE DOOR OVER IT ARE ONE ENTRY (ARCHITECT ruling 2026-10-04, t-h2host; spec
+    /// Part 2 #2): a plane crate whose exported door is built over its own `impl Plane` states ONE
+    /// entry on `:shape` and is ONE implementor on `:testkit` — GREEN, no `entry-count` finding.
+    #[test]
+    fn a_plane_impl_and_the_door_over_it_state_one_entry() {
+        let c = plane_crate("busbar-plane-planted-wrapped");
+        let idx = index_with(&c, "plane", "Plane", 1, true);
+        assert_eq!(entry_count(&idx, &c.dir, "plane", "Plane"), 1);
+        assert_eq!(implementor_count(&idx, &c.dir, "plane", "Plane"), 1);
+        let door_only = index_with(&c, "plane", "Plane", 0, true);
+        assert_eq!(entry_count(&door_only, &c.dir, "plane", "Plane"), 1);
+        let row = rule_shape(std::slice::from_ref(&c), &idx, &BTreeMap::new());
+        assert!(
+            !row.detail
+                .contains("entry-count\tcrates/busbar-plane-planted-wrapped"),
+            "one impl and the door over it are one entry: {}",
+            row.detail
+        );
+    }
+
+    /// TWO IMPLS ARE TWO ENTRIES, door or no door: RED on `:shape`.
+    #[test]
+    fn a_plane_crate_with_two_impls_is_red() {
+        let c = plane_crate("busbar-plane-planted-twice");
+        for door in [false, true] {
+            let idx = index_with(&c, "plane", "Plane", 2, door);
+            assert_eq!(
+                entry_count(&idx, &c.dir, "plane", "Plane"),
+                2,
+                "door: {door}"
+            );
+            let row = rule_shape(std::slice::from_ref(&c), &idx, &BTreeMap::new());
+            assert_red_naming(&row, &["entry-count\tcrates/busbar-plane-planted-twice"]);
+        }
+    }
+
+    /// A TRANSPORT DOOR DOES NOT WRAP AN `impl Transport` (unchanged): a legacy impl beside the
+    /// door states TWO entries, RED on `:shape`.
+    #[test]
+    fn a_transport_impl_beside_its_door_is_still_two_entries() {
+        let c = transport_crate("busbar-transport-planted-both");
+        let idx = index_with(&c, "transport", "Transport", 1, true);
+        assert_eq!(entry_count(&idx, &c.dir, "transport", "Transport"), 2);
+        assert_eq!(implementor_count(&idx, &c.dir, "transport", "Transport"), 2);
+        let row = rule_shape(std::slice::from_ref(&c), &idx, &BTreeMap::new());
+        assert_red_naming(&row, &["entry-count\tcrates/busbar-transport-planted-both"]);
     }
 
     /// The door's kind is the memory ABI it names, and a builder's definition is not a door.

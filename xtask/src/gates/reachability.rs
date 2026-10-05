@@ -1773,6 +1773,23 @@ fn axes_of(manifest: &str, krate: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// THE DOOR ROWS OF `krate`: every linked feature that links it whose `linked-axes` row carries
+/// [`PLANE_DOOR_AXIS`]. A plane's door row is a first-class roster row of its own (its feature
+/// beside the plane's declaration row, e.g. `<plane>-door = "plane-door"`), so the door arm reads
+/// every row of the crate, never only its first.
+fn door_rows_of(manifest: &str, krate: &str) -> Vec<String> {
+    let features: Vec<String> = manifest_table(manifest, "package.metadata.busbar.linked")
+        .into_iter()
+        .filter(|(_, k)| k == krate)
+        .map(|(f, _)| f)
+        .collect();
+    manifest_table(manifest, "package.metadata.busbar.linked-axes")
+        .into_iter()
+        .filter(|(f, v)| features.contains(f) && v.split_whitespace().any(|a| a == PLANE_DOOR_AXIS))
+        .map(|(f, _)| f)
+        .collect()
+}
+
 /// What the generated `$OUT_DIR/linked.rs` that `main.rs` includes references in THIS crate, read
 /// off the manifest: each root-unit row's module and its `ROOT_UNIT`, and each linked-entry row that
 /// points into the root (`crate::root::<module>`) with the items its axes put in the tables. Returned
@@ -2255,7 +2272,10 @@ impl Gate for ReachabilityGate {
             // A DOOR PLANE'S UNIT PATH (ARCHITECT Q-SO10; spec K5): its door row (its `linked-axes`
             // row carries the `plane-door` axis) AND the one composition building a driver AND a
             // reached line in that module driving a unit. Any one alone stays red.
-            let door_row = axes.iter().any(|a| a == PLANE_DOOR_AXIS);
+            // Its own row carrying the axis, or a door row of its own beside it (the plane's crate
+            // linked again under a `plane-door` feature).
+            let door_rows = door_rows_of(&manifest, p.linked_crate);
+            let door_row = axes.iter().any(|a| a == PLANE_DOOR_AXIS) || !door_rows.is_empty();
             let door_live = match (door_row, &door.composition, &door.served) {
                 (true, Ok(built), Ok(served)) => Some(format!(
                     "its door row (`{PLANE_DOOR_AXIS}` on its `linked-axes` row) is composed into a \
@@ -2802,6 +2822,25 @@ impl Gate for ReachabilityGate {
             decision_door(false, true, false),
             "no `plane-door` axis (no door row)",
         ));
+        // ITS DOOR ROW BESIDE ITS DECLARATION ROW (a `<plane>-door` feature linking the same crate
+        // on the `plane-door` axis): a first-class roster row. Green composed and served; a door
+        // row with no data route stays red.
+        report.push(green_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a door plane whose door row sits beside its declaration row, composed and driven, is green",
+            evidenced(decision_door_row_beside(true)),
+        ));
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a door row beside the declaration row with no data route reds its unit-path and root-reach rows",
+            &[row_unit_path("decision"), row_root_reach("decision")],
+            decision_door_row_beside(false),
+            "a driver with no data route is not a unit path",
+        ));
         report.push(red_over(
             self,
             cx,
@@ -3192,6 +3231,25 @@ fn decision_door(door_row: bool, driven: bool, twice: bool) -> Overlay {
     ov.set(
         MAIN_RS,
         FIXTURE_GREEN_MAIN.replace(INSTALL_CALL_LINE, &format!("{INSTALL_CALL_LINE}{calls}")),
+    );
+    ov
+}
+
+/// [`decision_door`] with NO `plane-door` on the plane's own row and its door row BESIDE it: a
+/// `plane-decisions-door` feature linking the same crate, its `linked-axes` row `plane-door`.
+fn decision_door_row_beside(driven: bool) -> Overlay {
+    let mut ov = decision_door(false, driven, false);
+    ov.set(
+        CRATE_MANIFEST,
+        FIXTURE_LINKED_MANIFEST
+            .replace(
+                "plane-decisions = \"busbar-plane-decisions\"\n",
+                "plane-decisions = \"busbar-plane-decisions\"\nplane-decisions-door = \"busbar-plane-decisions\"\n",
+            )
+            .replace(
+                "plane-decisions = \"plane\"\n",
+                "plane-decisions = \"plane\"\nplane-decisions-door = \"plane-door\"\n",
+            ),
     );
     ov
 }

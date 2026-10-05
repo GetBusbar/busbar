@@ -411,7 +411,9 @@ fn a_member_bound_over_an_upgrade_need_dials_its_spelled_base() {
 
 /// MULTI-NEED (ARCHITECT Q-L5B-NEEDS 2026-10-03): a member binds EVERY outbound need its style
 /// names, one per transport, the first as its own and the rest riding beside it, each opened when
-/// a far request names it.
+/// a far request names it. The bearer style is the linked header auth plugin's, so the leg runs
+/// where it is linked (a single-plane build links none).
+#[cfg(feature = "auth-header")]
 #[test]
 fn a_member_binds_every_need_its_style_names_one_per_transport() {
     use busbar_contract::abi::host::conn::connector::{DIRECTION_INBOUND, DIRECTION_OUTBOUND};

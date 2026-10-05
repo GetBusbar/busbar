@@ -520,6 +520,11 @@ pub fn refuse_a_key_two_doors_register(named: &[(String, &str)]) -> Result<(), S
     Ok(())
 }
 
+/// The dispatcher a door row's probe binds on: the process's one ([`crate::root::dispatch`]).
+pub(crate) fn door_probe_dispatcher() -> Arc<crate::root::loader::dispatch::Dispatcher> {
+    crate::root::dispatch::dispatcher()
+}
+
 /// THE DOOR PLANES' REGISTRY ROWS (DECL-FOLD; ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL; spec #49
 /// and R2-C): every plane [`dropped_planes_of`] discovered through a door, linked or dropped, bound
 /// once through the loader's one load on a dispatcher of its own (the process's is built after the
@@ -535,20 +540,16 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
     if doors.is_empty() {
         return Ok(Vec::new());
     }
-    // The probe binds' own dispatcher, the process's for its life: a probe plugin it adopted is
-    // refreshed through it at every generation.
-    static PROBE: std::sync::OnceLock<crate::root::loader::dispatch::Dispatcher> =
-        std::sync::OnceLock::new();
-    let probe = PROBE.get_or_init(|| {
-        crate::root::loader::dispatch::Dispatcher::new(
-            crate::root::loader::dispatch::DispatchConfig::default(),
-        )
-    });
+    // The probe binds on the PROCESS'S ONE DISPATCHER (booted first, in `main`), never one of
+    // their own: a second dispatcher is a second set of `busbar-dispatch` threads. A probe plugin
+    // it adopted is refreshed through it at every generation.
+    let probe = door_probe_dispatcher();
     let registrations = doors
         .iter()
         .map(|candidate| {
             let name = candidate.name.clone();
             let candidate = candidate.clone();
+            let probe = Arc::clone(&probe);
             let bind: crate::root::loader::dispatch::kinds::plane::ProbeBind =
                 Arc::new(move || {
                     crate::root::loader::boot::load_planes(
