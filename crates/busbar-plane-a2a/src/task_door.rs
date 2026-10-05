@@ -48,6 +48,8 @@ pub struct Pass {
     /// The plane answered the verb itself (the admission passed): the unit is served, and every
     /// window reports its fee unit, as the served engine kept the fee of a verb it answered.
     served: bool,
+    /// A card read's answer was written: a later piece answers nothing more.
+    answered: bool,
 }
 
 /// One piece's stamp: its clock, and whether it runs the second's sweep.
@@ -501,8 +503,24 @@ fn window(
     unit: u64,
     input: &Lent<'_, OnPieceIn>,
     out: &mut Out<'_, OnPieceOut>,
+    answer: (u32, &[u8]),
+    writes: &[Write],
+) -> Outcome {
+    window_with(plane, unit, input, out, answer, writes, &[JSON_HEAD])
+}
+
+/// The head a JSON answer starts with.
+const JSON_HEAD: (&str, &str) = ("content-type", JSON_MEDIA_TYPE);
+
+/// [`window`], the first window's head fields `head` (each written before its stated length).
+fn window_with(
+    plane: &A2aDoor,
+    unit: u64,
+    input: &Lent<'_, OnPieceIn>,
+    out: &mut Out<'_, OnPieceOut>,
     (status, body): (u32, &[u8]),
     writes: &[Write],
+    head: &[(&str, &str)],
 ) -> Outcome {
     let (mut reply, mut fields, mut records, mut arena, mut units) = (
         input.reply_buf(),
@@ -522,10 +540,12 @@ fn window(
         });
     }
     if status != 0 {
-        fields.push(OutField {
-            name: arena.span(b"content-type"),
-            value: arena.span(JSON_MEDIA_TYPE.as_bytes()),
-        });
+        for (name, value) in head {
+            fields.push(OutField {
+                name: arena.span(name.as_bytes()),
+                value: arena.span(value.as_bytes()),
+            });
+        }
         // A whole answer states its length, so it is sent under it (never chunked), as the
         // engine sent its buffered JSON answer.
         fields.push(OutField {
@@ -572,6 +592,161 @@ fn window(
         });
     }
     Outcome::Ready
+}
+
+/// THE HOST'S SIGNING SERVICE as a card's [`crate::served_card::Signer`]: the key id read with a
+/// first signature (the host names it beside every signature), then the signature, each on its own
+/// handle of the piece's ticket.
+struct HostSigner<'a> {
+    services: Option<&'a Services>,
+    ticket: Ticket,
+    seq: u32,
+}
+
+impl HostSigner<'_> {
+    fn signed(&mut self, data: &[u8]) -> Option<(String, Vec<u8>)> {
+        let services = self.services?;
+        let handle = CompletionHandle {
+            ticket: self.ticket,
+            seq: self.seq,
+            _reserved: 0,
+        };
+        self.seq += 1;
+        let absent = Span {
+            offset: SPAN_ABSENT,
+            len: 0,
+        };
+        let mut buf = vec![0u8; 1024];
+        let mut spans = [ItemSpan {
+            key: absent,
+            value: absent,
+        }; 2];
+        let sig = services.sign(handle, data, &mut buf, &mut spans).ok()?;
+        Some((sig.key_id.to_string(), sig.signature.to_vec()))
+    }
+}
+
+impl crate::served_card::Signer for HostSigner<'_> {
+    fn kid(&mut self) -> Option<String> {
+        self.signed(b"").map(|(kid, _)| kid)
+    }
+
+    fn sign(&mut self, input: &[u8]) -> Option<Vec<u8>> {
+        self.signed(input).map(|(_, sig)| sig)
+    }
+}
+
+/// An error document of the engine's card routes: `{"error": {"code", "message"}}`.
+fn card_error(code: &str, message: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({ "error": { "code": code, "message": message } }))
+        .unwrap_or_default()
+}
+
+/// `on_piece` for a card read ([`crate::arrival::CardAsk`]): its first piece (the caller's, for
+/// busbar's own card; the ATTEMPT naming the agent, for a fronted agent's) is answered whole, in the
+/// engine's words and heads (`receive::well_known_card` and `receive::card`), the card signed with
+/// busbar's key through the host's `sign`; a card read is never metered, so it reports no fee unit.
+pub fn card_piece(
+    plane: &A2aDoor,
+    instance: &Instance<'_, A2aDoor>,
+    input: Lent<'_, OnPieceIn>,
+    mut out: Out<'_, OnPieceOut>,
+    ask: crate::arrival::CardAsk,
+) -> Outcome {
+    use crate::served_card::{self as served, OWN_CARD_CACHE_CONTROL, OWN_CARD_MEDIA_TYPE};
+    let unit = input.get().unit;
+    let Some((rest, answered, agent, section, generation, issued)) = plane.units.with(&unit, |u| {
+        u.map(|u| {
+            (
+                std::mem::take(&mut u.pass.rest),
+                u.pass.answered,
+                u.agent.clone(),
+                u.section.clone(),
+                u.generation,
+                u.pass.issued,
+            )
+        })
+    }) else {
+        return Outcome::Refused;
+    };
+    if !rest.is_empty() {
+        return window(plane, unit, &input, &mut out, (0, &rest), &[]);
+    }
+    if answered {
+        return Outcome::Ready;
+    }
+    let mut signer = HostSigner {
+        services: plane.services.as_ref(),
+        ticket: instance.ticket(),
+        seq: issued,
+    };
+    let public_url = plane.public_url.clone().unwrap_or_default();
+    let own_head = [
+        ("cache-control", OWN_CARD_CACHE_CONTROL),
+        ("content-type", OWN_CARD_MEDIA_TYPE),
+    ];
+    let (status, body, own) = match ask {
+        crate::arrival::CardAsk::Own => {
+            match served::self_card_document(&public_url, Vec::new())
+                .ok_or_else(String::new)
+                .and_then(|card| served::sign_card(&card, &mut signer))
+            {
+                Ok(card) => (200, serde_json::to_vec(&card).unwrap_or_default(), true),
+                Err(_) => (
+                    500,
+                    card_error("internal", "the agent card could not be built"),
+                    false,
+                ),
+            }
+        }
+        crate::arrival::CardAsk::Agent => {
+            let agent = agent.unwrap_or_default();
+            let def = section.as_ref().and_then(|s| s.agents.get(&agent));
+            match (def, plane.cards.at(&agent, generation)) {
+                (Some(def), Some(held)) => {
+                    match served::rewrite_card(&held, &def.url, &public_url, &agent)
+                        .map_err(|_| String::new())
+                        .and_then(|card| served::sign_card(&card, &mut signer))
+                    {
+                        Ok(card) => (200, serde_json::to_vec(&card).unwrap_or_default(), false),
+                        Err(_) => (
+                            502,
+                            card_error("upstream_error", "the agent card could not be served"),
+                            false,
+                        ),
+                    }
+                }
+                _ => (
+                    503,
+                    card_error(
+                        "unavailable",
+                        "no agent card has been fetched for this registration yet",
+                    ),
+                    false,
+                ),
+            }
+        }
+    };
+    let seq = signer.seq;
+    plane.units.with(&unit, |u| {
+        if let Some(u) = u {
+            u.pass.answered = true;
+            u.pass.issued = seq;
+        }
+    });
+    if own {
+        window_with(
+            plane,
+            unit,
+            &input,
+            &mut out,
+            (status, &body),
+            &[],
+            &own_head,
+        )
+    } else {
+        window(plane, unit, &input, &mut out, (status, &body), &[])
+    }
 }
 
 #[cfg(test)]

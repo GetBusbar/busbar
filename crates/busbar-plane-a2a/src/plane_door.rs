@@ -40,8 +40,8 @@ use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn,
     PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, ProjectIn, ProjectOut, RecordWrite, RefusalIn,
     RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END,
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_REQUIRED,
-    RECORD_PUT, REFUSAL_ARRIVE, ROUTE_DIRECT, ROUTE_SCOPE, UNITS_REPORTED,
+    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
+    PRINCIPAL_REQUIRED, RECORD_PUT, REFUSAL_ARRIVE, ROUTE_DIRECT, ROUTE_SCOPE, UNITS_REPORTED,
 };
 use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::sdk::door::statement;
@@ -291,7 +291,7 @@ impl Outbox {
 /// snapshot and section, the units in flight, the second the task store was last swept, and the
 /// far end's own id for each relayed task busbar learnt it for.
 pub struct A2aDoor {
-    public_url: Option<String>,
+    pub(crate) public_url: Option<String>,
     pub(crate) host: Option<Host>,
     pub(crate) services: Option<Services>,
     generations: Generations<PlaneSnapshot, AgentsCfg>,
@@ -567,7 +567,8 @@ slot!(
                 Ok(None) => return unserved(&mut out),
                 Err(refusal) => return refused(&mut out, &refusal),
             },
-            Line::Framed | Line::Open => return unserved(&mut out),
+            Line::Open => return arrive_card(plane, route, target, given.unit, &mut out),
+            Line::Framed => return unserved(&mut out),
         };
         let fields = input.fields();
         let disposition = arrival::decide(envelope.as_deref().unwrap_or(body), |name| {
@@ -654,6 +655,70 @@ slot!(
         Outcome::Ready
     }
 );
+
+/// AN ARRIVAL ON THE OPEN LINE: a read of a card busbar serves ([`crate::served_card`]), kept with
+/// the generation it arrived under. Busbar's own card (the well-known path) is unauthenticated and
+/// the plane's own to answer (`ROUTE_LOCAL`); a fronted agent's card (`GET /a2a/agents/{id}`) needs
+/// a principal and is routed to the addressed agent's entry, so the kernel judges the caller's grant
+/// over it, and the agent's admission (its trust and a held card, the engine's `receive::admit`)
+/// refuses about that agent. Every other open route (the protected-resource document is the
+/// kernel's) is unserved here.
+fn arrive_card(
+    plane: &A2aDoor,
+    route: &door::Route,
+    target: &str,
+    unit: u64,
+    out: &mut Out<'_, ArriveOut>,
+) -> Outcome {
+    let generation = plane.newest();
+    let (ask, agent) = if route.verb == "GET" && route.target == crate::WELL_KNOWN_CARD_PATH {
+        (arrival::CardAsk::Own, None)
+    } else if route.verb == "GET" && route.target == crate::mounted_route(crate::ROUTE_AGENT) {
+        let Some(agent) = agent_of(target) else {
+            return unserved(out);
+        };
+        (arrival::CardAsk::Agent, Some(agent))
+    } else {
+        return unserved(out);
+    };
+    let Some(op) = door::op_class_index(crate::ops::OP_AGENT_CARD) else {
+        return unserved(out);
+    };
+    out.set(|o| &o.op_class, op);
+    out.set(|o| &o.dialect, door::DIALECT_DOCUMENT);
+    match &agent {
+        None => {
+            out.set(|o| &o.principal_need, PRINCIPAL_NONE);
+            out.local();
+        }
+        Some(agent) => {
+            out.set(|o| &o.principal_need, PRINCIPAL_REQUIRED);
+            out.route(ROUTE_DIRECT, agent);
+            let section = plane.generations.current();
+            if let Some(def) = section.as_ref().and_then(|s| s.agents.get(agent)) {
+                if let Err(refusal) = admit_unit(plane, (agent, def), Some(agent), generation, None)
+                {
+                    return refused(out, &refusal);
+                }
+            }
+        }
+    }
+    keep(
+        &plane.units,
+        MAX_UNITS,
+        unit,
+        Unit {
+            disposition: Disposition::Card(ask),
+            agent,
+            section: plane.generations.current(),
+            hop: None,
+            pass: crate::task_door::Pass::default(),
+            envelope: None,
+            generation,
+        },
+    );
+    Outcome::Ready
+}
 
 /// The hop a unit's `on_piece` serves, as the engine relays it (`receive::unary_hop` and
 /// `receive::stream_hop`): the extended-card read addressed to one agent, task-less (its
@@ -1264,6 +1329,13 @@ slot!(
             return Outcome::Failed;
         };
         let unit = input.get().unit;
+        let card = plane.units.with(&unit, |u| match u.map(|u| &u.disposition) {
+            Some(Disposition::Card(ask)) => Some(*ask),
+            _ => None,
+        });
+        if let Some(ask) = card {
+            return crate::task_door::card_piece(plane, &instance, input, out, ask);
+        }
         let relayed = plane.units.with(&unit, |u| u.is_some_and(|u| u.hop.is_some()));
         if !relayed {
             return crate::task_door::on_piece(plane, &instance, input, out)
@@ -1623,10 +1695,9 @@ fn fetch_card(
                     let request = Exchange::request(Request {
                         method: b"GET".to_vec(),
                         target: target.into_bytes(),
-                        fields: vec![(
-                            b"accept".to_vec(),
-                            crate::arrival::JSON_MEDIA_TYPE.as_bytes().to_vec(),
-                        )],
+                        // No field of the plane's own: the engine's card fetch named only the
+                        // host its connection carries (the predev fence's bytes).
+                        fields: Vec::new(),
                         body: Vec::new(),
                         timeout_ms: crate::trust::CARD_FETCH_TIMEOUT_MS,
                     })

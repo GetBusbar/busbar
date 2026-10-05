@@ -261,6 +261,17 @@ pub enum Disposition {
     },
     /// Refused at arrival.
     Refused(Refusal),
+    /// A read of a card busbar serves on its open line ([`crate::served_card`]).
+    Card(CardAsk),
+}
+
+/// WHICH CARD an open-line read asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardAsk {
+    /// Busbar's own card, at the well-known path: unauthenticated, answered by the plane.
+    Own,
+    /// A fronted agent's card, `GET /a2a/agents/{agent_id}`: the agent the target names.
+    Agent,
 }
 
 impl Disposition {
@@ -275,6 +286,7 @@ impl Disposition {
                 Some(ops::relay_class(method))
             }
             Disposition::Refused(_) => None,
+            Disposition::Card(_) => Some(ops::OP_AGENT_CARD),
         }
     }
 }

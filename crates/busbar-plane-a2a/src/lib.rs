@@ -74,6 +74,7 @@ pub mod record;
 pub mod records;
 pub mod relay;
 pub mod rest;
+pub mod served_card;
 pub mod skill;
 pub mod sse;
 pub mod surface;
