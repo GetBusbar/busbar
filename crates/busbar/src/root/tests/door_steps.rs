@@ -4292,3 +4292,128 @@ mod hook_parity {
         assert!(calls_heard(&mut heard).is_empty(), "nothing was dispatched");
     }
 }
+
+/// A REGISTRATION THAT IS A PROGRAM (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)), end to end through
+/// the composed door and the real connector: the server is a program the operator names (`/bin/sh`
+/// and its script, inline here), one long-lived child per registration, greeted once, its every
+/// exchange — verify-on-call's tool list, the relayed call over the kernel's walk, the reply to its
+/// own request — on that one child, correlated by id.
+#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+mod program_member {
+    use axum::http::StatusCode;
+
+    use super::tool_door::{rig_tools, send, tool_digest, tool_listing, CALL};
+    use crate::root::serve::planes_tests::{Published, PUBLISHING};
+
+    /// The server, as a shell script: it answers the handshake, its tool list (after a log line of
+    /// its own) and each call (after a request of its own, `ping`, which it counts the answers to),
+    /// each call answered with its process id and what it has seen so far.
+    fn script() -> String {
+        let listing = tool_listing().to_string().replace('\'', "'\\''");
+        format!(
+            "inits=0; lists=0; calls=0; pongs=0\n\
+             L='{listing}'\n\
+             while IFS= read -r l; do\n\
+               id=$(printf '%s' \"$l\" | sed -n 's/.*\"id\":\\([0-9]\\{{10,\\}}\\).*/\\1/p')\n\
+               case \"$l\" in\n\
+                 *'\"method\":\"initialize\"'*) inits=$((inits+1)); \
+                   printf '{{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"s\",\"version\":\"1\"}}}}}}\\n' \"$id\" ;;\n\
+                 *'\"method\":\"tools/list\"'*) lists=$((lists+1)); \
+                   printf '{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{{\"level\":\"info\",\"data\":\"listing\"}}}}\\n'; \
+                   printf '{{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{{\"tools\":%s}}}}\\n' \"$id\" \"$L\" ;;\n\
+                 *'\"method\":\"tools/call\"'*) calls=$((calls+1)); \
+                   printf '{{\"jsonrpc\":\"2.0\",\"id\":\"srv-%s\",\"method\":\"ping\"}}\\n' \"$calls\"; \
+                   printf '{{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"from the server pid=%s inits=%s lists=%s calls=%s pongs=%s\"}}]}}}}\\n' \"$id\" \"$$\" \"$inits\" \"$lists\" \"$calls\" \"$pongs\" ;;\n\
+                 *'\"result\":{{}}'*) pongs=$((pongs+1)) ;;\n\
+               esac\n\
+             done\n"
+        )
+    }
+
+    /// The section: one registration that is the program above, its one tool approved.
+    fn section() -> serde_yaml::Value {
+        let mut fs = serde_yaml::Mapping::new();
+        fs.insert("transport".into(), "stdio".into());
+        fs.insert("command".into(), "/bin/sh".into());
+        fs.insert(
+            "args".into(),
+            serde_yaml::Value::Sequence(vec!["-c".into(), script().into()]),
+        );
+        fs.insert(
+            "pin".into(),
+            serde_yaml::from_str("{ mechanism: pinned_pubkey, key: \"sha256/K=\" }").unwrap(),
+        );
+        fs.insert(
+            "tools_allow".into(),
+            serde_yaml::from_str(&format!(
+                "{{ read_file: {{ schema_hash: \"{}\" }} }}",
+                tool_digest()
+            ))
+            .unwrap(),
+        );
+        let mut tools = serde_yaml::Mapping::new();
+        tools.insert("fs".into(), serde_yaml::Value::Mapping(fs));
+        serde_yaml::Value::Mapping(tools)
+    }
+
+    /// The text of the tool result a call was answered with.
+    fn text(body: &[u8]) -> String {
+        let body: serde_json::Value = serde_json::from_slice(body).expect("a JSON-RPC answer");
+        assert_eq!(body["id"], 30, "answered under the caller's own id: {body}");
+        body["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a tool result: {body}"))
+            .to_string()
+    }
+
+    /// The `key=value` the server reported.
+    fn fact<'t>(text: &'t str, key: &str) -> &'t str {
+        text.split(' ')
+            .find_map(|w| w.strip_prefix(key)?.strip_prefix('='))
+            .unwrap_or_else(|| panic!("{key} in {text:?}"))
+    }
+
+    /// RED: the relayed `tools/call` is served by the registration's program, its answer relayed to
+    /// the caller; the child was greeted once and asked its tool list (verify-on-call) on the same
+    /// process; its own `ping` was answered on its input; and a second call reuses the same child
+    /// (one process, one greeting).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_program_registration_serves_the_call_and_a_second_call_reuses_its_child() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-program-member";
+        let _published = Published(instance);
+        let rig = rig_tools(instance, 0, section(), &|app| app);
+
+        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let first = text(&body);
+        assert!(first.starts_with("from the server "), "{first}");
+        assert_eq!(
+            fact(&first, "inits"),
+            "1",
+            "greeted before the call: {first}"
+        );
+        assert_eq!(
+            fact(&first, "lists"),
+            "1",
+            "verify-on-call on the child: {first}"
+        );
+        assert_eq!(fact(&first, "calls"), "1");
+
+        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let second = text(&body);
+        assert_eq!(
+            fact(&second, "pid"),
+            fact(&first, "pid"),
+            "the second call reached the same child"
+        );
+        assert_eq!(fact(&second, "inits"), "1", "greeted once: {second}");
+        assert_eq!(fact(&second, "calls"), "2");
+        assert_eq!(
+            fact(&second, "pongs"),
+            "1",
+            "the child's own request was answered once: {second}"
+        );
+    }
+}
