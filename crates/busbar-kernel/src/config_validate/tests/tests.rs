@@ -6144,6 +6144,59 @@ fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
     assert!(validate(&cfg).is_ok(), "no card = billing off, no refusal");
 }
 
+/// A plane served through its DOOR: its fee unit rides among its billable classes (the door's
+/// tail holds `fee_units ⊆ billable_classes`), exactly as `plane::door::fold` builds the row.
+static DOOR_FEE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "door-fee-plane",
+        billable_classes: &[
+            bc("calls", "count"),
+            bc("bytes", "byte"),
+            bc(busbar_contract::plane::PER_REQUEST, "count"),
+        ],
+        fee_units: &[busbar_contract::plane::PER_REQUEST],
+        ..CLASS_PLANE.declaration
+    },
+    ..CLASS_PLANE
+};
+
+/// SEAM-L(m), FEE-UNIT VALIDATION PARITY: a door plane's fee unit is no priced class. The card
+/// that priced the plane's lane before it was served through its door (its declared classes, no
+/// fee unit) boots; a class it leaves unpriced still refuses (#42), the fee unit never named among
+/// them; and a card naming the fee unit as a class refuses as it did, a fee unit being no class a
+/// card prices. RED: the fee unit was demanded of every card, so the predev card refused.
+#[test]
+fn a_door_planes_fee_unit_is_no_class_its_card_must_price() {
+    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&DOOR_FEE_PLANE]);
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.rate_card = Some(plane_card(
+        "door-fee-plane",
+        "srv_read",
+        "units: { calls: 2, bytes: 3 }",
+    ));
+    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+
+    cfg.rate_card = Some(plane_card(
+        "door-fee-plane",
+        "srv_read",
+        "units: { calls: 2 }",
+    ));
+    let errs = validate(&cfg).expect_err("bytes is declared and unpriced");
+    let want = "tools.rate_card does not configure billable unit(s) bytes declared by this plane; \
+                add them (0 to make them free)";
+    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+
+    cfg.rate_card = Some(plane_card(
+        "door-fee-plane",
+        "srv_read",
+        "units: { calls: 2, bytes: 3, per_request: 1 }",
+    ));
+    let errs = validate(&cfg).expect_err("a fee unit is no class a card prices");
+    let want = "tools.rate_card configures unit(s) per_request not declared by this plane \
+                (declared: calls, bytes); remove them or fix the name";
+    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+}
+
 /// A plane the kernel was never compiled with — its declaration built at run time, the way a plane
 /// registered from outside core arrives — has ITS declared classes honoured: the kernel reads the
 /// list off the declaration and names what it says.
