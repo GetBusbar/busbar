@@ -40,7 +40,16 @@
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
 
+// The root's transport-door adapter (`busbar/src/root/doors.rs`) names this crate by its own name;
+// `conformance` mounts that file verbatim, so the name resolves here too.
+#[cfg(feature = "conformance")]
+extern crate self as busbar_core_connector;
+
 pub mod compose;
+/// THE PUBLISHED CONFORMANCE SUITE'S HOST CONNECTOR: this crate's connector, composed as the root
+/// composes it, for the suite's networked plugins. Behind `conformance`; never in a shipped build.
+#[cfg(feature = "conformance")]
+pub mod conformance;
 pub mod dtls;
 pub mod endpoint;
 pub mod framer;

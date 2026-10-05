@@ -17,6 +17,19 @@
 //! }
 //! ```
 //!
+//! A NETWORKED plugin over `http`/`https`, or one that secures a stream through the host's TLS,
+//! names busbar's host connector too (a dev-dependency on `busbar-core-connector`, feature
+//! `conformance`, at the same pin), and, for TLS, the test CA its local endpoint's certificate
+//! chains to; both go to the HOST, never to the plugin:
+//!
+//! ```ignore
+//! busbar_plugin_loader::conformance_suite! {
+//!     door: …, cdylib: …, inputs: …,
+//!     host: busbar_core_connector::conformance::host,
+//!     tls: include_str!("test-ca.pem"),
+//! }
+//! ```
+//!
 //! with `busbar-plugin-loader = { git = …, rev = <the pin>, features = ["conformance"] }` as a
 //! dev-dependency. The macro emits the suite's tests; `plugin-ci.yml` runs them under `--release`.
 //!
@@ -39,7 +52,10 @@
 //! [`TcpConns`](crate::tcp_conns::TcpConns) over the leg dispatcher's conn waker), so a networked
 //! plugin dials the REAL local endpoint its `conformance.json` settings name, through the host
 //! connector's slots, reads PENDING and is woken. A plugin that declares no need is bound with no
-//! table, as before (the loader hands a table only to a Statement with a need).
+//! table, as before (the loader hands a table only to a Statement with a need). With busbar's HOST
+//! connector named (Q-P4-4: carrier -> [TLS] -> framer, as production composes it), every need over
+//! any scheme it serves binds over that connector instead, and its TLS trusts the suite's test
+//! anchors.
 //!
 //! THE RED ARMS, run in the plugin's own run: a perturbed pinned count is refused by the same
 //! comparator; the door restated at its kind ABI ± 1 is refused, linked (`KindAbi`) and dropped in
@@ -112,7 +128,21 @@ pub struct Subject {
     pub cdylib_crate: &'static str,
     /// The plugin's `conformance.json`.
     pub inputs: serde_json::Value,
+    /// THE HOST CONNECTOR the suite binds a networked plugin over (`conformance_suite! { …, host: …
+    /// }`): busbar's own connector, composed as the root composes it
+    /// (`busbar_core_connector::conformance::host`). `None`: the loader's test table
+    /// ([`TcpConns`], plain `tcp` only).
+    pub host: Option<Host>,
+    /// TEST TRUST ANCHORS (CA certificates, PEM) for the HOST connector's TLS
+    /// (`conformance_suite! { …, tls: … }`): never handed to the plugin.
+    pub anchors: Option<String>,
 }
+
+/// The suite's HOST CONNECTOR, as the busbar side builds it for one leg: its parked reads woken
+/// through the leg dispatcher's conn waker, its TLS trusting the test anchors (PEM) when named.
+/// `busbar_core_connector::conformance::host` is one (feature `conformance`; this crate cannot name
+/// it: the connector depends on the kernel, which depends on this crate).
+pub type Host = fn(Arc<dyn Fn(u64) + Send + Sync>, Option<&str>) -> Arc<dyn DeclaredConns>;
 
 impl Subject {
     /// `inputs` is the plugin's `conformance.json` text.
@@ -128,7 +158,23 @@ impl Subject {
             door,
             cdylib_crate,
             inputs,
+            host: None,
+            anchors: None,
         }
+    }
+
+    /// This subject's networked needs bind over `host` (the busbar side's host connector).
+    #[must_use]
+    pub fn with_host(mut self, host: Host) -> Self {
+        self.host = Some(host);
+        self
+    }
+
+    /// The host connector's TLS trusts `pem` (test CA certificates) too.
+    #[must_use]
+    pub fn with_anchors(mut self, pem: &str) -> Self {
+        self.anchors = Some(pem.to_owned());
+        self
     }
 
     /// The kind the linked door states.
@@ -203,9 +249,27 @@ impl Subject {
     /// need over a scheme the table does not serve (`http`, `https`, ...: the host connector's
     /// framing, which the test table has not; bound with no table, as before). `upgrade_secure` is
     /// refused: the table secures no stream (it names no TLS library).
+    ///
+    /// With a HOST connector ([`Subject::host`]) every need, over any scheme it serves (`tcp`,
+    /// `http`, `https`, …), binds over it, built the same way for each leg; its TLS trusts the
+    /// subject's [`Subject::anchors`].
+    ///
+    /// # Panics
+    /// Test anchors are named with no host connector to trust them.
     #[must_use]
     pub fn conns(&self, d: &Dispatcher) -> Option<Arc<dyn DeclaredConns>> {
         let needs = self.needs();
+        if needs.is_empty() {
+            return None;
+        }
+        if let Some(host) = self.host {
+            return Some(host(d.conn_waker(), self.anchors.as_deref()));
+        }
+        assert!(
+            self.anchors.is_none(),
+            "conformance_suite!'s `tls:` anchors are the HOST connector's: name its \
+             `host: busbar_core_connector::conformance::host` too"
+        );
         let table = TcpConns::new(d.conn_waker());
         let served = needs
             .iter()
@@ -973,9 +1037,20 @@ pub fn profile(debug: bool) {
 /// and requires every one to RUN. The names are the contract the CI step reads.
 #[macro_export]
 macro_rules! conformance_suite {
-    (door: $door:path, cdylib: $cdylib:expr, inputs: $inputs:expr $(,)?) => {
+    (
+        door: $door:path,
+        cdylib: $cdylib:expr,
+        inputs: $inputs:expr
+        $(, host: $host:path)?
+        $(, tls: $tls:expr)?
+        $(,)?
+    ) => {
         fn __busbar_conformance_subject() -> $crate::conformance::Subject {
-            $crate::conformance::Subject::new($door, $cdylib, $inputs)
+            #[allow(unused_mut)]
+            let mut s = $crate::conformance::Subject::new($door, $cdylib, $inputs);
+            $(s = s.with_host($host);)?
+            $(s = s.with_anchors($tls);)?
+            s
         }
 
         /// THE BOTH-WAYS ARM: linked vs dropped in, exact crossings, equal folds.

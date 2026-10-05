@@ -578,6 +578,8 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-plugin-loader",
+ "busbar-transport-http",
+ "busbar-transport-tcp",
  "busbar-transport-tcp-plugin",
  "bytes",
  "crc32fast",
