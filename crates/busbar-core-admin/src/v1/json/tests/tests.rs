@@ -478,7 +478,7 @@ fn served_openapi_equals_committed_file() {
 /// holds a door's stated schemas to the committed openapi.json. Not vacuous: some plane registers one.
 #[cfg(feature = "openapi-schema")]
 #[test]
-fn every_plane_component_schema_is_the_committed_ones() {
+fn openapi_plane_component_schemas_are_the_committed_ones() {
     crate::ensure_seam();
     let committed: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(COMMITTED_OPENAPI_PATH).expect("read committed openapi"),
