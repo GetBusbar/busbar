@@ -1690,7 +1690,7 @@ pub use crate::plane_host::engine_view::{
 };
 use crate::store::Unavailable;
 use busbar_contract::abi::hot::{AdmissionId, Signal, StatusClass};
-use busbar_contract::records::{PlaneRequestCtx, VirtualKey};
+use busbar_contract::records::PlaneRequestCtx;
 
 /// The outcome of a refusal-fidelity admit driven over the host `govern_admit_reason` seam.
 #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
