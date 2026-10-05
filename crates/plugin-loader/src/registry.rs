@@ -495,6 +495,40 @@ impl PluginRegistry {
         }
     }
 
+    /// M6-COLD-DELETE: whether the `kind: auth` row `name_or_alias` resolves to opens on the COLD
+    /// auth lane — a linked `BUSBAR_COLD_ENTRY`, or a dropped-in library with no door and no
+    /// Statement (`crate::auth_axis::AuthRows` opens such a row through its `ColdAuth`) — rather
+    /// than on the auth kind's memory ABI. A cold row's `verify` is a synchronous call that may
+    /// block: its caller keeps it off an async worker.
+    ///
+    /// # Errors
+    /// No row resolves to `name_or_alias`, or it is not `kind: auth`, in [`Self::open_auth`]'s words.
+    /// A name only a door's Statement alias answers resolves to no row here: the auth axis answers it.
+    pub fn auth_row_is_cold(&self, name_or_alias: &str) -> Result<bool, String> {
+        let p = self.resolve_kind(name_or_alias, "auth", "serve as an auth module")?;
+        Ok(p.door().is_none()
+            && (p.image_is_cold_linked() || matches!(p.manifest.stated_rendering(), Ok(None))))
+    }
+
+    /// Open an AUTH plugin resolved by name or alias: verifies the resolved plugin's `kind` is `auth`,
+    /// then loads it over the kind-neutral C ABI and `open`s it with `cfg_json`, returning
+    /// `Box<dyn AuthModule>` — the seam the engine's auth chain consumes. Same trust and load
+    /// pipeline as store/secret; only the kind (and the consuming seam) differs. FAIL-CLOSED.
+    pub fn open_auth(
+        &self,
+        name_or_alias: &str,
+        cfg_json: &str,
+    ) -> Result<Box<dyn busbar_contract::auth::AuthModule>, String> {
+        let p = self.resolve_kind(name_or_alias, "auth", "serve as an auth module")?;
+        if p.door().is_some() {
+            return Err(format!(
+                "auth plugin '{name_or_alias}' is on the memory ABI: it opens through the auth \
+                 axis, not the cold lane"
+            ));
+        }
+        crate::auth::load_auth_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)
+    }
+
     /// M6-COLD-DELETE RESIDUE (deleted when the hosted login moves onto the auth door): open an AUTH
     /// plugin as the unified [`busbar_contract::auth::AuthPlugin`] handle, KEEPING the `LoginModule`
     /// capability the hosted browser-login flow (`auth.methods`, 1.5.2) drives. Also

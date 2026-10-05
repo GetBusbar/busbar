@@ -160,14 +160,16 @@ struct ChainEntry {
     /// The instance's name as its Statement (or its in-process module) states it, for the plugin
     /// catalogue ([`AuthMiddleware::chain_names`]).
     name: String,
-    /// An in-process TEST stand-in (a 1.5.5-shaped module, `stand_in::InProcessAuth`): the kernel
-    /// caches its verdicts when it states [`FACT_CACHEABLE`], as 1.5.5 cached a `cacheable()` module.
-    /// Never set for a plugin: every plugin is a memory-ABI door, which caches inside itself
-    /// (THE DESIGN 11.11 R3), and the kernel keeps no verdict of it.
+    /// M6-COLD-DELETE residue: a 1.5.5-shaped module — the one auth plugin still on the JSON lane
+    /// (the auth-oidc plugin at its pinned rev, until its door re-pin), or an in-process test
+    /// stand-in. The kernel caches its verdicts when it states [`FACT_CACHEABLE`], as 1.5.5 cached a
+    /// `cacheable()` module. A memory-ABI door caches inside itself (THE DESIGN 11.11 R3): the
+    /// kernel keeps no verdict of it.
     cold: bool,
-    /// An in-process TEST stand-in whose `verify` may block: the request path OFFLOADS it, bounded
-    /// ([`AUTH_OFFLOAD_MAX_INFLIGHT`]), the 1.5.5 posture the acceptance pins keep. Never set for a
-    /// plugin: a memory-ABI door is awaited on the dispatcher (no thread parked).
+    /// M6-COLD-DELETE residue: a JSON-lane PLUGIN, whose `verify` is a synchronous call that may do
+    /// blocking I/O (the OIDC module's JWKS fetch): the request path OFFLOADS it, bounded
+    /// ([`AUTH_OFFLOAD_MAX_INFLIGHT`]). A memory-ABI door is awaited on the dispatcher (no thread
+    /// parked); an in-process stand-in cannot block.
     offload: bool,
 }
 
@@ -324,7 +326,7 @@ static ADMIN_OFFLOAD_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
 pub struct AdminAuthChain {
     /// The resolved EXTERNAL admin modules, keyed by provider name: each a `kind: auth` instance the
     /// auth axis opened on the one dispatcher (L2-AUTH-4, ARCHITECT 2026-10-03): a door is awaited,
-    /// an in-process test stand-in is offloaded off the reactor ([`AdminModule::cold`]).
+    /// a JSON-lane plugin (M6-COLD-DELETE residue) is offloaded off the reactor ([`AdminModule::cold`]).
     pub modules: std::collections::HashMap<String, AdminModule>,
     /// The operator credential, as the auth axis answers it, and the providers it answers for: a
     /// provider is the operator credential by its module, never by its name ([`Operator`]).
@@ -335,10 +337,11 @@ pub struct AdminAuthChain {
 pub struct AdminModule {
     /// The opened instance.
     pub calls: std::sync::Arc<dyn AuthCalls>,
-    /// An in-process TEST stand-in (a 1.5.5-shaped module): its `verify` is a synchronous call that
-    /// may block, so an awaited admin walk offloads it, bounded ([`ADMIN_OFFLOAD_MAX_INFLIGHT`]), and
-    /// the admin chain caches its verdicts as 1.5.5 did. Never set for a plugin: a memory-ABI door is
-    /// awaited on the dispatcher and caches inside itself (THE DESIGN 11.11 R3).
+    /// M6-COLD-DELETE residue: a 1.5.5-shaped module (the JSON-lane auth plugin until its door
+    /// re-pin, or an in-process test stand-in). Its `verify` is a synchronous call that may block, so
+    /// an awaited admin walk offloads it, bounded ([`ADMIN_OFFLOAD_MAX_INFLIGHT`]), and the admin
+    /// chain caches its verdicts as 1.5.5 did. A memory-ABI door is awaited on the dispatcher and
+    /// caches inside itself (THE DESIGN 11.11 R3): the kernel keeps no verdict of it.
     pub cold: bool,
 }
 
@@ -447,6 +450,13 @@ impl AdminAuthChain {
                             axis.insert(opened).clone()
                         }
                     };
+                    // The row's lane, refused in the registry's own words when it names no auth
+                    // row; a name only a door's Statement alias answers is the axis's (a door).
+                    let cold = match registry.auth_row_is_cold(other) {
+                        Ok(cold) => cold,
+                        Err(_) if axis.answers(other) => false,
+                        Err(e) => return Err(refused(e)),
+                    };
                     // The host label is unique per opened instance: the admin chain's provider,
                     // apart from a data-plane provider of the same name.
                     let label = format!("admin_auth.{name}");
@@ -456,7 +466,7 @@ impl AdminAuthChain {
                     // KEYED BY PROVIDER NAME (1.5.3): `run_admin_chain` dispatches by the same name
                     // `admin_chain` lists and `role_bindings.<name>` binds, so two named providers
                     // sharing one module stay distinct admin identities.
-                    modules.insert(name.to_string(), AdminModule { calls, cold: false });
+                    modules.insert(name.to_string(), AdminModule { calls, cold });
                 }
             }
         }
@@ -482,8 +492,8 @@ impl AuthMiddleware {
     /// authenticate on the governance path, not through a chain position, so its entry sets a flag
     /// rather than a position. Any OTHER name is a `kind: auth` PLUGIN, opened on this build's AUTH
     /// AXIS ([`crate::preflight::auth_axis`]: the composition root's rows over the process's one
-    /// dispatcher, AUTH-CHAIN-SWITCH) — a memory-ABI door, linked or dropped in; a 1.5.5
-    /// JSON-contract auth plugin is refused naming the rebuild. FAIL-CLOSED: a configured auth module that cannot
+    /// dispatcher, AUTH-CHAIN-SWITCH) — a memory-ABI door, linked or dropped in, and, until its door
+    /// re-pin, the one auth plugin still on the JSON lane (`ColdAuth`). FAIL-CLOSED: a configured auth module that cannot
     /// be loaded (missing tarball, wrong kind, untrusted under the running policy, a load or ABI
     /// failure, an `open` that refused) is a HARD boot error — never a silently-dropped module that
     /// would leave the front door open. `--validate`/`plugins_preflight` catches most of these
@@ -560,6 +570,13 @@ impl AuthMiddleware {
                             axis.insert(opened).clone()
                         }
                     };
+                    // The row's lane, refused in the registry's own words when it names no auth
+                    // row; a name only a door's Statement alias answers is the axis's (a door).
+                    let cold = match registry.auth_row_is_cold(other) {
+                        Ok(cold) => cold,
+                        Err(_) if axis.answers(other) => false,
+                        Err(e) => return Err(refused(e)),
+                    };
                     let calls = axis
                         .open(other, &entry.name, &serde_json::Value::Object(resolved))
                         .map_err(refused)?;
@@ -567,8 +584,8 @@ impl AuthMiddleware {
                         provider: entry.name.clone(),
                         name: calls.name().to_string(),
                         calls,
-                        cold: false,
-                        offload: false,
+                        cold,
+                        offload: cold,
                     });
                 }
             }

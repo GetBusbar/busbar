@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! M6-COLD-DELETE RESIDUE: THE HOSTED LOGIN'S JSON-LANE LOAD, and nothing else. [`DynAuth`] is a
-//! `kind: auth` plugin built on `export_login_plugin!`, loaded for the hosted browser login
-//! ([`load_login_image`], `PluginRegistry::open_login`) until the login moves onto the auth door.
-//! An auth plugin's VERIFY never loads here: it opens on the auth kind's memory ABI
-//! (`crate::auth_axis`). A misbehaving plugin is FAIL-CLOSED (rejected, never admitted).
+//! M6-COLD-DELETE RESIDUE: THE AUTH KIND'S JSON-LANE LOAD. [`DynAuth`] is a `kind: auth` plugin
+//! built on `export_login_plugin!` (the auth-oidc plugin at its pinned rev), loaded for the hosted
+//! browser login ([`load_login_image`], `PluginRegistry::open_login`) and, as a chain position, for
+//! its verify ([`load_auth_image`], `crate::auth_axis::ColdAuth`), until that plugin's door re-pin
+//! lands (the p4-oidc-repin lane). A misbehaving plugin is FAIL-CLOSED (rejected, never admitted).
 
 use crate::RawPlugin;
 use busbar_contract::abi::cold::auth::{AuthRequest, AuthResponse};
@@ -186,6 +186,24 @@ impl std::fmt::Debug for DynAuth {
             .field("path", &self.raw.path)
             .finish()
     }
+}
+
+/// Load an AUTH module over either door's [`crate::Image`], returning the verify-only [`AuthModule`]
+/// seam the data-plane chain consumes. The concrete [`DynAuth`] is ALSO a [`LoginModule`]; a caller
+/// that needs the login capability (the hosted browser flow) uses [`load_login_image`] instead, which
+/// returns the unified [`AuthPlugin`] box.
+pub fn load_auth_image(
+    image: crate::Image<'_>,
+    cfg_json: &str,
+    display: &str,
+    manifest_kind: &str,
+) -> Result<Box<dyn AuthModule>, String> {
+    Ok(Box::new(build_dyn_auth(
+        image,
+        cfg_json,
+        display,
+        manifest_kind,
+    )?))
 }
 
 /// Load an auth plugin as the unified [`AuthPlugin`] handle (verify + login) over either door's
