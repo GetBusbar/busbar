@@ -81,7 +81,9 @@ pub(super) fn bound(
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: crate::root::loader::dispatch::ConnTable::NoNeeds,
+            // These rows never dial (the plane's far end is not reached): its need is not
+            // declared, bound as a probe.
+            conns: crate::root::loader::dispatch::ConnTable::Probe,
         },
     )
     .expect("the dropped-in door binds");
