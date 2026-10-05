@@ -46,9 +46,8 @@
 //!    where the kernel could compare against it is the thing the lean-core scan exists to catch.
 
 use busbar_contract::caps::{Pass, Route};
-use busbar_contract::WireStatusClass;
 use busbar_kernel_breaker::cfg::BreakerCfg;
-use busbar_kernel_breaker::classify::NoopDiagnostics;
+use busbar_kernel_breaker::classify::Reading;
 use busbar_kernel_breaker::{Breaker as BreakerUnitTrait, BreakerUnit, DestinationId};
 use busbar_kernel_egress::ports::{
     Admit, Breaker, Classified, Outcome, Unavailable, UpstreamStatus,
@@ -177,49 +176,17 @@ impl BreakerAdapter {
         (self.unit)()
     }
 
-    /// Fold the transport's coarse reading of a frame down to a representative numeric status, for
-    /// when no number was reported.
+    /// The breaker unit's reading of an answer: the transport's fault reading of it, or — when the
+    /// status carries neither a class nor a fault reading — the fact that no answer came.
     ///
-    /// Success and the catch-all fold to nothing: there is no non-arbitrary number for either, and
-    /// the breaker's own "no code" answer — record nothing, relay as-is — is exactly what the
-    /// previous release did with an unexpected success reaching the error path.
-    fn fold_class(class: Option<WireStatusClass>) -> Option<u16> {
-        match class {
-            Some(WireStatusClass::CallerFault) => Some(400),
-            Some(WireStatusClass::FarEndFault) => Some(500),
-            Some(WireStatusClass::Success | WireStatusClass::Other) | None => None,
+    /// No number crosses: what a code means is the transport's own declared fault table, read on
+    /// its side of the frame. An answer whose transport states no reading (a framer with no fault
+    /// table) is the caller's, so it records nothing.
+    fn reading(status: UpstreamStatus) -> Reading {
+        if status.class.is_none() && status.fault.is_none() {
+            return Reading::NoAnswer;
         }
-    }
-
-    /// Narrow the transport contract's namespaced status to the breaker unit's own, carrying the
-    /// NAMESPACE across rather than the digits alone.
-    ///
-    /// Each numbering keeps its own table on the far side: an HTTP number is read against HTTP's
-    /// bands, a `grpc-status` against gRPC's codes. Flattening the two into one integer here is
-    /// precisely the defect this replaces — a gRPC `UNAVAILABLE` arrived as the number `14`, matched
-    /// no HTTP band, and was read as the caller's fault, so the destination that had just declared
-    /// itself down got no breaker record and the walk never failed over.
-    ///
-    /// The class fold is the fallback and only the fallback: it exists for a transport that read a
-    /// class but no number at all, and a frame that HAS a number never reaches it. The folded
-    /// stand-in is an HTTP one because the coarse class is protocol-neutral and HTTP's bands are the
-    /// table the breaker has always read a classless answer through.
-    fn narrow_code(status: UpstreamStatus) -> Option<busbar_kernel_breaker::port::UpstreamCode> {
-        use busbar_kernel_breaker::port::UpstreamCode;
-        // Asked by NAMESPACE, not by arm. The narrowing is this adapter's own — the breaker's
-        // enum is closed and names the two numberings it keeps tables for — but the question put
-        // to the frame is a keyed one, so a numbering this adapter has no table for is simply not
-        // one of these two, and adding a family costs the transport contract nothing here.
-        let Some(code) = status.code else {
-            return Self::fold_class(status.class).map(UpstreamCode::Http);
-        };
-        if let Some(http) = code.http().and_then(|n| u16::try_from(n).ok()) {
-            return Some(UpstreamCode::Http(http));
-        }
-        if let Some(grpc) = code.grpc().and_then(|n| u8::try_from(n).ok()) {
-            return Some(UpstreamCode::Grpc(grpc));
-        }
-        None
+        Reading::Answered(status.fault)
     }
 }
 
@@ -300,14 +267,12 @@ impl Breaker for BreakerAdapter {
     fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
         // The status alone, against no operator map: the breaker keeps none. Reading an error body
         // against the operator's `error_map` is the plane's classifier's work, and the unit is told
-        // that verdict; this port answers only for the numbered status the walk read off the frame.
+        // that verdict; this port answers only for the transport's reading of the frame.
         let classified = busbar_kernel_breaker::port::classify_upstream(
-            &HashMap::new(),
             busbar_kernel_breaker::port::UpstreamStatus {
-                code: Self::narrow_code(status),
+                reading: Self::reading(status),
                 retry_after: status.retry_after,
             },
-            &NoopDiagnostics,
         );
         Classified {
             disposition: classified.disposition,

@@ -139,7 +139,7 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
                 code: 0,
                 status_class: 0,
                 flags,
-                _reserved: 0,
+                fault: 0,
                 retry_after_secs: 0,
             });
         }

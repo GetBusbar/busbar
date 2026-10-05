@@ -78,7 +78,7 @@ use busbar_contract::conn::{
     PieceKind, PollConns, Ticket, NO_TICKET,
 };
 use busbar_contract::ids::StreamId;
-use busbar_contract::transport::wire::WireStatusClass;
+use busbar_contract::transport::wire::{WireFault, WireStatusClass};
 use busbar_contract::transport::ConnFacts;
 
 use crate::compose::{
@@ -855,6 +855,7 @@ impl Connector {
                         status_code: got.status_code,
                         status_namespace: None,
                         retry_after_secs: got.retry_after_secs,
+                        fault: WireFault::from_code(got.fault),
                         reason: None,
                     },
                     got.bytes,
@@ -923,6 +924,7 @@ fn completion(stream: u64) -> Piece {
         status_code: None,
         status_namespace: None,
         retry_after_secs: None,
+        fault: None,
         reason: None,
     }
 }

@@ -557,6 +557,7 @@ mod mint_door {
             status_code: status,
             status_namespace: None,
             retry_after_secs: None,
+            fault: None,
             reason: None,
         }
     }

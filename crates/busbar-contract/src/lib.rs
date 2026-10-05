@@ -202,7 +202,7 @@ pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
     Encode, EnvelopeField, Frame, FrameCursor, FrameMeta, Framing, Handoff, HandshakeTrigger,
     Listener, ListenerHandle, RawIo, RawStream, StatusAt, TransportEnvelope, TransportError,
-    Unit0Trigger, WireStatus, WireStatusClass,
+    Unit0Trigger, WireFault, WireStatus, WireStatusClass,
 };
 
 /// The default admin-scope CEILING for an identity provider that names none (`read-only`). Relocated

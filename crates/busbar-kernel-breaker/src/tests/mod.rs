@@ -1,192 +1,29 @@
 //! Tests for the breaker unit.
 //!
-//! The first block ports every classification test from
-//! `busbar-substrate::tests::breaker_tests` (1.5.5's
-//! `crates/busbar-substrate/src/tests/breaker_tests.rs`) verbatim in assertion, adapted only for
-//! this crate's dependency-free signatures (`normalize_raw_error` takes a [`classify::Diagnostics`]
-//! sink instead of nothing/`tracing`; `parse_retry_after` takes a `&str` instead of an
-//! `axum::http::HeaderMap`). Not ported: `retry_after_accepts_the_http_date_form` and
-//! `a_past_http_date_retry_after_floors_at_zero` used the `httpdate` crate to FORMAT a date to feed
-//! back in — this crate has no `httpdate` dependency, so those two are reproduced against
-//! hand-written IMF-fixdate strings instead of a round-trip through a formatter; the parsing
-//! arithmetic under test is identical.
+//! 1.5.5's classification tests read numeric statuses against bands, and the bands left this unit
+//! for the transports whose numbering they are: each framer's own fault-table tests pin them now,
+//! and the reading-to-disposition fold is pinned in `tests/port.rs`.
 //!
-//! The second block is new: state-machine tests the task specifically calls for, driven through
+//! The state-machine block is new: state-machine tests the task specifically calls for, driven through
 //! the public [`Breaker`] seam rather than 1.5.5's internal `cell_*` free functions (this crate has
 //! no direct callers of those internals to mirror — `BreakerUnit` is the whole public surface).
 
 use crate::budget::LifetimeBudget;
 use crate::cell::{BreakerCell, BreakerState, FailureEffect, ProbeAdmit};
 use crate::cfg::{BreakerCfg, TripConfig, TripMode};
-use crate::classify::{
-    classify, normalize_raw_error, status_class_from_str, CanonicalSignal, Disposition,
-    NoopDiagnostics, RawUpstreamError, StatusClass, PROVIDER_CODE_CONTEXT_LENGTH,
-};
+use crate::classify::{status_class_from_str, StatusClass};
 use crate::{BreakerUnit, DestinationId};
-use std::collections::HashMap;
 
 /// A fixed "now" for the tests that need one but are not ABOUT it — the kernel supplies this value
 /// on the real path, and a unit crate has no other source for it.
 const NOW: u64 = 1_700_000_000;
-
-fn err_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-    pairs
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
-}
 
 /// The probe fold's one test that takes no token (it reads a crate-private cell census); the ones
 /// that drive the `Pass<Route>`-taking seam run in busbar-kernel (`src/tests/members/breaker/`),
 /// where the token comes from the kernel's test token helper.
 mod probe;
 
-// ── Ported: classification pipeline ─────────────────────────────────────────────────────────────
-
-#[test]
-fn test_structured_type_drives_error_map() {
-    let raw = RawUpstreamError {
-        http_status: 400,
-        provider_code: None,
-        structured_type: Some("model_overloaded".to_string()),
-        retry_after_secs: None,
-    };
-    let map = err_map(&[("model_overloaded", "overloaded")]);
-    let sig = normalize_raw_error(&raw, &map, &NoopDiagnostics);
-    assert_eq!(sig.class, StatusClass::Overloaded);
-    assert_eq!(sig.provider_signal.as_deref(), Some("model_overloaded"));
-}
-
-#[test]
-fn test_provider_code_wins_over_structured_type() {
-    let raw = RawUpstreamError {
-        http_status: 500,
-        provider_code: Some("1302".to_string()),
-        structured_type: Some("server_error".to_string()),
-        retry_after_secs: None,
-    };
-    let map = err_map(&[("1302", "rate_limit"), ("server_error", "server_error")]);
-    let sig = normalize_raw_error(&raw, &map, &NoopDiagnostics);
-    assert_eq!(sig.class, StatusClass::RateLimit);
-}
-
-#[test]
-fn test_builtin_context_length_on_real_400_classifies_context_length() {
-    let raw = RawUpstreamError {
-        http_status: 400,
-        provider_code: Some(PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
-        structured_type: None,
-        retry_after_secs: None,
-    };
-    let sig = normalize_raw_error(&raw, &HashMap::new(), &NoopDiagnostics);
-    assert_eq!(sig.class, StatusClass::ContextLength);
-    assert_eq!(
-        sig.provider_signal.as_deref(),
-        Some("context_length_exceeded")
-    );
-}
-
-#[test]
-fn test_builtin_context_length_not_recognized_on_5xx() {
-    let raw = RawUpstreamError {
-        http_status: 503,
-        provider_code: Some(PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
-        structured_type: None,
-        retry_after_secs: None,
-    };
-    let sig = normalize_raw_error(&raw, &HashMap::new(), &NoopDiagnostics);
-    assert_eq!(sig.class, StatusClass::ServerError);
-}
-
-#[test]
-fn test_operator_error_map_overrides_builtin_context_length() {
-    let raw = RawUpstreamError {
-        http_status: 400,
-        provider_code: Some(PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
-        structured_type: None,
-        retry_after_secs: None,
-    };
-    let map = err_map(&[(PROVIDER_CODE_CONTEXT_LENGTH, "client_error")]);
-    let sig = normalize_raw_error(&raw, &map, &NoopDiagnostics);
-    assert_eq!(sig.class, StatusClass::ClientError);
-}
-
-#[test]
-fn test_operator_map_context_length_on_5xx_is_penalized() {
-    let raw = RawUpstreamError {
-        http_status: 503,
-        provider_code: Some("1234".to_string()),
-        structured_type: None,
-        retry_after_secs: None,
-    };
-    let map = err_map(&[("1234", "context_length")]);
-    let sig = normalize_raw_error(&raw, &map, &NoopDiagnostics);
-    assert_eq!(sig.class, StatusClass::ServerError);
-    assert_eq!(classify(&sig), Disposition::TransientUpstream);
-}
-
-#[test]
-fn test_operator_map_context_length_on_400_still_classifies_context_length() {
-    let raw = RawUpstreamError {
-        http_status: 400,
-        provider_code: Some("1234".to_string()),
-        structured_type: None,
-        retry_after_secs: None,
-    };
-    let map = err_map(&[("1234", "context_length")]);
-    let sig = normalize_raw_error(&raw, &map, &NoopDiagnostics);
-    assert_eq!(sig.class, StatusClass::ContextLength);
-}
-
-#[test]
-fn test_structured_type_context_length_on_5xx_is_penalized() {
-    let raw = RawUpstreamError {
-        http_status: 502,
-        provider_code: None,
-        structured_type: Some("ctx_overflow".to_string()),
-        retry_after_secs: None,
-    };
-    let map = err_map(&[("ctx_overflow", "context_length")]);
-    let sig = normalize_raw_error(&raw, &map, &NoopDiagnostics);
-    assert_eq!(sig.class, StatusClass::ServerError);
-    assert_eq!(classify(&sig), Disposition::TransientUpstream);
-}
-
-#[test]
-fn test_builtin_context_length_not_recognized_on_non_request_size_4xx() {
-    let raw = RawUpstreamError {
-        http_status: 403,
-        provider_code: Some(PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
-        structured_type: None,
-        retry_after_secs: None,
-    };
-    let sig = normalize_raw_error(&raw, &HashMap::new(), &NoopDiagnostics);
-    assert_eq!(sig.class, StatusClass::Auth);
-}
-
-#[test]
-fn test_builtin_context_length_recognized_on_413() {
-    let raw = RawUpstreamError {
-        http_status: 413,
-        provider_code: Some(PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
-        structured_type: None,
-        retry_after_secs: None,
-    };
-    let sig = normalize_raw_error(&raw, &HashMap::new(), &NoopDiagnostics);
-    assert_eq!(sig.class, StatusClass::ContextLength);
-}
-
-#[test]
-fn test_unmapped_structured_type_falls_through_to_http() {
-    let raw = RawUpstreamError {
-        http_status: 429,
-        provider_code: None,
-        structured_type: Some("something_unmapped".to_string()),
-        retry_after_secs: None,
-    };
-    let sig = normalize_raw_error(&raw, &HashMap::new(), &NoopDiagnostics);
-    assert_eq!(sig.class, StatusClass::RateLimit);
-}
+// ── The class vocabulary the unit still names ────────────────────────────────────────────────────
 
 #[test]
 fn status_class_from_str_maps_known_values_and_rejects_unknown() {
@@ -216,22 +53,6 @@ fn status_class_from_str_maps_known_values_and_rejects_unknown() {
     ));
     assert!(status_class_from_str("not_a_class").is_none());
     assert!(status_class_from_str("").is_none());
-}
-
-#[test]
-fn disposition_table_matches_the_classify_match() {
-    for class in crate::classify::StatusClass::ALL {
-        let sig = CanonicalSignal {
-            class: *class,
-            provider_signal: None,
-            retry_after: None,
-        };
-        assert_eq!(
-            classify(&sig),
-            class.disposition(),
-            "table row for {class:?} disagrees with classify()"
-        );
-    }
 }
 
 // ── Not ported ───────────────────────────────────────────────────────────────────────────────────

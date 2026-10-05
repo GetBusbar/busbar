@@ -26,22 +26,23 @@ use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::transport::check::{
-    check_accept, check_arrival, check_cancel, check_claims, check_composes_over, check_framer,
-    check_framer_fields, check_head_slots, check_io, check_listen, check_locate, check_settings,
-    check_tail,
+    check_accept, check_arrival, check_cancel, check_claims, check_composes_over,
+    check_fault_cover, check_fault_rows, check_framer, check_framer_fields, check_head_slots,
+    check_io, check_listen, check_locate, check_settings, check_status_rows, check_tail,
 };
 use busbar_contract::abi::transport::{
     self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
-    ConnOut, DialIn, EmitIn, EncodeIn, FinishIn, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
-    ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, SettingDecl, ShutIn, TransportTail,
-    WriteIn,
+    ConnOut, DialIn, EmitIn, EncodeIn, FaultRow, FinishIn, FramerOut, FramerSink, FramingIn,
+    IngestIn, IoOut, ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, SettingDecl,
+    ShutIn, StatusRow, TransportTail, WriteIn,
 };
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 
-/// The transport tail's last frozen size: it has not grown, so it is this host's (THE KIND TAIL
-/// GROWTH RULE, `abi::mechanism::door::tail_read_len`).
-const TRANSPORT_TAIL_FROZEN: usize = std::mem::size_of::<TransportTail>();
+/// The transport tail's last frozen size, before the fault table was appended (THE KIND TAIL
+/// GROWTH RULE, `abi::mechanism::door::tail_read_len`): a tail that predates the fault table loads
+/// and reads it as absent, and is then judged by [`check_fault_cover`] like any other.
+const TRANSPORT_TAIL_FROZEN: usize = transport::TRANSPORT_TAIL_FROZEN;
 
 /// WHAT A TRANSPORT STATES, read once at bind and checked by the kind's own `check_tail`,
 /// `check_claims`, `check_claim_rows` and `check_composes_over`: its role, every scheme it answers
@@ -112,6 +113,23 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         unsafe { std::slice::from_raw_parts(tail.settings, tail.settings_len) }
     };
     check_settings(settings).map_err(broke)?;
+    // THE TWO TABLES: the status class (the fee decision's leg) and the fault reading (the
+    // breaker's). A claim that classes its answers reads them for the breaker too.
+    let status: &[StatusRow] = if tail.status_rows_len == 0 {
+        &[]
+    } else {
+        // SAFETY: `check_tail` refused a NULL list with a count; the list is `'static` plugin data.
+        unsafe { std::slice::from_raw_parts(tail.status_rows, tail.status_rows_len) }
+    };
+    let faults: &[FaultRow] = if tail.fault_rows_len == 0 {
+        &[]
+    } else {
+        // SAFETY: as above.
+        unsafe { std::slice::from_raw_parts(tail.fault_rows, tail.fault_rows_len) }
+    };
+    check_status_rows(status, tail.claim_rows_len as u64).map_err(broke)?;
+    check_fault_rows(faults, tail.claim_rows_len as u64).map_err(broke)?;
+    check_fault_cover(status, faults).map_err(broke)?;
     Ok(TransportFacts {
         role: tail.role,
         claims: names

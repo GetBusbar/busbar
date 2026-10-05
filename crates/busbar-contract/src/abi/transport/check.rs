@@ -13,13 +13,13 @@
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{
-    AcceptOut, ArrivalOut, Claim, ConnFacts, FramePiece, FrameSpan, FramerOut, HeadSlots, IoOut,
-    ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail, CANCEL_COMPLETED,
-    CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH, FRAMING_DATAGRAM,
-    FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
-    PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, ROLE_CARRIER, ROLE_FRAMER,
-    SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS, UNIT0_HANDSHAKE,
-    YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    AcceptOut, ArrivalOut, Claim, ConnFacts, FaultRow, FramePiece, FrameSpan, FramerOut, HeadSlots,
+    IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail, CANCEL_COMPLETED,
+    CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH, FAULT_CALLER,
+    FAULT_HARD, FRAMING_DATAGRAM, FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED, PIECE_END_OF_FRAME,
+    PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT,
+    ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER,
+    STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
@@ -259,6 +259,19 @@ pub fn check_framer(
             u64::from(STATUS_OTHER),
             "framer.piece.status_class",
         )?;
+        code(
+            u64::from(p.fault),
+            0,
+            u64::from(FAULT_HARD),
+            "framer.piece.fault",
+        )?;
+        // The fault reading is a reading OF the piece's code: a piece with no code reads none.
+        if p.fault != 0 && p.flags & PIECE_HAS_CODE == 0 {
+            return Err(fault(
+                Rule::Contradiction,
+                "framer.piece.fault_without_code",
+            ));
+        }
     }
     Ok(())
 }
@@ -361,7 +374,7 @@ pub const fn check_facts(facts: &ConnFacts) -> Result<(), Fault> {
 /// over nothing (a framer with an empty `composes_over` frames directly over the host's socket);
 /// framing and fact bits are known; one to [`MAX_CLAIMS`]
 /// claim rows; no list is counted with a NULL pointer. The lists' elements: [`check_claims`],
-/// [`check_status_rows`], [`check_settings`].
+/// [`check_status_rows`], [`check_fault_rows`], [`check_fault_cover`], [`check_settings`].
 ///
 /// # Errors
 ///
@@ -395,6 +408,7 @@ pub fn check_tail(t: &TransportTail) -> Result<(), Fault> {
     listed(t.upgrades_to, t.upgrades_to_len, "tail.upgrades_to")?;
     listed(t.status_rows, t.status_rows_len, "tail.status_rows")?;
     listed(t.settings, t.settings_len, "tail.settings")?;
+    listed(t.fault_rows, t.fault_rows_len, "tail.fault_rows")?;
     text(t.handoff_from, "tail.handoff_from")?;
     text(t.handoff_to, "tail.handoff_to")?;
     text(t.handoff_binding_fact, "tail.handoff_binding_fact")?;
@@ -489,6 +503,45 @@ pub fn check_status_rows(rows: &[StatusRow], claims_len: u64) -> Result<(), Faul
             u64::from(STATUS_OTHER),
             "status_row.class",
         )?;
+    }
+    Ok(())
+}
+
+/// Every fault row: names a claim, `lo <= hi`, and a fault reading that is stated (never
+/// `FAULT_NONE`: a code the table does not cover already reads none).
+///
+/// # Errors
+///
+/// The rule a row breaks.
+pub fn check_fault_rows(rows: &[FaultRow], claims_len: u64) -> Result<(), Fault> {
+    for r in rows {
+        index(r.claim, claims_len, "fault_row.claim")?;
+        if r.lo > r.hi {
+            return Err(fault(Rule::Contradiction, "fault_row.lo_hi"));
+        }
+        code(
+            u64::from(r.fault),
+            u64::from(FAULT_CALLER),
+            u64::from(FAULT_HARD),
+            "fault_row.fault",
+        )?;
+    }
+    Ok(())
+}
+
+/// A claim that classes its answers classes them for the breaker too: every claim named by a status
+/// row is named by at least one fault row. A framer that states status rows and no fault table
+/// would have every failure it reports read as the caller's, and the destination behind it would
+/// never trip, so the load is refused rather than served blind.
+///
+/// # Errors
+///
+/// [`Rule::Missing`] at `tail.fault_rows` for the first claim with status rows and no fault row.
+pub fn check_fault_cover(status: &[StatusRow], faults: &[FaultRow]) -> Result<(), Fault> {
+    for r in status {
+        if !faults.iter().any(|f| f.claim == r.claim) {
+            return Err(fault(Rule::Missing, "tail.fault_rows"));
+        }
     }
     Ok(())
 }

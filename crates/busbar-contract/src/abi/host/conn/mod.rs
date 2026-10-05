@@ -732,6 +732,7 @@ impl HostConns {
             status_code: (p.flags & PIECE_HAS_CODE != 0).then_some(p.code),
             status_namespace: ns,
             retry_after_secs: (p.flags & PIECE_HAS_RETRY_AFTER != 0).then_some(p.retry_after_secs),
+            fault: None,
             reason: match p.reason.len {
                 0 => None,
                 n => {

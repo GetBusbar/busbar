@@ -98,6 +98,8 @@ const TAIL: TransportTail = TransportTail {
     status_rows_len: 0,
     settings: std::ptr::null(),
     settings_len: 0,
+    fault_rows: std::ptr::null(),
+    fault_rows_len: 0,
 };
 
 /// The door's Statement: the `stdio` line framer.
@@ -244,7 +246,7 @@ impl Framing {
                 code: 0,
                 status_class: 0,
                 flags: if done { PIECE_END_OF_FRAME } else { 0 },
-                _reserved: 0,
+                fault: 0,
                 retry_after_secs: 0,
             });
             used += n;

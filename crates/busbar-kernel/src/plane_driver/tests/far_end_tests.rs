@@ -79,6 +79,7 @@ fn piece(kind: PieceKind, len: usize, status: Option<(u32, Option<u64>)>) -> Pie
         status_code: status.map(|(c, _)| c),
         status_namespace: None,
         retry_after_secs: status.and_then(|(_, r)| r),
+        fault: None,
         reason: None,
     }
 }

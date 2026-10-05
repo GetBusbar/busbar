@@ -13,11 +13,16 @@
 //! request budget and a hard-down trip are lane-global (they trip every pool's cell at once).
 //!
 //! This is a MOVE, not a rewrite: the state machine in [`cell`] (trip condition, escalating
-//! cooldown with jitter, the Retry-After floor, half-open recovery) and the classifier in
-//! [`classify`] are byte-identical to 1.5.5's `busbar-core::store::in_memory::breaker` and
-//! `busbar-substrate::breaker`. See each module's doc comment for the handful of call-site
-//! adaptations required by depending on no workspace crate but `busbar-contract` (no `axum`, no `tracing`, no
-//! SWRR/pool-selection state, which belongs to the egress unit).
+//! cooldown with jitter, the requested-wait floor, half-open recovery) is byte-identical to 1.5.5's
+//! `busbar-core::store::in_memory::breaker`. See each module's doc comment for the handful of
+//! call-site adaptations required by depending on no workspace crate but `busbar-contract` (no
+//! logging, no SWRR/pool-selection state, which belongs to the egress unit).
+//!
+//! The classifier in [`classify`] is NOT a move: 1.5.5's read an upstream's numeric status against
+//! bands. This unit reads facts only — the transport's fault reading of an answer, the wait the
+//! answer stated, the kernel's fact that no answer came, and the plane's verdict as the [`Outcome`]
+//! its caller observes — so the bands live with the transports whose numbering they are. The four
+//! dispositions they produce are 1.5.5's.
 //!
 //! ## What's new here, not ported
 //!
@@ -36,6 +41,9 @@ pub mod cell;
 pub mod cfg;
 pub mod classify;
 pub mod journal;
+/// THE LEGACY ENGINES' NORMALIZER, NOT A BREAKER INPUT. The retiring engines read it through
+/// `busbar-kernel`'s `breaker` module until D2 deletes them with it; this unit never calls it, and
+/// no new caller may.
 pub mod normalize;
 pub mod port;
 
@@ -119,8 +127,8 @@ pub struct Admit {
 pub enum Outcome {
     /// The attempt succeeded.
     Success,
-    /// A transient upstream failure — cooldown + error counter. `retry_after` is the parsed
-    /// `Retry-After` header, if any (see [`normalize::parse_retry_after`]).
+    /// A transient upstream failure — cooldown + error counter. `retry_after` is the wait the
+    /// answer's frame stated, in whole seconds, if any.
     Transient {
         /// The upstream's requested Retry-After, in seconds, if any.
         retry_after: Option<u64>,

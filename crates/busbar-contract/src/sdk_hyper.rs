@@ -499,12 +499,14 @@ macro_rules! hyper_io {
             /// piece that does not fit whole is split, its end-of-frame on its last part; a field
             /// block only where a continuation extends a value), each stream's head words in its
             /// head slots ahead of its head's first piece, then the yield flags. `class_of` maps a
-            /// piece's status code to its class.
+            /// piece's status code to its class (the framer's status table); `fault_of` maps it to
+            /// the breaker's fault reading (the framer's fault table, `FAULT_NONE` off it).
             pub fn fill(
                 f: &mut impl Owed,
                 sink: Lent<'_, FramerSink>,
                 o: &mut Out<'_, FramerOut>,
                 class_of: impl Fn(u16) -> u8,
+                fault_of: impl Fn(u16) -> u8,
             ) {
                 let mut wire_buf = sink.wire();
                 let wire = f.take_wire(wire_buf.cap());
@@ -589,13 +591,14 @@ macro_rules! hyper_io {
                         code: 0,
                         status_class: 0,
                         flags: 0,
-                        _reserved: 0,
+                        fault: 0,
                         retry_after_secs: 0,
                     };
                     if let Some(code) = piece.status {
                         flags |= PIECE_HAS_CODE;
                         fp.code = u32::from(code);
                         fp.status_class = class_of(code);
+                        fp.fault = fault_of(code);
                     }
                     if let Some(secs) = piece.retry_after_secs {
                         flags |= PIECE_HAS_RETRY_AFTER;

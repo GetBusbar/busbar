@@ -109,6 +109,8 @@ pub struct Got {
     pub status_code: Option<u32>,
     /// The status class (`STATUS_*`).
     pub status_class: u8,
+    /// The fault reading (`FAULT_*`), the breaker's leg.
+    pub fault: u8,
     /// The far side's `Retry-After`, in seconds, where it asked.
     pub retry_after_secs: Option<u64>,
     /// The bytes are a field block (`PIECE_FIELDS`): the far end's head, or its trailers.
@@ -314,7 +316,7 @@ const EMPTY_PIECE: FramePiece = FramePiece {
     code: 0,
     status_class: 0,
     flags: 0,
-    _reserved: 0,
+    fault: 0,
     retry_after_secs: 0,
 };
 
@@ -402,6 +404,7 @@ impl Buffers {
                 end_of_frame: p.flags & PIECE_END_OF_FRAME != 0,
                 status_code: (p.flags & PIECE_HAS_CODE != 0).then_some(p.code),
                 status_class: p.status_class,
+                fault: p.fault,
                 retry_after_secs: (p.flags & PIECE_HAS_RETRY_AFTER != 0)
                     .then_some(p.retry_after_secs),
                 fields: p.flags & PIECE_FIELDS != 0,

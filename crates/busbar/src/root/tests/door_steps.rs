@@ -413,6 +413,7 @@ fn reply_piece(kind: busbar_contract::conn::PieceKind, len: usize) -> busbar_con
         status_code: (kind == PieceKind::Fields).then_some(200),
         status_namespace: None,
         retry_after_secs: None,
+        fault: None,
         reason: None,
     }
 }
