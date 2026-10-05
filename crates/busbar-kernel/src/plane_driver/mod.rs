@@ -103,7 +103,7 @@ pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, SessionCalle
 use crate::auth::CallerRefKey;
 use crate::host_services::{InstanceFacts, KernelServices, Signing};
 use crate::slice::GroupLeaseSlip;
-use crate::teller::{Ended, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
+use crate::teller::{Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units};
 use crate::trust::section::parse_section;
 use busbar_contract::ids::RecordSchemaId;
 
@@ -493,6 +493,8 @@ pub(crate) struct UnitState {
     /// The principal the kernel verified, for the hooks the unit binds and its audit row (never a
     /// plane input).
     principal: Option<PrincipalId>,
+    /// A gate-first plane's hooks screened the unit before the door ([`RouteAwait::screen`]).
+    screened: bool,
     /// The body a request-stage rewrite left, kept for every attempt; `None` = the caller's own.
     body: Option<Arc<[u8]>>,
     /// The unit's hooks and the plane's view of its effective request, once the request stage ran.
@@ -1086,5 +1088,34 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> RouteAwait for PlaneUni
 
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
         self.driver.money.abandoned(ctx, ended);
+    }
+
+    /// THE GATE-FIRST ORDER'S SCREEN (ARCHITECT ruling on Mode B, spec Part 3 section 12 "Hooks":
+    /// the hook order 1.5.5 used for that plane): a plane whose hooks run gate-first has its entry's
+    /// gates and rewrites screen the unit BEFORE the door, so a veto admits nothing (no request is
+    /// counted, nothing is charged) and an over-budget caller is answered the gate's refusal before
+    /// the door's. Every other plane's hooks run at the head of the route leg, as before.
+    fn screen<'a>(&'a self, ctx: &'a UnitCtx) -> Screen<'a> {
+        Box::pin(async move {
+            let Some(binder) = self.driver.hooks.as_ref() else {
+                return Ok(());
+            };
+            if binder.order() != hooks::HookOrder::Gated
+                || self.arrival.claim == busbar_contract::abi::plane::CLAIM_PROBE
+            {
+                return Ok(());
+            }
+            match self.gated_stage(&**binder).await {
+                Ok(()) => {
+                    self.lock().screened = true;
+                    Ok(())
+                }
+                Err(stopped) => {
+                    let reason = self.stopped(stopped);
+                    self.driver.money.finished(ctx);
+                    Err(reason)
+                }
+            }
+        })
     }
 }
