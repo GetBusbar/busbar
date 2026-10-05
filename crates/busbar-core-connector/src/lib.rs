@@ -53,6 +53,10 @@ pub mod process;
 pub mod registry;
 pub mod socket;
 pub mod stream;
+/// The TLS test kit (far ends, the recording TLS fixture server) for this crate's tests that need a
+/// real handshake: TLS stays in the connector, even in a test.
+#[cfg(test)]
+pub mod test_support;
 pub mod tls;
 pub mod udp;
 pub mod wire;

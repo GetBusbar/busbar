@@ -315,13 +315,11 @@ async fn connect_tunnel_end_to_end_through_scripted_proxy() {
     http.enforce_http(false);
     let connector =
         tunnel::TunnelConnector::new(http, Some(config), tunnel::connects_per_shard_for_tests());
-    let tls = super::rustls_client_config(&EngineSpec::pooled_webpki(4, 300, true, false))
-        .expect("the pooled tls posture builds");
-    let https = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_tls_config(tls)
-        .https_or_http()
-        .enable_http1()
-        .wrap_connector(connector);
+    let https = super::https::HttpsConnector::new(
+        connector,
+        super::client_tls(&EngineSpec::pooled_webpki(4, 300, true, false), &[])
+            .expect("the pooled tls posture builds"),
+    );
     let client: hyper_util::client::legacy::Client<_, Full<Bytes>> =
         hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
             .build(https);
