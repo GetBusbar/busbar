@@ -348,11 +348,20 @@ pub fn init_logging(stdout_reserved: bool) -> bool {
     // plugin's `log` records therefore become `tracing` events and reach its door's call capture,
     // exactly as a dropped-in plugin's do through the `LogTracer` its own image installs
     // (`BUSBAR-1.6.0.md` decision #85: every plugin logs to its own file, compiled in or dropped in).
-    let initialized = tracing_subscriber::registry()
+    //
+    // A compiled-in plugin called before this (its settings validated while the configuration
+    // resolved) has ALREADY made `LogTracer` the `log` logger — its door's capture installs it on
+    // first use when nothing has. `try_init` sets the global subscriber first and only then fails on
+    // that already-installed logger; the forwarder in place is the same one, so that failure is not
+    // a failed install. Installed means: no subscriber was set before, and one is now (1.5.5 printed
+    // nothing here, and neither does a boot whose plugin ran first).
+    let preset = tracing::dispatcher::has_been_set();
+    let installed = tracing_subscriber::registry()
         .with(fmt_layer)
         .with(crate::export::traces::layer(otlp_filter))
         .try_init()
         .is_ok();
+    let initialized = installed || (!preset && tracing::dispatcher::has_been_set());
     if !initialized {
         eprintln!("busbar: tracing subscriber already initialized");
     }
