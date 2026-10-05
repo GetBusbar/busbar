@@ -894,6 +894,8 @@ typedef struct bb_plane_ServeIn bb_plane_ServeIn;
 typedef struct bb_plane_ServeOut bb_plane_ServeOut;
 typedef struct bb_plane_PlaneDriveIn bb_plane_PlaneDriveIn;
 typedef struct bb_plane_PlaneDriveOut bb_plane_PlaneDriveOut;
+typedef struct bb_plane_PlaneCancelIn bb_plane_PlaneCancelIn;
+typedef struct bb_plane_PlaneCancelOut bb_plane_PlaneCancelOut;
 typedef struct bb_plane_ProjectIn bb_plane_ProjectIn;
 typedef struct bb_plane_ProjectOut bb_plane_ProjectOut;
 typedef struct bb_transport_Ops bb_transport_Ops;
@@ -2740,6 +2742,23 @@ struct bb_plane_PlaneDriveOut {
     uint32_t sessions_needed;
 };
 
+/* The plane's `cancel` `in` (SEAM-L(r)): the lifecycle's, embedded FIRST so the dispatcher fills */
+struct bb_plane_PlaneCancelIn {
+    bb_mech_CancelIn cancel;
+    bb_plane_RecordWrite *records_buf;
+    size_t records_cap;
+    uint8_t *arena_buf;
+    size_t arena_cap;
+};
+
+/* The plane's `cancel` `out`: the lifecycle's, embedded first, and what the plane wrote. */
+struct bb_plane_PlaneCancelOut {
+    bb_mech_CancelOut cancel;
+    uint32_t records_written;
+    uint32_t _reserved;
+    uint64_t arena_written;
+};
+
 /* `project`'s `in`: the arrival `arrive` classified, and HOST buffers for the view. */
 struct bb_plane_ProjectIn {
     bb_mech_InHead head;
@@ -3564,7 +3583,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn records_secret;
 };
 
-/* ---- layout proof: 260 of 263 structures are pinned by the golden ---- */
+/* ---- layout proof: 262 of 265 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -4952,6 +4971,19 @@ BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneDriveOut) == 8, "bb_plane_PlaneDriveOut: alig
 BB_ASSERT(offsetof(bb_plane_PlaneDriveOut, head) == 0, "bb_plane_PlaneDriveOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneDriveOut, sessions_written) == 96, "bb_plane_PlaneDriveOut.sessions_written: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneDriveOut, sessions_needed) == 100, "bb_plane_PlaneDriveOut.sessions_needed: offset");
+BB_ASSERT(sizeof(bb_plane_PlaneCancelIn) == 128, "bb_plane_PlaneCancelIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneCancelIn) == 8, "bb_plane_PlaneCancelIn: alignment");
+BB_ASSERT(offsetof(bb_plane_PlaneCancelIn, cancel) == 0, "bb_plane_PlaneCancelIn.cancel: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneCancelIn, records_buf) == 96, "bb_plane_PlaneCancelIn.records_buf: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneCancelIn, records_cap) == 104, "bb_plane_PlaneCancelIn.records_cap: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneCancelIn, arena_buf) == 112, "bb_plane_PlaneCancelIn.arena_buf: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneCancelIn, arena_cap) == 120, "bb_plane_PlaneCancelIn.arena_cap: offset");
+BB_ASSERT(sizeof(bb_plane_PlaneCancelOut) == 120, "bb_plane_PlaneCancelOut: size");
+BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneCancelOut) == 8, "bb_plane_PlaneCancelOut: alignment");
+BB_ASSERT(offsetof(bb_plane_PlaneCancelOut, cancel) == 0, "bb_plane_PlaneCancelOut.cancel: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneCancelOut, records_written) == 104, "bb_plane_PlaneCancelOut.records_written: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneCancelOut, _reserved) == 108, "bb_plane_PlaneCancelOut._reserved: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneCancelOut, arena_written) == 112, "bb_plane_PlaneCancelOut.arena_written: offset");
 BB_ASSERT(sizeof(bb_plane_ProjectIn) == 232, "bb_plane_ProjectIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ProjectIn) == 8, "bb_plane_ProjectIn: alignment");
 BB_ASSERT(offsetof(bb_plane_ProjectIn, head) == 0, "bb_plane_ProjectIn.head: offset");

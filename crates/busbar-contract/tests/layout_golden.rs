@@ -1914,6 +1914,16 @@ fn compute_layout() -> String {
     record!(s, pkind::PlaneDriveIn, [drive, sessions_buf, sessions_cap]);
     record!(
         s,
+        pkind::PlaneCancelIn,
+        [cancel, records_buf, records_cap, arena_buf, arena_cap]
+    );
+    record!(
+        s,
+        pkind::PlaneCancelOut,
+        [cancel, records_written, _reserved, arena_written]
+    );
+    record!(
+        s,
         pkind::PlaneDriveOut,
         [head, sessions_written, sessions_needed]
     );

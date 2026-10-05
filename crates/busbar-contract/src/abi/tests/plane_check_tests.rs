@@ -824,6 +824,43 @@ fn a_served_requests_record_writes_are_judged_as_an_answers() {
     );
 }
 
+/// SEAM-L(r), A CANCEL'S RECORD WRITES: never re-called, so they fit the host's buffers or the
+/// answer is FAULT; each is judged as an answer's; a `cancel` that is not READY writes none. RED: a
+/// cancel had no record slot.
+#[test]
+fn a_cancels_record_writes_fit_and_are_judged_as_an_answers() {
+    let mut o: PlaneCancelOut = z();
+    o.records_written = 1;
+    o.arena_written = 8;
+    let mut r: RecordWrite = z();
+    r.op = RECORD_AUDIT;
+    r.kind = AUDIT_APPLIED;
+    r.key = sp(0, 4);
+    r.value = sp(4, 4);
+    assert_eq!(
+        check_cancel_records(Ready, &o, &[r], (1, 8), &bounds()),
+        Ok(())
+    );
+    assert_eq!(
+        check_cancel_records(Ready, &o, &[r], (0, 8), &bounds()),
+        f(Rule::OverCap, "cancel.records")
+    );
+    assert_eq!(
+        check_cancel_records(Ready, &o, &[r], (1, 4), &bounds()),
+        f(Rule::OverCap, "cancel.arena")
+    );
+    assert_eq!(
+        check_cancel_records(Failed, &o, &[r], (1, 8), &bounds()),
+        f(Rule::Contradiction, "cancel.records_not_ready")
+    );
+    let mut bad = r;
+    bad.op = 4;
+    assert_eq!(
+        check_cancel_records(Ready, &o, &[bad], (1, 8), &bounds()),
+        f(Rule::UnknownCode, "record.op")
+    );
+}
+
 // ── refusal, serve, cancel ──
 
 #[test]

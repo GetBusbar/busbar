@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOOK-PATH BENCH — cells **C1** and **C2** of the added-latency instrument.
+//! THE HOOK-PATH BENCH — cell **C1** of the added-latency instrument (C2 moved out; see below).
 //!
 //! # Why this file exists
 //!
@@ -48,7 +48,6 @@
 //! # Running it
 //!
 //! ```text
-//! cargo build --workspace --all-targets          # C2 needs the hook cdylib built
 //! cargo bench -p busbar --bench hook_path
 //! ```
 //!
@@ -113,15 +112,15 @@
 //! from a saved baseline in the same session; never quote one of these figures against a number
 //! taken on another day.
 //!
-//! C2 needs a `kind: hook` plugin to attach, and uses the hermetic `busbar-hook-test-plugin`
-//! cdylib — packed here into an UNSIGNED tarball and loaded under `plugins.trust.allow_unsigned`,
-//! the same path the in-crate hook tests use (a bench cannot sign with the embedded first-party
-//! release key). If that cdylib has not been built, C2 **refuses to run rather than reporting a
-//! number for a deployment with no hook in it** — a bench that silently measures the wrong cell is
-//! worse than one that stops.
-
-#[path = "../tests/common/plugins.rs"]
-mod plugins;
+//! # C2 moved out with the test-hook plugin
+//!
+//! C2 needs a dropped-in `kind: hook` plugin that accepts a `prompt: ro` grant. The only one this
+//! tree had was the test-hook plugin, which is DELETED (OWNER 2026-10-03: "NO TEST PLUGINS ... busbar
+//! doesn't test plugins"; BUSBAR-CI-PLUGIN-AGNOSTIC), and the one hook the shipped binary links (the
+//! ranking hook) states `prompt: no`, so a `prompt: ro` tap on it projects nothing and would measure
+//! C1 under C2's name. The C2 cells (short and 200-turn) move to the real content hook's repo,
+//! GetBusbar/busbar-hook-webrequest, which boots this binary with itself dropped in as the tap. The
+//! readings above are the record of the cell as it ran here. C1 — the regression gate — stays.
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::io::Read as _;
@@ -193,26 +192,6 @@ fn spawn_stub_upstream() -> u16 {
     port
 }
 
-/// Pack the hook cdylib into an UNSIGNED tarball in `dir`, declaring `prompt: ro` — the grant the
-/// C2 cell is about. Unsigned + `allow_unsigned` is the only path available outside release CI, and
-/// it still runs the full scan/trust/load pipeline.
-fn install_prompt_ro_hook(dir: &Path) {
-    let cdylib = busbar_kernel::test_support::hook_fixture_cdylib().expect(
-        "the hook-test-plugin cdylib is not built, so the C2 cell would silently measure a \
-         deployment with NO hook in it. Run `cargo build --workspace --all-targets` first.",
-    );
-    let lib = std::fs::read(&cdylib).expect("read hook cdylib");
-    let mut m = plugins::manifest("hook", "busbar-bench-hook", "busbar-bench");
-    m.alias = "bench-hook".into();
-    // The manifest's own spelling of the grant it asks for: `needs: { prompt: ro, user: no }`.
-    m.needs = serde_json::from_value(serde_json::json!({ "prompt": "ro", "user": "no" }))
-        .expect("a hook's needs");
-    // The Statement its door states: a dropped-in hook is admitted against it.
-    m.statement = Some(busbar_kernel::test_support::hook_fixture_statement(&cdylib));
-    let tarball = plugins::seal(m, &lib);
-    std::fs::write(dir.join("bench-hook.tar.gz"), tarball).unwrap();
-}
-
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE DEPLOYMENT UNDER TEST
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -233,12 +212,9 @@ impl Drop for Deployment {
     }
 }
 
-/// Boot the REAL binary on a same-protocol deployment (in and out) pointed at the stub upstream.
-///
-/// `hooks` is spliced in verbatim: empty for C1, a `prompt: ro` tap for C2. Everything else about
-/// the deployment's shape is identical between the two cells, so the difference between their
-/// numbers is the hook seam and nothing else.
-fn boot(tag: &str, upstream_port: u16, with_hook: bool) -> Deployment {
+/// Boot the REAL binary on a same-protocol deployment (in and out) pointed at the stub upstream,
+/// with NO hook configured (C1; C2's tap moved to the content hook's repo, see the header).
+fn boot(tag: &str, upstream_port: u16) -> Deployment {
     let dir = fixture_dir(tag);
     let data_port = free_port();
     let admin_port = free_port();
@@ -251,34 +227,6 @@ fn boot(tag: &str, upstream_port: u16, with_hook: bool) -> Deployment {
     )
     .unwrap();
 
-    let (plugins_block, hooks_block) = if with_hook {
-        let plugins_dir = dir.join("plugins");
-        std::fs::create_dir_all(&plugins_dir).unwrap();
-        install_prompt_ro_hook(&plugins_dir);
-        (
-            format!(
-                "plugins:\n  enabled: true\n  dir: \"{}\"\n  trust:\n    allow_unsigned: true\n",
-                plugins_dir.display()
-            ),
-            // A TAP, `prompt: ro`, at the request stage: the content projection is built and handed
-            // over, and the hook itself returns immediately. That isolates the projection's cost
-            // from any policy work a gate would do.
-            "hooks:\n  bench-tap:\n    module: bench-hook\n    kind: tap\n    phase: [request]\n    prompt: ro\n"
-                .to_string(),
-        )
-    } else {
-        (String::new(), String::new())
-    };
-
-    // The RESERVED attach-everywhere key, not a per-group `hooks:` list: a group's own list carries
-    // gates (fire-and-wait, they influence selection) and REFUSES a tap at config validation. A tap
-    // attaches once, for every group, here.
-    let pool_hooks = if with_hook {
-        "  hooks: [bench-tap]\n"
-    } else {
-        ""
-    };
-
     std::fs::write(
         dir.join("config.yaml"),
         format!(
@@ -287,14 +235,14 @@ admin_listen: "127.0.0.1:{admin_port}"
 admin_require_mtls: false
 auth:
   chain: []
-{plugins_block}providers:
+providers:
   stub:
     api_key: {{ env: STUB_KEY }}
 models:
   bench-model:
     provider: stub
-{hooks_block}pools:
-{pool_hooks}  bench:
+pools:
+  bench:
     members:
       - model: bench-model
 "#
@@ -387,8 +335,8 @@ fn request_body(turns: usize) -> serde_json::Value {
 ///
 /// The FIRST request after boot is discarded — it pays lane construction, the upstream connection
 /// handshake and pool warm-up, none of which is what either cell is about.
-fn run_cell(c: &mut Criterion, name: &str, upstream_port: u16, with_hook: bool, turns: usize) {
-    let dep = boot(name, upstream_port, with_hook);
+fn run_cell(c: &mut Criterion, name: &str, upstream_port: u16, turns: usize) {
+    let dep = boot(name, upstream_port);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -436,40 +384,14 @@ const LONG: usize = 200;
 /// path changes. It is the cell the inverted-gate proof reads.
 fn c1_same_protocol_no_hook(c: &mut Criterion) {
     let upstream = spawn_stub_upstream();
-    run_cell(c, "C1_same_protocol_no_hook", upstream, false, SHORT);
+    run_cell(c, "C1_same_protocol_no_hook", upstream, SHORT);
 }
 
 /// **C1-long — the same cell on a 200-turn history.** Same claim, better resolution: if a change
 /// makes an unhooked deployment do per-turn work, this is where it shows first.
 fn c1_same_protocol_no_hook_long(c: &mut Criterion) {
     let upstream = spawn_stub_upstream();
-    run_cell(
-        c,
-        "C1_same_protocol_no_hook_200turns",
-        upstream,
-        false,
-        LONG,
-    );
-}
-
-/// **C2 — same-protocol, one `prompt: ro` tap.** The accepted cost, and the published number. The
-/// content projection is built and handed to a hook that returns immediately.
-fn c2_same_protocol_prompt_ro_tap(c: &mut Criterion) {
-    let upstream = spawn_stub_upstream();
-    run_cell(c, "C2_same_protocol_prompt_ro_tap", upstream, true, SHORT);
-}
-
-/// **C2-long.** The accepted cost with a history long enough that the projection, rather than the
-/// socket, dominates the difference from C1.
-fn c2_same_protocol_prompt_ro_tap_long(c: &mut Criterion) {
-    let upstream = spawn_stub_upstream();
-    run_cell(
-        c,
-        "C2_same_protocol_prompt_ro_tap_200turns",
-        upstream,
-        true,
-        LONG,
-    );
+    run_cell(c, "C1_same_protocol_no_hook_200turns", upstream, LONG);
 }
 
 criterion_group! {
@@ -479,8 +401,6 @@ criterion_group! {
     config = Criterion::default().sample_size(60).measurement_time(Duration::from_secs(20));
     targets =
         c1_same_protocol_no_hook,
-        c2_same_protocol_prompt_ro_tap,
-        c1_same_protocol_no_hook_long,
-        c2_same_protocol_prompt_ro_tap_long
+        c1_same_protocol_no_hook_long
 }
 criterion_main!(hook_path);

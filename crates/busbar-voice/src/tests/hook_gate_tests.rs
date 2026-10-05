@@ -7,7 +7,7 @@
 //! `host.gate_decide` seam (the Seam-B inversion — this plane names no core hook symbol): the host is
 //! the substrate's in-memory fixture host carrying a scripted gate under the plane's own decl key and
 //! `streams` container, so the plane's `gate_attached` / `gate_decide` legs run exactly as they do over
-//! a configured deployment. (The same verdict over the real loaded hook plugin is the engine's own
+//! a configured deployment. (The same verdict through the kernel's hook port is the engine's own
 //! hook battery to prove; this plane's tests do not link the engine.)
 //!
 //! The control makes the refusal falsifiable: the identical open with NOTHING attached proceeds past
@@ -25,8 +25,8 @@ use std::sync::Arc;
 /// The `streams:` container the voice plane files its operator hooks under.
 const GATE_CONTAINER: &str = "streams";
 
-/// A gate whose `raw_decide_reply` drives its verdict verbatim — the same reply shape the hermetic
-/// test hook plugin reads off its settings: `{"reject": {"status", "message"}}` refuses, anything
+/// A gate whose `raw_decide_reply` drives its verdict verbatim — the same reply shape the kernel's
+/// hook double reads off its settings: `{"reject": {"status", "message"}}` refuses, anything
 /// else proceeds.
 fn gate(settings: serde_json::Value) -> GateScript {
     let reply = settings["raw_decide_reply"].clone();

@@ -70,19 +70,18 @@ impl RoutingPolicy for Broken {
     }
 }
 
-/// A gate that answers a raw hook REPLY (the 1.5.5 JSON a plugin returns): the hook fixture, loaded
-/// through the hook axis on the one dispatcher and told to answer `reply` verbatim
-/// (`raw_decide_reply`). The SDK lowers the reply on the plugin side and the kernel's hook seam
-/// lowers the fixed answer back, so this drives the shipped path whole: a reply that fails to parse
-/// yields `Err(..)` (→ the gate's `on_error`), a reply that parses to "no opinion" yields
-/// `Ok(Abstain)` (→ proceed). Nothing here re-implements the normalizer.
+/// A gate that answers a raw hook REPLY (the 1.5.5 JSON a hook returns): the hook double
+/// (`test_support::hook_double`), opened through the kernel's hook axis port and told to answer
+/// `reply` verbatim (`raw_decide_reply`). The reply is lowered into the call's frame as the SDK
+/// lowers it, and the kernel's hook seam lowers the fixed answer back, so this drives the kernel's
+/// path whole: a reply that fails to parse yields `Err(..)` (→ the gate's `on_error`), a reply that
+/// parses to "no opinion" yields `Ok(Abstain)` (→ proceed). Nothing here re-implements the normalizer.
 fn reply_gate(reply: serde_json::Value) -> Arc<dyn RoutingPolicy> {
-    let env = crate::test_support::test_hook_env(&["reply-gate"], Default::default())
-        .expect("the hook fixture cdylib");
+    let env = crate::test_support::test_hook_env(&["reply-gate"], Default::default());
     let mut settings = serde_json::Map::new();
     settings.insert("raw_decide_reply".into(), reply);
     env.open("reply-gate", &settings, "reply-gate", 5_000)
-        .expect("the hook fixture opens through the axis")
+        .expect("the hook double opens through the axis")
 }
 
 /// A reply carrying a VALID `reject` beside a WRONG-TYPED sibling (`order` must be an array of

@@ -167,11 +167,10 @@ const GCP_GENERIC_MENTION_FILES: &[&str] = &[
     "crates/busbar-kernel/src/diagnostics/mod.rs",
 ];
 
-// ── HOOK (self-contained test plugin; matched on crate identity) ────────────────────────────────
-// The SECRET kind has no crate in this tree: its in-tree fixture was deleted (owner, "FIXTURES":
-// "real plugins are the examples") and it is proven by the real plugin repo GetBusbar/busbar-secret-vault,
-// so its noun below is censused like the stores — an empty family, every hit a leak.
-const FAM_HOOK: &[&str] = &["hook-test-plugin"];
+// ── HOOK test plugin: DELETED (OWNER 2026-10-03 "NO TEST PLUGINS"; lane-dg-hookfix) ─────────────
+// Like the SECRET kind's fixture (deleted, owner "FIXTURES": "real plugins are the examples"; proven
+// by GetBusbar/busbar-secret-vault), the test-hook plugin has no crate in this tree any more, so its
+// noun below is censused like the stores — an empty family, every hit a leak.
 // The store-kind crate that DOES exist in this tree, and the one in-tree hook plugin (item 197).
 // Matched, like the example/test plugins above, on its own identifiers. (`store-example-plugin`,
 // the second store crate, was deleted by DOOR-STORE; its noun now polices this crate's kind-qualified
@@ -423,7 +422,7 @@ const NOUNS: &[Noun] = &[
     Noun {
         key: "hook",
         kind: "hook",
-        family: FAM_HOOK,
+        family: FAM_NONE,
         tokens: &["hook_test_plugin"],
         camel: &[],
         section: None,

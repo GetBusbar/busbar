@@ -803,6 +803,33 @@ pub const fn check_cancel(outcome: Outcome, disposition: u32) -> Result<(), Faul
     )
 }
 
+/// `cancel`'s record writes (SEAM-L(r)): `cancel` is never re-called, so the writes and the arena
+/// they name fit the host's buffers or the answer is FAULT; each write is judged as an `on_piece`
+/// answer's. A `cancel` that is not READY writes nothing.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_cancel_records(
+    outcome: Outcome,
+    out: &super::PlaneCancelOut,
+    records_buf: &[RecordWrite],
+    (records_cap, arena_cap): (u64, u64),
+    b: &Bounds,
+) -> Result<(), Fault> {
+    let written = u64::from(out.records_written);
+    if written > records_cap || written > MAX_RECORDS {
+        return Err(fault(Rule::OverCap, "cancel.records"));
+    }
+    if out.arena_written > arena_cap {
+        return Err(fault(Rule::OverCap, "cancel.arena"));
+    }
+    if outcome != Outcome::Ready && (written != 0 || out.arena_written != 0) {
+        return Err(fault(Rule::Contradiction, "cancel.records_not_ready"));
+    }
+    records(records_buf, written, out.arena_written, b)
+}
+
 /// A generation snapshot (`open`/`refresh`): its own size, the generation asked for, lists within
 /// [`MAX_ROUTES`] and never counted with a NULL pointer. Its elements: [`check_claims`],
 /// [`check_admin_routes`].

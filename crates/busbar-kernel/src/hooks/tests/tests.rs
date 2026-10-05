@@ -11,111 +11,23 @@ fn from_ranked_drops_unknown_and_dedups() {
 
 use crate::config::{HookCfg, HookKind, PolicyOnError, PoolPolicy, PromptAccess, UserAccess};
 use std::collections::HashMap;
-use std::path::PathBuf;
 
-// ── Hook plugin test env ──────────────────────────────────────────────────────────────────────────
-// The 1.5.0 hooks-as-plugins world: a hook resolves its `plugin:` ref against a validated plugin
-// registry into a `HookPolicy`. These resolution tests build a real registry from the hermetic
-// `busbar-hook-test-plugin` cdylib (aliased `test-hook`), so `resolve_*` exercises the true
-// registry-resolution path — the same seam the request path uses. A gate whose `plugin:` names a
-// missing plugin resolves to `None` (gate-absent), exactly as before.
+// ── Hook test env ─────────────────────────────────────────────────────────────────────────────────
+// A hook resolves its `plugin:` ref against the registry's `kind: hook` rows and opens through the
+// hook axis into a `HookPolicy`. These resolution tests build the rows (each stating its manifest
+// `needs`, aliased `test-hook`) behind the kernel's hook axis port answered by the hook DOUBLE
+// (`test_support::hook_double`; OWNER 2026-10-03, no test plugins), so `resolve_*` exercises the true
+// registry-resolution path and the kernel's own lowering — the same seam the request path uses. A
+// gate whose `plugin:` names a missing row resolves to `None` (gate-absent), exactly as before.
 
-/// Locate the hermetic hook-test plugin cdylib in the build's target dir (like the store/auth tests).
-/// Under CI (`cargo test --workspace` always builds it) a missing cdylib is a HARD failure; locally a
-/// missing cdylib returns `None` and the caller skips cleanly.
-///
-/// Checks BOTH the "uplifted" `<profile_dir>/<name>` copy (only refreshed when `[lib]` is a ROOT
-/// build target, e.g. `cargo build --all-targets`) and the raw `<profile_dir>/deps/<name>` compiler
-/// output (refreshed on every build that recompiles the lib). A bare `cargo test` (or any other
-/// scoped build) does NOT uplift the cdylib to the top-level profile dir, only to
-/// `target/deps` — checking only `profile_dir` silently found nothing even though the cdylib really
-/// was built, so every test gated on this returned `None` and silently skipped (confirmed by hand:
-/// `cargo test -p busbar hooks::tests::` printed "skip: hook cdylib not built" for every hook
-/// resolution test after clearing target/debug/deps). Same fix already applied to
-/// auth-oidc-plugin's/store-postgres-plugin's/webrequest-hook's equivalent `plugin_path()` helpers.
-fn hook_cdylib() -> Option<PathBuf> {
-    let candidate = crate::test_support::hook_fixture_cdylib();
-    if candidate.is_none() && std::env::var_os("CI").is_some() {
-        panic!(
-            "the hook-test plugin cdylib is not built under CI (checked both the uplifted target \
-             dir and target/deps); refusing to silently skip the hook-plugin resolution coverage"
-        );
-    }
-    candidate
-}
-
-/// Build a validated [`HookEnv`] whose registry loads the hook-test cdylib under the given alias and
-/// declared manifest `needs`. `None` when the cdylib is not built (the caller skips). Uses the
-/// unsigned + `allow_unsigned` path (the test can't sign with the embedded first-party key), which
-/// still exercises the full scan/trust/load pipeline.
-/// Serialises the dlopen-backed hook tests.
-///
-/// Resolving a hook transport stages a copy of the cdylib to disk, `dlopen`s it and runs its
-/// constructor, all under `TRANSPORT_RESOLVE_TIMEOUT_MS` (5s). That deadline is a deliberate
-/// PRODUCTION value. Fifteen of these tests run concurrently inside a full `cargo test --workspace`,
-/// each doing that same staging and dlopen, and `dlopen` is serialised process-globally, so each
-/// one makes the others slower.
-///
-/// **This lock is a NARROWING, not the fix, and the note that used to sit here overstated it.** It
-/// said the work "is milliseconds on any sane machine" and that serialising these fifteen tests
-/// "fixes the oversubscription". Measured, both halves were wrong: one uncontended load of this
-/// cdylib is ~250 ms, and across a full workspace run — where far more than these fifteen tests
-/// load plugins — the median load took 5.9 s and the worst 88 s. The engine-side fix is
-/// `hooks::resolution` (single-flight admission and publication, so the engine stops opening a
-/// fresh image per control-plane touch); the lock stays because holding the concurrency down is
-/// still worth having and costs nothing.
-///
-/// Held only for the STAGING step inside `test_env_needs`, never across an await: that is the part
-/// that competes for disk and CPU, and it is what the callers (sync and async alike) all share. A
-/// plain `std` mutex is therefore correct and works for both, where a guard spanning an await would
-/// not be.
-pub(super) static DLOPEN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Held for the WHOLE body of every `dlopen_*` test, which the staging lock above cannot do.
-///
-/// The expensive, deadline-bound part is not staging: it is `gate_transport_named` doing the real
-/// `dlopen` and running the plugin constructor, inside `offload_bounded`'s 5s budget, during the
-/// test body. Fifteen of those racing each other makes each of them slower — though, as the note on
-/// the staging lock records, the fifteen were never the whole population. Async because the guard
-/// spans awaits.
-pub(super) static DLOPEN_BODY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-fn test_env_needs(alias: &str, needs: busbar_plugin_loader::sign::HookNeeds) -> Option<HookEnv> {
-    // Poison-tolerant: a panicking test elsewhere must not cascade into every other dlopen test
-    // reporting a lock error instead of its own result.
-    let _staging_guard = DLOPEN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let cdylib = hook_cdylib()?;
-    let lib = std::fs::read(&cdylib).expect("read hook cdylib");
-    let dir = crate::tests::tmp_plugin_dir(&format!("hook-env-{alias}"));
-    let mut m = crate::tests::plugin_manifest("busbar-hook-test-plugin", alias, "acme");
-    m.kind = "hook".into();
-    m.abi_version = *busbar_plugin_loader::supported_abi("hook")
-        .iter()
-        .max()
-        .expect("hook abi");
-    m.needs = needs;
-    m.statement = Some(crate::test_support::hook_fixture_statement(&cdylib));
-    let tarball = crate::tests::unsigned_tarball(m, &lib);
-    std::fs::write(dir.join("hook.tar.gz"), tarball).unwrap();
-    let mut policy = busbar_plugin_loader::sign::TrustPolicy {
-        binary_version: "1.5.0".into(),
-        ..Default::default()
-    };
-    policy.allow_unsigned = true;
-    let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("scan");
-    let _ = std::fs::remove_dir_all(&dir);
-    Some(
-        HookEnv::new(
-            std::sync::Arc::new(registry),
-            std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-        )
-        .expect("the registry's hook axis"),
-    )
+/// A [`HookEnv`] whose registry holds the `kind: hook` row `alias`, declaring manifest `needs`.
+fn test_env_needs(alias: &str, needs: busbar_plugin_loader::sign::HookNeeds) -> HookEnv {
+    crate::test_support::test_hook_env(&[alias], needs)
 }
 
 /// A [`HookEnv`] that resolves `test-hook` (declaring rw prompt + ro user intent, so the projection
 /// matrix's operator grants are not clamped by the manifest in the general resolution tests).
-fn test_env() -> Option<HookEnv> {
+fn test_env() -> HookEnv {
     test_env_needs(
         "test-hook",
         busbar_plugin_loader::sign::HookNeeds {
@@ -175,10 +87,7 @@ fn preresolve_hook_secrets_fails_closed_on_unresolvable_secret() {
 /// otherwise be silently dropped and its admission/rewrite decision lost.
 #[test]
 fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     // An unresolvable SecretRef in settings — the plugin itself resolves fine (it's registered in
     // `env`), but `resolve_hook_settings` must fail BEFORE open() is ever attempted.
     let mut settings = serde_json::Map::new();
@@ -312,10 +221,7 @@ fn native_policy_resolves_constructed_policy() {
 /// and has no gate of its own — but NOT for a pool that named a base or brought its own gate.
 #[test]
 fn default_hook_resolves_as_base_for_unnamed_pools() {
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let mut def = base_gate();
     def.default = true;
     let mut hooks = registry("def", def);
@@ -372,16 +278,9 @@ fn default_hook_resolves_as_base_for_unnamed_pools() {
 /// fix, `resolve_pool_ordering` applied NO filter at all (unlike its siblings
 /// `resolve_pool_gates`/`resolve_gate_hooks`), so every unnamed-base pool paid a per-request
 /// plugin round-trip + DOM materialization for a guaranteed no-op.
-///
-/// HARNESS CAVEAT: like every test in this file, `test_env()` prints a skip and returns green if
-/// the hook cdylib is not built. Run under `cargo test --workspace` and confirm the output does
-/// NOT contain "skip: hook cdylib not built" before trusting this RED proof.
 #[test]
 fn default_rw_hook_is_not_the_base_ordering() {
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
 
     // `kind: gate, prompt: rw, default: true` — a rewrite gate, not a decision gate.
     let mut rw = base_gate();
@@ -429,10 +328,7 @@ fn unknown_hook_ref_falls_back_to_none() {
 /// the hook's registry name; a gate whose plugin is missing (empty registry) degrades to gate-absent.
 #[test]
 fn plugin_gate_resolves_constructed_policy() {
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let hooks = registry("h", base_gate());
     match resolve_pool_gates(&pool_with_hook("h"), &hooks, &env, 0)
         .into_iter()
@@ -472,10 +368,7 @@ fn weighted_default_resolves_none() {
 /// infallible link and terminates.
 #[test]
 fn on_error_chain_resolves_gates_and_terminals() {
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     // a (plugin, on_error: b) -> b (plugin, on_error: reject)
     let mut a = base_gate();
     a.on_error = "b".to_string();
@@ -555,10 +448,7 @@ fn on_error_chain_resolves_gates_and_terminals() {
 #[cfg(feature = "hooks-ranking")]
 #[test]
 fn on_error_chain_strategy_terminates() {
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let mut g = base_gate();
     g.on_error = "cheapest".to_string();
     let hooks = registry("g", g);
@@ -585,10 +475,7 @@ fn on_error_chain_strategy_terminates() {
 /// never pays a decision deadline for a reply arm it cannot return.
 #[test]
 fn pool_rw_gate_resolves_as_rewrite_not_decision() {
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let mut rw = base_gate();
     rw.prompt = PromptAccess::Rw;
     let hooks = registry("rw", rw);
@@ -636,10 +523,7 @@ fn missing_plugin_gate_is_absent_not_stranded() {
 /// recycled into the next attempt.
 #[test]
 fn a_reused_registry_address_never_inherits_a_dead_registrys_resolution() {
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let hooks = registry("h", base_gate());
     // Resolve once against the REAL registry: this publishes into the resolution cache.
     assert_eq!(
@@ -682,10 +566,7 @@ fn a_reused_registry_address_never_inherits_a_dead_registrys_resolution() {
 /// independent of what it tries to return (the bidirectional grant holds by construction).
 #[test]
 fn resolve_rewrite_hooks_admits_only_prompt_rw_gates() {
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let mk = |kind: HookKind, prompt: PromptAccess| HookCfg {
         kind,
         prompt,
@@ -739,10 +620,7 @@ fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
             prompt: need,
             user: NeedLevel::No,
         };
-        let Some(env) = test_env_needs("test-hook", needs) else {
-            eprintln!("skip: hook cdylib not built (run under --workspace)");
-            return;
-        };
+        let env = test_env_needs("test-hook", needs);
         // The operator's grant is the MAXIMUM rung on every row — only the manifest varies.
         let mut rw = base_gate();
         rw.prompt = PromptAccess::Rw;
@@ -873,16 +751,13 @@ fn effective_access_warns_on_inert_read_grants_only() {
 
     // Fat-fingered PROMPT grant: operator grants `ro`, manifest declares no prompt need at all.
     // Must warn at effective_access's prompt-inert-grant call site.
-    let Some(env) = test_env_needs(
+    let env = test_env_needs(
         "inert-prompt",
         busbar_plugin_loader::sign::HookNeeds {
             prompt: NeedLevel::No,
             user: NeedLevel::No,
         },
-    ) else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    );
     let mut h = base_gate();
     h.plugin = "inert-prompt".to_string();
     h.prompt = PromptAccess::Ro;
@@ -900,15 +775,13 @@ fn effective_access_warns_on_inert_read_grants_only() {
     let events2: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub2 = LineCapturingSubscriber(events2.clone());
-    let Some(env2) = test_env_needs(
+    let env2 = test_env_needs(
         "matched-prompt",
         busbar_plugin_loader::sign::HookNeeds {
             prompt: NeedLevel::Ro,
             user: NeedLevel::No,
         },
-    ) else {
-        return;
-    };
+    );
     let mut h2 = base_gate();
     h2.plugin = "matched-prompt".to_string();
     h2.prompt = PromptAccess::Ro;
@@ -925,15 +798,13 @@ fn effective_access_warns_on_inert_read_grants_only() {
     let events3: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub3 = LineCapturingSubscriber(events3.clone());
-    let Some(env3) = test_env_needs(
+    let env3 = test_env_needs(
         "inert-user",
         busbar_plugin_loader::sign::HookNeeds {
             prompt: NeedLevel::No,
             user: NeedLevel::No,
         },
-    ) else {
-        return;
-    };
+    );
     let mut h3 = base_gate();
     h3.plugin = "inert-user".to_string();
     h3.user = UserAccess::Ro;
@@ -951,15 +822,13 @@ fn effective_access_warns_on_inert_read_grants_only() {
     let events4: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub4 = LineCapturingSubscriber(events4.clone());
-    let Some(env4) = test_env_needs(
+    let env4 = test_env_needs(
         "matched-user",
         busbar_plugin_loader::sign::HookNeeds {
             prompt: NeedLevel::No,
             user: NeedLevel::Ro,
         },
-    ) else {
-        return;
-    };
+    );
     let mut h4 = base_gate();
     h4.plugin = "matched-user".to_string();
     h4.user = UserAccess::Ro;
@@ -989,16 +858,13 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
 
     // The exact inert-gate scenario: kind: gate, operator grants `rw`, manifest only declares `ro`
     // (can_rewrite() true, wants_rewrite() false) — the WRITE-half mismatch.
-    let Some(env) = test_env_needs(
+    let env = test_env_needs(
         "inert-rewrite",
         busbar_plugin_loader::sign::HookNeeds {
             prompt: NeedLevel::Ro,
             user: NeedLevel::No,
         },
-    ) else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    );
     let mut h = base_gate();
     h.plugin = "inert-rewrite".to_string();
     h.prompt = PromptAccess::Rw;
@@ -1040,15 +906,13 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
     let events3: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sub3 = LineCapturingSubscriber(events3.clone());
-    let Some(env3) = test_env_needs(
+    let env3 = test_env_needs(
         "matched-rewrite",
         busbar_plugin_loader::sign::HookNeeds {
             prompt: NeedLevel::Rw,
             user: NeedLevel::No,
         },
-    ) else {
-        return;
-    };
+    );
     let mut h3 = base_gate();
     h3.plugin = "matched-rewrite".to_string();
     h3.prompt = PromptAccess::Rw;
@@ -1072,10 +936,7 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
 /// resolve as decision gates.
 #[test]
 fn resolve_gate_hooks_admits_only_decision_gates() {
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let mk = |kind: HookKind, prompt: PromptAccess| HookCfg {
         kind,
         prompt,
@@ -1107,10 +968,7 @@ fn resolve_gate_hooks_admits_only_decision_gates() {
 #[test]
 fn resolve_tap_hooks_admits_only_request_stage_taps() {
     use crate::config::HookStage;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let mk = |kind: HookKind, phase: Vec<HookStage>| HookCfg {
         kind,
         phase,
@@ -1170,10 +1028,7 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
 #[test]
 fn resolve_tap_hooks_honors_phase_list() {
     use crate::config::HookStage;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let mk = |phase: Vec<HookStage>| HookCfg {
         kind: HookKind::Tap,
         global: true,
@@ -1210,10 +1065,7 @@ fn resolve_tap_hooks_honors_phase_list() {
 /// `prompt: no` tap stays `false` (shape-only). This is the per-grant projection contract for taps.
 #[test]
 fn resolve_tap_hooks_carries_prompt_grant() {
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let mk = |prompt: PromptAccess| HookCfg {
         kind: HookKind::Tap,
         prompt,
@@ -1304,10 +1156,7 @@ fn native_resolve_forces_opt_in_flags_off() {
 /// the matching intent, so BOTH agree and the projection is on.)
 #[test]
 fn gate_grants_pass_through_as_projection_flags() {
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let hooks = registry(
         "h",
         HookCfg {
@@ -1362,16 +1211,13 @@ fn manifest_intent_and_grant_projection_matrix() {
     ];
     for (idx, (need, grant, want_prompt)) in prompt_cases.into_iter().enumerate() {
         let alias = format!("mtx-{idx}");
-        let Some(env) = test_env_needs(
+        let env = test_env_needs(
             &alias,
             busbar_plugin_loader::sign::HookNeeds {
                 prompt: need,
                 user: NeedLevel::No,
             },
-        ) else {
-            eprintln!("skip: hook cdylib not built (run under --workspace)");
-            return;
-        };
+        );
         let hooks = registry(
             "h",
             HookCfg {
@@ -1400,15 +1246,13 @@ fn manifest_intent_and_grant_projection_matrix() {
     ];
     for (idx, (need, grant, want_user)) in user_cases.into_iter().enumerate() {
         let alias = format!("mtx-user-{idx}");
-        let Some(env) = test_env_needs(
+        let env = test_env_needs(
             &alias,
             busbar_plugin_loader::sign::HookNeeds {
                 prompt: NeedLevel::No,
                 user: need,
             },
-        ) else {
-            return;
-        };
+        );
         let hooks = registry(
             "h",
             HookCfg {
@@ -1487,12 +1331,14 @@ fn opt_in_projections_redact_debug() {
 }
 
 // ── HookPolicy behavior over the REAL lowering (ported socket/webhook transport coverage) ──────
-// These drive a LOADED test-hook plugin through the resolved `HookPolicy`: the SDK lowers its JSON
-// reply on the plugin side and the kernel lowers the fixed answer through the wire.rs fail-closed
-// normalizing (reject-precedence, order, abstain, rewrite, notify delivery).
+// These drive an OPENED hook (the hook double behind the kernel's hook axis port) through the
+// resolved `HookPolicy`: its 1.5.5 JSON reply is lowered into the call's frame as the SDK lowers a
+// plugin's, and the kernel lowers the fixed answer through the wire.rs fail-closed normalizing
+// (reject-precedence, order, abstain, rewrite, notify delivery). The `dlopen_*` names are the 1.5.5
+// tests' own spellings, which THE DESIGN R1 and the design-bindings ledger cite by name.
 
-/// Resolve the single gate `h` from a one-hook registry backed by the test-hook plugin (settings
-/// carry the plugin's behavior config), returning the constructed `Arc<dyn RoutingPolicy>`.
+/// Resolve the single gate `h` from a one-hook registry backed by the hook double (settings carry
+/// the double's behavior config), returning the constructed `Arc<dyn RoutingPolicy>`.
 fn resolve_one(env: &HookEnv, settings: serde_json::Value) -> Option<Arc<dyn RoutingPolicy>> {
     let mut hook = base_gate();
     hook.prompt = PromptAccess::Ro; // so the opt-in prompt projection is sent (matches manifest rw need)
@@ -1556,11 +1402,7 @@ fn dctx() -> RoutingContext<'static> {
 /// `wire::normalize` (unknown idxs dropped); an empty order abstains.
 #[tokio::test]
 async fn dlopen_decide_order_and_abstain() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let budget = std::time::Duration::from_secs(5);
     let cands = [dcand(0), dcand(1)];
 
@@ -1588,11 +1430,7 @@ async fn dlopen_decide_order_and_abstain() {
 /// surfaces as a `RoutingDecision::Reject` through the REAL fail-closed normalizer (status/message).
 #[tokio::test]
 async fn dlopen_decide_reject_from_opt_in_prompt() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let budget = std::time::Duration::from_secs(5);
     let cands = [dcand(0)];
     let policy = resolve_one(
@@ -1626,12 +1464,8 @@ async fn dlopen_decide_reject_from_opt_in_prompt() {
 /// screen token — reject > rewrite precedence, through the REAL `wire::transform_outcome`.
 #[tokio::test]
 async fn dlopen_transform_rewrite_and_reject() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     use busbar_contract::hooks::TransformOutcome;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let budget = std::time::Duration::from_secs(5);
     let policy =
         resolve_one(&env, serde_json::json!({"reject_if_contains": "BLOCKME"})).expect("resolve");
@@ -1654,11 +1488,7 @@ async fn dlopen_transform_rewrite_and_reject() {
 /// a seam stubbed to a no-op would have passed it just as happily as the real one.
 #[tokio::test]
 async fn dlopen_notify_is_fire_and_forget() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let budget = std::time::Duration::from_secs(5);
     let policy = resolve_one(&env, serde_json::json!({})).expect("resolve");
     /// The plugin's tap counter, read over the SAME handle the notifies went to.
@@ -1698,11 +1528,7 @@ async fn dlopen_notify_is_fire_and_forget() {
 /// schema envelope (via `fetch_schema`, single-nest extracted), through the real lowering.
 #[tokio::test]
 async fn dlopen_status_and_schema_reads() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let hook = {
         let mut h = base_gate();
         h.settings = serde_json::json!({"order": [0]})
@@ -1733,7 +1559,7 @@ async fn dlopen_status_and_schema_reads() {
     assert_eq!(schema["type"], "object");
 }
 
-/// `configure` push over the dlopen seam: the test-hook plugin acks the EXACT pushed version → Ok.
+/// `configure` push over the hook seam: the hook acks the EXACT pushed version → Ok.
 /// (A wrong-version ack rejecting the commit is covered at the HookPolicy configure unit level.)
 ///
 /// **The one assertion this test makes is about the ACK.** It used to make a second one nobody
@@ -1749,11 +1575,7 @@ async fn dlopen_status_and_schema_reads() {
 /// deadline the push runs under is the shipped 5 s, unchanged.
 #[tokio::test]
 async fn dlopen_configure_acks_exact_version() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let hook = base_gate();
     assert!(
         super::await_transport_published("h", &hook, &env).await,
@@ -1793,11 +1615,7 @@ async fn dlopen_configure_acks_exact_version() {
 /// reports two distinct pointers.
 #[tokio::test]
 async fn one_load_serves_every_resolution_of_the_same_hook() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let hook = base_gate();
     let (first, _) = gate_transport_named("h", &hook, &env, 0).expect("first resolve");
     let (second, _) = gate_transport_named("h", &hook, &env, 0).expect("second resolve");
@@ -1828,10 +1646,7 @@ async fn one_load_serves_every_resolution_of_the_same_hook() {
 /// first assert report `Some(..)`.
 #[test]
 fn a_hook_carrying_a_secret_ref_is_never_reused() {
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let mut with_secret = base_gate();
     with_secret.settings.insert(
         "licenseKey".to_string(),
@@ -1853,11 +1668,7 @@ fn a_hook_carrying_a_secret_ref_is_never_reused() {
 /// `reject` terminal. Ported from the socket on_error-chain test onto the dlopen seam.
 #[tokio::test]
 async fn dlopen_on_error_chain_link_is_live_plugin() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let mut a = base_gate();
     a.on_error = "b".to_string();
     let mut b = base_gate();
@@ -1899,11 +1710,7 @@ async fn dlopen_on_error_chain_link_is_live_plugin() {
 /// reject on prompt content it never received.
 #[tokio::test]
 async fn dlopen_prompt_no_grant_withholds_content() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     // A gate with the DEFAULT prompt: no grant, but a plugin that WOULD reject on the token.
     let mut hook = base_gate(); // prompt defaults to No
     hook.settings = serde_json::json!({"order": [0], "reject_if_contains": "BLOCKME"})
@@ -1945,11 +1752,7 @@ async fn dlopen_prompt_no_grant_withholds_content() {
 /// anything outside 400..=499 to 403 — a hook cannot mint a success/redirect/5xx through the ABI.
 #[tokio::test]
 async fn dlopen_decide_reject_status_is_clamped() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let budget = std::time::Duration::from_secs(5);
     let cands = [dcand(0)];
     for (sent, want) in [
@@ -1986,11 +1789,7 @@ async fn dlopen_decide_reject_status_is_clamped() {
 /// EMPTY tag set (resolved downstream by `on_empty`, never allow-all).
 #[tokio::test]
 async fn dlopen_decide_restrict_and_fail_closed() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let budget = std::time::Duration::from_secs(5);
     let cands = [dcand(0), dcand(1)];
 
@@ -2034,11 +1833,7 @@ async fn dlopen_decide_restrict_and_fail_closed() {
 /// request can never have it routed because a detail was malformed.
 #[tokio::test]
 async fn dlopen_decide_raw_reply_is_fail_closed() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let budget = std::time::Duration::from_secs(5);
     let cands = [dcand(0)];
 
@@ -2091,18 +1886,14 @@ async fn dlopen_decide_raw_reply_is_fail_closed() {
 /// This is the identity analogue of the prompt opt-in delivery test.
 #[tokio::test]
 async fn dlopen_user_identity_projection_rides_the_wire() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     use busbar_plugin_loader::sign::{HookNeeds, NeedLevel};
-    let Some(env) = test_env_needs(
+    let env = test_env_needs(
         "user-hook",
         HookNeeds {
             prompt: NeedLevel::No,
             user: NeedLevel::Ro,
         },
-    ) else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    );
     let hooks = registry(
         "h",
         HookCfg {
@@ -2132,11 +1923,7 @@ async fn dlopen_user_identity_projection_rides_the_wire() {
 /// plugin never stalls the runtime.
 #[tokio::test]
 async fn dlopen_decide_deadline_cuts_off_a_slow_gate() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let policy =
         resolve_one(&env, serde_json::json!({"order": [0], "sleep_ms": 2000})).expect("resolve");
     let started = std::time::Instant::now();
@@ -2163,11 +1950,7 @@ async fn dlopen_decide_deadline_cuts_off_a_slow_gate() {
 /// (`resolve_one`), where `load` and `DlopenPolicy` went.
 #[tokio::test]
 async fn dlopen_slow_gate_hits_the_deadline() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let policy =
         resolve_one(&env, serde_json::json!({"order": [0], "sleep_ms": 2000})).expect("resolve");
     let started = std::time::Instant::now();
@@ -2191,11 +1974,7 @@ async fn dlopen_slow_gate_hits_the_deadline() {
 /// "doesn't speak it" — `fetch_status`/`fetch_schema` return `None`, never affecting a request.
 #[tokio::test]
 async fn dlopen_empty_management_reads_are_fail_open_none() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let mut hook = base_gate();
     hook.settings = serde_json::json!({"empty_management": true})
         .as_object()
@@ -2216,11 +1995,7 @@ async fn dlopen_empty_management_reads_are_fail_open_none() {
 /// settings PATCH would not commit — the exact-version ack rule holds over the ABI.
 #[tokio::test]
 async fn dlopen_configure_nack_does_not_commit() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let mut hook = base_gate();
     hook.settings = serde_json::json!({"nack_configure": true})
         .as_object()
@@ -2634,12 +2409,8 @@ fn resolve_rewrite_pair(
 /// deadline reaches the same arm one layer lower, in the transport (`HookPolicy::transform`).
 #[tokio::test]
 async fn rewrite_call_failure_takes_the_configured_disposition() {
-    let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
     use busbar_contract::hooks::TransformOutcome;
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = test_env();
     let budget = std::time::Duration::from_secs(5);
     let failed = serde_json::json!({"fail_transform": "classifier unreachable"});
     let answered = serde_json::json!({});

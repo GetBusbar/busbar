@@ -882,19 +882,15 @@ async fn admin_usage_over_an_unpriced_class_answers_named_409() {
 /// the hook's describe reply.
 #[cfg(unix)]
 /// Control plane over the DLOPEN hook seam: registering a hook loads its `kind: hook` plugin; a
-/// settings PATCH pushes `configure` and COMMITS on the plugin's exact-version ack (the test-hook
-/// plugin acks by default); `GET .../schema` proxies the plugin's `describe` self-description
+/// settings PATCH pushes `configure` and COMMITS on the hook's exact-version ack (the hook double
+/// acks by default); `GET .../schema` proxies the plugin's `describe` self-description
 /// envelope, extracting the `schema` member (single nest). The retired socket/webhook mock is gone —
 /// the plugin IS the transport now. (A NACK/wrong-version ack rejecting the commit is covered at the
 /// hook seam's configure unit level.)
 #[tokio::test]
 async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
     busbar_kernel::metrics::init();
-    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
-    else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     // Kept for the readiness wait below — `HookEnv` clones share one `Arc<PluginRegistry>`, which is
@@ -985,9 +981,9 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
 /// `GET /plugins/{name}/schema`'s describe→manifest fallback: a loaded hook whose live `describe`
 /// answers `schema: null` is NOT evidence the plugin has no real settings shape — the handler must
 /// fall back to the manifest baseline SERVER-SIDE and return it with `source: "manifest"`, not just
-/// report `source: "describe"` with a bare null. Uses the real dlopen'd `busbar-hook-test-plugin`
-/// (its `empty_management: true` setting makes `describe()` return `{}`, the real "unsupported"
-/// reply) with a manifest stamped with a real `settings_schema`, over the live admin router.
+/// report `source: "describe"` with a bare null. Uses the kernel's hook double (its
+/// `empty_management: true` setting makes `describe()` return `{}`, the real "unsupported" reply)
+/// behind a manifest row stamped with a real `settings_schema`, over the live admin router.
 #[cfg(unix)]
 #[tokio::test]
 async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answers_null() {
@@ -997,14 +993,11 @@ async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answer
         "type": "object",
         "properties": {"order": {"type": "array"}},
     });
-    let Some(env) = busbar_kernel::test_support::test_hook_env_with_schema(
+    let env = busbar_kernel::test_support::test_hook_env_with_schema(
         &["test-hook-fallback"],
         Default::default(),
         Some(&manifest_schema.to_string()),
-    ) else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    );
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     // See the sibling test: kept so the readiness wait below resolves against the SAME registry.

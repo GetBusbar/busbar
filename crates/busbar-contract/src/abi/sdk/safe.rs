@@ -395,9 +395,18 @@ impl<S: SafeSlot> Entry for Safe<S> {
                 h.forget(call.ticket);
             }
             if index == slot::CANCEL {
-                if let Some(c) = (input as &dyn Any).downcast_ref::<CancelIn>() {
+                let any = input as &dyn Any;
+                let cancelled = any
+                    .downcast_ref::<CancelIn>()
+                    .map(|c| c.ticket)
+                    .or_else(|| {
+                        // A kind that widens `cancel` embeds the lifecycle's `in` first.
+                        any.downcast_ref::<crate::abi::plane::PlaneCancelIn>()
+                            .map(|c| c.cancel.ticket)
+                    });
+                if let Some(ticket) = cancelled {
                     // `cancel`: the cancelled ticket's op will not resume either.
-                    h.forget(c.ticket);
+                    h.forget(ticket);
                 }
             }
         }

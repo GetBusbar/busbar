@@ -53,6 +53,67 @@ pub trait PieceInFlight: Future<Output = Answered> + Send + Unpin {
     /// The `out` the answer carried; `None` before the answer, or when the op was faulted
     /// mid-crossing.
     fn out(&self) -> Option<OnPieceOut>;
+
+    /// The record writes of the `cancel` that ended the op (its client-drop path: a deadline, a
+    /// cut or a reload while it was in flight), copied out of the cancel's buffers; empty when no
+    /// cancel ended it or it wrote none (SEAM-L(r)).
+    fn cancel_writes(&self) -> Vec<CancelWrite> {
+        Vec::new()
+    }
+}
+
+/// One record write a plane's `cancel` answered, owned: its `kind`, `op` ([`RecordWrite`]'s), key
+/// and value bytes.
+///
+/// [`RecordWrite`]: crate::abi::plane::RecordWrite
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CancelWrite {
+    /// [`RecordWrite::kind`](crate::abi::plane::RecordWrite::kind).
+    pub kind: u32,
+    /// [`RecordWrite::op`](crate::abi::plane::RecordWrite::op).
+    pub op: u32,
+    /// The key's bytes.
+    pub key: Vec<u8>,
+    /// The value's bytes.
+    pub value: Vec<u8>,
+}
+
+/// What a READY `cancel` answered: its disposition and its record writes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Cancelled {
+    /// The `CANCEL_*` disposition.
+    pub disposition: u32,
+    /// Its record writes, in the plane's order.
+    pub writes: Vec<CancelWrite>,
+}
+
+impl CancelWrite {
+    /// Each of the first `written` writes of `records`, its spans read in `arena` (a span past
+    /// it reads empty).
+    #[must_use]
+    pub fn owned(
+        records: &[crate::abi::plane::RecordWrite],
+        written: usize,
+        arena: &[u8],
+    ) -> Vec<CancelWrite> {
+        let bytes = |s: crate::abi::mechanism::call::Span| {
+            let start = s.offset as usize;
+            arena
+                .get(start..start.saturating_add(s.len as usize))
+                .unwrap_or_default()
+                .to_vec()
+        };
+        records
+            .iter()
+            .take(written)
+            .map(|w| CancelWrite {
+                kind: w.kind,
+                op: w.op,
+                key: bytes(w.key),
+                value: bytes(w.value),
+            })
+            .collect()
+    }
 }
 
 /// One `serve` in flight on its ticket. Dropping it before it answered is a client drop.
@@ -236,9 +297,9 @@ pub trait PlaneCalls: Send + Sync {
         grow: Grow<'_, ProjectIn, ProjectOut>,
     ) -> Outcome;
 
-    /// The host's own ticketless `cancel` of `ticket`: the disposition it answered, or `None`
-    /// when it did not answer READY.
-    fn cancel(&self, ticket: Ticket) -> Option<u32>;
+    /// The host's own ticketless `cancel` of `ticket`: the disposition it answered and the record
+    /// writes it carried (SEAM-L(r)), or `None` when it did not answer READY.
+    fn cancel(&self, ticket: Ticket) -> Option<Cancelled>;
 
     /// A request ticket for one unit; `None` when none can be minted.
     fn mint(&self) -> Option<Ticket>;

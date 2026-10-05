@@ -839,6 +839,9 @@ fn rows(resource: &str) -> Vec<String> {
 #[test]
 fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
     use busbar_kernel::plane_driver::serve::{publish, serve, withdraw, Unserved};
+    let _one = PUBLISHED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for way in ways() {
         let item = format!("{way:?}").to_lowercase();
         let act = format!("/items/{item}/act");
@@ -913,6 +916,63 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
             None,
             "{way:?}: withdrawn, nothing mounts"
         );
+    }
+}
+
+/// The process's one table of published instances: one test publishes at a time.
+static PUBLISHED: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// RED (SEAM-4o): a PUBLIC route the published snapshot states (`ROUTE_PUBLIC`) is served on the
+/// public serve path by the plane's own `serve`, to a caller that presents no busbar credential:
+/// the plane sees the request's own head fields with every credential field struck, and answers
+/// with its own status and body. The admin route is not public (`404` there), an unknown path is
+/// `404`, and a withdrawn instance serves nothing. RED before: the kernel filtered public routes
+/// out of every table, so nothing served them.
+#[test]
+fn a_public_route_is_served_by_the_planes_serve_without_a_credential() {
+    use busbar_kernel::plane_driver::serve::{answer_public, publish, withdraw};
+    let _one = PUBLISHED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for way in ways() {
+        let item = format!("{way:?}").to_lowercase();
+        let (_plugin, table) = serve_table(way, "the-public-instance");
+        publish(table, &[]).expect("the instance publishes");
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer someone".parse().unwrap());
+        headers.insert("cookie", "session=secret".parse().unwrap());
+        headers.insert("x-trace", "t-1".parse().unwrap());
+        let call = |method: &str, path: &str| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime");
+            rt.block_on(async {
+                let resp =
+                    answer_public(method, path, path, &headers, axum::body::Bytes::from("go"))
+                        .await;
+                let status = resp.status().as_u16();
+                let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                    .await
+                    .expect("a body");
+                (status, String::from_utf8_lossy(&body).into_owned())
+            })
+        };
+        let hook = format!("/items/{item}/hook");
+        assert_eq!(
+            call("POST", &hook),
+            (200, format!("public {hook} fields=x-trace")),
+            "{way:?}: served by the plane, no credential crossed"
+        );
+        assert_eq!(call("GET", &hook).0, 404, "{way:?}: another verb");
+        assert_eq!(
+            call("POST", &format!("/items/{item}/act")).0,
+            404,
+            "{way:?}: the admin route is not public"
+        );
+        assert_eq!(call("POST", "/nowhere").0, 404, "{way:?}");
+        withdraw("the-public-instance");
+        assert_eq!(call("POST", &hook).0, 404, "{way:?}: withdrawn");
     }
 }
 

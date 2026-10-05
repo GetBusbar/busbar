@@ -258,8 +258,8 @@ pub const SLOTS: u32 = LIFECYCLE_SLOTS + KIND_SLOTS;
 #[derive(Debug, Clone, Copy)]
 pub struct Ops {
     /// The lifecycle. `open` is in [`PlaneOpenIn`], out [`PlaneOpenOut`]; `refresh` out is
-    /// [`PlaneRefreshOut`]; `drive` is in [`PlaneDriveIn`], out [`PlaneDriveOut`]; `cancel`
-    /// answers a `CANCEL_*` disposition.
+    /// [`PlaneRefreshOut`]; `drive` is in [`PlaneDriveIn`], out [`PlaneDriveOut`]; `cancel` is in
+    /// [`PlaneCancelIn`], out [`PlaneCancelOut`], and answers a `CANCEL_*` disposition.
     pub head: OpsHead,
     /// [`slot::ARRIVE`]: in [`ArriveIn`], out [`ArriveOut`].
     pub arrive: Option<Op>,
@@ -1720,6 +1720,40 @@ pub struct PlaneDriveOut {
     pub sessions_needed: u32,
 }
 
+/// The plane's `cancel` `in` (SEAM-L(r)): the lifecycle's, embedded FIRST so the dispatcher fills
+/// its head as every kind's, plus HOST buffers for the cancelled unit's record writes, as an
+/// `on_piece` answer's ([`RecordWrite`], their bytes in the arena): `cancel` is a unit's last
+/// terminal crossing, so a unit cut by a deadline, a reload or a shutdown still writes its row.
+/// `cancel` may not pend and is never re-called: what does not fit the host's buffers is FAULT.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PlaneCancelIn {
+    /// The lifecycle `in`.
+    pub cancel: CancelIn,
+    /// HOST buffer for record writes.
+    pub records_buf: *mut RecordWrite,
+    /// Its capacity.
+    pub records_cap: usize,
+    /// HOST arena for the record writes' bytes.
+    pub arena_buf: *mut u8,
+    /// Its capacity.
+    pub arena_cap: usize,
+}
+
+/// The plane's `cancel` `out`: the lifecycle's, embedded first, and what the plane wrote.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PlaneCancelOut {
+    /// The lifecycle `out` (its disposition).
+    pub cancel: CancelOut,
+    /// Record writes written to `records_buf`.
+    pub records_written: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+    /// Bytes written to `arena_buf`.
+    pub arena_written: u64,
+}
+
 /// `project`'s `in`: the arrival `arrive` classified, and HOST buffers for the view.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -1808,6 +1842,7 @@ pub struct ProjectOut {
 // SAFETY (all below): `#[repr(C)]`, leading with `InHead`/`OutHead`, plain data only.
 unsafe impl super::sdk::door::AbiIn for PlaneOpenIn {}
 unsafe impl super::sdk::door::AbiIn for PlaneDriveIn {}
+unsafe impl super::sdk::door::AbiIn for PlaneCancelIn {}
 unsafe impl super::sdk::door::AbiIn for ArriveIn {}
 unsafe impl super::sdk::door::AbiIn for OnPieceIn {}
 unsafe impl super::sdk::door::AbiIn for RefusalIn {}
@@ -1816,6 +1851,7 @@ unsafe impl super::sdk::door::AbiIn for ProjectIn {}
 unsafe impl super::sdk::door::AbiOut for PlaneOpenOut {}
 unsafe impl super::sdk::door::AbiOut for PlaneRefreshOut {}
 unsafe impl super::sdk::door::AbiOut for PlaneDriveOut {}
+unsafe impl super::sdk::door::AbiOut for PlaneCancelOut {}
 unsafe impl super::sdk::door::AbiOut for ArriveOut {}
 unsafe impl super::sdk::door::AbiOut for OnPieceOut {}
 unsafe impl super::sdk::door::AbiOut for RefusalOut {}
@@ -1855,7 +1891,7 @@ super::sdk::door::slot_structs!(Ops {
 /// # ready!(Rf, RefreshIn, PlaneRefreshOut);
 /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut);
 /// # ready!(Dr, PlaneDriveIn, PlaneDriveOut);
-/// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
+/// # ready!(Cn, PlaneCancelIn, PlaneCancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
 /// # ready!(Arrive, ArriveIn, ArriveOut); ready!(Refusal, RefusalIn, RefusalOut);
 /// # ready!(Serve, ServeIn, ServeOut); ready!(Hydrate, GenIn, OutHead);
 /// # ready!(Start, GenIn, OutHead); ready!(Project, ProjectIn, ProjectOut);
@@ -1888,7 +1924,7 @@ super::sdk::door::slot_structs!(Ops {
 /// ready!(Op_, OpenIn, OpenOut); // the lifecycle's `open`, no snapshot: refused
 /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut);
 /// # ready!(Dr, PlaneDriveIn, PlaneDriveOut);
-/// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
+/// # ready!(Cn, PlaneCancelIn, PlaneCancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
 /// # ready!(Arrive, ArriveIn, ArriveOut); ready!(Refusal, RefusalIn, RefusalOut);
 /// # ready!(Serve, ServeIn, ServeOut); ready!(Hydrate, GenIn, OutHead);
 /// # ready!(Start, GenIn, OutHead); ready!(Project, ProjectIn, ProjectOut);
@@ -1916,7 +1952,7 @@ super::sdk::door::slot_structs!(PlaneLifecycle {
     life::RETIRE => GenIn, OutHead;
     life::TICK => TickIn, TickOut;
     life::DRIVE => PlaneDriveIn, PlaneDriveOut;
-    life::CANCEL => CancelIn, CancelOut;
+    life::CANCEL => PlaneCancelIn, PlaneCancelOut;
     life::RELEASE => ReleaseIn, OutHead;
     life::CLOSE => InHead, OutHead;
 });

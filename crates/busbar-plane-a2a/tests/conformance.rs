@@ -954,12 +954,12 @@ mod both_ways {
 
     use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, Span, BLOB_OCTETS};
     use busbar_contract::abi::mechanism::lifecycle::{
-        slot as life, CancelIn, CancelOut, GenIn, RefreshIn, TickIn, TickOut, ValidateIn,
+        slot as life, GenIn, RefreshIn, TickIn, TickOut, ValidateIn,
     };
     use busbar_contract::abi::plane::{
-        slot, ArriveIn, ArriveOut, OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn,
-        PlaneOpenOut, PlaneRefreshOut, ProjectIn, ProjectOut, RefusalIn, RefusalOut,
-        REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL,
+        slot, ArriveIn, ArriveOut, OutField, PlaneCancelIn, PlaneCancelOut, PlaneDriveIn,
+        PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, ProjectIn, ProjectOut,
+        RefusalIn, RefusalOut, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL,
     };
     use busbar_contract::abi::sdk::door::abi_str;
     use busbar_plane_a2a::door::{self, DIALECT_DOCUMENT, DIALECT_FRAMED, DIALECT_TARGET};
@@ -1301,12 +1301,12 @@ mod both_ways {
             "drive {:?} sessions={}",
             c.outcome, d.out.sessions_written
         ));
-        let mut x: Frame<CancelIn, CancelOut> = Frame::new(z(), z());
-        (x.input.head, x.out.head) = (in_head(), out_head());
+        let mut x: Frame<PlaneCancelIn, PlaneCancelOut> = Frame::new(z(), z());
+        (x.input.cancel.head, x.out.cancel.head) = (in_head(), out_head());
         let c = p.call(life::CANCEL, &mut x);
         t.push(format!(
             "cancel {:?} disposition={}",
-            c.outcome, x.out.disposition
+            c.outcome, x.out.cancel.disposition
         ));
 
         // THE REQUEST PATH.

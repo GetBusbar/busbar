@@ -34,14 +34,15 @@
 use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
+    GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::plane::{
-    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn,
-    PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, ProjectIn, ProjectOut, RecordWrite, RefusalIn,
-    RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END,
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
-    PRINCIPAL_REQUIRED, RECORD_PUT, REFUSAL_ARRIVE, ROUTE_DIRECT, ROUTE_SCOPE, UNITS_REPORTED,
+    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneCancelIn, PlaneCancelOut,
+    PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
+    ProjectIn, ProjectOut, RecordWrite, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
+    CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, RECORD_PUT, REFUSAL_ARRIVE,
+    ROUTE_DIRECT, ROUTE_SCOPE, UNITS_REPORTED,
 };
 use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::sdk::door::statement;
@@ -691,17 +692,19 @@ slot!(
 slot!(
     /// `cancel`: nothing the far end moved is in flight, so nothing moved; a card look the
     /// cancelled unit held is abandoned, and every unit waiting on it is woken at once to look for
-    /// itself (ARCHITECT Q-DEL-A2A-TIMED-WAKE: cancellation is a wake).
-    Cancel, CancelIn, CancelOut, |instance, input, mut out| {
+    /// itself (ARCHITECT Q-DEL-A2A-TIMED-WAKE: cancellation is a wake). No row is written: a
+    /// caller that went away mid-answer stopped 1.5.5's relay without a task transition, and the
+    /// task keeps the last state it reached.
+    Cancel, PlaneCancelIn, PlaneCancelOut, |instance, input, mut out| {
         if let Some(plane) = instance.get() {
-            let woken = plane.flights.abandon(input.get().ticket);
+            let woken = plane.flights.abandon(input.cancel.ticket);
             if let Some(host) = plane.host.as_ref() {
                 for waiter in woken {
                     host.wake(waiter);
                 }
             }
         }
-        out.set(|o| &o.disposition, CANCEL_ABORTED);
+        out.set(|o| &o.cancel.disposition, CANCEL_ABORTED);
         Outcome::Ready
     }
 );

@@ -166,7 +166,12 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
     if let Ok(base) = base_ref(cx) {
         if let Ok(was) = cx.git_show(&base.sha, CEILINGS) {
             if let Ok(doc) = crate::toml_doc::parse_str(&was) {
-                let moved = moved_out_by_kind(cx, cfg, &doc, &base.sha);
+                let base_deleted = deleted_ledger(&doc);
+                let now_deleted = deleted_ledger(&cfg.doc);
+                bad.extend(deleted_ledger_findings(&now_deleted, &base_deleted, |d| {
+                    cx.abs(d).exists()
+                }));
+                let moved = moved_out_by_kind(cx, cfg, &doc, &base.sha, &now_deleted);
                 bad.extend(lowered_floors(&cfg.doc, &doc, base.short(), &moved));
             }
         }
@@ -218,7 +223,7 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
 ///
 /// THE ONE ACCEPTED WAY DOWN (ARCHITECT 2026-10-02, TODO PATH TO DEV-GREEN P5): a
 /// `plugin_kinds.<kind>` floor may drop by at most `moved[<key>]`, the number of that kind's crate
-/// directories that left the tree as MOVED-OUT plugins ([`moved_out`]). Every other drop is RED.
+/// directories that left the tree as MOVED-OUT plugins or ruled deletions ([`excused_out`]). Every other drop is RED.
 fn lowered_floors(
     now_doc: &Document,
     base_doc: &Document,
@@ -245,9 +250,15 @@ fn lowered_floors(
 
 /// Per `plugin_kinds.<kind>` census key, how many of that kind's crate directories MOVED OUT since
 /// the base (`sha`): the directories the base's globs matched that this tree's globs no longer
-/// match. The count is entered only when EVERY such directory moved out ([`moved_out`]); a kind
+/// match. The count is entered only when EVERY such directory moved out or were deleted under the ledger ([`excused_out`]); a kind
 /// that lost one directory any other way gets no entry, so its floor drop stays RED.
-fn moved_out_by_kind(cx: &Ctx, cfg: &Cfg, base_doc: &Document, sha: &str) -> BTreeMap<String, i64> {
+fn moved_out_by_kind(
+    cx: &Ctx,
+    cfg: &Cfg,
+    base_doc: &Document,
+    sha: &str,
+    deleted: &BTreeSet<String>,
+) -> BTreeMap<String, i64> {
     let root_manifest = cx.read("Cargo.toml").unwrap_or_default();
     let base_kinds = base_doc.table_or_empty("gate.plugin_kinds");
     let mut out = BTreeMap::new();
@@ -271,11 +282,34 @@ fn moved_out_by_kind(cx: &Ctx, cfg: &Cfg, base_doc: &Document, sha: &str) -> BTr
                         .map(|n| n.trim().trim_matches('"').to_string())
                 })
         };
-        if let Some(n) = moved_out(&gone, package_at_base, &root_manifest) {
+        if let Some(n) = excused_out(
+            &gone,
+            |dir| moved_out(&[dir.to_string()], package_at_base, &root_manifest).is_some(),
+            |dir| deleted.contains(dir) && !cx.abs(dir).exists(),
+        ) {
             out.insert(format!("plugin_kinds.{kind}"), n as i64);
         }
     }
     out
+}
+
+/// A plugin crate MOVED OUT (TODO PATH TO DEV-GREEN P5: filter-repo into its own repo, pinned back
+/// in busbar as one git dependency at an exact commit), or was DELETED under a ruled TODO deletion
+/// (ARCHITECT 2026-10-04: named in `[gate.census.deleted]`, absent from this tree).
+/// `Some(gone.len())` when EVERY directory in `gone` is one or the other (`is_moved`, `is_deleted`);
+/// `None` when any one is neither (an unlisted vanished directory stays RED), and for an empty
+/// `gone`.
+fn excused_out(
+    gone: &[String],
+    is_moved: impl Fn(&str) -> bool,
+    is_deleted: impl Fn(&str) -> bool,
+) -> Option<usize> {
+    if gone.is_empty() {
+        return None;
+    }
+    gone.iter()
+        .all(|dir| is_moved(dir) || is_deleted(dir))
+        .then_some(gone.len())
 }
 
 /// A plugin crate MOVED OUT (TODO PATH TO DEV-GREEN P5: filter-repo into its own repo, pinned back
@@ -298,6 +332,37 @@ fn moved_out(
             })
         })
         .then_some(gone.len())
+}
+
+/// The directories `[gate.census.deleted]` names, by key.
+fn deleted_ledger(doc: &Document) -> BTreeSet<String> {
+    doc.table_or_empty("gate.census.deleted")
+        .keys()
+        .iter()
+        .map(|k| k.trim().trim_matches('"').to_string())
+        .collect()
+}
+
+/// The `[gate.census.deleted]` ledger's own rules: add-only against the base (an entry the base
+/// carried and this tree does not is RED), and an entry whose directory is still present is a
+/// stale entry (RED).
+fn deleted_ledger_findings(
+    now: &BTreeSet<String>,
+    base: &BTreeSet<String>,
+    present: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut out: Vec<String> = base
+        .difference(now)
+        .map(|d| {
+            format!(
+                "[gate.census.deleted] `{d}` was removed since the base; the ledger is add-only"
+            )
+        })
+        .collect();
+    out.extend(now.iter().filter(|d| present(d)).map(|d| {
+        format!("[gate.census.deleted] `{d}` is listed but still present in the tree (stale entry)")
+    }));
+    out
 }
 
 /// The directories the globs `globs` matched at commit `sha`: each glob's parent listed at that
@@ -444,5 +509,65 @@ mod tests {
         );
         assert_eq!(out.len(), 1, "{out:?}");
         assert!(out[0].contains("plane_crates"), "{out:?}");
+    }
+
+    fn set(v: &[&str]) -> BTreeSet<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_listed_and_gone_directory_is_excused() {
+        let gone = vec!["crates/hook-test-plugin".to_string()];
+        let deleted = set(&["crates/hook-test-plugin"]);
+        let n = excused_out(&gone, |_| false, |d| deleted.contains(d));
+        assert_eq!(n, Some(1));
+        assert!(deleted_ledger_findings(&deleted, &deleted, |_| false).is_empty());
+    }
+
+    #[test]
+    fn an_unlisted_vanished_directory_is_red() {
+        let gone = vec!["crates/hook-test-plugin".to_string()];
+        let deleted = set(&[]);
+        assert_eq!(excused_out(&gone, |_| false, |d| deleted.contains(d)), None);
+        let out = lowered_floors(
+            &doc(&DOC.replace("plane = 5", "plane = 4")),
+            &doc(DOC),
+            "abc1234",
+            &BTreeMap::new(),
+        );
+        assert_eq!(out.len(), 1, "{out:?}");
+    }
+
+    #[test]
+    fn a_listed_but_present_directory_is_red() {
+        let deleted = set(&["crates/hook-test-plugin"]);
+        let out = deleted_ledger_findings(&deleted, &deleted, |_| true);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].contains("stale entry"), "{out:?}");
+    }
+
+    #[test]
+    fn an_entry_removed_versus_the_base_is_red() {
+        let out = deleted_ledger_findings(&set(&[]), &set(&["crates/hook-test-plugin"]), |_| false);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].contains("add-only"), "{out:?}");
+    }
+
+    #[test]
+    fn the_deleted_table_is_read_from_the_document() {
+        let d = doc("[gate.census.deleted]\n\"crates/x\" = \"why\"\n");
+        assert_eq!(deleted_ledger(&d), set(&["crates/x"]));
+    }
+
+    #[test]
+    fn an_excused_drop_by_exactly_the_count_is_green_and_one_more_is_red() {
+        let moved: BTreeMap<String, i64> = [("plugin_kinds.plane".to_string(), 1)].into();
+        let down1 = DOC.replace("plane = 5", "plane = 4");
+        assert!(lowered_floors(&doc(&down1), &doc(DOC), "abc1234", &moved).is_empty());
+        let down2 = DOC.replace("plane = 5", "plane = 3");
+        assert_eq!(
+            lowered_floors(&doc(&down2), &doc(DOC), "abc1234", &moved).len(),
+            1
+        );
     }
 }

@@ -1281,8 +1281,7 @@ mod door {
     use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span, BLOB_OCTETS};
     use busbar_contract::abi::mechanism::door::Door;
     use busbar_contract::abi::mechanism::lifecycle::{
-        slot as life, CancelIn, CancelOut, GenIn, OpenIn, OpenOut, RefreshIn, TickIn, TickOut,
-        ValidateIn,
+        slot as life, GenIn, OpenIn, OpenOut, RefreshIn, TickIn, TickOut, ValidateIn,
     };
     use busbar_contract::abi::plane::{
         self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn,
@@ -1604,13 +1603,16 @@ mod door {
         let c = p.call(life::TICK, &mut k);
         t.push(format!("tick {:?} next={}", c.outcome, k.out.next_tick_ns));
 
-        let mut x: Frame<CancelIn, CancelOut> = Frame::new(z(), z());
-        (x.input.head, x.out.head) = (in_head(), out_head());
+        let mut x: Frame<
+            busbar_contract::abi::plane::PlaneCancelIn,
+            busbar_contract::abi::plane::PlaneCancelOut,
+        > = Frame::new(z(), z());
+        (x.input.cancel.head, x.out.cancel.head) = (in_head(), out_head());
         let c = p.call(life::CANCEL, &mut x);
         t.push(format!(
             "cancel {:?} aborted={}",
             c.outcome,
-            x.out.disposition == CANCEL_ABORTED
+            x.out.cancel.disposition == CANCEL_ABORTED
         ));
 
         let mut f: Frame<RefreshIn, PlaneRefreshOut> = Frame::new(z(), z());
