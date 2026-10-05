@@ -92,14 +92,19 @@ fn migrate_inserts_the_memory_store_and_the_result_validates() {
         "the change is listed; stderr:\n{stderr}"
     );
 
-    let migrated = dir.join("config.yaml");
-    std::fs::write(&migrated, &stdout).unwrap();
-    let out = validate(&dir, &migrated);
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "the migrated config validates; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    // The fixture's provider speaks the llm plane's wire, so the migrated config can only
+    // validate in a build that compiles that plane in; elsewhere validation refuses the provider,
+    // not the store.
+    if cfg!(feature = "proto-llm") {
+        let migrated = dir.join("config.yaml");
+        std::fs::write(&migrated, &stdout).unwrap();
+        let out = validate(&dir, &migrated);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "the migrated config validates; stderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
