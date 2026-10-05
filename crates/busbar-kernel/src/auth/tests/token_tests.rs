@@ -3,73 +3,130 @@
 
 //! Tests for the `GET /auth/token` hosted browser-login flow (1.5.2). `token_tests` is a
 //! submodule of `auth::token`, so it can drive the private sub-state handlers (`chooser`/`begin`/
-//! `callback`), the render fns, and the cookie/PKCE/hop helpers directly.
+//! `callback`), the render fns, and the cookie/PKCE helpers directly. Every login plugin here is on
+//! the auth kind's door ([`DoorLogin`]): the plugin makes its own token exchange and binds the IdP's
+//! answer to the nonce itself; the host mints PKCE/state/nonce, checks `state`, bounds the
+//! anonymous flood, and renders.
 
 use super::*;
 use busbar_contract::auth::{
-    AuthModule, AuthVerdict, BeginLogin, CompleteLogin, FieldKind, LoginField, LoginForm, LoginHop,
-    LoginKind, LoginModule, LoginOutcome, Principal,
+    BeginLogin, FieldKind, LoginField, LoginForm, LoginKind, LoginOutcome, Principal,
 };
+use busbar_contract::auth_calls::{LoginCall, LoginCallback, LoginSettled};
 
-/// A test login module (AuthPlugin = AuthModule + LoginModule). `begin` returns a fixed authorize
-/// URL; `complete` returns a token-exchange hop pointing at `token_url` (with a `client_secret`
-/// placeholder + `secret_form_field`), then — once a token_response is fed back — `Identify`s alice.
-struct TestLogin {
-    authorize_url: String,
-    token_url: String,
+/// A door stand-in: an opened `kind: auth` instance answering `begin_login`/`complete_login` (the
+/// plugin on the auth kind's door), recording every `complete_login` it was handed. `park` holds
+/// each answer back that long on a thread of its own — the dispatcher worker the plugin runs on —
+/// never on the caller's.
+struct DoorLogin {
+    kind: LoginKind,
+    begin: LoginOutcome,
+    complete: Box<dyn Fn(&LoginCallback) -> LoginOutcome + Send + Sync>,
+    park: Option<std::time::Duration>,
+    seen: std::sync::Mutex<Vec<LoginCallback>>,
 }
-impl AuthModule for TestLogin {
-    fn name(&self) -> &'static str {
-        "test-login"
-    }
-    fn authenticate(&self, _c: Option<&str>) -> AuthVerdict {
-        AuthVerdict::Pass
-    }
-}
-impl LoginModule for TestLogin {
-    fn begin_login(&self, _r: &BeginLogin) -> LoginOutcome {
-        LoginOutcome::Authorize(self.authorize_url.clone())
-    }
-    fn complete_login(&self, r: &CompleteLogin) -> LoginOutcome {
-        if r.token_response.is_none() {
-            LoginOutcome::Exchange(LoginHop {
-                method: "POST".into(),
-                url: self.token_url.clone(),
-                form: vec![
-                    ("grant_type".into(), "authorization_code".into()),
-                    // The plugin writes only the KEY (+ a placeholder value); the CORE injects the
-                    // real secret. This proves the plugin never holds the secret value.
-                    ("client_secret".into(), "__PLACEHOLDER__".into()),
-                ],
-                secret_form_field: Some("client_secret".into()),
-                headers: vec![],
-            })
-        } else {
-            let mut p = Principal::from_id("alice");
-            p.roles = vec!["members".into()];
-            LoginOutcome::Identify(p)
+
+impl DoorLogin {
+    /// A redirect plugin whose authorize URL is the IdP's and whose `complete_login` answers
+    /// `complete(request)`.
+    fn answering(
+        complete: impl Fn(&LoginCallback) -> LoginOutcome + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            kind: LoginKind::Redirect,
+            begin: LoginOutcome::Authorize("https://idp.example.com/authorize?x=1".into()),
+            complete: Box::new(complete),
+            park: None,
+            seen: std::sync::Mutex::new(Vec::new()),
         }
     }
+
+    /// A redirect plugin whose `complete_login` always answers `complete`.
+    fn new(complete: LoginOutcome) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self::answering(move |_| complete.clone()))
+    }
+
+    /// The step's answer: on the spot, or after `park` from the plugin's own thread.
+    fn answer(&self, outcome: LoginOutcome) -> Box<dyn LoginCall> {
+        let Some(park) = self.park else {
+            return Box::new(LoginSettled(Some(outcome)));
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            std::thread::sleep(park);
+            let _ = tx.send(outcome);
+        });
+        Box::new(Parked(rx))
+    }
 }
 
-fn test_app_with_methods(
-    methods: Vec<(&str, bool)>,
-    token_url: &str,
-) -> std::sync::Arc<crate::state::App> {
+/// A login step the plugin answers later, from its own thread.
+struct Parked(tokio::sync::oneshot::Receiver<LoginOutcome>);
+
+impl std::future::Future for Parked {
+    type Output = LoginOutcome;
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<LoginOutcome> {
+        std::future::Future::poll(std::pin::Pin::new(&mut self.0), cx)
+            .map(|answer| answer.unwrap_or(LoginOutcome::Reject))
+    }
+}
+
+impl LoginCall for Parked {
+    fn settled(&mut self) -> Option<LoginOutcome> {
+        self.0.try_recv().ok()
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for DoorLogin {
+    fn name(&self) -> &str {
+        "door-login"
+    }
+    fn facts(&self) -> u32 {
+        0
+    }
+    fn verify_now(
+        &self,
+        _: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        None
+    }
+    fn verify(
+        &self,
+        _: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        unreachable!("the login flow never verifies")
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+    fn login_kind(&self) -> Option<LoginKind> {
+        Some(self.kind)
+    }
+    fn begin_login(&self, _: BeginLogin) -> Box<dyn LoginCall> {
+        self.answer(self.begin.clone())
+    }
+    fn complete_login(&self, request: LoginCallback) -> Box<dyn LoginCall> {
+        let outcome = (self.complete)(&request);
+        self.seen.lock().unwrap().push(request);
+        self.answer(outcome)
+    }
+}
+
+/// The IdP's identity for a redirect login: alice, a `members`.
+fn alice() -> LoginOutcome {
+    let mut p = Principal::from_id("alice");
+    p.roles = vec!["members".into()];
+    LoginOutcome::Identify(p)
+}
+
+/// An app whose hosted-login methods are redirect plugins on the door, one per `(name, has_button)`.
+fn test_app_with_methods(methods: Vec<(&str, bool)>) -> std::sync::Arc<crate::state::App> {
     let mut b = crate::test_support::TestApp::new().public_url("https://busbar.example.com");
     for (name, has_button) in methods {
-        b = b.login_method(
-            name,
-            Box::new(TestLogin {
-                authorize_url: "https://idp.example.com/authorize?x=1".into(),
-                token_url: token_url.to_string(),
-            }),
-            Some("REAL-CLIENT-SECRET".into()),
-            // The issuer hint carries the mock IdP host so the hop executor's allowlist admits it
-            // (the token endpoint the plugin will describe lives at this host).
-            Some(token_url.to_string()),
-            has_button,
-        );
+        b = b.login_method_door(name, DoorLogin::new(alice()), LoginKind::Redirect, has_button);
     }
     b.build()
 }
@@ -79,13 +136,13 @@ fn test_app_with_methods(
 #[test]
 fn chooser_renders_0_1_n_buttons() {
     // 0 buttons (no browser_login method).
-    let app0 = test_app_with_methods(vec![], "");
+    let app0 = test_app_with_methods(vec![]);
     let body0 = body_of(chooser(&app0));
     assert_eq!(body0.matches("class=\"provider\"").count(), 0);
     assert!(body0.contains("No browser login"));
 
     // 1 button.
-    let app1 = test_app_with_methods(vec![("microsoft", true)], "");
+    let app1 = test_app_with_methods(vec![("microsoft", true)]);
     let body1 = body_of(chooser(&app1));
     assert_eq!(body1.matches("class=\"provider\"").count(), 1);
     assert!(body1.contains("/auth/token?method=microsoft"));
@@ -97,7 +154,6 @@ fn chooser_renders_0_1_n_buttons() {
             ("github", true),
             ("headless-only", false),
         ],
-        "",
     );
     let bodyn = body_of(chooser(&appn));
     assert_eq!(
@@ -119,7 +175,7 @@ fn chooser_renders_0_1_n_buttons() {
 /// route still serves POST is the observable proof here.)
 #[tokio::test]
 async fn gui_off_method_still_works_via_post() {
-    let app = test_app_with_methods(vec![("headless-only", false)], "");
+    let app = test_app_with_methods(vec![("headless-only", false)]);
     let (base, handle) = serve(app).await;
     let client = reqwest::Client::new();
     // POST /auth/token with no auth ⇒ the exchange runs the chain (401 unauth), NOT a 404/405: the
@@ -138,7 +194,7 @@ async fn gui_off_method_still_works_via_post() {
 
 #[tokio::test]
 async fn begin_sets_httponly_secure_cookie_and_redirects() {
-    let app = test_app_with_methods(vec![("microsoft", true)], "");
+    let app = test_app_with_methods(vec![("microsoft", true)]);
     let resp = begin(&app, "microsoft", false).await;
     assert_eq!(resp.status().as_u16(), 302);
     let loc = resp.headers().get("location").unwrap().to_str().unwrap();
@@ -181,14 +237,13 @@ async fn begin_with_an_unrepresentable_authorize_url_fails_closed_not_panics() {
     ] {
         let app = crate::test_support::TestApp::new()
             .public_url("https://busbar.example.com")
-            .login_method(
+            .login_method_door(
                 "microsoft",
-                Box::new(TestLogin {
-                    authorize_url: bad.to_string(),
-                    token_url: String::new(),
+                std::sync::Arc::new(DoorLogin {
+                    begin: LoginOutcome::Authorize(bad.to_string()),
+                    ..DoorLogin::answering(|_| alice())
                 }),
-                Some("REAL-CLIENT-SECRET".into()),
-                None,
+                LoginKind::Redirect,
                 true,
             )
             .build();
@@ -213,7 +268,11 @@ async fn begin_with_an_unrepresentable_authorize_url_fails_closed_not_panics() {
 
 #[tokio::test]
 async fn callback_state_mismatch_400() {
-    let app = test_app_with_methods(vec![("microsoft", true)], "http://127.0.0.1:1/unused");
+    let door = DoorLogin::new(alice());
+    let app = crate::test_support::TestApp::new()
+        .public_url("https://busbar.example.com")
+        .login_method_door("microsoft", door.clone(), LoginKind::Redirect, true)
+        .build();
     let cookie = LoginCookie {
         method: "microsoft".into(),
         code_verifier: "v".into(),
@@ -221,8 +280,7 @@ async fn callback_state_mismatch_400() {
         nonce: "n".into(),
         refresh: false,
     };
-    // Wrong state ⇒ 400 BEFORE any token exchange (the token_url above is unreachable; if an
-    // exchange were attempted this would hang/error, not cleanly 400).
+    // Wrong state ⇒ 400 BEFORE the plugin is asked anything (no token exchange is started).
     let resp = callback(
         &app,
         &cred_handle(&app),
@@ -246,13 +304,29 @@ async fn callback_state_mismatch_400() {
     )
     .await;
     assert_eq!(resp2.status().as_u16(), 400, "no cookie ⇒ 400");
+    assert!(
+        door.seen.lock().unwrap().is_empty(),
+        "no complete_login is handed to the plugin on a refused callback"
+    );
 }
 
+/// NONCE BINDING: the host hands the plugin the nonce it minted at `begin` (carried in the cookie),
+/// and the plugin binds the IdP's identity token to it. An IdP whose id_token carries ANOTHER nonce
+/// is a failed security check: rejected, no key issued.
 #[tokio::test]
 async fn callback_nonce_mismatch_rejected() {
-    // Mock token endpoint returns an id_token whose `nonce` claim is WRONG.
-    let (token_url, mock) = mock_token_endpoint("WRONG-NONCE".into()).await;
-    let app = test_app_with_methods(vec![("microsoft", true)], &token_url);
+    // The IdP's id_token carries `WRONG-NONCE`; the plugin compares it with the nonce it was handed.
+    let door = std::sync::Arc::new(DoorLogin::answering(|request| {
+        if request.nonce.as_deref() == Some("WRONG-NONCE") {
+            alice()
+        } else {
+            LoginOutcome::SecurityCheckFailed
+        }
+    }));
+    let app = crate::test_support::TestApp::new()
+        .public_url("https://busbar.example.com")
+        .login_method_door("microsoft", door.clone(), LoginKind::Redirect, true)
+        .build();
     let cookie = LoginCookie {
         method: "microsoft".into(),
         code_verifier: "v".into(),
@@ -273,7 +347,12 @@ async fn callback_nonce_mismatch_rejected() {
         400,
         "an id_token whose nonce ≠ the cookie nonce must be rejected (no key issued)"
     );
-    mock.abort();
+    assert!(!body_of(resp).contains("bbk_"), "no key issued");
+    assert_eq!(
+        door.seen.lock().unwrap()[0].nonce.as_deref(),
+        Some("the-core-nonce"),
+        "the plugin is handed the cookie's nonce"
+    );
 }
 
 // ── branded error pages (hosted browser flow) vs JSON (headless API) ─────────────────────────────
@@ -315,7 +394,7 @@ fn assert_branded_error_page(body: &str, heading: &str) {
 /// callback returned `(400, "state mismatch")` plain text (no `<!doctype`, no error card).
 #[tokio::test]
 async fn browser_callback_failure_renders_branded_html() {
-    let app = test_app_with_methods(vec![("microsoft", true)], "http://127.0.0.1:1/unused");
+    let app = test_app_with_methods(vec![("microsoft", true)]);
     let cookie = LoginCookie {
         method: "microsoft".into(),
         code_verifier: "v".into(),
@@ -348,12 +427,11 @@ async fn browser_callback_failure_renders_branded_html() {
 
 /// The flagship copy case: a verified identity with NO self-serve grant gets the friendly "No access
 /// yet" card (403), not the bare "no self-serve grant for this identity" text. Driven through the FULL
-/// redirect callback (mock token endpoint → Identify) with no role binding ⇒ `Unbound`.
+/// redirect callback (the plugin `Identify`s) with no role binding ⇒ `Unbound`.
 #[tokio::test]
 async fn no_self_serve_grant_renders_branded_html() {
-    let (token_url, mock) = mock_token_endpoint("match-nonce".into()).await;
     // No governance / role_bindings ⇒ the Identified principal resolves to `Unbound`.
-    let app = test_app_with_methods(vec![("microsoft", true)], &token_url);
+    let app = test_app_with_methods(vec![("microsoft", true)]);
     let cookie = LoginCookie {
         method: "microsoft".into(),
         code_verifier: "v".into(),
@@ -376,7 +454,6 @@ async fn no_self_serve_grant_renders_branded_html() {
         body.contains("admin"),
         "the copy tells the user to ask their admin: {body}"
     );
-    mock.abort();
 }
 
 /// A rejected credential (wrong password) renders the branded 401 card via the POST/credential path,
@@ -400,7 +477,7 @@ async fn credential_reject_renders_branded_html() {
 /// receive a styled page. Here an unauthenticated POST ⇒ 401 JSON, not the branded HTML card.
 #[tokio::test]
 async fn api_json_path_stays_json_not_html() {
-    let app = test_app_with_methods(vec![("microsoft", true)], "");
+    let app = test_app_with_methods(vec![("microsoft", true)]);
     let (base, handle) = serve(app).await;
     let client = reqwest::Client::new();
     let r = client
@@ -436,83 +513,14 @@ async fn api_json_path_stays_json_not_html() {
     handle.abort();
 }
 
-// ── client_secret injection (CORE-only) ──────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn client_secret_is_core_injected_only() {
-    // A mock endpoint that ECHOES the received form body so we can inspect what the core sent.
-    let (url, mock) = mock_echo_endpoint().await;
-    let allowed = allowed_hosts_for(&url);
-    let hop = LoginHop {
-        method: "POST".into(),
-        url,
-        form: vec![
-            ("grant_type".into(), "authorization_code".into()),
-            ("client_secret".into(), "__PLACEHOLDER__".into()),
-        ],
-        secret_form_field: Some("client_secret".into()),
-        headers: vec![],
-    };
-    let (_status, echoed) = execute_hop(
-        hop_client(),
-        &hop,
-        Some("REAL-SECRET-XYZ"),
-        &allowed,
-        std::time::Duration::from_secs(10),
-    )
-    .await
-    .expect("hop executes");
-    assert!(
-        echoed.contains("client_secret=REAL-SECRET-XYZ"),
-        "the CORE injects the real secret value into the hop form: {echoed}"
-    );
-    assert!(
-        !echoed.contains("__PLACEHOLDER__"),
-        "the plugin's placeholder must be overwritten by the core"
-    );
-    mock.abort();
-
-    // The secret NEVER appears in the login cookie (structurally — no secret field)...
-    let cookie = LoginCookie {
-        method: "m".into(),
-        code_verifier: "v".into(),
-        state: "s".into(),
-        nonce: "n".into(),
-        refresh: false,
-    }
-    .encode();
-    let decoded = String::from_utf8(B64.decode(&cookie).unwrap()).unwrap();
-    assert!(!decoded.contains("REAL-SECRET-XYZ") && !cookie.contains("REAL-SECRET-XYZ"));
-    // ...nor in the rendered key-issued page.
-    let page = render_key_issued(
-        "alice",
-        "user:alice",
-        "bb_live_abc",
-        "https://busbar.example.com",
-        "microsoft",
-    );
-    assert!(!page.contains("REAL-SECRET-XYZ"));
-}
-
 // ── credential flow: Prompt form, POST submit, Refresh rotation ──────────────────────────────────
 
-/// A CREDENTIAL-kind login module (the LDAP shape): begin returns a `Prompt` form; complete verifies
-/// the submitted username/password ITSELF and `Identify`s (no hop, no client_secret).
-struct CredLogin;
-impl AuthModule for CredLogin {
-    fn name(&self) -> &'static str {
-        "test-login-double"
-    }
-    fn authenticate(&self, _c: Option<&str>) -> AuthVerdict {
-        AuthVerdict::Pass
-    }
-}
-impl LoginModule for CredLogin {
-    fn login_kind(&self) -> LoginKind {
-        LoginKind::Credential
-    }
-    fn begin_login(&self, _r: &BeginLogin) -> LoginOutcome {
-        LoginOutcome::Prompt(LoginForm {
+/// A CREDENTIAL-kind login plugin on the door (the LDAP shape): begin returns a `Prompt` form;
+/// complete verifies the submitted username/password ITSELF and `Identify`s (no client_secret).
+fn cred_login() -> std::sync::Arc<DoorLogin> {
+    std::sync::Arc::new(DoorLogin {
+        kind: LoginKind::Credential,
+        begin: LoginOutcome::Prompt(LoginForm {
             fields: vec![
                 LoginField {
                     name: "username".into(),
@@ -527,23 +535,25 @@ impl LoginModule for CredLogin {
                     required: true,
                 },
             ],
+        }),
+        ..DoorLogin::answering(|request| {
+            let get = |k: &str| {
+                request
+                    .login
+                    .submitted
+                    .iter()
+                    .find(|(n, _)| n == k)
+                    .map(|(_, v)| v.expose_secret().as_str())
+            };
+            if get("username") == Some("alice") && get("password") == Some("pw") {
+                let mut p = Principal::from_id("test-login-double:alice");
+                p.roles = vec!["members".into()];
+                LoginOutcome::Identify(p)
+            } else {
+                LoginOutcome::Reject
+            }
         })
-    }
-    fn complete_login(&self, r: &CompleteLogin) -> LoginOutcome {
-        let get = |k: &str| {
-            r.submitted
-                .iter()
-                .find(|(n, _)| n == k)
-                .map(|(_, v)| v.expose_secret().as_str())
-        };
-        if get("username") == Some("alice") && get("password") == Some("pw") {
-            let mut p = Principal::from_id("test-login-double:alice");
-            p.roles = vec!["members".into()];
-            LoginOutcome::Identify(p)
-        } else {
-            LoginOutcome::Reject
-        }
-    }
+    })
 }
 
 fn cred_gov() -> std::sync::Arc<crate::governance::GovState> {
@@ -590,7 +600,12 @@ fn cred_app() -> std::sync::Arc<crate::state::App> {
         .governance(cred_gov())
         .role_bindings(cred_bindings())
         .groups_tree(groups)
-        .login_method("test-login-double", Box::new(CredLogin), None, None, true)
+        .login_method_door(
+            "test-login-double",
+            cred_login(),
+            LoginKind::Credential,
+            true,
+        )
         .build()
 }
 
@@ -647,7 +662,7 @@ async fn credential_begin_renders_the_form() {
 /// A Redirect method's `begin` still 302s (credential UI must not change the OAuth path).
 #[tokio::test]
 async fn redirect_begin_still_redirects() {
-    let app = test_app_with_methods(vec![("microsoft", true)], "");
+    let app = test_app_with_methods(vec![("microsoft", true)]);
     let resp = begin(&app, "microsoft", false).await;
     assert_eq!(resp.status().as_u16(), 302);
 }
@@ -765,246 +780,6 @@ fn browser_login_secret_required_for_redirect_absent_for_credential() {
     );
 }
 
-// ── hop security: URL allowlist, header sanitize, no-redirect, timeout, hop cap ──────────────────
-
-/// The operator-derived allowlist for a single mock host (mirrors the core-side rule).
-fn allowed_hosts_for(url: &str) -> std::collections::HashSet<String> {
-    collect_allowed_hosts(&serde_json::Map::new(), Some(url))
-}
-
-/// SSRF / client_secret-exfil guard: a hop to a host NOT in the method's operator-derived allowlist
-/// is REFUSED before the request is built, so the injected secret is never sent. Before the fix:
-/// `execute_hop` sent to any plugin-chosen URL and returned Ok, exfiltrating the secret.
-#[tokio::test]
-async fn execute_hop_refuses_non_allowlisted_host() {
-    let (url, mock) = mock_echo_endpoint().await;
-    let empty = std::collections::HashSet::new(); // nothing allow-listed
-    let hop = LoginHop {
-        method: "POST".into(),
-        url,
-        form: vec![("client_secret".into(), "__PLACEHOLDER__".into())],
-        secret_form_field: Some("client_secret".into()),
-        headers: vec![],
-    };
-    let r = execute_hop(
-        hop_client(),
-        &hop,
-        Some("REAL-SECRET-XYZ"),
-        &empty,
-        std::time::Duration::from_secs(10),
-    )
-    .await;
-    assert!(
-        r.is_err(),
-        "a hop to a non-allowlisted host must be refused (secret never sent)"
-    );
-    mock.abort();
-}
-
-/// Header sanitize: CR/LF/NUL (request-splitting) and the hop-control headers are rejected; a
-/// legitimate `Authorization` bearer is allowed. Before the fix: no header path existed / no
-/// sanitization.
-#[test]
-fn sanitize_hop_header_rejects_crlf_and_hop_control() {
-    assert!(sanitize_hop_header("Authorization", "Bearer abc.def").is_ok());
-    assert!(sanitize_hop_header("X-Evil", "a\r\nInjected: 1").is_err());
-    assert!(sanitize_hop_header("Bad\nName", "v").is_err());
-    assert!(sanitize_hop_header("X-Nul", "a\0b").is_err());
-    for forbidden in ["Host", "content-length", "Transfer-Encoding"] {
-        assert!(
-            sanitize_hop_header(forbidden, "x").is_err(),
-            "{forbidden} must be refused"
-        );
-    }
-}
-
-/// A hop carrying a CR/LF-injected header fails the WHOLE hop closed (no request sent).
-#[tokio::test]
-async fn execute_hop_refuses_a_crlf_injected_header() {
-    let (url, mock) = mock_echo_endpoint().await;
-    let allowed = allowed_hosts_for(&url);
-    let hop = LoginHop {
-        method: "POST".into(),
-        url,
-        form: vec![],
-        secret_form_field: None,
-        headers: vec![("X-Evil".into(), "a\r\nInjected: 1".into())],
-    };
-    assert!(execute_hop(
-        hop_client(),
-        &hop,
-        None,
-        &allowed,
-        std::time::Duration::from_secs(10)
-    )
-    .await
-    .is_err());
-    mock.abort();
-}
-
-/// vet_hop_url: https required for a public host; http tolerated for loopback; a metadata/link-local
-/// host is refused even if allowlisted.
-#[test]
-fn vet_hop_url_enforces_https_allowlist_and_blocks_metadata() {
-    let pub_ok: std::collections::HashSet<String> =
-        ["idp.example.com".into()].into_iter().collect();
-    assert!(vet_hop_url("https://idp.example.com/token", &pub_ok).is_ok());
-    assert!(
-        vet_hop_url("https://attacker.com/token", &pub_ok).is_err(),
-        "off-allowlist host refused"
-    );
-    assert!(
-        vet_hop_url("http://idp.example.com/token", &pub_ok).is_err(),
-        "public host must be https"
-    );
-    let loop_ok: std::collections::HashSet<String> = ["127.0.0.1".into()].into_iter().collect();
-    assert!(
-        vet_hop_url("http://127.0.0.1:9/token", &loop_ok).is_ok(),
-        "http tolerated for loopback"
-    );
-    let meta: std::collections::HashSet<String> = ["169.254.169.254".into()].into_iter().collect();
-    assert!(
-        vet_hop_url("https://169.254.169.254/latest", &meta).is_err(),
-        "cloud-metadata/link-local refused even if allowlisted"
-    );
-}
-
-/// No-redirect: the hop client does NOT follow a 302, so the client_secret can never be re-POSTed to
-/// a redirect target. Before the fix: `reqwest::Client::new()` follows redirects, so a 302 from
-/// the allowlisted endpoint to an attacker host re-sends the secret (status would be the target's).
-#[tokio::test]
-async fn execute_hop_does_not_follow_redirect() {
-    let (url, mock) = mock_redirect_endpoint("https://attacker.example.com/steal").await;
-    let allowed = allowed_hosts_for(&url);
-    let hop = LoginHop {
-        method: "POST".into(),
-        url,
-        form: vec![("client_secret".into(), "__PLACEHOLDER__".into())],
-        secret_form_field: Some("client_secret".into()),
-        headers: vec![],
-    };
-    let (status, _body) = execute_hop(
-        hop_client(),
-        &hop,
-        Some("SECRET"),
-        &allowed,
-        std::time::Duration::from_secs(10),
-    )
-    .await
-    .expect("hop returns the 302 itself");
-    assert_eq!(
-        status, 302,
-        "the hop must NOT follow the redirect (else the secret is re-POSTed to the target)"
-    );
-    mock.abort();
-}
-
-/// Timeout: `execute_hop` honors the client's request timeout, so a hanging token endpoint cannot
-/// hold the callback open. Before the fix: `Client::new()` has no timeout and the call hangs.
-#[tokio::test]
-async fn execute_hop_times_out_on_a_hanging_endpoint() {
-    let (url, mock) = mock_hang_endpoint().await;
-    let allowed = allowed_hosts_for(&url);
-    // The 300ms bound rides the hop's own timeout argument now — the knob the retired
-    // client-level reqwest timeout carried.
-    let hop = LoginHop {
-        method: "POST".into(),
-        url,
-        form: vec![],
-        secret_form_field: None,
-        headers: vec![],
-    };
-    let r = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        execute_hop(
-            hop_client(),
-            &hop,
-            None,
-            &allowed,
-            std::time::Duration::from_millis(300),
-        ),
-    )
-    .await
-    .expect("execute_hop returns within the outer bound (did not hang)");
-    assert!(
-        r.is_err(),
-        "a hanging endpoint must surface as an error, not hang"
-    );
-    mock.abort();
-}
-
-/// The callback hop loop runs at most `MAX_HOPS` times (not `MAX_HOPS + 1`). A module that only ever
-/// `Exchange`s is fail-closed after exactly `MAX_HOPS` core-executed hops. Before the fix: the
-/// `0..=MAX_HOPS` loop ran `MAX_HOPS + 1` times.
-#[tokio::test]
-async fn hop_loop_runs_at_most_max_hops_times() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc as StdArc;
-
-    struct CountingLogin {
-        calls: StdArc<AtomicUsize>,
-        token_url: String,
-    }
-    impl AuthModule for CountingLogin {
-        fn name(&self) -> &'static str {
-            "counting"
-        }
-        fn authenticate(&self, _c: Option<&str>) -> AuthVerdict {
-            AuthVerdict::Pass
-        }
-    }
-    impl LoginModule for CountingLogin {
-        fn complete_login(&self, _r: &CompleteLogin) -> LoginOutcome {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            // Never Identify — always ask for another hop (fail-closed exercise).
-            LoginOutcome::Exchange(LoginHop {
-                method: "POST".into(),
-                url: self.token_url.clone(),
-                form: vec![],
-                secret_form_field: None,
-                headers: vec![],
-            })
-        }
-    }
-
-    let (token_url, mock) = mock_echo_endpoint().await;
-    let calls = StdArc::new(AtomicUsize::new(0));
-    let app = crate::test_support::TestApp::new()
-        .public_url("https://busbar.example.com")
-        .login_method(
-            "counting",
-            Box::new(CountingLogin {
-                calls: calls.clone(),
-                token_url: token_url.clone(),
-            }),
-            Some("SECRET".into()),
-            Some(token_url.clone()),
-            true,
-        )
-        .build();
-    let cookie = LoginCookie {
-        method: "counting".into(),
-        code_verifier: "v".into(),
-        state: "st".into(),
-        nonce: "n".into(),
-        refresh: false,
-    };
-    let _ = callback(
-        &app,
-        &cred_handle(&app),
-        Some(cookie.encode()),
-        "code".into(),
-        Some("st".into()),
-    )
-    .await;
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        MAX_HOPS,
-        "the hop loop must run exactly MAX_HOPS times, not MAX_HOPS + 1"
-    );
-    mock.abort();
-}
-
 // ── render: base_url verbatim ────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -1090,7 +865,7 @@ fn key_page_has_copy_buttons_wired_to_clipboard() {
 /// an unknown param that fell through to the chooser (no signed-out page, no cookie clear).
 #[tokio::test]
 async fn logout_renders_signed_out_and_clears_cookie() {
-    let app = test_app_with_methods(vec![("microsoft", true)], "");
+    let app = test_app_with_methods(vec![("microsoft", true)]);
     let handle = cred_handle(&app);
     let req = axum::http::Request::builder()
         .uri("/auth/token?logout=1")
@@ -1377,7 +1152,7 @@ async fn core_route_bypass_is_exact_in_path_and_method() {
     handle.abort();
 }
 
-// ── test helpers: serve an app + mock IdP endpoints ──────────────────────────────────────────────
+// ── test helpers: serve an app ───────────────────────────────────────────────────────────────────
 
 async fn serve(app: std::sync::Arc<crate::state::App>) -> (String, tokio::task::JoinHandle<()>) {
     let router = crate::build_router(app);
@@ -1396,110 +1171,19 @@ fn body_of(resp: Response) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
-/// A mock OIDC token endpoint that returns `{"id_token": "<jwt with the given nonce>"}`.
-async fn mock_token_endpoint(nonce: String) -> (String, tokio::task::JoinHandle<()>) {
-    let payload = B64
-        .encode(serde_json::to_vec(&serde_json::json!({"sub": "alice", "nonce": nonce})).unwrap());
-    let id_token = format!("e30.{payload}.sig");
-    let router = axum::Router::new().route(
-        "/token",
-        axum::routing::post(move || {
-            let body = serde_json::json!({ "id_token": id_token }).to_string();
-            async move {
-                (
-                    [(axum::http::header::CONTENT_TYPE, "application/json")],
-                    body,
-                )
-            }
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (format!("http://{addr}/token"), handle)
-}
+// ── the anonymous-flood class: a slow login plugin must not park Tokio workers ──────────────────
 
-/// A mock endpoint that replies `302 Found` with the given `Location`, to prove the hop client does
-/// NOT follow redirects (which would re-POST the secret to the target).
-async fn mock_redirect_endpoint(location: &str) -> (String, tokio::task::JoinHandle<()>) {
-    let location = location.to_string();
-    let router = axum::Router::new().route(
-        "/token",
-        axum::routing::post(move || {
-            let location = location.clone();
-            async move {
-                (
-                    axum::http::StatusCode::FOUND,
-                    [(axum::http::header::LOCATION, location)],
-                )
-            }
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (format!("http://{addr}/token"), handle)
-}
-
-/// A mock endpoint that never responds (sleeps well past any request timeout), to prove `execute_hop`
-/// honors its client's timeout rather than hanging.
-async fn mock_hang_endpoint() -> (String, tokio::task::JoinHandle<()>) {
-    let router = axum::Router::new().route(
-        "/token",
-        axum::routing::post(|| async move {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-            "never"
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (format!("http://{addr}/token"), handle)
-}
-
-/// A mock endpoint that ECHOES the received request body (so a test can inspect the form the core
-/// sent, e.g. to prove the client_secret was injected).
-async fn mock_echo_endpoint() -> (String, tokio::task::JoinHandle<()>) {
-    let router = axum::Router::new().route(
-        "/token",
-        axum::routing::post(|body: String| async move { body }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (format!("http://{addr}/token"), handle)
-}
-
-// ── the BLOCKING-FFI class: a login plugin's sync FFI must not park Tokio workers ────────────────
-
-/// A login module whose `begin_login` / `complete_login` BLOCK the calling thread for `park`, the way
-/// a real credential plugin does: an LDAP/AD bind or an OIDC token exchange is a synchronous network
-/// round-trip behind a `transport_call`. Nothing here is async — that is the point: the ENGINE, not
-/// the plugin, is responsible for keeping this off the reactor.
-struct ParkingLogin {
-    park: std::time::Duration,
-    kind: LoginKind,
-}
-impl AuthModule for ParkingLogin {
-    fn name(&self) -> &'static str {
-        "parking-login"
-    }
-    fn authenticate(&self, _c: Option<&str>) -> AuthVerdict {
-        AuthVerdict::Pass
-    }
-}
-impl LoginModule for ParkingLogin {
-    fn login_kind(&self) -> LoginKind {
-        self.kind
-    }
-    fn begin_login(&self, _r: &BeginLogin) -> LoginOutcome {
-        std::thread::sleep(self.park);
-        LoginOutcome::Authorize("https://idp.example.com/authorize".into())
-    }
-    fn complete_login(&self, _r: &CompleteLogin) -> LoginOutcome {
-        std::thread::sleep(self.park);
-        LoginOutcome::Reject
-    }
+/// A login plugin on the door whose `begin_login` / `complete_login` answer only after `park`, the
+/// way a real one does: an LDAP/AD bind or an OIDC token exchange is a network round-trip. The
+/// plugin runs on its own (dispatcher) thread; the HOST, not the plugin, is responsible for awaiting
+/// the step rather than parking a reactor worker on it.
+fn parking_login(kind: LoginKind) -> std::sync::Arc<DoorLogin> {
+    std::sync::Arc::new(DoorLogin {
+        kind,
+        begin: LoginOutcome::Authorize("https://idp.example.com/authorize".into()),
+        park: Some(std::time::Duration::from_secs(3)),
+        ..DoorLogin::answering(|_| LoginOutcome::Reject)
+    })
 }
 
 /// The runtime this class is about: a SMALL, fixed worker pool, exactly like a busy node whose
@@ -1541,7 +1225,7 @@ fn assert_runtime_still_polls(
 
 /// UNAUTHENTICATED DATA PLANE. `GET /auth/token?method=…` is mounted on the DATA router
 /// (`main.rs`'s data-router mount) and the auth middleware bypasses that exact path, so ANONYMOUS
-/// callers reach `begin` — and `begin` calls the plugin's synchronous `begin_login`. Four concurrent
+/// callers reach `begin` — and `begin` asks the plugin's `begin_login`. Four concurrent
 /// anonymous requests on a two-worker runtime must not stop the runtime from polling anything else.
 #[test]
 fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
@@ -1549,14 +1233,10 @@ fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
     let app = rt.block_on(async {
         crate::test_support::TestApp::new()
             .public_url("https://busbar.example.com")
-            .login_method(
+            .login_method_door(
                 "test-login-double",
-                Box::new(ParkingLogin {
-                    park: std::time::Duration::from_secs(3),
-                    kind: LoginKind::Redirect,
-                }),
-                Some("REAL-CLIENT-SECRET".into()),
-                None,
+                parking_login(LoginKind::Redirect),
+                LoginKind::Redirect,
                 true,
             )
             .build()
@@ -1574,7 +1254,7 @@ fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
         &rt,
         std::time::Duration::from_millis(750),
         "the runtime stopped polling while four ANONYMOUS /auth/token begins sat inside the login \
-         plugin's synchronous begin_login: every Tokio worker is parked in FFI, so nothing else in \
+         plugin's begin_login: every Tokio worker is parked on the plugin, so nothing else in \
          the process — other requests, the admin plane, /healthz — can run",
     );
     for t in tasks {
@@ -1582,7 +1262,7 @@ fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
     }
 }
 
-/// The credential POST (`POST /auth/token` carrying a login cookie) runs the plugin's
+/// The credential POST (`POST /auth/token` carrying a login cookie) asks the plugin's
 /// `complete_login` — the LDAP/AD bind itself. The `__state` CSRF check does not gate an attacker:
 /// they call `begin` themselves and echo back the state from the cookie they were handed, which is
 /// exactly what this test does. Same anonymous reachability, same runtime-starvation shape.
@@ -1592,14 +1272,10 @@ fn concurrent_credential_submit_does_not_starve_the_runtime() {
     let (app, handle) = rt.block_on(async {
         let app = crate::test_support::TestApp::new()
             .public_url("https://busbar.example.com")
-            .login_method(
+            .login_method_door(
                 "test-login-double",
-                Box::new(ParkingLogin {
-                    park: std::time::Duration::from_secs(3),
-                    kind: LoginKind::Credential,
-                }),
-                None,
-                None,
+                parking_login(LoginKind::Credential),
+                LoginKind::Credential,
                 true,
             )
             .build();
@@ -1639,77 +1315,11 @@ fn concurrent_credential_submit_does_not_starve_the_runtime() {
         &rt,
         std::time::Duration::from_millis(750),
         "the runtime stopped polling while four ANONYMOUS credential POSTs sat inside the login \
-         plugin's synchronous complete_login",
+         plugin's complete_login",
     );
     for t in tasks {
         rt.block_on(async { t.await.ok() });
     }
-}
-
-/// A PUBLIC client must not send `client_secret=` at all — an empty value is not an absent one.
-///
-/// A plugin writes the secret KEY with an empty placeholder and lets the core inject the VALUE, so
-/// when no secret is configured the placeholder used to survive and `client_secret=` went on the
-/// wire. That is the wrong request shape for a public client, and an IdP is entitled to read an
-/// empty string as a WRONG secret and answer `invalid_client` rather than as "this client is
-/// public". The confidential path is asserted alongside it, so this cannot be satisfied by dropping
-/// the field in both cases.
-#[tokio::test]
-async fn the_secret_placeholder_is_dropped_for_a_public_client_and_filled_for_a_confidential_one() {
-    let (url, mock) = mock_echo_endpoint().await;
-    let allowed = allowed_hosts_for(&url);
-    let hop = LoginHop {
-        method: "POST".into(),
-        url: url.clone(),
-        form: vec![
-            ("grant_type".into(), "authorization_code".into()),
-            ("client_secret".into(), String::new()),
-        ],
-        secret_form_field: Some("client_secret".into()),
-        headers: vec![],
-    };
-
-    // PUBLIC client: no secret configured.
-    let (status, body) = execute_hop(
-        hop_client(),
-        &hop,
-        None,
-        &allowed,
-        std::time::Duration::from_secs(10),
-    )
-    .await
-    .expect("hop runs");
-    assert_eq!(status, 200);
-    assert!(
-        !body.contains("client_secret"),
-        "a public client must omit the parameter entirely, got body: {body}"
-    );
-    assert!(
-        body.contains("grant_type=authorization_code"),
-        "the rest of the form must survive: {body}"
-    );
-
-    // CONFIDENTIAL client: the placeholder is replaced by the real value, not duplicated.
-    let (status, body) = execute_hop(
-        hop_client(),
-        &hop,
-        Some("s3cr3t"),
-        &allowed,
-        std::time::Duration::from_secs(10),
-    )
-    .await
-    .expect("hop runs");
-    assert_eq!(status, 200);
-    assert!(
-        body.contains("client_secret=s3cr3t"),
-        "the core must inject the real secret: {body}"
-    );
-    assert_eq!(
-        body.matches("client_secret").count(),
-        1,
-        "the secret key must appear exactly once, not appended alongside the placeholder: {body}"
-    );
-    mock.abort();
 }
 
 /// RED: a login plugin answering SecurityCheckFailed (the LOGIN_SECURITY_CHECK_FAILED verdict) on
@@ -1717,23 +1327,14 @@ async fn the_secret_placeholder_is_dropped_for_a_public_client_and_filled_for_a_
 /// no-store), byte for byte the page a `state` mismatch renders, and clears the login cookie.
 #[tokio::test]
 async fn callback_security_check_failed_renders_the_state_mismatch_bytes() {
-    struct FailsCheck;
-    impl AuthModule for FailsCheck {
-        fn name(&self) -> &'static str {
-            "fails-check"
-        }
-        fn authenticate(&self, _c: Option<&str>) -> AuthVerdict {
-            AuthVerdict::Pass
-        }
-    }
-    impl LoginModule for FailsCheck {
-        fn complete_login(&self, _r: &CompleteLogin) -> LoginOutcome {
-            LoginOutcome::SecurityCheckFailed
-        }
-    }
     let app = crate::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
-        .login_method("fails", Box::new(FailsCheck), Some("S".into()), None, true)
+        .login_method_door(
+            "fails",
+            DoorLogin::new(LoginOutcome::SecurityCheckFailed),
+            LoginKind::Redirect,
+            true,
+        )
         .build();
     let cookie = LoginCookie {
         method: "fails".into(),
@@ -1788,67 +1389,7 @@ async fn callback_security_check_failed_renders_the_state_mismatch_bytes() {
 // its own need with the client secret it was lent at `open`, and binds the IdP's answer to the
 // login's nonce itself (THE DESIGN 6.7). The core still mints PKCE/state/nonce, checks `state`
 // against the cookie before anything is asked, hands the plugin ONE `complete_login` carrying the
-// cookie's state and nonce, and renders the plugin's answer exactly as the cold hop loop renders
-// the same outcome.
-
-/// A door stand-in: answers `begin_login`/`complete_login` from fixed outcomes, recording every
-/// `complete_login` it was handed.
-struct DoorLogin {
-    begin: LoginOutcome,
-    complete: LoginOutcome,
-    seen: std::sync::Mutex<Vec<busbar_contract::auth_calls::LoginCallback>>,
-}
-
-impl DoorLogin {
-    fn new(complete: LoginOutcome) -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self {
-            begin: LoginOutcome::Authorize("https://idp.example.com/authorize?x=1".into()),
-            complete,
-            seen: std::sync::Mutex::new(Vec::new()),
-        })
-    }
-}
-
-impl busbar_contract::auth_calls::AuthCalls for DoorLogin {
-    fn name(&self) -> &str {
-        "door-login"
-    }
-    fn facts(&self) -> u32 {
-        0
-    }
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        None
-    }
-    fn verify(
-        &self,
-        _: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        unreachable!("the login flow never verifies")
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-    fn login_kind(&self) -> Option<LoginKind> {
-        Some(LoginKind::Redirect)
-    }
-    fn begin_login(&self, _: BeginLogin) -> Box<dyn busbar_contract::auth_calls::LoginCall> {
-        Box::new(busbar_contract::auth_calls::LoginSettled(Some(
-            self.begin.clone(),
-        )))
-    }
-    fn complete_login(
-        &self,
-        request: busbar_contract::auth_calls::LoginCallback,
-    ) -> Box<dyn busbar_contract::auth_calls::LoginCall> {
-        self.seen.lock().unwrap().push(request);
-        Box::new(busbar_contract::auth_calls::LoginSettled(Some(
-            self.complete.clone(),
-        )))
-    }
-}
+// cookie's state and nonce, and renders the plugin's answer as 1.5.5 rendered the same outcome.
 
 fn door_app(door: std::sync::Arc<DoorLogin>) -> std::sync::Arc<crate::state::App> {
     crate::test_support::TestApp::new()
@@ -1867,8 +1408,7 @@ fn door_cookie() -> LoginCookie {
     }
 }
 
-/// `begin` on the door 302s to the plugin's authorize URL and sets the login cookie, as the cold
-/// lane does.
+/// `begin` on the door 302s to the plugin's authorize URL and sets the login cookie.
 #[tokio::test]
 async fn a_door_login_begins_with_the_plugins_authorize_url() {
     let app = door_app(DoorLogin::new(LoginOutcome::Reject));
@@ -1901,7 +1441,7 @@ async fn a_door_callback_hands_the_plugin_the_cookies_state_and_nonce() {
     .await;
     assert_eq!(resp.status().as_u16(), 401, "a declined login");
     let seen = door.seen.lock().unwrap();
-    assert_eq!(seen.len(), 1, "one complete_login, no hop loop: {seen:?}");
+    assert_eq!(seen.len(), 1, "one complete_login: {seen:?}");
     assert_eq!(seen[0].state, "st");
     assert_eq!(seen[0].nonce.as_deref(), Some("the-core-nonce"));
     assert_eq!(seen[0].login.code.as_deref(), Some("the-code"));
@@ -1933,10 +1473,10 @@ async fn a_door_callback_with_a_foreign_state_asks_the_plugin_nothing() {
     assert!(door.seen.lock().unwrap().is_empty());
 }
 
-/// Every door answer renders the page the cold hop loop renders for the same outcome: a failed
-/// security check, an unreachable IdP, a declined login, and an identity with no self-serve grant.
+/// Every door answer renders 1.5.5's page for the same outcome: a failed security check, an
+/// unreachable IdP, a declined login, and an identity with no self-serve grant.
 #[tokio::test]
-async fn a_door_callback_renders_each_answer_as_the_cold_loop_does() {
+async fn a_door_callback_renders_each_answer_on_its_page() {
     for (outcome, status, heading) in [
         (
             LoginOutcome::SecurityCheckFailed,
@@ -1971,7 +1511,7 @@ async fn a_door_callback_renders_each_answer_as_the_cold_loop_does() {
         Some("st".into()),
     )
     .await;
-    let cold = provider_unreachable();
-    assert_eq!(unreachable.status(), cold.status());
-    assert_eq!(body_of(unreachable), body_of(cold));
+    let page = provider_unreachable();
+    assert_eq!(unreachable.status(), page.status());
+    assert_eq!(body_of(unreachable), body_of(page));
 }

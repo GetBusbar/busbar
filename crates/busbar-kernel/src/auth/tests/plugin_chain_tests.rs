@@ -453,7 +453,7 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
     .expect("preflight resolves the kind:auth plugin");
     let registry = std::sync::Arc::new(registry);
 
-    // The real load through the middleware — resolve → open_auth → box → chain.
+    // The real load through the middleware — resolve → the auth axis opens it → chain.
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,

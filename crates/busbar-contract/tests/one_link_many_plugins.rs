@@ -19,17 +19,47 @@ use busbar_contract::abi::cold::STATUS_PROTOCOL;
 use busbar_contract::abi::sdk::__door;
 
 mod first {
-    fn open(_cfg: &str) -> Result<Box<dyn busbar_contract::auth::AuthPlugin>, String> {
+    /// The image's one handle type (it never opens: its constructor refuses).
+    type Handle = Box<String>;
+
+    fn open(_cfg: &str) -> Result<Handle, String> {
         Err("first plugin refuses".into())
     }
-    busbar_contract::export_login_plugin!(open);
+
+    /// It serves no request: this image exists to prove its door's registration.
+    ///
+    /// # Safety
+    /// Called only through the SDK boundary, which never dereferences on its behalf.
+    unsafe fn dispatch(
+        _handle: *mut std::ffi::c_void,
+        _bytes: &[u8],
+    ) -> busbar_contract::abi::sdk::BoundaryOutcome {
+        busbar_contract::abi::sdk::BoundaryOutcome::Unsupported("no request is served here".into())
+    }
+
+    busbar_contract::export_plugin!(kind = "auth", dispatch = dispatch, ctor = open, handle = Handle);
 }
 
 mod second {
-    fn open(_cfg: &str) -> Result<Box<dyn busbar_contract::auth::AuthPlugin>, String> {
+    /// The image's one handle type (it never opens: its constructor refuses).
+    type Handle = Box<String>;
+
+    fn open(_cfg: &str) -> Result<Handle, String> {
         Err("second plugin refuses".into())
     }
-    busbar_contract::export_login_plugin!(open);
+
+    /// It serves no request: this image exists to prove its door's registration.
+    ///
+    /// # Safety
+    /// Called only through the SDK boundary, which never dereferences on its behalf.
+    unsafe fn dispatch(
+        _handle: *mut std::ffi::c_void,
+        _bytes: &[u8],
+    ) -> busbar_contract::abi::sdk::BoundaryOutcome {
+        busbar_contract::abi::sdk::BoundaryOutcome::Unsupported("no request is served here".into())
+    }
+
+    busbar_contract::export_plugin!(kind = "auth", dispatch = dispatch, ctor = open, handle = Handle);
 }
 
 /// A transport's door in the same link (#84 merge: the transport door is the shared one). Before

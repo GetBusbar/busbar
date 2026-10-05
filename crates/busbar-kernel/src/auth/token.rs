@@ -9,16 +9,16 @@
 //! * **begin** (`?method=<name>`): the CORE mints PKCE (`code_verifier`/`code_challenge` S256),
 //!   `state`, and `nonce`, stores them in a hand-rolled HttpOnly+Secure+SameSite=Lax cookie, and
 //!   302s to the IdP authorize URL the module's `begin_login` returned.
-//! * **callback** (`?code=&state=`): the CORE validates `state` against the cookie BEFORE any token
-//!   exchange (CSRF), then loops `complete_login` — executing each module-described token-exchange
-//!   hop and INJECTING the confidential-client `client_secret` (the module only ever writes the KEY,
-//!   never the value) — verifies the returned id_token's `nonce` claim against the cookie nonce, and
-//!   on `Identify` mints the caller's key through the SAME [`super::self_keys`] seam the headless
-//!   `POST` uses (no second mint path). The cookie is cleared on completion.
+//! * **callback** (`?code=&state=`): the CORE validates `state` against the cookie BEFORE anything
+//!   is asked of the plugin (CSRF), then hands the plugin ONE `complete_login` on the auth kind's
+//!   door carrying the cookie's state and nonce — the plugin makes its own token exchange with the
+//!   client secret it was lent at `open` and binds the IdP's answer to the nonce — and on `Identify`
+//!   mints the caller's key through the SAME [`super::self_keys`] seam the headless `POST` uses (no
+//!   second mint path). The cookie is cleared on completion.
 //!
-//! SECURITY: `state` and `nonce` are validated before identity is established; the `client_secret`
-//! value is core-only (never crosses the ABI, never in the cookie, never logged, never rendered); the
-//! login page issues via the shared self-serve seam.
+//! SECURITY: `state` is validated before identity is established; the `client_secret` is the
+//! plugin's (lent at `open`, never in the cookie, never logged, never rendered); the login page
+//! issues via the shared self-serve seam.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,15 +30,13 @@ use axum::response::{Html, IntoResponse, Response};
 use base64::Engine as _;
 use indexmap::IndexMap;
 
-use busbar_contract::auth::{
-    AuthPlugin, BeginLogin, CompleteLogin, LoginHttpResponse, LoginOutcome, Principal,
-};
+use busbar_contract::auth::{BeginLogin, CompleteLogin, LoginOutcome, Principal};
 use busbar_contract::auth_calls::{AuthCalls, LoginCallback};
 
 use super::self_keys::{issue_key, resolve_exchange, DeterministicEd25519Keys, HandleProvisioner};
 use super::ChainVerdict;
 use crate::config::AuthCfg;
-use crate::diagnostics::{diag_debug, diag_warn, LOGIN_OFFLOAD_SATURATED, LOGIN_PLUGIN_PANICKED};
+use crate::diagnostics::{diag_debug, diag_warn, LOGIN_OFFLOAD_SATURATED};
 use crate::state::{App, AppHandle};
 
 /// The login-state cookie name. Scoped to `/auth/token` (Path), HttpOnly + Secure + SameSite=Lax.
@@ -48,59 +46,28 @@ const LOGIN_COOKIE: &str = "busbar_login";
 const FORM_STATE_FIELD: &str = "__state";
 /// Short cookie lifetime — a login round-trip is seconds-to-minutes; the cookie is single-purpose.
 const LOGIN_COOKIE_MAX_AGE: u32 = 600;
-/// The maximum number of `complete_login` turns per callback (each `Exchange` hop the CORE executes,
-/// plus the terminal `Identify`, is one turn). Sized for the LONGEST first-party redirect flow:
-/// GitHub is code→token (1) + `GET /user` (2) + `GET /user/orgs` (3) THEN `Identify` on the 4th turn,
-/// so a bound of 3 would fail-close GitHub's org flow one turn short of identity. 6 keeps the loop
-/// firmly bounded (a module that never `Identify`s is still fail-closed) while covering every shipped
-/// flow with headroom (OIDC code→token is a single hop). Raising this is safe: the hop-cap test asserts
-/// the loop runs EXACTLY this many turns for a never-identifying module, symbolically, not a literal.
-const MAX_HOPS: usize = 6;
 /// The URL-safe, no-pad base64 engine used for PKCE and the cookie payload.
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 // ── login-method registry (App.login_methods) ───────────────────────────────────────────────────
 
-/// The plugin a hosted-login method drives.
-pub(crate) enum LoginPlugin {
-    /// ON THE AUTH KIND'S DOOR (THE DESIGN 6.7; WIRE-AUTH (A)(3)): an instance opened through the
-    /// build's auth axis, its `begin_login`/`complete_login` submitted on the one dispatcher and
-    /// awaited (no thread parked). The plugin makes its own token exchange over its own declared
-    /// need with the client secret the host lent it at `open`, and binds the IdP's answer to the
-    /// login's nonce itself; the core holds no secret for it and runs no hop.
-    Door(Arc<dyn AuthCalls>),
-    /// M6-COLD-DELETE: a not-yet-ported plugin on the cold lane (its synchronous FFI offloaded; the
-    /// core runs each hop it describes, injecting the client secret, and checks the nonce).
-    Cold(Box<dyn AuthPlugin>),
-}
-
-/// One resolved hosted-login method (`identity-providers.<name>`). Holds the login-capable plugin handle,
-/// the OAuth `client_id`, and — for a `browser_login` method on the cold lane — the resolved
-/// confidential-client secret VALUE, which is CORE-ONLY: never serialized to the plugin, never in
-/// the cookie, never logged, never rendered; injected ONLY into a token-exchange hop's
-/// `secret_form_field`. A door plugin is lent its secret at `open` instead, and the core holds none.
+/// One resolved hosted-login method (`identity-providers.<name>`): the login-capable plugin instance
+/// the build's auth axis opened ON THE AUTH KIND'S DOOR (THE DESIGN 6.7; WIRE-AUTH (A)(3)), its
+/// `begin_login`/`complete_login` submitted on the one dispatcher and awaited (no thread parked).
+/// The plugin makes its own token exchange over its own declared need with the client secret the
+/// host lent it at `open`, and binds the IdP's answer to the login's nonce itself; the core holds no
+/// secret for it and runs no hop.
 pub(crate) struct LoginMethod {
-    pub(crate) module: LoginPlugin,
-    /// The resolved confidential-client secret, held [`busbar_contract::redacted::Redacted`] so it never leaks via
-    /// `Debug`/logs and zeroizes on drop. CORE-ONLY: exposed only into a token-exchange hop's
-    /// `secret_form_field`, never serialized to the plugin, never rendered.
-    pub(crate) client_secret: Option<busbar_contract::redacted::Redacted<String>>,
+    pub(crate) module: Arc<dyn AuthCalls>,
     /// `true` ⇒ this method has a `browser_login` block and renders a button (and accepts `begin`).
     pub(crate) has_button: bool,
     /// The OIDC issuer from the method's opaque settings, used only to infer a button icon/label.
     pub(crate) issuer: Option<String>,
-    /// The plugin's pure redirect-vs-credential classification, resolved ONCE at build (a
-    /// side-effect-free `login_kind` call). Read by `credential_submit` to gate the credential POST to
-    /// `Credential` methods only (a redirect method never completes via the form POST).
+    /// The plugin's redirect-vs-credential classification, as its tail states it, read ONCE at
+    /// build. Read by `credential_submit` to gate the credential POST to `Credential` methods only
+    /// (a redirect method never completes via the form POST).
     pub(crate) login_kind: busbar_contract::auth::LoginKind,
-    /// The set of hosts (lowercased) a token-exchange/userinfo hop may target, derived CORE-SIDE from
-    /// this method's OPERATOR config (the `issuer` + any absolute-URL settings values like
-    /// `api_base`/`token_base`/`authorize_base`). A module-described hop to any host NOT in this set is
-    /// REFUSED before the request is built — so a signed-but-malicious login plugin can neither exfil
-    /// the core-injected `client_secret` nor a bearer to an attacker host, nor use the core as a blind
-    /// SSRF proxy. Empty ⇒ no hop is permitted (fail closed).
-    pub(crate) allowed_hosts: std::collections::HashSet<String>,
 }
 
 /// The resolved hosted-login map — insertion-ordered (config order = button order), keyed by the
@@ -109,9 +76,9 @@ pub(crate) struct LoginMethods {
     pub(crate) methods: IndexMap<String, LoginMethod>,
 }
 
-// ── the login-plugin OFFLOAD (the blocking-FFI class) ───────────────────────────────────────────
+// ── the login budget (the anonymous-flood class) ─────────────────────────────────────────────────
 
-/// The bound on CONCURRENT offloaded login-plugin calls, and a SEPARATE budget from the data-plane
+/// The bound on CONCURRENT in-flight login-plugin steps, and a SEPARATE budget from the data-plane
 /// auth chain's [`super::AUTH_OFFLOAD_MAX_INFLIGHT`] and the admin chain's
 /// `ADMIN_OFFLOAD_MAX_INFLIGHT`: `/auth/token` is reachable ANONYMOUSLY (it is mounted on the data
 /// router and the auth middleware bypasses that exact path — `auth/mod.rs`'s bypass list), so its
@@ -120,14 +87,14 @@ pub(crate) struct LoginMethods {
 /// 64 for the same reason: a human login round-trip is not customer request volume.
 const LOGIN_OFFLOAD_MAX_INFLIGHT: usize = 16;
 
-/// How long a login request waits for an offload permit before giving up. A login that cannot even be
+/// How long a login request waits for a permit before giving up. A login that cannot even be
 /// STARTED in this window is not going to complete, so it is answered rather than left hanging.
 const LOGIN_OFFLOAD_WAIT: Duration = Duration::from_secs(5);
 
 /// The permit pool for [`LOGIN_OFFLOAD_MAX_INFLIGHT`]. Process-wide (not per-`LoginMethods`) on
-/// purpose — the resource being bounded is the process's ONE shared blocking pool, and a config
-/// reload swaps `App::login_methods` while in-flight offloads from the previous one still hold
-/// threads. Same construction, and the same reason, as `auth::AUTH_OFFLOAD_PERMITS`.
+/// purpose — the resource being bounded is the process's ONE dispatcher the login steps are
+/// submitted on, and a config reload swaps `App::login_methods` while in-flight steps from the
+/// previous one still hold permits. Same construction as `auth::AUTH_OFFLOAD_PERMITS`.
 static LOGIN_OFFLOAD_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(LOGIN_OFFLOAD_MAX_INFLIGHT));
 
@@ -138,7 +105,7 @@ async fn login_permit(
     method: &str,
     op: &'static str,
 ) -> Option<tokio::sync::SemaphorePermit<'static>> {
-    // Warn-once transition latch: a saturated login offload persists per request until the wedged
+    // Warn-once transition latch: a saturated login budget persists per request until the wedged
     // plugin recovers, and this path is anonymously reachable, so warn on the TRANSITION into the
     // saturated state and hold subsequent rejections at debug. Reset when a permit is acquired again.
     static LOGIN_OFFLOAD_SATURATED_WARNED: std::sync::atomic::AtomicBool =
@@ -173,14 +140,6 @@ async fn login_permit(
     }
 }
 
-/// The door plugin `method` drives, when it is on the auth kind's door.
-fn door_of(methods: &LoginMethods, method: &str) -> Option<Arc<dyn AuthCalls>> {
-    match methods.methods.get(method).map(|m| &m.module) {
-        Some(LoginPlugin::Door(calls)) => Some(calls.clone()),
-        _ => None,
-    }
-}
-
 /// One login step for a door plugin.
 enum DoorStep {
     Begin(BeginLogin),
@@ -201,8 +160,8 @@ fn submit_door(
 }
 
 /// ONE LOGIN STEP ON THE DOOR: submitted on the one dispatcher ([`submit_door`]) and its answer
-/// awaited, so no thread is parked; it holds a slot of the same anonymous-flood budget the cold
-/// offload does ([`login_permit`]), released when the step answers. A step that answered no verdict
+/// awaited, so no thread is parked; it holds a slot of the anonymous-flood budget
+/// ([`login_permit`]), released when the step answers. A step that answered no verdict
 /// is [`LoginOutcome::Reject`] (the loader's door, fail-closed).
 async fn door_login_call(
     method: &str,
@@ -216,63 +175,6 @@ async fn door_login_call(
     let outcome = submit_door(&*calls, step).await;
     drop(permit);
     outcome
-}
-
-/// THE ONE PLACE a login plugin's synchronous FFI is called from the request path.
-///
-/// `LoginModule::begin_login` / `complete_login` are SYNCHRONOUS `transport_call`s into a dlopened
-/// plugin, and behind that call is real network I/O: an LDAP/AD bind for a credential method, an
-/// authorize-URL mint or a userinfo/token round-trip for a redirect one. Called inline from the
-/// `async fn` handlers, each in-flight login parks a Tokio worker for the plugin's full timeout;
-/// since `/auth/token` is ANONYMOUSLY reachable, an attacker picks how many. Once every worker is
-/// parked NOTHING in the process is polled — not other requests, not the admin plane, not `/healthz`
-/// (exempt from auth, but still needing a worker to run at all) — and the node fails its liveness
-/// probe. This is the hazard `AuthMiddleware::run_chain_on_request_path` documents and offloads for;
-/// the login path needs the same treatment, with its own budget (see [`LOGIN_OFFLOAD_MAX_INFLIGHT`]).
-///
-/// So the call runs on the blocking pool, BOUNDED by [`LOGIN_OFFLOAD_PERMITS`], and FAIL-CLOSED at
-/// every failure: a permit that cannot be acquired in time, a method that vanished under a concurrent
-/// reload, and a panicking plugin (join error) are all [`LoginOutcome::Reject`] — the same posture
-/// `map_begin_login`/`map_complete_login` already take on a transport error, so a caller that cannot
-/// distinguish them does not have to.
-///
-/// The method is re-looked-up by NAME on the blocking thread rather than borrowed across the offload:
-/// the closure must be `'static`, and cloning the `Arc<LoginMethods>` snapshot is what makes the
-/// module handle outlive a concurrent config swap.
-async fn offload_login_call<F>(
-    methods: &Arc<LoginMethods>,
-    method: &str,
-    op: &'static str,
-    call: F,
-) -> LoginOutcome
-where
-    F: FnOnce(&LoginMethod) -> LoginOutcome + Send + 'static,
-{
-    let Some(permit) = login_permit(method, op).await else {
-        return LoginOutcome::Reject;
-    };
-    let (methods, method_name) = (methods.clone(), method.to_string());
-    let joined = tokio::task::spawn_blocking(move || {
-        let outcome = match methods.methods.get(&method_name) {
-            Some(m) => call(m),
-            // The method disappeared between the handler's lookup and this thread (a config reload
-            // swapped `login_methods`). Nothing verified anyone — reject.
-            None => LoginOutcome::Reject,
-        };
-        // Released when the blocking work is DONE, not when the awaiting future is dropped: a
-        // cancelled request must not hand its slot to another while the plugin thread it started is
-        // still wedged.
-        drop(permit);
-        outcome
-    })
-    .await;
-    match joined {
-        Ok(outcome) => outcome,
-        Err(e) => {
-            diag_warn!(LOGIN_PLUGIN_PANICKED, method = %method, op, error = %e, "login plugin call panicked; rejecting (fail-closed)");
-            LoginOutcome::Reject
-        }
-    }
 }
 
 impl std::fmt::Debug for LoginMethods {
@@ -292,20 +194,21 @@ impl LoginMethods {
         }
     }
 
-    /// Resolve every `identity-providers:` entry as a login-capable `kind: auth` plugin (ABI v2) via the
-    /// validated `registry` — the same trust/load pipeline as the data-plane chain. SecretRef-typed
-    /// module settings resolve before the config crosses the ABI; the `browser_login.client_secret`
-    /// resolves to a plaintext held CORE-ONLY. CAPABILITY GATE: a `browser_login` method whose plugin
-    /// advertises `abi_version < 2` is a HARD build error (never a 500 at request time). FAIL-CLOSED:
-    /// any unresolvable method aborts the boot/reload build. Runs inside `build_app_from_config`.
+    /// Resolve every `identity-providers:` entry as a login-capable `kind: auth` plugin on the auth
+    /// kind's door, opened through the build's auth axis over the validated `registry` — the same
+    /// trust/load pipeline as the data-plane chain. SecretRef-typed module settings resolve before
+    /// the config crosses the ABI; the `browser_login.client_secret` resolves and is lent to the
+    /// plugin at `open`. A module no door answers is refused in the loader's words (a 1.5.5 JSON
+    /// auth plugin does not load). FAIL-CLOSED: any unresolvable method aborts the boot/reload
+    /// build. Runs inside `build_app_from_config`.
     pub(crate) fn build(
         cfg: &AuthCfg,
         registry: &Arc<busbar_plugin_loader::PluginRegistry>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
         let mut methods = IndexMap::new();
-        // The build's auth axis, opened on first use: a method whose plugin is on the auth kind's
-        // door opens there (the chain's own rows, the same dispatcher and connection table).
+        // The build's auth axis, opened on first use: every method's plugin opens there (the
+        // chain's own rows, the same dispatcher and connection table).
         let mut axis: Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
         for (name, mc) in &cfg.methods {
             let mut resolved =
@@ -313,7 +216,7 @@ impl LoginMethods {
                     .map_err(|e| format!("identity-providers.{name} settings: {e}"))?;
             // The OAuth `client_id` (the PUBLIC half) rides the module's settings so the module can
             // build the authorize URL + token-exchange with it. It is NOT a secret and is passed
-            // through; the confidential-client secret is held CORE-only below and never crosses here.
+            // through.
             if let Some(bl) = &mc.browser_login {
                 if let Some(cid) = &bl.client_id {
                     resolved
@@ -328,151 +231,79 @@ impl LoginMethods {
                     mc.module
                 )
             };
-            // Per-kind rule: a Redirect (OAuth) method REQUIRES the confidential-client secret; a
-            // Credential (LDAP/AD-bind) method must NOT carry one (it has nothing to hold).
-            let resolve_secret = |login_kind| -> Result<Option<String>, String> {
-                let Some(bl) = &mc.browser_login else {
-                    return Ok(None);
-                };
-                validate_browser_login_secret(login_kind, bl.client_secret.is_some())
-                    .map_err(|e| format!("identity-providers.{name} browser_login: {e}"))?;
-                bl.client_secret
-                    .as_ref()
-                    .map(|sref| {
-                        secret_resolver.resolve_string(sref).map_err(|e| {
-                            format!("identity-providers.{name} browser_login.client_secret: {e}")
-                        })
-                    })
-                    .transpose()
+            let axis = match &axis {
+                Some(a) => a.clone(),
+                None => axis
+                    .insert(
+                        crate::preflight::auth_axis(registry.clone()).ok_or_else(|| {
+                            refused(super::auth_refusal(registry, &mc.module))
+                        })?,
+                    )
+                    .clone(),
             };
-            // The row's lane: a door (linked, or a dropped-in library stating its Statement, or a
-            // name only a door's Statement alias answers), else M6-COLD-DELETE's cold lane.
-            let door = match registry.auth_row_is_cold(&mc.module) {
-                Ok(cold) => !cold,
-                Err(e) => {
-                    let opened = match &axis {
-                        Some(a) => a.clone(),
-                        None => axis
-                            .insert(
-                                crate::preflight::auth_axis(registry.clone())
-                                    .ok_or_else(|| refused(e.clone()))?,
-                            )
-                            .clone(),
-                    };
-                    if opened.answers(&mc.module) {
-                        true
-                    } else {
-                        return Err(refused(e));
-                    }
-                }
-            };
+            // A module no door answers is refused in the registry's own words.
+            if !axis.answers(&mc.module) {
+                return Err(refused(super::auth_refusal(registry, &mc.module)));
+            }
             let issuer = mc
                 .settings
                 .get("issuer")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             let has_button = mc.browser_login.is_some();
-            // Derive the hop host-allowlist from the OPERATOR's config (issuer + any URL settings) —
-            // NEVER from anything the untrusted plugin returns.
-            let allowed_hosts = collect_allowed_hosts(&mc.settings, issuer.as_deref());
-            if door {
-                let axis = match &axis {
-                    Some(a) => a.clone(),
-                    None => axis
-                        .insert(
-                            crate::preflight::auth_axis(registry.clone()).ok_or_else(|| {
-                                refused(format!(
-                                    "no `kind: auth` plugin answers to '{}'",
-                                    mc.module
-                                ))
-                            })?,
-                        )
-                        .clone(),
-                };
-                // The confidential-client secret is the PLUGIN's to hold (THE DESIGN 6.7): it is
-                // lent at `open` as the Statement's `client_secret` secret reference (the loader
-                // takes it out of the settings), never kept here, and the plugin makes its own
-                // token exchange with it.
-                if let Some(sref) = mc
-                    .browser_login
-                    .as_ref()
-                    .and_then(|bl| bl.client_secret.as_ref())
-                {
-                    let secret = secret_resolver.resolve_string(sref).map_err(|e| {
-                        format!("identity-providers.{name} browser_login.client_secret: {e}")
-                    })?;
-                    resolved.insert(
-                        "client_secret".to_string(),
-                        serde_json::Value::String(secret),
-                    );
-                }
-                let calls = axis
-                    .open(
-                        &mc.module,
-                        &login_label(name),
-                        &serde_json::Value::Object(resolved),
-                    )
-                    .map_err(&refused)?;
-                // The plugin's login kind, as its tail states it (read without a `begin_login`).
-                // A plugin whose tail states no login serves only the headless method; a
-                // `browser_login` button needs one that logs in.
-                let login_kind = match (calls.login_kind(), &mc.browser_login) {
-                    (Some(kind), _) => kind,
-                    (None, None) => busbar_contract::auth::LoginKind::Redirect,
-                    (None, Some(_)) => {
-                        return Err(format!(
-                            "identity-providers.{name} sets browser_login but its plugin serves \
-                             no login; a hosted login button requires a login-capable auth plugin"
-                        ))
-                    }
-                };
-                if let Some(bl) = &mc.browser_login {
-                    validate_browser_login_secret(login_kind, bl.client_secret.is_some())
-                        .map_err(|e| format!("identity-providers.{name} browser_login: {e}"))?;
-                }
-                methods.insert(
-                    name.clone(),
-                    LoginMethod {
-                        module: LoginPlugin::Door(calls),
-                        client_secret: None,
-                        has_button,
-                        issuer,
-                        login_kind,
-                        allowed_hosts,
-                    },
+            // The confidential-client secret is the PLUGIN's to hold (THE DESIGN 6.7): it is lent
+            // at `open` as the Statement's `client_secret` secret reference (the loader takes it
+            // out of the settings), never kept here, and the plugin makes its own token exchange
+            // with it.
+            if let Some(sref) = mc
+                .browser_login
+                .as_ref()
+                .and_then(|bl| bl.client_secret.as_ref())
+            {
+                let secret = secret_resolver.resolve_string(sref).map_err(|e| {
+                    format!("identity-providers.{name} browser_login.client_secret: {e}")
+                })?;
+                resolved.insert(
+                    "client_secret".to_string(),
+                    serde_json::Value::String(secret),
                 );
-                continue;
             }
-            let cfg_json = serde_json::Value::Object(resolved).to_string();
             // Opened by the provider definition's `module:` (the plugin), REGISTERED under the
-            // provider NAME (the instance). 1.5.3: `auth.methods:` folded into
-            // `identity-providers:`, so the two are no longer the same string — two named providers
-            // may legitimately share one login plugin with different issuers/clients.
-            let (module, abi_version) = registry
-                .open_login(&mc.module, &cfg_json)
+            // provider NAME (the instance): two named providers may share one login plugin with
+            // different issuers/clients.
+            let calls = axis
+                .open(
+                    &mc.module,
+                    &login_label(name),
+                    &serde_json::Value::Object(resolved),
+                )
                 .map_err(&refused)?;
-            // Resolve the plugin's classification ONCE here (side-effect-free) so the chooser reads it
-            // off the registry entry without a per-render call — and so `client_secret` can be
-            // validated per the method's login_kind below.
-            let login_kind = module.login_kind();
-            if has_button && abi_version < 2 {
-                return Err(format!(
-                    "identity-providers.{name} sets browser_login but its plugin advertises \
-                     abi_version {abi_version}; a hosted login button requires an ABI v2 \
-                     login-capable auth plugin (rebuild the plugin against auth ABI v2)"
-                ));
+            // The plugin's login kind, as its tail states it (read without a `begin_login`).
+            // A plugin whose tail states no login serves only the headless method; a
+            // `browser_login` button needs one that logs in.
+            let login_kind = match (calls.login_kind(), &mc.browser_login) {
+                (Some(kind), _) => kind,
+                (None, None) => busbar_contract::auth::LoginKind::Redirect,
+                (None, Some(_)) => {
+                    return Err(format!(
+                        "identity-providers.{name} sets browser_login but its plugin serves \
+                         no login; a hosted login button requires a login-capable auth plugin"
+                    ))
+                }
+            };
+            // Per-kind rule: a Redirect (OAuth) method REQUIRES the confidential-client secret; a
+            // Credential (LDAP/AD-bind) method must NOT carry one (it has nothing to hold).
+            if let Some(bl) = &mc.browser_login {
+                validate_browser_login_secret(login_kind, bl.client_secret.is_some())
+                    .map_err(|e| format!("identity-providers.{name} browser_login: {e}"))?;
             }
-            let client_secret =
-                resolve_secret(login_kind)?.map(busbar_contract::redacted::Redacted::new);
             methods.insert(
                 name.clone(),
                 LoginMethod {
-                    module: LoginPlugin::Cold(module),
-                    client_secret,
+                    module: calls,
                     has_button,
                     issuer,
                     login_kind,
-                    allowed_hosts,
                 },
             );
         }
@@ -536,23 +367,20 @@ fn chooser(app: &App) -> Response {
 /// begin: mint PKCE/state/nonce, call the module's `begin_login`, and either 302 to the IdP authorize
 /// URL (REDIRECT flow) or render the credential FORM (CREDENTIAL flow). `refresh` marks a rotate.
 async fn begin(app: &App, method: &str, refresh: bool) -> Response {
-    // Existence + button check ONLY: the `LoginMethod` is deliberately NOT bound here. The one call
-    // this function makes into it is the offloaded `begin_login` below, which re-looks-up the method
-    // by name on the blocking thread — so there is no handle in scope an inline FFI call could be
-    // written against.
-    if !app
+    let Some(calls) = app
         .login_methods
         .methods
         .get(method)
-        .is_some_and(|m| m.has_button)
-    {
+        .filter(|m| m.has_button)
+        .map(|m| m.module.clone())
+    else {
         // Unknown / headless-only method — nothing to begin in the browser.
         return error_page(
             StatusCode::NOT_FOUND,
             "Sign-in method not found",
             "That sign-in method isn't available here. Head back and choose one of the listed options.",
         );
-    }
+    };
     let redirect_uri = format!("{}/auth/token", app.public_url.as_deref().unwrap_or(""));
     let code_verifier = random_b64url(32);
     let code_challenge = code_challenge_s256(&code_verifier);
@@ -566,28 +394,14 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
         nonce: Some(nonce.clone()),
         scopes: Vec::new(),
     };
-    // OFFLOADED + BOUNDED: `begin_login` is synchronous plugin FFI on an ANONYMOUSLY-reachable data-
-    // plane path (see `offload_login_call`). `m` is not used past this point, so nothing borrows the
-    // App across the offload.
-    // On the door, the step is submitted on the one dispatcher and awaited.
-    let outcome = match door_of(&app.login_methods, method) {
-        Some(calls) => door_login_call(method, "begin_login", calls, DoorStep::Begin(begin)).await,
-        None => {
-            offload_login_call(&app.login_methods, method, "begin_login", move |m| {
-                match &m.module {
-                    LoginPlugin::Cold(module) => module.begin_login(&begin),
-                    // The method was swapped onto the door under a reload: nothing begun.
-                    LoginPlugin::Door(_) => LoginOutcome::Reject,
-                }
-            })
-            .await
-        }
-    };
+    // BOUNDED: this data-plane path is ANONYMOUSLY reachable, so the step holds a slot of the login
+    // budget; it is submitted on the one dispatcher and awaited (no worker parked).
+    let outcome = door_login_call(method, "begin_login", calls, DoorStep::Begin(begin)).await;
     match outcome {
         // REDIRECT (OAuth) flow: 302 to the IdP; the callback (a GET) completes it.
         LoginOutcome::Authorize(url) => {
             // The `Location` value is the PLUGIN's, not ours — the one plugin-authored header on
-            // this path, and the only one that skips `sanitize_hop_header`. `HeaderValue` refuses
+            // this path. `HeaderValue` refuses
             // CR, LF and NUL, so an authorize URL carrying a raw newline (a `login_hint`/
             // `domain_hint` a module interpolated without encoding it) is unrepresentable. Building
             // it with `expect` treated it as static and turned that plugin bug into a panic on an
@@ -652,8 +466,9 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
     }
 }
 
-/// callback: validate `state` vs the cookie (CSRF) BEFORE any exchange, run the hop loop injecting
-/// the client_secret, verify the id_token nonce, then mint via the shared self-serve seam.
+/// callback: validate `state` vs the cookie (CSRF) BEFORE anything is asked of the plugin, hand the
+/// door ONE `complete_login` carrying the cookie's state and nonce, then mint via the shared
+/// self-serve seam.
 async fn callback(
     app: &App,
     handle: &Arc<AppHandle>,
@@ -696,140 +511,46 @@ async fn callback(
     // ON THE DOOR: ONE `complete_login`. The plugin redeems the code at its token endpoint itself
     // (its own need, its own lent client secret) and binds the IdP's identity token to the nonce
     // the core minted at `begin` (carried in the cookie, handed over here): it answers who, a
-    // declined login, an unreachable IdP, or a failed security check, rendered as the hop loop's
-    // answers below render them.
-    if let LoginPlugin::Door(calls) = &m.module {
-        let request = LoginCallback {
-            state: cookie.state.clone(),
-            nonce: Some(cookie.nonce.clone()),
-            login: CompleteLogin {
-                code: Some(code),
-                redirect_uri: Some(redirect_uri),
-                code_verifier: Some(cookie.code_verifier.clone()),
-                ..Default::default()
-            },
-        };
-        let principal = match door_login_call(
-            &cookie.method,
-            "complete_login",
-            calls.clone(),
-            DoorStep::Complete(request),
-        )
-        .await
-        {
-            LoginOutcome::Identify(p) => p,
-            LoginOutcome::Outage => return clear_and(provider_unreachable()),
-            LoginOutcome::SecurityCheckFailed => return clear_and(security_check_failed()),
-            LoginOutcome::Reject => {
-                return clear_and(error_page(
-                    StatusCode::UNAUTHORIZED,
-                    "Sign-in was declined",
-                    "Your identity provider declined this sign-in. Check with your Busbar admin if \
-                     this keeps happening.",
-                ));
-            }
-            LoginOutcome::Authorize(_) | LoginOutcome::Prompt(_) | LoginOutcome::Exchange(_) => {
-                return clear_and(error_page(
-                    StatusCode::BAD_GATEWAY,
-                    "Sign-in unavailable",
-                    "Something went wrong completing this sign-in. Please head back and try again.",
-                ));
-            }
-        };
-        return clear_and(
-            issue_and_render(app, handle, &cookie.method, principal, cookie.refresh).await,
-        );
-    }
-
-    // The complete_login hop loop. The module DESCRIBES each token-exchange hop; the CORE executes it
-    // and injects the client_secret into the named form field. Bounded to MAX_HOPS; a module that
-    // never Identifies is fail-closed.
-    let mut cl = CompleteLogin {
-        code: Some(code),
-        redirect_uri: Some(redirect_uri),
-        code_verifier: Some(cookie.code_verifier.clone()),
-        ..Default::default()
+    // declined login, an unreachable IdP, or a failed security check.
+    let request = LoginCallback {
+        state: cookie.state.clone(),
+        nonce: Some(cookie.nonce.clone()),
+        login: CompleteLogin {
+            code: Some(code),
+            redirect_uri: Some(redirect_uri),
+            code_verifier: Some(cookie.code_verifier.clone()),
+            ..Default::default()
+        },
     };
-    let http = hop_client();
-    let mut principal: Option<Principal> = None;
-    for _ in 0..MAX_HOPS {
-        // OFFLOADED + BOUNDED per hop: `complete_login` is synchronous plugin FFI (the token
-        // exchange / userinfo decode) and this loop runs up to `MAX_HOPS` of them on an anonymously-
-        // reachable callback. The hop request itself (`execute_hop`) is already async and stays on
-        // the reactor; only the plugin call crosses to the blocking pool.
-        let turn = cl.clone();
-        match offload_login_call(
-            &app.login_methods,
-            &cookie.method,
-            "complete_login",
-            move |m| match &m.module {
-                LoginPlugin::Cold(module) => module.complete_login(&turn),
-                LoginPlugin::Door(_) => LoginOutcome::Reject,
-            },
-        )
-        .await
-        {
-            LoginOutcome::Identify(p) => {
-                principal = Some(p);
-                break;
-            }
-            LoginOutcome::Exchange(hop) => {
-                // Execute the hop, CORE-injecting the client_secret VALUE into the named form field.
-                let (status, body) = match execute_hop(
-                    http,
-                    &hop,
-                    m.client_secret.as_ref().map(|r| r.expose_secret().as_str()),
-                    &m.allowed_hosts,
-                    Duration::from_secs(HOP_TIMEOUT_SECS),
-                )
-                .await
-                {
-                    Ok(v) => v,
-                    Err(_) => return clear_and(provider_unreachable()),
-                };
-                // NONCE BINDING (core's job — the ABI CompleteLogin has no nonce field): if the hop
-                // body carries an id_token, its `nonce` claim MUST equal the cookie nonce BEFORE any
-                // identity is trusted. A mismatch is a rejected callback with NO identity established.
-                if let Some(id_token) = extract_id_token(&body) {
-                    match id_token_nonce(&id_token) {
-                        // Constant-time compare (the nonce is per-login secret material).
-                        Some(n)
-                            if busbar_contract::redacted::constant_time_eq(&n, &cookie.nonce) => {}
-                        _ => {
-                            return clear_and(security_check_failed());
-                        }
-                    }
-                }
-                cl.token_response = Some(LoginHttpResponse { status, body });
-            }
-            LoginOutcome::Outage => return clear_and(provider_unreachable()),
-            // The IdP's answer failed the login's security check: 1.5.5's verification page, the
-            // one the state mismatch renders.
-            LoginOutcome::SecurityCheckFailed => return clear_and(security_check_failed()),
-            LoginOutcome::Reject => {
-                return clear_and(error_page(
-                    StatusCode::UNAUTHORIZED,
-                    "Sign-in was declined",
-                    "Your identity provider declined this sign-in. Check with your Busbar admin if \
-                     this keeps happening.",
-                ));
-            }
-            // A module must not (re)authorize or (re)prompt on the callback path — fail closed.
-            LoginOutcome::Authorize(_) | LoginOutcome::Prompt(_) => {
-                return clear_and(error_page(
-                    StatusCode::BAD_GATEWAY,
-                    "Sign-in unavailable",
-                    "Something went wrong completing this sign-in. Please head back and try again.",
-                ));
-            }
+    let principal = match door_login_call(
+        &cookie.method,
+        "complete_login",
+        m.module.clone(),
+        DoorStep::Complete(request),
+    )
+    .await
+    {
+        LoginOutcome::Identify(p) => p,
+        LoginOutcome::Outage => return clear_and(provider_unreachable()),
+        // The IdP's answer failed the login's security check: 1.5.5's verification page, the one
+        // the state mismatch renders.
+        LoginOutcome::SecurityCheckFailed => return clear_and(security_check_failed()),
+        LoginOutcome::Reject => {
+            return clear_and(error_page(
+                StatusCode::UNAUTHORIZED,
+                "Sign-in was declined",
+                "Your identity provider declined this sign-in. Check with your Busbar admin if \
+                 this keeps happening.",
+            ));
         }
-    }
-    let Some(principal) = principal else {
-        return clear_and(error_page(
-            StatusCode::BAD_GATEWAY,
-            "Sign-in didn't finish",
-            "This sign-in didn't complete. Please head back and try again.",
-        ));
+        // A module must not (re)authorize or (re)prompt on the callback path — fail closed.
+        LoginOutcome::Authorize(_) | LoginOutcome::Prompt(_) | LoginOutcome::Exchange(_) => {
+            return clear_and(error_page(
+                StatusCode::BAD_GATEWAY,
+                "Sign-in unavailable",
+                "Something went wrong completing this sign-in. Please head back and try again.",
+            ));
+        }
     };
 
     // Feed the verified identity through the SAME admission + mint seam as the headless POST and the
@@ -954,40 +675,22 @@ pub(crate) async fn credential_submit(
         submitted,
         ..Default::default()
     };
-    let door = door_of(&app.login_methods, &cookie.method);
-    // A credential module verifies the credential itself (e.g. an LDAP bind) and returns `Identify`.
-    // OFFLOADED + BOUNDED: that bind is the longest synchronous FFI call in the engine and this POST
-    // is anonymously reachable (the `__state` check is satisfied by a cookie the caller minted for
-    // themselves via `begin`), so it must never run on a reactor worker.
-    let outcome = match door {
-        // On the door: the plugin verifies the submitted credential over its own need.
-        Some(calls) => {
-            let request = LoginCallback {
-                state: cookie.state.clone(),
-                nonce: None,
-                login: cl,
-            };
-            door_login_call(
-                &cookie.method,
-                "complete_login",
-                calls,
-                DoorStep::Complete(request),
-            )
-            .await
-        }
-        None => {
-            offload_login_call(
-                &app.login_methods,
-                &cookie.method,
-                "complete_login",
-                move |m| match &m.module {
-                    LoginPlugin::Cold(module) => module.complete_login(&cl),
-                    LoginPlugin::Door(_) => LoginOutcome::Reject,
-                },
-            )
-            .await
-        }
+    // A credential module verifies the credential itself (e.g. an LDAP bind) over its own need and
+    // returns `Identify`. BOUNDED: this POST is anonymously reachable (the `__state` check is
+    // satisfied by a cookie the caller minted for themselves via `begin`), so the step holds a slot
+    // of the login budget; it is submitted on the one dispatcher and awaited (no worker parked).
+    let request = LoginCallback {
+        state: cookie.state.clone(),
+        nonce: None,
+        login: cl,
     };
+    let outcome = door_login_call(
+        &cookie.method,
+        "complete_login",
+        m.module.clone(),
+        DoorStep::Complete(request),
+    )
+    .await;
     let principal = match outcome {
         LoginOutcome::Identify(p) => p,
         LoginOutcome::Outage => return clear_and(provider_unreachable()),
@@ -1071,36 +774,8 @@ fn clear_and(mut resp: Response) -> Response {
     resp
 }
 
-// ── core-executed token-exchange hop + nonce verification ────────────────────────────────────────
+// ── browser_login configuration ───────────────────────────────────────────────────────────────────
 
-/// The per-hop HTTP request timeout — a hostile/slow token endpoint (which the plugin chooses) must
-/// not hold the callback future open indefinitely.
-const HOP_TIMEOUT_SECS: u64 = 10;
-
-/// The ONE pooled HTTP client every hop reuses (connection pooling; not a fresh client per
-/// callback) — the ENGINE on the cold open-web posture. Redirect non-following is STRUCTURAL now
-/// (an auto-followed 3xx could bounce the core-injected secret/bearer to an off-allowlist host);
-/// the [`HOP_TIMEOUT_SECS`] total the retired reqwest builder carried client-level rides each hop
-/// as an absolute deadline in [`execute_hop`].
-fn hop_client() -> &'static crate::proxy::EgressClient {
-    static CLIENT: std::sync::OnceLock<crate::proxy::EgressClient> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(|| {
-        crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::pooled_webpki(
-            usize::MAX,
-            90,
-            false,
-            false,
-        ))
-    })
-}
-
-/// The header names a module-described hop may NEVER set (hop-control headers): letting a plugin set
-/// these would let it desync the request framing or override the target authority.
-const FORBIDDEN_HOP_HEADERS: [&str; 3] = ["host", "content-length", "transfer-encoding"];
-
-/// Collect the host-allowlist for a method's hops from the OPERATOR's config: the `issuer` plus the
-/// host of any absolute http(s) URL anywhere in the method's opaque settings (`api_base`,
-/// `token_base`, `authorize_base`, …). Hosts are lowercased. NEVER derived from plugin output.
 /// Per-`login_kind` rule for a `browser_login` method's `client_secret`: a Redirect (OAuth-family,
 /// confidential-client) method REQUIRES it; a Credential (LDAP/AD-bind) method must NOT set one (it
 /// has no confidential-client secret to hold). Pure, so it is unit-tested without a plugin registry.
@@ -1119,177 +794,6 @@ pub(crate) fn validate_browser_login_secret(
         ),
         _ => Ok(()),
     }
-}
-
-pub(crate) fn collect_allowed_hosts(
-    settings: &serde_json::Map<String, serde_json::Value>,
-    issuer: Option<&str>,
-) -> std::collections::HashSet<String> {
-    let mut hosts = std::collections::HashSet::new();
-    let mut add = |url: &str| {
-        if let Some(h) = crate::config_validate::extract_normalized_host(url) {
-            hosts.insert(h.to_ascii_lowercase());
-        }
-    };
-    if let Some(iss) = issuer {
-        add(iss);
-    }
-    // Walk every string value in the settings tree; an absolute http(s) URL contributes its host.
-    fn walk(v: &serde_json::Value, add: &mut impl FnMut(&str)) {
-        match v {
-            serde_json::Value::String(s) => {
-                if s.starts_with("http://") || s.starts_with("https://") {
-                    add(s);
-                }
-            }
-            serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, add)),
-            serde_json::Value::Object(o) => o.values().for_each(|x| walk(x, add)),
-            _ => {}
-        }
-    }
-    for v in settings.values() {
-        walk(v, &mut add);
-    }
-    hosts
-}
-
-/// Vet a module-described hop URL BEFORE any request is built (so the secret is never sent on a
-/// refusal). The host MUST be in the operator-derived `allowed` set; the scheme MUST be https for a
-/// public host (http tolerated only for a loopback/private endpoint, matching
-/// `oauth_client_credentials::validate_token_url`); and a cloud-metadata/link-local host is refused
-/// outright. Returns the normalized host on success.
-fn vet_hop_url(url: &str, allowed: &std::collections::HashSet<String>) -> Result<(), ()> {
-    use crate::config_validate::{
-        extract_normalized_host, host_is_private_or_loopback, scheme_is, ssrf_blocked_host,
-    };
-    let Some(host) = extract_normalized_host(url) else {
-        return Err(());
-    };
-    // PRIMARY control: the host must be one the operator configured for this method.
-    if !allowed.contains(&host.to_ascii_lowercase()) {
-        return Err(());
-    }
-    let host_private = host_is_private_or_loopback(&host);
-    // https for public hosts; http only for loopback/private (a local/on-prem IdP).
-    if !(scheme_is(url, "https") || (host_private && scheme_is(url, "http"))) {
-        return Err(());
-    }
-    // Defense-in-depth: never a cloud-metadata/IMDS/link-local target, even if somehow allowlisted.
-    if ssrf_blocked_host(url, &[], false, &[]).is_some() {
-        return Err(());
-    }
-    Ok(())
-}
-
-/// Sanitize a module-described header: reject CR/LF/NUL (request-splitting) in the name or value and
-/// the hop-control headers (`Host`/`Content-Length`/`Transfer-Encoding`). Returns the parsed
-/// name+value on success, `Err` if the header must cause the whole hop to be refused.
-fn sanitize_hop_header(
-    name: &str,
-    value: &str,
-) -> Result<(http::header::HeaderName, http::header::HeaderValue), ()> {
-    let bad = |s: &str| s.contains('\r') || s.contains('\n') || s.contains('\0');
-    if bad(name) || bad(value) {
-        return Err(());
-    }
-    if FORBIDDEN_HOP_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
-        return Err(());
-    }
-    let hn = http::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| ())?;
-    let hv = http::header::HeaderValue::from_str(value).map_err(|_| ())?;
-    Ok((hn, hv))
-}
-
-/// Execute a module-described hop, CORE-INJECTING the `client_secret` VALUE into the field the
-/// module named in `secret_form_field` (the module only ever wrote the KEY). The secret VALUE lives
-/// ONLY in this outbound form — never in the cookie, never logged, never rendered. The hop URL is
-/// VETTED against the method's operator-derived host allowlist (`allowed`) BEFORE the request is
-/// built (so the secret is never sent to an off-allowlist host), and the module's extra `headers` are
-/// SANITIZED (CR/LF/NUL + hop-control headers rejected).
-async fn execute_hop(
-    http: &crate::proxy::EgressClient,
-    hop: &busbar_contract::auth::LoginHop,
-    client_secret: Option<&str>,
-    allowed: &std::collections::HashSet<String>,
-    timeout: Duration,
-) -> Result<(u16, String), ()> {
-    // VET THE URL FIRST — a refusal here means no request is built and no secret leaves the process.
-    vet_hop_url(&hop.url, allowed)?;
-
-    let mut form: Vec<(String, String)> = hop.form.clone();
-    if let Some(field) = hop.secret_form_field.as_deref() {
-        match client_secret {
-            // Overwrite the placeholder value the plugin wrote for the secret key with the real value.
-            Some(secret) => {
-                if let Some(slot) = form.iter_mut().find(|(k, _)| k == field) {
-                    slot.1 = secret.to_string();
-                } else {
-                    form.push((field.to_string(), secret.to_string()));
-                }
-            }
-            // NO secret configured: DROP the placeholder rather than sending it empty.
-            //
-            // A plugin writes the key with an empty value and lets the core fill it in, so leaving
-            // it alone here puts `client_secret=` on the wire. An empty secret is NOT the same as an
-            // absent one: for a PUBLIC client (the shape with no secret at all) the parameter should
-            // simply not be there, and an IdP is entitled to read an empty string as a WRONG secret
-            // and answer `invalid_client` rather than as "this client is public". Removing it makes
-            // the request the correct shape for the configuration the operator actually has, and
-            // cannot affect the confidential path, which takes the arm above.
-            None => form.retain(|(k, _)| k != field),
-        }
-    }
-    let method = http::Method::from_bytes(hop.method.as_bytes()).unwrap_or(http::Method::POST);
-    let uri: http::Uri = hop.url.parse().map_err(|_| ())?;
-    let mut headers = http::HeaderMap::new();
-    headers.insert(
-        http::header::CONTENT_TYPE,
-        http::HeaderValue::from_static("application/x-www-form-urlencoded"),
-    );
-    // 1.5.5's client default, between the form's content-type and the host (reqwest's
-    // `request().form()`; oracle cell `egress.auth|login-hop|oidc`).
-    headers.insert(http::header::ACCEPT, http::HeaderValue::from_static("*/*"));
-    for (name, value) in &hop.headers {
-        // Any invalid/forbidden header fails the WHOLE hop closed (a plugin injecting CRLF is hostile).
-        let (hn, hv) = sanitize_hop_header(name, value)?;
-        headers.append(hn, hv);
-    }
-    // The exact call reqwest's `.form()` was — wire bytes unchanged.
-    let body = serde_urlencoded::to_string(&form).map_err(|_| ())?;
-    let request =
-        crate::egress::engine::client_request(method, uri, headers, bytes::Bytes::from(body));
-    // The hop's total, send THROUGH body read under one absolute deadline — the client-level
-    // timeout the retired reqwest builder carried, now the caller's argument (production passes
-    // [`HOP_TIMEOUT_SECS`]; the hang test shortens it, which is what a client-level knob allowed).
-    let deadline = tokio::time::Instant::now() + timeout;
-    let resp = busbar_kernel::egress::engine::send_bounded(http, request, deadline)
-        .await
-        .map_err(|_| ())?;
-    let status = resp.status().as_u16();
-    let body = {
-        use http_body_util::BodyExt;
-        let collected = tokio::time::timeout_at(deadline, resp.into_body().collect())
-            .await
-            .map_err(|_| ())?
-            .map_err(|_| ())?;
-        String::from_utf8_lossy(&collected.to_bytes()).into_owned()
-    };
-    Ok((status, body))
-}
-
-/// Pull the `id_token` string out of an OAuth/OIDC token-endpoint JSON body, if present.
-fn extract_id_token(body: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(body).ok()?;
-    v.get("id_token")?.as_str().map(str::to_string)
-}
-
-/// Decode a JWT's payload (segment 2, base64url) and read its `nonce` claim. NO signature check —
-/// the auth module verified iss/aud/exp/sig; the CORE only binds the nonce it minted at begin.
-fn id_token_nonce(id_token: &str) -> Option<String> {
-    let payload_b64 = id_token.split('.').nth(1)?;
-    let bytes = B64.decode(payload_b64).ok()?;
-    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    claims.get("nonce")?.as_str().map(str::to_string)
 }
 
 // ── PKCE + randomness ────────────────────────────────────────────────────────────────────────────
@@ -1358,7 +862,8 @@ fn html_no_store(body: String) -> Response {
 }
 
 /// The shared branded error for a failed anti-CSRF / nonce check (a mismatched `state` on the
-/// callback or credential POST, or a mismatched id_token `nonce`). One copy for every "the security
+/// callback or credential POST, or a login plugin answering that the IdP's answer failed the
+/// login's security check, [`LoginOutcome::SecurityCheckFailed`]). One copy for every "the security
 /// check didn't match" case — honest without hinting at WHICH check failed. HTTP 400.
 fn security_check_failed() -> Response {
     error_page(
@@ -1456,8 +961,8 @@ const LOGOUT_ICON: &str = r##"<svg viewBox="0 0 16 16" fill="none" aria-hidden="
 /// browser-flow failure (chooser / begin / callback / credential POST) routes through here with an
 /// honest, secret-free message and the right HTTP status. The HEADLESS JSON `POST /auth/token` path
 /// keeps its `{"error":…}` body (see `exchange::refusal`) — this is the browser branch ONLY.
-/// 1.5.5's page for an identity provider that could not be reached: a hop that failed, or a login
-/// plugin that answered `LOGIN_OUTAGE` ([`LoginOutcome::Outage`]).
+/// 1.5.5's page for an identity provider that could not be reached: a login plugin that answered
+/// `LOGIN_OUTAGE` ([`LoginOutcome::Outage`]).
 fn provider_unreachable() -> Response {
     error_page(
         StatusCode::BAD_GATEWAY,
