@@ -284,11 +284,7 @@ fn moved_out_by_kind(
         };
         if let Some(n) = excused_out(
             &gone,
-            |dir| {
-                package_at_base(dir).is_some_and(|name| {
-                    crate::gates::workspace_deps::pinned_git_dep(&root_manifest, &name)
-                })
-            },
+            |dir| moved_out(&[dir.to_string()], package_at_base, &root_manifest).is_some(),
             |dir| deleted.contains(dir) && !cx.abs(dir).exists(),
         ) {
             out.insert(format!("plugin_kinds.{kind}"), n as i64);
@@ -313,6 +309,28 @@ fn excused_out(
     }
     gone.iter()
         .all(|dir| is_moved(dir) || is_deleted(dir))
+        .then_some(gone.len())
+}
+
+/// A plugin crate MOVED OUT (TODO PATH TO DEV-GREEN P5: filter-repo into its own repo, pinned back
+/// in busbar as one git dependency at an exact commit). `Some(gone.len())` when every directory in
+/// `gone` is a crate whose package (`package_at_base`) the root manifest now pins as a git
+/// dependency at a `rev`; `None` when any one is not (deleted, renamed, or pulled by branch), and
+/// for an empty `gone`.
+fn moved_out(
+    gone: &[String],
+    package_at_base: impl Fn(&str) -> Option<String>,
+    root_manifest: &str,
+) -> Option<usize> {
+    if gone.is_empty() {
+        return None;
+    }
+    gone.iter()
+        .all(|dir| {
+            package_at_base(dir).is_some_and(|name| {
+                crate::gates::workspace_deps::pinned_git_dep(root_manifest, &name)
+            })
+        })
         .then_some(gone.len())
 }
 
@@ -512,7 +530,7 @@ mod tests {
         let deleted = set(&[]);
         assert_eq!(excused_out(&gone, |_| false, |d| deleted.contains(d)), None);
         let out = lowered_floors(
-            &doc("[gate.census]\n[gate.census.plugin_kinds]\nplane = 4\n"),
+            &doc(&DOC.replace("plane = 5", "plane = 4")),
             &doc(DOC),
             "abc1234",
             &BTreeMap::new(),
