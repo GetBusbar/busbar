@@ -250,6 +250,8 @@ pub(crate) struct Crossed {
     pub(crate) short: bool,
     /// `cancel`'s `CancelOut.disposition`, when the op ended through `cancel`.
     pub(crate) disposition: Option<u32>,
+    /// The record writes that `cancel` carried (a plane's, SEAM-L(r)).
+    pub(crate) cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
 }
 
 impl Crossed {
@@ -261,6 +263,7 @@ impl Crossed {
             wake_at_ns: 0,
             short: false,
             disposition: None,
+            cancel_writes: Vec::new(),
         }
     }
 }
@@ -321,6 +324,8 @@ pub(crate) struct Instance {
     op_name: fn(u32) -> &'static str,
     /// [`Kind::unit_of`] of the bound kind.
     unit_of: fn(u32, *const InHead, usize) -> Option<u64>,
+    /// [`Kind::cancel_frame`] of the bound kind.
+    pub(crate) cancel_frame: fn() -> Box<dyn super::CancelFrame>,
     /// [`Kind::context`] of the bound kind, built from the Statement at bind.
     context: Option<Box<super::Context>>,
     sink: Arc<dyn EnvelopeSink>,
@@ -787,6 +792,7 @@ impl Instance {
             },
             short,
             disposition: None,
+            cancel_writes: Vec::new(),
         }
     }
 
@@ -1128,6 +1134,7 @@ impl<K: Kind> Plugin<K> {
                 short: K::short,
                 op_name: K::op_name,
                 unit_of: K::unit_of,
+                cancel_frame: K::cancel_frame,
                 context,
                 sink: bind.sink.clone(),
                 wake,

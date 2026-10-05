@@ -534,6 +534,8 @@ pub(crate) struct Pumping<'u> {
     keep: Keep,
     flight: Option<Box<dyn PieceInFlight>>,
     ended: bool,
+    /// The record writes the `cancel` that ended the last op carried (SEAM-L(r)).
+    cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
 }
 
 impl<'u> Pumping<'u> {
@@ -559,6 +561,7 @@ impl<'u> Pumping<'u> {
             keep: Arc::new(Mutex::new(None)),
             flight: None,
             ended: false,
+            cancel_writes: Vec::new(),
         }
     }
 
@@ -596,6 +599,10 @@ impl<'u> Pumping<'u> {
             }
         };
         let out = flight.out().map(|o| Answer::of(&o));
+        // The record writes of a `cancel` that ended it (its client-drop path), for the unit's end.
+        if cause.is_some() {
+            self.cancel_writes = flight.cancel_writes();
+        }
         self.flight = None;
         (answered, out, cause)
     }
@@ -604,11 +611,17 @@ impl<'u> Pumping<'u> {
     /// the disposition the cancel crossing gave; otherwise the driver makes the ticketless `cancel`
     /// itself, here, on the caller's task.
     pub(crate) fn cancel(&mut self, cause: ReasonCode, done: Option<Answered>) -> CancelBill {
-        let disposition = match done.map(|d| (d.disposition, d.outcome)) {
-            Some((Some(d), _)) => Some(d),
+        let cancelled = match done.map(|d| (d.disposition, d.outcome)) {
+            Some((Some(d), _)) => Some((d, std::mem::take(&mut self.cancel_writes))),
             Some((None, AbiOutcome::Fault)) => None,
-            _ => self.driver.cancel_now(self.ticket),
+            _ => (self.driver.cancel_now(self.ticket)).map(|c| (c.disposition, c.writes)),
         };
+        // THE CANCELLED UNIT'S ROW (SEAM-L(r)): what its `cancel` wrote, under its principal.
+        if let Some((_, writes)) = &cancelled {
+            let principal = self.lock().principal.clone();
+            self.driver.fold_writes(writes, principal.as_ref());
+        }
+        let disposition = cancelled.map(|(d, _)| d);
         let facts = self.lock().facts.clone();
         let bill = CancelBill::new(cause, disposition, &facts);
         self.driver.money.cancelled(self.ctx, &bill);
@@ -728,12 +741,16 @@ impl Drop for Pumping<'_> {
             },
             None => None,
         };
-        let facts = self.lock().facts.clone();
+        let (facts, principal) = {
+            let st = self.lock();
+            (st.facts.clone(), st.principal.clone())
+        };
         self.driver.bury(Buried {
             ctx: self.ctx.clone(),
             ticket: self.ticket,
             facts,
             flight,
+            principal,
         });
     }
 }
