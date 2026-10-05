@@ -568,7 +568,7 @@ impl RootCfg {
 pub use busbar_kernel::config::sections::TlsCfg;
 
 pub use busbar_kernel::config::auth::{
-    builtin_identity_providers, operator_principal_id, operator_provider,
+    builtin_identity_providers, operator_module, operator_principal_id, operator_provider,
 };
 /// One entry in the top-level `identity-providers:` NAMED-DEFINITION map, the resolved auth-chain
 /// entry, the role-binding grant, the token-mint policy, the built-in provider names, and the

@@ -1049,7 +1049,7 @@ pub struct AdminAuthView {
 fn modules_description() -> String {
     format!(
         "The active admin-plane guard module names, the `admin_auth` chain verbatim (e.g.\n`[\"{}\"]`), reported in order. Empty when the admin plane is open.",
-        busbar_kernel::config::operator_provider()
+        busbar_kernel::config::operator_module()
     )
 }
 
