@@ -18,7 +18,9 @@
 //!   its one outbound need, and the tail [`TAIL`] (every list read off [`crate::driven::tail`]).
 //! * `validate`, `open`, `refresh`: the settings blob read as the `decisions:` section
 //!   ([`crate::config::DecisionsSection`]); a generation's snapshot claims
-//!   [`crate::driven::served_claims`] for its model count. `retire` drops a generation.
+//!   [`crate::driven::served_claims`] for its model count and its protected-resource document,
+//!   admitted against the audience read off the public base URL it was opened with
+//!   ([`crate::driven::admission`]; none, and it claims nothing). `retire` drops a generation.
 //! * `arrive`: [`crate::driven::arrive`]; an unclaimed request is refused at 404.
 //! * `on_piece`: the ATTEMPT's request head ([`crate::driven::attempt_request`]), the caller's body to the
 //!   far end unchanged ([`crate::driven::caller_piece`]), and the far end's answer relayed unchanged
@@ -45,7 +47,7 @@ use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
     PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
-    CANCEL_ABORTED, CLAIM_EXACT, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
+    CANCEL_ABORTED, CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
     FROM_KERNEL, INGRESS_REQUEST_RESPONSE, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
     PRINCIPAL_OPTIONAL, PRINCIPAL_REQUIRED, ROUTE_DIRECT, SHAPE_WHOLE, UNITS_REPORTED,
 };
@@ -223,15 +225,31 @@ pub fn read_settings(settings: &[u8]) -> Result<DecisionsSection, String> {
     serde_json::from_slice(settings).map_err(|e| e.to_string())
 }
 
-/// ONE GENERATION'S SNAPSHOT for a section with `models` configured models: the claims
-/// [`driven::served_claims`] serves, each an exact target over the claim's transport.
+/// ONE GENERATION'S SNAPSHOT for a section with `models` configured models, opened under the
+/// deployment's public base URL `public_url`: the claims [`driven::served_claims`] serves, each an
+/// exact target over the claim's transport, the open `GET` of their protected-resource document
+/// ([`driven::METADATA_PATH`]), and the audience and metadata URL they are admitted against
+/// ([`driven::admission`]). With no audience to bind (no public URL, or no operation mounted) it
+/// claims nothing.
 #[must_use]
-pub fn snapshot_spec(models: usize) -> SnapshotSpec {
+pub fn snapshot_spec(models: usize, public_url: Option<&str>) -> SnapshotSpec {
+    let Some((audience, metadata)) = driven::admission(models, public_url) else {
+        return SnapshotSpec::default();
+    };
+    let mut claims: Vec<ClaimSpec> = driven::served_claims(models)
+        .iter()
+        .map(|(verb, target)| ClaimSpec::new(verb, target, claims::TRANSPORT, CLAIM_EXACT))
+        .collect();
+    claims.push(ClaimSpec::new(
+        "GET",
+        driven::METADATA_PATH,
+        claims::TRANSPORT,
+        CLAIM_EXACT | CLAIM_OPEN,
+    ));
     SnapshotSpec {
-        claims: driven::served_claims(models)
-            .iter()
-            .map(|(verb, target)| ClaimSpec::new(verb, target, claims::TRANSPORT, CLAIM_EXACT))
-            .collect(),
+        claims,
+        audience: Some(audience),
+        resource_metadata: Some(metadata),
         ..SnapshotSpec::default()
     }
 }
@@ -261,6 +279,9 @@ pub struct DecisionsDoor {
     /// The entry a claimed arrival routes over, directly: the one configured model of the latest
     /// generation (none held when the section configures other than one, and nothing is claimed).
     routed: Keyed<(), String>,
+    /// The deployment's public base URL, as the instance was opened with it: every generation's
+    /// audience and metadata URL are read off it.
+    public_url: Option<String>,
 }
 
 impl DecisionsDoor {
@@ -318,13 +339,18 @@ slot!(
             Ok(section) => section,
             Err(words) => return open_failed(open, &mut out, |o| &o.open.err_len, &words),
         };
+        let public_url = std::str::from_utf8(input.field(|i| &i.public_url).bytes())
+            .ok()
+            .filter(|u| !u.is_empty())
+            .map(str::to_string);
         let plane = DecisionsDoor {
             generations: Generations::new(),
             units: Keyed::new(),
             routed: Keyed::new(),
+            public_url,
         };
         plane.route_over(&section);
-        let spec = snapshot_spec(section.models.len());
+        let spec = snapshot_spec(section.models.len(), plane.public_url.as_deref());
         out.publish(|o| &o.snapshot, &plane.generations, open.generation, &spec);
         instance.open(plane);
         Outcome::Ready
@@ -341,7 +367,7 @@ slot!(
             Ok(section) => section,
             Err(words) => return out.fail(Refusal::refused(words)),
         };
-        let spec = snapshot_spec(section.models.len());
+        let spec = snapshot_spec(section.models.len(), plane.public_url.as_deref());
         plane.route_over(&section);
         out.publish(|o| &o.snapshot, &plane.generations, input.generation, &spec);
         Outcome::Ready

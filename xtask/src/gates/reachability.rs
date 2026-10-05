@@ -2100,19 +2100,22 @@ impl Gate for ReachabilityGate {
             let module = by_rel.get(module_rel.as_str());
 
             // 1. REGISTERED — a linked-table row for the plane's crate that `register_planes()`
-            // folds, or a plane type in `plane_claims()`.
+            // folds (on the `plane` axis, or on the `plane-door` axis: the door's Statement, which
+            // `register_planes()` folds into the plane's registry row through the loader's one
+            // load), or a plane type in `plane_claims()`.
             let mut hits: Vec<String> = linked_rows
                 .iter()
-                .filter(|(_, krate)| {
-                    folds_linked
-                        && krate == p.linked_crate
-                        && axes_of(&manifest, krate).iter().any(|a| a == "plane")
-                })
-                .map(|(feature, krate)| {
-                    format!(
-                        "{CRATE_MANIFEST} [package.metadata.busbar.linked] `{feature} = \"{krate}\"` \
-                         on the `plane` axis, folded by `register_planes()` over `LINKED`"
-                    )
+                .filter_map(|(feature, krate)| {
+                    let axes = axes_of(&manifest, krate);
+                    let axis = ["plane", PLANE_DOOR_AXIS]
+                        .into_iter()
+                        .find(|a| axes.iter().any(|x| x == a))?;
+                    (folds_linked && krate == p.linked_crate).then(|| {
+                        format!(
+                            "{CRATE_MANIFEST} [package.metadata.busbar.linked] `{feature} = \"{krate}\"` \
+                             on the `{axis}` axis, folded by `register_planes()` over `LINKED`"
+                        )
+                    })
                 })
                 .collect();
             hits.extend(
@@ -3123,6 +3126,7 @@ const FIXTURE_GREEN_MAIN: &str =
 /// The green fixture's rider, runner and decision entry, verbatim (the planted variants edit a copy).
 const INSTALL_RS: &str = "crates/busbar/src/root/gauntlet_install.rs";
 const KERNEL_RS: &str = "crates/busbar/src/root/gauntlet_kernel.rs";
+// qa-names: crates/busbar/src/root/plane_decisions.rs -- xtask/src/gates/reachability.rs -- a path inside the green FIXTURE tree (xtask/fixtures/reachability-green), whose planted variants edit the decision entry it carries; the real tree has no such file since FLIP-DECISIONS served the decisions plane through its door
 const DECISION_ENTRY_RS: &str = "crates/busbar/src/root/plane_decisions.rs";
 const FIXTURE_GREEN_INSTALL: &str =
     include_str!("../../fixtures/reachability-green/crates/busbar/src/root/gauntlet_install.rs");

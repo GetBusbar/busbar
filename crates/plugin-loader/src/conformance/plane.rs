@@ -16,6 +16,7 @@
 //!   "plane": {
 //!     "bad_settings": [<settings `validate` must refuse, naming why>, ...],
 //!     "refresh_settings": <the settings generation 2 is refreshed over>,
+//!     "public_url": "<the deployment's public base URL it opens under>",  // optional: none
 //!     "open_claims":    [["<verb>", "<target>"], ...],   // generation 1's snapshot claims
 //!     "refresh_claims": [["<verb>", "<target>"], ...],   // generation 2's
 //!     "member": "<the pool member an ATTEMPT names>",
@@ -229,6 +230,8 @@ impl Piece {
 struct Inputs {
     bad: Vec<Vec<u8>>,
     refresh: Vec<u8>,
+    /// The public base URL the instance opens under; empty = none.
+    public_url: Vec<u8>,
     member: Vec<u8>,
     claimed: (u64, Vec<u8>, Vec<u8>),
     unclaimed: (u64, Vec<u8>, Vec<u8>),
@@ -267,6 +270,10 @@ impl Inputs {
         Self {
             bad,
             refresh: text(&k["refresh_settings"], "refresh_settings"),
+            public_url: k["public_url"]
+                .as_str()
+                .map(|u| u.as_bytes().to_vec())
+                .unwrap_or_default(),
             member: text(&k["member"], "member"),
             claimed: arrival("claimed"),
             unclaimed: arrival("unclaimed"),
@@ -376,6 +383,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let open = |what: &[u8]| {
         let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
         (f.input.open.generation, f.input.open.settings) = (1, json(what));
+        if !k.public_url.is_empty() {
+            f.input.public_url = abi(&k.public_url);
+        }
         let (c, snap) = p.open(&mut f);
         format!("{} {}", called(&c), snapshot(snap.as_ref()))
     };

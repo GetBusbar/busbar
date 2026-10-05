@@ -133,11 +133,10 @@ fn plane_crate_ledger_columns() -> Vec<(&'static str, &'static [&'static str])> 
 /// THE WORKSPACE PLANE CRATES THAT ANSWER TO NO LEDGER COLUMN YET — pinned EXACTLY, at today's
 /// measurement, so the gap is named rather than invisible and cannot grow or quietly close.
 ///
-/// `busbar-plane-decisions` is the fifth plane (#48) and `qa/capability-equality.json` declares no
-/// column for it; mapping it to a column the ledger does not have would fail the column check, and
-/// leaving it out of the enumeration is the hole item 257 found. So it is listed here, and the
-/// cross-check below is RED if a crate joins the workspace unmapped and unlisted, AND if a listed
-/// crate gains a mapping without leaving this list. The column is the ledger owner's to add.
+/// Empty today: `busbar-plane-decisions`, the fifth plane (#48), was listed here until its flip onto
+/// its door gave the ledger its `decisions` column (FLIP-DECISIONS). The cross-check below is RED if
+/// a crate joins the workspace unmapped and unlisted, AND if a listed crate gains a mapping without
+/// leaving this list.
 fn plane_crates_owed_a_column() -> Vec<&'static str> {
     common::doctrine_rows("owed")
         .into_iter()
@@ -162,7 +161,7 @@ const MIN_PROVEN: usize = 20;
 /// An n/a "argument" shorter than this is a label, not an argument.
 const MIN_NA_REASON: usize = 60;
 
-/// THE FIVE ROOT LEGS, verbatim — one per `root-*` feature the composition root carries. Pinned
+/// THE SIX ROOT LEGS, verbatim — one per `root-*` feature the composition root carries. Pinned
 /// here for the same reason [`PLANES`] is: a leg that quietly left the list would take its whole
 /// column of root verdicts with it.
 fn root_legs() -> &'static [&'static str] {
@@ -863,13 +862,14 @@ fn the_root_leg_matrix_runs_once_per_leg() {
 /// able to quietly narrow what the real gate demands.
 #[test]
 fn the_gates_own_constants_are_the_doctrines() {
-    // Seven directional planes: one single-direction plane and the three bidirectional protocols
-    // counted in both directions (`<p>-client` / `<p>-server`), and nothing else.
+    // Eight directional planes: two single-direction planes (llm, and decisions: both halves in one
+    // column, its only need outbound) and the three bidirectional protocols counted in both
+    // directions (`<p>-client` / `<p>-server`), and nothing else.
     let planes = planes();
     assert_eq!(
         planes.len(),
-        7,
-        "the plane list is the owner's ruling (the one-direction plane plus both directions of the \
+        8,
+        "the plane list is the owner's ruling (the one-direction planes plus both directions of the \
          bidirectional three); changing it is a doctrine change, not a refactor: {planes:?}"
     );
     let singles: Vec<&&str> = planes
@@ -878,8 +878,8 @@ fn the_gates_own_constants_are_the_doctrines() {
         .collect();
     assert_eq!(
         singles.len(),
-        1,
-        "exactly one one-direction plane: {planes:?}"
+        2,
+        "exactly two one-direction planes: {planes:?}"
     );
     for p in planes.iter().filter(|p| p.ends_with("-client")) {
         let server = format!("{}-server", p.trim_end_matches("-client"));
@@ -903,8 +903,8 @@ fn the_gates_own_constants_are_the_doctrines() {
     let legs = root_legs();
     assert_eq!(
         legs.len(),
-        5,
-        "the five root legs are the composition root's own; changing the list is a doctrine change: \
+        6,
+        "the six root legs are the composition root's own; changing the list is a doctrine change: \
          {legs:?}"
     );
     assert!(

@@ -79,25 +79,20 @@ function that folds `LINKED` for every plane whose `linked-axes` row carries `ga
 (`register_gauntlet_runner`) or `gauntlet-session` (`register_session_runner`); the self-test proves
 the fold both ways.
 
-## 2. `crates/busbar/src/root/plane_decisions.rs` — decision: NO LIVE UNIT PATH (Q72(3) ruled SERVE; door path owed)
+## 2. `crates/busbar/src/root/serve.rs` — decision: THE SERVED DOOR (FLIP-DECISIONS)
 
-The decision plane's linked entry (`[package.metadata.busbar.linked-entry]` `busbar-plane-decisions =
-"crate::root::plane_decisions"`, axes `plane`) exports `PLANE_DECLARATION` (:110) and `PLANE_HOOKS`
-(:150). Neither builds anything: the hooks are the inert trio (`claims: |_| Vec::new()`, `admission:
-|_| None`, `build: |_| None`) — no served door. The file declares **no `impl … Units for`**, and no
-line in `gauntlet_install.rs` (or anywhere else) routes a `busbar_plane_decisions::…` or
-`plane_decisions::…` key onto a runner. So both rows are RED:
+Owner question **Q72(3)** ruled that 1.6.0 SERVES the decisions (jev) plane. It is a DOOR plane, so
+its unit path is its served door (ARCHITECT Q-SO10, spec K5), and FLIP-DECISIONS lands it: the
+`plane-decisions` row of `crates/busbar/Cargo.toml` is the plane's `plane-door` row
+(`busbar_plane_decisions::plane_door::door`, bound through the loader's one load), the root's one
+composition (`compose_planes` in `root/serve.rs`) builds its `PlaneDriver`, and the data route
+(`door_routes`) drives a unit through it. The root's identity-only declaration that used to stand
+in for the plane (its inert `claims`/`admission`/`build` trio, no served door) is deleted with the
+flip, so the plane's registry row is the door's own Statement, folded by the kernel.
 
-- `unit-path:decision` — "NO LIVE UNIT PATH … Linked entry: `crates/busbar/src/root/plane_decisions.rs`
-  declares no `impl … Units for`."
-- `root-reach:decision` — "NO UNIT PATH REACHED …"
-
-Owner question **Q72(3)** is RULED: 1.6.0 SERVES the decisions (jev) plane. It is a DOOR plane, so
-its unit path is its served door (ARCHITECT Q-SO10, spec K5): its `linked-axes` row carries
-`plane-door`, exactly one function reached from `fn main()` builds its `PlaneDriver` (the root's
-one composition), and a reached line in that module drives a unit through it (the data route). Any
-one alone is red: a driver with no data route is not a unit path. The rows stay RED until SERVE-WIRE
-P2 and the DEC-SERVE serving slice land them, and are NOT declared in `qa/reachability.toml`.
+- `registered:decision` — the `plane-door` row, folded by `register_planes()` over `LINKED`.
+- `unit-path:decision` and `root-reach:decision` — green on the door: the row, the one composition
+  building the driver, and the data route driving a unit.
 
 ## 3. Unreached root modules — the `root-module` row
 

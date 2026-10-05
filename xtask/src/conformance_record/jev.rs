@@ -256,10 +256,13 @@ pub fn judge_jev_ledger(totals: &[u8]) -> Result<(), String> {
 /// loopback address declared as an allowed destination (`advanced.allow_destinations`), as an
 /// operator declares one, so the connector's default destination guard (private, loopback and
 /// metadata addresses refused, QUESTIONS Q130/Q131) admits the dial. The oidf rig declares its IdP
-/// stub the same way.
+/// stub the same way. And the deployment's public base URL (`public_url`), the data listener's own
+/// origin: the served operation is admitted against an audience read off it, and a deployment that
+/// states none fronts nothing (`busbar_plane_decisions::driven::admission`, as every door plane).
 pub fn jev_subject_config(data: u16, admin: u16, key_file: &Path) -> String {
     format!(
         "listen: \"127.0.0.1:{data}\"\n\
+         public_url: \"http://127.0.0.1:{data}\"\n\
          admin_listen: \"127.0.0.1:{admin}\"\n\
          providers:\n  {PROVIDER}:\n    api_key: {{ env: JEV_CONFORMANCE_PROVIDER_KEY }}\n\
          models: {{}}\n\

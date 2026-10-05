@@ -1,9 +1,9 @@
 # THE PLANE DOCTRINE (capability_equality.rs, plane_isomorphism.rs) — data, so the test sources
 # name no plugin.
 #
-# plane <column>: the owner's directional plane list, verbatim — the one-direction plane, then the
-# three bidirectional protocols counted in both directions. Must equal qa/capability-equality.json
-# `planes`.
+# plane <column>: the owner's directional plane list, verbatim — the one-direction planes (llm, and
+# decisions: both halves in one column, its only need outbound), and the three bidirectional
+# protocols counted in both directions. Must equal qa/capability-equality.json `planes`.
 plane llm
 plane mcp-client
 plane mcp-server
@@ -11,15 +11,18 @@ plane a2a-client
 plane a2a-server
 plane voice-client
 plane voice-server
+plane decisions
 #
-# root-leg <leg> <cargo feature that compiles it into this build>: the five root legs. Must equal
+# root-leg <leg> <cargo feature that compiles it into this build>: the six root legs. Must equal
 # qa/capability-equality.json `root_legs`. The mcp, a2a and voice legs are the served kernel-loop
-# rider (the voice leg its session rider), so the feature that links the plane gates them.
+# rider (the voice leg its session rider), and the decisions leg its door served end to end, so the
+# feature that links the plane gates them.
 root-leg root-a2a plane-a2a
 root-leg root-admin root-admin
 root-leg root-llm proto-llm
 root-leg root-mcp plane-mcp
 root-leg root-voice plane-streaming
+root-leg root-decisions plane-decisions
 #
 # crate <crates/busbar-<suffix>> <ledger column>...: the columns each workspace plane crate answers
 # to (both halves of every plane; plane-streaming is the plane voice is a dialect of).
@@ -31,9 +34,9 @@ crate plane-llm llm
 crate plane-mcp mcp-client mcp-server
 crate plane-a2a a2a-client a2a-server
 crate plane-streaming voice-client voice-server
+crate plane-decisions decisions
 #
 # owed <crate suffix>: workspace plane crates that answer to no ledger column yet, pinned exactly.
-owed plane-decisions
 #
 # installed <plane key> <ledger column>...: the doctrine's installed-plane axis (plane_isomorphism.rs)
 # — each plane the composition root installs from its own linked entry, and the directional ledger
