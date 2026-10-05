@@ -2137,9 +2137,26 @@ impl Gate for ReachabilityGate {
                     .into_iter()
                     .map(|h| format!("registry.rs:{h}")),
             );
+            // A DOOR ROW IS REGISTRATION (Part 2 #2: compiled-in = dropped-in): a linked row of the
+            // plane's crate whose `linked-axes` row carries `plane-door` is bound through the
+            // loader's one load at boot (`open_planes` over `LINKED.plane_doors`), the same
+            // registration a dropped-in door gets. The rule decisions' door row is read by, for
+            // every roster row.
+            if folds_linked {
+                hits.extend(
+                    door_rows_of(&manifest, p.linked_crate)
+                        .into_iter()
+                        .map(|feature| {
+                            format!(
+                        "{CRATE_MANIFEST} [package.metadata.busbar.linked-axes] `{feature}` on the \
+                         `{PLANE_DOOR_AXIS}` axis, bound through the loader's one load at boot"
+                    )
+                        }),
+                );
+            }
             let registered = if hits.is_empty() {
                 Err(format!(
-                    "no linked-table row for `{}` on the `plane` axis in {CRATE_MANIFEST} that \
+                    "no linked-table row for `{}` on the `plane` or `plane-door` axis in {CRATE_MANIFEST} that \
                      `register_planes()` ({MAIN_RS}) folds over `LINKED`, and no registration token {:?} appears in \
                      `plane_claims()` ({REGISTRY_RS}). The composition root does not install this \
                      plane, so nothing it declares is served. ({})",
@@ -3065,7 +3082,7 @@ impl Gate for ReachabilityGate {
                 );
                 ov
             },
-            "no linked-table row for `busbar-a2a` on the `plane` axis",
+            "no linked-table row for `busbar-a2a` on the `plane` or `plane-door` axis",
         ));
         report.push(red_over(
             self,
@@ -3082,7 +3099,27 @@ impl Gate for ReachabilityGate {
                 );
                 ov
             },
-            "no linked-table row for `busbar-voice` on the `plane` axis",
+            "no linked-table row for `busbar-voice` on the `plane` or `plane-door` axis",
+        ));
+        // A DOOR ROW IS REGISTRATION (Part 2 #2, compiled-in = dropped-in): a door-shaped plane —
+        // its declaration row on no `plane` axis, its crate linked again on `plane-door`, no
+        // plane_claims token — is registered by its door row, and green end to end. RED: the same
+        // plane with neither a door row nor a plane axis reds its registration row.
+        report.push(green_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a door-shaped plane registered ONLY through its plane-door row is green",
+            evidenced(door_shaped_decision(true)),
+        ));
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a plane with no door row and no plane axis, and no plane_claims token, reds its registration row",
+            &[row_registered("decision")],
+            door_shaped_decision(false),
+            "no linked-table row for `busbar-plane-decisions` on the `plane` or `plane-door` axis",
         ));
         report.push(red_over(
             self,
@@ -3251,6 +3288,36 @@ fn decision_door_row_beside(driven: bool) -> Overlay {
                 "plane-decisions = \"plane\"\n",
                 "plane-decisions = \"plane\"\nplane-decisions-door = \"plane-door\"\n",
             ),
+    );
+    ov
+}
+
+/// THE DOOR SHAPE, registration-wise: [`decision_door_row_beside`] (served, driven) with the plane's
+/// declaration row carrying NO `plane` axis and no plane_claims token, so the only registration
+/// left is its door row beside it (`door_row`), or none at all.
+fn door_shaped_decision(door_row: bool) -> Overlay {
+    let mut ov = decision_door_row_beside(true);
+    let mut manifest = FIXTURE_LINKED_MANIFEST.replace(
+        "plane-decisions = \"plane\"\n",
+        "plane-decisions = \"claims\"\n",
+    );
+    if door_row {
+        manifest = manifest
+            .replace(
+                "plane-decisions = \"busbar-plane-decisions\"\n",
+                "plane-decisions = \"busbar-plane-decisions\"\nplane-decisions-door = \"busbar-plane-decisions\"\n",
+            )
+            .replace(
+                "plane-decisions = \"claims\"\n",
+                "plane-decisions = \"claims\"\nplane-decisions-door = \"plane-door\"\n",
+            );
+    }
+    ov.set(CRATE_MANIFEST, manifest);
+    ov.set(
+        REGISTRY_RS,
+        include_str!("../../fixtures/reachability-green/crates/busbar/src/root/registry.rs")
+            .replace("use busbar_plane_decisions::DecisionPlane;\n", "")
+            .replace("    claims.push(DecisionPlane::KEY);\n", ""),
     );
     ov
 }
