@@ -1230,9 +1230,9 @@ mod tools_door {
             "refused as over budget, in the plane's words: {answer}"
         );
         // (The admission's wait — `LimitBlocked`'s `retry_after`, carried on the root's `Refusal` —
-        // does not reach the caller on this path: the kernel driver renders an admission refusal
-        // from its reason alone, so neither a `Retry-After` head nor `retryAfterSeconds` is
-        // asserted here. Named in the ledger's cell note.)
+        // reaches the plane's `refusal` as `retry_after_s` (ARCHITECT Q5, the kernel driver), but
+        // the tool door's budget refusal does not render it, so neither a `Retry-After` head nor
+        // `retryAfterSeconds` is asserted here. Named in the ledger's cell note.)
         assert!(
             !drain(&mut heard).contains(&"call"),
             "the refused call never went out"

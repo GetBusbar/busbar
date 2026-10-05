@@ -542,7 +542,7 @@
       "plane": "mcp-client",
       "state": "proven",
       "test": "crates/busbar/src/root/tests/door_steps.rs::a_tools_call_is_served_through_the_tool_door_and_its_money_posted",
-      "note": "the door charges the presenting key and refuses a spent budget before dispatch (429, over budget); the admission's wait does NOT reach the caller on this path -- the root's Refusal carries LimitBlocked's retry_after, but the kernel plane driver renders an admission refusal from its reason alone (plane_driver encode -> render_as with no walk terminal: retry_after_s 0), so neither a Retry-After head nor retryAfterSeconds is sent. Open: the Retry-After clause of this capability is a kernel-driver gap on every door plane.",
+      "note": "the door charges the presenting key and refuses a spent budget before dispatch (429, over budget); the admission's wait does NOT reach the caller on this path -- the root's Refusal carries LimitBlocked's retry_after and the kernel plane driver hands it to the plane's refusal as retry_after_s (ARCHITECT Q5), but the tool door's budget refusal does not render it, so neither a Retry-After head nor retryAfterSeconds is sent. Open: the Retry-After clause of this capability is a gap in the mcp tool door's budget rendering.",
       "root": {
         "state": "proven",
         "leg": "root-mcp",
@@ -554,7 +554,7 @@
       "plane": "mcp-server",
       "state": "proven",
       "test": "crates/busbar/src/root/tests/door_steps.rs::a_tools_call_is_served_through_the_tool_door_and_its_money_posted",
-      "note": "the door charges the presenting key and refuses a spent budget before dispatch (429, over budget); the admission's wait does NOT reach the caller on this path -- the root's Refusal carries LimitBlocked's retry_after, but the kernel plane driver renders an admission refusal from its reason alone (plane_driver encode -> render_as with no walk terminal: retry_after_s 0), so neither a Retry-After head nor retryAfterSeconds is sent. Open: the Retry-After clause of this capability is a kernel-driver gap on every door plane.",
+      "note": "the door charges the presenting key and refuses a spent budget before dispatch (429, over budget); the admission's wait does NOT reach the caller on this path -- the root's Refusal carries LimitBlocked's retry_after and the kernel plane driver hands it to the plane's refusal as retry_after_s (ARCHITECT Q5), but the tool door's budget refusal does not render it, so neither a Retry-After head nor retryAfterSeconds is sent. Open: the Retry-After clause of this capability is a gap in the mcp tool door's budget rendering.",
       "root": {
         "state": "proven",
         "leg": "root-mcp",
