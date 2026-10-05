@@ -329,14 +329,13 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
 }
 
 /// THE STORE, HOOK AND SECRET AXES: the linked store and hook rows onto the kernel's cold-kind axis,
-/// with the default store resolved from the store rows' own claims ([`default_store`]), and the
-/// secret axis ([`secret_rows`]). Two rows claiming the default, or a linked secret door that does
-/// not state itself, refuse the boot (exit 2) before anything resolves a store or a secret.
+/// and the secret axis ([`secret_rows`]). No row is a default store: the store is the one config
+/// names (Q-STORE = (B)). A linked secret door that does not state itself refuses the boot (exit 2)
+/// before anything resolves a store or a secret.
 pub fn register_stores(linked: &Linked) {
-    match default_store(linked.stores).and_then(|d| Ok((d, link_secrets(linked.secrets)?))) {
-        Ok((default, secrets)) => busbar_kernel::preflight::install_linked_rows(RootInstall {
+    match link_secrets(linked.secrets) {
+        Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
             stores: linked.stores,
-            default_store_module: default.unwrap_or_default(),
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),
@@ -406,22 +405,6 @@ pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
     SECRETS.get_or_init(|| {
         crate::root::loader::secret_calls::SecretRows::new(crate::root::dispatch::dispatcher, conns)
     })
-}
-
-/// THE DEFAULT GOVERNANCE STORE — the one linked store row that DECLARES itself the default, the
-/// store a deployment that configures no `store.module` runs on. The root holds no store name: it
-/// asks each row what it claims. No claim is `None`; two claims are refused, naming both rows —
-/// ambiguity is never resolved by picking a winner.
-pub fn default_store(stores: &[LinkedStore]) -> Result<Option<&'static str>, String> {
-    let mut claims = stores.iter().filter(|s| s.2).map(|s| s.0);
-    let first = claims.next();
-    match (first, claims.next()) {
-        (Some(a), Some(b)) => Err(format!(
-            "linked stores '{a}' and '{b}' both declare themselves the default governance store; \
-             a build links at most one default store"
-        )),
-        _ => Ok(first),
-    }
 }
 
 /// THE PLANE AXIS: every entry's registry row and every HOT-lane plane's — linked or dropped in —
