@@ -19,7 +19,7 @@ use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use busbar_kernel::state::App;
 
 use super::planes_tests::{bound, composed_services, Published, PUBLISHING};
-use super::{compose_planes, door_routes};
+use super::{compose_planes, compose_served, data_routes, door_routes};
 use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
 use crate::root::plane_node::{Node, NodeEndPost};
 
@@ -373,4 +373,111 @@ async fn a_nest_past_the_depth_cap_is_refused() {
         "every unit but the refused one"
     );
     assert_eq!(g.money.open_units(), 0);
+}
+
+/// A BUILD THAT LINKS NO PLANE SERVES A DROPPED-IN DOOR PLANE (ARCHITECT Q1 (2), #2: a dropped-in
+/// plane serves on the same path as a compiled-in one). The boot's own composition — `compose_served`
+/// over a governance book, the test plane dropped in with its section configured and its egress
+/// sealed over the deployment's (empty) providers, then `data_routes` — serves a keyed unit of it on
+/// the process's one node in every build, `--no-default-features` included: admitted and charged,
+/// then its walk exhausted, its money and node facts closed.
+#[tokio::test]
+async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-money-boot-composition";
+    let services = composed_services();
+    let dispatcher = Arc::new(Dispatcher::with_services(
+        DispatchConfig::default(),
+        Arc::clone(&services) as Arc<dyn busbar_contract::services::HostServices>,
+    ));
+    let Some(plane) = bound(instance, &dispatcher) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let _published = Published(instance);
+    let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
+    let gov = Arc::new(
+        GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
+            .expect("governance"),
+    );
+    let cost = CostModel::flat(1);
+    let (key, token) = gov
+        .mint_signed(
+            NewKeySpec {
+                name: "door".to_string(),
+                ..Default::default()
+            },
+            4_000_000_000,
+            1_700_000_000,
+        )
+        .expect("mint");
+    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    let providers = BTreeMap::new();
+    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let reach = crate::root::door_steps::DoorReach {
+        providers: &providers,
+        secrets: &secrets,
+        auths: Arc::new(crate::root::door_steps::OutboundAuths::new(
+            Arc::clone(&dispatcher),
+            crate::LINKED.auths,
+            None,
+            None,
+        )),
+        conns: Arc::new(busbar_core_connector::Connector::new()),
+        stream_ceiling_secs: 1,
+        upgrades: Vec::new(),
+    };
+    let mut sections = BTreeMap::new();
+    sections.insert("test_plane", serde_yaml::from_str("m: {}").expect("yaml"));
+    let served = compose_served(
+        Some(Arc::clone(&gov)),
+        &[(instance.to_string(), plane)],
+        &dispatcher,
+        &services,
+        &sections,
+        None,
+        &reach,
+        None,
+    )
+    .expect("every build composes a configured door plane");
+    assert_eq!(served.planes.len(), 1, "the dropped-in door plane composed");
+    let post = Arc::clone(served.post.as_ref().expect("its units post on the node"));
+    let routes = data_routes(served, &[], &[]).expect("its claims mount on the data listener");
+    let app = busbar_kernel::test_support::TestApp::new()
+        .keys_chain()
+        .governance(Arc::clone(&gov))
+        .cost(cost)
+        .build();
+    let (router, _admin, _handle) =
+        busbar_kernel::build_split_routers_serving(Arc::clone(&app), routes, 1 << 20, 0, false);
+    let (status, body) = {
+        use http_body_util::BodyExt as _;
+        use tower::ServiceExt as _;
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/call/direct:m")
+            .header("authorization", format!("Bearer {}", token.expose_secret()))
+            .body(axum::body::Body::from("ping"))
+            .expect("a request");
+        let resp = router.oneshot(req).await.expect("the router answers");
+        let status = resp.status().as_u16();
+        let bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("the body")
+            .to_bytes();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    };
+    assert!(
+        status == 503 && body.starts_with("refused:503:"),
+        "the dropped-in plane served the unit: admitted, then its walk exhausted; got {status} {body}"
+    );
+    let requests = gov
+        .usage_for(&app.cost, &key.id, busbar_kernel::store::now())
+        .expect("a read")
+        .expect("the key exists")
+        .requests;
+    assert_eq!(requests, 1, "its request was charged at admission");
+    assert_eq!(post.open_units(), 0, "its node facts closed at its end");
 }
