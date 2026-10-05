@@ -680,8 +680,9 @@ mod catalog_scan_test_hooks {
 /// for both `info`'s build proof and the `plugins?type=auth` catalog. `keys` (the built-in
 /// signed-key verifier) is engine-handled and always present; every other entry is an auth row the
 /// build LINKS onto the auth axis (the operator credential's, in the default build — its packaging
-/// feature is the composition root's).
-fn auth_modules_compiled_in() -> Vec<&'static str> {
+/// feature is the composition root's). Public so the composition root's tests can hold the shipped
+/// build to 1.5.5's answer over the rows it really links.
+pub fn auth_modules_compiled_in() -> Vec<&'static str> {
     let mut modules = vec![busbar_kernel::config::KEYS_MODULE];
     modules.extend(inbound_auth_names(
         busbar_kernel::preflight::linked_auth_rows(),
