@@ -1476,6 +1476,7 @@ fn piece(
         hop.left = true;
     }
     let left = hop.left;
+    let admitted = hop.admitted;
     let ob = &mut hop.outbox;
     let (mut reply, mut fields, mut records, mut arena, mut units) = (
         input.reply_buf(),
@@ -1544,6 +1545,20 @@ fn piece(
             key: arena.span(w.key.as_bytes()),
             value: arena.span(&w.value),
         });
+    }
+    // THE UNIT'S AUDIT ROW, with the head of the caller's answer, for a unit its admission passed:
+    // served when its hop left the plane, rejected when it was refused before it did (the engine's
+    // hop charge: `settle` applied, `refused` rejected).
+    let caller_head = matches!(
+        ob.head,
+        Some(Head::Reply(..) | Head::Events | Head::Framed(..))
+    );
+    if caller_head && admitted && !member.is_empty() {
+        records.push(door::audit_write(
+            &mut arena,
+            &door::agent_resource(member),
+            left,
+        ));
     }
     // A stream that already sent messages states the status it ends with on its closing answer:
     // its message and details are in the arena by then.
@@ -1756,8 +1771,43 @@ slot!(
                 rendered.status,
             )
         };
-        let (mut reply, mut fields, mut arena) =
-            (input.reply_buf(), input.fields_buf(), input.arena_buf());
+        // THE UNIT'S AUDIT ROW, rejected, for a refusal the engine made after its admission (a
+        // gate's veto, a spent budget, an open breaker), naming the unit's agent (or busbar's
+        // extended card's plane pool); a refusal before it (no key, no grant) leaves none.
+        use busbar_contract::abi::plane::RefusalCode;
+        let after_admission = given.cause == busbar_contract::abi::plane::REFUSAL_GATE
+            || [
+                RefusalCode::HookVeto,
+                RefusalCode::OverBudget,
+                RefusalCode::GroupFrozen,
+                RefusalCode::OverdraftCeiling,
+                RefusalCode::BreakerOpen,
+            ]
+            .iter()
+            .any(|c| c.code() == given.reason);
+        let audited = after_admission
+            .then(|| {
+                instance.get().and_then(|plane| {
+                    plane.units.with(&given.unit, |u| {
+                        u.and_then(|u| match (&u.disposition, &u.agent) {
+                            (Disposition::Request { row, .. }, None)
+                                if row.op == crate::ops::OP_AGENT_CARD =>
+                            {
+                                Some(door::PLANE_POOL_RESOURCE.to_string())
+                            }
+                            (_, Some(agent)) => Some(door::agent_resource(agent)),
+                            _ => None,
+                        })
+                    })
+                })
+            })
+            .flatten();
+        let (mut reply, mut fields, mut arena, mut records) = (
+            input.reply_buf(),
+            input.fields_buf(),
+            input.arena_buf(),
+            input.records_buf(),
+        );
         reply.extend(&body);
         for (name, value) in &head {
             fields.push(OutField {
@@ -1765,9 +1815,15 @@ slot!(
                 value: arena.span(value.as_bytes()),
             });
         }
-        let short = !(reply.fits() && fields.fits() && arena.fits());
+        if let Some(resource) = &audited {
+            records.push(door::audit_write(&mut arena, resource, false));
+        }
+        let short = !(reply.fits() && fields.fits() && arena.fits() && records.fits());
         let (rw, rnd) = reply.settle(short);
         let (fw, fnd) = fields.settle(short);
+        let (cw, cnd) = records.settle(short);
+        out.set(|o| &o.records_written, cw as u32);
+        out.set(|o| &o.records_needed, cnd as u32);
         let (aw, and) = arena.settle(short);
         out.set(|o| &o.reply_written, rw as u64);
         out.set(|o| &o.reply_needed, rnd as u64);

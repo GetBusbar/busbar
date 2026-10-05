@@ -609,6 +609,41 @@ pub fn claim_flags(r: &Route) -> u32 {
     flags
 }
 
+/// THE AUDIT ROW every admitted unit of this plane leaves (the engine's `receive::AUDIT_ACTION`),
+/// written as a `RECORD_AUDIT` record write on the unit's answer (SEAM-L(k)): `applied` when the
+/// unit was served (its hop left the plane, or the plane answered it), `rejected` when it was
+/// refused after its admission (a gate, a budget, a breaker, a hop that never left).
+pub const AUDIT_ACTION: &str = "agent.call";
+
+/// The resource an agent's row names (the kernel's `agent_key`: `agent:<id>`).
+#[must_use]
+pub fn agent_resource(agent: &str) -> String {
+    format!("agent:{agent}")
+}
+
+/// The resource busbar's extended card's row names: the plane pool (the `agents` section).
+pub const PLANE_POOL_RESOURCE: &str = crate::CONFIG_SECTION;
+
+/// The audit record write for `resource`, `applied` or rejected, its words in `arena`.
+#[must_use]
+pub fn audit_write(
+    arena: &mut busbar_contract::abi::sdk::HostBuf<'_, u8>,
+    resource: &str,
+    applied: bool,
+) -> busbar_contract::abi::plane::RecordWrite {
+    use busbar_contract::abi::plane::{AUDIT_APPLIED, AUDIT_REJECTED, RECORD_AUDIT};
+    busbar_contract::abi::plane::RecordWrite {
+        kind: if applied {
+            AUDIT_APPLIED
+        } else {
+            AUDIT_REJECTED
+        },
+        op: RECORD_AUDIT,
+        key: arena.span(AUDIT_ACTION.as_bytes()),
+        value: arena.span(resource.as_bytes()),
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/door.rs"]
 mod tests;

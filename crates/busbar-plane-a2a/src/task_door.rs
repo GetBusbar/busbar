@@ -61,6 +61,9 @@ pub struct Pass {
     refreshed_queued: usize,
     /// The reply the windows write is one message (the gRPC line's).
     message: bool,
+    /// The audit row the unit's answer writes with its first window: its resource, and whether
+    /// the unit was served ([`crate::door::AUDIT_ACTION`]).
+    pub(crate) audit: Option<(String, bool)>,
 }
 
 /// A finished listing: the handle the piece's calls count on from after it, and its answer's status
@@ -542,6 +545,9 @@ pub fn on_piece(
     plane.units.with(&unit, |u| {
         if let Some(u) = u {
             u.pass.served = served;
+            // An admitted verb the plane answered is the caller's call, audited as served (the
+            // engine's local arm, after its admission).
+            u.pass.audit = served.then(|| (crate::door::agent_resource(member), true));
         }
     });
     // BUSBAR'S OWN CALLBACK, MIRRORED ONTO THE AGENT before the answer goes (the engine awaited it
@@ -997,6 +1003,15 @@ fn window_core(
             value: arena.span(&w.value),
         });
     }
+    // THE UNIT'S AUDIT ROW, with its answer's first window.
+    let audit = first.as_ref().and(
+        plane
+            .units
+            .with(&unit, |u| u.and_then(|u| u.pass.audit.clone())),
+    );
+    if let Some((resource, applied)) = &audit {
+        records.push(crate::door::audit_write(&mut arena, resource, *applied));
+    }
     let short = !(fields.fits() && records.fits() && arena.fits() && units.fits());
     let (fw, fnd) = fields.settle(short);
     let (rw, rnd) = records.settle(short);
@@ -1012,6 +1027,13 @@ fn window_core(
     out.set(|o| &o.arena_needed, and as u64);
     if short {
         return Outcome::Failed;
+    }
+    if audit.is_some() {
+        plane.units.with(&unit, |u| {
+            if let Some(u) = u {
+                u.pass.audit = None;
+            }
+        });
     }
     let n = reply.stream(body);
     let rest = &body[n..];
@@ -1243,6 +1265,11 @@ pub fn card_piece(
             }
         }
         crate::arrival::CardAsk::Extended => {
+            plane.units.with(&unit, |u| {
+                if let Some(u) = u {
+                    u.pass.audit = Some((crate::door::PLANE_POOL_RESOURCE.to_string(), true));
+                }
+            });
             let (status, body) = extended_card(
                 plane,
                 &mut signer,

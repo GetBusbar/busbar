@@ -61,12 +61,61 @@ fn refused(
     out.answer(input, status, &fields, &body, AUDIT_NONE)
 }
 
-/// `202`, with no document: the report was taken. TRANSITIONAL (SEAM-L(t), ARCHITECT ruling Q3a):
-/// the recorded move's `writes` ride the serve answer's record slot once it carries one; until
-/// then the door does not serve this route (its kernel public path is SEAM-4o's).
+/// `202`, with no document: the report was taken, the move it recorded written to the task's
+/// chain with the answer (SEAM-L(t)).
 fn accepted(input: &Lent<'_, ServeIn>, out: &mut Out<'_, ServeOut>, writes: &[Write]) -> Outcome {
-    let _ = writes;
-    out.answer(input, 202, &[], b"", AUDIT_NONE)
+    answer(input, out, (202, &[], b""), writes)
+}
+
+/// A whole serve answer: `status`, the head `fields`, `body`, and the record `writes` it carries,
+/// every span in the one arena; a short buffer answers FAILED with what each needs.
+fn answer(
+    input: &Lent<'_, ServeIn>,
+    out: &mut Out<'_, ServeOut>,
+    (status, head, body): (u32, &[(&str, &str)], &[u8]),
+    writes: &[Write],
+) -> Outcome {
+    use busbar_contract::abi::plane::{OutField, RecordWrite, RECORD_PUT};
+    let (mut reply, mut fields, mut arena, mut records) = (
+        input.reply_buf(),
+        input.fields_buf(),
+        input.arena_buf(),
+        input.records_buf(),
+    );
+    reply.extend(body);
+    for (name, value) in head {
+        fields.push(OutField {
+            name: arena.span(name.as_bytes()),
+            value: arena.span(value.as_bytes()),
+        });
+    }
+    for w in writes {
+        records.push(RecordWrite {
+            kind: crate::task_door::kind_index(w.kind),
+            op: RECORD_PUT,
+            key: arena.span(w.key.as_bytes()),
+            value: arena.span(&w.value),
+        });
+    }
+    let short = !(reply.fits() && fields.fits() && arena.fits() && records.fits());
+    let (rw, rnd) = reply.settle(short);
+    let (fw, fnd) = fields.settle(short);
+    let (cw, cnd) = records.settle(short);
+    let (aw, and) = arena.settle(short);
+    out.set(|o| &o.reply_written, rw as u64);
+    out.set(|o| &o.reply_needed, rnd as u64);
+    out.set(|o| &o.fields_written, fw as u32);
+    out.set(|o| &o.fields_needed, fnd as u32);
+    out.set(|o| &o.records_written, cw as u32);
+    out.set(|o| &o.records_needed, cnd as u32);
+    out.set(|o| &o.arena_written, aw as u64);
+    out.set(|o| &o.arena_needed, and as u64);
+    if short {
+        return Outcome::Failed;
+    }
+    out.set(|o| &o.status, status);
+    out.set(|o| &o.audit, AUDIT_NONE);
+    Outcome::Ready
 }
 
 /// What a push keeps across its op's PENDING entries: it has already spent its push-volume budget,
