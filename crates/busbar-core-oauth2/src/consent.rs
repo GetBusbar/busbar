@@ -191,7 +191,7 @@ pub(crate) fn pushed_key(client_id: &str, request_uri: &str) -> String {
 
 /// The key an answer on this authorization request is staked under: [`pushed_key`] when the
 /// request names a `request_uri`, [`approval_key`] otherwise.
-fn approval_key(request: &ApprovalRequest<'_>) -> String {
+fn staked_key(request: &ApprovalRequest<'_>) -> String {
     let request_uri = request.uri.query().and_then(|q| {
         super::routes::form_urlencoded_pairs(q)
             .into_iter()
@@ -256,7 +256,7 @@ pub(crate) fn approval_resolver(
         if request.subject == PENDING || sessions.subject(&id).is_none() {
             return redirect(&login_url, request);
         }
-        match sessions.spend(&id, &approval_key(request)) {
+        match sessions.spend(&id, &staked_key(request)) {
             Some(true) => return ApprovalDecision::Approve,
             // The operator refused on the screen: RFC 6749 s4.1.2.1 `access_denied`, at the
             // client's validated redirect URI.
