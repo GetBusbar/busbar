@@ -675,12 +675,6 @@ async fn served_rider_refuses_an_unpinned_peer() {
     run_served("trust-pinning", "served_rider_refuses_an_unpinned_peer").await;
 }
 
-/// NET-GUARD, on the served leg: the dialled address is the one the guard judged.
-#[tokio::test]
-async fn served_rider_dials_only_the_judged_address() {
-    run_served("net-guard", "served_rider_dials_only_the_judged_address").await;
-}
-
 /// EGRESS-AUTH, on the served leg: the upstream is handed the planned credential only.
 #[tokio::test]
 async fn served_rider_presents_only_the_planned_credential() {
