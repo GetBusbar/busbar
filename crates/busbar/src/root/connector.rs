@@ -189,6 +189,9 @@ fn io_reactor() -> tokio::runtime::Handle {
 #[path = "tests/connector.rs"]
 mod tests;
 
-#[cfg(test)]
+// The h2/http1 battery dials through the linked `http` row, which composes over the linked `tcp`
+// row: a build without `transport-tcp` links no `tcp` row (the wire is served dropped in), so the
+// linked doors do not compose and there is nothing here for the battery to dial through.
+#[cfg(all(test, feature = "transport-tcp"))]
 #[path = "tests/connector_h2.rs"]
 mod h2_tests;
