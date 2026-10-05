@@ -179,6 +179,33 @@ fn debt_free_case<'a>(
     })
 }
 
+/// [`debt_free_case`] over a PLANTED TABLE: the shipped runner with one table edit, judged over the
+/// tree with the row's standing debt out of view, and the plant laid over both. For a rule whose
+/// proof needs a table row AND a tree plant at once (a signed ledger claim, and a copy in a plane
+/// it was not signed for). A table-twin gate has no cached baseline, so this pays for its own.
+fn debt_free_table_case<'a>(
+    cx: &'a Ctx,
+    name: &str,
+    covers: &[&str],
+    tables: Tables,
+    base: Overlay,
+    plant: Overlay,
+    naming: &[&str],
+) -> crate::gates::CasePlan<'a> {
+    let name = name.to_string();
+    let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
+    let naming: Vec<String> = naming.iter().map(|s| (*s).to_string()).collect();
+    crate::gates::CasePlan::new(move || {
+        let debt_free = DebtFree {
+            inner: StructureLintGate::with_tables(tables),
+            base,
+        };
+        let covers: Vec<&str> = covers.iter().map(String::as_str).collect();
+        let naming: Vec<&str> = naming.iter().map(String::as_str).collect();
+        prove_rows_red(cx, &debt_free, name, &covers, plant, &naming).take()
+    })
+}
+
 /// The shipped gate, run over the tree with one row's standing debt out of view. See
 /// [`debt_free_case`]. The plant the harness hands in is laid OVER the base, so a plant that
 /// touches a hidden path wins — the base can hide debt, never a plant.
@@ -305,7 +332,7 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     // for it, is two homes for one plane.
     let mut ov = Overlay::new();
     ov.set(
-        "crates/busbar-planted/src/voice/mod.rs",
+        "crates/busbar-planted/src/llm/mod.rs",
         format!(
             "{} : busbar_kernel::plane::registry::PlaneDecl = PLANTED;\n",
             crate::planes::PLANE_GRAMMAR
@@ -317,7 +344,7 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         "a plane outside the old two-plane constant with two homes is refused",
         &[roots::ROW_PLANE_ROOTS],
         ov,
-        &["PLANE-ROOT-AMBIGUOUS", "voice"],
+        &["PLANE-ROOT-AMBIGUOUS", "llm"],
     ));
 
     // ── the denominator ──────────────────────────────────────────────────────────────────────────
@@ -613,62 +640,65 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     // THREE PLANTS, ONE RUN, EVERY ONE NAMED (items 184, 223, 224). Each is a duplicate the old
     // two-plane scan could not see:
     //
-    // * THE PAIR THE OLD SCAN NEVER LOADED — voice and a2a. The scan compared mcp with a2a and
-    //   nothing else, so a copy between these two (the shape of voice's `absolute`, "the A2A
-    //   `serve::absolute` discipline, kept local") was structurally invisible.
+    // * A PAIR THE OLD SCAN NEVER LOADED — llm and mcp. The scan compared mcp with a2a and nothing
+    //   else, so a copy between any other pair (the shape of voice's `absolute`, "the A2A
+    //   `serve::absolute` discipline, kept local") was structurally invisible. (The pair was voice
+    //   and a2a until FLIP-A2A deleted `busbar-a2a`; llm and mcp are the same "never loaded" pair.)
     // * A PLANE NO ROSTER NAMES — it declares itself, so it is compared the day it lands, without
     //   anybody remembering to add it to a constant.
-    // * A THIRD COPY OF A LEDGERED NAME — the ledger's rows were argued for mcp and a2a; a copy in
-    //   a plane the claim was never signed for is a file nobody read, and matching the row by name
-    //   alone absorbed it.
-    let voice = addresses.plane("voice");
+    // * A THIRD COPY OF A LEDGERED NAME — a ledger row signs for the planes it was argued for; a copy
+    //   in a plane the claim was never signed for is a file nobody read, and matching the row by
+    //   name alone absorbed it. The real ledger holds no symbol row since FLIP-A2A struck the mcp+a2a
+    //   claims, so the signed row is PLANTED in the table (llm+mcp) and the third copy is laid in the
+    //   planted plane: the shipped runner, over the real tree, with one signed claim added.
+    let llm = addresses.plane("llm");
+    let mcp = addresses.plane("mcp");
+    const SIGNED: &str = "planted_signed_helper";
+    let mut signed_tables = t.clone();
+    signed_tables.plane_ledger.push(plane_dups::LedgerRow {
+        name: SIGNED.to_string(),
+        class: plane_dups::Class::Distinct,
+        concern: String::new(),
+        note: "a claim signed for llm and mcp only".to_string(),
+        planes: vec!["llm".to_string(), "mcp".to_string()],
+    });
     let mut ov = Overlay::new();
     ov.set(
-        format!("{voice}/planted_shared_concern.rs"),
-        "pub fn planted_shared_concern() {}\n",
+        format!("{llm}/planted_shared_concern.rs"),
+        format!("pub fn planted_shared_concern() {{}}\npub fn {SIGNED}() {{}}\n"),
     );
     ov.set(
-        format!("{}/planted_shared_concern.rs", addresses.a2a),
-        "pub fn planted_shared_concern() {}\npub fn planted_derived_plane_helper() {}\n",
+        format!("{mcp}/planted_shared_concern.rs"),
+        format!(
+            "pub fn planted_shared_concern() {{}}\npub fn planted_derived_plane_helper() {{}}\n\
+             pub fn {SIGNED}() {{}}\n"
+        ),
     );
     ov.set(
         "crates/busbar-planted/src/lib.rs",
         format!(
             "{} : busbar_kernel::plane::registry::PlaneDecl = PLANTED;\n\
-             pub fn planted_derived_plane_helper() {{}}\n",
+             pub fn planted_derived_plane_helper() {{}}\n\
+             pub fn {SIGNED}() {{}}\n",
             crate::planes::PLANE_GRAMMAR
         ),
     );
-    let signed = t
-        .plane_ledger
-        .iter()
-        .find(|r| r.planes.iter().all(|p| p != "voice") && !r.name.ends_with(".rs"))
-        .map(|r| r.name.clone());
-    let mut naming: Vec<String> = vec![
+    let naming = [
         "PLANE-DUPLICATE (symbol): `planted_shared_concern`".to_string(),
-        format!("voice:{voice}/planted_shared_concern.rs"),
+        format!("llm:{llm}/planted_shared_concern.rs"),
+        format!("mcp:{mcp}/planted_shared_concern.rs"),
         "PLANE-DUPLICATE (symbol): `planted_derived_plane_helper`".to_string(),
         "planted:crates/busbar-planted/src/lib.rs".to_string(),
+        format!("PLANE-DUPLICATE (symbol): `{SIGNED}`"),
+        "planted:crates/busbar-planted/src/lib.rs:3".to_string(),
+        "signs for".to_string(),
     ];
-    if let Some(name) = &signed {
-        ov.set(
-            format!("{voice}/planted_third_copy.rs"),
-            format!("pub fn {name}() {{}}\n"),
-        );
-        naming.push(format!("PLANE-DUPLICATE (symbol): `{name}`"));
-        naming.push("signs for".to_string());
-    } else {
-        report.note_infra_failure(
-            "structure-lint selftest: no ledger row signs for a symbol outside voice, so the \
-             third-copy plant has nothing to copy",
-        );
-    }
     let naming: Vec<&str> = naming.iter().map(String::as_str).collect();
-    report.push(debt_free_case(
+    report.push(debt_free_table_case(
         cx,
-        gate,
         "a name declared in two planes nobody signed for — on any pair, in any declared plane — is a duplicate",
         &[plane_dups::ROW_UNLEDGERED],
+        signed_tables,
         without_existing(&existing.unledgered),
         ov,
         &naming,

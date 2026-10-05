@@ -2,16 +2,12 @@
 //!
 //! A plane is pure over its inputs and performs no input or output of its own. Those are two
 //! separate claims and they are checked two separate ways: the source is walked for the shapes that
-//! would make either false, and the methods are driven twice over the same inputs and their answers
-//! compared. A comment claiming purity is worth nothing; a scan and a repeat are worth something.
+//! would make either false, and the door's arrival is driven repeatedly over the same inputs and its
+//! answers compared. A comment claiming purity is worth nothing; a scan and a repeat are worth something.
 
-use busbar_contract::plane::{Ingress, Plane, PlaneMeta};
-use busbar_contract::wire::FrameCursor;
+use busbar_contract::plane::PlaneMeta;
 use busbar_plane_a2a::A2aPlane;
 use std::path::{Path, PathBuf};
-
-mod common;
-use common::{frame, Scaffold};
 
 /// The crate's own source directory.
 fn src_dir() -> PathBuf {
@@ -188,10 +184,9 @@ fn the_plane_names_no_kernel_side_crate() {
     );
 }
 
-/// The decode step gives the same answer every time it is asked the same question.
+/// The door's arrival gives the same answer every time it is asked the same question.
 #[test]
-fn the_decode_step_is_deterministic() {
-    let plane = A2aPlane::EMPTY;
+fn the_arrival_is_deterministic() {
     let bodies: Vec<Vec<u8>> = A2aPlane::OP_CLASSES
         .iter()
         .filter_map(|op| busbar_plane_a2a::ops::METHODS.iter().find(|r| r.op == *op))
@@ -212,84 +207,14 @@ fn the_decode_step_is_deterministic() {
         "no request body was derived from the declared op classes, so nothing was driven twice"
     );
     for body in &bodies {
-        let mut answers = Vec::new();
-        for _ in 0..8 {
-            let scaffold = Scaffold::new("http");
-            let ctx = scaffold.ctx();
-            let frames = vec![frame(body)];
-            let mut cursor = FrameCursor::new(&frames);
-            let ingress = plane
-                .decode_ingress(&mut cursor, None, &ctx)
-                .expect("a known method decodes");
-            let summary = match ingress {
-                Ingress::Open(d) | Ingress::OneShot(d) => {
-                    format!("{:?}/{:?}/{}", d.op, d.correlation_out, d.facts.len())
-                }
-                other => format!("{other:?}"),
-            };
-            answers.push(summary);
-        }
+        let answers: Vec<String> = (0..8)
+            .map(|_| format!("{:?}", busbar_plane_a2a::arrival::decide(body, |_| None)))
+            .collect();
         assert!(
             answers.windows(2).all(|w| w[0] == w[1]),
-            "the decode step varied over one body: {answers:?}"
+            "the arrival varied over one body: {answers:?}"
         );
     }
-}
-
-/// The encode step writes the same bytes every time it is asked the same question.
-#[test]
-fn the_encode_step_is_deterministic() {
-    let plane = A2aPlane::EMPTY;
-    let answer = br#"{"id":1,"jsonrpc":"2.0","result":{"a":1,"b":2}}"#;
-    let mut written = Vec::new();
-    for _ in 0..8 {
-        let scaffold = Scaffold::new("http");
-        let ctx = scaffold.ctx();
-        let r = busbar_contract::plane::Response {
-            ir: busbar_contract::bounded::Ir::new(answer, &[]),
-            finish: busbar_contract::unit::FinishClass::Complete,
-            facts: busbar_contract::bounded::Facts::new(),
-        };
-        let out = plane
-            .encode_response(&r, None, &ctx)
-            .expect("it re-encodes");
-        written.push(out.as_slice().to_vec());
-    }
-    assert!(
-        written.windows(2).all(|w| w[0] == w[1]),
-        "the encode step varied over one answer"
-    );
-}
-
-/// The plane does not read the clock, so a call at a different time gives the same answer.
-///
-/// The two readings are DECADES apart and the second is the earlier one, so a plane that folded
-/// `ctx.clock` into what it decoded — a timestamp, an expiry, a monotonic tie-break — cannot land on
-/// the same answer by accident.
-#[test]
-fn the_answer_does_not_move_with_the_clock() {
-    let plane = A2aPlane::EMPTY;
-    let body = br#"{"jsonrpc":"2.0","id":9,"method":"tasks/get","params":{"id":"t1"}}"#;
-    let mut answers = Vec::new();
-    for unix_secs in [2_000_000_000_u64, 1_000_000_000] {
-        let scaffold = Scaffold::new("http");
-        let ctx = scaffold.ctx_at(unix_secs);
-        assert_eq!(
-            ctx.clock().unix_secs,
-            unix_secs,
-            "the scaffold handed the plane the reading this test chose"
-        );
-        let frames = vec![frame(body)];
-        let mut cursor = FrameCursor::new(&frames);
-        let Ok(Ingress::OneShot(draft)) = plane.decode_ingress(&mut cursor, None, &ctx) else {
-            panic!("a single-answer method decodes as one shot");
-        };
-        answers.push(format!("{:?}{:?}", draft.op, draft.correlation_out));
-    }
-    assert_eq!(
-        answers[0], answers[1],
-        "the decoded answer moved with the clock: {answers:?}"
-    );
 }
 
 /// The plane never hands back a decision, an amount or a credential.

@@ -1968,7 +1968,9 @@ because = "a type alias over the rows the loop posted, and a reader of it; the n
 # silent as deleting the table alone was.
 [gate.census]
 legacy_reach_prefixes = 4
-plane_crates = 4
+# 4 -> 3: crates/busbar-a2a deleted by the P3 a2a flip, named in [gate.census.deleted] (the
+# plane_crates floor drops only by ledgered deletions, ARCHITECT 2026-10-05).
+plane_crates = 3
 
 # HOW MANY CRATE DIRECTORIES EACH KIND GLOB MATCHES.
 #

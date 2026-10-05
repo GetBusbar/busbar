@@ -488,8 +488,8 @@ fn strip_comment_line_keeps_string_literals_intact() {
 
 #[test]
 fn the_plane_key_contract_matches_plane_keys_sh() {
-    assert_eq!(planes::PLANE_KEYS, ["llm", "mcp", "a2a", "voice"]);
-    assert_eq!(planes::plane_keys_protocol(), vec!["mcp", "a2a", "voice"]);
+    assert_eq!(planes::PLANE_KEYS, ["llm", "mcp", "voice"]);
+    assert_eq!(planes::plane_keys_protocol(), vec!["mcp", "voice"]);
     let src = planes::plane_src_roots();
     assert_eq!(src[0], "crates/busbar-llm/src");
     assert!(!src.contains(&"crates/busbar-llm-codec/src".to_string()));
@@ -592,15 +592,14 @@ fn plane_root_resolution_ports_the_four_shell_selftest_cases() {
         Err(PlaneRootError::Missing { .. })
     ));
 
-    // 4. the real tree's a2a resolves to the owner, not the codec crate.
-    let real = PlaneRoots::at(repo_root().join("crates"))
-        .resolve("a2a")
-        .unwrap();
-    assert!(
-        real.ends_with("busbar-a2a/src/a2a"),
-        "resolved to {}",
-        real.display()
-    );
+    // 4. the real tree's same-named wire directory is not a home: `busbar-plane-a2a/src/a2a/` holds
+    //    the A2A wire and declares nothing, so with the engine deleted (FLIP-A2A) `a2a` resolves to
+    //    NO home rather than to the directory that merely shares its name.
+    assert!(repo_root().join("crates/busbar-plane-a2a/src/a2a").is_dir());
+    assert!(matches!(
+        PlaneRoots::at(repo_root().join("crates")).resolve("a2a"),
+        Err(PlaneRootError::Missing { .. })
+    ));
 }
 
 // ── yaml_lite ───────────────────────────────────────────────────────────────────────────────────

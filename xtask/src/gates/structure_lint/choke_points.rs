@@ -120,7 +120,6 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
     let core = &a.core;
     let substrate = &a.substrate;
     let mcp = &a.mcp;
-    let a2a = &a.a2a;
 
     vec![
         // ── A ── persistence: one durable-write primitive. A fifth call site re-hand-rolling the
@@ -298,18 +297,17 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
             rules: Vec::new(),
             why: "the registry is being written generic on its FIRST build because there is no first use to extract a trait from later, so genericity has to be a test rather than a review habit".into(),
         },
-        // ── G ── the same choke point from the OTHER side: a plane PARAMETERISES the lifecycle, it
-        //         never re-declares one. F stops a plane's vocabulary leaking INTO the machine; this
-        //         stops a copy of the machine leaking OUT into a plane.
-        ChokeRow {
-            id: "G-trust-parameterised".into(),
-            tag: "TRUST-MACHINE-FORK".into(),
-            owner: format!("{a2a}/pin.rs (CardPin, the artifact, plus the one plane-specific refusal)"),
-            class_test: format!("{a2a}/tests/reuse_tests.rs::the_a2a_plane_declares_no_trust_state_of_its_own"),
-            remedy: "supply an artifact implementing trust::PinnedArtifact; never re-declare TrustState, Drift, Approval or their verbs".into(),
-            rules: Vec::new(),
-            why: "two planes carrying two copies of one lifecycle disagree the first time either copy is fixed, and the disagreement surfaces as a registration dispatch serves while the operator view calls it quarantined".into(),
-        },
+        // ── G ── STRUCK (FLIP-A2A). It was the same choke point from the OTHER side — "a plane
+        //         PARAMETERISES the kernel's trust lifecycle, it never re-declares one" — owned by
+        //         the legacy a2a engine (`busbar-a2a/src/a2a/pin.rs`, `CardPin` as a
+        //         `trust::PinnedArtifact`) and proved by its `tests/reuse_tests.rs`. FLIP-A2A deleted
+        //         that crate and both files with it. The subject did not move: the a2a plane is now a
+        //         memory-ABI door that may name `busbar-contract` and nothing else, so it cannot
+        //         parameterise `busbar_kernel::trust`, and its trust surface
+        //         (`busbar-plane-a2a/src/trust.rs`, ARCHITECT Q-L3B-VERBS) carries its own
+        //         `Approval`/`State`/`Drift` behind the ABI. A row naming a class test that cannot
+        //         exist is not re-pointed onto a test that proves something else; F above still
+        //         holds the kernel lifecycle neutral.
         // ── H ── THE OPERATOR-AUTHORED ASK: one origin for the bytes busbar puts its own name to.
         //         Half one is the TYPE SYSTEM — `CallerAsk` lives in a private module with one
         //         constructor — which leaves `AskEntryCfg` itself as the way in. An `AskEntryCfg` is

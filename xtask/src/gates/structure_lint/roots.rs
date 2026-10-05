@@ -98,7 +98,6 @@ pub struct Addresses {
     /// resolved to its home (or to an address nothing matches, with the finding recorded).
     pub planes: Vec<Plane>,
     pub mcp: String,
-    pub a2a: String,
 }
 
 /// One plane and the directory that owns it.
@@ -224,10 +223,8 @@ pub fn resolve(cx: &Ctx, f: &mut Findings) -> Addresses {
         src_roots: src_roots.into_iter().collect(),
         planes,
         mcp: String::new(),
-        a2a: String::new(),
     };
     a.mcp = a.plane("mcp");
-    a.a2a = a.plane("a2a");
     a
 }
 

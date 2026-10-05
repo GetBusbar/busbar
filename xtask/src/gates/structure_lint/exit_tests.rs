@@ -57,6 +57,11 @@ fn run_tables(t: Tables) -> Verdict {
     StructureLintGate::with_tables(t).run(&cx)
 }
 
+fn run_tables_over(t: Tables, ov: Overlay) -> Verdict {
+    let cx = Ctx::workspace().expect("workspace");
+    StructureLintGate::with_tables(t).run(&cx.with_overlay(ov))
+}
+
 const BRANCH: &str =
     "pub fn pick(transport: Transport) -> u8 {\n    if transport == Transport::Http { 1 } else { 0 }\n}\n";
 
@@ -79,63 +84,75 @@ fn item_183_the_axis_ban_judges_the_money_path_and_the_contract() {
     );
 }
 
-/// Item 184: a concern duplicated between two planes that are not mcp+a2a is seen.
+/// Item 184: a concern duplicated between two planes that are not mcp+a2a is seen. (The pair was
+/// llm+voice; llm+mcp is the same "not mcp+a2a" pair, and survives FLIP-STREAMING deleting
+/// `busbar-voice`.)
 #[test]
-fn item_184_a_duplicate_between_llm_and_voice_is_seen() {
+fn item_184_a_duplicate_between_llm_and_mcp_is_seen() {
     let mut ov = Overlay::new();
     ov.set(
-        "crates/busbar-llm/src/planted_llm_voice_copy.rs",
-        "pub fn planted_llm_voice_copy() {}\n",
+        "crates/busbar-llm/src/planted_llm_mcp_copy.rs",
+        "pub fn planted_llm_mcp_copy() {}\n",
     );
     ov.set(
-        "crates/busbar-voice/src/planted_llm_voice_copy.rs",
-        "pub fn planted_llm_voice_copy() {}\n",
+        "crates/busbar-mcp/src/mcp/planted_llm_mcp_copy.rs",
+        "pub fn planted_llm_mcp_copy() {}\n",
     );
     names(
         &run(ov),
         UNLEDGERED,
         &[
-            "`planted_llm_voice_copy`",
-            "llm:crates/busbar-llm/src/planted_llm_voice_copy.rs:1",
-            "voice:crates/busbar-voice/src/planted_llm_voice_copy.rs:1",
+            "`planted_llm_mcp_copy`",
+            "llm:crates/busbar-llm/src/planted_llm_mcp_copy.rs:1",
+            "mcp:crates/busbar-mcp/src/mcp/planted_llm_mcp_copy.rs:1",
         ],
     );
 }
 
-/// Item 223: a plane-local copy of another plane's helper (voice beside a2a) is seen, and a name the
-/// ledger signed for mcp+a2a is NOT excused when a third plane grows a copy of it.
+/// Item 223: a plane-local copy of another plane's helper is seen, and a name the ledger signed for
+/// two planes is NOT excused when a third plane grows a copy of it. The real ledger's symbol rows
+/// were all signed for mcp+a2a and were struck when FLIP-A2A deleted `busbar-a2a`, so the signed
+/// claim is planted in the table (llm+mcp) and the third copy in a planted plane.
 #[test]
-fn item_223_a_voice_copy_of_a_plane_helper_is_seen_and_a_signed_claim_does_not_stretch() {
-    let signed = plane_dups::ledger()
-        .into_iter()
-        .find(|r| r.name == "judge")
-        .expect("the ledger signs `judge` for mcp and a2a");
+fn item_223_a_third_plane_copy_of_a_plane_helper_is_seen_and_a_signed_claim_does_not_stretch() {
+    let mut t = real_tables();
+    t.plane_ledger.push(plane_dups::LedgerRow {
+        name: "planted_signed_helper".to_string(),
+        class: plane_dups::Class::Distinct,
+        concern: String::new(),
+        note: "a claim signed for llm and mcp only".to_string(),
+        planes: vec!["llm".to_string(), "mcp".to_string()],
+    });
     let mut ov = Overlay::new();
     ov.set(
-        "crates/busbar-voice/src/planted_voice_a2a_copy.rs",
-        format!(
-            "pub fn planted_voice_a2a_copy() {{}}\npub fn {}() {{}}\n",
-            signed.name
-        ),
+        "crates/busbar-llm/src/planted_llm_helper.rs",
+        "pub fn planted_signed_helper() {}\n",
     );
     ov.set(
-        "crates/busbar-a2a/src/a2a/planted_voice_a2a_copy.rs",
-        "pub fn planted_voice_a2a_copy() {}\n",
+        "crates/busbar-mcp/src/mcp/planted_mcp_helper.rs",
+        "pub fn planted_signed_helper() {}\npub fn planted_mcp_planted_copy() {}\n",
+    );
+    ov.set(
+        "crates/busbar-planted/src/lib.rs",
+        "pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl = PLANTED;\n\
+         pub fn planted_mcp_planted_copy() {}\n\
+         pub fn planted_signed_helper() {}\n",
     );
     names(
-        &run(ov),
+        &run_tables_over(t, ov),
         UNLEDGERED,
         &[
-            "`planted_voice_a2a_copy`",
-            "voice:crates/busbar-voice/src/planted_voice_a2a_copy.rs:1",
-            "`judge`",
-            "voice:crates/busbar-voice/src/planted_voice_a2a_copy.rs:2",
+            "`planted_mcp_planted_copy`",
+            "planted:crates/busbar-planted/src/lib.rs:2",
+            "`planted_signed_helper`",
+            "planted:crates/busbar-planted/src/lib.rs:3",
+            "signs for llm+mcp only",
         ],
     );
 }
 
 /// Item 224: the plane set is derived — a plane on no constant is compared, and a plane the old
-/// constant never named (voice) is judged by the plane-roots row.
+/// two-plane constant never named (llm) is judged by the plane-roots row.
 #[test]
 fn item_224_the_plane_set_is_derived_not_spelled() {
     let mut ov = Overlay::new();
@@ -145,11 +162,11 @@ fn item_224_the_plane_set_is_derived_not_spelled() {
          pub fn planted_derived_plane_helper() {}\n",
     );
     ov.set(
-        "crates/busbar-a2a/src/a2a/planted_derived_plane_helper.rs",
+        "crates/busbar-mcp/src/mcp/planted_derived_plane_helper.rs",
         "pub fn planted_derived_plane_helper() {}\n",
     );
     ov.set(
-        "crates/busbar-planted-twin/src/voice/mod.rs",
+        "crates/busbar-planted-twin/src/llm/mod.rs",
         "pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl = PLANTED;\n",
     );
     let v = run(ov);
@@ -161,7 +178,7 @@ fn item_224_the_plane_set_is_derived_not_spelled() {
             "planted:crates/busbar-planted/src/lib.rs:2",
         ],
     );
-    names(&v, PLANE_ROOTS, &["PLANE-ROOT-AMBIGUOUS", "`voice`"]);
+    names(&v, PLANE_ROOTS, &["PLANE-ROOT-AMBIGUOUS", "`llm`"]);
 }
 
 /// Item 236: the DEBT half is reachable — a DEBT row naming an undeclared concern is refused even
