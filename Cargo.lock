@@ -961,7 +961,6 @@ dependencies = [
 name = "busbar-plane-streaming"
 version = "1.6.0"
 dependencies = [
- "async-trait",
  "busbar-contract",
  "busbar-plugin-loader",
  "bytes",
@@ -1112,29 +1111,6 @@ dependencies = [
  "busbar-contract",
  "serde_json",
  "tokio-tungstenite",
-]
-
-[[package]]
-name = "busbar-voice"
-version = "1.6.0"
-dependencies = [
- "async-trait",
- "axum",
- "busbar-contract",
- "busbar-kernel",
- "busbar-plane-streaming",
- "bytes",
- "futures",
- "http",
- "http-body-util",
- "metrics",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "url",
 ]
 
 [[package]]

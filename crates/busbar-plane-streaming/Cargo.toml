@@ -51,10 +51,6 @@ serde_json = { workspace = true }
 # THE MEDIA-FRAME CARRIER. `IrAudioFrame::media` and the tool IR's opaque payloads are `bytes::Bytes`;
 # this crate reads and builds them at the same seam rather than converting through an owned `Vec<u8>`.
 bytes = { workspace = true }
-# THE SERVER-SIDE TOOL EXECUTOR PORT's async signature — an `async fn` in a trait object, written on the
-# `#[async_trait]` desugaring it always was. A proc-macro that expands to `Box`ed futures and pulls no
-# I/O into this crate's closure.
-async-trait = { workspace = true }
 # THE DOOR'S ONE READING OF THE PUBLIC BASE URL (`door::absolute`): the audience and the metadata URL
 # replace the path of the deployment's public URL and drop its query and fragment, parsed once.
 url = { workspace = true }

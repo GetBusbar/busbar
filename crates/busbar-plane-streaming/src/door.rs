@@ -4,11 +4,9 @@
 //! THE STREAMING PLANE'S DOOR: the one function a compiled-in row holds and a dropped-in image
 //! exports (`examples/streaming_door.rs`), and everything it states and answers.
 //!
-//! The composition root links [`door`] on its `plane-door` axis under this fold's development-only
-//! switch (`BUSBAR-1.6.0.md` Part 3, section 12, "The switch") and binds it through the loader's one
-//! load beside the dropped-in plane doors. The default build links no door of this plane, and with
-//! the switch on the legacy row still serves every route until the serve path hands this door the
-//! arrivals it takes.
+//! The composition root links [`door`] on its `plane-door` axis (the `plane-streaming` row,
+//! `BUSBAR-1.6.0.md` Part 3, section 12) and binds it through the loader's one load beside the
+//! dropped-in plane doors.
 //!
 //! ## What the plane states once
 //!

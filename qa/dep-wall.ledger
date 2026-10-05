@@ -53,11 +53,3 @@ busbar-transport-http	hyper-util
 busbar-transport-http	socket2
 busbar-transport-http	tokio (net)
 busbar-transport-ws	socket2
-busbar-voice	hyper-util
-busbar-voice	reqwest
-busbar-voice	rustls
-busbar-voice	socket2
-busbar-voice	std::net
-busbar-voice	tokio (net)
-busbar-voice	tokio-rustls
-busbar-voice	tokio::net

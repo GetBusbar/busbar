@@ -49,8 +49,9 @@ crates = [
   "busbar-plane-decisions",
   "busbar-plane-mcp",
   "busbar-plane-streaming",
-  "busbar-voice",
 ]
+# `busbar-voice` HAS NO ROW ANY MORE: FLIP-STREAMING deleted the legacy streams crate once the
+# streaming plane's door served every route (#18).
 # `busbar-voice-codec` HAS NO ROW ANY MORE (owner ruling R7, 2026-09-27, #39): it dissolved into
 # `busbar-plane-streaming`'s own `codec` module, a pure move — the LOC it carried is still counted,
 # now under the `busbar-plane-streaming` row above.

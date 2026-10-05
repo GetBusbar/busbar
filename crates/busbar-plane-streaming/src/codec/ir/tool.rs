@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! LAYER 1 — TOOL-CALL (full normalization; the moat). Design `BUSBAR-1.6.0.md` #18/#45.
+//! LAYER 1 — TOOL-CALL (correlation normalization). Design `BUSBAR-1.6.0.md` #18/#45.
 //!
-//! The one layer where the IR genuinely reshapes the wire, and the whole reason a governed plane
-//! beats a dumb WS pipe: tools execute server-side, under governance, and the browser is never trusted
-//! to author them.
+//! The one layer where the IR reshapes the wire: a call's correlation, so one dialect's call can be
+//! answered in another's terms. A tool call is part of the model's response and goes back to the
+//! caller unchanged except for dialect translation; the caller runs the tool and busbar executes
+//! nothing (Law 11; QUESTIONS Q98).
 
 use bytes::Bytes;
 
@@ -28,8 +29,8 @@ pub struct CallRef(pub u64);
 ///
 /// The Realtime tool loop this normalizes: the model announces a call
 /// (`response.output_item.added` with a `function_call` item) then streams
-/// `response.function_call_arguments.delta` → `…done`; busbar executes the tool server-side and
-/// returns `conversation.item.create{ function_call_output }` then `response.create`. A tool-call turn
+/// `response.function_call_arguments.delta` → `…done`; the caller runs the tool and returns
+/// `conversation.item.create{ function_call_output }` then `response.create`. A tool-call turn
 /// often produces NO audio until the result is fed back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IrDuplexTool {
@@ -58,8 +59,8 @@ pub enum IrDuplexTool {
         /// The raw wire id the dialect correlates on.
         call_id: String,
     },
-    /// busbar's SERVER-SIDE RESULT (client→server) — authored by the plane after governance, never by
-    /// the browser. Written back to the upstream as `function_call_output` + `response.create`.
+    /// The caller's RESULT (client→server), carried upstream as `function_call_output` +
+    /// `response.create` once the node's open-call table took it. busbar never authors one.
     CallResult {
         /// The call this result answers.
         call_ref: CallRef,

@@ -190,17 +190,16 @@ where
         }
     }
 
-    /// A piece from the far end, at `now_ms`. No tool is served on this node: every call is relayed
-    /// to the caller.
+    /// A piece from the far end, at `now_ms`. A tool call in it is relayed to the caller as-is: the
+    /// caller runs the tool (Law 11).
     pub fn from_far_end(&mut self, bytes: &[u8], now_ms: u64) -> Plan {
         if self.ended {
             return Plan::default();
         }
-        let (out, _) = self.pump.on_server_frame(
+        let out = self.pump.on_server_frame(
             WireEvent(Bytes::copy_from_slice(bytes)),
             now_ms,
             &mut self.units,
-            &|_: &str| false,
         );
         Plan {
             to_far_end: out.upstream.into_iter().map(|w| w.0.to_vec()).collect(),

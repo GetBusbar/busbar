@@ -39,14 +39,6 @@ impl TurnSink for Turns {
     }
 }
 
-fn serves_all(_: &str) -> bool {
-    true
-}
-
-fn serves_none(_: &str) -> bool {
-    false
-}
-
 fn usage_done() -> WireEvent {
     wire(serde_json::json!({
         "type": "response.done",
@@ -78,8 +70,8 @@ fn a_usage_report_closes_the_turn_with_its_counters_and_the_session_continues() 
         "type":"input_audio_buffer.append","audio": b64
     })));
     assert_eq!(up.upstream.len(), 1, "uplink audio is written through");
-    let (out, runs) = p.on_server_frame(usage_done(), 0, &mut sink, &serves_all);
-    assert!(!out.close && runs.is_empty());
+    let out = p.on_server_frame(usage_done(), 0, &mut sink);
+    assert!(!out.close);
     assert_eq!(sink.closed.len(), 1);
     let (usage, counters) = sink.closed[0];
     let usage = usage.expect("the turn carries its usage");
@@ -97,7 +89,7 @@ fn a_sink_that_refuses_cuts_the_session_and_tells_the_far_end_to_stop() {
         refuse: true,
         ..Turns::default()
     };
-    let (out, _) = p.on_server_frame(usage_done(), 0, &mut sink, &serves_all);
+    let out = p.on_server_frame(usage_done(), 0, &mut sink);
     assert!(out.close);
     assert!(texts(&out.upstream).contains("response.cancel"));
 }
@@ -114,16 +106,14 @@ fn a_barge_in_cancels_and_truncates_at_what_was_heard() {
         ),
         0,
         &mut sink,
-        &serves_all,
     );
-    let (out, _) = p.on_server_frame(
+    let out = p.on_server_frame(
         wire(
             serde_json::json!({"type":"input_audio_buffer.speech_started",
             "audio_start_ms":0,"item_id":"it7"}),
         ),
         0,
         &mut sink,
-        &serves_all,
     );
     let up = texts(&out.upstream);
     assert!(up.contains("response.cancel"), "{up}");
@@ -134,24 +124,33 @@ fn a_barge_in_cancels_and_truncates_at_what_was_heard() {
     assert!(texts(&out.downlink).contains("speech_started"));
 }
 
+/// LAW 11 (QUESTIONS Q98): a tool call is part of the model's response. Every frame of it is relayed
+/// to the caller as the model streamed it, its arguments verbatim, and nothing the gateway writes
+/// upstream answers it: no `function_call_output`, no `response.create`. RED: the pump handed a
+/// closed call to a server-side executor and wrote the executor's output upstream itself.
 #[test]
-fn a_tool_call_is_run_once_on_its_close_with_its_accumulated_arguments() {
+fn a_tool_call_is_relayed_to_the_caller_as_is_and_the_gateway_answers_nothing() {
     let mut p = pump();
     let mut sink = Turns::default();
-    let mut runs = Vec::new();
+    let (mut down, mut up) = (Vec::new(), Vec::new());
     for f in call_frames("ca", "alpha", "{\"x\":1}") {
-        let (_, r) = p.on_server_frame(f, 0, &mut sink, &serves_all);
-        runs.extend(r);
+        let out = p.on_server_frame(f, 0, &mut sink);
+        down.extend(out.downlink);
+        up.extend(out.upstream);
     }
-    assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].name, "alpha");
-    assert_eq!(runs[0].call_id, "ca");
-    assert_eq!(runs[0].args, b"{\"x\":1}");
-    let mut out = Outbound::default();
-    p.tool_executed(runs.remove(0), b"{\"ok\":true}".to_vec(), &mut out);
-    let up = texts(&out.upstream);
-    assert!(up.contains("function_call_output") && up.contains("\"call_id\":\"ca\""));
-    assert!(up.contains("response.create"));
+    let down = texts(&down);
+    assert!(
+        down.contains("\"name\":\"alpha\"")
+            && down.contains("\"call_id\":\"ca\"")
+            && down.contains("{\\\"x\\\":1}")
+            && down.contains("function_call_arguments.done"),
+        "the call's open, its arguments and its close reach the caller: {down}"
+    );
+    assert!(
+        up.is_empty(),
+        "the gateway writes nothing upstream for a call: {}",
+        texts(&up)
+    );
     p.settle_open_turn(&mut sink);
     assert_eq!(sink.closed.len(), 1);
     assert_eq!(
@@ -196,7 +195,7 @@ impl GovernedCalls for Table {
 }
 
 #[test]
-fn a_call_the_session_does_not_serve_waits_for_the_callers_reply() {
+fn a_relayed_call_waits_for_the_callers_reply() {
     let table = Arc::new(Table::default());
     let mut p = pump();
     p.bind_governed(GovernedSession {
@@ -205,11 +204,8 @@ fn a_call_the_session_does_not_serve_waits_for_the_callers_reply() {
     });
     let mut sink = Turns::default();
     for f in call_frames("cc", "lookup", "{}") {
-        let (_, runs) = p.on_server_frame(f, 42, &mut sink, &serves_none);
-        assert!(
-            runs.is_empty(),
-            "the gateway never answers a call it does not serve"
-        );
+        let out = p.on_server_frame(f, 42, &mut sink);
+        assert!(out.upstream.is_empty(), "the gateway never answers a call");
     }
     assert_eq!(
         *table.planned.lock().expect("lock"),
@@ -263,11 +259,10 @@ fn a_session_past_its_ceiling_is_told_why_in_its_dialect() {
 fn an_error_closes_the_open_turn_before_it_is_relayed() {
     let mut p = pump();
     let mut sink = Turns::default();
-    let (out, _) = p.on_server_frame(
+    let out = p.on_server_frame(
         wire(serde_json::json!({"type":"error","error":{"code":"x","message":"y"}})),
         0,
         &mut sink,
-        &serves_all,
     );
     assert_eq!(sink.closed.len(), 1);
     assert!(sink.closed[0].0.is_none());
@@ -275,18 +270,14 @@ fn an_error_closes_the_open_turn_before_it_is_relayed() {
 }
 
 #[test]
-fn a_call_no_one_on_this_node_serves_is_relayed_to_the_caller_and_never_answered_here() {
-    // No open-call table bound (an ungoverned node), and no tool served: the call reaches the
-    // caller, and nothing the gateway writes answers it.
+fn an_ungoverned_session_relays_a_call_and_never_answers_it() {
+    // No open-call table bound (an ungoverned node): the call reaches the caller, and nothing the
+    // gateway writes answers it.
     let mut p = pump();
     let mut sink = Turns::default();
     let (mut down, mut up) = (Vec::new(), Vec::new());
     for f in call_frames("cu", "unknown_tool", "{\"q\":1}") {
-        let (out, runs) = p.on_server_frame(f, 0, &mut sink, &serves_none);
-        assert!(
-            runs.is_empty(),
-            "the gateway runs nothing for a tool it does not serve"
-        );
+        let out = p.on_server_frame(f, 0, &mut sink);
         down.extend(out.downlink);
         up.extend(out.upstream);
     }
@@ -319,7 +310,7 @@ fn two_open_tool_calls_wait_on_two_different_correlations() {
         .into_iter()
         .chain(call_frames("dd", "b", "{}"))
     {
-        let _ = p.on_server_frame(f, 0, &mut sink, &serves_none);
+        let _ = p.on_server_frame(f, 0, &mut sink);
     }
     let planned: Vec<String> = table
         .planned
@@ -351,13 +342,12 @@ fn an_upstream_error_still_meters_the_turn_it_ended() {
     for id in ["e1", "e2"] {
         let open = call_frames(id, "t", "{}");
         let [first, ..] = open;
-        let _ = p.on_server_frame(first, 0, &mut sink, &serves_none);
+        let _ = p.on_server_frame(first, 0, &mut sink);
     }
     let _ = p.on_server_frame(
         wire(serde_json::json!({"type":"error","error":{"code":"x","message":"y"}})),
         0,
         &mut sink,
-        &serves_none,
     );
     assert_eq!(sink.closed.len(), 1);
     let closed = sink.closed[0].1;
@@ -370,7 +360,7 @@ fn a_barge_in_bills_what_the_interrupted_turn_served_on_the_turn_that_takes_over
     let mut sink = Turns::default();
     let _ = p.on_client_frame(uplink_ms(1_000));
     let [open, ..] = call_frames("b1", "t", "{}");
-    let _ = p.on_server_frame(open, 0, &mut sink, &serves_none);
+    let _ = p.on_server_frame(open, 0, &mut sink);
     let _ = p.on_server_frame(
         wire(
             serde_json::json!({"type":"input_audio_buffer.speech_started",
@@ -378,13 +368,12 @@ fn a_barge_in_bills_what_the_interrupted_turn_served_on_the_turn_that_takes_over
         ),
         0,
         &mut sink,
-        &serves_none,
     );
     assert!(
         sink.closed.is_empty(),
         "a barge-in closes no turn and drops no counter"
     );
-    let _ = p.on_server_frame(usage_done(), 0, &mut sink, &serves_none);
+    let _ = p.on_server_frame(usage_done(), 0, &mut sink);
     assert_eq!(sink.closed.len(), 1);
     let closed = sink.closed[0].1;
     assert_eq!((closed.audio_ms_in, closed.tool_calls), (1_000, 1));
@@ -425,7 +414,7 @@ fn twenty_turns_of_1050_ms_bill_21_audio_seconds_not_40() {
         let _ = p.on_client_frame(wire(serde_json::json!({
             "type":"input_audio_buffer.append","audio": b64
         })));
-        let _ = p.on_server_frame(usage_done(), 0, &mut sink, &serves_all);
+        let _ = p.on_server_frame(usage_done(), 0, &mut sink);
     }
     assert_eq!(sink.closed.len(), 20);
     assert_eq!(billed_audio_seconds(&sink), 21);
@@ -444,7 +433,7 @@ fn the_part_of_a_millisecond_a_frame_leaves_over_is_carried_not_floored() {
             "type":"input_audio_buffer.append","audio": b64
         })));
     }
-    let _ = p.on_server_frame(usage_done(), 0, &mut sink, &serves_all);
+    let _ = p.on_server_frame(usage_done(), 0, &mut sink);
     assert_eq!(sink.closed.len(), 1);
     assert_eq!(sink.closed[0].1.audio_ms_in, 1000);
     assert_eq!(billed_audio_seconds(&sink), 1);

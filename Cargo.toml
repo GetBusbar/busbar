@@ -8,7 +8,6 @@ members = [
     "crates/busbar-llm",
     "crates/busbar-mcp",
     "crates/busbar-a2a",
-    "crates/busbar-voice",
     "crates/busbar-contract",
     "crates/busbar-kernel",
     "crates/busbar-kernel-identity",

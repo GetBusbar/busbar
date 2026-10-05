@@ -20,18 +20,10 @@
 //!
 //! ## The dependency seam, stated honestly
 //!
-//! THIS CRATE DOES NOT DEPEND ON `busbar-voice`, AND THE EDGE RUNS THE OTHER WAY. Measured with
-//! `cargo tree -p busbar-plane-streaming --edges normal --depth 1`, this crate's whole direct
-//! closure is `busbar-contract` + `serde` + `serde_json` + `bytes` + `async-trait` (a proc-macro) —
-//! the codecs are this crate's own `codec` module, not a named dependency. The legacy engine is the
-//! crate that names THIS one, not the reverse — so there is no `default-features = false` on a line
-//! naming it here, because there is no such line at all.
-//!
-//! `busbar-voice`'s own plane machinery (`PLANE_DECL`, `mount`, `runtime`, `topology`) is built
-//! against a different, older plane architecture (`busbar_kernel::plane::registry::PlaneDecl`,
-//! the same shape `busbar-mcp`/`busbar-a2a` use) and is gated behind busbar-voice's `runtime` cargo
-//! feature. None of that machinery, and none of the async runtime it would pull in (`tokio`,
-//! `futures`, `hyper`), is reachable from here — the closure above measures zero of them.
+//! Measured with `cargo tree -p busbar-plane-streaming --edges normal --depth 1`, this crate's whole
+//! direct closure is `busbar-contract` + `serde` + `serde_json` + `bytes` + `url` — the codecs are
+//! this crate's own `codec` module, not a named dependency, and no async runtime (`tokio`,
+//! `futures`, `hyper`) is reachable from here.
 //!
 //! What this crate DOES use is [`codec::ir`] — the plane-4 duplex/session intermediate
 //! representation and both dialect codecs — which is pure, sync, and free of any async surface.
@@ -70,7 +62,6 @@ pub mod session_pump;
 pub mod session_row;
 pub mod session_unit;
 pub mod sessions;
-pub mod tools;
 
 #[cfg(test)]
 mod tests;

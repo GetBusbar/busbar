@@ -4,9 +4,9 @@
 //! THE NODE'S OPEN-CALL TABLE — every client-served tool call this node's sessions have open, and the
 //! one port the session runtime reaches it through.
 //!
-//! Two kinds of tool call cross a live session. A call for a tool this node serves is executed
-//! in-process and the client never authors its result. A call for a tool the node does NOT serve has
-//! only one possible answerer, so its leg is a wait: the runtime plans it
+//! A tool call crossing a live session is relayed to the caller, who runs the tool (Law 11): busbar
+//! executes nothing. The caller is its only possible answerer, so its leg is a wait: the session
+//! plans it
 //! ([`GovernedCalls::planned`]), the client's reply names the call it answers
 //! ([`GovernedCalls::replied`]), and the tick beside the pump ends the ones nobody answered
 //! ([`GovernedCalls::expired`]). Which answer wakes which wait is decided here, once, by

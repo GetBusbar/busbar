@@ -53,7 +53,8 @@ scan_roots = ["crates/*/src", "crates/*/tests", "crates/*/benches"]
 # two lists share zero members. manifest-allowlist reads THIS one to decide what "a plane names
 # another plane" means. The two collapse into one definition when the legacy engines are deleted;
 # until then a reader must not take either as "the plane kind".
-plane_crates = ["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"]
+# `busbar-voice` is struck: FLIP-STREAMING deleted the legacy streams crate (#18).
+plane_crates = ["busbar-llm", "busbar-mcp", "busbar-a2a"]
 # A file at one of these path fragments is TEST code (same rule the purity lint applies), in
 # addition to any `#[cfg(test)] mod … { … }` block inside a production file.
 # A bare `tests.rs` (Rust's `#[cfg(test)] mod tests;` file convention) is test code too.
@@ -263,7 +264,7 @@ busbar-mcp = 281
 # busbar-a2a 233 -> 232 (downward, at the measure): push delivery names the kernel's engine seam once
 # instead of per signature.
 busbar-a2a = 232
-busbar-voice = 88
+# busbar-voice is struck: FLIP-STREAMING deleted the crate, and the row went with it.
 
 [rules.ports-only-tests]
 why = """The same reach from test code. Tests that name core internals pin the plane to core's \
@@ -283,7 +284,7 @@ counts can trend to zero at their own pace."""
 busbar-llm = 1027
 busbar-mcp = 185
 busbar-a2a = 98
-busbar-voice = 43
+# busbar-voice is struck: FLIP-STREAMING deleted the crate, and the row went with it.
 
 # ── 4. no-uninstalled-seam ───────────────────────────────────────────────────────────────────────
 [rules.no-uninstalled-seam]
@@ -757,7 +758,6 @@ busbar-plane-llm = ["busbar-llm"]
 # + three third-party crates, and it names no engine crate in either spelling. The edge that exists
 # now runs the other way — `busbar-mcp` reads the plane's wire dialect — which is the direction a
 # plane's definition asks for and not a coupling this rule is about.
-busbar-plane-streaming = ["busbar-voice"]
 
 # ── 16. source-denylist (BUSBAR-1.6.0.md THE DESIGN, §2) ───────────────────────────────────────────────────────
 [rules.source-denylist]
