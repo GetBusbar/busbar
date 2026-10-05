@@ -134,6 +134,10 @@ case "$PLUGIN_KIND" in
   secret) REF="" ;;
   *) echo "FAIL: unknown plugin kind '$PLUGIN_KIND'" >&2; exit 1 ;;
 esac
+# A config names its store (Q-STORE = (B), #465): every kind but store, whose reference IS the
+# `store:` block above, boots on the compiled-in memory store.
+STORE_REF=""
+[ "$PLUGIN_KIND" = store ] || STORE_REF=$'store:\n  module: memory'
 cat > "$WORK/config.yaml" <<EOF
 listen: "127.0.0.1:0"
 providers:
@@ -145,6 +149,7 @@ models:
 plugins:
   enabled: true
   dir: '$WORK/plugins'
+$STORE_REF
 $REF
 EOF
 
