@@ -193,7 +193,7 @@ busbar-plugin-example-plane = { path = "../plane-example" }
 busbar-export-file = { workspace = true }
 busbar-export-file-plugin = { workspace = true, features = ["dropped-in"] }
 busbar-export-webhook = { workspace = true }
-busbar-export-webhook-plugin = { workspace = true }
+busbar-export-webhook-plugin = { workspace = true, features = ["dropped-in"] }
 busbar-export-prometheus = { workspace = true }
 busbar-export-prometheus-plugin = { workspace = true }
 busbar-export-otlp = { workspace = true }
