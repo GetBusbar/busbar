@@ -25,11 +25,22 @@ repos = ["busbar-auth-ldap"]
 reason = "the LDAP client of the ldap auth module. 0.12 is on rustls 0.23 / ring 0.17 (DEPS-AUDIT cut #7, busbar-auth-ldap#7). Its TLS features are a plugin-side TLS stack and are net-banned."
 
 [plugin-deps.mysql]
-version = "26"
+version = "28"
 default-features = false
-features = ["minimal"]
+features = ["minimal-rust"]
 repos = ["busbar-store-mysql"]
-reason = "the MySQL/MariaDB driver of the mysql store (its zlib is libz-sys, on the C allow-list below)."
+reason = "TESTS ONLY: the upstream MySQL/MariaDB driver the mysql store's live tests verify what landed with, independently of the store. Never in the shipped image (the store reaches its server only over the host's connector, busbar-store-mysql#15)."
+
+[plugin-deps.mysql_common]
+version = "0.35"
+default-features = false
+repos = ["busbar-store-mysql"]
+reason = "the sans-IO MySQL client protocol (packets, handshake, auth plugins, values) the mysql store speaks over the host's connector; no socket of its own (busbar-store-mysql#15)."
+
+[plugin-deps.percent-encoding]
+version = "2"
+repos = ["busbar-store-mysql"]
+reason = "the mysql store's reading of its `mysql://` URL (the 1.5.5 driver's URL rules); pure parsing."
 
 [plugin-deps.postgres]
 version = "0.19"
@@ -52,7 +63,7 @@ reason = "the SQLite store's engine, with SQLite compiled in (libsqlite3-sys bun
 [plugin-deps.ulid]
 version = "1"
 repos = ["busbar-store-mysql"]
-reason = "sortable ids for the mysql store's rows."
+reason = "TESTS ONLY: sortable ids the mysql store's conformance battery writes (a dev-dependency since busbar-store-mysql#15)."
 
 # ── cargo-deny [bans] ─────────────────────────────────────────────────────────────────────────────
 # ONE protocol = ONE library, ONE crypto backend = ring (BUSBAR-1.6.0.md §Libraries). Rendered into
