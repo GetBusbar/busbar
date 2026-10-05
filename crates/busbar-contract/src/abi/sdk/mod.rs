@@ -751,10 +751,10 @@ pub mod __door {
         }
     }
 
-    /// `busbar_abi` — the handshake version ([`crate::abi::handshake::VERSION`]).
+    /// `busbar_abi` — the frozen TRANSPORT handshake, shared by every image that answers it.
     #[no_mangle]
     pub extern "C-unwind" fn busbar_abi() -> u32 {
-        crate::abi::handshake::VERSION
+        crate::abi::cold::TRANSPORT_VERSION
     }
 
     /// `busbar_plugin_kind` — a `'static` NUL-terminated string owned by this library; null when the

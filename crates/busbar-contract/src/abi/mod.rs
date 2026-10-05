@@ -9,11 +9,13 @@
 //!   lifecycle, and each kind's own operations, shapes and version.
 //! * [`hot`] — the HOT lane (was `busbar-plane-abi`). A `#[repr(C)]` fn-pointer vtable the planes
 //!   and transports that have not yet moved to their door still speak; deleted with the last of them
-//!   (M6-HOT-PLANE). Its images answer the [`handshake`] below.
+//!   (M6-HOT-PLANE). Its images answer the two-symbol handshake `busbar_abi` / `busbar_plugin_kind`
+//!   still defined beside the JSON lane's residue ([`cold`]).
 //!
-//! The COLD/JSON lane (the six-symbol JSON `call` wire) is gone: no kind is cold, and
-//! a 1.5.5 JSON-contract plugin is refused at boot naming the rebuild against the 1.6.0 SDK
-//! (THE DESIGN §11.1, §11.8).
+//! * [`cold`] — the residue of the COLD/JSON lane (THE DESIGN §11.1 abolished it): the hosted login's
+//!   auth wire and the two request-log export sinks' wire, each deleted with the last plugin on it.
+//!   No store, secret or hook plugin rides it, and a 1.5.5 JSON-contract plugin is refused at boot
+//!   naming the rebuild against the 1.6.0 SDK (§11.8).
 //!
 //! # The shared root (this module)
 //!
@@ -90,37 +92,12 @@ macro_rules! slot_table {
     };
 }
 
-/// M6-COLD-DELETE RESIDUE: the hosted login's JSON lane, and nothing else (see its module doc).
+/// M6-COLD-DELETE RESIDUE: the hosted login's and the two request-log sinks' JSON lane (see its
+/// module doc).
 pub mod cold;
 pub mod host;
 pub mod hot;
 pub mod sdk;
-
-/// THE HOT LANE'S HANDSHAKE (M6-HOT-PLANE: deleted with [`hot`]): the two symbols a HOT-lane plane
-/// or transport image answers before the loader reads its `#[repr(C)]` decl — the version it was
-/// built against and the ONE kind it speaks. A memory-ABI plugin exports neither: its one symbol is
-/// [`mechanism::DOOR_SYMBOL`].
-pub mod handshake {
-    /// The handshake version a HOT-lane image answers from `busbar_abi()`.
-    pub const VERSION: u32 = 1;
-
-    /// The handshake's symbol names, NUL-terminated for `dlsym`.
-    pub mod symbol {
-        /// `busbar_abi() -> u32` — [`super::VERSION`].
-        pub const ABI: &[u8] = b"busbar_abi\0";
-        /// `busbar_plugin_kind() -> *const u8` — a NUL-terminated string, the ONE kind the image
-        /// speaks.
-        pub const PLUGIN_KIND: &[u8] = b"busbar_plugin_kind\0";
-    }
-
-    /// `busbar_abi` — returns [`VERSION`].
-    pub type AbiFn = unsafe extern "C-unwind" fn() -> u32;
-
-    /// `busbar_plugin_kind` — a pointer to a NUL-terminated `'static` string naming the ONE kind
-    /// the image speaks. It carries no length: the loader reads it with `CStr::from_ptr`, so it must
-    /// come from a NUL-terminated static.
-    pub type PluginKindFn = unsafe extern "C-unwind" fn() -> *const u8;
-}
 
 // THE ONE MEMORY ABI (the design's locked plugin ABI: one place for every shape): the shared
 // mechanism and one folder per kind.

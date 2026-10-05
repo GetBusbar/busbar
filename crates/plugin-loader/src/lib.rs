@@ -16,7 +16,7 @@ use busbar_contract::abi::cold::{
     symbol, CallFn, CloseFn, FreeFn, MAX_PLUGIN_RESPONSE_LEN, STATUS_ERR, STATUS_OK, STATUS_PANIC,
     STATUS_PROTOCOL, STATUS_UNSUPPORTED,
 };
-use busbar_contract::abi::handshake::{self, PluginKindFn};
+use busbar_contract::abi::cold::{PluginKindFn, TRANSPORT_VERSION};
 use libloading::Library;
 use std::os::raw::c_void;
 use std::path::Path;
@@ -281,8 +281,8 @@ fn ffi_guard<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<R, String
 pub(crate) fn abi_symbol(
     lib: &Library,
     display: &str,
-) -> Result<busbar_contract::abi::handshake::AbiFn, String> {
-    unsafe { lib.get::<busbar_contract::abi::handshake::AbiFn>(handshake::symbol::ABI) }
+) -> Result<busbar_contract::abi::cold::AbiFn, String> {
+    unsafe { lib.get::<busbar_contract::abi::cold::AbiFn>(symbol::ABI) }
         .map(|f| *f)
         .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))
 }
@@ -294,15 +294,14 @@ pub(crate) fn abi_symbol(
 /// refusal names it (`plugin`, `plane`, `transport`), so each path's text is unchanged byte for
 /// byte.
 pub(crate) fn abi_handshake(
-    abi: busbar_contract::abi::handshake::AbiFn,
+    abi: busbar_contract::abi::cold::AbiFn,
     display: &str,
     noun: &str,
 ) -> Result<u32, String> {
     let abi_version = ffi_guard_confined(display, "abi", || unsafe { abi() })?;
-    if abi_version != handshake::VERSION {
+    if abi_version != TRANSPORT_VERSION {
         return Err(format!(
-            "{noun} '{display}' targets transport ABI v{abi_version}, engine speaks v{}",
-            handshake::VERSION
+            "{noun} '{display}' targets transport ABI v{abi_version}, engine speaks v{TRANSPORT_VERSION}"
         ));
     }
     Ok(abi_version)
@@ -976,7 +975,7 @@ fn wire_up(
 
 /// Read `busbar_plugin_kind()` from a mapped library into an owned `String`.
 fn read_plugin_kind(lib: &Library, display: &str) -> Result<String, String> {
-    let f = unsafe { lib.get::<PluginKindFn>(handshake::symbol::PLUGIN_KIND) }.map_err(|_| {
+    let f = unsafe { lib.get::<PluginKindFn>(symbol::PLUGIN_KIND) }.map_err(|_| {
         format!("'{display}' is not a busbar plugin (no busbar_plugin_kind symbol)")
     })?;
     kind_from_fn(*f, display)

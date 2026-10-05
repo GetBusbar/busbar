@@ -37,7 +37,7 @@ fn the_frozen_symbols_answer_through_the_registered_transport() {
     );
     assert_eq!(
         __door::busbar_abi(),
-        busbar_contract::abi::handshake::VERSION
+        busbar_contract::abi::cold::TRANSPORT_VERSION
     );
 
     // SAFETY: the door symbols never dereference anything for a transport image.
