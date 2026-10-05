@@ -796,10 +796,13 @@ mod mint_door {
                     TOKEN_URL.to_string(),
                     "POST".to_string(),
                     "/tenant/oauth2/v2.0/token".to_string(),
-                    vec![(
-                        "content-type".to_string(),
-                        "application/x-www-form-urlencoded".to_string()
-                    )],
+                    vec![
+                        (
+                            "content-type".to_string(),
+                            "application/x-www-form-urlencoded".to_string()
+                        ),
+                        ("accept".to_string(), "*/*".to_string())
+                    ],
                     form.to_string(),
                 )
             );
