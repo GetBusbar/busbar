@@ -104,6 +104,8 @@ pub struct Exchange {
     ended: Option<u32>,
     /// The address set the dial must land on ([`Exchange::landing_within`]); empty = no pin.
     within: String,
+    /// The registration the exchange reaches ([`Exchange::as_member`]); `None` = none.
+    member: Option<String>,
     /// The stream's facts are read before it closes ([`Exchange::observing`]).
     observe: bool,
     /// What they said, once read: kept across replays, which answer without writing them again.
@@ -135,6 +137,7 @@ impl Exchange {
             applied: 0,
             ended: None,
             within: String::new(),
+            member: None,
             observe: false,
             observed: None,
         }
@@ -163,6 +166,15 @@ impl Exchange {
     #[must_use]
     pub fn landing_within(mut self, within: String) -> Self {
         self.within = within;
+        self
+    }
+
+    /// This exchange reaches the REGISTRATION `name` (its name in the plugin's declaring section):
+    /// what the host sealed for that registration alone (its private reach) applies to its dial;
+    /// an exchange that names none dials under its need's class alone (SEAM-4p).
+    #[must_use]
+    pub fn as_member(mut self, name: impl Into<String>) -> Self {
+        self.member = Some(name.into());
         self
     }
 
@@ -292,7 +304,7 @@ fn send_and_read(
     need: u32,
     target: Option<&str>,
 ) -> Answer<()> {
-    let stream = ready!(c.establish(need, target, &state.within));
+    let stream = ready!(c.establish_as(need, target, &state.within, 0, state.member.as_deref()));
     ready!(send(c, state, stream));
     loop {
         let this = c.issued();
