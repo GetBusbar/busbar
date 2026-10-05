@@ -2680,10 +2680,7 @@ impl FarEnd for DoorFar<'_, '_> {
         self.far().and_then(|far| far.failure(token))
     }
 
-    fn candidates(
-        &self,
-        token: &Pass<Route>,
-    ) -> Option<busbar_kernel::plane_driver::Candidates> {
+    fn candidates(&self, token: &Pass<Route>) -> Option<busbar_kernel::plane_driver::Candidates> {
         self.far().and_then(|far| far.candidates(token))
     }
 
