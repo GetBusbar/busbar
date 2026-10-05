@@ -118,6 +118,9 @@ pub struct OutboundRequest {
     /// The need the request rides, as the plane named it (`OnPieceOut::need`: its declared index
     /// plus one); `0` = the member's own.
     pub need: u32,
+    /// The plane marked the request's message text (`PIECE_OUT_TEXT` on a far-bound answer): a far
+    /// end whose wire tells text from binary is written it as text (ARCHITECT Q-L5B-WS-DIAL).
+    pub text: bool,
 }
 
 /// THE FAR END, as the pump reaches it: the kernel's egress walk and the connector stand behind it
@@ -172,6 +175,17 @@ pub trait FarEnd: Sync {
     fn constrain(&self, token: &Pass<Route>, constraint: super::hooks::Constraint) {
         let _ = (token, constraint);
     }
+    /// A HELD FAR END's next frame (a duplex session's: dialled once, by the [`FarEnd::send`] of its
+    /// first turn, and held for the session): write `request`'s body, as one message, into the
+    /// attempt that send opened and its far end answered. The verb, target and fields were the
+    /// open's. `false` when it could not be written (no attempt is held, its answer has ended, or
+    /// the far end went away). May await the far end taking the bytes; the session's own waits
+    /// bound it.
+    fn write<'a>(
+        &'a self,
+        token: &'a Pass<Route>,
+        request: OutboundRequest,
+    ) -> impl Future<Output = bool> + Send + 'a;
 }
 
 /// THE CALLER'S SIDE of the unit: the reply head, then the reply bytes.
@@ -691,6 +705,34 @@ async fn guarded_run<T>(
     guarded(&mut run.stop, left, fut).await
 }
 
+/// [`guarded_run`], and for a session's turn leg also the session's end ([`session::Turn::halted`]):
+/// what `fut` answered, or how the walk ends instead. A halt is seen only between crossings, never
+/// under one.
+async fn turn_wait<T>(
+    run: &mut Pumping<'_>,
+    turn: Option<&session::Turn<'_>>,
+    fut: impl Future<Output = T>,
+) -> Result<T, End> {
+    let halted = async {
+        match turn {
+            Some(t) => t.halted().await,
+            None => std::future::pending().await,
+        }
+    };
+    let raced = async {
+        tokio::select! {
+            biased;
+            halt = halted => Err(halt),
+            v = fut => Ok(v),
+        }
+    };
+    match guarded_run(run, raced).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(halt)) => Err(halt.end()),
+        Err(cause) => Err(End::Cancel(cause, None)),
+    }
+}
+
 /// A future that finishes once `left` has passed; never, for `None`.
 async fn until(left: Option<Duration>) {
     match left {
@@ -703,7 +745,10 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     /// S3: every attempt of the unit, until its reply is complete, it fails, or the driver cancels.
     /// A session's turn leg ([`session::Turn`]) is the same walk: each attempt picks a member
     /// inside the destination set sealed at the open (a member outside it is passed over, never
-    /// crossed), pushes only the ATTEMPT piece, and sends the turn's request.
+    /// crossed), pushes only the ATTEMPT piece, and sends the turn's request: the session's ONE dial.
+    /// Its far end is then held: the far pieces reach the far side's ticket as they arrive, until
+    /// the far end's answer ends or the session does ([`session::Turn::halted`]), and the far end's
+    /// first answer tells the session's later turns they may be written into it.
     pub(crate) async fn attempts(
         &self,
         run: &mut Pumping<'_>,
@@ -714,7 +759,11 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         let mut failed: Option<&'static str> = None;
         'attempt: loop {
             attempt_no += 1;
-            let picked = guarded_run(run, self.far.member(run.token, attempt_no)).await;
+            if let Some(t) = turn {
+                // A new attempt holds nothing yet: the session's later turns wait for its answer.
+                t.held.send_replace(false);
+            }
+            let picked = turn_wait(run, turn, self.far.member(run.token, attempt_no)).await;
             let ((member, pool), terminal) = match picked {
                 Ok(Pick::Member { name, .. }) if turn.is_some_and(|t| !t.within(&name)) => {
                     continue 'attempt;
@@ -740,7 +789,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     retry_after,
                 }) => return End::Exhausted(status, retry_after),
                 Ok(Pick::Vetoed { status, text }) => return End::Vetoed(status, text),
-                Err(cause) => return End::Cancel(cause, None),
+                Err(end) => return end,
             };
             run.bufs.member.clear();
             run.bufs.member.extend_from_slice(member.as_bytes());
@@ -810,24 +859,24 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     None => End::Failed(ReasonCode::DestinationUnreachable),
                 };
             }
-            match guarded_run(run, self.far.send(run.token, request)).await {
+            match turn_wait(run, turn, self.far.send(run.token, request)).await {
                 Ok(true) => {}
                 // Not sent, so nothing reached the caller: fail over.
                 Ok(false) => {
                     failed = self.far.failure(run.token);
                     continue 'attempt;
                 }
-                Err(cause) => return End::Cancel(cause, None),
+                Err(end) => return end,
             }
             let mut first = true;
             loop {
-                let piece = match guarded_run(run, self.far.next(run.token)).await {
+                let piece = match turn_wait(run, turn, self.far.next(run.token)).await {
                     Ok(Some(piece)) => piece,
                     Ok(None) => FarPiece {
                         last: true,
                         ..FarPiece::default()
                     },
-                    Err(cause) => return End::Cancel(cause, None),
+                    Err(end) => return end,
                 };
                 // THE WALK'S OWN STATUS TABLE: an attempt it fails over never reaches the plane,
                 // while nothing has reached the caller.
@@ -836,6 +885,10 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     continue 'attempt;
                 }
                 run.lock().facts.far_end_answered = true;
+                if let Some(t) = turn {
+                    // The far end answered this attempt: it is the session's held far end.
+                    t.held.send_replace(true);
+                }
                 run.bufs.input.clear();
                 run.bufs.input.extend_from_slice(&piece.bytes);
                 let status = piece.status.filter(|_| first);
@@ -951,6 +1004,9 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         }
                         if out.need != 0 {
                             request.need = out.need;
+                        }
+                        if out.flags & PIECE_OUT_TEXT != 0 {
+                            request.text = true;
                         }
                         request.fields.extend(bufs.fields_of(out.fields_written));
                         request.body.extend_from_slice(emitted);

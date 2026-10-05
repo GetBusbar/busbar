@@ -60,12 +60,31 @@ pub mod stat {
 // ── the doubles ──────────────────────────────────────────────────────────────────────────────────
 
 /// A far end that answers every attempt with the same script, and records what it was sent.
+///
+/// [`Far::held`] is a HELD far end instead (one socket a duplex session dials once): its answer
+/// opens with a greeting, then answers every frame it takes (the dial's body, then each written
+/// frame) with `re:<frame>`, and never ends on its own unless it takes the frame `bye`, which it
+/// answers and then hangs up. A frame written to a socket that is not open is refused.
 pub(crate) struct Far {
     members: Vec<&'static str>,
     script: Vec<FarPiece>,
     sent: Mutex<Vec<OutboundRequest>>,
     current: Mutex<VecDeque<FarPiece>>,
+    /// Every dial opens a held socket.
+    held: bool,
+    /// The frames written into a held far end, with whether its socket was open when each came.
+    written: Mutex<Vec<(Vec<u8>, bool)>>,
+    /// A held far end's socket is open.
+    open: std::sync::atomic::AtomicBool,
+    /// Woken when a held far end has a piece to read.
+    arrived: tokio::sync::Notify,
 }
+
+/// The greeting a held far end opens its answer with, before any frame is answered.
+pub(crate) const GREETING: &[u8] = b"hello";
+
+/// The frame a held far end answers and then hangs up on.
+pub(crate) const BYE: &[u8] = b"bye";
 
 impl Far {
     pub(crate) fn new(members: &[&'static str], chunks: &[&[u8]]) -> Self {
@@ -87,11 +106,48 @@ impl Far {
             script,
             sent: Mutex::new(Vec::new()),
             current: Mutex::new(VecDeque::new()),
+            held: false,
+            written: Mutex::new(Vec::new()),
+            open: std::sync::atomic::AtomicBool::new(false),
+            arrived: tokio::sync::Notify::new(),
+        }
+    }
+
+    /// A held far end over `members`: every dial opens one socket that stays open.
+    #[allow(dead_code)] // built by the composition root's session suite only
+    pub(crate) fn held(members: &[&'static str]) -> Self {
+        Far {
+            held: true,
+            ..Far::new(members, &[])
         }
     }
 
     pub(crate) fn sent(&self) -> Vec<OutboundRequest> {
         self.sent.lock().unwrap().clone()
+    }
+
+    /// The frames written into a held far end, with whether its socket was open when each came.
+    #[allow(dead_code)] // read by the composition root's session suite only
+    pub(crate) fn written(&self) -> Vec<(Vec<u8>, bool)> {
+        self.written.lock().unwrap().clone()
+    }
+
+    /// A held far end takes `frame`: it answers `re:<frame>`, and hangs up after `bye`.
+    fn answer(&self, frame: &[u8]) {
+        let mut current = self.current.lock().unwrap();
+        current.push_back(FarPiece {
+            bytes: [b"re:".as_slice(), frame].concat(),
+            ..FarPiece::default()
+        });
+        if frame == BYE {
+            self.open.store(false, Ordering::SeqCst);
+            current.push_back(FarPiece {
+                last: true,
+                ..FarPiece::default()
+            });
+        }
+        drop(current);
+        self.arrived.notify_one();
     }
 }
 
@@ -130,6 +186,7 @@ impl FarEnd for Far {
         _: &'a Pass<Route>,
         request: OutboundRequest,
     ) -> impl Future<Output = bool> + Send + 'a {
+        let held_body = self.held.then(|| request.body.clone());
         let script = if request.member == OVERLOADED {
             vec![FarPiece {
                 bytes: b"overloaded".to_vec(),
@@ -152,23 +209,59 @@ impl FarEnd for Far {
                 ..FarPiece::default()
             });
             script
+        } else if held_body.is_some() {
+            // The socket opens and greets; the dial's body is its first frame.
+            vec![FarPiece {
+                bytes: GREETING.to_vec(),
+                status: Some((101, 1)),
+                ..FarPiece::default()
+            }]
         } else {
             self.script.clone()
         };
         self.sent.lock().unwrap().push(request);
         *self.current.lock().unwrap() = script.into_iter().collect();
+        if let Some(body) = held_body {
+            self.open.store(true, Ordering::SeqCst);
+            self.answer(&body);
+        }
         async { true }
     }
 
-    fn next<'a>(
+    async fn next(&self, _: &Pass<Route>) -> Option<FarPiece> {
+        loop {
+            // Interest first, then the queue: a piece put between the two still wakes this.
+            let arrived = self.arrived.notified();
+            let piece = self.current.lock().unwrap().pop_front();
+            match piece {
+                Some(piece) => {
+                    tokio::task::yield_now().await;
+                    return Some(piece);
+                }
+                // A held far end's socket stays open with nothing to read: wait for a frame.
+                None if self.open.load(Ordering::SeqCst) => arrived.await,
+                None => {
+                    tokio::task::yield_now().await;
+                    return None;
+                }
+            }
+        }
+    }
+
+    fn write<'a>(
         &'a self,
         _: &'a Pass<Route>,
-    ) -> impl Future<Output = Option<FarPiece>> + Send + 'a {
-        let piece = self.current.lock().unwrap().pop_front();
-        async move {
-            tokio::task::yield_now().await;
-            piece
+        request: OutboundRequest,
+    ) -> impl Future<Output = bool> + Send + 'a {
+        let open = self.open.load(Ordering::SeqCst);
+        self.written
+            .lock()
+            .unwrap()
+            .push((request.body.clone(), open));
+        if open {
+            self.answer(&request.body);
         }
+        async move { open }
     }
 }
 

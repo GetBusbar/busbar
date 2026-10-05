@@ -818,6 +818,40 @@ impl busbar_kernel::plane_host::HookConfigHost for EngineHostImpl {
         crate::config::caller_in_hook_groups(caller_group, hook_groups, &self.app.groups_registry)
     }
 
+    fn plane_gates_of(
+        &self,
+        plane_key: &str,
+        container: &str,
+    ) -> Vec<(u16, busbar_kernel::hooks::ResolvedPolicy)> {
+        // The set the previous release's gate seam fired, as resolved (`gate::decide` orders it).
+        self.app
+            .plane_gates(plane_key)
+            .and_then(|m| m.get(container))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn plane_rewrites_of(
+        &self,
+        plane_key: &str,
+        container: &str,
+    ) -> Vec<(
+        std::time::Duration,
+        Arc<dyn busbar_contract::hooks::RoutingPolicy>,
+    )> {
+        self.app
+            .plane_rewrites(plane_key)
+            .and_then(|m| m.get(container))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn gate_scan(&self) -> Option<(Arc<busbar_kernel::session::SessionStore>, u64)> {
+        self.app
+            .incremental_scan
+            .then(|| (Arc::clone(&self.app.session_store), self.app.config_version))
+    }
+
     // ── HOOK/CONFIG FACADE READS (App-retype WEDGE 2d) — each a pure borrow of the bound snapshot ──
 
     fn pool_rewrites(
@@ -2790,6 +2824,40 @@ pub trait HookConfigHost: Send + Sync {
     /// PROVIDED, so a plane's own hook call sites record through the same seam as the kernel's.
     fn hook_read(&self, name: &str, principal: Option<&str>, op: &str, identity: bool) {
         crate::audit::amend::hook_read(name, principal, op, identity);
+    }
+
+    /// The DECISION GATES the plane `plane_key` attached to its entry `container` this generation
+    /// (the plane's per-entry `hooks:`), as resolved; empty = none. A gate-first plane's units
+    /// are screened by them (`abi::plane::TAIL_HOOKS_GATED`). PROVIDED: a host with no per-plane
+    /// gate map attaches none.
+    fn plane_gates_of(
+        &self,
+        plane_key: &str,
+        container: &str,
+    ) -> Vec<(u16, crate::hooks::ResolvedPolicy)> {
+        let _ = (plane_key, container);
+        Vec::new()
+    }
+
+    /// The REWRITE chain the plane `plane_key` attached to its entry `container` this generation;
+    /// empty = none. PROVIDED: a host with no per-plane rewrite map attaches none.
+    fn plane_rewrites_of(
+        &self,
+        plane_key: &str,
+        container: &str,
+    ) -> Vec<(
+        std::time::Duration,
+        std::sync::Arc<dyn busbar_contract::hooks::RoutingPolicy>,
+    )> {
+        let _ = (plane_key, container);
+        Vec::new()
+    }
+
+    /// The gate's INCREMENTAL-SCAN substrate under the operator's opt-in: the node's session store
+    /// and the hook-config generation a clearance is bound to; `None` = every request is screened
+    /// whole. PROVIDED: `None`.
+    fn gate_scan(&self) -> Option<(std::sync::Arc<crate::session::SessionStore>, u64)> {
+        None
     }
 
     /// The GLOBAL request-stage `kind: tap` observers — the borrow of `App::tap_hooks`. Each

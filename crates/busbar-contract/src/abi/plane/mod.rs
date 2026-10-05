@@ -321,6 +321,14 @@ pub const TAIL_FALLBACK: u32 = 1;
 /// pinned to one member: its `arrive` names [`CLAIM_PROBE`], its ATTEMPT piece asks for the probe
 /// request, and it is zero-billed and draws no lease.
 pub const TAIL_PROBES: u32 = 1 << 1;
+/// [`PlaneTail::flags`]: the plane's request-stage hooks run GATE-FIRST (spec Part 3 section 12
+/// "Hooks": in the hook order the previous release used for that plane; ARCHITECT ruling
+/// Q-FOLD-A2A-2). The decision gates attached to the entry the plane's `project` names
+/// ([`crate::abi::hook::RequestView::pool`]) screen its projected body first — keyed on the view's
+/// session for the incremental scan, fail-closed, a refusal at the hook's own clamped status — and
+/// then the entry's rewrite chain runs; no stage tap and no route policy fires. Without it the
+/// hooks run in the routed order: the rewrite chain, the request taps, then the route decision.
+pub const TAIL_HOOKS_GATED: u32 = 1 << 2;
 
 /// [`Claim::flags`]: the route takes no inbound credential; the kernel admits an arrival on it
 /// without verifying a caller. Without it, the route takes one.

@@ -29,6 +29,9 @@
 //!    key failing and records nothing; a transient failure is recorded and the piece fails over
 //!    before the plane sees it. A failure before any answer — refused, reset, the attempt's cap —
 //!    fails over too.
+//! 4. [`FarEnd::write`], for a duplex session's HELD far end only: once the attempt's far end has
+//!    answered, each later turn's frame goes into the same connection (`Conns::write`, one message
+//!    per frame), never a second dial; the reads of step 3 go on until its answer ends.
 //!
 //! Deadlines are 1.5.5's: the walk's whole budget is the pool's request timeout, measured from the
 //! unit's start; the first answer is bounded by the member's attempt cap (never beyond what the walk
@@ -70,6 +73,10 @@ use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
 
 /// The bytes one read of the far end takes.
 const READ_BYTES: usize = 16 * 1024;
+
+/// The longest pause between two offers of a held far end's frame its connection's buffer had no
+/// room for, milliseconds.
+const WRITE_PAUSE_MAX_MS: u64 = 64;
 
 /// 1.5.5's cap on a buffered far-end ERROR body (`limits.upstream_error_body_max_bytes`, default
 /// 256 KiB; v1.5.5 `DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES`, config/mod.rs): the default for
@@ -840,7 +847,9 @@ impl EgressFarEnd<'_> {
             &OpenDesc {
                 target: &url,
                 fields: &borrowed,
-                body: &request.body,
+                // A TEXT message rides no opening: the connection opens bare and the message is
+                // written to it as text once open (the opening carries no text bit).
+                body: if request.text { &[] } else { &request.body },
                 timeout_ms: cap_ms,
                 method: &request.verb,
                 head_target: path.as_bytes(),
@@ -850,17 +859,63 @@ impl EgressFarEnd<'_> {
         let now_ms = e.clock.now_millis();
         match opened {
             Ok(conn) => {
-                let mut w = self.lock();
-                if let Some(live) = w.live.as_mut() {
-                    live.keep = keep;
-                    live.conn = Some(conn);
-                    live.anchor_ms = now_ms;
+                {
+                    let mut w = self.lock();
+                    if let Some(live) = w.live.as_mut() {
+                        live.keep = keep;
+                        live.conn = Some(conn);
+                        live.anchor_ms = now_ms;
+                    }
+                }
+                if request.text && !request.body.is_empty() {
+                    return self.write_to(conn, &request.body, true).await;
                 }
                 true
             }
             Err(err) => {
                 let _ = self.no_answer(token, NoAnswer::of(err));
                 false
+            }
+        }
+    }
+
+    /// A HELD FAR END's next frame: `body`, as one message, into the live attempt's connection,
+    /// once its far end has answered and while its answer has not ended. The connection's own
+    /// buffer takes it; while it is full the write waits a short, growing pause and offers the rest
+    /// again (the table's write registers no waker), bounded by the session's own waits.
+    async fn write_frame(&self, body: Vec<u8>, text: bool) -> bool {
+        let conn = {
+            let w = self.lock();
+            match w.live.as_ref() {
+                Some(live) if live.answered && !live.ended => live.conn,
+                _ => None,
+            }
+        };
+        let Some(conn) = conn else {
+            return false;
+        };
+        self.write_to(conn, &body, text).await
+    }
+
+    /// Write `body` whole to `conn` as one message (`text` = a text message), pausing on a full
+    /// buffer.
+    async fn write_to(&self, conn: ConnId, body: &[u8], text: bool) -> bool {
+        let e = self.egress;
+        let (mut at, mut pause_ms) = (0, 1);
+        loop {
+            match e.conns.write(e.caller, conn, &body[at..], true, text) {
+                Ok(n) => {
+                    at += n;
+                    if at >= body.len() {
+                        return true;
+                    }
+                    pause_ms = 1;
+                }
+                Err(ConnError::Pending) => {
+                    tokio::time::sleep(Duration::from_millis(pause_ms)).await;
+                    pause_ms = (pause_ms * 2).min(WRITE_PAUSE_MAX_MS);
+                }
+                Err(_) => return false,
             }
         }
     }
@@ -1189,6 +1244,14 @@ impl FarEnd for EgressFarEnd<'_> {
         token: &'a Pass<Route>,
     ) -> impl Future<Output = Option<FarPiece>> + Send + 'a {
         self.next_piece(token)
+    }
+
+    fn write<'a>(
+        &'a self,
+        _token: &'a Pass<Route>,
+        request: OutboundRequest,
+    ) -> impl Future<Output = bool> + Send + 'a {
+        self.write_frame(request.body, request.text)
     }
 }
 

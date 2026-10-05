@@ -65,6 +65,10 @@ struct Table {
     closed: AtomicU64,
     /// The need every open was made on.
     needs: Mutex<Vec<u32>>,
+    /// Whether each write was a text message.
+    texts: Mutex<Vec<bool>>,
+    /// Every write: the connection, the bytes, and whether they completed the caller's message.
+    written: Mutex<Vec<(u64, Vec<u8>, bool)>>,
 }
 
 fn piece(kind: PieceKind, len: usize, status: Option<(u32, Option<u64>)>) -> Piece {
@@ -152,11 +156,13 @@ impl Conns for Table {
     fn write(
         &self,
         _: InstanceId,
-        _: ConnId,
+        c: ConnId,
         b: &[u8],
-        _: bool,
-        _: bool,
+        end: bool,
+        text: bool,
     ) -> Result<usize, ConnError> {
+        self.written.lock().unwrap().push((c.0, b.to_vec(), end));
+        self.texts.lock().unwrap().push(text);
         Ok(b.len())
     }
     fn read(&self, _: InstanceId, _: ConnId, _: Ticket, _: &mut [u8]) -> Result<Piece, ConnError> {
@@ -530,6 +536,7 @@ fn token() -> Pass<Route> {
 
 fn request() -> OutboundRequest {
     OutboundRequest {
+        text: false,
         member: String::new(),
         pool: String::new(),
         attempt_no: 1,
@@ -1415,4 +1422,96 @@ async fn a_far_request_opens_on_the_need_it_names() {
         assert_eq!(needs.get(before).copied(), opened, "named {named}");
         drop(far);
     }
+}
+
+/// A HELD FAR END (ARCHITECT Q-L5-FAR (A)): once the attempt's far end has answered, a later
+/// turn's frame is written into the SAME connection as one whole message, never a second open; a
+/// frame before the answer, or after the answer ended, is refused (nothing holds it).
+#[tokio::test]
+async fn a_held_far_ends_frame_goes_into_the_answered_connection() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"hel", b"lo"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    let frame = |body: &[u8]| OutboundRequest {
+        body: body.to_vec(),
+        ..request()
+    };
+    assert!(
+        !far.write(&t, frame(b"early")).await,
+        "nothing is held before a dial"
+    );
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    assert!(
+        !far.write(&t, frame(b"unanswered")).await,
+        "a dial its far end has not answered holds nothing"
+    );
+    let first = far.next(&t).await.expect("the answer's first piece");
+    assert_eq!(first.status, Some((200, 1)));
+    assert!(far.write(&t, frame(b"two")).await);
+    assert_eq!(
+        *r.table.written.lock().unwrap(),
+        vec![(1, b"two".to_vec(), true)],
+        "into the answered connection, as one message"
+    );
+    assert_eq!(
+        r.table.opened.lock().unwrap().len(),
+        1,
+        "never a second open"
+    );
+    let rest = drain(&far, &t).await;
+    assert!(rest.last().is_some_and(|p| p.last));
+    assert!(
+        !far.write(&t, frame(b"late")).await,
+        "an ended answer holds nothing"
+    );
+    assert_eq!(r.table.written.lock().unwrap().len(), 1);
+}
+
+/// Q-L5B-WS-DIAL: a far request the plane marked text opens its connection bare (no opening body,
+/// which carries no text bit) and is written to it as ONE text message; an unmarked one rides its
+/// opening as before and writes nothing.
+#[tokio::test]
+async fn a_text_request_opens_bare_and_is_written_as_text() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    let sent = far
+        .send(
+            &t,
+            OutboundRequest {
+                text: true,
+                ..request()
+            },
+        )
+        .await;
+    assert!(sent);
+    let opened = r.table.opened.lock().unwrap().clone();
+    assert!(opened[0].2.is_empty(), "the opening carries no body");
+    assert_eq!(
+        r.table.written.lock().unwrap().clone(),
+        [(1, b"{}".to_vec(), true)],
+        "the body is written, whole"
+    );
+    assert_eq!(r.table.texts.lock().unwrap().clone(), [true]);
+    drop(far);
+
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    assert_eq!(r.table.opened.lock().unwrap()[1].2, b"{}");
+    assert_eq!(
+        r.table.written.lock().unwrap().len(),
+        1,
+        "no write of its own"
+    );
 }

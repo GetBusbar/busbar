@@ -673,11 +673,94 @@ fn a_fee_unit_floor_count_keeps_the_fee() {
     assert_eq!(usage(&r).1, 5, "a floor fee unit keeps the fee");
 }
 
-/// THE SESSION MONEY GUARD (ARCHITECT 2026-09-30: K6's refusing session defaults stand until
-/// K6-4). The production money seam states no session money yet, so it refuses every duplex
-/// session at its open, as `Unpriced`: no session runs unbilled. K6-4 turns this test over.
+/// THE SESSION MONEY GUARD, kept by K6-4: a session on a unit whose money facts the root never
+/// opened is refused at its open, as `Unpriced`: no session runs unbilled.
 #[test]
-fn the_production_money_seam_refuses_a_session_until_its_money_is_stated() {
+fn a_session_on_a_unit_with_no_money_facts_is_refused() {
     let r = rig(None, 5, ExhaustionMode::FinishUnit);
-    assert_eq!(r.money.session_opened(&ctx(1)), Err(ReasonCode::Unpriced));
+    assert_eq!(r.money.session_opened(&ctx(2)), Err(ReasonCode::Unpriced));
+}
+
+/// K6-4 (THE DESIGN §7, "A session is one unit with one line"): each turn's cumulative counts are a
+/// checkpoint, never a line; the session's end writes ONE line of its last cumulative counts, and
+/// the unit's own end then ledgers nothing twice.
+#[test]
+fn a_session_writes_one_line_of_its_last_cumulative_counts_at_its_end() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    assert_eq!(r.money.session_opened(&ctx(1)), Ok(()));
+    for n in [30, 75, 120] {
+        assert_eq!(
+            r.money.checkpoint(&ctx(1), &reported(n)),
+            Checkpoint::Continue
+        );
+    }
+    assert_eq!(usage(&r).0, 0, "a turn is a checkpoint, never a line");
+    r.money.session_ended(&ctx(1));
+    assert_eq!(usage(&r).0, 120, "the session's one line");
+    r.money.session_ended(&ctx(1));
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert_eq!(usage(&r).0, 120, "nothing is ledgered twice");
+    assert_eq!(r.money.open_units(), 0, "the unit's end closes it");
+}
+
+/// A cancel on either side of a session bills nothing of its own: the near side's facts never
+/// see the far end answer, so its cancel bill is empty, and a session that took it as its line
+/// would serve audio and bill none. The session's end bills its last cumulative counts. RED before
+/// K6-4: the side's empty bill was the session's only line.
+#[test]
+fn a_cancelled_side_does_not_replace_the_sessions_line() {
+    for cause in [ReasonCode::ClientGone, ReasonCode::OverBudget] {
+        let r = rig(None, 0, ExhaustionMode::FinishUnit);
+        assert_eq!(r.money.session_opened(&ctx(1)), Ok(()));
+        let _ = r.money.checkpoint(&ctx(1), &reported(90));
+        r.money.cancelled(
+            &ctx(1),
+            &CancelBill {
+                cause,
+                disposition: CANCEL_OK_PARTIAL,
+                far_end_answered: false,
+                streamed: false,
+                billed: Vec::new(),
+            },
+        );
+        r.money.cancelled(&ctx(1), &bill(cause, 40));
+        assert_eq!(usage(&r).0, 0, "{cause:?}: a side's bill is not the line");
+        r.money.session_ended(&ctx(1));
+        assert_eq!(usage(&r).0, 90, "{cause:?}: what the session served");
+    }
+}
+
+/// The caller went away before the session's cleanup ran: its end is posted once, and the
+/// session's one line is written by the cleanup, which closes the unit.
+#[test]
+fn an_abandoned_session_is_billed_by_its_cleanup_and_closes() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    assert_eq!(r.money.session_opened(&ctx(1)), Ok(()));
+    let _ = r.money.checkpoint(&ctx(1), &reported(55));
+    r.money.abandoned(&ctx(1), Ended::AlreadySettled);
+    assert_eq!(r.posted.0.load(Ordering::SeqCst), 1);
+    assert_eq!(usage(&r).0, 0);
+    r.money.session_ended(&ctx(1));
+    assert_eq!(usage(&r).0, 55);
+    assert_eq!(r.money.open_units(), 0);
+}
+
+/// A session's estimate never bills, and its floor counts bill like reported ones.
+#[test]
+fn a_sessions_line_carries_reported_and_floor_counts_never_an_estimate() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    assert_eq!(r.money.session_opened(&ctx(1)), Ok(()));
+    let _ = r.money.checkpoint(
+        &ctx(1),
+        &[
+            UnitCount {
+                class: INPUT,
+                source: UNITS_ESTIMATED,
+                amount: 500,
+            },
+            floor(1, 7),
+        ],
+    );
+    r.money.session_ended(&ctx(1));
+    assert_eq!(usage(&r).0, 7);
 }
