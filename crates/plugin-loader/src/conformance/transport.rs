@@ -14,7 +14,8 @@
 //! { "settings": <the settings it opens over>,
 //!   "transport": {
 //!     "locate": "refused" | {
-//!         "reads":   [{ "target": "<a target it reads>", "authority": "<what it dials>", "secure": false }, ...],
+//!         "reads":   [{ "target": "<a target it reads>", "authority": "<what it dials>", "secure": false,
+//!                       "has_name": false /* optional: it names the far end a certificate is checked against */ }, ...],
 //!         "refuses": ["<a target it refuses: FAILED>", ...] },
 //!     "dial": {
 //!         "target":  "<what begin dials>",          /* optional, default "": a wire whose
@@ -29,7 +30,9 @@
 //!         "ingest_wire": "<what reading them writes>", /* optional: the far side closed in them
 //!                                                       and the close is answered (ws); the
 //!                                                       frames end there */
-//!         "finish": "<what finish writes>" },       /* optional, default "" (ws's close) */
+//!         "finish": "<what finish writes>",         /* optional, default "" (ws's close) */
+//!         "deadline": true },                       /* optional: the emit arms the exchange's
+//!                                                       deadline (http), YIELD_HAS_DEADLINE */
 //!     "encode": [{ "body": "<body>", "fields": [["<name>", "<value>"], ...],
 //!                  "wire": "<the rendering>" | null /* FAILED */ }, ...],
 //!     "refuse": "refused" /* a framer that frames DIALLED connections only: `begin` on the
@@ -72,7 +75,8 @@ use busbar_contract::abi::transport::{
     slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, ConnIn, ConnOut, DialIn,
     EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
     ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, ShutIn, WriteIn,
-    PIECE_END_OF_FRAME, ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_MORE,
+    PIECE_END_OF_FRAME, ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE,
+    YIELD_MORE,
 };
 
 use super::{
@@ -509,9 +513,9 @@ fn relocate(
     locate_line(&c, &f.out, &authority)
 }
 
-fn ready_locate(authority: &[u8], secure: bool) -> String {
+fn ready_locate(authority: &[u8], secure: bool, has_name: bool) -> String {
     format!(
-        "Ready err=\"\" authority={:?} secure={secure} has_name=false short=false",
+        "Ready err=\"\" authority={:?} secure={secure} has_name={has_name} short=false",
         lossy(authority)
     )
 }
@@ -601,13 +605,15 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
                 let target = text(&read["target"], "locate.reads.target");
                 let authority = text(&read["authority"], "locate.reads.authority");
                 let secure = read["secure"].as_bool().unwrap_or(false);
+                let has_name = read["has_name"].as_bool().unwrap_or(false);
                 let label = format!("locate #{n}");
                 r.line(&label, 1, || locate(&p, &target, AMPLE).0);
-                want.push((label, Want::Is(ready_locate(&authority, secure))));
+                want.push((label, Want::Is(ready_locate(&authority, secure, has_name))));
             }
             let target = text(&reads[0]["target"], "locate.reads.target");
             let authority = text(&reads[0]["authority"], "locate.reads.authority");
             let secure = reads[0]["secure"].as_bool().unwrap_or(false);
+            let has_name = reads[0]["has_name"].as_bool().unwrap_or(false);
             assert!(
                 authority.len() > 1,
                 "transport.locate.reads[0].authority must be longer than one byte"
@@ -628,7 +634,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
                 Want::Is(format!(
                     "needed={} then {}",
                     authority.len(),
-                    ready_locate(&authority, secure)
+                    ready_locate(&authority, secure, has_name)
                 )),
             ));
             for (n, t) in texts(&l["refuses"], "locate.refuses").iter().enumerate() {
@@ -675,9 +681,16 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("emit", sinkfuls(wire.len(), TIGHT_WIRE), || {
         pump(&p, token, Op::Emit(&emit, true), &mut tight).line()
     });
+    // A wire whose emit arms the exchange's deadline (http: the attempt's one clock) states
+    // `"deadline": true`; the answer then carries YIELD_HAS_DEADLINE.
+    let armed = if dial["deadline"].as_bool().unwrap_or(false) {
+        YIELD_HAS_DEADLINE
+    } else {
+        0
+    };
     want.push((
         "emit".into(),
-        Want::Is(yielded_line(&wire, &[], &[], 0, false)),
+        Want::Is(yielded_line(&wire, &[], &[], armed, false)),
     ));
     // What reading them writes back (a ws close answered), absent = nothing.
     let answered = opt_text(&dial["ingest_wire"], "dial.ingest_wire");
