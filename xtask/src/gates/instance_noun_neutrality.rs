@@ -162,9 +162,7 @@ const FAM_AUTH: &[&str] = &["auth-admin-tokens", "busbar-core-oauth2"];
 /// loosening the token or dropping the noun — a real `gcp` auth scheme, when one lands, will get its
 /// own unambiguous scheme spelling (a plugin crate identifier), and that spelling
 /// (not bare `gcp`) is what should be tracked.
-const GCP_GENERIC_MENTION_FILES: &[&str] = &[
-    "crates/busbar-kernel/src/diagnostics/mod.rs",
-];
+const GCP_GENERIC_MENTION_FILES: &[&str] = &["crates/busbar-kernel/src/diagnostics/mod.rs"];
 
 // ── HOOK test plugin: DELETED (OWNER 2026-10-03 "NO TEST PLUGINS"; lane-dg-hookfix) ─────────────
 // Like the SECRET kind's fixture (deleted, owner "FIXTURES": "real plugins are the examples"; proven

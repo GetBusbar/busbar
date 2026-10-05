@@ -8046,7 +8046,11 @@ impl Gate for KindIsolationGate {
                     "crate = \"busbar-plugin-loader\"\nface = \"Transport\"".to_string(),
                     "crate = \"busbar-plugin-loader-planted\"\nface = \"Transport\"".to_string(),
                 )),
-                &["dead-face", "busbar-plugin-loader-planted", "Strike the row"],
+                &[
+                    "dead-face",
+                    "busbar-plugin-loader-planted",
+                    "Strike the row",
+                ],
             ));
         }
 
