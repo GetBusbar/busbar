@@ -2802,38 +2802,6 @@
    ]
   },
   {
-   "id": ".measure",
-   "kind": "instrument",
-   "paths": [
-    ".measure"
-   ],
-   "tree_hash": "96dbc9475dd3ce880322a8498b774d92ed8d1b488e75ce0a59094117e01c0323",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "HIGH": 1,
-    "LOW": 1
-   },
-   "report": "A hidden top-level directory tracks an unreferenced 57 MB git bundle holding the repository's complete history and a stale, uncompilable copy of the WebSocket conformance subject; the bundle freezes the pre-rewrite history in a blob, defeating the planned author rewrite and bloating every clone, so it must be deleted and purged from history. Read fully.",
-   "auditor": "opus-q128-architecture",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "96dbc9475dd3ce880322a8498b774d92ed8d1b488e75ce0a59094117e01c0323",
-     "counts": {
-      "HIGH": 1,
-      "LOW": 1
-     },
-     "report": "A hidden top-level directory tracks an unreferenced 57 MB git bundle holding the repository's complete history and a stale, uncompilable copy of the WebSocket conformance subject; the bundle freezes the pre-rewrite history in a blob, defeating the planned author rewrite and bloating every clone, so it must be deleted and purged from history. Read fully."
-    }
-   ]
-  },
-  {
    "id": "bin",
    "kind": "instrument",
    "paths": [
