@@ -60,7 +60,7 @@ use journal::{JournalSink, NoopJournal, ProbeEvent};
 /// which is what makes `(transport, destination)` and `(pool, destination)` the same key.
 pub use busbar_contract::DestinationId;
 
-/// The at-capacity Retry-After floor in whole seconds — the answer when no admissible pool member
+/// The at-capacity requested-wait floor in whole seconds — the answer when no admissible pool member
 /// reports a genuine cooldown to wait out. Pinned to the 1.5.5 constant
 /// (`AT_CAPACITY_RETRY_AFTER_SECS = AT_CAPACITY_RECOVERY_FLOOR_MS / 1000 = 2`).
 ///
@@ -74,7 +74,7 @@ pub const AT_CAPACITY_RETRY_AFTER_SECS: u64 = 2;
 /// The default sticky cooldown applied by a hard-down trip (1.5.5's `DEFAULT_HARD_DOWN_COOLDOWN_SECS`).
 pub const DEFAULT_HARD_DOWN_COOLDOWN_SECS: u64 = 1800;
 
-/// The default absolute ceiling on an honored upstream Retry-After (1.5.5's
+/// The default absolute ceiling on an honored upstream requested wait (1.5.5's
 /// `DEFAULT_MAX_HONORED_RETRY_AFTER_SECS`).
 pub const DEFAULT_MAX_HONORED_RETRY_AFTER_SECS: u64 = 86_400;
 
@@ -130,7 +130,7 @@ pub enum Outcome {
     /// A transient upstream failure — cooldown + error counter. `retry_after` is the wait the
     /// answer's frame stated, in whole seconds, if any.
     Transient {
-        /// The upstream's requested Retry-After, in seconds, if any.
+        /// The upstream's requested wait, in seconds, if any.
         retry_after: Option<u64>,
     },
     /// A definitive signal (bad key, billing exhausted): trips every pool cell for this
@@ -239,7 +239,7 @@ impl<J: JournalSink> BreakerUnit<J> {
         }
     }
 
-    /// Override the hard-down sticky cooldown and the absolute Retry-After honoring ceiling
+    /// Override the hard-down sticky cooldown and the absolute requested-wait honoring ceiling
     /// (1.5.5's `limits.hard_down_cooldown_secs` / `limits.max_honored_retry_after_secs`).
     pub fn with_limits(
         mut self,
@@ -282,7 +282,7 @@ impl<J: JournalSink> BreakerUnit<J> {
         self.hard_down_cooldown_secs
     }
 
-    /// The absolute ceiling on an honored upstream Retry-After (see [`Self::with_limits`]).
+    /// The absolute ceiling on an honored upstream requested wait (see [`Self::with_limits`]).
     pub fn max_honored_retry_after_secs(&self) -> u64 {
         self.max_honored_retry_after_secs
     }
@@ -542,7 +542,7 @@ impl<J: JournalSink> BreakerUnit<J> {
         });
     }
 
-    /// The at-capacity terminal's `Retry-After`: the SOONEST genuine (`> 0`) cooldown
+    /// The at-capacity terminal's requested-wait: the SOONEST genuine (`> 0`) cooldown
     /// among the given members' states, else [`AT_CAPACITY_RETRY_AFTER_SECS`], always floored at 1.
     /// A member reporting `Suppressed { until }` with `until <= now` (an expired cooldown — the
     /// member is actually probe-winnable) contributes no genuine cooldown, matching 1.5.5's

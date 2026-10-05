@@ -69,7 +69,7 @@ pub fn outcome_and_label(
         // The caller's bad input: the destination is healthy either way, so nothing is recorded —
         // folded together with `ContextLength` below, per `Outcome`'s own doc comment.
         Disposition::ClientFault => (Outcome::RecordNothing, label::CLIENT_FAULT),
-        // A transient failure: the upstream's own Retry-After (if any) threads through as the
+        // A transient failure: the upstream's own requested wait (if any) threads through as the
         // cooldown floor `BreakerCell::compute_cooldown_with_retry_after` reads.
         Disposition::TransientUpstream => (
             Outcome::Transient { retry_after },
