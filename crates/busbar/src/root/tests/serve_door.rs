@@ -695,9 +695,8 @@ mod mcp {
             call(&rig, &rig.token, "tripper_read_file", serde_json::json!({})).await;
         assert_eq!(status.as_u16(), 503, "{answer}");
         assert_eq!(
-            answer["error"]["message"],
-            busbar_contract::caps::ReasonCode::BreakerOpen.as_str(),
-            "refused as the open cell: {answer}"
+            answer["error"]["data"]["reason"], "upstream_unavailable",
+            "refused as the open cell, in the served engine's words: {answer}"
         );
         assert!(
             drain(&mut bad_heard).is_empty(),
@@ -1179,8 +1178,7 @@ mod mcp {
                 "call {n}: the server's refusal relayed as the tool's failure: {answer}"
             );
             assert_ne!(
-                answer["error"]["message"],
-                busbar_contract::caps::ReasonCode::BreakerOpen.as_str(),
+                answer["error"]["data"]["reason"], "upstream_unavailable",
                 "call {n}: a caller fault never opens the member's cell: {answer}"
             );
             assert!(
@@ -1215,8 +1213,7 @@ mod mcp {
         );
         let (_, answer) = call(&rig, &rig.token, "failing_read_file", serde_json::json!({})).await;
         assert_eq!(
-            answer["error"]["message"],
-            busbar_contract::caps::ReasonCode::BreakerOpen.as_str(),
+            answer["error"]["data"]["reason"], "upstream_unavailable",
             "and it opened the cell: {answer}"
         );
         assert!(rig.all_ended(), "every unit ended");
