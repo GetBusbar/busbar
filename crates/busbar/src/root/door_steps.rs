@@ -1187,9 +1187,9 @@ impl OutboundAuths {
         credential: &[u8],
         settings: &serde_json::Value,
     ) -> Result<Vec<String>, String> {
-        use crate::root::loader::dispatch::auth_outbound::{serves_style, OutboundInstance};
+        use crate::root::loader::dispatch::auth_outbound::{outbound_style, OutboundInstance};
         for (_, plugin) in self.rows_with(false) {
-            if serves_style(&plugin, style).is_none() {
+            if outbound_style(&plugin, style).is_none() {
                 continue;
             }
             let bytes = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
