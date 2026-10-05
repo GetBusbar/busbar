@@ -1755,7 +1755,6 @@ const AXIS_ITEMS: &[(&str, &[&str])] = &[
     ("ws-arrivals", &["install_ws_arrivals"]),
     ("on-host", &["on_host"]),
     ("compose", &["compose"]),
-    ("stdio-serve", &["stdio_serve"]),
 ];
 
 /// The registration axes the manifest's `[package.metadata.busbar.linked-axes]` row lists for the

@@ -41,7 +41,6 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("ws-arrivals", "ws_arrivals", "install_ws_arrivals"),
     ("on-host", "on_host", "on_host"),
     ("compose", "compose", "compose"),
-    ("stdio-serve", "stdio_serve", "stdio_serve"),
     ("cli-help", "cli_help", "CLI_HELP"),
     ("exports", "exports", "EXPORT"),
     ("stores", "stores", "STORE"),
