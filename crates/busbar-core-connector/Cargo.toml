@@ -68,6 +68,12 @@ tokio = { workspace = true, features = ["net", "time", "rt", "process"] }
 libc = { workspace = true }
 
 
+[features]
+# THE TLS TEST KIT for a plugin repo's conformance test (`test_support`: the far end's TLS and a
+# private test CA), named only from a plugin repo's dev-dependencies (ARCHITECT Q-P4-9). Adds no
+# crate: rcgen is already a dependency; `pem` writes the test CA as the anchors a suite names.
+test-support = ["rcgen/pem"]
+
 [dev-dependencies]
 # Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
 sha2 = { workspace = true }
