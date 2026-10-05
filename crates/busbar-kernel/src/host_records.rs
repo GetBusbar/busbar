@@ -78,6 +78,54 @@ pub trait RecordRows: Send + Sync {
     ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError>;
 }
 
+/// THE CONFIGURED STORE'S TYPED RECORDS, as [`RecordRows`]: its store v3 record slots
+/// ([`busbar_contract::store_calls::StoreCalls`]), each call awaited where it is made. The host
+/// services call these only on their blocking pool (never on a runtime worker), so a call waits
+/// there for the store's answer. A store that FAILED or REFUSED the call answers its text.
+pub struct StoreRows(pub Arc<dyn busbar_contract::store_calls::StoreCalls>);
+
+impl std::fmt::Debug for StoreRows {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoreRows").finish_non_exhaustive()
+    }
+}
+
+/// The store's answer to one awaited call, as the records' error.
+fn awaited<T>(call: busbar_contract::store_calls::StoreCall<'_, T>) -> Result<T, StoreError> {
+    futures::executor::block_on(call).map_err(|failure| match failure {
+        busbar_contract::store_calls::StoreFailure::Refused(text) => StoreError::Rejected(text),
+        _ => StoreError::Unavailable,
+    })
+}
+
+impl RecordRows for StoreRows {
+    fn record_put(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+        value: &RecordBytes,
+    ) -> Result<(), StoreError> {
+        awaited(self.0.record_put(schema.as_str(), key, value))
+    }
+
+    fn record_get(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+    ) -> Result<Option<RecordBytes>, StoreError> {
+        awaited(self.0.record_get(schema.as_str(), key))
+    }
+
+    fn record_scan(
+        &self,
+        schema: RecordSchemaId,
+        prefix: &[u8],
+        limit: u32,
+    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
+        awaited(self.0.record_scan(schema.as_str(), prefix, limit))
+    }
+}
+
 /// The store key of `key` for the instance labelled `instance`: the label's length (two bytes, big
 /// endian), the label, then the key. The length makes the scope unambiguous whatever the label
 /// holds, and a key's scoped form begins with its prefix's scoped form, so a prefix scan stays one.

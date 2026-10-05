@@ -135,7 +135,23 @@ impl GovState {
             denylist,
             refresh_lock: std::sync::Mutex::new(()),
             self_mint_lock: std::sync::Mutex::new(()),
+            store_calls: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Keep the configured store's store v3 slots beside its 1.5.5 op set, once (boot opens the
+    /// store through its door, `OpenedStore`). `false` when they were already kept.
+    pub fn attach_store_calls(
+        &self,
+        calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
+    ) -> bool {
+        self.store_calls.set(calls).is_ok()
+    }
+
+    /// The configured store's store v3 slots, when it was opened through a door.
+    #[must_use]
+    pub fn store_calls(&self) -> Option<Arc<dyn busbar_contract::store_calls::StoreCalls>> {
+        self.store_calls.get().cloned()
     }
 
     /// SCHEDULE a re-read of the store's revocation denylist when this node's copy is older than

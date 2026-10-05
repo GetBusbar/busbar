@@ -514,7 +514,7 @@ pub struct KernelServices {
     /// The monotonic clock, where one was given; else the time since [`Self::origin`].
     mono_ns: Option<MonoNs>,
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
-    records: Option<Records>,
+    records: OnceLock<Records>,
     pool: OnceLock<Arc<dyn Offload>>,
     pending: Arc<PendingRecords>,
     units: Arc<crate::host_units::UnitRecords>,
@@ -569,7 +569,7 @@ impl KernelServices {
             wall_ms: Arc::new(system_wall_ms),
             mono_ns: None,
             instances: Mutex::default(),
-            records: None,
+            records: OnceLock::new(),
             pool: OnceLock::new(),
             pending: Arc::default(),
             units: Arc::default(),
@@ -657,13 +657,16 @@ impl KernelServices {
     /// Serve the records services over `reads` (the store's typed record reads) and `claims` (its
     /// single-use redemption). Without them they are REFUSED.
     #[must_use]
-    pub fn with_records(
-        mut self,
-        reads: Arc<dyn RecordRows>,
-        claims: Arc<dyn RecordStore>,
-    ) -> Self {
-        self.records = Some(Records { reads, claims });
+    pub fn with_records(self, reads: Arc<dyn RecordRows>, claims: Arc<dyn RecordStore>) -> Self {
+        self.attach_records(reads, claims);
         self
+    }
+
+    /// Serve the records services over `reads` and `claims` (see [`Self::with_records`]), attached
+    /// late, once: the configured store is opened after the services are installed (the composition
+    /// root's late attach). `false` when a record store was already bound.
+    pub fn attach_records(&self, reads: Arc<dyn RecordRows>, claims: Arc<dyn RecordStore>) -> bool {
+        self.records.set(Records { reads, claims }).is_ok()
     }
 
     /// Run every store call on `pool`, never on the calling thread. Without it the services that
@@ -934,7 +937,7 @@ impl KernelServices {
         if ttl_ms == 0 || key.is_empty() || !self.lock_instances().contains_key(instance) {
             return refused;
         }
-        let (Some(records), Some(pool)) = (self.records.as_ref(), self.pool()) else {
+        let (Some(records), Some(pool)) = (self.records.get(), self.pool()) else {
             return refused;
         };
         let rows = Arc::clone(&records.reads);
@@ -985,7 +988,7 @@ impl KernelServices {
     /// start a flush of the queued record writes when none runs, so writes a refused flush left
     /// queued still reach the store.
     pub fn flush_tick(&self) {
-        if let (Some(records), Some(pool)) = (self.records.as_ref(), self.pool()) {
+        if let (Some(records), Some(pool)) = (self.records.get(), self.pool()) {
             if self.batcher.start() {
                 self.start_flush(records, pool);
             }
@@ -1048,7 +1051,7 @@ impl KernelServices {
             .ok_or_else(|| Stored::refused(NOT_A_KIND))?;
         let records = self
             .records
-            .as_ref()
+            .get()
             .ok_or_else(|| Stored::refused(NO_STORE))?;
         let pool = self.pool().ok_or_else(|| Stored::refused(NO_POOL))?;
         Ok((schema, records, pool))
@@ -1072,7 +1075,7 @@ impl KernelServices {
             .ok_or_else(|| Stored::refused(NOT_ADMITTED))?;
         let records = self
             .records
-            .as_ref()
+            .get()
             .ok_or_else(|| Stored::refused(NO_STORE))?;
         let pool = self.pool().ok_or_else(|| Stored::refused(NO_POOL))?;
         Ok((facts, records, pool))
