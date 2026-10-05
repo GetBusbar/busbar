@@ -657,7 +657,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-prometheus"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=1c9e53c80bda2a6c0036e43e4176001d45f926ea#1c9e53c80bda2a6c0036e43e4176001d45f926ea"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=a4165f0f5508a33f7cd2d7ae7081dfb55c03b64b#a4165f0f5508a33f7cd2d7ae7081dfb55c03b64b"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -667,7 +667,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-prometheus-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=1c9e53c80bda2a6c0036e43e4176001d45f926ea#1c9e53c80bda2a6c0036e43e4176001d45f926ea"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=a4165f0f5508a33f7cd2d7ae7081dfb55c03b64b#a4165f0f5508a33f7cd2d7ae7081dfb55c03b64b"
 dependencies = [
  "busbar-contract",
  "busbar-export-prometheus",
