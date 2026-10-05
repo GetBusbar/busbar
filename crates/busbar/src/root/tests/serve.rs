@@ -875,6 +875,7 @@ mod a2a_door {
             auths: Arc::new(auths),
             conns: Arc::clone(&connector) as Arc<dyn busbar_contract::conn::PollConns>,
             stream_ceiling_secs: 600,
+            upgrades: Vec::new(),
         };
         let mut composed = compose_planes(
             &[(instance.to_string(), plane)],
