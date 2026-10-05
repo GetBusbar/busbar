@@ -19,5 +19,4 @@ pub fn install() {
     flip_one_shot_to_kernel(busbar_llm::PLANE_DECLARATION.key);
     flip_one_shot_to_kernel(busbar_mcp::PLANE_KEY);
     flip_one_shot_to_kernel(busbar_a2a::PLANE_KEY);
-    flip_session_to_kernel(busbar_voice::PLANE_KEY);
 }
