@@ -2259,11 +2259,18 @@ impl DataRoutes {
             Some(key) => PrincipalId::new(key.id.as_str()),
             None => PrincipalId::new(AuthPrincipal(None).actor_id()),
         };
-        let open = self.served.planes[plane]
-            .snapshot
-            .claims
-            .get(claim as usize)
-            .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
+        // An anonymous caller is admitted on an open claim; and, on the plane serving the `pools`
+        // map, on every claim when the deployment's data front door is open (`auth.chain: []`
+        // without `keys`: 1.5.5 admitted every model request anonymously, its open relay). Any
+        // other plane's credential claim fails closed (ARCHITECT P3 (a)).
+        let pools_plane = self.served.planes[plane].live.served_facts.section
+            == busbar_contract::section::RESERVED_POOLS_KEY;
+        let open = (pools_plane && app.auth.is_open())
+            || self.served.planes[plane]
+                .snapshot
+                .claims
+                .get(claim as usize)
+                .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
         let key = gov.key.clone();
         let (caller, reply) = IngressCaller::arriving(body);
         let unit = async move {
