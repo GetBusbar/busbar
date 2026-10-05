@@ -759,11 +759,18 @@ impl Units for DoorSteps<'_> {
         // A UNIT THE PLANE ANSWERS ITSELF (ROUTE_LOCAL, ARCHITECT Q-L3B-LOCAL): admitted with no
         // route walk; only far-end-reported units bill (§7), so it holds and charges nothing, and
         // is audited as every unit is.
-        let local = self
-            .lock()
-            .named
-            .as_ref()
-            .is_some_and(|(class, _)| *class == ROUTE_LOCAL);
+        // A local unit whose plane EXPECTS units (its admission estimate) is charged as any keyed
+        // unit is: the plane's own round, on the caller's budget (the served engine charged busbar's
+        // own ask round before it was asked; lane-dg-mcp 05e053183a).
+        let (local, estimated) = {
+            let u = self.lock();
+            (
+                u.named
+                    .as_ref()
+                    .is_some_and(|(class, _)| *class == ROUTE_LOCAL),
+                !u.expected.is_empty(),
+            )
+        };
         // A UNIT ROUTED BY SCOPE that no one entry reached (Q-DEL-A2A-SELECT): refused before
         // anything is charged, as 1.5.5 chose the agent before its admission.
         let unrouted_scope = self
@@ -779,7 +786,7 @@ impl Units for DoorSteps<'_> {
             Admission::Refused => {
                 return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
             }
-            Admission::Keyed if !local => {
+            Admission::Keyed if !local || estimated => {
                 if let Some(key) = self.key.clone() {
                     if let Err(refusal) = self.charge(ctx, &key) {
                         return SeatVerdict::refuse(token, refusal);
