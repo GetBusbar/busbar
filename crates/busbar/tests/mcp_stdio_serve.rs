@@ -666,7 +666,7 @@ fn an_ungranted_tool_is_refused_per_call_on_the_line() {
       tester: { allowed_pools: [elsewhere] }
 tools:
   ws:
-    url: "http://127.0.0.1:9/mcp"
+    url: "http://127.0.0.1:9/rpc"
     allow_private: true
     pin: { mechanism: cert_spki, key: "sha256/UNUSED=" }
     tools_allow:

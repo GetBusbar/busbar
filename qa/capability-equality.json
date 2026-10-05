@@ -89,7 +89,7 @@
         "mcp-client",
         "mcp-server"
       ],
-      "note": "the MCP plane served through its memory-ABI door on the kernel's plane driver: the door bound through the loader's one load, composed by root/serve.rs (compose_planes, its egress sealed by DoorEgress, the K5 hook stage) and mounted on the data router by door_routes; each loop cell drives a tools/call (or listing) through that router and asserts the capability where it lands -- the walk's breaker cell, the hook stage, the call log's host chain and the kernel's audit chain, the governance book, /metrics, the trust state, the connector's destination guard and the plane's argument guard, the member's auth binding, the caller's catalogue. Its cells are in serve.rs's #[path] test file root/tests/serve_door.rs (module door_tests::mcp)."
+      "note": "the MCP plane served through its memory-ABI door on the kernel's plane driver: the door bound through the loader's one load, composed by root/serve.rs (compose_planes, its egress sealed by DoorEgress, the K5 hook stage) and mounted on the data router by door_routes; each loop cell drives a tools/call (or listing) through that router and asserts the capability where it lands -- the walk's breaker cell, the hook stage, the call log's host chain and the kernel's audit chain, the governance book, /metrics, the trust state, the connector's destination guard and the plane's argument guard, the member's auth binding, the caller's catalogue. Its cells are in serve.rs's #[path] test file root/tests/serve_door.rs (module door_tests::tools_door)."
     },
     "root-a2a": {
       "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
