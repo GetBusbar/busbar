@@ -1229,7 +1229,13 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> RouteAwait for PlaneUni
                 Err(stopped) => {
                     let reason = self.stopped(stopped);
                     self.driver.money.finished(ctx);
-                    Err(reason)
+                    // Named at the site: a screen stops a unit for a hook's veto or an unreadable
+                    // request, nothing else.
+                    Err(if reason == ReasonCode::HookVeto {
+                        Refusal::new(ReasonCode::HookVeto)
+                    } else {
+                        Refusal::new(ReasonCode::DecodeFailed)
+                    })
                 }
             }
         })
