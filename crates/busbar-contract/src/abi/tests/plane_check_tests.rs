@@ -551,7 +551,7 @@ fn a_non_ready_on_piece_still_has_its_units_and_records_judged() {
     let mut o: OnPieceOut = z();
     o.records_written = 1;
     let mut r: RecordWrite = z();
-    r.op = 3;
+    r.op = 4;
     assert_eq!(
         check_on_piece(Pending, &o, (&[], &[r], &[]), &caps(), &bounds()),
         f(Rule::UnknownCode, "record.op")
@@ -623,6 +623,79 @@ fn a_record_write_that_is_not_a_put_is_fault() {
         r.op = op;
         assert_eq!(piece(&o, &[], &[r], &[]), f(Rule::UnknownCode, "record.op"));
     }
+}
+
+/// SEAM-L(k), THE UNIT'S AUDIT RECORD: a [`RECORD_AUDIT`] write names the row's outcome where a
+/// put names its kind (so it needs no record kind of the plane's: here a tail with none), its
+/// action in `key` (never empty) and its resource in `value`, both inside the arena. RED: every
+/// write but a put was FAULT, and its outcome was judged as a record kind.
+#[test]
+fn an_audit_record_names_its_outcome_and_action() {
+    let mut o: OnPieceOut = z();
+    o.records_written = 1;
+    o.arena_written = 8;
+    let mut r: RecordWrite = z();
+    r.op = RECORD_AUDIT;
+    r.key = sp(0, 4);
+    r.value = sp(4, 4);
+    let none = Bounds {
+        record_kinds: 0,
+        ..bounds()
+    };
+    for outcome in [AUDIT_APPLIED, AUDIT_REJECTED] {
+        r.kind = outcome;
+        assert_eq!(
+            check_on_piece(Ready, &o, (&[], &[r], &[]), &caps(), &none),
+            Ok(()),
+            "outcome {outcome}"
+        );
+    }
+    for outcome in [AUDIT_NONE, AUDIT_REJECTED + 1, u32::MAX] {
+        r.kind = outcome;
+        assert_eq!(
+            piece(&o, &[], &[r], &[]),
+            f(Rule::UnknownCode, "record.audit_outcome")
+        );
+    }
+    r.kind = AUDIT_APPLIED;
+    r.key = sp(0, 0);
+    assert_eq!(
+        piece(&o, &[], &[r], &[]),
+        f(Rule::Contradiction, "record.audit_without_action")
+    );
+    r.key = sp(6, 4);
+    assert_eq!(
+        piece(&o, &[], &[r], &[]),
+        f(Rule::SpanOutOfBounds, "record.key")
+    );
+    r.key = sp(0, 4);
+    r.value = sp(6, 4);
+    assert_eq!(
+        piece(&o, &[], &[r], &[]),
+        f(Rule::SpanOutOfBounds, "record.value")
+    );
+}
+
+/// SEAM-L(j), THE UNIT'S LEDGER LANE: an answer may name the lane its units are priced under, in
+/// the arena written, on any answer; none named is a zero length. RED: the answer had no lane.
+#[test]
+fn a_ledger_lane_rides_the_arena() {
+    let mut o: OnPieceOut = z();
+    o.arena_written = 8;
+    o.lane = sp(2, 6);
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    o.lane = sp(4, 6);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::SpanOutOfBounds, "on_piece.lane")
+    );
+    o.lane = sp(SPAN_ABSENT, 1);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::SpanNotAbsent, "on_piece.lane")
+    );
+    o.lane = sp(0, 0);
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
 }
 
 // ── refusal, serve, cancel ──
@@ -965,7 +1038,7 @@ fn a_tail_with_unknown_bits_or_no_ingress_is_fault() {
     t.ingress = INGRESS_REQUEST_RESPONSE | (1 << 5);
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.ingress"));
     let mut t = tail();
-    t.flags = 4;
+    t.flags = 1 << 3;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
     let mut t = tail();
     t.dispatch_shape = 2;

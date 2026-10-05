@@ -322,6 +322,16 @@ fn resolve_over(
     providers: &[(&str, super::ProviderRoute)],
     served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
 ) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
+    resolve_upgrading(section, providers, served, Vec::new())
+}
+
+/// [`resolve_over`], with `upgrades` the linked framers composed over the data carrier.
+fn resolve_upgrading(
+    section: &str,
+    providers: &[(&str, super::ProviderRoute)],
+    served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+    upgrades: Vec<&'static str>,
+) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
     let section: serde_yaml::Value = serde_yaml::from_str(section).expect("yaml");
     let providers = providers
         .iter()
@@ -341,8 +351,60 @@ fn resolve_over(
         conns,
         stream_ceiling_secs: 1,
         catalog: None,
+        upgrades,
     };
     super::member_routes(&section, &DoorPools::of(&section), served, &reach)
+}
+
+/// SEAM-L(n), `spelled_for`: a need over a framer composed over the base URL's carrier dials the
+/// same authority and path in that framer's scheme, its secured form for a secured base; a need
+/// over any other transport, or a base in no upgradable scheme, dials the base as written.
+#[test]
+fn a_need_over_an_upgrade_framer_spells_the_base_url_in_its_scheme() {
+    let upgrades = ["ws"];
+    assert_eq!(
+        super::spelled_for("https://api.example/v1", "ws", &upgrades).as_deref(),
+        Some("wss://api.example/v1")
+    );
+    assert_eq!(
+        super::spelled_for("http://127.0.0.1:9/v1", "ws", &upgrades).as_deref(),
+        Some("ws://127.0.0.1:9/v1")
+    );
+    assert_eq!(
+        super::spelled_for("https://api.example", "http", &upgrades),
+        None
+    );
+    assert_eq!(super::spelled_for("https://api.example", "ws", &[]), None);
+    assert_eq!(super::spelled_for("unix:///sock", "ws", &upgrades), None);
+}
+
+/// SEAM-L(n), THE MEMBER'S ROUTE: a member bound over an upgrade framer's need dials that need at
+/// its base URL in the framer's scheme, its own (http) need at the base as written. RED: the route
+/// carried the provider's base URL alone, so the framer's need dialled https.
+#[test]
+fn a_member_bound_over_an_upgrade_need_dials_its_spelled_base() {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    let served = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        need_auths: vec![
+            (DIRECTION_OUTBOUND, "bearer"),
+            (DIRECTION_OUTBOUND, "bearer"),
+        ],
+        need_transports: vec!["http", "ws"],
+        ..styled()
+    };
+    let routes = resolve_upgrading(
+        "models: {m: {provider: p}}",
+        &[("p", provider("d", None))],
+        &served,
+        vec!["ws"],
+    )
+    .expect("the member resolves");
+    let route = &routes["m"];
+    let base = route.base_url.clone();
+    let spelled = base.replacen("http://", "ws://", 1);
+    assert!(base.starts_with("http://"), "{base}");
+    assert_eq!(route.ride(0).map(|r| r.base_url), Some(base.as_str()));
+    assert_eq!(route.ride(2).map(|r| r.base_url), Some(spelled.as_str()));
 }
 
 /// MULTI-NEED (ARCHITECT Q-L5B-NEEDS 2026-10-03): a member binds EVERY outbound need its style
@@ -375,8 +437,8 @@ fn a_member_binds_every_need_its_style_names_one_per_transport() {
         [2],
         "the http need rides beside it; the api-key need is not its style"
     );
-    assert_eq!(route.ride(3).map(|(n, _)| n.0), Some(2));
-    assert_eq!(route.ride(0).map(|(n, _)| n.0), Some(1));
+    assert_eq!(route.ride(3).map(|r| r.need.0), Some(2));
+    assert_eq!(route.ride(0).map(|r| r.need.0), Some(1));
     assert!(
         route.ride(4).is_none(),
         "a need its style does not name is no ride"
@@ -671,6 +733,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,
         catalog: None,
+        upgrades: Vec::new(),
     };
     let section: serde_yaml::Value =
         serde_yaml::from_str("models: {m: {provider: p}}").expect("yaml");

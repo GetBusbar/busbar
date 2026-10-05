@@ -108,23 +108,48 @@ pub struct MemberRoute {
     /// busbar's client identity, sealed into the connector at the egress's composition so every
     /// connection to the member, the walk's and the plane's own, is held to them. Default = none.
     pub anchors: busbar_contract::transport::trust::Anchors,
+    /// The base URL a bound need dials, where its transport spells the member's `base_url` in its
+    /// own scheme (a framer composed over the base URL's carrier: the same authority and path, read
+    /// by that framer); a need not listed dials [`Self::base_url`]. Composed by the root, which
+    /// knows the linked transports; the kernel names no scheme.
+    pub spelled: Vec<(NeedId, String)>,
+}
+
+/// The need a far request opens on: its id, its keep rule and the base URL it dials.
+#[derive(Debug, Clone, Copy)]
+pub struct Ride<'a> {
+    /// The need.
+    pub need: NeedId,
+    /// Its response-head rule.
+    pub keep: &'a ResponseKeep,
+    /// The base URL the far request's target is joined onto.
+    pub base_url: &'a str,
 }
 
 impl MemberRoute {
-    /// The need a far request opens on and its keep rule: the one it names (its declared index
-    /// plus one), else the member's own; `None` when it names a need not bound for the member.
+    /// The need a far request opens on: the one it names (its declared index plus one), else the
+    /// member's own; `None` when it names a need not bound for the member. It dials the base URL
+    /// that need spells ([`Self::spelled`]), else the member's own.
     #[must_use]
-    pub fn ride(&self, named: u32) -> Option<(NeedId, &ResponseKeep)> {
-        let Some(index) = named.checked_sub(1) else {
-            return Some((self.need, &self.keep));
+    pub fn ride(&self, named: u32) -> Option<Ride<'_>> {
+        let (need, keep) = match named.checked_sub(1) {
+            Some(index) if self.need.0 != index => self
+                .rides
+                .iter()
+                .find(|(need, _)| need.0 == index)
+                .map(|(need, keep)| (*need, keep))?,
+            _ => (self.need, &self.keep),
         };
-        if self.need.0 == index {
-            return Some((self.need, &self.keep));
-        }
-        self.rides
+        let base_url = self
+            .spelled
             .iter()
-            .find(|(need, _)| need.0 == index)
-            .map(|(need, keep)| (*need, keep))
+            .find(|(n, _)| *n == need)
+            .map_or(self.base_url.as_str(), |(_, url)| url.as_str());
+        Some(Ride {
+            need,
+            keep,
+            base_url,
+        })
     }
 }
 
@@ -758,7 +783,10 @@ impl EgressFarEnd<'_> {
         };
         // THE NEED IT RIDES: the one the far request names, bound for the member; a need the member
         // has no binding for is no destination's fault, and nothing is recorded or dialled.
-        let Some((need, keep)) = route.ride(request.need).map(|(n, k)| (n, k.clone())) else {
+        let Some((need, keep, base_url)) = route
+            .ride(request.need)
+            .map(|r| (r.need, r.keep.clone(), r.base_url.to_string()))
+        else {
             let mut w = self.lock();
             self.settle(&mut w);
             return false;
@@ -787,7 +815,7 @@ impl EgressFarEnd<'_> {
             }
             return false;
         }
-        let url = join(&route.base_url, &request.target);
+        let url = join(&base_url, &request.target);
         // 2. The one auth call; its fields lead the head (1.5.5's order).
         let mut auth = Vec::new();
         if let Some(binding) = &route.auth {

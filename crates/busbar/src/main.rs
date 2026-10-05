@@ -875,6 +875,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             |l| l.upstream_request_timeout_secs,
         ),
         catalog: Some(&deploy.models),
+        upgrades: root::serve::upgrade_carriers(LINKED.transports),
     };
     // The kernel's own App through its swap handle once it exists (a config apply replaces the
     // generation a unit's hooks are read off), the boot App's until then.

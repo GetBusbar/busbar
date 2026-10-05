@@ -202,6 +202,7 @@ impl Node {
                         MemberRoute {
                             anchors: Default::default(),
                             rides: Vec::new(),
+                            spelled: Vec::new(),
                             need: NeedId(0),
                             base_url: format!("https://{lane}.test/"),
                             auth: None,
