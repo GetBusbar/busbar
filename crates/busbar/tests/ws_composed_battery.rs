@@ -173,6 +173,21 @@ impl Stack {
     }
 }
 
+/// A DIALLED CONNECTION IS READ FOR ITS LIFE, as the plane driver reads its far end: the reader
+/// ingests the handshake's answer, and what the wire owes the far end (a message written before the
+/// answer arrived) leaves with it. A writer that never reads would hold its first message until it
+/// did. The reader is aborted when the returned handle drops out of use.
+fn attach_reader(
+    t: &Arc<dyn Transport>,
+    conn: &busbar_contract::transport::wire::Conn,
+) -> tokio::task::JoinHandle<()> {
+    let (t, conn) = (Arc::clone(t), conn.clone());
+    tokio::spawn(async move {
+        let mut frames = t.frames(conn);
+        while frames.next().await.is_some() {}
+    })
+}
+
 /// A minimal listener config view, built only from `busbar_contract`'s public
 /// `ConfigView`/`TransportConfigView` traits: a bind address and, optionally, the body cap.
 struct ListenerCfg(String, Option<i64>);
@@ -294,6 +309,7 @@ async fn a_composed_round_trip_over_the_layers_below() {
     let (client_t, client_conn, server_t, server_conn) = stack
         .upgraded(&TransportSettings::default(), stack.dialler(), "/")
         .await;
+    let reader = attach_reader(&client_t, &client_conn);
 
     // Both ends report the stack they actually stand on, not a name for themselves.
     let served = server_t.arrival(&server_conn).transport_chain;
@@ -322,8 +338,13 @@ async fn a_composed_round_trip_over_the_layers_below() {
         .await
         .unwrap();
     let mut frames = server_t.frames(server_conn);
-    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("the server reads what the client wrote")
+        .unwrap()
+        .unwrap();
     assert_eq!(frame.bytes.as_slice(), b"hello over the layers below");
+    reader.abort();
 }
 
 /// The layer this instance reports is the one it declares: NONE. An upgrade wire composes over
@@ -366,6 +387,7 @@ async fn the_message_cap_is_the_operator_s_and_not_the_library_s() {
     // The peer is not capped at the operator's number, because the cap this test is about is the
     // RECEIVER's: a limit that only holds when the far side agrees to it is not a limit.
     let (peer, a, t, b) = stack.upgraded(&capped, stack.dialler(), "/").await;
+    let reader = attach_reader(&peer, &a);
 
     let oversized = vec![b'w'; 2 * CAP];
     peer.write(&a, StreamId(0), ScratchBytes::new(&oversized))
@@ -382,6 +404,7 @@ async fn the_message_cap_is_the_operator_s_and_not_the_library_s() {
         TransportError::Framing,
         "a message past the operator's cap is a framing refusal"
     );
+    reader.abort();
 }
 
 /// And the other lifecycle: an instance that only ever DIALS holds the same ceiling — the settings
