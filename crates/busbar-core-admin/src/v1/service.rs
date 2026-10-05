@@ -4,16 +4,17 @@
 //! The Admin API v1 SERVICE — the application core (the "port").
 //!
 //! `AdminService` owns every admin OPERATION as a typed async method returning `Result<View,
-//! AdminError>`. It holds the shared `App` and knows nothing about HTTP/JSON/MCP: a transport adapter
-//! (`super::transport`) drives it and projects the result onto a wire. This is where scope checks,
-//! atomicity, and audit live as the surface grows — one place, reused by every transport (REST now;
-//! GraphQL/MCP/gRPC later, unchanged).
+//! AdminError>`. It holds the shared `App` and knows nothing about any wire or protocol: a
+//! transport adapter (`super::transport`) drives it and projects the result onto a wire. This is
+//! where scope checks, atomicity, and audit live as the surface grows — one place, reused by every
+//! transport (REST now; any other protocol later, unchanged).
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use busbar_kernel::audit::amend;
 use busbar_kernel::diagnostics::{
     diag_debug, diag_error, diag_warn, ADMIN_STORE_OPERATION_FAILED, GROUP_DELETE_KEY_READ_FAILED,
     PLUGINS_DIR_FINGERPRINT_FAILED, PLUGIN_CATALOG_BLOCKING_TASK_FAILED,
@@ -105,7 +106,7 @@ use super::named_def_views::{export_def_view, identity_provider_view, unparseabl
 /// a hole no entry of the snapshot covers.
 /// It prices at the CURRENT card — the previous release's reading — and prices nothing here: the
 /// row goes to the cost unit's own row read,
-/// [`busbar_kernel_ledger::cost::MeteredRow::spend_micros_at_card`], which projects it onto lanes
+/// the ledger's `cost::MeteredRow::spend_micros_at_card`, which projects it onto lanes
 /// and drives the one function at that card. A model or class the present card does not price
 /// REFUSES (#42, item 31) instead of reading as the flat fee alone, and an overflow refuses instead
 /// of pinning (item 28).
@@ -136,7 +137,7 @@ pub fn derive_spend_micros_row_classes(
 /// are its token columns under the reserved class spellings ([`row_counts`]), and its requests and
 /// ledgered classes go as they are. Which lane each count prices on, and whether the requests are
 /// the pools plane's flat fee or a plane's own fee units, is the cost unit's
-/// ([`busbar_kernel_ledger::cost::MeteredRow`], one-pricing-site, ARCHITECT ruling 2026-09-30).
+/// (the ledger's `cost::MeteredRow`, one-pricing-site, ARCHITECT ruling 2026-09-30).
 /// Shared by the current-card and the dated reads so they cannot spell a row two ways.
 fn metered_row<'a>(
     cost: &'a busbar_kernel::cost::CostModel,
@@ -204,7 +205,7 @@ pub(crate) fn usage_refusal(
 // happens after it and leaves the window before its `effective_from` exactly as it was; a signed
 // back-dated correction reprices exactly `[effective_from, effective_until)` and nothing outside
 // it. The resolution rule itself is not written here — it is
-// `busbar_kernel_ledger::cost::HistoryView::card_at`, the one place entitled to say which entry
+// the ledger's `cost::HistoryView::card_at`, the one place entitled to say which entry
 // answers for an instant, and a second copy of it is how a request comes to be judged at one
 // figure and billed at another.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -281,14 +282,14 @@ pub fn row_priced_at_ms(bucket_start_secs: u64, priced_from_ms: u64) -> u64 {
 /// (`eras`). The sum TELESCOPES — a second correction of one unit names the first one's result as
 /// its `was` — so it is the unit's latest counts minus what it recorded.
 pub fn row_count_corrections(
-    corrections: &[busbar_kernel::audit::amend::Amendment],
+    corrections: &[amend::Amendment],
     key_id: &str,
     lane: &str,
     window: (u64, u64),
     priced_from_ms: u64,
     eras: &[u64],
 ) -> std::collections::BTreeMap<String, i128> {
-    use busbar_kernel::audit::amend::{AmendBody, Subject};
+    use self::amend::{AmendBody, Subject};
     let (start_ms, end_ms) = (
         window.0.saturating_mul(1_000),
         window.1.saturating_mul(1_000),
@@ -356,8 +357,8 @@ fn row_counts(b: &UsageBreakdown) -> impl Iterator<Item = (&'static str, u64)> +
 }
 
 /// **THE LOOKUP, AND IT IS THE ONE FUNCTION** — one metering row priced by the cost unit's dated
-/// row read, [`busbar_kernel_ledger::cost::MeteredRow::spend_micros_in_view`], which projects the
-/// row into a ledger slice and prices it through [`busbar_kernel_ledger::cost::price_in_view`], the
+/// row read, the ledger's `cost::MeteredRow::spend_micros_in_view`, which projects the
+/// row into a ledger slice and prices it through the ledger's `cost::price_in_view`, the
 /// single implementation of `money = f(ledger_slice, card_history)` that satisfies #79
 /// (`BUSBAR-1.6.0.md:423`), #42 (`:367`) and #81 (`:425`) together.
 ///
@@ -367,14 +368,14 @@ fn row_counts(b: &UsageBreakdown) -> impl Iterator<Item = (&'static str, u64)> +
 /// projection now lives in the cost unit with the price, and this read hands over the row.
 ///
 /// Before that, the dated read carried its OWN multiply-and-sum — it called
-/// `busbar_kernel_ledger::cost::derive_spend_micros`, which is the LEGACY read-time projection and a
+/// the ledger's `cost::derive_spend_micros`, which is the LEGACY read-time projection and a
 /// second implementation of the same arithmetic. The two agreed on every input either of them
 /// answered, and that agreement was the hazard rather than the reassurance: two implementations are
 /// two chances to be wrong and two places to remember when the ruling changes. #71 (`:409`) says
 /// pricing is read-time and in the kernel; it does not say it may be read-time in two kernels.
 ///
 /// **THE RESOLUTION IS INSIDE.** The card is not chosen by the caller and handed in: the entry
-/// carries its own `arrived_ms` and [`busbar_kernel_ledger::cost::HistoryView::card_at`] — the one
+/// carries its own `arrived_ms` and the ledger's `cost::HistoryView::card_at` — the one
 /// place entitled to say which entry answers for an instant — resolves it. #79 is applied in exactly
 /// one place on this path instead of being applied by the caller and trusted here.
 ///

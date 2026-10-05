@@ -1,3 +1,4 @@
+use busbar_kernel::audit_ring;
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
 use busbar_kernel::proto::PROTO_ANTHROPIC;
 use busbar_kernel::test_support::warn_capture::WarnCapture;
@@ -116,10 +117,10 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
     );
     let hook_plugins = body["build"]["hook_plugins"].as_array().unwrap();
     assert_eq!(
-            hook_plugins.iter().any(|m| m == "ranking"),
-            cfg!(feature = "hooks-ranking"),
-            "hook_plugins must contain `ranking` iff the hooks-ranking feature is compiled in: {hook_plugins:?}"
-        );
+        hook_plugins.iter().any(|m| m == "ranking"),
+        cfg!(feature = "hooks-ranking"),
+        "hook_plugins must contain `ranking` iff the hooks-ranking feature is compiled in: {hook_plugins:?}"
+    );
     // Topology keys are present and numeric (exact counts depend on the TestApp fixture).
     assert!(body["topology"]["pools"].is_number());
     assert!(body["topology"]["models"].is_number());
@@ -9606,15 +9607,15 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
     // emits that action against this resource, and a large concurrent audit-writing burst could in
     // principle evict this test's own `signing_key.report` row before the read. Latent; accepted —
     // bracketing by seq would narrow the window but not defeat eviction.
-    let rows = busbar_kernel::audit_ring::AUDIT.list_filtered(
+    let rows = audit_ring::AUDIT.list_filtered(
         0,
-        busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES,
+        audit_ring::MAX_AUDIT_ENTRIES,
         None,
         Some("signing-key"),
     );
     assert!(
-        rows.iter().any(|e| e.action == "signing_key.report"
-            && e.outcome == busbar_kernel::audit_ring::OUTCOME_APPLIED),
+        rows.iter()
+            .any(|e| e.action == "signing_key.report" && e.outcome == audit_ring::OUTCOME_APPLIED),
         "the report is recorded under a verb that does not claim a mutation"
     );
     assert!(
@@ -10034,7 +10035,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(body["error"]["code"], "invalid_request");
     // This lib-test app links no plane registry, so every named-map section is served and the list
-    // runs on to `tools`/`agents`; on a 1.5.5-shaped config (no mcp:/agents:) those two are not
+    // runs on to `tools`/`agents`; on a 1.5.5-shaped config (no plane sections) those two are not
     // sections and the list ends `…, or `export`` — the oracle cell
     // `admin.ops|DeleteOverlaySection|not-found` pins that form. The SHAPE is what this pins.
     assert_eq!(
@@ -10948,7 +10949,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     // so a concurrently-running sibling's legitimate APPLIED reset can land between this test's own
     // two REJECTED rows and fail the "never APPLIED" assertion. Same pattern as
     // `test_admin_v1_restart_refuses_when_it_cannot_restart`'s baseline_seq bracketing.
-    let baseline_seq = busbar_kernel::audit_ring::AUDIT
+    let baseline_seq = audit_ring::AUDIT
         .list(1)
         .first()
         .map(|e| e.seq)
@@ -10980,24 +10981,20 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
         reset.text().await
     );
 
-    let rows: Vec<_> = busbar_kernel::audit_ring::AUDIT
-        .list_filtered(
-            0,
-            busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES,
-            None,
-            Some("overlay:root"),
-        )
+    let rows: Vec<_> = audit_ring::AUDIT
+        .list_filtered(0, audit_ring::MAX_AUDIT_ENTRIES, None, Some("overlay:root"))
         .into_iter()
         .filter(|e| e.seq > baseline_seq)
         .collect();
     assert!(
-        rows.iter().any(|e| e.action == "overlay.reset"
-            && e.outcome == busbar_kernel::audit_ring::OUTCOME_REJECTED),
+        rows.iter()
+            .any(|e| e.action == "overlay.reset" && e.outcome == audit_ring::OUTCOME_REJECTED),
         "the corrupt-overlay reset must be audited as REJECTED, never APPLIED: {rows:?}"
     );
     assert!(
-        !rows.iter().any(|e| e.action == "overlay.reset"
-            && e.outcome == busbar_kernel::audit_ring::OUTCOME_APPLIED),
+        !rows
+            .iter()
+            .any(|e| e.action == "overlay.reset" && e.outcome == audit_ring::OUTCOME_APPLIED),
         "a corrupt-overlay reset must never be recorded as a successful apply: {rows:?}"
     );
 
@@ -13643,7 +13640,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     // the binary writes to, unscoped by principal (every admin-token test shares the SAME fixed
     // operator principal id, so scoping by principal would not distinguish this test's rows from a
     // concurrent sibling's). Rows from THIS test's own restart attempts are bracketed by seq.
-    let baseline_seq = busbar_kernel::audit_ring::AUDIT
+    let baseline_seq = audit_ring::AUDIT
         .list(1)
         .first()
         .map(|e| e.seq)
@@ -13722,8 +13719,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
 
     // Every refusal is audited — the operator's only evidence, since a real restart takes the
     // connection that would have carried the response.
-    let entries =
-        busbar_kernel::audit_ring::AUDIT.list(busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES);
+    let entries = audit_ring::AUDIT.list(audit_ring::MAX_AUDIT_ENTRIES);
     let restarts: Vec<_> = entries
         .iter()
         .filter(|e| e.action == "admin.restart" && e.seq > baseline_seq)
@@ -13735,7 +13731,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     assert!(
         restarts
             .iter()
-            .all(|e| e.outcome == busbar_kernel::audit_ring::OUTCOME_REJECTED),
+            .all(|e| e.outcome == audit_ring::OUTCOME_REJECTED),
         "a refused restart must never be recorded as applied: {restarts:?}"
     );
 }
@@ -14826,8 +14822,8 @@ async fn test_admin_v1_identity_provider_rejects_an_unknown_module() {
     );
     assert!(
         msg.contains("keys") && msg.contains("admin-tokens"),
-        "the refusal lists the valid modules, the way the `streams:` error names its whole valid \
-         set: {body}"
+        "the refusal lists the valid modules, the way every other section's module refusal names \
+         its whole valid set: {body}"
     );
     let after = admin(client.get(format!(
         "http://{addr}/api/v1/admin/identity-providers/typo"
@@ -14968,12 +14964,14 @@ async fn drive_named_map_errors() {
     };
     let ok_def = |section: &str| match section {
         "identity-providers" => r#"{"module":"keys"}"#.to_string(),
-        // The MCP plane has no backing plugin, so its valid definition names no `module:` at all —
+        // The tools plane has no backing plugin, so its valid definition names no `module:` —
         // which is exactly the asymmetry `NamedMapSection::requires_module` exists to carry.
         "tools" => r#"{"url":"https://x/","pin":{"mechanism":"unpinned"}}"#.to_string(),
-        // The A2A plane's entries are NOT plugin instances, so a legal definition here names a URL
+        // The agents plane's entries are NOT plugin instances, so a legal definition names a URL
         // and a pin rather than a module. That asymmetry is the reason `requires_module()` exists.
-        "agents" => r#"{"url":"https://a2a.example/x","pin":{"mechanism":"unpinned"}}"#.to_string(),
+        "agents" => {
+            r#"{"url":"https://agent.example/x","pin":{"mechanism":"unpinned"}}"#.to_string()
+        }
         _ => r#"{"module":"prometheus","settings":{"buffer_seconds":30}}"#.to_string(),
     };
     // (label, method, relative path, If-Match, body, want status, want code)
@@ -15044,7 +15042,7 @@ async fn drive_named_map_errors() {
                     // A pin whose mechanism needs material and carries none. On the other sections
                     // the equivalent nonsense is an empty `module:`; the CONDITION being witnessed
                     // (`Validation/InvalidConfig`) is the same one either way.
-                    r#"{"url":"https://a2a.example/x","pin":{"mechanism":"jws_issuer_key"}}"#
+                    r#"{"url":"https://agent.example/x","pin":{"mechanism":"jws_issuer_key"}}"#
                         .to_string()
                 } else {
                     r#"{"module":""}"#.to_string()

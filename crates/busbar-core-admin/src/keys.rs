@@ -124,7 +124,7 @@ pub(crate) struct CreateKeyReq {
 }
 
 // `MintPolicy`/`RoleCeiling`/`MintRequest`/`apply_mint_ttl_ceiling`/`DEFAULT_KEY_TTL_SECS`
-// RELOCATED to `busbar_kernel::governance::mint_policy` (1.6.0 de-alias, stage 2a): core mint-decision
+// RELOCATED to `busbar_kernel::governance::mint_policy` (1.6.0 de-alias, stage 2a): core mint-policy
 // infrastructure read on the hot mint path (`state.rs`'s `App::mint_policy`, `auth/exchange.rs`,
 // `auth/token.rs`), never admin-surface vocabulary. Imported below so the mint-handler call sites in
 // this file are unchanged; byte-identical move (same values, same decisions, same messages).
