@@ -314,6 +314,7 @@ extern "C" {
 #define BB_EXPORT_SCRAPE_KIND_HISTOGRAM UINT8_C(2) /* [`ScrapeFamily::kind`]: a histogram (`_bucket`/`_sum`/`_count` legs as separate */
 #define BB_EXPORT_SCRAPE_KIND_SUMMARY UINT8_C(3) /* [`ScrapeFamily::kind`]: a summary (`quantile` legs as separate [`ScrapeSample`]s). */
 #define BB_EXPORT_SCRAPE_KIND_UNTYPED UINT8_C(4) /* [`ScrapeFamily::kind`]: untyped. */
+#define BB_EXPORT_SCRAPE_FLAG_HOOK_FAMILIES UINT32_C(2) /* [`super::mechanism::call::InHead::flags`] on `scrape`: the families are the HOOK families. */
 #define BB_EXPORT_CHECK_PHASE_LIMITS UINT32_C(0) /* [`CheckIn::phase`]: among the operational limits' checks (a bound this sink's instances */
 #define BB_EXPORT_CHECK_PHASE_INSTANCES UINT32_C(1) /* [`CheckIn::phase`]: after the limits, each instance's own settings — the OLD */
 #define BB_EXPORT_ROUTE_AUTH_NONE UINT32_C(0) /* [`Route::auth`]: no auth required before `serve` — OLD `RouteAuth::None`. */

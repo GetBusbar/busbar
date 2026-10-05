@@ -42,7 +42,6 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
 /// only as an [`busbar_contract::ir::facts::IrFacts`]. The MCP and A2A firing sites call it; the model plane's
 /// own phase-2 reconcile (which also has a candidate set to reconcile) stays in `proxy::engine`.
 pub mod gate;
-pub mod scrape;
 
 // The HOOK CONTRACT — the `RoutingPolicy` trait and the read-only projections it is invoked with
 // (`RoutingRequest`, `Candidate`, `RoutingContext`, `RoutingDecision`, …) — lives in the

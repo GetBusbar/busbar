@@ -348,7 +348,9 @@ pub struct PoolMemberStatusView {
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct ModelView {
     pub model: String,
-    pub provider: String,
+    // The wire key is the frozen 1.5.5 `provider` (a plain comment: a doc line would grow the schema).
+    #[serde(rename = "provider")]
+    pub upstream: String,
 }
 
 /// A provider in the topology read (`GET /api/v1/admin/providers`): the provider name + how many model
@@ -356,7 +358,9 @@ pub struct ModelView {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct ProviderView {
-    pub provider: String,
+    // The wire key is the frozen 1.5.5 `provider` (a plain comment: a doc line would grow the schema).
+    #[serde(rename = "provider")]
+    pub upstream: String,
     pub model_count: usize,
 }
 
@@ -491,8 +495,8 @@ pub struct LimitView {
     pub per: Option<&'static str>,
     /// The pool scope: present when the limit carries `pool: <name>` (it accounts and enforces
     /// only that pool's traffic, per `(group, pool)`); absent for a group-wide limit.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pool: Option<String>,
+    #[serde(rename = "pool", skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     /// The budget-exhaustion behavior: `block` or `downgrade`. Absent = block (the default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_exhaust: Option<&'static str>,
@@ -508,7 +512,7 @@ impl LimitView {
             metric: l.metric.as_str(),
             amount: l.amount,
             per: l.per.map(|w| w.as_str()),
-            pool: l.scope.as_ref().map(|s| s.value.clone()),
+            scope: l.scope.as_ref().map(|s| s.value.clone()),
             on_exhaust: l.on_exhaust.map(|e| match e {
                 busbar_kernel::config::groups::OnExhaust::Block => "block",
                 busbar_kernel::config::groups::OnExhaust::Downgrade => "downgrade",
@@ -560,8 +564,8 @@ pub struct GroupBucketUsageView {
     /// The accounting window: `minute` | `hour` | `day` | `month` | `total`.
     pub window: &'static str,
     /// The pool scope for a pool-qualified bucket; absent for a group-wide bucket.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pool: Option<String>,
+    #[serde(rename = "pool", skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     /// Requests admitted this window (the requests-limit truth: failures are not refunded).
     pub requests: u64,
     /// Total tokens ledgered this window (all tiers).
@@ -1005,7 +1009,9 @@ pub struct UsageBreakdown {
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct ModelUsageView {
     pub model: String,
-    pub provider: String,
+    // The wire key is the frozen 1.5.5 `provider` (a plain comment: a doc line would grow the schema).
+    #[serde(rename = "provider")]
+    pub upstream: String,
     #[serde(flatten)]
     pub usage: UsageBreakdown,
 }

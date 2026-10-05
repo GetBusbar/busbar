@@ -55,6 +55,9 @@ use crate::state::App;
 /// the rest of this module is routing weights, durations and lane health, all legitimate floats.
 mod money;
 
+/// THE HOOK FAMILIES — the hook-reported metrics folded for `/metrics/hooks` (P2 D4).
+pub(crate) mod hooks;
+
 /// THE OBSERVATION SOURCE — the recorder the emission sites write and [`snapshot`] reads.
 mod source;
 /// A test builds its own source to drive one through `metrics::with_local_recorder`.

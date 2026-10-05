@@ -3676,7 +3676,7 @@ The loader checks in this order:
   - `deliver{stream u8, batch jsonl}`, built at batch time with the `fields:` projection applied kernel-side;
   - `scrape(families)` over the host snapshot service;
   - `status` (1.5.5 blob), `check`, `serve`.
-- **Listener.** `/metrics` is served on the **data listener** through the export route exception, with confinement to `/metrics` or `/exports/<name>/*`, the reserved paths and the 64-header cap. `/metrics/hooks` stays a core route.
+- **Listener.** `/metrics` is served on the **data listener** through the export route exception, with confinement to `/metrics` or `/exports/<name>/*`, the reserved paths and the 64-header cap. ~~`/metrics/hooks` stays a core route.~~ (SUPERSEDED 2026-10-04, ARCHITECT Q-D4-HOOKS, by the owner law at the kernel<>plugins synthesis: "the kernel owns no route that exists for one plugin: /metrics and /metrics/hooks leave core": `/metrics/hooks` is rendered by the scrape sink over the existing `scrape(families)` slot, the snapshot service handing the hook families with `SCRAPE_FLAG_HOOK_FAMILIES` set; no new op.)
 - **Behaviour.** Webhook and otlp use driver tickets. The `Host` and `Started` variants are retired.
 
 ##### B.6 plane (v1)

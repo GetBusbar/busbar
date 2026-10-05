@@ -1,24 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Prometheus exposition of HOOK-reported metrics — the `GET /metrics/hooks` scrape.
+//! THE HOOK FAMILIES of the snapshot service — what `GET /metrics/hooks` is rendered from.
 //!
 //! A hook reports its own operational metrics over the wire (`status.metrics`, see
-//! [`super::wire::HookMetric`]). The admin API surfaces those LIVE, on-demand, per hook
+//! [`HookMetric`]). The admin API surfaces those LIVE, on-demand, per hook
 //! (`GET /api/v1/admin/hooks/{name}/status`) — that path is unchanged and is the "truth right now"
-//! read. THIS module is the parallel projection for time-series consumers: it renders the same
-//! metrics as standard Prometheus text so any Prometheus/Grafana can scrape them, with the hook's
-//! metric NAMES verbatim (so an external dashboard built against a hook — e.g. a compression tool's
-//! own Grafana — repoints at busbar and just works) plus one automatic `hook="<name>"` label for
-//! provenance and multi-hook disambiguation.
+//! read. THIS module is the parallel projection for time-series consumers: the host validates,
+//! bounds and folds the same metrics into hook FAMILIES — the hook's metric NAMES verbatim (so an
+//! external dashboard built against a hook repoints at busbar and just works) plus one automatic
+//! `hook="<name>"` label for provenance and multi-hook disambiguation — and the prometheus export
+//! plugin renders them as `/metrics/hooks` (the export kind's `scrape` with
+//! `SCRAPE_FLAG_HOOK_FAMILIES`, `crate::export::scrape::hooks_handler`). Moved here from the kernel's
+//! `hooks::scrape` (P2 D4, ARCHITECT Q-D4-HOOKS 2026-10-04: `/metrics/hooks` leaves core; the fold
+//! is the snapshot service's, the rendering the plugin's). The kernel writes no exposition text.
 //!
 //! Design invariants (why this can never break busbar's own `/metrics`):
-//! * SEPARATE exposition. Hook metrics render here, never merged into busbar's own `/metrics`, so a
-//!   hook can never type-conflict or shadow a first-party `busbar_*` series (Prometheus allows one
-//!   TYPE per metric name per exposition; a `hook` label cannot disambiguate type).
+//! * SEPARATE exposition. Hook families are handed to their own render, never merged into busbar's
+//!   own `/metrics`, so a hook can never type-conflict or shadow a first-party `busbar_*` series
+//!   (Prometheus allows one TYPE per metric name per exposition; a `hook` label cannot
+//!   disambiguate type).
 //! * RESERVED namespace. A hook metric whose name starts with `busbar_` is dropped — a hook cannot
 //!   impersonate a first-party series.
-//! * NON-BLOCKING scrape. The scrape renders a CACHE and never awaits a hook socket inline. When a
+//! * NON-BLOCKING scrape. The fold reads a CACHE and never awaits a hook socket inline. When a
 //!   hook's cache is older than [`HOOK_METRICS_TTL_SECS`] the scrape serves the stale value and fires
 //!   an ASYNC refresh (stale-while-revalidate) — a slow or dead hook yields stale-then-absent series
 //!   (fail-open), never a stalled `/metrics/hooks`. Zero work when nobody scrapes; self-tunes to the
@@ -26,7 +30,12 @@
 //! * BOUNDED. `parse_status_metrics` already caps entries (64) + labels (8) + quantiles (8) +
 //!   buckets (64) and sanitizes every name/label/value, so a hostile hook cannot flood or
 //!   exfiltrate through the scrape.
+//!
+//! The 1.5.5 layout the plugin writes: families by name, `# HELP` (when present) then `# TYPE`, each
+//! family's samples in the order handed (hooks by name, then each hook's report order), no blank line
+//! between families. Every label value and number here is already in exposition spelling.
 
+use busbar_contract::export_calls::{Family, Sample};
 use busbar_contract::hook_wire::reply::HookMetric;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -135,18 +144,18 @@ fn snapshot() -> Vec<(String, Vec<HookMetric>)> {
 }
 
 /// Live-query one hook's status and update its cache entry. Runs in a spawned task from the scrape
-/// (never inline). Reuses the exact same [`super::fetch_status`] path the admin API uses, so the
+/// (never inline). Reuses the exact same [`crate::hooks::fetch_status`] path the admin API uses, so the
 /// scrape and the live admin read see the identical hook data (just at different freshness).
 async fn refresh(
     claim: InFlight,
     hook: crate::config::HookCfg,
     settings_version: u64,
-    env: super::HookEnv,
+    env: crate::hooks::HookEnv,
 ) {
     // The claim is held for the WHOLE refresh and dropped on the way out (including on panic), so no
     // second refresh for this hook can start while this one is still loading the plugin.
     let name = claim.0.clone();
-    let metrics = match super::fetch_status(&name, &hook, settings_version, &env).await {
+    let metrics = match crate::hooks::fetch_status(&name, &hook, settings_version, &env).await {
         Some(status) => status
             .metrics
             .as_ref()
@@ -159,11 +168,11 @@ async fn refresh(
     store(&name, metrics, busbar_kernel::store::now());
 }
 
-/// `GET /metrics/hooks` — render every hook's cached metrics as Prometheus text.
+/// THE HOOK FAMILIES for one `GET /metrics/hooks`: every hook's cached metrics, folded.
 ///
 /// Stale-while-revalidate: for each configured hook whose cache is stale, spawn an async refresh
-/// (the NEXT scrape sees it) and render the current cache now. The handler never awaits a hook.
-pub(crate) fn render(app: &Arc<crate::state::App>) -> String {
+/// (the NEXT scrape sees it) and fold the current cache now. Never awaits a hook.
+pub(crate) fn families(app: &Arc<crate::state::App>) -> Vec<Family> {
     let now = busbar_kernel::store::now();
     // Evict cache entries for hooks removed/renamed in a config reload so stale series stop
     // rendering and the process-global cache can't grow unbounded across reloads.
@@ -185,17 +194,18 @@ pub(crate) fn render(app: &Arc<crate::state::App>) -> String {
             app.hook_env.clone(),
         ));
     }
-    render_text(&snapshot())
+    families_of(&snapshot())
 }
 
-/// A metric-name group during rendering: `(prometheus_type, help, [(hook_name, metric)])`.
+/// A metric-name group during the fold: `(prometheus_type, help, [(hook_name, metric)])`.
 type MetricGroup = (String, Option<String>, Vec<(String, HookMetric)>);
 
-/// Render `(hook_name, metrics)` pairs to Prometheus 0.0.4 text exposition. Grouped by metric name
-/// (HELP/TYPE emitted once per name, as the format requires), verbatim names + a `hook="<name>"`
-/// label, `busbar_`-prefixed names dropped, histograms rendered as Prometheus SUMMARY (the type that
-/// carries `quantile` series). Deterministic order (sorted) so scrapes are stable and testable.
-fn render_text(hooks: &[(String, Vec<HookMetric>)]) -> String {
+/// Fold `(hook_name, metrics)` pairs into the hook families, in the 1.5.5 exposition's order.
+/// Grouped by metric name (one family per name, as the format requires), verbatim names + a
+/// `hook="<name>"` label, `busbar_`-prefixed names dropped, histograms as Prometheus SUMMARY (the
+/// type that carries `quantile` series) unless they carry native buckets. Deterministic order
+/// (sorted) so scrapes are stable and testable.
+pub(crate) fn families_of(hooks: &[(String, Vec<HookMetric>)]) -> Vec<Family> {
     // Group by metric name -> (prom_type, help, [(hook_name, metric)]). First occurrence fixes the
     // type; a later entry of a DIFFERENT type for the same name is dropped (Prometheus forbids mixing).
     let mut order: Vec<String> = Vec::new();
@@ -222,24 +232,30 @@ fn render_text(hooks: &[(String, Vec<HookMetric>)]) -> String {
         }
     }
 
-    let mut out = String::new();
+    let mut out = Vec::with_capacity(order.len());
     order.sort();
     for name in &order {
         let (ptype, help, entries) = &groups[name];
-        if let Some(h) = help {
-            out.push_str(&format!("# HELP {name} {}\n", escape_help(h)));
-        }
-        out.push_str(&format!("# TYPE {name} {ptype}\n"));
+        let mut samples = Vec::new();
         for (hook_name, m) in entries {
             match ptype.as_str() {
-                "histogram" => render_histogram(&mut out, name, hook_name, m),
-                "summary" => render_summary(&mut out, name, hook_name, m),
-                _ => {
-                    let labels = render_labels(hook_name, m.labels.as_ref(), &[]);
-                    out.push_str(&format!("{name}{labels} {}\n", fmt_f64(m.value)));
-                }
+                "histogram" => histogram_samples(&mut samples, name, hook_name, m),
+                "summary" => summary_samples(&mut samples, name, hook_name, m),
+                _ => samples.push(Sample {
+                    name: name.clone(),
+                    labels: render_labels(hook_name, m.labels.as_ref(), &[]),
+                    value: fmt_f64(m.value),
+                }),
             }
         }
+        out.push(Family {
+            name: name.clone(),
+            help: help.as_deref().map(escape_help),
+            unit: None,
+            kind: busbar_contract::export_calls::kind_of(ptype)
+                .unwrap_or(busbar_contract::abi::export::SCRAPE_KIND_UNTYPED),
+            samples,
+        });
     }
     out
 }
@@ -263,7 +279,7 @@ fn prom_type_of(m: &HookMetric) -> &'static str {
 /// omitted it) plus `name_count` = the total observation count (`value`). This is the shape
 /// `histogram_quantile()` operates on, so a dashboard built against a `*_bucket` series works
 /// unchanged.
-fn render_histogram(out: &mut String, name: &str, hook: &str, m: &HookMetric) {
+fn histogram_samples(out: &mut Vec<Sample>, name: &str, hook: &str, m: &HookMetric) {
     let mut saw_inf = false;
     if let Some(buckets) = &m.buckets {
         // Sort by le so the exposition is monotonic and stable (finite bounds ascending, +Inf last).
@@ -285,36 +301,45 @@ fn render_histogram(out: &mut String, name: &str, hook: &str, m: &HookMetric) {
             if le == "+Inf" {
                 saw_inf = true;
             }
-            let labels = render_labels(hook, m.labels.as_ref(), &[("le", le)]);
-            out.push_str(&format!("{name}_bucket{labels} {}\n", fmt_f64(*count)));
+            out.push(Sample {
+                name: format!("{name}_bucket"),
+                labels: render_labels(hook, m.labels.as_ref(), &[("le", le)]),
+                value: fmt_f64(*count),
+            });
         }
     }
     // Prometheus requires a +Inf bucket equal to the total count; add it if the hook didn't.
     if !saw_inf {
-        let labels = render_labels(hook, m.labels.as_ref(), &[("le", "+Inf")]);
-        out.push_str(&format!("{name}_bucket{labels} {}\n", fmt_f64(m.value)));
+        out.push(Sample {
+            name: format!("{name}_bucket"),
+            labels: render_labels(hook, m.labels.as_ref(), &[("le", "+Inf")]),
+            value: fmt_f64(m.value),
+        });
     }
-    let count_labels = render_labels(hook, m.labels.as_ref(), &[]);
-    out.push_str(&format!(
-        "{name}_count{count_labels} {}\n",
-        fmt_f64(m.value)
-    ));
+    out.push(Sample {
+        name: format!("{name}_count"),
+        labels: render_labels(hook, m.labels.as_ref(), &[]),
+        value: fmt_f64(m.value),
+    });
 }
 
 /// Render a summary: one `name{...,quantile="q"}` line per quantile plus `name_count` = the
 /// observation count (the metric's `value` for a histogram).
-fn render_summary(out: &mut String, name: &str, hook: &str, m: &HookMetric) {
+fn summary_samples(out: &mut Vec<Sample>, name: &str, hook: &str, m: &HookMetric) {
     if let Some(qs) = &m.quantiles {
         for (q, v) in qs {
-            let labels = render_labels(hook, m.labels.as_ref(), &[("quantile", q)]);
-            out.push_str(&format!("{name}{labels} {}\n", fmt_f64(*v)));
+            out.push(Sample {
+                name: name.to_string(),
+                labels: render_labels(hook, m.labels.as_ref(), &[("quantile", q)]),
+                value: fmt_f64(*v),
+            });
         }
     }
-    let count_labels = render_labels(hook, m.labels.as_ref(), &[]);
-    out.push_str(&format!(
-        "{name}_count{count_labels} {}\n",
-        fmt_f64(m.value)
-    ));
+    out.push(Sample {
+        name: format!("{name}_count"),
+        labels: render_labels(hook, m.labels.as_ref(), &[]),
+        value: fmt_f64(m.value),
+    });
 }
 
 /// Build the `{hook="...",k="v",...,extra="..."}` label set: the automatic `hook` label first, then
@@ -329,21 +354,21 @@ fn render_labels(
     hook: &str,
     labels: Option<&std::collections::BTreeMap<String, String>>,
     extra: &[(&str, &str)],
-) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    parts.push(format!("hook=\"{}\"", escape_label(hook)));
+) -> Vec<(String, String)> {
+    let mut parts: Vec<(String, String)> = Vec::new();
+    parts.push(("hook".to_string(), escape_label(hook)));
     if let Some(m) = labels {
         for (k, v) in m {
             if k == "hook" || extra.iter().any(|(ek, _)| ek == k) {
-                continue; // would duplicate a label this renderer emits; keep ours, drop theirs
+                continue; // would duplicate a label this fold emits; keep ours, drop theirs
             }
-            parts.push(format!("{k}=\"{}\"", escape_label(v)));
+            parts.push((k.clone(), escape_label(v)));
         }
     }
     for (k, v) in extra {
-        parts.push(format!("{k}=\"{}\"", escape_label(v)));
+        parts.push(((*k).to_string(), escape_label(v)));
     }
-    format!("{{{}}}", parts.join(","))
+    parts
 }
 
 /// Prometheus label-value escaping: backslash, double-quote, newline (per the exposition spec).
@@ -371,26 +396,6 @@ fn fmt_f64(v: f64) -> String {
     }
 }
 
-/// `GET /metrics/hooks` — the Prometheus scrape of hook-reported metrics. Standard text exposition,
-/// governed by the auth chain exactly like busbar's own `/metrics` (both carry operational topology,
-/// so busbar does NOT exempt them — a scraper authenticates with a bearer token, which Prometheus and
-/// Grafana both support in scrape/datasource config). Stale-while-revalidate: renders the cache now,
-/// refreshes stale hooks in the background; never blocks on a hook socket.
-pub(crate) async fn handler(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    (
-        axum::http::StatusCode::OK,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/plain; version=0.0.4; charset=utf-8",
-        )],
-        render(&app),
-    )
-        .into_response()
-}
-
 #[cfg(test)]
-#[path = "tests/scrape_tests.rs"]
-mod scrape_tests;
+#[path = "../tests/snapshot_hooks_tests.rs"]
+mod tests;

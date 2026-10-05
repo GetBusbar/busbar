@@ -365,8 +365,9 @@ pub(crate) fn base_data_router(
     // OWN `/metrics` exposition is no longer a core route here — it is served by the built-in
     // prometheus exporter through the plugin HTTP endpoint registration (`mount_plugin_routes` below,
     // the well-known `/metrics` exception), resolved at scrape time so a hot-swap never leaves it
-    // stale. The HOOK-metrics scrape (`/metrics/hooks`) stays a core route, mounted only
-    // when the recorder is installed (`metrics::enabled()`), reserved against plugin claims.
+    // stale. The HOOK-metrics scrape (`/metrics/hooks`) is mounted here only when the recorder is
+    // installed (`snapshot::enabled()`), reserved against plugin claims, and RENDERED BY THE SCRAPE SINK
+    // over the snapshot service's hook families (P2 D4: the kernel writes no exposition).
     let router = if snapshot::enabled() {
         // A SEPARATE exposition from busbar's own `/metrics` so a hook can never type-conflict or
         // shadow a first-party series. Verbatim hook metric names + an auto `hook="<name>"` label, so
@@ -376,7 +377,7 @@ pub(crate) fn base_data_router(
             "/metrics/hooks",
             RouteMethod::Get,
             RouteAuth::Key,
-            crate::hooks::scrape::handler,
+            crate::export::scrape::hooks_handler,
         )
     } else {
         router

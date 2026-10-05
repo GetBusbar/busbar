@@ -1660,7 +1660,7 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
     let find = |window: &str, pool: Option<&str>| {
         view.buckets
             .iter()
-            .find(|b| b.window == window && b.pool.as_deref() == pool)
+            .find(|b| b.window == window && b.scope.as_deref() == pool)
             .unwrap_or_else(|| panic!("bucket ({window}, {pool:?}) missing: {:?}", view.buckets))
     };
 
@@ -1763,7 +1763,7 @@ async fn get_group_usage_governance_off_zero_usage_caps_projected() {
     assert!(view
         .buckets
         .iter()
-        .any(|b| b.budget_cap == Some(500) && b.pool.as_deref() == Some("frontier")));
+        .any(|b| b.budget_cap == Some(500) && b.scope.as_deref() == Some("frontier")));
 }
 
 // ---- fleet-wide usage read: store-failure logging ----

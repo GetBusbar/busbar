@@ -110,6 +110,38 @@ pub(crate) fn exposition(
     }
 }
 
+/// `/metrics/hooks`' content type, 1.5.5's bytes (its own: the hook exposition carried a charset).
+pub(crate) const HOOKS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+
+/// `GET /metrics/hooks` — the hook-reported metrics, folded by the snapshot service
+/// ([`crate::snapshot::hooks::families`]) and RENDERED BY THE SCRAPE SINK through the export kind's
+/// `scrape` with `SCRAPE_FLAG_HOOK_FAMILIES` (P2 D4, ARCHITECT Q-D4-HOOKS 2026-10-04: `/metrics/hooks`
+/// leaves core; the kernel writes no exposition). Governed by the auth chain exactly like `/metrics`
+/// (both carry operational topology). Stale-while-revalidate: the fold reads the cache now and
+/// refreshes stale hooks in the background; it never blocks on a hook. With no sink, or one that
+/// does not render, a `502` with no body and a warning, as `/metrics` answers.
+pub(crate) async fn hooks_handler(
+    crate::state::CurrentApp(app): crate::state::CurrentApp,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let families = crate::snapshot::hooks::families(&app);
+    let rendered = super::plugin::scrape_sink()
+        .ok_or_else(|| "no scrape sink is open".to_string())
+        .and_then(|sink| sink.scrape_hooks(&families));
+    match rendered {
+        Ok(body) => (
+            axum::http::StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, HOOKS_CONTENT_TYPE)],
+            String::from_utf8_lossy(&body).into_owned(),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::warn!(error = %e, "the scrape sink did not render the hook families");
+            axum::http::StatusCode::BAD_GATEWAY.into_response()
+        }
+    }
+}
+
 /// The scrape route `cfg` declares: owned by the MODULE its scrape sink's instance names (the name a
 /// colliding sink is refused against), or `None` with no scrape sink (⇒ `/metrics` is never
 /// mounted, as it was unmounted when metrics were off).

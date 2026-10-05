@@ -193,7 +193,7 @@ impl AdminService {
             .filter_map(|i| {
                 view.lane_view(i).map(|l| ModelView {
                     model: l.model.to_string(),
-                    provider: l.provider.to_string(),
+                    upstream: l.provider.to_string(),
                 })
             })
             .collect();
@@ -215,7 +215,7 @@ impl AdminService {
         let providers = counts
             .into_iter()
             .map(|(provider, model_count)| ProviderView {
-                provider: provider.to_string(),
+                upstream: provider.to_string(),
                 model_count,
             })
             .collect();
@@ -396,7 +396,7 @@ impl AdminService {
             };
             buckets.push(GroupBucketUsageView {
                 window: b.window,
-                pool: b.scope.as_ref().map(|s| s.value.clone()),
+                scope: b.scope.as_ref().map(|s| s.value.clone()),
                 requests: usage.requests,
                 tokens: usage.tokens,
                 spend_cents: usage.spend_cents,
@@ -1574,7 +1574,7 @@ impl AdminService {
             .into_iter()
             .map(|((model, provider), usage)| ModelUsageView {
                 model,
-                provider,
+                upstream: provider,
                 usage,
             })
             .collect();

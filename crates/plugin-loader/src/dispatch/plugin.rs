@@ -42,8 +42,8 @@ use std::time::Instant;
 use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, Diag, InHead, MetricEntry, Op, OutHead, Outcome, RawOutcome,
-    DIAG_LOG, DIAG_LOG_DROPPED, METRIC_ADD, METRIC_OBSERVE, METRIC_SET, SEVERITY_ERROR,
-    SEVERITY_TRACE,
+    DIAG_LOG, DIAG_LOG_DROPPED, FLAG_RESUME, METRIC_ADD, METRIC_OBSERVE, METRIC_SET,
+    SEVERITY_ERROR, SEVERITY_TRACE,
 };
 use busbar_contract::abi::mechanism::door::{FAMILY_COUNTER, FAMILY_GAUGE, FAMILY_HISTOGRAM};
 use busbar_contract::abi::mechanism::lifecycle::{
@@ -1223,7 +1223,9 @@ impl<K: Kind> Plugin<K> {
         let crossed = unsafe {
             let head = &mut *i;
             head.size = size_of::<I>() as u32;
-            head.flags = 0;
+            // The dispatcher owns only the mechanism's own bit; a kind's bit the caller set on the
+            // head (the export scrape's `SCRAPE_FLAG_HOOK_FAMILIES`) rides through untouched.
+            head.flags &= !FLAG_RESUME;
             head.deadline_class = DeadlineClass::Call as u8;
             head.ticket = Ticket::NONE;
             inst.cross(s, i, o, out_size)

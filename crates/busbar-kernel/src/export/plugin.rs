@@ -111,6 +111,9 @@ pub(super) struct PluginSink {
     name: String,
     module: String,
     sink: Arc<dyn ExportCalls>,
+    /// Whether this is the SCRAPE SINK's instance (the one subscribed to `metrics`), which renders
+    /// `/metrics` and `/metrics/hooks`.
+    scrape: bool,
     pub(super) projection: Projection,
     /// Its admission, as it stated it when started ([`start`]).
     admission: OnceLock<Admission>,
@@ -191,6 +194,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             name: name.clone(),
             module: module.to_string(),
             sink,
+            scrape: p.scrape,
             projection,
             admission: OnceLock::new(),
         });
@@ -248,6 +252,12 @@ pub fn start() {
 /// The sink opened at boot for the instance `name`, if one was.
 pub(crate) fn opened(name: &str) -> Option<Arc<dyn ExportCalls>> {
     sinks().find(|s| s.name == name).map(|s| s.sink.clone())
+}
+
+/// The scrape sink opened at boot (the instance subscribed to `metrics`), if one was: what renders
+/// `/metrics/hooks`.
+pub(crate) fn scrape_sink() -> Option<Arc<dyn ExportCalls>> {
+    sinks().find(|s| s.scrape).map(|s| s.sink.clone())
 }
 
 /// Ask every opened sink for its `status` — its envelope folds into this process's recorder —
