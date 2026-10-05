@@ -484,16 +484,25 @@ fn pending_request(plane: &super::plane::AsPlane, target: &str) -> Pending {
 
 /// Is this a path on THIS server rather than a URL somewhere else?
 ///
-/// The consent screen redirects a browser to this value, so an unchecked one is an open redirect —
-/// and an open redirect on an OAuth server's own origin is the single most useful thing an attacker
-/// can find there. Accepted: a single leading `/` followed by something that is not another `/` and
-/// not a `\`. Refused: an absolute URL, a scheme-relative `//evil.example`, and the backslash form
-/// browsers normalise into one.
+/// The consent screen redirects a browser to this value once the operator presses Approve or Deny,
+/// so an unchecked one is an open redirect — and an open redirect on an OAuth server's own origin is
+/// the single most useful thing an attacker can find there. A browser does not read a `Location`
+/// the way a prefix check does: it drops every tab and newline anywhere in it, trims leading
+/// controls and spaces, and reads `\` as `/`, so `/\t/evil.example` and `/\n/evil.example` are
+/// `//evil.example` to it, a scheme-relative URL on someone else's host.
+///
+/// So the value is held to the ONE shape a local absolute path has, byte by byte, and anything else
+/// is refused rather than cleaned: it opens with exactly one `/`; its second byte is neither `/` nor
+/// `\`; and no byte anywhere is a backslash, a control (C0, DEL, or a C1 control), or whitespace.
+/// What the authorization endpoint sends here is the request target the browser itself sent, which
+/// is percent-encoded and carries none of those.
 fn is_local_path(value: &str) -> bool {
-    value.starts_with('/')
-        && !value.starts_with("//")
-        && !value.starts_with("/\\")
-        && !value.contains('\\')
+    let mut bytes = value.bytes();
+    bytes.next() == Some(b'/')
+        && !matches!(bytes.next(), Some(b'/' | b'\\'))
+        && !value
+            .chars()
+            .any(|c| c == '\\' || c.is_control() || c.is_whitespace())
 }
 
 /// The `client_id` and `scope` of a pending authorization request, read out of its query string.
@@ -720,3 +729,7 @@ mod percent_decode_tests;
 #[cfg(test)]
 #[path = "tests/consent_host_tests.rs"]
 mod consent_host_tests;
+
+#[cfg(test)]
+#[path = "tests/local_path_tests.rs"]
+mod local_path_tests;

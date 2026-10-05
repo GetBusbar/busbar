@@ -1053,3 +1053,67 @@ async fn an_unencodable_login_redirect_fails_closed_rather_than_proceeding() {
          resource owner had answered: got {status} {body}"
     );
 }
+
+/// THE OPEN REDIRECT, on the wire. An operator who opened a real consent screen (so the session
+/// cookie is live) and then submitted a form whose `return` is `/<TAB>/evil.example` must not be
+/// sent anywhere: a browser drops the tab and follows `//evil.example` off-site. Both buttons, since
+/// Deny redirects exactly as Approve does. Before the fix both answered 302 to that `Location`.
+#[tokio::test]
+async fn a_return_target_a_browser_reads_as_off_site_is_refused_on_approve_and_deny() {
+    let (origin, _app) = serve().await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    let mut jar = Jar::new(false);
+    let authorize = format!(
+        "{origin}/authorize?response_type=code&client_id={CLIENT_ID}\
+         &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1&scope={SCOPE}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256"
+    );
+    let (_, headers, _) = send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
+    let consent = location(&headers, &origin);
+    let (status, _, body) = send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
+    assert_eq!(
+        status, 200,
+        "the consent screen renders and opens a session: {body}"
+    );
+    assert!(
+        jar.header_for("/consent").is_some(),
+        "the session cookie is live"
+    );
+
+    for answer in ["approve", "deny"] {
+        for bypass in ["/\t/evil.example", "/\n/evil.example", "/\\evil.example"] {
+            let (status, headers, _) = send(
+                &client,
+                &mut jar,
+                reqwest::Method::POST,
+                &format!("{origin}/consent"),
+                Some(&[("return", bypass), ("answer", answer)]),
+            )
+            .await;
+            assert_eq!(
+                status, 400,
+                "{answer} with return {bypass:?} must be refused"
+            );
+            assert!(
+                headers.get(reqwest::header::LOCATION).is_none(),
+                "{answer} with return {bypass:?} redirected the browser"
+            );
+        }
+    }
+    // And the screen itself refuses to render for one.
+    let (status, _, _) = send(
+        &client,
+        &mut jar,
+        reqwest::Method::GET,
+        &format!("{origin}/consent?return=%2F%09%2Fevil.example"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status, 400,
+        "the consent screen renders for an off-site return target"
+    );
+}
