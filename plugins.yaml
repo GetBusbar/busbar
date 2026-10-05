@@ -281,7 +281,7 @@ plugins:
   - repo: busbar-hook-webrequest
     kind: hook
     alias: webrequest
-    crate: busbar-hook-webrequest
+    crate: busbar-hook-webrequest-plugin
     version_line: "1.0"
     service: none
     release_gate: optional
