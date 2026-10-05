@@ -61,6 +61,7 @@ pub mod door;
 pub mod events;
 pub mod facts;
 pub mod frame;
+pub mod framed;
 pub mod identity;
 pub mod jsonrpc;
 pub mod local;

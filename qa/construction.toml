@@ -738,7 +738,7 @@ busbar-transport-stdio = ["tokio", "futures"]
 busbar-plane-mcp = ["base64"]
 # The same ruling applied to a plane: the `agents:` grammar keeps its registrations in the order an
 # operator wrote them (indexmap), and the plane reads its public base URL once (url).
-busbar-plane-a2a = ["indexmap", "url"]
+busbar-plane-a2a = ["indexmap", "url", "a2a-pb", "a2a-lf", "prost"]
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a

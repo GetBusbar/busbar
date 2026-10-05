@@ -929,9 +929,12 @@ dependencies = [
 name = "busbar-plane-a2a"
 version = "1.6.0"
 dependencies = [
+ "a2a-lf",
+ "a2a-pb",
  "busbar-contract",
  "busbar-plugin-loader",
  "indexmap",
+ "prost",
  "serde",
  "serde_json",
  "tracing",
