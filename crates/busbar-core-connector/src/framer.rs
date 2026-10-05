@@ -68,14 +68,40 @@ pub struct DoorFacts {
     /// The claims it composes over: always empty now (no transport names another); an entry that
     /// states one is refused where it would be served.
     pub composes_over: Vec<&'static str>,
+    /// A CARRIER whose own claim selects on the local PORT a connection arrived on (its claim row's
+    /// selector forms hold `SelectorForm::Port`): it listens on, and dials, network addresses. The
+    /// connector carries a framer's connection over the first such carrier
+    /// ([`crate::registry::Transports::address_carrier`]): the carrier under a framer is the
+    /// connector's choice from the target, and no transport names another.
+    pub ported: bool,
 }
 
-/// A transport entry's framer table, as the host reaches it.
+/// A transport entry's table, as the host reaches it: a framer's ops ([`FramerDoor::cross`]) and a
+/// carrier's ([`FramerDoor::carry`]).
 pub trait FramerDoor: Send + Sync {
     /// What the entry states.
     fn facts(&self) -> &DoorFacts;
     /// One crossing: the op, answered into its `out`.
     fn cross(&self, call: Call<'_>) -> Crossed;
+    /// A new side of a carried connection: a ticket the entry's carrier ops are driven on inline
+    /// (`crate::carrier`). `None` = the entry is no carrier the host can drive.
+    fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        None
+    }
+    /// One CARRIER crossing on `side` (a RESUME of the op that pended on it when `resume`). An entry
+    /// that carries nothing answers REFUSED.
+    fn carry(
+        &self,
+        side: &dyn crate::carrier::Side,
+        resume: bool,
+        call: crate::carrier::Carry<'_>,
+    ) -> Crossed {
+        let _ = (side, resume, call);
+        Crossed {
+            outcome: Outcome::Refused,
+            error: None,
+        }
+    }
 }
 
 /// Why a framer op did not answer READY.

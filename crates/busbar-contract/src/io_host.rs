@@ -63,8 +63,15 @@ pub trait IoHost: Send + Sync {
     /// Not admitted, or the system could not bind it.
     fn listen(&self, owner: u64, ticket: Ticket, bind: &str) -> IoResult<(u64, String)>;
 
-    /// The next connection off `listener`: its handle and its far end's address.
-    fn accept(&self, owner: u64, listener: u64, waker: &Waker) -> Poll<IoResult<(u64, String)>>;
+    /// The next connection off `listener`, for the accept `ticket` runs: its handle and its far
+    /// end's address.
+    fn accept(
+        &self,
+        owner: u64,
+        ticket: Ticket,
+        listener: u64,
+        waker: &Waker,
+    ) -> Poll<IoResult<(u64, String)>>;
 
     /// Bytes into `buf`; `0` is the clean end.
     fn read(&self, owner: u64, handle: u64, buf: &mut [u8], waker: &Waker) -> Poll<IoResult<usize>>;

@@ -195,7 +195,13 @@ impl IoHost for SuiteIo {
         Ok((self.hold(owner, Some(ticket), Handle::Listener(l)), at))
     }
 
-    fn accept(&self, owner: u64, listener: u64, waker: &Waker) -> Poll<IoResult<(u64, String)>> {
+    fn accept(
+        &self,
+        owner: u64,
+        ticket: Ticket,
+        listener: u64,
+        waker: &Waker,
+    ) -> Poll<IoResult<(u64, String)>> {
         let got = self.on(owner, listener, |h| match h {
             Handle::Listener(l) => match l.accept() {
                 Ok((s, peer)) => Ok(Some((s, peer.to_string()))),
@@ -207,7 +213,7 @@ impl IoHost for SuiteIo {
         match got {
             Ok(Some((s, peer))) => {
                 let _ = s.set_nonblocking(true);
-                Poll::Ready(Ok((self.hold(owner, None, Handle::Stream(s)), peer)))
+                Poll::Ready(Ok((self.hold(owner, Some(ticket), Handle::Stream(s)), peer)))
             }
             Ok(None) => {
                 self.park(listener, waker);

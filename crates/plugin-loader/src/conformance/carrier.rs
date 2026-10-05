@@ -89,7 +89,7 @@ fn go<I: InFrame, O: OutFrame>(
     i: I,
 ) -> (Called, O) {
     let mut f = Frame::new(i, output::<O>());
-    let c = p.call_inline(&side.ticket, resume, s, &mut f);
+    let c = p.call_inline(side.ticket.ticket(), resume, s, &mut f);
     (c, f.out)
 }
 

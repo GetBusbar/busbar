@@ -1234,7 +1234,7 @@ impl<K: Kind> Plugin<K> {
         self.call_once(s, frame, true)
     }
 
-    /// AN INLINE CALL on `ticket` (`super::inline`): on the caller's thread, like [`Plugin::call`],
+    /// AN INLINE CALL on `ticket` (an inline ticket's, `super::inline::InlineTicket::ticket`): on the caller's thread, like [`Plugin::call`],
     /// but on a REAL ticket, so the op may answer PENDING — the op's wake (an `io.*` slot's, or the
     /// plugin's own) wakes the task `ticket` registered, which calls again with `resume` (the
     /// mechanism's `FLAG_RESUME`: the same op on the same ticket). The caller serializes the ops on
@@ -1242,12 +1242,12 @@ impl<K: Kind> Plugin<K> {
     /// handoff (#30).
     pub fn call_inline<I: InFrame, O: OutFrame>(
         &self,
-        ticket: &super::inline::InlineTicket,
+        ticket: Ticket,
         resume: bool,
         s: u32,
         frame: &mut Frame<I, O>,
     ) -> Called {
-        self.call_ticketed(s, frame, ticket.ticket(), resume)
+        self.call_ticketed(s, frame, ticket, resume)
     }
 
     fn instance_id(&self) -> usize {

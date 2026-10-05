@@ -278,7 +278,7 @@ extern "C" fn accept(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -
         if check_addr_buf(i.addr_buf, i.addr_cap, "io.accept.addr").is_err() {
             return Answer::with(Outcome::Refused, SHORT_ADDR);
         }
-        let p = c.io.accept(c.owner, i.handle, &c.waker(ticket));
+        let p = c.io.accept(c.owner, ticket, i.handle, &c.waker(ticket));
         // SAFETY: the caller's buffer, checked at least `MAX_ADDR`.
         Answer::polled(p, |(h, peer)| {
             Answer::ready(h, unsafe { put(i.addr_buf, i.addr_cap, &peer) })

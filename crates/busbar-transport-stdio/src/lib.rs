@@ -1,93 +1,48 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The stdio transport: a duplex, framed byte pump over a process's own stdin/stdout, or over a
-//! spawned child process's pipes.
+//! The stdio transport: the CARRIER of a spawned program's pipes, one frame per line.
 //!
-//! This crate carries exactly the byte-level behaviour the architecture's stdio row names: one
-//! frame per line (bytes split on `0x0A`), a single write lock per connection, and the
-//! process/child lifecycle. It carries no protocol meaning at all — no JSON-RPC, no ids, no
-//! correlation table. That meaning belongs to whichever plane rides this transport; this crate
-//! only ever sees and returns opaque bytes.
+//! No plugin opens a socket or a pipe (`BUSBAR-1.6.0.md` THE DESIGN, §5): the host spawns the program
+//! (an absolute path, its arguments and its whole environment, no shell — what the deployment wrote
+//! down and nothing it did not), owns its pipes and kills it when the connection closes. This crate
+//! holds only the host's opaque handle ([`door`]) and owns the policy over it: the spawn it asks for,
+//! one frame per line on the way in, one line per frame on the way out, and the close. It carries no
+//! protocol meaning at all — no JSON-RPC, no ids, no correlation table: that belongs to whichever
+//! plane rides this transport.
 //!
-//! ## What "Unit 0" is here
-//!
-//! [`busbar_contract::transport::wire::Unit0Trigger::FirstMessage`]: the first framed line on the channel opens the
-//! session's first unit, exactly as the architecture's stdio row states (`SESSION` / `SESSION_BOUND`
-//! / Unit 0 = true / true / first message).
-//!
-//! ## The connection side-table, and why `Conn` cannot hold the reader directly
-//!
-//! [`busbar_contract::transport::wire::Conn`] is a sealed, opaque handle: a plugin (and a transport crate,
-//! which is reviewed in-tree but still built against the same contract surface) can only read its
-//! `id()` and `peer()`. The actual reader/writer/child-process state therefore lives in this
-//! transport's own side table, keyed by `Conn::id()` — never inside the `Conn` itself. Every method
-//! below (`frames`, `write`, `close`, `upgrade`, `unit0_refusal`) looks the state up by id.
-//!
-//! ## The lower-layer boundary (placeholder, see the crate's own report)
-//!
-//! stdio composes over nothing (`COMPOSES_OVER` is empty): it is either the process's own
-//! stdin/stdout, or a spawned child's pipes. A dial target reaches it as
-//! [`busbar_contract::transport::dest::UpstreamAddress::Program`], which spells the three things a spawn needs and a
-//! single opaque string could not: the absolute path, the argument vector, and the environment. The
-//! security posture of the 1.5.5-era MCP stdio client is kept exactly — no shell, an absolute path
-//! only, `env_clear()` before anything the destination declared is set — so a child inherits
-//! nothing the deployment did not write down.
-//!
-//! ## The connector's door
-//!
-//! [`door`] is this row as a memory-ABI LINE FRAMER: the host's connector spawns the program a
-//! plane's stdio need names (its settings' `{command, args, env}`), owns the child, and frames its
-//! pipes through this door, one frame per line.
+//! One door, two ways in: a build that links this crate names [`linked::door`]; built with its
+//! `dropped-in` feature, the crate's cdylib exports the same door as its image's one symbol.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
 
-mod carrier;
+// THE KIND'S SKELETON (`BUSBAR-1.6.0.md` THE DESIGN, §2), the same files every transport twin
+// carries: what it declares (`meta`), what it claims (`claims`), the entry (`transport`), and the
+// door that states them.
 mod claims;
-mod conn;
 pub mod door;
 mod meta;
 mod transport;
 
-#[cfg(feature = "dropped-in")]
-pub use carrier::exports;
-pub use carrier::StdioCarrier;
-pub use conn::StaticConfig;
-
 /// THE TRANSPORT AXIS ENTRY (#3, #30): what the composition root folds for this wire — its key, the
-/// layers it declares, and how it is built. The root names none of them.
+/// layers it declares and its door. The root names none of them.
 pub mod linked {
-    use std::sync::Arc;
-
-    use busbar_contract::transport::{TransportMeta, TransportSettings};
-
     /// The row's registry key.
-    pub const KEY: &str = <crate::StdioCarrier as TransportMeta>::KEY;
-    /// The layers this wire declares it can be built over.
-    pub const COMPOSES_OVER: &[&str] = <crate::StdioCarrier as TransportMeta>::COMPOSES_OVER;
+    pub const KEY: &str = crate::door::KEY;
+    /// The layers this wire declares it can be built over: none, it is the bottom of its stack.
+    pub const COMPOSES_OVER: &[&str] = &[];
     /// Whether this wire carries sessions.
-    pub const SESSION: bool = <crate::StdioCarrier as TransportMeta>::SESSION;
-
-    /// Every constant this wire declares, as the root reads a row.
-    pub const ROW: busbar_contract::transport::TransportRow =
-        busbar_contract::transport::TransportRow::of::<crate::StdioCarrier>();
-
-    /// The carrier, built: it opens its own pipes and reads no setting.
-    #[must_use]
-    pub fn carrier(_: &TransportSettings) -> Arc<dyn busbar_contract::transport::Carrier> {
-        Arc::new(crate::StdioCarrier::new())
-    }
-
-    /// THE MEMORY-ABI DOOR the host's connector frames a program's pipes with (the `transport-door`
-    /// axis): the line framer.
+    pub const SESSION: bool = true;
+    /// THE MEMORY-ABI DOOR the host's connector carries a program's pipes through (the
+    /// `transport-door` axis).
     pub use crate::door::door;
 }
 
-#[cfg(test)]
-#[path = "tests/carrier_battery.rs"]
-mod carrier_battery;
-
-#[cfg(test)]
-#[path = "tests/mutation_hardening.rs"]
-mod mutation_hardening;
+/// THE DROPPED-IN DOOR (`dropped-in`): the image's one door symbol, this crate's own door. The one
+/// item this crate's `#![deny(unsafe_code)]` allows: exporting a symbol is the macro's.
+#[cfg(feature = "dropped-in")]
+#[allow(unsafe_code)]
+mod exports {
+    busbar_contract::export_door!(crate::door::door);
+}
