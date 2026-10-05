@@ -344,6 +344,19 @@ pub const STATUS_FAR_END_FAULT: u8 = 3;
 /// Status class: other.
 pub const STATUS_OTHER: u8 = 4;
 
+/// Fault reading: none stated. The breaker reads an answer with no fault reading as the caller's
+/// (it records nothing against the destination): a framer that states no fault table never trips
+/// anything.
+pub const FAULT_NONE: u8 = 0;
+/// Fault reading: the caller's own fault. The destination is healthy and nothing is recorded.
+pub const FAULT_CALLER: u8 = 1;
+/// Fault reading: a transient fault of the destination. Its cell counts it toward a trip, and the
+/// piece's `retry_after_secs`, where stated, floors the cooldown.
+pub const FAULT_TRANSIENT: u8 = 2;
+/// Fault reading: the destination itself is down for every caller (its credential or its account
+/// was refused), so every pool's cell for it trips at once.
+pub const FAULT_HARD: u8 = 3;
+
 /// [`Claim::status_at`]: no status.
 pub const STATUS_AT_NONE: u8 = 0;
 /// [`Claim::status_at`]: the first frame carries the status.

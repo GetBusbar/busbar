@@ -1616,6 +1616,40 @@ fn a_verdict_is_known() {
     );
 }
 
+/// THE BREAKER FAULT READING (ARCHITECT 2026-10-05): one vocabulary with the transport's
+/// (`FAULT_*`), separate from the verdict. RED arms: past `FAULT_HARD`, on an answer that is not
+/// READY, and its padding not zero.
+#[test]
+fn a_fault_reading_is_the_transports_vocabulary_on_a_ready_answer() {
+    use crate::abi::transport::{FAULT_CALLER, FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT};
+    let mut o: OnPieceOut = z();
+    for reading in [FAULT_NONE, FAULT_CALLER, FAULT_TRANSIENT, FAULT_HARD] {
+        o.fault = reading;
+        assert_eq!(piece(&o, &[], &[], &[]), Ok(()), "{reading}");
+    }
+    // Separate from the verdict: a retried answer that is the caller's own fault.
+    o.verdict = VERDICT_RETRY;
+    o.fault = FAULT_CALLER;
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    o.verdict = 0;
+    o.fault = FAULT_HARD + 1;
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::UnknownCode, "on_piece.fault")
+    );
+    o.fault = FAULT_TRANSIENT;
+    assert_eq!(
+        check_on_piece(Pending, &o, (&[], &[], &[]), &caps(), &bounds()),
+        f(Rule::Contradiction, "on_piece.fault_not_ready")
+    );
+    o.fault = FAULT_NONE;
+    o._fault_reserved = [0, 1, 0];
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.fault_reserved")
+    );
+}
+
 #[test]
 fn a_verdict_rides_only_a_ready_answer() {
     let mut o: OnPieceOut = z();

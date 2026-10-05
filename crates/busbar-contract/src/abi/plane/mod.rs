@@ -1523,8 +1523,16 @@ pub struct OnPieceOut {
     /// `0` = the member's first bound need (a plane with one outbound need never names one). A tail
     /// addition.
     pub need: u32,
+    /// THE PLANE'S BREAKER FAULT READING of a far-end answer (ARCHITECT 2026-10-05): the
+    /// destination's health as the plane reads the answer, in the transport kind's ONE fault
+    /// vocabulary (`abi::transport::FAULT_*`: none, caller, transient, hard), which the breaker
+    /// records against the destination. Separate from [`OnPieceOut::verdict`] (the walk's routing
+    /// reading): an answer the walk retries elsewhere may be the caller's fault, and one it keeps
+    /// may still be the destination's. `FAULT_NONE` = no reading. Laid in the padding after
+    /// `need` (pre-tag v1).
+    pub fault: u8,
     /// Alignment padding.
-    pub _need_reserved: u32,
+    pub _fault_reserved: [u8; 3],
     /// THE UNIT'S LEDGER LANE, in the arena; a zero length = none named. The billing identity the
     /// unit's units are priced, ledgered and metered under, which is not the route entry the walk
     /// picked (a call of one tool on a pooled server is the tool's lane, not the server's). The
