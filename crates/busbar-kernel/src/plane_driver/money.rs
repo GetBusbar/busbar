@@ -19,7 +19,11 @@
 //!   force, reach what its tightest applicable budget has left; a count the card cannot price cuts
 //!   (fail closed);
 //! * an abandoned unit's sealed end goes to the composition root's one posting site
-//!   ([`EndPost`]); this file seals nothing.
+//!   ([`EndPost`]); this file seals nothing;
+//! * a duplex session is ONE unit with ONE line (THE DESIGN §7, "A session is one unit with one
+//!   line"): its turns' cumulative counts are checkpoints, a cancel on either side bills nothing of
+//!   its own, and the session's one cleanup ([`MoneySeam::session_ended`]) ledgers the last
+//!   far-end-reported (or floor) cumulative counts once, however the session ended.
 //!
 //! The kernel names no plane here: a unit's class names, model, pool and key are handed in by the
 //! composition root when it opens the unit ([`PlaneMoney::open`]).
@@ -28,6 +32,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::plane::{units_bill, UnitCount};
+use busbar_contract::caps::ReasonCode;
 use busbar_contract::records::VirtualKey;
 use busbar_contract::UnitKey;
 
@@ -119,6 +124,9 @@ struct Open {
     abandoned: bool,
     /// The route step ended without a cancel: no bill will come.
     finished: bool,
+    /// A duplex session opened on the unit ([`MoneySeam::session_opened`]): its line is the
+    /// session end's, never a side's cancel bill.
+    session: bool,
     /// The provider of the member that served the unit, once its answering attempt committed
     /// ([`MoneySeam::served`]); `None` while no member has answered. The served model replaces
     /// [`UnitMoney::model`] in `money` at the same moment.
@@ -166,6 +174,7 @@ impl PlaneMoney {
                 ledgered: false,
                 abandoned: false,
                 finished: false,
+                session: false,
                 provider: None,
             },
         );
@@ -363,7 +372,9 @@ impl MoneySeam for PlaneMoney {
             let Some(open) = all.get_mut(&ctx.key) else {
                 return;
             };
-            if open.ledgered {
+            // A session's side bills nothing of its own: the session's one line is written at
+            // its end from its last cumulative counts ([`MoneySeam::session_ended`]).
+            if open.ledgered || open.session {
                 return;
             }
             open.ledgered = true;
@@ -427,6 +438,52 @@ impl MoneySeam for PlaneMoney {
     fn finished(&self, ctx: &UnitCtx) {
         if let Some(open) = self.lock().get_mut(&ctx.key) {
             open.finished = true;
+        }
+    }
+
+    /// The session opens under the unit's one admission: its money facts must be open (a unit
+    /// the root admitted with no facts runs no session unbilled), and from here its line is the
+    /// session end's.
+    fn session_opened(&self, ctx: &UnitCtx) -> Result<(), ReasonCode> {
+        match self.lock().get_mut(&ctx.key) {
+            Some(open) if !open.ledgered => {
+                open.session = true;
+                Ok(())
+            }
+            _ => Err(ReasonCode::Unpriced),
+        }
+    }
+
+    /// THE SESSION'S ONE LINE: its last billing cumulative counts (far-end-reported or floor,
+    /// never an estimate), ledgered once and metered when they bill, in the window of the unit's
+    /// arrival, however the session ended (its own end, a cut, a cancel on either side, its caller
+    /// gone). The unit's own end then ledgers nothing twice and still decides the fee refund. A unit
+    /// whose caller already went away closes here. Runs inside the session's cleanup `Drop`: the
+    /// accrual is in memory and neither awaits nor crosses a plugin.
+    fn session_ended(&self, ctx: &UnitCtx) {
+        let owed = {
+            let mut all = self.lock();
+            let Some(open) = all.get_mut(&ctx.key) else {
+                return;
+            };
+            if open.ledgered || !open.session {
+                return;
+            }
+            open.ledgered = true;
+            let owed = (
+                open.money.clone(),
+                open.provider.clone(),
+                reported(&open.last),
+            );
+            if open.abandoned {
+                all.remove(&ctx.key);
+            }
+            owed
+        };
+        let (money, provider, counts) = owed;
+        self.ledger(&money, &counts);
+        if bills(&money, &counts) {
+            self.meter(&money, provider.as_deref(), &counts);
         }
     }
 
