@@ -405,9 +405,13 @@ async fn k_concurrent_writers_do_not_interleave_within_a_line() {
         .expect("spawn");
 
     // Fill the child's input until the pipe takes no more: big writes, then single bytes, so not
-    // even a short line fits.
+    // even a short line fits. A freshly opened pipe's writability is not known until its reactor
+    // has reported it, and until then a poll answers `Pending` with the pipe empty; so the first
+    // byte is written by an AWAITED write, which waits for that report. From then on `Pending`
+    // means the pipe refused a write (it is full), the only thing that clears its writability.
+    write_all(&c, conn, b"\n").await;
     let mut noop = Context::from_waker(std::task::Waker::noop());
-    let mut filler = 0usize;
+    let mut filler = 1usize;
     for chunk in [vec![b'\n'; 4096], vec![b'\n'; 1]] {
         loop {
             match c.poll_write(conn, &mut noop, &chunk) {
@@ -417,7 +421,7 @@ async fn k_concurrent_writers_do_not_interleave_within_a_line() {
             }
         }
     }
-    assert!(filler > 0, "the pipe took nothing");
+    assert!(filler > 1, "the pipe took nothing past its first byte");
 
     const K: usize = 32;
     // Each line is "writer-NN\n": 7 + 2 + 1 = 10 bytes, so K of them is a known total length.
