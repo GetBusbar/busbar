@@ -10,10 +10,10 @@
 //! from the test-linked table (`tests/linked/mod.rs`; K3, architect ruling N02) and are ADDRESSED by
 //! what they declare, read back from the registry: the fallback plane, the plane that owns the
 //! `tools:` section (one wire format over several transports) and the plane that owns `agents:`
-//! (several bindings of one registration). The `agents:` owner is a DOOR row — the kernel's
-//! door-plane double (`linked::door`), folded by the kernel's own door fold as the composition root
-//! folds the door plane that owns that section in a shipped build (the linked engine crate that used
-//! to own it is deleted). This file spells no plane key; each plane pins its own literal identity in
+//! (several bindings of one registration). The `agents:` owner is a DOOR row — a `door:` row
+//! of the test-linked list, the plane's own door folded from its Statement by the kernel's door
+//! fold as the composition root folds it in a shipped build (the linked engine crate that used to
+//! own it is deleted). This file spells no plane key; each plane pins its own literal identity in
 //! its own crate. Every test installs the roster first (idempotent, first-wins). A handful of `pub(crate)` items (`Ingress`, `PlaneDispatch::{ingress_of,
 //! wire_format_of, mounted_plane_of}`, `sole_wire_format`, `has_superset_ir`, `sole_of`,
 //! `superset_of`, `ingress::native::envelope_dialect`) were widened to `pub` for exactly this move.
@@ -159,8 +159,8 @@ fn the_fallback_and_multi_binding_planes_have_earned_an_ir_today() {
 /// request with the word of the door it was knocked on (`wire_format_of`), and the transport axis
 /// names its legs with `Transport::name`. If these ever diverge, an operator correlating a
 /// Prometheus series with a leg is silently comparing two strings that no longer describe the same
-/// leg. The `agents:` owner is the kernel's door-plane double, which states the kernel's own
-/// wire-format words; the shipped door's card spelling of each binding is pinned in its own crate.
+/// leg. The `agents:` owner is a door row, whose Statement states its wire-format words; the
+/// door's card spelling of each binding is pinned in its own crate.
 ///
 /// Relocated from `src/tests/transport_tests.rs` (the "fix the 38" pass).
 #[test]

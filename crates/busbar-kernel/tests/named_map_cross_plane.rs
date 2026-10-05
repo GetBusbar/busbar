@@ -6,9 +6,9 @@
 //! dev-dependency-cycle cleanup): `sections()` is folded from the REAL registered plane roster (see
 //! its doc — under the default/test/openapi feature set the fold is `[identity-providers, export,
 //! tools, agents]`, where `"tools"` is the linked tool plane's own declared config section and
-//! `"agents"` the section the roster's DOOR row states — the kernel's door-plane double
-//! (`linked::door`), folded by the kernel's own door fold and registered after the linked rows, as
-//! the composition root folds the door plane that owns that section in a shipped build). Pinning
+//! `"agents"` the section the roster's DOOR row states — a `door:` row of the test-linked list,
+//! the plane's own door folded from its Statement by the kernel's door fold and registered in the
+//! list's (layering) order, as the composition root folds it in a shipped build). Pinning
 //! that frozen order is a claim about the roster's fold, which
 //! `cargo xtask gate construction`'s `neutral-no-dialect` rule (ceiling 0) forbids `busbar-kernel`
 //! itself from asserting via a synthetic `#[cfg(test)]` decl. Every other test in

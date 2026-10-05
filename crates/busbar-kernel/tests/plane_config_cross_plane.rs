@@ -9,8 +9,8 @@
 //! CONFIG-DRIVEN — the section is parsed and resolved through the kernel's own config entry points,
 //! exactly as boot does — against core's own `config_sections()`/`refuse_cross_plane_reference`
 //! grammar. The rendered prose pinned below names config sections (`tools`, `agents`), which is
-//! what an operator reads at boot. The `agents:` owner is the roster's DOOR row (`linked::door`, the
-//! kernel's door-plane double folded by the kernel's own door fold): a door's registrations reach
+//! what an operator reads at boot. The `agents:` owner is a DOOR row (a `door:` row of the
+//! test-linked list, folded from its door's Statement by the kernel's door fold): a door's registrations reach
 //! the kernel's boot judgement (`validate_plane_section`) exactly as a linked plane's do, which is
 //! the half of the rule this file proves for it.
 

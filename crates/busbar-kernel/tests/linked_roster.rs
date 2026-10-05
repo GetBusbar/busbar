@@ -4,9 +4,9 @@
 //! THE TEST-LINKED ROSTER, witnessed. `tests/linked/mod.rs` is how every cross-plane test here
 //! gets real planes without naming one; these two arms prove the mechanism is not vacuous:
 //!
-//! - GREEN: every crate in `[package.metadata.busbar] test-linked` registers exactly one plane, and
-//!   the door row (`linked::door`) one more, so the registry the tests address holds as many planes
-//!   as the manifest lists plus the door row.
+//! - GREEN: every row of `[package.metadata.busbar] test-linked` registers exactly one plane (a
+//!   linked crate its own row, a `door:` row the row folded from its door's Statement), so the
+//!   registry the tests address holds as many planes as the manifest lists.
 //! - RED: an address no linked plane answers refuses, naming what was asked for and the manifest
 //!   list — so a test addressed at a plane that is not test-linked fails, never passes over an
 //!   empty roster.
@@ -19,7 +19,7 @@ fn every_test_linked_crate_registers_one_plane() {
     assert_eq!(
         keys.len(),
         linked::linked_count(),
-        "each test-linked crate registers exactly one plane, and the door row one: {keys:?}"
+        "each test-linked row registers exactly one plane: {keys:?}"
     );
     let mut dedup = keys.clone();
     dedup.sort_unstable();

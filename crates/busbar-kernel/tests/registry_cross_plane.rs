@@ -541,7 +541,7 @@ fn dup_claim_guard_passes_for_the_shipped_registry() {
 // THE THREE ADMISSION RATCHETS (Step 2.2). These drive `build_dispatch` — the registry-driven
 // fold that assembles the dispatch table from each plane's decl and its runtime object — directly,
 // with the SAME runtime objects a boot builds — the linked tool plane's own, and the `agents:` door
-// row's slot built by the kernel's door fold (`linked::door`) — so the security property they pin is
+// row's slot built by the kernel's door fold over that plane's own door — so the property they pin is
 // the one production has rather than one a fixture invented.
 // ---------------------------------------------------------------------------------------------
 

@@ -6,10 +6,10 @@
 //! a real `tools:`/`agents:` block and then asserts on `cfg.tool_pools`/`cfg.agent_pools`, which only
 //! exist once a registered plane actually claims each section — `resolve()` refuses a
 //! `tools:`/`agents:` section as "compiled without the plane that owns it" unless the owning plane
-//! is registered. `tools:` is the linked tool plane's; `agents:` is the roster's DOOR row
-//! (`linked::door`, the kernel's door-plane double folded by the kernel's own door fold, as the
-//! composition root folds the door plane that owns that section in a shipped build), so the
-//! section is parsed, judged and pooled by the kernel's production code for a door. That only type-checks with ONE `busbar_kernel` in the graph, which is
+//! is registered. `tools:` is the linked tool plane's; `agents:` is the roster's DOOR row (a
+//! `door:` row of the test-linked list: the plane's own door, its registry row folded from its
+//! Statement by the kernel's door fold as the composition root folds it), so the section is
+//! parsed, judged and pooled by the kernel's production code for a door. That only type-checks with ONE `busbar_kernel` in the graph, which is
 //! exactly what an integration-test target gives. See `plane_integration.rs`'s header for the same
 //! rationale, first written there.
 

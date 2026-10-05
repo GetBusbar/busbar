@@ -9,12 +9,12 @@
 //! The planes' own published literals (subject noun, audit kind, action words) are pinned in their
 //! own suites. The source-scanning ratchets in `planeverbs_tests.rs` name no plane and stay there.
 //!
-//! The roster's second verb-mounting plane is a DOOR row (`linked::door`, the kernel's door-plane
-//! double folded by the kernel's own door fold): its trust verbs reach the admin table through the
-//! fold's stated-route adapter, which is how the door plane that owns `agents:` mounts its
-//! `connect`/`approve` in a shipped build (the linked engine crate whose row mounted them is
-//! deleted). The double also states one PUBLIC route, which the adapter must keep off the admin
-//! table — the frozen table below proves it did.
+//! The roster's second verb-mounting plane is a DOOR row (a `door:` row of the test-linked list,
+//! the plane's own door folded from its Statement by the kernel's door fold): its trust verbs reach
+//! the admin table through the fold's stated-route adapter, which is how the door plane that owns
+//! `agents:` mounts its `connect`/`approve` in a shipped build (the linked engine crate whose row
+//! mounted them is deleted). Its Statement also states one PUBLIC route, which the adapter must
+//! keep off the admin table — the frozen table below proves it did.
 
 mod linked;
 

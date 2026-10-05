@@ -11,7 +11,8 @@
 //! configures it: a deploy document run through the kernel's own `resolve`, and the plane's runtime
 //! object built through its own declared `build`, `claims` and `admission` hooks.
 //!
-//! The `agents:` section's owner is the roster's DOOR row (`linked::door`). The test that read the
+//! The `agents:` section's owner is a DOOR row (a `door:` row of the test-linked list, its registry
+//! row folded from the plane door's Statement). The test that read the
 //! `agents:` plane's carried verify-on-call gate off its runtime object through its test seam is
 //! gone with the linked engine crate that installed that seam: a door row carries no kernel verify
 //! gate on its slot (its `retain_verify_gates` hook is `None`; the door judges its own
@@ -29,9 +30,9 @@ fn door_plane() -> &'static PlaneDecl {
     linked::owning("tools")
 }
 
-/// The plane that owns the `agents:` section: the roster's DOOR row (`linked::door`, the kernel's
-/// door-plane double folded by the kernel's own door fold, as the composition root folds the door
-/// plane that owns that section in a shipped build).
+/// The plane that owns the `agents:` section: a DOOR row (a `door:` row of the test-linked list,
+/// the plane's own door folded from its Statement by the kernel's door fold, as the composition
+/// root folds it in a shipped build).
 fn agents_plane() -> &'static PlaneDecl {
     linked::owning("agents")
 }
@@ -211,7 +212,7 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
 /// contributes its data routes through the slot seam (`PlaneDecl::routes`), is a route the built
 /// router mounted. So `build_app_from_config` builds each plane ONCE via its `build` hook, and the
 /// mount table, the router surface and the audience check come off that one slot object. A DOOR row
-/// (the `agents:` owner here, `linked::door`) contributes no data route through the slot seam: its
+/// (the `agents:` owner here) contributes no data route through the slot seam: its
 /// claimed paths are served by the plane driver behind the mount table, which is what it is held to.
 #[test]
 fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {

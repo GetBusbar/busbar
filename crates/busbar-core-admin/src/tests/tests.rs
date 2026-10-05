@@ -13311,6 +13311,7 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     drive_plugin_inspect_errors().await;
     drive_key_cap_and_delegation_errors().await;
     drive_named_map_errors().await;
+    drive_door_verb_errors().await;
     drive_unpriced_usage_reads().await;
     // Every linked plane's own error-surface driver (its trust verbs), called here for the same reason
     // as every line above it: a condition witnessed only by a sibling test is witnessed nowhere. Looped
@@ -14962,6 +14963,149 @@ async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
     assert_eq!(after.status().as_u16(), 404, "and is gone");
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A TEST-LINKED DOOR PLANE'S INSTANCE, opened over `settings` and published on the kernel's serve
+/// table as the composition root publishes it (K-SERVE): the instance serving its stated admin
+/// routes for as long as the guard lives. The door is the one whose folded row owns `section`.
+struct PublishedDoor(String);
+
+impl Drop for PublishedDoor {
+    fn drop(&mut self) {
+        busbar_kernel::plane_driver::serve::withdraw(&self.0);
+    }
+}
+
+fn publish_door(section: &str, settings: &str) -> PublishedDoor {
+    use busbar_plugin_loader::dispatch::kinds::plane::{open_door, Plane};
+    use busbar_plugin_loader::dispatch::{
+        load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
+    };
+    crate::ensure_seam();
+    let owner = busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+        .unwrap_or_else(|| panic!("a test-linked plane owns `{section}:`"));
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let (instance, plane) = crate::test_seams::linked_doors()
+        .iter()
+        .find_map(|(label, door)| {
+            let row = LinkedRow::of(*door).ok()?;
+            let instance = format!("{label}-published");
+            let plane = load_linked::<Plane>(
+                &row,
+                Bind {
+                    instance: Arc::from(instance.as_str()),
+                    max_inflight_cap: 64,
+                    sink: Arc::new(NoSink),
+                    dispatcher: dispatcher.adopter(),
+                    conns: None,
+                },
+            )
+            .ok()?;
+            (plane.served().section == owner.config_section).then_some((instance, plane))
+        })
+        .expect("the owning plane's door is test-linked");
+    let snapshot = open_door(&plane, settings.as_bytes(), b"", None).expect("the door opens");
+    let routes = snapshot
+        .admin_routes
+        .iter()
+        .map(|r| busbar_kernel::plane_driver::serve::ServeRoute {
+            verb: r.verb.clone(),
+            target: r.target.clone(),
+            flags: r.flags,
+            audit_verb: r.audit_verb.clone(),
+        })
+        .collect();
+    let audit_kind = plane.served().audit_kind.to_string();
+    let calls = Arc::new(
+        busbar_plugin_loader::dispatch::plane_calls::PlaneInstance::new(plane, dispatcher, 0),
+    );
+    busbar_kernel::plane_driver::serve::publish(
+        busbar_kernel::plane_driver::serve::ServeTable {
+            instance: instance.clone(),
+            audit_kind,
+            calls,
+            caps: busbar_kernel::plane_driver::BufferCaps::default(),
+            routes,
+            records: None,
+        },
+        &[],
+    )
+    .expect("its admin routes publish");
+    PublishedDoor(instance)
+}
+
+/// A door verb's refusal, read: `status`, its taxonomy `code`, and the body.
+async fn door_refusal(
+    r: reqwest::Response,
+    status: u16,
+    code: &str,
+    what: &str,
+) -> serde_json::Value {
+    assert_eq!(r.status().as_u16(), status, "{what}");
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body.pointer("/error/code").unwrap(), code, "{what}: {body}");
+    body
+}
+
+/// THE DOOR PLANE'S TRUST VERBS' DECLARED ERRORS, produced through the admin router by the door's
+/// own `serve` op (ARCHITECT Q-L3B-VERBS): the `agents:` owner's instance, opened over the same
+/// `base-agent` registration the named-map fixture boots with and published as the root publishes
+/// it. The deleted engine's error-surface driver witnessed these; now the door does:
+/// * an unregistered name is `404 not_found` on `connect` and `approve` (before anything is read);
+/// * `approve` whose body is not the one-field `{"fingerprint": …}` document (an unknown field
+///   beside it) is `400 invalid_request` under the MALFORMED-BODY condition, audited nowhere;
+/// * `approve` naming a fingerprint the endpoint does not serve is `400 invalid_request` under the
+///   INVALID-CONFIG condition: the instance is published with no host (no connector), so its card
+///   fetch cannot complete and the look reports the card unauthenticated, which no approval can
+///   agree with.
+async fn drive_door_verb_errors() {
+    let _published = publish_door(
+        "agents",
+        r#"{"base-agent": {"url": "https://agents.example/planner", "pin": {"mechanism": "unpinned"}}}"#,
+    );
+    let (_dir, _overlay, addr, handle) = named_map_app("door-verbs", false).await;
+    let client = reqwest::Client::new();
+    let send = |path: &str, body: &str| {
+        client
+            .post(format!("http://{addr}/api/v1/admin{path}"))
+            .header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .send()
+    };
+    for path in ["/agents/nope/connect", "/agents/nope/approve"] {
+        let r = send(path, r#"{"fingerprint": "sha256:aa"}"#).await.unwrap();
+        door_refusal(r, 404, "not_found", path).await;
+    }
+    let r = send(
+        "/agents/base-agent/approve",
+        r#"{"fingerprint": "sha256:aa", "and": "more"}"#,
+    )
+    .await
+    .unwrap();
+    let body = door_refusal(
+        r,
+        400,
+        "invalid_request",
+        "approve with an unknown body field",
+    )
+    .await;
+    assert!(
+        body.to_string().contains("fingerprint"),
+        "the malformed-body refusal names the one field the body may carry: {body}"
+    );
+    let r = send(
+        "/agents/base-agent/approve",
+        r#"{"fingerprint": "sha256:aa"}"#,
+    )
+    .await
+    .unwrap();
+    let body = door_refusal(r, 400, "invalid_request", "approve of an unverified card").await;
+    assert!(
+        body.to_string().contains("nothing to approve"),
+        "the invalid-config refusal says the card could not be authenticated: {body}"
+    );
+    handle.abort();
 }
 
 /// WITNESS DRIVER for the generic named-map surface: produces EVERY `(operation, ErrKind, Cond)`

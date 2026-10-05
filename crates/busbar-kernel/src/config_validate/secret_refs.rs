@@ -403,17 +403,40 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     // `tools.<name>.token_exchange.subject_token` — busbar's OWN token, the SUBJECT of an RFC 8693
     // exchange, never the caller's.
     ("TokenExchangeCfg", SecretBearing::Walked),
-    // That plane's LEASED outbound delegation credential. Reached from `RootCfg` through
-    // `agent_defs -> agents.<name>.upstream_credential`.
-    ("OutboundCredential", SecretBearing::Walked),
-    // That plane's OUTBOUND CLIENT CERTIFICATE — busbar's own end of a mutual handshake with a
-    // registered peer. Reached from `RootCfg` through `agent_defs -> agents.<name>.client_identity`.
-    ("ClientIdentityCfg", SecretBearing::Walked),
+    // `agents.<name>.upstream_credential` — the `agents:` plane's LEASED outbound delegation
+    // credential.
+    (
+        "OutboundCredential",
+        SecretBearing::DoorDeclared(
+            "the `agents:` door's section: its Statement declares \
+             `settings.*.upstream_credential.secret`, and the folded row's section enumerates every \
+             reference at that path",
+        ),
+    ),
+    // `agents.<name>.client_identity` — the `agents:` plane's OUTBOUND CLIENT CERTIFICATE, busbar's
+    // own end of a mutual handshake with a registered peer.
+    (
+        "ClientIdentityCfg",
+        SecretBearing::DoorDeclared(
+            "the `agents:` door's section: its Statement declares \
+             `settings.*.client_identity.cert` and `settings.*.client_identity.key`, and the folded \
+             row's section enumerates every reference at those paths",
+        ),
+    ),
     // The authorization server's ES256 signing key — the highest-value secret in the process, since
     // whoever holds it forges every token this deployment will ever issue. Reached from `RootCfg`
     // through `oauth_as`, which is the VALIDATED identity, which is why that type carries the
     // reference verbatim rather than consuming it at `resolve` time.
     ("CheckedAsBlock", SecretBearing::Walked),
+    // A door plane's section as the kernel carries it: the references read at its door's declared
+    // paths, answered through `PlaneCfg::secret_refs` on the plane loop.
+    (
+        "DoorSection",
+        SecretBearing::DoorDeclared(
+            "the folded door row's section: it holds the references read at its door's declared \
+             `settings.` paths and answers them through `PlaneCfg::secret_refs`",
+        ),
+    ),
     (
         "AsIdentity",
         SecretBearing::NotInResolvedConfig(
@@ -470,6 +493,11 @@ pub(crate) enum SecretBearing {
     /// checks; each entry's reason says which shape it is and why the references it touches are
     /// covered elsewhere.
     NotInResolvedConfig(&'static str),
+    /// A DOOR PLANE'S configuration type: the kernel holds no typed copy of a door's section, so it
+    /// never destructures the type; it reads every reference the section holds at the door's
+    /// declared secret-reference paths (`PlaneRegistration::secret_refs`), walking the section as
+    /// written. The reason names those paths.
+    DoorDeclared(&'static str),
 }
 
 #[cfg(test)]
