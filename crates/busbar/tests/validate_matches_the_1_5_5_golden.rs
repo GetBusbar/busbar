@@ -121,6 +121,19 @@ fn validate_refuses_every_golden_case_as_1_5_5_did() {
             continue;
         }
         answered += 1;
+        let got: Vec<String> = out
+            .lines()
+            .filter(|l| l.starts_with("  - "))
+            .map(str::to_string)
+            .collect();
+        assert_eq!(&got, want, "{case}:\n{out}");
+        if want.is_empty() {
+            assert!(out.contains("ok: config valid"), "{case}:\n{out}");
+        } else {
+            let header = out.lines().find(|l| l.starts_with("[error]")).unwrap_or("");
+            assert!(header.ends_with(" config errors:"), "{case}:\n{out}");
+        }
+    }
     let _ = std::fs::remove_dir_all(&dir);
     assert!(
         answered > 0,
