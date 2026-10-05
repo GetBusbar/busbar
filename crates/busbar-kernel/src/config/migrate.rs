@@ -887,6 +887,15 @@ fn rescale_amount(amount: Value, divisor: u64) -> Value {
     }
 }
 
+/// Whether `module` names a linked store row that states what it holds is lost on restart: such a
+/// store keeps no file and no URL, so a 1.4.x `db_path` has nothing to become. Asked of the rows the
+/// composition root installed; the migrator names no store.
+fn is_ephemeral_store(module: &str) -> bool {
+    let rows = crate::preflight::root_rows().stores;
+    rows.iter()
+        .any(|&(name, ephemeral, ..)| name == module && ephemeral)
+}
+
 /// `governance:` -> store / rate_card / per_request_fee / groups / advanced / auth.admin_auth.
 fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
     // Take-on-match (see `Taken`): `as_map` on a taken value silently turned a non-mapping
@@ -915,7 +924,7 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         store.insert("module".into(), module.clone().into());
         let mut settings = Mapping::new();
         match (module.as_str(), db_path) {
-            ("memory", _) => {}
+            (m, _) if is_ephemeral_store(m) => {}
             // No explicit db_path: 1.4.x's real default was "busbar-governance.db", not memory.
             (m, p) if m == legacy_store_text("gov14_module") => {
                 let p = p.unwrap_or_else(|| legacy_store_text("gov14_db_path").into());
