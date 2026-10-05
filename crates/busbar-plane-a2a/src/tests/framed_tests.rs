@@ -241,3 +241,25 @@ fn the_card_narrowing_removes_only_the_member_the_proto_has_no_field_for() {
     assert_eq!(narrowed["skills"][0]["id"], "planner");
     assert!(!UNMODELLED_CARD_MEMBERS.is_empty());
 }
+
+/// A send with no message mints its id as the SDK's model did: a version-7 UUID over the clock.
+#[test]
+fn a_send_with_no_message_mints_a_v7_id() {
+    let none = pb::SendMessageRequest::default().encode_to_vec();
+    assert!(mints_message_id(Rpc::SendMessage, &none));
+    assert!(!mints_message_id(Rpc::GetTask, &none));
+    let some = pb::SendMessageRequest {
+        message: Some(pb::Message::default()),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    assert!(!mints_message_id(Rpc::SendMessage, &some));
+    let id = message_id_v7(0x0190_1234_5678, &[0xff; 10]);
+    assert_eq!(id, "01901234-5678-7fff-bfff-ffffffffffff");
+    let composed: Value =
+        serde_json::from_slice(&compose(Rpc::SendMessage, &none).expect("composes")).unwrap();
+    let minted = with_message_id(&composed, &id);
+    assert_eq!(minted["params"]["message"]["messageId"], id);
+    assert_eq!(minted["params"]["message"]["role"], "ROLE_USER");
+    assert!(minted["params"]["message"].get("parts").is_none());
+}

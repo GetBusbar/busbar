@@ -308,6 +308,52 @@ pub fn compose(rpc: Rpc, message: &[u8]) -> Result<Vec<u8>, Status> {
     Ok(envelope.to_string().into_bytes())
 }
 
+/// Whether `message` is a send whose request carries no message at all: the SDK's model gave it a
+/// fresh user message under a new (v7) id, which the unit mints at its first attempt
+/// ([`message_id_v7`]) from the host's clock and random bytes.
+#[must_use]
+pub fn mints_message_id(rpc: Rpc, message: &[u8]) -> bool {
+    matches!(rpc, Rpc::SendMessage | Rpc::SendStreamingMessage)
+        && pb::SendMessageRequest::decode(message).is_ok_and(|m| m.message.is_none())
+}
+
+/// A version-7 UUID (RFC 9562) over `unix_ms` and ten random bytes, as the SDK's model minted a
+/// message id: the 48-bit millisecond time, the version, 12 random bits, the variant, 62 random
+/// bits, written lower-case and hyphenated.
+#[must_use]
+pub fn message_id_v7(unix_ms: u64, random: &[u8; 10]) -> String {
+    let mut b = [0_u8; 16];
+    b[..6].copy_from_slice(&unix_ms.to_be_bytes()[2..]);
+    b[6..].copy_from_slice(random);
+    b[6] = 0x70 | (b[6] & 0x0f);
+    b[8] = 0x80 | (b[8] & 0x3f);
+    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
+}
+
+/// `envelope` with `id` as its message's `messageId` (the composed request already carries the
+/// fresh message's user role, [`crate::proto::Normal`]).
+#[must_use]
+pub fn with_message_id(envelope: &Value, id: &str) -> Value {
+    let mut envelope = envelope.clone();
+    if let Some(params) = envelope.get_mut("params").and_then(Value::as_object_mut) {
+        let message = params
+            .entry("message")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(m) = message.as_object_mut() {
+            m.insert("messageId".into(), Value::String(id.to_string()));
+        }
+    }
+    envelope
+}
+
 /// PROTOBUF IN, CANONICAL JSON OUT: `message` decoded as `M` (a parse error is `INTERNAL` with the
 /// decoder's words), carried through the model's rules, written as its ProtoJSON.
 fn to_params<M>(message: &[u8]) -> Result<Value, Status>

@@ -18,9 +18,10 @@
 //! from a gRPC interface's URL, and refuses an answer with no payload. [`Normal`] is that
 //! round trip, applied in place to each message, so the bytes either way are the engine's.
 //!
-//! One rule is not reproducible and is stated rather than hidden: a `SendMessageRequest` with no
-//! message got a fresh message with a random (`uuid` v7) id from the model; here it gets the same
-//! empty user message with an empty id, because a plane draws no randomness of its own.
+//! One rule needs the host: a `SendMessageRequest` with no message got a fresh user message with a
+//! new (v7) id from the model. [`Normal`] gives it the user message; its id is minted at the unit's
+//! first attempt from the host's clock and random bytes ([`crate::framed::message_id_v7`]), because
+//! a plane draws no time and no randomness of its own.
 
 use crate::wkt::{value::Kind, Struct, Timestamp, Value};
 

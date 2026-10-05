@@ -155,6 +155,9 @@ pub struct Hop {
     /// reads (the task it opens, the callback it carries, the admission) reads the caller's own
     /// envelope, as the engine read the params its gate had already screened.
     rewritten: Option<serde_json::Value>,
+    /// A gRPC send whose request carried no message: its first ATTEMPT mints the message's id
+    /// ([`crate::framed::mints_message_id`]) before the task is opened.
+    mint_message_id: bool,
 }
 
 impl Hop {
@@ -179,6 +182,7 @@ impl Hop {
             endpoint_judged: false,
             left: false,
             rewritten: None,
+            mint_message_id: false,
         }
     }
 
@@ -701,6 +705,9 @@ slot!(
             serde_json::from_slice(envelope.as_deref().unwrap_or(body)).ok();
         let generation = plane.newest();
         let mut hop = hop_of(&disposition, agent.is_some(), request.clone());
+        if let (Some(hop), Some(rpc)) = (hop.as_mut(), framed) {
+            hop.mint_message_id = crate::framed::mints_message_id(rpc, body);
+        }
         // The HTTP+JSON line relays the envelope its request spelled, never the caller's body.
         if let (Some(hop), Some(composed)) = (hop.as_mut(), envelope.as_ref()) {
             hop.relay.send_instead(composed.clone());
@@ -959,6 +966,26 @@ fn open_task(
         None => *hop.now.insert(reach.now().ok_or(Outcome::Failed)?),
     };
     let mut via = reach.via(pass.issued).ok_or(Outcome::Failed)?;
+    // THE MESSAGE ID a gRPC send with no message gets, as the SDK's model minted it (a v7 id over
+    // the clock and ten random bytes), into every copy of the request the hop reads and relays.
+    if hop.mint_message_id {
+        let mut random = [0_u8; 10];
+        if via.random(&mut random).is_err() {
+            return Err(Outcome::Failed);
+        }
+        let ms = reach.now_ms().ok_or(Outcome::Failed)?;
+        let id = crate::framed::message_id_v7(ms, &random);
+        let minted = crate::framed::with_message_id(envelope, &id);
+        if let Ok(bytes) = serde_json::to_vec(&minted) {
+            hop.relay.send_instead(bytes);
+        }
+        hop.request = Some(minted.clone());
+        hop.opening = Some(minted);
+        hop.mint_message_id = false;
+    }
+    let Some(envelope) = hop.opening.as_ref() else {
+        return Ok(None);
+    };
     // A subscribe answers busbar's own refusal first, for a task it does not hold for this caller
     // or holds as terminal (the engine's local half of the verb); a live task is relayed.
     if hop.subscribe {
