@@ -101,7 +101,7 @@ pub fn classify(sig: &CanonicalSignal) -> Disposition {
 /// Every `grpc-status` code paired with the [`StatusClass`] this unit reads it as, as data.
 ///
 /// gRPC's numbering is its own: nothing here is derived from an HTTP status, and the two tables
-/// disagree on purpose where the protocols do. Three groupings carry the money decisions:
+/// disagree on purpose where the protocols do. Three groupings carry the money outcomes:
 ///
 /// - `RESOURCE_EXHAUSTED` is the upstream's quota, not the caller's mistake, so it is a rate limit
 ///   (transient, and the upstream's own wait is the cooldown floor) — the same reading 1.5.5 gave
@@ -295,7 +295,7 @@ pub fn normalize_raw_error(
         // No status at all: the upstream never answered (connection refused/reset, transport
         // error, timeout with no response) — a failure OF the destination, which is what
         // `StatusClass::Network` (a transient upstream failure that trips the cell) exists for.
-        // 1.5.5 mapped this (`a2a::relay::classify_hop`'s Transport arm) to Network; before this
+        // 1.5.5's relay hop classifier mapped its transport-failure arm to Network; before this
         // arm it fell to the 2xx/3xx arm below as `ClientFault`/RecordNothing and never tripped.
         StatusClass::Network
     } else {

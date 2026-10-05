@@ -156,8 +156,8 @@ fn client_error_status_is_client_fault_with_no_penalty() {
 fn no_code_at_all_classifies_as_network_failure_and_trips() {
     // A caller with no numeric status to report (`status.code: None`) is a TRANSPORT failure: the
     // upstream never answered (connection refused/reset, a transport error, a timeout with no HTTP
-    // response). 1.5.5's legacy breaker (`a2a::relay::classify_hop`) mapped exactly this — a
-    // `RelayRefusal::Transport` — to `StatusClass::Network`, a transient upstream failure that
+    // response). 1.5.5's legacy relay hop classifier mapped exactly this — its transport-failure
+    // refusal — to `StatusClass::Network`, a transient upstream failure that
     // trips the destination's cell. Treating it as `ClientFault`/RecordNothing (the old behaviour
     // here) was a regression that let a destination failing this way keep taking full traffic.
     let out = classify_upstream(
