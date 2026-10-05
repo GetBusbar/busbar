@@ -2613,7 +2613,10 @@ mod tests;
 #[path = "tests/serve_planes.rs"]
 pub(crate) mod planes_tests;
 
-#[cfg(all(test, feature = "plane-decisions", linked_axis_node))]
+// The doors served end to end through this composition: the decisions plane's (under its feature)
+// and the MCP plane's (the `root-mcp` leg's loop cells, under the linked plane-door axis), each
+// gated item by item inside, so either plane's switch alone still compiles its own.
+#[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_door.rs"]
 mod door_tests;
 

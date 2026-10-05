@@ -14,28 +14,46 @@
 //! fold of the same door is the plane crate's own conformance suite (`tests/conformance.rs`, one
 //! transcript through both loads); this harness builds no cdylib of it.
 
+#[cfg(feature = "plane-decisions")]
 use std::collections::BTreeMap;
+#[cfg(feature = "plane-decisions")]
 use std::sync::Arc;
 
+#[cfg(feature = "plane-decisions")]
 use axum::http::StatusCode;
+#[cfg(feature = "plane-decisions")]
 use busbar_contract::caps::ReasonCode;
+#[cfg(feature = "plane-decisions")]
 use busbar_contract::conn::{DeclaredConns, PollConns};
+#[cfg(feature = "plane-decisions")]
 use busbar_kernel::cost::CostModel;
+#[cfg(feature = "plane-decisions")]
 use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
+#[cfg(feature = "plane-decisions")]
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec, PLANE_LANE_SEP};
+#[cfg(feature = "plane-decisions")]
 use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
+#[cfg(feature = "plane-decisions")]
 use busbar_plane_decisions::plane_door::door as decisions_door;
+#[cfg(feature = "plane-decisions")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[cfg(feature = "plane-decisions")]
 use super::planes_tests::{composed_services, money, Published, PUBLISHING};
+#[cfg(feature = "plane-decisions")]
 use super::{compose_planes, door_routes, DoorEgress};
+#[cfg(feature = "plane-decisions")]
 use crate::root::door_steps::{provider_routes, DoorReach, OutboundAuths};
+#[cfg(feature = "plane-decisions")]
 use crate::root::loader::dispatch::kinds::plane::Plane;
+#[cfg(feature = "plane-decisions")]
 use crate::root::loader::dispatch::{
     load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
 };
+#[cfg(feature = "plane-decisions")]
 use crate::root::plane_node::{Node, NodeEndPost};
 
+#[cfg(feature = "plane-decisions")]
 /// The deployment's dated card history the served unit is pinned to at its door: one entry, no
 /// price (billing off: the counts are the unit's fact and price at nothing).
 static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
@@ -52,15 +70,19 @@ static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
         holder
     });
 
+#[cfg(feature = "plane-decisions")]
 /// The decisions plane's one claim, with one model configured.
 const CLAIMED: &str = "/v1/systemone";
 
+#[cfg(feature = "plane-decisions")]
 /// The provider's credential, as its file holds it.
 const CREDENTIAL: &str = "sk-door-test";
 
+#[cfg(feature = "plane-decisions")]
 /// The far end's answer: a decision, and the one unit it reports using.
 const ANSWER: &str = r#"{"id":"d-1","decision":"approve","usage":{"units":1}}"#;
 
+#[cfg(feature = "plane-decisions")]
 /// A POST of the caller's decision state to `path` on `router`, with `token` as its bearer or with
 /// none: the response.
 async fn send(router: &axum::Router, path: &str, token: Option<&str>) -> axum::response::Response {
@@ -79,6 +101,7 @@ async fn send(router: &axum::Router, path: &str, token: Option<&str>) -> axum::r
         .expect("the router answers")
 }
 
+#[cfg(feature = "plane-decisions")]
 /// A far end on loopback answering every request with [`ANSWER`]; what it was sent comes back on
 /// the channel, one request head per connection.
 async fn far_end() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
@@ -132,6 +155,7 @@ async fn far_end() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
     (port, heard)
 }
 
+#[cfg(feature = "plane-decisions")]
 /// THE EXIT TEST: a keyed caller's claimed request is SERVED through the decisions door, 200, the
 /// far end's answer relayed as it came, and the unit's money posted on both books.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -340,6 +364,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     );
 }
 
+#[cfg(feature = "plane-decisions")]
 /// THE MOUNT: the door's claim is a route on the data router only when the router is built with
 /// it; a path the door does not claim is the router's own. An unkeyed caller on the door's claim (it
 /// takes a credential) is refused before anything is charged, rendered by the plane.
@@ -416,6 +441,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     );
 }
 
+#[cfg(feature = "plane-decisions")]
 /// ONE MOUNT PER (PATH, METHOD) (SEAM-L(l), ported from 5ad225bc89): a door claiming one verb and
 /// path over two carriers (an endpoint answered as a document or as an event stream) is one route
 /// on the data listener, the first in its claim order; the data router builds with it. RED: each
@@ -483,4 +509,521 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
         send(&router, CLAIMED, None).await.status().as_u16(),
         refused
     );
+}
+
+/// THE ROOT-MCP LEG'S LOOP CELLS (U14): the MCP plane served through its memory-ABI door, composed by
+/// this file's composition (`compose_planes`, `door_routes`) on the kernel's plane driver, each core
+/// capability of the capability-equality matrix (`qa/capability-equality.json`, the `mcp-client` and
+/// `mcp-server` columns) driven through the data router the door's claims mount on and asserted
+/// where the capability lands: the breaker cell and its walk, the hook stage, the call log's chain
+/// and the kernel's audit chain, the governance book, the `/metrics` exposition, the trust state,
+/// the connector's destination guard and the plane's argument guard, the member's auth binding, and
+/// the caller's catalogue. The door rig is `door_steps`' own (`tool_door::Rig`), one composition
+/// per case.
+#[cfg(linked_axis_plane_door)]
+mod mcp {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use axum::http::StatusCode;
+    use busbar_kernel::governance::PLANE_LANE_SEP;
+
+    use crate::root::door_steps::tests::hook_parity;
+    use crate::root::door_steps::tests::tool_door::{
+        down_port, grant, protocol_version, rig_tools, send, send_as, surface, three_tools,
+        tool_digest, tool_listing, tool_schema, tool_server, tool_server_listing,
+        tool_server_replying, Footing, Rig, CALL, TOOL_DESCRIPTION,
+    };
+    use crate::root::serve::planes_tests::{Published, PUBLISHING};
+
+    type Heard = tokio::sync::mpsc::UnboundedReceiver<String>;
+
+    /// The pin every test registration carries (the door requires one).
+    const PIN: &str = "pin: { mechanism: pinned_pubkey, key: \"sha256/K=\" }";
+
+    /// A `tools:` section of one registration `server` on loopback `port`, `extra` (indented YAML
+    /// lines) beside its pin, the one approved tool.
+    fn registration(server: &str, port: u16, extra: &str) -> serde_yaml::Value {
+        serde_yaml::from_str(&format!(
+            "{server}:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  {PIN}\n{extra}  \
+             tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n",
+            tool_digest()
+        ))
+        .expect("a section")
+    }
+
+    /// A `tools/call` of `tool` (its published name) with `arguments`.
+    fn call_of(tool: &str, arguments: serde_json::Value) -> String {
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 41, "method": "tools/call",
+            "params": {
+                "name": tool, "arguments": arguments,
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": protocol_version(),
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                },
+            },
+        })
+        .to_string()
+    }
+
+    /// A `tools/list`, as a caller sends it.
+    fn listing() -> String {
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 42, "method": "tools/list",
+            "params": { "_meta": {
+                "io.modelcontextprotocol/protocolVersion": protocol_version(),
+                "io.modelcontextprotocol/clientCapabilities": {},
+            } },
+        })
+        .to_string()
+    }
+
+    /// `tool` called on `rig` as `token`: the status, the response head and the JSON-RPC answer.
+    async fn call_with_head(
+        rig: &Rig,
+        token: &str,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> (StatusCode, axum::http::HeaderMap, serde_json::Value) {
+        use tower::ServiceExt as _;
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/{}", surface("endpoint_section")))
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .header(surface("protocol_header"), protocol_version())
+            .header(surface("method_header"), "tools/call")
+            .header(surface("name_header"), tool)
+            .header("authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::from(call_of(tool, arguments)))
+            .expect("a request");
+        let response = rig.router.clone().oneshot(req).await.expect("answers");
+        let (status, head) = (response.status(), response.headers().clone());
+        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .expect("the body");
+        let answer = serde_json::from_slice(&body)
+            .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(&body) }));
+        (status, head, answer)
+    }
+
+    /// `tool` called on `rig` as `token`: the status and the JSON-RPC answer.
+    async fn call(
+        rig: &Rig,
+        token: &str,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let (status, _, answer) = call_with_head(rig, token, tool, arguments).await;
+        (status, answer)
+    }
+
+    /// What the server heard since the last drain, as `list` / `call` / `other`.
+    fn drain(heard: &mut Heard) -> Vec<&'static str> {
+        std::iter::from_fn(|| heard.try_recv().ok())
+            .map(|r| {
+                if r.contains("\"tools/list\"") {
+                    "list"
+                } else if r.contains("\"tools/call\"") {
+                    "call"
+                } else {
+                    "other"
+                }
+            })
+            .collect()
+    }
+
+    /// The raw requests the server heard since the last drain.
+    fn wire(heard: &mut Heard) -> Vec<String> {
+        std::iter::from_fn(|| heard.try_recv().ok()).collect()
+    }
+
+    /// A tool server answering its tool list as approved and every `tools/call` with `status`.
+    async fn answering_calls_with(status: u16) -> (u16, Heard) {
+        tool_server_replying(Arc::new(move |r: &str| {
+            if r.contains("\"tools/list\"") {
+                let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}});
+                (200, list.to_string())
+            } else {
+                (status, r#"{"error":"no"}"#.to_string())
+            }
+        }))
+        .await
+    }
+
+    /// The registration `server`'s lane on `rig`'s plane: the breaker cell, the metrics label.
+    fn lane(rig: &Rig, server: &str) -> String {
+        format!("{}{PLANE_LANE_SEP}{server}", rig.plane_key)
+    }
+
+    /// The sum of every `/metrics` sample of `family` whose labels carry every `(key, value)`.
+    fn scraped(family: &str, labels: &[(&str, &str)]) -> f64 {
+        busbar_kernel::metrics::render()
+            .lines()
+            .filter(|l| !l.starts_with('#') && l.starts_with(&format!("{family}{{")))
+            .filter(|l| {
+                labels
+                    .iter()
+                    .all(|(k, v)| l.contains(&format!("{k}=\"{v}\"")))
+            })
+            .filter_map(|l| l.rsplit(' ').next()?.parse::<f64>().ok())
+            .sum()
+    }
+
+    /// BREAKER-TRIP: a registration whose server answers a call with a transient failure records
+    /// that answer into ITS breaker cell (the walk's, keyed by the member's lane) and the cell opens:
+    /// the failure is counted on `/metrics` under that lane, the next call to it is refused as the
+    /// open breaker without reaching the server — and a healthy registration on the same door, its
+    /// own cell, is untouched and still served.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failing_tool_server_trips_its_breaker_cell_through_the_composed_door() {
+        busbar_kernel::metrics::init();
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-mcp-trip";
+        let _published = Published(instance);
+        let (bad, mut bad_heard) = answering_calls_with(503).await;
+        let (good, mut good_heard) = tool_server().await;
+        let mut tools = registration("tripper", bad, "");
+        let healthy = registration("healthy", good, "");
+        tools
+            .as_mapping_mut()
+            .expect("a mapping")
+            .extend(healthy.as_mapping().expect("a mapping").clone());
+        let rig = rig_tools(instance, bad, tools, &|app| app);
+        let cell = lane(&rig, "tripper");
+        let failures = || scraped("busbar_upstream_failures_total", &[("lane", cell.as_str())]);
+        let before = failures();
+
+        let (status, answer) =
+            call(&rig, &rig.token, "tripper_read_file", serde_json::json!({})).await;
+        assert_ne!(status, StatusCode::OK, "{answer}");
+        assert_eq!(
+            drain(&mut bad_heard),
+            ["list", "call"],
+            "the failing call went out"
+        );
+        assert!(
+            failures() > before,
+            "the failure is recorded under the member's lane {cell}"
+        );
+
+        let (status, answer) =
+            call(&rig, &rig.token, "tripper_read_file", serde_json::json!({})).await;
+        assert_eq!(status.as_u16(), 503, "{answer}");
+        assert_eq!(
+            answer["error"]["message"],
+            busbar_contract::caps::ReasonCode::BreakerOpen.as_str(),
+            "refused as the open cell: {answer}"
+        );
+        assert!(
+            drain(&mut bad_heard).is_empty(),
+            "the open cell kept the call off the wire"
+        );
+
+        let (status, answer) =
+            call(&rig, &rig.token, "healthy_read_file", serde_json::json!({})).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "another member's cell is its own: {answer}"
+        );
+        assert!(
+            drain(&mut good_heard).contains(&"call"),
+            "the healthy member served"
+        );
+        assert!(rig.all_ended(), "every unit ended");
+    }
+
+    /// BREAKER-FASTFAIL: once a member's cell is open, a call is refused BEFORE dispatch, in
+    /// milliseconds — no byte reaches the server and no attempt's timeout is waited out — and the
+    /// refusal is the open breaker's, rendered in the plane's words.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tripped_tool_server_is_refused_before_dispatch_without_waiting() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-mcp-fastfail";
+        let _published = Published(instance);
+        let (port, mut heard) = answering_calls_with(503).await;
+        let rig = rig_tools(instance, port, registration("flaky", port, ""), &|app| app);
+        let _ = call(&rig, &rig.token, "flaky_read_file", serde_json::json!({})).await;
+        assert!(
+            drain(&mut heard).contains(&"call"),
+            "the failure that opens the cell"
+        );
+
+        let started = Instant::now();
+        let (status, answer) =
+            call(&rig, &rig.token, "flaky_read_file", serde_json::json!({})).await;
+        let took = started.elapsed();
+        assert_eq!(status.as_u16(), 503, "{answer}");
+        assert_eq!(
+            answer["error"]["message"],
+            busbar_contract::caps::ReasonCode::BreakerOpen.as_str(),
+            "{answer}"
+        );
+        assert!(
+            took < Duration::from_millis(500),
+            "refused at once, not after a timeout: {took:?}"
+        );
+        assert!(drain(&mut heard).is_empty(), "nothing reached the server");
+        assert!(rig.all_ended(), "the refused unit ended");
+    }
+
+    /// FAILOVER-REROUTE: a pool of two registrations walked by the kernel's ONE walk. The primary's
+    /// transient failure fails the call over to its twin before the caller hears anything (the pool
+    /// names the tool repeatable), and the primary's cell, now open, keeps the NEXT call off it
+    /// entirely: the walk admits the twin first, and the primary is never touched again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tripped_pool_member_reroutes_the_next_call_to_its_twin_through_the_walk() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-mcp-reroute";
+        let _published = Published(instance);
+        let (bad, mut bad_heard) = answering_calls_with(503).await;
+        let (good, mut good_heard) = tool_server().await;
+        let d = tool_digest();
+        let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
+            "fs:\n  url: \"http://127.0.0.1:{bad}/rpc\"\n  {PIN}\n  \
+             tools_allow:\n    read_file: {{ schema_hash: \"{d}\" }}\n\
+             fs2:\n  url: \"http://127.0.0.1:{good}/rpc\"\n  {PIN}\n  \
+             tools_allow:\n    read_file: {{ schema_hash: \"{d}\" }}\n\
+             pools:\n  twins: {{ members: [fs, fs2], repeatable: [read_file], member_granted: true }}\n"
+        ))
+        .expect("a section");
+        let rig = rig_tools(instance, bad, tools, &|app| app);
+
+        let (status, answer) = call(&rig, &rig.token, "fs_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "the twin answered: {answer}");
+        assert_eq!(
+            answer["result"]["content"][0]["text"], "from the server",
+            "{answer}"
+        );
+        assert_eq!(
+            drain(&mut bad_heard)
+                .iter()
+                .filter(|w| **w == "call")
+                .count(),
+            1,
+            "the primary was tried first"
+        );
+        assert_eq!(
+            drain(&mut good_heard)
+                .iter()
+                .filter(|w| **w == "call")
+                .count(),
+            1,
+            "and the call failed over to its twin"
+        );
+
+        let (status, answer) = call(&rig, &rig.token, "fs_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        assert!(
+            !drain(&mut bad_heard).contains(&"call"),
+            "the primary's open cell kept the next call off it"
+        );
+        assert_eq!(
+            drain(&mut good_heard)
+                .iter()
+                .filter(|w| **w == "call")
+                .count(),
+            1,
+            "the walk rerouted the next call straight to the twin"
+        );
+        assert_eq!(rig.admitted(), 2, "two calls, two units");
+        assert!(rig.all_ended(), "every unit ended");
+    }
+
+    /// HOOKS-TAP: a `prompt: rw` transform hook attached to the door's section rewrites the call's
+    /// arguments at the kernel's hook stage BEFORE the member is dialled: the server receives the
+    /// arguments the hook wrote and never the caller's, and the rewritten call is still the one
+    /// served unit. The identical deployment with no hook carries the caller's arguments (the
+    /// control).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_rewrite_hook_rewrites_the_arguments_on_the_composed_door() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-mcp-tap";
+        let _published = Published(instance);
+        let (port, mut heard) = tool_server().await;
+        let arguments = serde_json::json!({ "path": "/home/caller/secret.txt" });
+
+        let control = hook_parity::rig(instance, port, Vec::new());
+        let (status, _) = call(&control, &control.token, "fs_read_file", arguments.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        let sent = hook_parity::calls_heard(&mut heard);
+        assert!(
+            sent.len() == 1 && sent[0].contains("/home/caller/secret.txt"),
+            "the control carries the caller's arguments: {sent:?}"
+        );
+        drop(control);
+
+        let tapped = hook_parity::rig(
+            instance,
+            port,
+            vec![(
+                "rewrite",
+                hook_parity::gate(
+                    "rw",
+                    serde_json::json!({ "raw_transform_reply": {
+                        "rewrite": { "messages": [
+                            { "role": "user", "content": { "path": "/srv/redacted" } }
+                        ] }
+                    } }),
+                ),
+            )],
+        );
+        let (status, answer) = call(&tapped, &tapped.token, "fs_read_file", arguments).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        assert_eq!(
+            answer["result"]["content"][0]["text"], "from the server",
+            "{answer}"
+        );
+        let sent = hook_parity::calls_heard(&mut heard);
+        assert_eq!(sent.len(), 1, "one call went out");
+        assert!(
+            sent[0].contains("/srv/redacted") && !sent[0].contains("/home/caller"),
+            "the server received the hook's arguments and never the caller's: {}",
+            sent[0]
+        );
+        assert_eq!(
+            tapped.admitted(),
+            1,
+            "the rewritten call is the one served unit"
+        );
+        assert!(tapped.all_ended(), "every unit ended");
+    }
+
+    /// HOOKS-GATE: a gating hook attached to the door's section decides the call at the kernel's
+    /// hook stage BEFORE dispatch: its rejection is the caller's answer, at the hook's own status and
+    /// in its own words, the server is never reached and nothing is charged.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_gate_hook_refuses_the_call_before_it_is_dispatched() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-mcp-gate";
+        let _published = Published(instance);
+        let (port, mut heard) = tool_server().await;
+        let gated = hook_parity::rig(
+            instance,
+            port,
+            vec![(
+                "closed",
+                hook_parity::gate(
+                    "ro",
+                    serde_json::json!({
+                        "raw_decide_reply": {"reject": {"status": 409, "message": "tools are closed"}}
+                    }),
+                ),
+            )],
+        );
+        let (status, answer) = call(
+            &gated,
+            &gated.token,
+            "fs_read_file",
+            serde_json::json!({ "path": "a" }),
+        )
+        .await;
+        assert_eq!(status.as_u16(), 409, "the hook's own status: {answer}");
+        assert_eq!(answer["error"]["message"], "tools are closed", "{answer}");
+        assert!(
+            hook_parity::calls_heard(&mut heard).is_empty(),
+            "the gated call never reached the server"
+        );
+        assert_eq!(gated.admitted(), 0, "a gated call is charged nothing");
+        assert!(gated.all_ended(), "the refused unit ended");
+    }
+
+    /// The call log's chained records on `rig`, oldest first: each record's `(seq, prev_hash,
+    /// hash)` as the host chained it.
+    fn call_chain(rig: &Rig) -> Vec<(u64, String, String)> {
+        use busbar_contract::records::{PlaneSelector, RecordStore as _};
+        let kind = surface("record_kind_call");
+        let parents = rig.store.list_plane_record_parents(kind).expect("a read");
+        assert_eq!(parents.len(), 1, "one chain, the caller's: {parents:?}");
+        let chained = rig
+            .store
+            .list_plane_records(kind, &PlaneSelector::Parent(parents[0].as_str().into()))
+            .expect("a read");
+        let mut links: Vec<(u64, String, String)> = chained
+            .iter()
+            .map(|body| {
+                let body: serde_json::Value =
+                    serde_json::from_slice(body).expect("the journal's envelope");
+                (
+                    body["seq"].as_u64().expect("a sequence"),
+                    body["prev_hash"].as_str().expect("a link").to_string(),
+                    body["hash"].as_str().expect("a digest").to_string(),
+                )
+            })
+            .collect();
+        links.sort_by_key(|l| l.0);
+        links
+    }
+
+    /// AUDIT-CHAIN: every call through the door lands in two tamper-evident chains. The plane's
+    /// CALL LOG is a chained kind: each call's record is appended to the host's record chain, each
+    /// one linking the digest before it. And the unit's AUDIT ROW is written on the kernel's own
+    /// audit chain under the principal the kernel verified: a served call `applied`, a refused one
+    /// `rejected`, each row linked to the row before it on the chain.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn every_call_is_chained_on_the_call_log_and_the_kernels_audit_chain() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-mcp-audit";
+        let _published = Published(instance);
+        let (port, _heard) = tool_server().await;
+        let rig = rig_tools(instance, port, registration("audited", port, ""), &|app| {
+            app
+        });
+
+        for _ in 0..2 {
+            let (status, answer) =
+                call(&rig, &rig.token, "audited_read_file", serde_json::json!({})).await;
+            assert_eq!(status, StatusCode::OK, "{answer}");
+        }
+        let (status, _) = call(&rig, &rig.token, "audited_unlisted", serde_json::json!({})).await;
+        assert_ne!(status, StatusCode::OK, "an unknown tool is refused");
+
+        // THE CALL LOG: three records, one chain, each linking the one before.
+        let chain = call_chain(&rig);
+        assert_eq!(
+            chain.len(),
+            3,
+            "every call, served or refused, is logged: {chain:?}"
+        );
+        for pair in chain.windows(2) {
+            assert_eq!(pair[1].0, pair[0].0 + 1, "consecutive: {chain:?}");
+            assert_eq!(
+                pair[1].1, pair[0].2,
+                "each record links the digest before it: {chain:?}"
+            );
+            assert!(!pair[1].2.is_empty() && pair[1].2 != pair[0].2, "{chain:?}");
+        }
+
+        // THE KERNEL'S AUDIT CHAIN: the rows, attributed to the verified key.
+        let log = &busbar_kernel::audit::auditlog::AUDIT_LOG;
+        let action = surface("audit_action_tool_call");
+        let resource = |tool: &str| format!("{}:{tool}", surface("audit_resource_tool"));
+        let served = log.list_filtered(0, 1000, Some(action), Some(&resource("audited_read_file")));
+        let mine: Vec<_> = served
+            .iter()
+            .filter(|e| e.principal == rig.key.id)
+            .collect();
+        assert_eq!(
+            mine.len(),
+            2,
+            "both served calls audited under the key: {served:?}"
+        );
+        assert!(mine.iter().all(|e| e.outcome == "applied"), "{mine:?}");
+        let refused = log.list_filtered(0, 1000, Some(action), Some(&resource("audited_unlisted")));
+        assert!(
+            refused
+                .iter()
+                .any(|e| e.principal == rig.key.id && e.outcome == "rejected"),
+            "the refused call audited rejected: {refused:?}"
+        );
+        let all = log.list_filtered(0, 1000, None, None);
+        for row in &mine {
+            assert!(!row.hash.is_empty(), "a sealed row: {row:?}");
+            if let Some(before) = all.iter().find(|e| e.seq + 1 == row.seq) {
+                assert_eq!(row.prev_hash, before.hash, "linked to the row before it");
+            }
+        }
+    }
 }

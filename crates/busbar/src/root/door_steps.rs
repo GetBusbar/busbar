@@ -1825,4 +1825,4 @@ fn registration_anchors(
 
 #[cfg(test)]
 #[path = "tests/door_steps.rs"]
-mod tests;
+pub(crate) mod tests;
