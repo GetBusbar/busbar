@@ -461,7 +461,7 @@ pub(crate) struct DoorSubject<'a> {
 }
 
 /// FIRE THE GATES OF A REQUEST SERVED THROUGH A PLANE'S DOOR (ARCHITECT RULING 2026-10-03,
-/// Q-FOLD-A2A-2-PROJECT-POOL session half): the same [`decide`] the engine fired, over the plane's
+/// the session half): the same [`decide`] the engine fired, over the plane's
 /// projected `{tool, arguments}`, with the incremental scan KEYED ON THE VIEW'S SESSION, bound to
 /// the caller principal and the hook generation exactly as the engine's was
 /// ([`IncrementalScan::derive_session_key`]). A request whose view names no session, or a node

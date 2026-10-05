@@ -866,11 +866,10 @@ impl RoutingPolicy for SessionSpy {
 }
 
 /// What a door plane's `project` answers for an invocation: the invoke document.
-const PROJECTED: &[u8] =
-    br#"{"tool":"message/send","arguments":{"message":{"parts":[{"text":"hi"}]}}}"#;
+const PROJECTED: &[u8] = br#"{"tool":"lookup","arguments":{"query":{"parts":[{"text":"hi"}]}}}"#;
 
-/// THE DOOR PATH'S INCREMENTAL SCAN KEYS ON THE VIEW'S SESSION (ARCHITECT RULING 2026-10-03,
-/// Q-FOLD-A2A-2-PROJECT-POOL session half; predev's contextId-keyed scan is the baseline): the hook
+/// THE DOOR PATH'S INCREMENTAL SCAN KEYS ON THE VIEW'S SESSION (ARCHITECT RULING 2026-10-03, the
+/// session half; the engine's session-keyed scan is the baseline): the hook
 /// sees the session; a piece cleared under one session is not screened again under it; another
 /// session, no session, an empty session, another caller, a new hook generation and a node that
 /// did not opt in each screen it again.
@@ -898,7 +897,7 @@ async fn the_door_paths_incremental_scan_keys_on_the_views_session() {
         async move {
             let door = DoorSubject {
                 projected: PROJECTED,
-                container: "planner",
+                container: "entry",
                 dialect: "door-dialect",
                 request_id: 1,
                 key: Some(who),
