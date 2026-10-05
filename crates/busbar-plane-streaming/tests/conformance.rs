@@ -14,7 +14,7 @@ use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, Field, Outcome, Span, BLOB_JSON, BLOB_OCTETS,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
-    slot as life, CancelIn, CancelOut, GenIn, RefreshIn, TickIn, TickOut, ValidateIn,
+    slot as life, GenIn, RefreshIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneOpenIn, PlaneOpenOut,
@@ -244,14 +244,17 @@ fn script(p: &Plugin<Plane>, public_url: Option<&'static str>) -> Vec<String> {
     let c = p.call(life::TICK, &mut k);
     t.push(format!("tick {:?} next={}", c.outcome, k.out.next_tick_ns));
 
-    let mut x: Frame<CancelIn, CancelOut> = Frame::new(z(), z());
-    x.input.head = in_head();
-    x.out.head = out_head();
+    let mut x: Frame<
+        busbar_contract::abi::plane::PlaneCancelIn,
+        busbar_contract::abi::plane::PlaneCancelOut,
+    > = Frame::new(z(), z());
+    x.input.cancel.head = in_head();
+    x.out.cancel.head = out_head();
     let c = p.call(life::CANCEL, &mut x);
     t.push(format!(
         "cancel {:?} failed={}",
         c.outcome,
-        x.out.disposition == CANCEL_FAILED
+        x.out.cancel.disposition == CANCEL_FAILED
     ));
     t
 }

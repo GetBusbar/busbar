@@ -57,16 +57,17 @@ use busbar_contract::abi::mechanism::door::{
     KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
+    GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
-    PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
-    PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
-    CANCEL_FAILED, CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
-    FROM_KERNEL, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, ROUTE_DIRECT, SHAPE_PIECEWISE, SPAN_ABSENT, UNITS_ESTIMATED, UNITS_REPORTED,
+    PlaneCancelIn, PlaneCancelOut, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut,
+    PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut,
+    ServeIn, ServeOut, UnitCount, CANCEL_FAILED, CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE,
+    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION,
+    INGRESS_REQUEST_RESPONSE, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, ROUTE_DIRECT,
+    SHAPE_PIECEWISE, SPAN_ABSENT, UNITS_ESTIMATED, UNITS_REPORTED,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
@@ -738,14 +739,19 @@ slot!(
 );
 
 // `cancel`: an op on a session's ticket ends the session (each side tells the other); a request
-// unit's cancel is declined.
-slot!(Cancel, CancelIn, CancelOut, |instance, input, out| {
-    if let Some(p) = instance.get() {
-        lock(&p.sessions).cancel(input.get().ticket);
+// unit's cancel is declined. It writes no record.
+slot!(
+    Cancel,
+    PlaneCancelIn,
+    PlaneCancelOut,
+    |instance, input, out| {
+        if let Some(p) = instance.get() {
+            lock(&p.sessions).cancel(input.get().cancel.ticket);
+        }
+        out.set(|o| &o.cancel.disposition, CANCEL_FAILED);
+        Outcome::Ready
     }
-    out.set(|o| &o.disposition, CANCEL_FAILED);
-    Outcome::Ready
-});
+);
 
 slot!(Release, ReleaseIn, OutHead, |_, _, _out| { Outcome::Ready });
 
