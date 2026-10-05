@@ -790,19 +790,27 @@ pub fn resolve_secrets(
     resolver: &dyn busbar_contract::secret::SecretResolve,
 ) -> Result<Vec<Vec<u8>>, String> {
     keys.iter()
-        .map(|path| {
-            let Some(found) = take_path(block, path) else {
-                return Ok(Vec::new());
-            };
-            // The decoder's own text is withheld (`not_a_reference`): a value that is not a
-            // reference may be the secret itself, pasted where its reference belongs.
-            let r: busbar_contract::secret_ref::SecretRef = serde_json::from_value(found)
-                .map_err(not_a_reference(format!("settings.{path}")))?;
-            resolver
-                .resolve(&r)
-                .map_err(|e| format!("settings.{path}: the secret did not resolve: {e}"))
-        })
+        .map(|path| resolve_one(block, path, resolver))
         .collect()
+}
+
+/// One declared secret of [`resolve_secrets`]: taken out of the block, decoded as a reference and
+/// resolved. Decoding and resolving are separate steps so the decoder's text never shares a message
+/// with anything: a value that is not a reference may be the secret itself, pasted where its
+/// reference belongs, so its decode failure is described by [`not_a_reference`] alone.
+fn resolve_one(
+    block: &mut serde_json::Value,
+    path: &str,
+    resolver: &dyn busbar_contract::secret::SecretResolve,
+) -> Result<Vec<u8>, String> {
+    let Some(found) = take_path(block, path) else {
+        return Ok(Vec::new());
+    };
+    let r: busbar_contract::secret_ref::SecretRef =
+        serde_json::from_value(found).map_err(not_a_reference(format!("settings.{path}")))?;
+    resolver
+        .resolve(&r)
+        .map_err(|e| format!("settings.{path}: the secret did not resolve: {e}"))
 }
 
 /// The `map_err` for a settings value that should be a secret REFERENCE and does not decode as one.

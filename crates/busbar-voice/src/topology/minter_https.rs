@@ -28,6 +28,8 @@ const DEFAULT_TTL_SECS: u64 = 600;
 const MIN_TTL_SECS: u64 = 10;
 /// The provider's maximum accepted secret lifetime.
 const MAX_TTL_SECS: u64 = 7200;
+/// The prefix every ephemeral client secret the provider mints carries.
+const EK_PREFIX: &str = "ek_";
 /// The header binding a minted secret to the caller identity.
 const SAFETY_IDENTIFIER_HEADER: &str = "OpenAI-Safety-Identifier";
 /// The bound on the whole mint exchange up to the response head plus its small body read.
@@ -78,6 +80,28 @@ impl HttpsTokenMinter {
             .unwrap_or(DEFAULT_TTL_SECS)
             .clamp(MIN_TTL_SECS, MAX_TTL_SECS)
     }
+}
+
+/// The provider's client-secret response: the `ek_` value and its absolute expiry in unix seconds.
+#[derive(serde::Deserialize)]
+struct ClientSecretResponse {
+    value: String,
+    #[serde(default)]
+    expires_at: u64,
+}
+
+/// A decode failure on the mint answer, described without `serde_json::Error`'s own `Display`: the
+/// body carries the minted secret and a data error quotes the offending value, so the decoder's text
+/// is withheld (secret-hygiene #53, Check 3). The class and the place of the failure survive.
+fn json_failure_shape(e: &serde_json::Error) -> String {
+    let class = match e.classify() {
+        serde_json::error::Category::Io => "the body could not be read",
+        serde_json::error::Category::Syntax => "it is not well-formed JSON",
+        serde_json::error::Category::Data => "a field is missing or has the wrong type",
+        serde_json::error::Category::Eof => "it ends before the JSON does",
+    };
+    let (line, column) = (e.line(), e.column());
+    format!("{class} (line {line}, column {column}; the decoder's text is withheld)")
 }
 
 #[async_trait]
@@ -131,16 +155,27 @@ impl TokenMinter for HttpsTokenMinter {
             )));
         }
 
-        // The answer is read by the plane's ONE reader of it, `broker::read_minted` (this was a
-        // byte-for-byte copy of it). It upholds the browser-facing invariant — only an `ek_` secret
-        // ever leaves this boundary; any other value is refused rather than handed on as a client
-        // secret — and it describes a decode failure without the decoder's text, which can quote
-        // the minted secret (secret-hygiene #53, Check 3).
-        let minted =
-            busbar_plane_streaming::broker::read_minted(&raw).map_err(MintError::Provider)?;
+        // Decoded here, in the binary's own crate (door-only: the streaming plane's reader is a plugin
+        // crate's item). A decode failure is described WITHOUT the decoder's text, which can quote the
+        // minted secret (secret-hygiene #53, Check 3): what survives is the class and the place.
+        let parsed: ClientSecretResponse = serde_json::from_slice(&raw).map_err(|e| {
+            MintError::Provider(format!(
+                "client-secret response did not parse: {}",
+                json_failure_shape(&e)
+            ))
+        })?;
+
+        // The browser-facing invariant: only an `ek_` secret ever leaves this boundary. A response
+        // whose value lacks the prefix is refused rather than handed on as if it were a client secret.
+        if !parsed.value.starts_with(EK_PREFIX) {
+            return Err(MintError::Provider(
+                "client-secret response value is not an ek_ ephemeral secret".into(),
+            ));
+        }
+
         Ok(EphemeralToken {
-            value: minted.value,
-            expires_at_unix: minted.expires_at_unix,
+            value: parsed.value,
+            expires_at_unix: parsed.expires_at,
         })
     }
 }
