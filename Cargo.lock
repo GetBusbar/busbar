@@ -339,11 +339,11 @@ dependencies = [
  "busbar-plane-decisions",
  "busbar-plane-llm",
  "busbar-plane-streaming",
- "busbar-plugin-example-plane",
  "busbar-plugin-loader",
  "busbar-secret-env",
  "busbar-secret-file",
  "busbar-store-memory",
+ "busbar-transport-grpc",
  "busbar-transport-http",
  "busbar-transport-stdio",
  "busbar-transport-tcp",
@@ -365,6 +365,8 @@ dependencies = [
  "prost",
  "rcgen",
  "reqwest",
+ "rustls",
+ "rustls-pki-types",
  "serde_json",
  "serde_yaml_ng",
  "sha2",
@@ -372,6 +374,7 @@ dependencies = [
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
+ "tokio-rustls",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -403,8 +406,6 @@ dependencies = [
  "rcgen",
  "reqwest",
  "ring",
- "rustls",
- "rustls-pki-types",
  "schemars",
  "serde",
  "serde_json",
@@ -498,6 +499,7 @@ dependencies = [
  "futures",
  "hex",
  "http",
+ "hyper",
  "indexmap",
  "jsonschema",
  "libc",
@@ -545,15 +547,19 @@ dependencies = [
 name = "busbar-core-connector"
 version = "1.6.0"
 dependencies = [
+ "axum",
  "busbar-contract",
  "busbar-kernel",
  "busbar-plugin-loader",
  "busbar-transport-tcp-plugin",
+ "bytes",
  "crc32fast",
  "dimpl",
  "futures",
+ "http-body-util",
  "libc",
  "rcgen",
+ "reqwest",
  "ring",
  "rustls",
  "rustls-pki-types",
@@ -716,7 +722,6 @@ dependencies = [
  "http-body-util",
  "httpdate",
  "hyper",
- "hyper-rustls",
  "hyper-util",
  "indexmap",
  "libc",
@@ -727,8 +732,6 @@ dependencies = [
  "rcgen",
  "reqwest",
  "ring",
- "rustls",
- "rustls-pki-types",
  "schemars",
  "serde",
  "serde_json",
@@ -739,14 +742,12 @@ dependencies = [
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
- "tokio-rustls",
  "tokio-tungstenite",
  "tokio-util",
  "tower",
  "tracing",
  "tracing-subscriber",
  "url",
- "webpki-roots",
  "zeroize",
 ]
 
@@ -939,13 +940,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-plugin-example-plane"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
-]
-
-[[package]]
 name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
@@ -960,7 +954,6 @@ dependencies = [
  "busbar-export-webhook-plugin",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
- "busbar-plugin-example-plane",
  "busbar-secret-env",
  "busbar-store-memory",
  "busbar-transport-tcp",
@@ -975,9 +968,6 @@ dependencies = [
  "libc",
  "libloading",
  "log",
- "rcgen",
- "rustls",
- "rustls-pki-types",
  "serde",
  "serde_json",
  "tar",
@@ -1014,9 +1004,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-transport-grpc"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=5607182ed5d28da20a6e1699aad512909d24142e#5607182ed5d28da20a6e1699aad512909d24142e"
+dependencies = [
+ "busbar-contract",
+ "bytes",
+ "http",
+ "http-body",
+ "hyper",
+ "serde_json",
+]
+
+[[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=9e6bf2cdbe77e51968dd6e8df6a1eabe96c0a1c4#9e6bf2cdbe77e51968dd6e8df6a1eabe96c0a1c4"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=fc91230af97997994e9206124ee7414f3aec6eee#fc91230af97997994e9206124ee7414f3aec6eee"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -1029,8 +1032,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
- "tonic",
- "tower",
 ]
 
 [[package]]
@@ -4608,6 +4609,7 @@ dependencies = [
  "busbar-plugin-loader",
  "busbar-transport-ws",
  "futures",
+ "serde_json",
  "tokio",
 ]
 

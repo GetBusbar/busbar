@@ -510,7 +510,9 @@ impl HostWire {
                     .as_mut()
                     .ok_or(TransportError::Closed)
                     .and_then(|f| {
-                        f.refuse(stream.map(|s| s.0), bytes.as_slice())
+                        // A Unit 0 refusal's bytes are the transport's whole envelope, rendered
+                        // before any plane: they state no neutral status apart from themselves.
+                        f.refuse(stream.map(|s| s.0), bytes.as_slice(), 0)
                             .map_err(|_| TransportError::Framing)
                     })
                     .map(|y| y.wire)

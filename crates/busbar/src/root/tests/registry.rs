@@ -504,12 +504,13 @@ fn the_shipped_transport_stack_composes() {
             .expect("registered")
             .composed_over
     };
-    // The two transports whose `new()` yields something that refuses every connection are the
-    // two that must be built through `over`, and the rows say they were.
+    // The transport whose `new()` yields something that refuses every connection is the one that
+    // must be built through `over`, and the rows say it was. `grpc` is a door that frames the
+    // host's socket: it is built over nothing.
     if session_linked() {
         assert_eq!(composed_over("ws"), Some("http"));
     }
-    assert_eq!(composed_over("grpc"), Some("http"));
+    assert_eq!(composed_over("grpc"), None);
     assert_eq!(composed_over("sse"), Some("http"));
 }
 
@@ -689,8 +690,8 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
 
 /// THE FOLD IS BOTTOM-UP, AND `COMPOSES_OVER` IS THE COMPOSITION ORDER. The shipped rows build in
 /// the order they register — every wire after every layer it declares — and each composed wire is
-/// built over the first layer it declares: `sse`, `ws` and `grpc` over `http`, the four that open
-/// their own socket or streams over nothing. The same rows handed over in the reverse order build
+/// built over the first layer it declares: `sse` and `ws` over `http`, the four that open their
+/// own socket or frame the host's over nothing. The same rows handed over in the reverse order build
 /// the same stack, because the order is the declarations' and not the table's.
 // THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the http rows compose over the linked transport door
 // (tcp); a build that links none (`--no-default-features`) has no stack to fold or seal, so this
@@ -846,7 +847,11 @@ fn dropped_doors() -> &'static [DroppedDoor] {
             .map(|(plugin, key)| DroppedDoor {
                 key,
                 composes_over: Vec::new(),
-                wire: crate::root::doors::host_wire(plugin).expect("the door serves"),
+                wire: crate::root::doors::host_wire(
+                    plugin,
+                    &busbar_contract::transport::TransportSettings::default(),
+                )
+                .expect("the door serves"),
             })
             .collect()
     });

@@ -130,4 +130,6 @@ allow-git = [
     "https://github.com/GetBusbar/busbar-hook-ranking",
     "https://github.com/GetBusbar/busbar-auth-header",
     "https://github.com/GetBusbar/busbar-auth-oauth",
+    "https://github.com/GetBusbar/busbar-auth-sigv4",
+    "https://github.com/GetBusbar/busbar-transport-grpc",
 ]

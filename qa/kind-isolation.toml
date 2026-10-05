@@ -518,10 +518,6 @@ crate = "busbar-plane-streaming"
 kind = "transport"
 
 [[cell]]
-crate = "busbar-plugin-example-plane"
-kind = "plugin-tooling"
-
-[[cell]]
 crate = "busbar-plugin-loader"
 kind = "hooks"
 
@@ -775,16 +771,6 @@ why     = "busbar-mcp names busbar-plane-mcp: declared normal in the shipped gra
 drain   = "delete the busbar-plane-mcp dependency from busbar-mcp's Cargo.toml — which happens when busbar-mcp itself folds into busbar-plane-mcp and is deleted (#19; BUSBAR-1.6.0.md THE DESIGN, §11.11), because the dialect is already where it belongs and it is the ENGINE that is still in the wrong crate."
 
 
-
-[[dep]]
-from    = "busbar-plugin-loader"
-to      = "busbar-plugin-example-plane"
-half    = "test"
-count   = "1"
-verdict = "tcb"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 \"`loader` and `abi` are TCB crates, not kinds.\" The loader's drop-in conformance test dev-depends on the fixture's rlib for the COMPILED-IN PLANE_DECL reference it compares the DROPPED-IN decl against; a plugin-tooling-to-plugin-tooling test edge inside the trusted computing base."
-why     = "busbar-plugin-loader names busbar-plugin-example-plane: declared dev in the test graph so plane_conformance_tests can link the compiled-in PLANE_DECL, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while the loader and the plugin tooling are outside the kind system (BUSBAR-1.6.0.md THE DESIGN, §2: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
 
 [[dep]]
 from    = "busbar"
@@ -1357,16 +1343,6 @@ why     = "busbar names busbar-store-memory: declared normal in the shipped grap
 drain   = "none: BUSBAR-1.6.0.md grants this class (roster def 1). What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar"
-to      = "busbar-plugin-example-plane"
-half    = "test"
-count   = "1"
-verdict = "allowed"
-cite    = "ARCHITECT 2026-09-25 (K4 residue, decisions.md, L5 intake): \"busbar -> busbar-plugin-example-plane test edge [[dep]] row\"; BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes (`root -> plugin-tooling` is granted)."
-why     = "busbar names busbar-plugin-example-plane: declared dev in the test graph so the root's tests load the example plane plugin through the plugin path, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
 from    = "busbar-plugin-loader"
 to      = "busbar-store-memory"
 half    = "test"
@@ -1435,16 +1411,6 @@ verdict = "allowed"
 cite    = "DECISIONS #36 (BUSBAR-1.6.0.md:2196, OWNER-LOCKED): the kernel workflow is 8 busbar-kernel-<name> crates in 4 groups serving the loop in busbar-kernel; an edge between two kernel-tier crates crosses no kind boundary (ARCHITECTURE_ALLOWED kernel -> kernel)."
 why     = "busbar-kernel names busbar-kernel-wal: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants the kernel -> kernel class. What this row holds is the NUMBER."
-
-[[dep]]
-from    = "busbar-plugin-example-plane"
-to      = "busbar-contract"
-half    = "shipped"
-count   = "1"
-verdict = "tcb"
-cite    = "DECISIONS #40(a) (BUSBAR-1.6.0.md:2200, OWNER-LOCKED): \"a plugin crate's entire workspace dependency closure = `busbar-contract` and nothing else\"; BUSBAR-1.6.0.md THE DESIGN, §9 (BUSBAR-1.6.0.md:1140-1141): busbar-contract is \"the shapes and the author SDK\". The example plane resolves as plugin-tooling by its busbar-plugin- name, so its one edge is read by ARCHITECTURE_TCB plugin-tooling -> contract."
-why     = "busbar-plugin-example-plane names busbar-contract: declared normal in the shipped graph (crates/plane-example), 1 declaration(s) at this commit — the whole of its workspace closure. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while the example plane resolves as plugin-tooling: the contract is the one edge #40(a) leaves a plugin. The row holds the number, so a second declaration is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar-core-admin"

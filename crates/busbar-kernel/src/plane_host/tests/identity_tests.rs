@@ -18,20 +18,18 @@ fn isolated() -> MutexGuard<'static, ()> {
     guard
 }
 
-/// A self-signed client identity (cert + key concatenated as one PEM buffer, the single form
-/// `ClientIdentity::from_pem` takes — `reqwest::Identity::from_pem` parity by the R4 corpus),
-/// built the way the a2a boot resolver builds one.
+/// A self-signed client identity, from its parts (the PEM walk `ClientIdentity::from_pem` runs —
+/// `reqwest::Identity::from_pem` parity by the R4 corpus — is the connector's, proven over the real
+/// wrap in the connector's `tls/engine_tests.rs`).
 fn an_identity() -> crate::egress::engine::ClientIdentity {
     use rcgen::{CertificateParams, KeyPair};
     let kp = KeyPair::generate().expect("a key pair");
     let params = CertificateParams::new(vec!["client.test".to_string()]).expect("params");
     let cert = params.self_signed(&kp).expect("self-signed");
-    let mut pem = cert.pem().into_bytes();
-    if !pem.ends_with(b"\n") {
-        pem.push(b'\n');
-    }
-    pem.extend_from_slice(kp.serialize_pem().as_bytes());
-    crate::egress::engine::ClientIdentity::from_pem(&pem).expect("a usable client identity")
+    crate::egress::engine::ClientIdentity::from_parts(
+        vec![cert.der().to_vec()],
+        crate::secure::KeyDer::Pkcs8(kp.serialize_der()),
+    )
 }
 
 #[test]

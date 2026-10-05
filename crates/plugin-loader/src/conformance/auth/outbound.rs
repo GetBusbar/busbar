@@ -196,7 +196,16 @@ fn expected(v: &serde_json::Value, what: &str) -> String {
             (
                 str_of(&p[0], what).as_bytes().to_vec(),
                 str_of(&p[1], what).as_bytes().to_vec(),
-                p.get(2).and_then(serde_json::Value::as_u64).unwrap_or(0) as u32,
+                match p.get(2) {
+                    // No third element: the field carries no flag.
+                    None => 0,
+                    Some(f) => f
+                        .as_u64()
+                        .and_then(|n| u32::try_from(n).ok())
+                        .unwrap_or_else(|| {
+                            panic!("conformance.json: {what}'s flags must be a u32")
+                        }),
+                },
             )
         })
         .collect();
@@ -236,7 +245,9 @@ impl Style {
             authority: str_of(&h["authority"], "head.authority").to_string(),
             path,
             query,
-            timestamp: h["timestamp"].as_u64().unwrap_or(0),
+            timestamp: h["timestamp"].as_u64().unwrap_or_else(|| {
+                panic!("conformance.json: style `{style}`'s head.timestamp must be epoch seconds")
+            }),
             fields: pairs(&h["fields"], "head.fields"),
             body: h["body"].as_str().unwrap_or("").as_bytes().to_vec(),
         };

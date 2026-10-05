@@ -1065,9 +1065,14 @@ max_sites = 0
 # test-seal dev-dependency went with it. The rule's pattern matches no file under either crate, so
 # the entry is not repointed (a row on a path with no finding would only excuse a future forgery);
 # it is struck, and both paths are held to the rule. The seal debt that remains is the two below.
+# STRUCK 2026-10-04: `crates/busbar-transport-stdio/src/tests/battery.rs`. GONE — the stdio row was
+# made door-only (ARCHITECT ruling (A)): its in-process `impl Transport` battery, which forged a
+# `TestKernelSeal` to drive that transport, was deleted and its coverage folded onto the carrier and
+# door batteries, none of which forge a seal. The rule's `impl … KernelSeal for` pattern now matches
+# NO file under `crates/busbar-transport-stdio/`, so the entry is not repointed (a row on a path with
+# no finding would only excuse a future forgery); it is struck, and the crate is held to the rule.
 known_sites = [
   "crates/busbar-plane-streaming/src/tests/harness.rs",
-  "crates/busbar-transport-stdio/src/tests/battery.rs",
 ]
 
 # ── 22. forbid-unsafe ────────────────────────────────────────────────────────────────────────────
@@ -1242,7 +1247,6 @@ known_sites = [
   "crates/busbar-kernel/src/proto/installed.rs",
   "crates/plugin-loader/src/",
   "crates/busbar-contract/src/abi/sdk/boundary.rs",
-  "crates/plane-example/src/",
   # REVIEWED 2026-09-25 (item 141): a first-party plugin's diagnostic written as the host's own
   # line needs a tracing callsite and field names that are 'static by tracing's type; `site` makes
   # ONE per (code, level, field-name list) and interns it, so the allocation is bounded by the
@@ -2118,6 +2122,7 @@ abi = 1
 # an unlisted vanished dir stays RED.
 [gate.census.deleted]
 "crates/hook-test-plugin" = "TODO P5: delete hook-test-plugin (ARCHITECT 2026-10-04)"
+"crates/plane-example" = "TODO P5: delete plane-example (Q128 audit BLOCK 11/12: a fixture plane plugin riding the HOT lane with C-unwind doors)"
 
 # THE RENAME ROWS (ARCHITECT 2026-10-03, Q-L7B2-CENSUS). A moved-out crate excuses its kind's floor
 # drop only when the root pins it as a git dependency at a rev under the package name it had at the

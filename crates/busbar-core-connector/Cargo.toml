@@ -62,15 +62,27 @@ crc32fast = { workspace = true }
 # OS socket (BUSBAR-1.6.0.md THE DESIGN, §5). `tokio` is asked for its reactor registration
 # (`net`: `AsyncFd`) and its timer (`time`) on the calling worker's own runtime — no runtime and no
 # thread of this crate's. `socket2` makes the non-blocking connect and the per-acceptor listener
-# (address and port reuse); `libc` names the in-progress connect.
-tokio = { workspace = true, features = ["net", "time", "rt"] }
+# (address and port reuse); `libc` names the in-progress connect. `process`: a need whose target is a
+# PROGRAM is the child's pipes, spawned and killed by the connector (its reactor carries them).
+tokio = { workspace = true, features = ["net", "time", "rt", "process"] }
 libc = { workspace = true }
 
 
 [dev-dependencies]
 # Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
 sha2 = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
+# THE REAL-TLS ROWS (tls/engine_tests.rs): the kernel's outbound engine and TLS listener driven over
+# this crate's wrap. TLS stays in the connector, so the rows that need a real handshake through the
+# kernel live here: the kernel's test kit (its fixture servers and the test install of the
+# egress-trust capability), 1.5.5's pinned reqwest client the egress differential compares against
+# and whose `Identity::from_pem` the identity PEM walk keeps verdict parity with, and the router the
+# TLS listener serves. Dev-only.
+busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support"] }
+reqwest = { workspace = true }
+axum = { workspace = true, features = ["http1"] }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
 # THE UNIVERSAL-NEEDS WITNESS (tests/universal_needs.rs, its only user): the fixture below is loaded
 # dropped in through the real admission, scan and open, never a host written for the test. Dev-only.
 busbar-plugin-loader = { path = "../plugin-loader" }
