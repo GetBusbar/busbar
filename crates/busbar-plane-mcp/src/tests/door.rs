@@ -236,3 +236,46 @@ fn the_admitted_origins_are_the_blocks_and_the_refusal_is_the_served_words() {
     );
     assert_eq!(STATUS_FORBIDDEN_ORIGIN, 403);
 }
+
+/// THE ADMIN OPENAPI BLOB CARRIES ITS OWN BODIES (ARCHITECT Q2): every admin verb's `200` names a
+/// typed body by `$ref`, and every `$ref` in the blob, its schemas' included, names a schema the
+/// blob's `components.schemas` states. The schemas' bytes are held to the committed admin document
+/// by the admin crate's drift test.
+#[test]
+fn the_admin_openapi_blob_states_every_body_its_verbs_name() {
+    fn refs(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                if let Some(r) = m.get("$ref").and_then(|r| r.as_str()) {
+                    out.push(r.to_string());
+                }
+                m.values().for_each(|v| refs(v, out));
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|v| refs(v, out)),
+            _ => {}
+        }
+    }
+    let blob: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("a JSON object");
+    let schemas = blob["components"]["schemas"]
+        .as_object()
+        .expect("the blob states its schemas");
+    for (verb, target) in ADMIN_VERBS {
+        let op = &blob[*target][verb.to_ascii_lowercase()];
+        let body = &op["responses"]["200"]["content"]["application/json"]["schema"]["$ref"];
+        assert!(body.is_string(), "{verb} {target} names no typed body");
+    }
+    let mut named = Vec::new();
+    refs(&blob, &mut named);
+    for r in &named {
+        let name = r
+            .strip_prefix("#/components/schemas/")
+            .unwrap_or_else(|| panic!("`{r}` is no component reference"));
+        assert!(schemas.contains_key(name), "`{r}` names no stated schema");
+    }
+    for name in schemas.keys() {
+        assert!(
+            named.iter().any(|r| r.ends_with(&format!("/{name}"))),
+            "the blob states `{name}` and nothing names it"
+        );
+    }
+}

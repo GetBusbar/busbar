@@ -471,6 +471,58 @@ fn served_openapi_equals_committed_file() {
     assert_eq!(super::handlers::openapi_json(), committed);
 }
 
+/// THE PLANES' COMPONENT SCHEMAS ARE THE COMMITTED ONES (ARCHITECT Q2): every component schema a
+/// plane's `openapi_schemas` registers equals the committed document's entry of that name. A linked
+/// plane's come from schemars; a door plane's are the data its admin OpenAPI blob states under
+/// `components.schemas`, which the kernel's fold inserts as written, so this is the drift test that
+/// holds a door's stated schemas to the committed openapi.json. Not vacuous: some plane registers one.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn every_plane_component_schema_is_the_committed_ones() {
+    crate::ensure_seam();
+    let committed: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(COMMITTED_OPENAPI_PATH).expect("read committed openapi"),
+    )
+    .expect("committed openapi parses");
+    let committed = committed["components"]["schemas"]
+        .as_object()
+        .expect("committed component schemas");
+    // The two generators `openapi_doc` hands every contributor, configured as it configures them.
+    let generator = |serialize: bool| {
+        let settings = schemars::generate::SchemaSettings::draft2020_12().with(|s| {
+            s.definitions_path = "/components/schemas".into();
+            s.meta_schema = None;
+        });
+        if serialize {
+            settings.for_serialize().into_generator()
+        } else {
+            settings.for_deserialize().into_generator()
+        }
+    };
+    let mut seen = 0usize;
+    for decl in busbar_kernel::plane::registry::plane_decls() {
+        let Some(schemas) = decl.openapi_schemas else {
+            continue;
+        };
+        let (mut gen, mut req_gen) = (generator(true), generator(false));
+        let mut paths = match decl.openapi.map(|openapi| openapi()) {
+            Some(serde_json::Value::Object(paths)) => paths,
+            _ => serde_json::Map::new(),
+        };
+        schemas(&mut gen, &mut req_gen, &mut paths);
+        for (name, schema) in gen.definitions().iter().chain(req_gen.definitions()) {
+            assert_eq!(
+                committed.get(name),
+                Some(schema),
+                "plane `{}` registers component schema `{name}` unlike the committed openapi.json",
+                decl.key
+            );
+            seen += 1;
+        }
+    }
+    assert!(seen > 0, "no plane registered a component schema");
+}
+
 /// `POST /restart`'s handler explicitly treats an absent body as `RestartReq::default()`
 /// (`handlers.rs`'s own doc comment on `restart()` — "Absent is the same as `{}`"), but `body_raw!`
 /// hardcodes `"required": true` on every attached request body, so the openapi contract asserts the
