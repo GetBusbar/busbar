@@ -1,0 +1,148 @@
+{
+  "auth": {
+    "outbound": [
+      {
+        "style": "oauth-client-credentials",
+        "credential": "conformance-client:conformance:secret",
+        "settings": {
+          "token_url": "https://login.conformance.invalid/oauth2/token",
+          "scope": "https://api.conformance.invalid/.default"
+        },
+        "head": {
+          "method": "POST",
+          "authority": "runtime.signer.example",
+          "target": "/model/m/converse",
+          "timestamp": 1440938160,
+          "fields": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "body": "{}"
+        },
+        "expect_fields": [
+          [
+            "authorization",
+            "Bearer conformance-token-1"
+          ]
+        ],
+        "token_endpoint": [
+          {
+            "expect_request": {
+              "method": "POST",
+              "target": "https://login.conformance.invalid/oauth2/token",
+              "fields_subset": [
+                [
+                  "content-type",
+                  "application/x-www-form-urlencoded"
+                ]
+              ],
+              "body": "grant_type=client_credentials&client_id=conformance-client&client_secret=conformance%3Asecret&scope=https%3A%2F%2Fapi.conformance.invalid%2F.default"
+            },
+            "respond": {
+              "status": 200,
+              "body": "{\"access_token\": \"conformance-token-1\", \"expires_in\": 3600, \"token_type\": \"Bearer\"}"
+            }
+          },
+          {
+            "expect_request": {
+              "method": "POST",
+              "target": "https://login.conformance.invalid/oauth2/token",
+              "fields_subset": [
+                [
+                  "content-type",
+                  "application/x-www-form-urlencoded"
+                ]
+              ],
+              "body": "grant_type=client_credentials&client_id=conformance-client&client_secret=conformance%3Asecret&scope=https%3A%2F%2Fapi.conformance.invalid%2F.default"
+            },
+            "respond": {
+              "status": 200,
+              "body": "{\"access_token\": \"conformance-token-2\", \"expires_in\": 3600, \"token_type\": \"Bearer\"}"
+            }
+          }
+        ],
+        "expires_in": 3600,
+        "refreshed_fields": [
+          [
+            "authorization",
+            "Bearer conformance-token-2"
+          ]
+        ],
+        "refusal": "Refused"
+      },
+      {
+        "style": "jwt-bearer",
+        "credential": "{\"type\": \"service_account\", \"client_email\": \"conformance@conformance.invalid\", \"private_key\": \"-----BEGIN PRIVATE KEY-----\\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCwVz6FEsj34T1R\\nZcMLhb7W0SlfTcv4876w/AdHXoFCQhU6cJTarVt2TrkLpzbcxdA/4mK6wb869mzn\\npHf4ClLzU2ypaCmW2my8u7ljyOiO+2cxudO/yesdTHMqbULRoNbOw2I8vXkI0nPe\\nHd/Yl3+hxXMuJAqtMEY0/v4Zn5IxtiI3Vi+4RS4D6tkoWV59kq3DqAwjQQvuq0O8\\nsq2DJQMKKuCvKxNHfK3ssosaacIsYM3704z+CFoYOuuScOK8XV3MmLpO/DjiILLv\\n08cjpILS4iOJPnGWl2i4Dk2x5Hr23Fe5dpJVAq/P3dRVr2KdSiOK3sgwQ736SGmX\\np72l54kpAgMBAAECggEASG1U/ugzxefrvPJsdV+V/fpDoWK9K7/FK0EgpjYRJgsp\\nV+rkoJqCTenQhBJGbNAMlCih/23TYt7S5SN+qNBouIsjvsLLDiwhbDU4VF0w84Ub\\noedeqs++szZyuNLOlnYWtC64uxThUPfLYkfn6Dh1Uhbck293OSHyPBMdf520OJkU\\nj2JSwlRQei2nv/bSmwiY1hntceSGiSjtuHQAzWiMvGVLQiN38Oa7dKGIszJWeG/5\\n44/gWnrax7ieagMKta4cgVZM0rT8hqZ8K33r1Fd6pTAhjDrrCi82opoblTkTo6y6\\nQEj0LZU67zGjhjsQdvdR1CAZModW5oMhTB9bfOOvNwKBgQDliTNPRSUSlSireO1Q\\nuv11W7iUbkjm+NjuKoYyiV/NIeMPn/0z0tXhxs3dbUPY9D5taIRb0GV3MdBTuEDf\\nEe3uq1qufmq4+dDfBKiGCwjCo/XLoisNGeZhRC0cqLC73IvNIDHsXli+Ly2pfy09\\nXoqL7pSm3e/KCNL0NKahauxbEwKBgQDEq/p776Q4TU3Nq6GmVZXdEJtsKa7Wejy6\\n1epLSTCFelHCKWNZkn+tXRtYvEsTnVnJjWt3vjuJnUgBvc3DeOWGVNCsZACpUKgY\\ny1ACbIWQECijUVs7ixB1qGY5JmmI4ESutcnPfHfxKFr3DxwJ2E7C2JA11HIxPXPX\\n85sb0bA2UwKBgFdTND8TOkBwmNFrpzWQfj74zydBMeEViUpKyVVOqDDdlInsPyNJ\\nMe+8d7OnDynp+hobqkdX6FJJlE1VivCS3Kdxb4V1ONr4x7shBZBBgGq0gB2hq6lH\\nUjts+ZCuqNY/2LwIZJXdavun7UJPzQFNB36nHMzDIKgHZWJc6Yv9psAbAoGAMP4+\\nqf0qxbPMO/4TiOItMSLf9PP1UAyncEu10AdthPLRxzKUQ04RbFiTZWmSslIyedk2\\n+l9zaXa652QnDBjj5LDgQvGukH89QN/1EIWESD0eQoET3yNneEf5HyeIhsaHlZZH\\nrd5t6q+I6Z7j9zfhdvyIAEDqKYYLg7J141o7MW0CgYAy68LLPNE1RYqudEdoRL+E\\nyhhGQ9K1h28+ZsA97QyG7Pz26Y3lsIb4X34vAJyuh3EKZo7e18R52hpfJkn3ZCus\\n5gbrWTwmAvUEzIQZ8LdSalufL0ziwly6AmqL4UqII/uivOs8J5xdcDpo2/ExNJF9\\n1Bw48hMPERwjUHWwG7tDzw==\\n-----END PRIVATE KEY-----\\n\", \"token_uri\": \"https://oauth2.conformance.invalid/token\"}",
+        "settings": {
+          "token_uri": "https://oauth2.conformance.invalid/token",
+          "scope": "https://www.googleapis.com/auth/cloud-platform"
+        },
+        "head": {
+          "method": "POST",
+          "authority": "runtime.signer.example",
+          "target": "/model/m/converse",
+          "timestamp": 1440938160,
+          "fields": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "body": "{}"
+        },
+        "expect_fields": [
+          [
+            "authorization",
+            "Bearer conformance-token-1"
+          ]
+        ],
+        "token_endpoint": [
+          {
+            "expect_request": {
+              "method": "POST",
+              "target": "https://oauth2.conformance.invalid/token",
+              "fields_subset": [
+                [
+                  "content-type",
+                  "application/x-www-form-urlencoded"
+                ]
+              ],
+              "body_prefix": "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=eyJ"
+            },
+            "respond": {
+              "status": 200,
+              "body": "{\"access_token\": \"conformance-token-1\", \"expires_in\": 3600, \"token_type\": \"Bearer\"}"
+            }
+          },
+          {
+            "expect_request": {
+              "method": "POST",
+              "target": "https://oauth2.conformance.invalid/token",
+              "fields_subset": [
+                [
+                  "content-type",
+                  "application/x-www-form-urlencoded"
+                ]
+              ],
+              "body_prefix": "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=eyJ"
+            },
+            "respond": {
+              "status": 200,
+              "body": "{\"access_token\": \"conformance-token-2\", \"expires_in\": 3600, \"token_type\": \"Bearer\"}"
+            }
+          }
+        ],
+        "expires_in": 3600,
+        "refreshed_fields": [
+          [
+            "authorization",
+            "Bearer conformance-token-2"
+          ]
+        ],
+        "refusal": "Refused"
+      }
+    ]
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "auth": {
+    "outbound": [
+      {
+        "style": "sigv4",
+        "credential": "AKIDEXAMPLE:SECRET:TOKEN",
+        "settings": {
+          "service": "svc",
+          "region": "us-east-1",
+          "content_type": "application/json"
+        },
+        "head": {
+          "method": "POST",
+          "authority": "runtime.signer.example",
+          "target": "/model/m/converse",
+          "timestamp": 1440938160,
+          "fields": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "body": "{}"
+        },
+        "expect_fields": [
+          [
+            "authorization",
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/svc/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=2d863231c4a4f0c3d932f6ffd1454792ca0b9cce22813ee70e20165c673c8dc2"
+          ],
+          [
+            "x-amz-date",
+            "20150830T123600Z"
+          ],
+          [
+            "x-amz-content-sha256",
+            "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+          ],
+          [
+            "x-amz-security-token",
+            "TOKEN"
+          ]
+        ]
+      }
+    ]
+  }
+}

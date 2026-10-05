@@ -29,7 +29,7 @@ use crate::abi::hook::{
     STAGE_HAS_REMAINING_CANDIDATES, STAGE_HAS_STATUS, VIEW_HAS_BUDGET_REMAINING, VIEW_HAS_PROMPT,
     VIEW_HAS_USER,
 };
-use crate::abi::mechanism::call::{AbiStr, Blob, InHead, BLOB_ABSENT};
+use crate::abi::mechanism::call::{AbiStr, Blob, InHead, Outcome, BLOB_ABSENT};
 use crate::hook_wire::HookStageProjection;
 use crate::hooks::{Candidate, RoutingContext, RoutingRequest};
 use crate::signal::{SignalBag, SignalValue as Value};
@@ -558,6 +558,53 @@ impl DecideFrame {
     #[must_use]
     pub fn rewrite(&self, written: usize) -> Vec<u8> {
         self.rewrite.read(written).to_vec()
+    }
+
+    /// The 1.5.5 `decide`/`transform` JSON (`op`: [`crate::hook_wire::OP_DECIDE`] or
+    /// [`crate::hook_wire::OP_TRANSFORM`]) a hook written against the JSON contract is handed for
+    /// this frame's view: the SDK's own rebuild ([`crate::abi::sdk::hook::Decoded::projection_json`]),
+    /// read here so an in-process hook reads exactly what a plugin reads (as
+    /// [`NotifyFrame::projection_json`]).
+    #[must_use]
+    pub fn projection_json(&self, op: &'static str) -> serde_json::Value {
+        let input = self.input();
+        // SAFETY: every pointer in `input` names storage this frame owns (its view's store and its
+        // host buffers), live while `self` is borrowed.
+        let lent = unsafe { crate::abi::sdk::Lent::new(&input) };
+        crate::abi::sdk::hook::Decoded::of(lent).projection_json(op)
+    }
+
+    /// ANSWER `decide` IN PROCESS: `v` lowered into this frame's own host buffers exactly as the
+    /// SDK's door lowers it ([`crate::abi::sdk::hook::write_verdict`], the one short FAILED
+    /// included), and the `out` it answers (its head blank: nothing crossed). For an in-process
+    /// [`crate::hook_calls::HookCalls`], the frame's one answerer: nothing reads the answer before
+    /// this returns.
+    #[must_use]
+    pub fn answer_decide(&self, v: &crate::abi::sdk::hook::Verdict) -> (Outcome, DecideOut) {
+        let input = self.input();
+        // SAFETY: as `projection_json`; the host buffers are writable for their stated capacity
+        // and overlap nothing else.
+        let lent = unsafe { crate::abi::sdk::Lent::new(&input) };
+        // SAFETY: `DecideOut` is plain integers and a head of plain integers, raw pointers and
+        // blobs, for which the all-zero pattern is valid (the host's own pre-fill).
+        let mut out: DecideOut = unsafe { std::mem::zeroed() };
+        let outcome = crate::abi::sdk::hook::write_verdict(v, lent, &mut out);
+        (outcome, out)
+    }
+
+    /// [`Self::answer_decide`]'s `transform` twin ([`crate::abi::sdk::hook::write_rewrite`]).
+    #[must_use]
+    pub fn answer_transform(
+        &self,
+        v: &crate::abi::sdk::hook::RewriteVerdict,
+    ) -> (Outcome, TransformOut) {
+        let input = self.input();
+        // SAFETY: as `answer_decide`.
+        let lent = unsafe { crate::abi::sdk::Lent::new(&input) };
+        // SAFETY: as `answer_decide`: `TransformOut` is plain integers and a plain head.
+        let mut out: TransformOut = unsafe { std::mem::zeroed() };
+        let outcome = crate::abi::sdk::hook::write_rewrite(v, lent, &mut out);
+        (outcome, out)
     }
 }
 

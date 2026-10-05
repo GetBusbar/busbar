@@ -38,7 +38,7 @@ zeroize = { workspace = true }
 [dev-dependencies]
 # THE PLUGIN TESTS ITSELF (BUSBAR-1.6.0.md THE DESIGN, §2): `tests/conformance.rs` links this crate AND loads its own
 # cdylib through the real loader, through the same table (BUSBAR-1.6.0.md §11.4).
-busbar-plugin-loader = { path = "../plugin-loader" }
+busbar-plugin-loader = { path = "../plugin-loader", features = ["conformance"] }
 
 [[test]]
 name = "conformance"
