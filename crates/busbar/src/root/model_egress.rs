@@ -71,6 +71,9 @@ pub struct ModelPools {
     /// Each model's active health probing (K7): its provider's `health:` over the process-wide
     /// defaults, as 1.5.5's prober resolved it per lane.
     probes: BTreeMap<String, busbar_kernel::probe::ProbeCfg>,
+    /// What each pool's members show the ranking hooks, by pool then model: the member's tier and
+    /// tags, and its model's cost per million tokens off the rate card (1.5.5's pool member meta).
+    meta: BTreeMap<String, Arc<HashMap<String, busbar_kernel::plane_driver::MemberFacts>>>,
 }
 
 impl ModelPools {
@@ -175,7 +178,34 @@ impl ModelPools {
                 ))
             })
             .collect();
+        let meta = cfg
+            .pools
+            .iter()
+            .map(|(name, pool)| {
+                let members = pool
+                    .members
+                    .iter()
+                    .map(|m| {
+                        (
+                            m.model.clone(),
+                            busbar_kernel::plane_driver::MemberFacts {
+                                model: m.model.clone(),
+                                tags: m.tags.clone(),
+                                tier: m.tier.clone(),
+                                cost_per_mtok: cfg
+                                    .rate_card
+                                    .as_ref()
+                                    .and_then(|card| card.get(&m.model))
+                                    .map(busbar_kernel::config::rate_entry_per_mtok),
+                            },
+                        )
+                    })
+                    .collect();
+                (name.clone(), Arc::new(members))
+            })
+            .collect();
         ModelPools {
+            meta,
             pools,
             lanes,
             breaker: BreakerPolicy::from_pools(&cfg.pools),
@@ -236,6 +266,108 @@ impl std::fmt::Debug for ModelServing {
             .field("lanes", &self.lanes)
             .finish_non_exhaustive()
     }
+}
+
+/// The number of latency samples a lane's p95 reservoir holds (1.5.5's ring).
+const LATENCY_RESERVOIR_LEN: usize = 128;
+
+/// ONE LANE'S P95 LATENCY RESERVOIR (1.5.5's `LatencyReservoir`, moved verbatim): a ring of the
+/// last [`LATENCY_RESERVOIR_LEN`] samples in microseconds, written lock-free.
+#[derive(Debug)]
+pub struct LatencyReservoir {
+    cursor: std::sync::atomic::AtomicUsize,
+    samples: [std::sync::atomic::AtomicU32; LATENCY_RESERVOIR_LEN],
+}
+
+impl Default for LatencyReservoir {
+    fn default() -> Self {
+        Self {
+            cursor: std::sync::atomic::AtomicUsize::new(0),
+            samples: std::array::from_fn(|_| std::sync::atomic::AtomicU32::new(0)),
+        }
+    }
+}
+
+impl LatencyReservoir {
+    /// Record one sample, in milliseconds. A non-finite or non-positive sample is ignored.
+    pub fn record(&self, latency_ms: f64) {
+        use std::sync::atomic::Ordering;
+        if !latency_ms.is_finite() || latency_ms <= 0.0 {
+            return;
+        }
+        // `as` saturates a float-to-int cast, so an absurdly long sample clamps to `u32::MAX` us.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let us = ((latency_ms * 1000.0).round() as u32).max(1);
+        let slot = self.cursor.fetch_add(1, Ordering::Relaxed) % LATENCY_RESERVOIR_LEN;
+        self.samples[slot].store(us, Ordering::Relaxed);
+    }
+
+    /// The nearest-rank 95th percentile of the held samples, in whole milliseconds rounded UP;
+    /// `None` while the ring holds no sample.
+    #[must_use]
+    pub fn p95_ms(&self) -> Option<u64> {
+        let mut held: Vec<u32> = self
+            .samples
+            .iter()
+            .map(|s| s.load(std::sync::atomic::Ordering::Relaxed))
+            .filter(|v| *v != 0)
+            .collect();
+        if held.is_empty() {
+            return None;
+        }
+        held.sort_unstable();
+        let rank = (held.len() * 95).div_ceil(100);
+        Some(u64::from(held[rank - 1]).div_ceil(1000))
+    }
+}
+
+/// EACH MEMBER'S STANDING AS THE RANKING HOOKS READ IT, off the generation's lane store, as 1.5.5's
+/// candidate projection read it: the latency signal, the free concurrency (the member's own permits
+/// where its `max_concurrent` is stated, the lane's otherwise), the remaining lifetime budget, the
+/// breaker state and error rate in the routing pool, and the lane's p95 reservoir.
+pub struct ModelSignals {
+    app: AppSource,
+    permits: Arc<crate::root::egress_ports::MemberPermits>,
+    reservoirs: Arc<HashMap<usize, LatencyReservoir>>,
+}
+
+impl busbar_kernel::plane_driver::MemberSignals for ModelSignals {
+    fn standing(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+    ) -> busbar_kernel::plane_driver::MemberStanding {
+        let (app, lane) = ((self.app)(), lane_of(destination));
+        let store = &app.store;
+        let state = match store.breaker_state_snapshot_in(pool, lane) {
+            busbar_kernel::store::BreakerState::Closed => "closed",
+            busbar_kernel::store::BreakerState::Open { .. } => "open",
+            busbar_kernel::store::BreakerState::HalfOpen => "half_open",
+        };
+        busbar_kernel::plane_driver::MemberStanding {
+            latency_ms: store.lane_latency_ms(lane),
+            available_concurrency: self
+                .permits
+                .available(destination)
+                .unwrap_or_else(|| store.available_permits(lane)),
+            budget_remaining: store.lane_budget_remaining(lane),
+            breaker_state: Some(state),
+            error_rate: store.error_rate_in(pool, lane, busbar_kernel::store::now()),
+            latency_p95_ms: self
+                .reservoirs
+                .get(&lane)
+                .and_then(LatencyReservoir::p95_ms),
+        }
+    }
+}
+
+/// What the hooks are shown of the model-serving pools beside the walk: each pool's member meta
+/// and the members' live standing.
+pub struct ModelShown {
+    /// Each pool's member meta, by pool.
+    pub described: BTreeMap<String, Arc<HashMap<String, busbar_kernel::plane_driver::MemberFacts>>>,
+    /// The members' live standing.
+    pub signals: Arc<dyn busbar_kernel::plane_driver::MemberSignals>,
 }
 
 /// The kernel's breaker port over its lane store: a model-named direct route is mapped onto the
@@ -409,6 +541,8 @@ impl Breaker for DirectCells {
 struct ModelTelemetry {
     app: AppSource,
     queued: crate::root::egress_ports::WalkTelemetry,
+    /// Each lane's p95 reservoir, fed only while the generation declares the signal.
+    reservoirs: Arc<HashMap<usize, LatencyReservoir>>,
 }
 
 impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
@@ -436,9 +570,19 @@ impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
     fn upstream_latency(&self, destination: DestinationId, ms: f64) {
         // The lane's latency signal (the admin pool listing's `latency_ms`, the `fastest` order's
         // input), as 1.5.5's served attempt recorded it.
-        (self.app)()
-            .store
-            .record_latency_in("", lane_of(destination), ms);
+        let app = (self.app)();
+        let lane = lane_of(destination);
+        app.store.record_latency_in("", lane, ms);
+        // The same sample into the lane's p95 reservoir, ONLY while the generation declares the
+        // signal, as 1.5.5 collected it.
+        if app
+            .requested_signals
+            .wants(busbar_contract::signal::Signal::CandidateLatencyP95Ms)
+        {
+            if let Some(r) = self.reservoirs.get(&lane) {
+                r.record(ms);
+            }
+        }
     }
 
     fn queued(&self, pool: &str, delta: i64) {
@@ -470,7 +614,7 @@ pub fn compose(
     routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
     journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
     stream_ceiling_secs: u64,
-) -> Result<busbar_kernel::plane_driver::Egress, String> {
+) -> Result<(busbar_kernel::plane_driver::Egress, ModelShown), String> {
     let plan = &serving.pools;
     let mut sealed = HashMap::new();
     let mut names = Vec::new();
@@ -538,6 +682,22 @@ pub fn compose(
         built.insert(model.clone(), p);
         direct.insert(model.clone());
     }
+    let permits = Arc::new(crate::root::egress_ports::MemberPermits::new(limits));
+    let reservoirs: Arc<HashMap<usize, LatencyReservoir>> = Arc::new(
+        serving
+            .lanes
+            .values()
+            .map(|lane| (*lane, LatencyReservoir::default()))
+            .collect(),
+    );
+    let shown = ModelShown {
+        described: plan.meta.clone(),
+        signals: Arc::new(ModelSignals {
+            app: Arc::clone(&serving.app),
+            permits: Arc::clone(&permits),
+            reservoirs: Arc::clone(&reservoirs),
+        }),
+    };
     let app = Arc::clone(&serving.app);
     let breaker = DirectCells {
         inner: BreakerAdapter::over(
@@ -548,21 +708,25 @@ pub fn compose(
         records: plan.records.clone(),
         direct,
     };
-    Ok(busbar_kernel::plane_driver::Egress {
-        caller,
-        conns,
-        breaker: Arc::new(breaker),
-        capacity: Arc::new(crate::root::egress_ports::MemberPermits::new(limits)),
-        clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
-        journal,
-        telemetry: Arc::new(ModelTelemetry {
-            app: Arc::clone(&serving.app),
-            queued: crate::root::egress_ports::WalkTelemetry::new(names),
-        }),
-        floor: busbar_kernel_egress::WeightedFloor::new(),
-        pools: built,
-        routes: sealed,
-        stream_ceiling_secs,
-        error_body_max: busbar_kernel::plane_driver::DEFAULT_ERROR_BODY_MAX,
-    })
+    Ok((
+        busbar_kernel::plane_driver::Egress {
+            caller,
+            conns,
+            breaker: Arc::new(breaker),
+            capacity: permits,
+            clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
+            journal,
+            telemetry: Arc::new(ModelTelemetry {
+                app: Arc::clone(&serving.app),
+                queued: crate::root::egress_ports::WalkTelemetry::new(names),
+                reservoirs,
+            }),
+            floor: busbar_kernel_egress::WeightedFloor::new(),
+            pools: built,
+            routes: sealed,
+            stream_ceiling_secs,
+            error_body_max: busbar_kernel::plane_driver::DEFAULT_ERROR_BODY_MAX,
+        },
+        shown,
+    ))
 }

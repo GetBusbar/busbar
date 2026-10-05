@@ -107,6 +107,8 @@ struct SeatProbe {
     reject: Option<(u16, &'static str)>,
     /// Tap seats: the last delivered projection.
     last_payload: Mutex<Option<Vec<u8>>>,
+    /// Gate seat: each candidate the last decide was shown, as one line.
+    candidates: Mutex<Vec<String>>,
 }
 
 impl SeatProbe {
@@ -117,6 +119,7 @@ impl SeatProbe {
             requests_now: None,
             reject: None,
             last_payload: Mutex::new(None),
+            candidates: Mutex::new(Vec::new()),
         }
     }
 }
@@ -126,11 +129,42 @@ impl RoutingPolicy for SeatProbe {
     async fn decide(
         &self,
         _req: &RoutingRequest<'_>,
-        _candidates: &[Candidate<'_>],
+        candidates: &[Candidate<'_>],
         _ctx: &RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> PolicyResult {
         self.log.lock().unwrap().push(self.seat.to_string());
+        *self.candidates.lock().unwrap() = candidates
+            .iter()
+            .map(|c| {
+                format!(
+                    "{} tier={:?} tags={:?} latency={} avail={} budget={:?} signals={:?}",
+                    c.model,
+                    c.tier,
+                    c.tags,
+                    c.latency_ms.is_some(),
+                    c.available_concurrency > 0,
+                    c.budget_remaining,
+                    c.signals
+                        .iter()
+                        .map(|(s, v)| format!(
+                            "{s:?}={}",
+                            match v {
+                                busbar_contract::SignalValue::Str(t) => t.to_string(),
+                                other => format!(
+                                    "{}",
+                                    matches!(
+                                        other,
+                                        busbar_contract::SignalValue::F64(_)
+                                            | busbar_contract::SignalValue::U64(_)
+                                    )
+                                ),
+                            }
+                        ))
+                        .collect::<Vec<_>>()
+                )
+            })
+            .collect();
         Ok(match self.reject {
             Some((status, message)) => RoutingDecision::Reject {
                 status,
@@ -301,6 +335,11 @@ pub(super) struct RigOpts<'a> {
     pub pooled: Option<usize>,
     /// The pools the key may reach (`None`: every pool).
     pub allowed_pools: Option<&'a [&'a str]>,
+    /// The members' dialect (`None`: `openai`).
+    pub dialect: Option<&'a str>,
+    /// Each pool member states a tier `t<i>` and a tag `g<i>`, and the generation declares the
+    /// three candidate catalog signals (breaker state, error rate, p95 latency).
+    pub described: bool,
 }
 
 /// THE LLM DOOR, SERVED END TO END, as production composes it: the data router built with the
@@ -319,10 +358,16 @@ pub(super) struct DoorRig {
     log: Arc<Mutex<Vec<String>>>,
     request_tap: Arc<SeatProbe>,
     candidate_tap: Arc<SeatProbe>,
+    gate_seat: Arc<SeatProbe>,
     read: Arc<dyn Fn() -> Ledger + Send + Sync>,
 }
 
 impl DoorRig {
+    /// Each candidate the pool's ranking policy was last shown, one line each.
+    pub fn gate_saw(&self) -> Vec<String> {
+        self.gate_seat.candidates.lock().unwrap().clone()
+    }
+
     /// One request through the door as the keyed caller: its status, head and body.
     pub async fn send(
         &self,
@@ -456,12 +501,16 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     let pooled = opts.pooled.unwrap_or(opts.members.len());
     for (i, (_, weight)) in opts.members.iter().enumerate().take(pooled) {
         yaml.push_str(&format!("      - model: m{i}\n        weight: {weight}\n"));
+        if opts.described {
+            yaml.push_str(&format!("        tier: t{i}\n        tags: [g{i}]\n"));
+        }
     }
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("a deployment");
     let mut defs_yaml = String::new();
     for (i, (port, _)) in opts.members.iter().enumerate() {
         defs_yaml.push_str(&format!(
-            "oai{i}:\n  protocol: openai\n  base_url: 'http://127.0.0.1:{port}'\n"
+            "oai{i}:\n  protocol: {}\n  base_url: 'http://127.0.0.1:{port}'\n",
+            opts.dialect.unwrap_or("openai")
         ));
     }
     let defs: HashMap<String, busbar_kernel::config::ProviderDef> =
@@ -544,7 +593,10 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     for (i, (port, _)) in opts.members.iter().enumerate() {
         builder = builder.lane(busbar_kernel::test_support::LaneSpec::new(
             &format!("m{i}"),
-            "openai",
+            match opts.dialect {
+                Some("anthropic") => "anthropic",
+                _ => "openai",
+            },
             &format!("http://127.0.0.1:{port}"),
         ));
     }
@@ -581,6 +633,8 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     let request_tap = Arc::new(SeatProbe::new("request-tap", &log));
     let candidate_tap = Arc::new(SeatProbe::new("candidate-tap", &log));
     let mut gate_probe = SeatProbe::new("gate", &log);
+    // The pool's ranking policy, which is shown the candidates (an abstaining ranker).
+    let ranker = Arc::new(SeatProbe::new("ranker", &log));
     if opts.reject_at_gate {
         gate_probe.reject = Some((451, "the gate says no"));
     }
@@ -594,6 +648,18 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         a.tap_hooks_candidate =
             vec![(std::time::Duration::from_millis(500), false, ct, Vec::new())];
         a.global_gates = vec![(0u16, gate(Arc::new(gate_probe)))];
+        if opts.described {
+            let r: Arc<dyn RoutingPolicy> = ranker.clone();
+            a.pool_orderings.insert("p".to_string(), gate(r));
+            use busbar_contract::Signal;
+            for s in [
+                Signal::CandidateBreakerState,
+                Signal::CandidateErrorRate,
+                Signal::CandidateLatencyP95Ms,
+            ] {
+                a.requested_signals.insert(s);
+            }
+        }
     }
 
     // THE COMPOSITION, as production seals it: the door opened with the deployment's sections,
@@ -666,6 +732,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         log,
         request_tap,
         candidate_tap,
+        gate_seat: ranker,
         read,
     }
 }

@@ -100,6 +100,12 @@ impl MemberPermits {
         }
     }
 
+    /// The free slots of `destination`; `None` for a member with no limit.
+    #[must_use]
+    pub fn available(&self, destination: DestinationId) -> Option<usize> {
+        self.limits.get(&destination).map(|s| s.available_permits())
+    }
+
     fn slot(destination: DestinationId, held: Option<OwnedSemaphorePermit>) -> Permit {
         Permit::new(Box::new(Slot {
             destination,

@@ -87,8 +87,8 @@ use tokio::sync::{watch, Notify};
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
 pub use far_end::{
-    AuthBinding, Egress, EgressFarEnd, MemberFacts, MemberRoute, ResponseKeep, Ride, UnitRoute,
-    DEFAULT_ERROR_BODY_MAX,
+    AuthBinding, Egress, EgressFarEnd, MemberFacts, MemberRoute, MemberSignals, MemberStanding,
+    ResponseKeep, Ride, UnitRoute, DEFAULT_ERROR_BODY_MAX,
 };
 pub use hooks::{
     Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, EngineCaller,
@@ -252,10 +252,11 @@ pub(crate) fn audit_row_to(
     value: &[u8],
     principal: Option<&PrincipalId>,
 ) -> Result<(), ()> {
-    use busbar_contract::abi::plane::{AUDIT_APPLIED, AUDIT_REJECTED};
+    use busbar_contract::abi::plane::{AUDIT_APPLIED, AUDIT_DEGRADED, AUDIT_REJECTED};
     let outcome = match outcome {
         AUDIT_APPLIED => busbar_contract::vocab::OUTCOME_APPLIED,
         AUDIT_REJECTED => busbar_contract::vocab::OUTCOME_REJECTED,
+        AUDIT_DEGRADED => busbar_contract::vocab::OUTCOME_DEGRADED,
         _ => return Err(()),
     };
     let action = std::str::from_utf8(key).map_err(|_| ())?;

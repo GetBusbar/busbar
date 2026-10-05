@@ -149,6 +149,11 @@ pub struct Piece<'a> {
     pub fault: Option<Fault>,
     /// The caller's answer is complete.
     pub done: bool,
+    /// The wire paths of a delivered TRANSLATE answer that did not cross to the caller's dialect
+    /// (design F3 "Drops"), already warned: the door reports one `egress.control_unrepresentable`
+    /// audit row per path (`<path> from <dialect>`), 1.5.5's row. Empty on a relay of the caller's
+    /// own dialect and on every end that delivers nothing.
+    pub dropped: Vec<String>,
 }
 
 enum State {
@@ -227,6 +232,7 @@ fn answered<'a>(r: Rendered, units: Units, verdict: Verdict, fault: Option<Fault
         verdict,
         fault,
         done: true,
+        dropped: Vec::new(),
     }
 }
 
@@ -371,6 +377,7 @@ impl Reply {
                         units: units.clone(),
                         fault: None,
                         done: false,
+                        dropped: Vec::new(),
                     };
                 }
                 let end = relay.end();
@@ -393,6 +400,7 @@ impl Reply {
                     },
                     fault,
                     done: true,
+                    dropped: end.dropped,
                 }
             }
         }
@@ -427,6 +435,7 @@ impl Reply {
                     verdict: Verdict::Hard,
                     fault: Some(Fault::Transient(cut.reason)),
                     done: true,
+                    dropped: Vec::new(),
                 }
             }
         }
@@ -505,6 +514,10 @@ fn whole_piece<'a>(
         wire::token_usage_of(&w.usage).as_ref(),
         wire::open_units_of(&w.usage),
     );
+    let dropped = match w.end {
+        whole::WholeEnd::Delivered => std::mem::take(&mut w.dropped),
+        _ => Vec::new(),
+    };
     let (verdict, fault) = match w.end {
         whole::WholeEnd::Delivered => (Verdict::Ok, None),
         whole::WholeEnd::FailedGeneration => (
@@ -517,5 +530,8 @@ fn whole_piece<'a>(
         whole::WholeEnd::Cut => (Verdict::Hard, Some(Fault::Transient("transport"))),
         whole::WholeEnd::IngressUnsupported | whole::WholeEnd::OverCap => (Verdict::Hard, None),
     };
-    answered(w.answer, units, verdict, fault)
+    Piece {
+        dropped,
+        ..answered(w.answer, units, verdict, fault)
+    }
 }

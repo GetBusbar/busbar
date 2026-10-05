@@ -421,6 +421,9 @@ pub struct DoorLive {
     /// The health-probe service's target for this generation (K7), when the plane answers probes
     /// and a member probes: held here, so a replaced generation's probers exit at their next tick.
     pub probes: Option<Arc<busbar_kernel::plane_driver::PlaneProbes>>,
+    /// What the ranking hooks are shown of the model-serving pools' members beside the walk: their
+    /// meta and their live standing (`None` for a plane whose egress is the generic walk).
+    pub shown: Option<crate::root::model_egress::ModelShown>,
 }
 
 /// What a door plane's egress is re-sealed over on a config apply: the providers the deployment
@@ -556,6 +559,7 @@ impl DoorApply {
             egress,
             facts: self.facts.clone(),
             probes: None,
+            shown: None,
         })
     }
 }
@@ -1162,7 +1166,8 @@ fn seal_live(
                     &routes,
                     Arc::clone(&egress.journal),
                     egress.reach.stream_ceiling_secs,
-                ),
+                )
+                .map(|(e, shown)| (e, Some(shown))),
                 _ => crate::root::door_steps::compose_egress(
                     &facts,
                     &pools,
@@ -1171,11 +1176,17 @@ fn seal_live(
                     &routes,
                     Arc::clone(&egress.journal),
                     egress.reach.stream_ceiling_secs,
-                ),
+                )
+                .map(|e| (e, None)),
             };
-            Some(Arc::new(sealed.map_err(|e| format!("{instance}: {e}"))?))
+            let (sealed, shown) = sealed.map_err(|e| format!("{instance}: {e}"))?;
+            Some((Arc::new(sealed), shown))
         }
         None => None,
+    };
+    let (egress, shown) = match egress {
+        Some((e, shown)) => (Some(e), shown),
+        None => (None, None),
     };
     Ok(DoorLive {
         section: section.clone(),
@@ -1184,6 +1195,7 @@ fn seal_live(
         egress,
         facts,
         probes: None,
+        shown,
     })
 }
 
@@ -2188,6 +2200,7 @@ impl DataRoutes {
         );
         let far = DoorFar {
             egress: live.egress.as_deref(),
+            shown: live.shown.as_ref(),
             steps: &steps,
             unit,
             credential: door.credential,
@@ -2438,6 +2451,7 @@ impl DataRoutes {
         }
         let far = DoorFar {
             egress: live.egress.as_deref(),
+            shown: live.shown.as_ref(),
             steps: &steps,
             unit,
             credential,
@@ -2577,6 +2591,8 @@ fn report_of(
 #[cfg(linked_axis_node)]
 struct DoorFar<'d, 's> {
     egress: Option<&'d Egress>,
+    /// What the hooks are shown of the members beside the walk.
+    shown: Option<&'d crate::root::model_egress::ModelShown>,
     steps: &'d DoorSteps<'s>,
     unit: busbar_contract::UnitKey,
     /// The caller's verified credential, lent to the walk for a passthrough member alone.
@@ -2591,13 +2607,22 @@ impl<'d> DoorFar<'d, '_> {
             .get_or_init(|| {
                 let egress = self.egress?;
                 let routed = self.steps.routed()?;
-                Some(egress.unit(UnitRoute {
+                let pool = egress_pool(self.steps.plane(), &routed);
+                let described = self.shown.and_then(|s| s.described.get(&pool).cloned());
+                let mut far = egress.unit(UnitRoute {
                     unit: self.unit,
-                    pool: egress_pool(self.steps.plane(), &routed),
+                    pool,
                     caller_credential: self.credential.clone(),
                     once: self.steps.once(),
                     ..UnitRoute::default()
-                }))
+                });
+                if let Some(described) = described {
+                    far = far.described(described);
+                }
+                if let Some(shown) = self.shown {
+                    far = far.signals(Arc::clone(&shown.signals));
+                }
+                Some(far)
             })
             .as_ref()
     }

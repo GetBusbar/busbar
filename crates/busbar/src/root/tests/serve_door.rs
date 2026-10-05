@@ -861,3 +861,131 @@ async fn the_pools_doors_catalogue_shows_a_restricted_key_only_what_it_reaches()
         "the reachable pool and its member, nothing else"
     );
 }
+
+/// An anthropic message whose usage carries a member the openai caller's dialect has no form for.
+#[cfg(linked_fold_on_driver)]
+const ANTHROPIC_ANSWER: &str = r#"{"id":"msg_1","type":"message","role":"assistant","model":"m0","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0}}}"#;
+
+/// THE DROPPED-CONTROLS AUDIT ROW ON THE DOOR (ARCHITECT, Q128 gap): a TRANSLATE attempt that
+/// cannot carry a control the caller set writes 1.5.5's `egress.control_unrepresentable` row,
+/// outcome `degraded`, `<control> on <dialect>`; an answer member the caller's dialect has no form
+/// for writes `<path> from <dialect>`. Both reach the kernel's audit chain through the plane's
+/// `RECORD_AUDIT` write. RED arm: a request that sets nothing the far dialect drops writes no row.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_audits_a_control_the_far_dialect_cannot_carry() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-dropped-controls";
+    let _published = Withdrawn(instance);
+    let far = far_end_answering(200, ANTHROPIC_ANSWER).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            dialect: Some("anthropic"),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let rows = |resource: &str| {
+        busbar_kernel::audit::auditlog::AUDIT_LOG
+            .list_filtered(
+                0,
+                1000,
+                Some("egress.control_unrepresentable"),
+                Some(resource),
+            )
+            .into_iter()
+            .filter(|e| e.principal == rig.key_id && e.outcome == "degraded")
+            .count()
+    };
+    let (status, _, _) = rig
+        .send(
+            "POST",
+            "/v1/chat/completions",
+            Some(serde_json::json!({"model": "p", "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}]})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        rows("logit_bias on anthropic"),
+        0,
+        "nothing set, nothing dropped"
+    );
+    let (status, _, _) = rig
+        .send(
+            "POST",
+            "/v1/chat/completions",
+            Some(serde_json::json!({"model": "p", "max_tokens": 16,
+                "logit_bias": {"50256": -100},
+                "messages": [{"role": "user", "content": "hi"}]})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        rows("logit_bias on anthropic"),
+        1,
+        "the dropped control, one row"
+    );
+    assert!(
+        rows("usage.output_tokens_details from anthropic") >= 1,
+        "the answer member the caller's dialect cannot carry"
+    );
+}
+
+/// THE RANKING SIGNALS ON THE DOOR (ARCHITECT, Q128 gap): the hooks see each candidate as 1.5.5's
+/// projection fed it: the pool member's tier and tags, the lane's latency signal once a sample is
+/// recorded, its free concurrency, its remaining budget, and, where the generation declares them,
+/// its breaker state, error rate and p95 latency in the routing pool. RED before: every one of them
+/// was empty on the door path.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_doors_hooks_see_each_candidates_standing() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-signals";
+    let _published = Withdrawn(instance);
+    let (a, b) = (
+        far_end_answering(200, SERVED_BY_TWIN).await,
+        far_end_answering(200, SERVED_BY_TWIN).await,
+    );
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(a.port, 1), (b.port, 1)],
+            described: true,
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200);
+    let first = rig.gate_saw();
+    assert_eq!(first.len(), 2, "{first:?}");
+    assert!(
+        first[0].starts_with("m0 tier=Some(\"t0\") tags=[\"g0\"] latency=false avail=true"),
+        "{first:?}"
+    );
+    assert!(
+        first[0].contains("CandidateBreakerState=closed"),
+        "the declared breaker state: {first:?}"
+    );
+    assert!(
+        !first[0].contains("CandidateLatencyP95Ms"),
+        "no p95 before a sample: {first:?}"
+    );
+    assert_eq!(rig.chat().await.0, 200);
+    let second = rig.gate_saw();
+    let second: Vec<String> = second
+        .into_iter()
+        .filter(|c| c.contains("latency=true"))
+        .collect();
+    assert!(
+        !second.is_empty(),
+        "the served attempt's latency sample: {second:?}"
+    );
+    assert!(
+        second[0].contains("CandidateLatencyP95Ms=true")
+            && second[0].contains("CandidateErrorRate=true"),
+        "the p95 reservoir and the error rate, once fed: {second:?}"
+    );
+}

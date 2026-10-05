@@ -151,7 +151,7 @@ fn records(buf: &[RecordWrite], n: u64, arena: u64, b: &Bounds) -> Result<(), Fa
                 code(
                     u64::from(r.kind),
                     u64::from(super::AUDIT_APPLIED),
-                    u64::from(super::AUDIT_REJECTED),
+                    u64::from(super::AUDIT_DEGRADED),
                     "record.audit_outcome",
                 )?;
                 if r.key.len == 0 {

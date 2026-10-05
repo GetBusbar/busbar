@@ -574,6 +574,10 @@ pub const AUDIT_APPLIED: u32 = 1;
 /// [`ServeOut::audit`]: the request was rejected after it was judged; the row's outcome is
 /// `rejected`.
 pub const AUDIT_REJECTED: u32 = 2;
+/// A [`RECORD_AUDIT`] write's outcome only (never [`ServeOut::audit`]): the unit was served with
+/// something the caller asked for left out (a control the far end's form cannot carry); the row's
+/// outcome is `degraded`, the 1.5.5 row's.
+pub const AUDIT_DEGRADED: u32 = 3;
 
 /// [`RecordChain::framing`]: each field of the record's digest is length-prefixed.
 pub const CHAIN_LENGTH_PREFIXED: u32 = 1;

@@ -69,6 +69,7 @@ use busbar_contract::abi::plane::{
     VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
+use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, RECORD_AUDIT};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
@@ -426,7 +427,13 @@ struct Answer {
     verdict: u32,
     /// The caller's reply is complete.
     done: bool,
+    /// The unit's audit rows, `(action, resource)`, each written as a degraded `RECORD_AUDIT`:
+    /// what a TRANSLATE attempt could not carry (1.5.5's `egress.control_unrepresentable` rows).
+    audits: Vec<(Vec<u8>, Vec<u8>)>,
 }
+
+/// The action of a dropped control's audit row (1.5.5's).
+const DROPPED_CONTROL: &[u8] = b"egress.control_unrepresentable";
 
 impl Answer {
     /// The walk ends here: nothing for the far end, nothing more for the caller.
@@ -775,6 +782,9 @@ fn attempt(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
     };
     match built {
         Ok(request) => {
+            // A control the far end's dialect cannot carry, one degraded row each (`<control> on
+            // <dialect>`, the row 1.5.5 wrote as it translated the request).
+            let egress = unit.shaping.lane(&unit.member).map_or("", |l| l.dialect);
             let answer = Answer {
                 to_far_end: true,
                 request: Some((
@@ -782,6 +792,16 @@ fn attempt(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
                     request.target.as_bytes().to_vec(),
                 )),
                 fields: owned(&request.fields),
+                audits: request
+                    .dropped_controls
+                    .iter()
+                    .map(|c| {
+                        (
+                            DROPPED_CONTROL.to_vec(),
+                            format!("{c} on {egress}").into_bytes(),
+                        )
+                    })
+                    .collect(),
                 ..Answer::default()
             };
             unit.request = Some(request);
@@ -831,8 +851,21 @@ fn far_end(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
     let Some(reply) = unit.reply.as_mut() else {
         return Answer::hard();
     };
-    let fed = reply.feed(&ctx, piece.bytes, piece.last, at(piece.clock, unit.started));
-    to_caller(fed)
+    let mut fed = reply.feed(&ctx, piece.bytes, piece.last, at(piece.clock, unit.started));
+    // An answer member the caller's dialect has no form for, one degraded row each (`<path> from
+    // <dialect>`, the row 1.5.5 wrote as it delivered the translated answer).
+    let dropped = std::mem::take(&mut fed.dropped);
+    let mut answer = to_caller(fed);
+    answer.audits = dropped
+        .iter()
+        .map(|p| {
+            (
+                DROPPED_CONTROL.to_vec(),
+                format!("{p} from {}", lane.dialect).into_bytes(),
+            )
+        })
+        .collect();
+    answer
 }
 
 /// The plane's answer to one piece.
@@ -862,12 +895,16 @@ fn settle(
     out: &mut Out<'_, OnPieceOut>,
     fields: &HostBuf<'_, OutField>,
     units: &HostBuf<'_, UnitCount>,
+    records: &HostBuf<'_, RecordWrite>,
     arena: &HostBuf<'_, u8>,
 ) -> bool {
-    let short = !(fields.fits() && units.fits() && arena.fits());
+    let short = !(fields.fits() && units.fits() && records.fits() && arena.fits());
     let (fw, fnd) = fields.settle(short);
     let (uw, und) = units.settle(short);
+    let (rw, rnd) = records.settle(short);
     let (aw, and) = arena.settle(short);
+    out.set(|o| &o.records_written, rw as u32);
+    out.set(|o| &o.records_needed, rnd as u32);
     out.set(|o| &o.fields_written, fw as u32);
     out.set(|o| &o.fields_needed, fnd as u32);
     out.set(|o| &o.units_written, uw as u32);
@@ -889,8 +926,12 @@ fn deliver(
         return (Outcome::Fault, false);
     };
     if !p.opened {
-        let (mut fields, mut units, mut arena) =
-            (input.fields_buf(), input.units_buf(), input.arena_buf());
+        let (mut fields, mut units, mut records, mut arena) = (
+            input.fields_buf(),
+            input.units_buf(),
+            input.records_buf(),
+            input.arena_buf(),
+        );
         let request = p
             .answer
             .request
@@ -903,7 +944,15 @@ fn deliver(
             });
         }
         units.extend(&p.answer.units);
-        if settle(out, &fields, &units, &arena) {
+        for (action, resource) in &p.answer.audits {
+            records.push(RecordWrite {
+                kind: AUDIT_DEGRADED,
+                op: RECORD_AUDIT,
+                key: arena.span(action),
+                value: arena.span(resource),
+            });
+        }
+        if settle(out, &fields, &units, &records, &arena) {
             return (Outcome::Failed, false);
         }
         if let Some((verb, target)) = request {

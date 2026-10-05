@@ -319,6 +319,7 @@ impl Egress {
             }),
             probe_of: None,
             described: None,
+            signals: None,
             constraint: Mutex::new(None),
         }
     }
@@ -353,6 +354,7 @@ impl Egress {
             }),
             probe_of: Some(destination),
             described: None,
+            signals: None,
             constraint: Mutex::new(None),
         })
     }
@@ -410,8 +412,37 @@ pub struct EgressFarEnd<'e> {
     /// What the hooks are shown of each member beyond the walk's own facts, by member name: the
     /// operator's tags, tier and cost (the plane's section states them).
     described: Option<Arc<HashMap<String, MemberFacts>>>,
+    /// Each member's live standing as the ranking hooks read it ([`MemberSignals`]).
+    signals: Option<Arc<dyn MemberSignals>>,
     /// The hooks' constraint on the walk, once the request stage set one.
     constraint: Mutex<Option<Constraint>>,
+}
+
+/// ONE MEMBER'S LIVE STANDING, as the ranking hooks read it (1.5.5 fed every candidate these from
+/// the lane store, and the ones a deployment declares as catalog signals): its latency signal, its
+/// free concurrency, its remaining lifetime budget, and its breaker state, recent error rate and
+/// p95 latency in the routing pool.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct MemberStanding {
+    /// The latency signal (milliseconds), once a sample is recorded.
+    pub latency_ms: Option<f64>,
+    /// The free concurrency.
+    pub available_concurrency: usize,
+    /// The remaining lifetime request budget; `None` = unlimited.
+    pub budget_remaining: Option<i64>,
+    /// The breaker state in the pool (`closed` | `open` | `half_open`).
+    pub breaker_state: Option<&'static str>,
+    /// The recent error rate in the pool, once an outcome is in its window.
+    pub error_rate: Option<f64>,
+    /// The p95 latency (whole milliseconds), once a sample is held.
+    pub latency_p95_ms: Option<u64>,
+}
+
+/// WHERE A MEMBER'S STANDING IS READ: the composition root's lane store, by the routing pool and
+/// the member's destination.
+pub trait MemberSignals: Send + Sync {
+    /// `destination`'s standing in `pool`.
+    fn standing(&self, pool: &str, destination: DestinationId) -> MemberStanding;
 }
 
 /// What the operator states of one member for the hooks: its tags, its tier and its cost.
@@ -432,6 +463,13 @@ impl EgressFarEnd<'_> {
     #[must_use]
     pub fn described(mut self, facts: Arc<HashMap<String, MemberFacts>>) -> Self {
         self.described = Some(facts);
+        self
+    }
+
+    /// Where each member's live standing is read for the hooks.
+    #[must_use]
+    pub fn signals(mut self, signals: Arc<dyn MemberSignals>) -> Self {
+        self.signals = Some(signals);
         self
     }
 
@@ -1419,6 +1457,11 @@ impl FarEnd for EgressFarEnd<'_> {
                 .enumerate()
                 .map(|(idx, m)| {
                     let facts = self.facts_of(m);
+                    let standing = self
+                        .signals
+                        .as_ref()
+                        .map(|s| s.standing(&pool.name, m.destination))
+                        .unwrap_or_default();
                     CandidateFacts {
                         idx,
                         model: facts
@@ -1435,7 +1478,12 @@ impl FarEnd for EgressFarEnd<'_> {
                         tier: facts.and_then(|f| f.tier.clone()),
                         cost_per_mtok: facts.and_then(|f| f.cost_per_mtok),
                         tags: facts.map(|f| f.tags.clone()).unwrap_or_default(),
-                        ..CandidateFacts::default()
+                        latency_ms: standing.latency_ms,
+                        available_concurrency: standing.available_concurrency,
+                        budget_remaining: standing.budget_remaining,
+                        breaker_state: standing.breaker_state,
+                        error_rate: standing.error_rate,
+                        latency_p95_ms: standing.latency_p95_ms,
                     }
                 })
                 .collect(),
