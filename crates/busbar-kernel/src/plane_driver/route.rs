@@ -27,8 +27,8 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span}
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, CLAIM_PROBE, EMIT_DONE,
-    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS,
-    PIECE_LAST, PIECE_OUT_TEXT, VERDICT_RETRY,
+    EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, RECORD_AUDIT, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, ReasonCode, Route};
@@ -122,6 +122,12 @@ pub struct OutboundRequest {
     pub fields: HeadFields,
     /// The body.
     pub body: Vec<u8>,
+    /// The need the request rides, as the plane named it (`OnPieceOut::need`: its declared index
+    /// plus one); `0` = the member's own.
+    pub need: u32,
+    /// The plane marked the request's message text (`PIECE_OUT_TEXT` on a far-bound answer): a far
+    /// end whose wire tells text from binary is written it as text (ARCHITECT Q-L5B-WS-DIAL).
+    pub text: bool,
 }
 
 /// THE FAR END, as the pump reaches it: the kernel's egress walk and the connector stand behind it
@@ -176,6 +182,17 @@ pub trait FarEnd: Sync {
     fn constrain(&self, token: &Pass<Route>, constraint: super::hooks::Constraint) {
         let _ = (token, constraint);
     }
+    /// A HELD FAR END's next frame (a duplex session's: dialled once, by the [`FarEnd::send`] of its
+    /// first turn, and held for the session): write `request`'s body, as one message, into the
+    /// attempt that send opened and its far end answered. The verb, target and fields were the
+    /// open's. `false` when it could not be written (no attempt is held, its answer has ended, or
+    /// the far end went away). May await the far end taking the bytes; the session's own waits
+    /// bound it.
+    fn write<'a>(
+        &'a self,
+        token: &'a Pass<Route>,
+        request: OutboundRequest,
+    ) -> impl Future<Output = bool> + Send + 'a;
 }
 
 /// THE CALLER'S SIDE of the unit: the reply head, then the reply bytes.
@@ -189,6 +206,33 @@ pub trait CallerEnd: Sync {
     /// with no text/binary distinction writes them as any bytes.
     fn write_text<'a>(&'a self, bytes: &'a [u8]) -> impl Future<Output = bool> + Send + 'a {
         self.write(bytes)
+    }
+    /// Write `bytes` as `write`/`write_text` do, `message_end` saying they END one message
+    /// (`EMIT_MESSAGE_END`: a carrier that frames messages frames one on this boundary, however
+    /// many writes its bytes spanned); `bytes` may be empty on a boundary alone. The default has
+    /// no messages: it writes the bytes and ignores the boundary.
+    fn write_piece<'a>(
+        &'a self,
+        bytes: &'a [u8],
+        text: bool,
+        message_end: bool,
+    ) -> impl Future<Output = bool> + Send + 'a {
+        let _ = message_end;
+        async move {
+            if bytes.is_empty() {
+                true
+            } else if text {
+                self.write_text(bytes).await
+            } else {
+                self.write(bytes).await
+            }
+        }
+    }
+    /// The reply's FINAL status (`EMIT_FINAL_STATUS` on its closing answer), in the numbering the
+    /// claim's transport declares, with its message and details bytes: a carrier that reports a
+    /// status after the reply's bytes reports this one. The default reports nothing.
+    fn final_status(&self, status: u32, message: &[u8], details: &[u8]) {
+        let _ = (status, message, details);
     }
 }
 
@@ -313,6 +357,20 @@ impl Piece {
     }
 }
 
+/// THE OPERATOR'S NAME a plane is lent for the member (and pool) its attempt was picked from
+/// (`OnPieceIn::member`, `OnPieceIn::pool`: "the operator's name"): the kernel keys a door plane's
+/// walk state by (plane key, entry), written `<plane key>`[`PLANE_LANE_SEP`]`<entry>` (ARCHITECT
+/// Q-FL3), and the plane is lent the entry alone, the name its own section writes. A name with no
+/// plane key (a model plane's lane) is lent as it is.
+///
+/// [`PLANE_LANE_SEP`]: crate::governance::PLANE_LANE_SEP
+fn operator_name(key: &[u8]) -> &[u8] {
+    let sep = crate::governance::PLANE_LANE_SEP as u8;
+    key.iter()
+        .position(|b| *b == sep)
+        .map_or(key, |at| &key[at + 1..])
+}
+
 /// An `on_piece` frame of `unit` over `bufs`. Built and handed to the dispatcher in one breath, so
 /// no raw pointer is ever held across an await.
 fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) {
@@ -324,7 +382,7 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
     let (member, pool) = if p.attempt_no == 0 {
         (&[][..], &[][..])
     } else {
-        (&bufs.member[..], &bufs.pool[..])
+        (operator_name(&bufs.member), operator_name(&bufs.pool))
     };
     let str_of = |b: &[u8]| {
         if b.is_empty() {
@@ -415,10 +473,15 @@ struct Answer {
     verdict: u32,
     verb: Span,
     target: Span,
+    need: u32,
+    lane: Span,
     units_needed: u32,
     records_needed: u32,
     fields_needed: u32,
     arena_needed: u64,
+    final_status: u32,
+    final_message: Span,
+    final_details: Span,
 }
 
 impl Answer {
@@ -434,10 +497,15 @@ impl Answer {
             verdict: o.verdict,
             verb: o.verb,
             target: o.target,
+            need: o.need,
+            lane: o.lane,
             units_needed: o.units_needed,
             records_needed: o.records_needed,
             fields_needed: o.fields_needed,
             arena_needed: o.arena_needed,
+            final_status: o.final_status,
+            final_message: o.final_message,
+            final_details: o.final_details,
         }
     }
 }
@@ -560,17 +628,26 @@ impl<'u> Pumping<'u> {
     /// completes only once the store took every one ([`RecordWrite`]: "a write is DURABLE before
     /// the op that carried it completes ... a write the store refuses fails the op"). An empty
     /// value is a tombstone, written like any value.
+    ///
+    /// A [`RECORD_AUDIT`] write is the unit's audit row, not a record of the plane's: it is folded
+    /// into the kernel's own audit chain ([`super::AuditSink`]) under the unit's principal, in the
+    /// plane's order, and needs no record path. An action or resource that is not UTF-8 fails the
+    /// unit (a plane fault, never a row the kernel guesses at).
     async fn write_records(&mut self, written: u32) -> Result<(), End> {
         let n = (written as usize).min(self.bufs.records.len());
         if n == 0 {
             return Ok(());
         }
         let refused = || End::Failed(ReasonCode::DurabilityUnavailable);
-        let Some((services, caller)) = self.driver.records.as_ref() else {
-            return Err(refused());
-        };
         let mut acks = Vec::with_capacity(n);
         for w in &self.bufs.records[..n] {
+            if w.op == RECORD_AUDIT {
+                self.audit(w)?;
+                continue;
+            }
+            let Some((services, caller)) = self.driver.records.as_ref() else {
+                return Err(refused());
+            };
             let (tx, rx) = tokio::sync::oneshot::channel();
             let kind = services.record_kind(caller, w.kind);
             let value = RecordBytes::new(self.bufs.arena(w.value).to_vec());
@@ -593,6 +670,18 @@ impl<'u> Pumping<'u> {
             }
         }
         Ok(())
+    }
+
+    /// THE UNIT'S AUDIT ROW (SEAM-L(k)): a [`RECORD_AUDIT`] write's action (`key`), resource
+    /// (`value`) and outcome (`kind`), written on the kernel's audit chain under the principal the
+    /// kernel verified for the unit (the plane never sees it; an unverified unit's is anonymous).
+    /// The kernel names no record kind: the row's words are the plane's.
+    fn audit(&self, w: &RecordWrite) -> Result<(), End> {
+        let principal = self.lock().principal.clone();
+        let (key, value) = (self.bufs.arena(w.key), self.bufs.arena(w.value));
+        (self.driver)
+            .audit_row(w.kind, key, value, principal.as_ref())
+            .map_err(|()| End::Failed(ReasonCode::PlanePanic))
     }
 
     /// Lend the unit's own facts on every piece it pushes: the claim it arrived on, the dialect
@@ -680,6 +769,34 @@ async fn guarded_run<T>(
     guarded(&mut run.stop, left, fut).await
 }
 
+/// [`guarded_run`], and for a session's turn leg also the session's end ([`session::Turn::halted`]):
+/// what `fut` answered, or how the walk ends instead. A halt is seen only between crossings, never
+/// under one.
+async fn turn_wait<T>(
+    run: &mut Pumping<'_>,
+    turn: Option<&session::Turn<'_>>,
+    fut: impl Future<Output = T>,
+) -> Result<T, End> {
+    let halted = async {
+        match turn {
+            Some(t) => t.halted().await,
+            None => std::future::pending().await,
+        }
+    };
+    let raced = async {
+        tokio::select! {
+            biased;
+            halt = halted => Err(halt),
+            v = fut => Ok(v),
+        }
+    };
+    match guarded_run(run, raced).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(halt)) => Err(halt.end()),
+        Err(cause) => Err(End::Cancel(cause, None)),
+    }
+}
+
 /// A future that finishes once `left` has passed; never, for `None`.
 async fn until(left: Option<Duration>) {
     match left {
@@ -707,7 +824,10 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     /// S3: every attempt of the unit, until its reply is complete, it fails, or the driver cancels.
     /// A session's turn leg ([`session::Turn`]) is the same walk: each attempt picks a member
     /// inside the destination set sealed at the open (a member outside it is passed over, never
-    /// crossed), pushes only the ATTEMPT piece, and sends the turn's request.
+    /// crossed), pushes only the ATTEMPT piece, and sends the turn's request: the session's ONE dial.
+    /// Its far end is then held: the far pieces reach the far side's ticket as they arrive, until
+    /// the far end's answer ends or the session does ([`session::Turn::halted`]), and the far end's
+    /// first answer tells the session's later turns they may be written into it.
     pub(crate) async fn attempts(
         &self,
         run: &mut Pumping<'_>,
@@ -718,7 +838,11 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         let mut failed: Option<&'static str> = None;
         'attempt: loop {
             attempt_no += 1;
-            let picked = guarded_run(run, self.far.member(run.token, attempt_no)).await;
+            if let Some(t) = turn {
+                // A new attempt holds nothing yet: the session's later turns wait for its answer.
+                t.held.send_replace(false);
+            }
+            let picked = turn_wait(run, turn, self.far.member(run.token, attempt_no)).await;
             let ((member, pool), terminal) = match picked {
                 Ok(Pick::Member { name, .. }) if turn.is_some_and(|t| !t.within(&name)) => {
                     continue 'attempt;
@@ -748,7 +872,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     detail,
                 }) => return End::Exhausted(status, retry_after, detail),
                 Ok(Pick::Vetoed { status, text }) => return End::Vetoed(status, text),
-                Err(cause) => return End::Cancel(cause, None),
+                Err(end) => return end,
             };
             run.bufs.member.clear();
             run.bufs.member.extend_from_slice(member.as_bytes());
@@ -797,8 +921,11 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             let local = {
                 let mut toward = Toward::FarEnd(&mut request);
                 for piece in pieces {
-                    if let Step::End(end) = self.push(run, *piece, &mut toward).await {
-                        return end;
+                    match self.push(run, *piece, &mut toward).await {
+                        Step::End(end) => return end,
+                        // The plane declined this member: nothing was sent; the next one.
+                        Step::Retry if far_bound => continue 'attempt,
+                        _ => {}
                     }
                     if matches!(toward, Toward::Caller) {
                         break;
@@ -817,24 +944,24 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     None => End::Failed(ReasonCode::DestinationUnreachable),
                 };
             }
-            match guarded_run(run, self.far.send(run.token, request)).await {
+            match turn_wait(run, turn, self.far.send(run.token, request)).await {
                 Ok(true) => {}
                 // Not sent, so nothing reached the caller: fail over.
                 Ok(false) => {
                     failed = self.far.failure(run.token);
                     continue 'attempt;
                 }
-                Err(cause) => return End::Cancel(cause, None),
+                Err(end) => return end,
             }
             let mut first = true;
             loop {
-                let piece = match guarded_run(run, self.far.next(run.token)).await {
+                let piece = match turn_wait(run, turn, self.far.next(run.token)).await {
                     Ok(Some(piece)) => piece,
                     Ok(None) => FarPiece {
                         last: true,
                         ..FarPiece::default()
                     },
-                    Err(cause) => return End::Cancel(cause, None),
+                    Err(end) => return end,
                 };
                 // THE WALK'S OWN STATUS TABLE: an attempt it fails over never reaches the plane,
                 // while nothing has reached the caller.
@@ -848,6 +975,10 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     if first {
                         facts.facts.relayed = piece.relayed;
                     }
+                }
+                if let Some(t) = turn {
+                    // The far end answered this attempt: it is the session's held far end.
+                    t.held.send_replace(true);
                 }
                 run.bufs.input.clear();
                 run.bufs.input.extend_from_slice(&piece.bytes);
@@ -921,19 +1052,43 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 drop(st);
                 self.driver.money.checkpoint(run.ctx, units)
             };
+            // THE UNIT'S LEDGER LANE, where the answer names one (SEAM-L(j)): the money steps
+            // lane the unit by it from here. A lane that is not UTF-8 is a plane fault.
+            let lane = run.bufs.arena(out.lane);
+            if !lane.is_empty() && run.billed() {
+                match std::str::from_utf8(lane) {
+                    Ok(lane) => self.driver.money.laned(run.ctx, lane),
+                    Err(_) => return Step::End(End::Failed(ReasonCode::PlanePanic)),
+                }
+            }
             if let Err(end) = run.write_records(out.records_written).await {
                 return Step::End(end);
             }
             let bufs = &run.bufs;
             let emitted = &bufs.reply[..(out.emitted as usize).min(bufs.reply.len())];
-            // A LOCAL ANSWER: the plane answered a piece bound for the far end with its reply done
-            // and nothing for the far end. The unit is the plane's to finish: its bytes go to the
-            // caller, and no far end is sent to.
-            if matches!(toward, Toward::FarEnd(_))
-                && out.flags & EMIT_TO_FAR_END == 0
-                && out.flags & EMIT_DONE != 0
-            {
-                *toward = Toward::Caller;
+            // A DECLINED MEMBER: the plane answered a piece bound for the far end with nothing at all
+            // and the retry verdict (a member this unit may not reach, ARCHITECT round 4
+            // Q-L3B-SURFACES (h)): nothing was sent, so the walk moves to its next member.
+            if let Toward::FarEnd(_) = toward {
+                if out.verdict == VERDICT_RETRY
+                    && out.flags & (EMIT_TO_FAR_END | EMIT_DONE) == 0
+                    && out.reply_status == 0
+                    && emitted.is_empty()
+                {
+                    return Step::Retry;
+                }
+            }
+            // A LOCAL ANSWER: the plane answered a piece bound for the far end with nothing for the
+            // far end, and either its reply done or (with no member to send to) a reply begun: a
+            // window of a longer answer asks for more and may not say done (ARCHITECT B7). The unit
+            // is the plane's to finish: its bytes go to the caller, and no far end is sent to.
+            if let Toward::FarEnd(request) = toward {
+                let answered = out.flags & EMIT_DONE != 0
+                    || (request.member.is_empty()
+                        && (out.reply_status != 0 || !emitted.is_empty()));
+                if out.flags & EMIT_TO_FAR_END == 0 && answered {
+                    *toward = Toward::Caller;
+                }
             }
             let far = match toward {
                 Toward::FarEnd(_) => true,
@@ -946,6 +1101,12 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         if out.verb.len != 0 {
                             request.verb = bufs.arena(out.verb).to_vec();
                             request.target = bufs.arena(out.target).to_vec();
+                        }
+                        if out.need != 0 {
+                            request.need = out.need;
+                        }
+                        if out.flags & PIECE_OUT_TEXT != 0 {
+                            request.text = true;
                         }
                         request.fields.extend(bufs.fields_of(out.fields_written));
                         request.body.extend_from_slice(emitted);
@@ -995,18 +1156,16 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         // a streamed body still flowing).
                         self.response_tap(false, out.reply_status);
                     }
-                    if n != 0 {
-                        run.lock().facts.streamed = true;
+                    let message_end = out.flags & EMIT_MESSAGE_END != 0;
+                    if n != 0 || message_end {
+                        if n != 0 {
+                            run.lock().facts.streamed = true;
+                        }
                         let left = run.left();
                         let Pumping { stop, bufs, .. } = &mut *run;
                         let emitted = &bufs.reply[..n];
-                        let written = async {
-                            if out.flags & PIECE_OUT_TEXT != 0 {
-                                self.caller.write_text(emitted).await
-                            } else {
-                                self.caller.write(emitted).await
-                            }
-                        };
+                        let text = out.flags & PIECE_OUT_TEXT != 0;
+                        let written = self.caller.write_piece(emitted, text, message_end);
                         match guarded(stop, left, written).await {
                             Ok(true) => {}
                             Ok(false) => {
@@ -1019,6 +1178,16 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             if checkpoint == Checkpoint::Cut {
                 return Step::End(End::Cancel(ReasonCode::OverBudget, None));
+            }
+            // THE REPLY'S FINAL STATUS, on its closing answer, for a carrier that reports one after
+            // the reply's bytes.
+            if out.flags & EMIT_FINAL_STATUS != 0 && out.flags & EMIT_DONE != 0 {
+                let bufs = &run.bufs;
+                self.caller.final_status(
+                    out.final_status,
+                    bufs.arena(out.final_message),
+                    bufs.arena(out.final_details),
+                );
             }
             if out.more == 1 {
                 piece = piece.continuation();

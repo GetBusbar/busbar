@@ -264,10 +264,16 @@ async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
     })
     .expect("the guard");
     let connector = busbar_core_connector::process::build(
-        || crate::root::connector::entries(crate::LINKED_TRANSPORT_DOORS),
+        || {
+            crate::root::connector::entries(
+                crate::LINKED_TRANSPORT_DOORS,
+                &busbar_contract::transport::TransportSettings::default(),
+            )
+        },
         judge,
         &[],
         Arc::new(|_| {}),
+        busbar_core_connector::pool::PoolPosture::NONE,
     )
     .expect("the connector builds");
 
@@ -394,7 +400,12 @@ async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
     // THE COMPOSITION, as production seals it: the door opened with the deployment's sections,
     // its egress the model-serving walk over the kernel's lane cells, its hooks the kernel's stage.
     let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
-    let auths = OutboundAuths::new(Arc::clone(&dispatcher), crate::LINKED.auths, None, None);
+    let auths = Arc::new(OutboundAuths::new(
+        Arc::clone(&dispatcher),
+        crate::LINKED.auths,
+        None,
+        None,
+    ));
     let models = crate::root::model_egress::ModelServing {
         pools: model_pools,
         lanes: HashMap::from([("m0".to_string(), 0)]),
@@ -406,10 +417,11 @@ async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
     let reach = DoorReach {
         providers: &providers,
         secrets: &secrets,
-        auths: &auths,
+        auths,
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
         stream_ceiling_secs: 600,
         models: Some(&models),
+        upgrades: Vec::new(),
     };
     let stage = HookStage {
         host: {
@@ -424,6 +436,7 @@ async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
         &dispatcher,
         &composed_services(),
         &sections,
+        None,
         &plane_money,
         Some(&DoorEgress {
             reach: &reach,
@@ -435,7 +448,7 @@ async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
     let _ = std::fs::remove_file(&key_file);
     served.post = Some(Arc::clone(&post));
     let doors = door_routes(
-        Arc::new(served),
+        served,
         || CARD.pin(),
         &[],
         &busbar_kernel::base_data_core_lines(&app),

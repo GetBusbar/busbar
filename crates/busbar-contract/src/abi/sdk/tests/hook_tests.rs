@@ -80,6 +80,7 @@ fn request(prompt: bool, user: bool) -> RoutingRequest<'static> {
             user: Some("u@x".into()),
         }),
         signals: signals(),
+        session: None,
     }
 }
 
@@ -839,4 +840,34 @@ fn red_open_hands_the_plugin_its_settings_verbatim_an_empty_blob_stays_empty() {
     );
     closed::<OpenRecording>(empty);
     closed::<OpenRecording>(present);
+}
+
+/// THE SESSION CROSSES TO THE SDK (ARCHITECT RULING 2026-10-03, Q-FOLD-A2A-2-PROJECT-POOL session
+/// half): a hook reads the request's opaque session off its view, byte for byte, and the 1.5.5
+/// JSON projection a JSON hook is handed stays byte-identical (the session is never on that wire).
+#[test]
+fn a_hook_reads_the_session_and_the_1_5_5_projection_does_not_carry_it() {
+    let ctx = RoutingContext {
+        pool: "pool-a",
+        budget_remaining: None,
+        budget: &[],
+    };
+    let mut req = request(true, true);
+    let old = serde_json::to_string(
+        &serde_json::to_value(crate::hook_wire::build(OP_DECIDE, &req, &[], &ctx)).unwrap(),
+    )
+    .unwrap();
+    req.session = Some(b"ctx-1");
+    let frame = DecideFrame::first(DecideView::build(&req, &[], &ctx));
+    let input = frame.input();
+    let decoded = Decoded::of(lend(&input));
+    assert_eq!(decoded.session, Some(&b"ctx-1"[..]));
+    assert_eq!(
+        serde_json::to_string(&decoded.projection_json(OP_DECIDE)).unwrap(),
+        old
+    );
+
+    let frame = DecideFrame::first(DecideView::build(&request(true, true), &[], &ctx));
+    let input = frame.input();
+    assert_eq!(Decoded::of(lend(&input)).session, None);
 }

@@ -54,6 +54,7 @@ fn dial(target: &str) -> Dial {
         open_timeout: Duration::from_secs(5),
         opening: None,
         head_words: Default::default(),
+        anchors: None,
     }
 }
 
@@ -288,6 +289,100 @@ fn tls_and_the_protocol_offer_are_the_connectors() {
     });
 }
 
+/// THE OFFER IS THE FRAMER'S (THE DESIGN, connections): the protocols the handshake offers are
+/// what the entry's `locate` answered, most preferred first, and the registration's offer stands
+/// only for an entry that answers none. A far end agreeing `h2` or `http/1.1` agrees what the
+/// framer offered, whatever the registration says.
+#[test]
+fn the_handshake_offers_what_the_framer_located() {
+    crate::tls::install_crypto_provider();
+    let (ca, leaf, key) = localhost_cert();
+    worker().block_on(async move {
+        // (the framer's offer, the registration's, what a far end serving h2 and http/1.1 agrees)
+        type Case = (Option<&'static [u8]>, Vec<Vec<u8>>, Option<&'static [u8]>);
+        let cases: [Case; 4] = [
+            (Some(b"\x02h2\x08http/1.1"), Vec::new(), Some(b"h2")),
+            (
+                Some(b"\x08http/1.1"),
+                vec![b"h2".to_vec()],
+                Some(b"http/1.1"),
+            ),
+            (Some(b"\x02h2"), Vec::new(), Some(b"h2")),
+            (None, vec![b"http/1.1".to_vec()], Some(b"http/1.1")),
+        ];
+        for (offer, registered, agreed) in cases {
+            let mut server = rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![leaf.clone().into()],
+                    rustls_pki_types::PrivateKeyDer::try_from(key.clone()).unwrap(),
+                )
+                .unwrap();
+            server.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+            let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let far = l.local_addr().unwrap().to_string();
+            tokio::spawn(async move {
+                let (s, _) = l.accept().await.unwrap();
+                let mut s = acceptor.accept(s).await.unwrap();
+                let mut buf = [0_u8; 5];
+                s.read_exact(&mut buf).await.unwrap();
+                s.write_all(&buf).await.unwrap();
+                s.flush().await.unwrap();
+            });
+            let door = Arc::new(TestDoor::new(
+                "sec",
+                &["sec"],
+                &[],
+                Knobs {
+                    secure_name: Some("localhost"),
+                    offer,
+                    ..Knobs::default()
+                },
+            ));
+            let trust = busbar_contract::transport::trust::EgressTrust {
+                extra_anchors: vec![ca.clone()],
+                ..Default::default()
+            };
+            let mut d = dial(&far);
+            d.tls = Some(Arc::new(
+                crate::tls::client::build_client_config(&trust).expect("a usable client config"),
+            ));
+            d.alpn = registered;
+            d.opening = Some((Vec::new(), b"hello".to_vec()));
+            let mut c = Connection::dial(door, d).unwrap();
+            assert_eq!(gather(&mut c, 5).await, b"hello");
+            assert_eq!(
+                c.established().agreed_protocol.as_deref(),
+                agreed,
+                "the framer offered {offer:?}"
+            );
+        }
+    });
+}
+
+/// A framer's protocol offer that is not a protocol list is refused at `locate`, before any dial.
+#[test]
+fn a_malformed_protocol_offer_refuses_the_dial() {
+    worker().block_on(async {
+        let door = Arc::new(TestDoor::new(
+            "sec",
+            &["sec"],
+            &[],
+            Knobs {
+                secure_name: Some("localhost"),
+                offer: Some(b"\x05h2"),
+                ..Knobs::default()
+            },
+        ));
+        let got = Connection::dial(door, dial("127.0.0.1:9"));
+        assert!(
+            matches!(&got, Err(Failure::Refused(why)) if why.contains("protocol offer")),
+            "{got:?}"
+        );
+    });
+}
+
 /// RED: a far end that never reads cannot grow the host's memory. Writes are taken while the
 /// connection's buffer has room; once the socket stops taking bytes the buffer fills to
 /// [`WRITE_BUFFER_BYTES`] and a write is taken not at all (`Ok(0)`), and stays so.
@@ -336,5 +431,94 @@ fn a_far_end_that_never_reads_fills_the_buffer_and_writes_are_refused_room() {
             "and a full buffer keeps refusing room"
         );
         c.close();
+    });
+}
+
+/// WHY A CONNECTION FAILED, named by stage and the underlying error's own words (ARCHITECT
+/// Q-DEL-A2A-GUARD-WORDS): a closed port fails the socket's open with the socket's own error
+/// (the one this host's own connect to it answers); a far end whose certificate no anchor signs
+/// fails connection security with the TLS stack's own error; a handshake that never finishes is a
+/// deadline.
+#[test]
+fn a_failed_connection_names_its_stage_and_the_underlying_error() {
+    use busbar_contract::abi::host::conn::connector::{
+        CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_SECURITY,
+    };
+    crate::tls::install_crypto_provider();
+    let (_, leaf, key) = localhost_cert();
+    worker().block_on(async move {
+        // The socket's open.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let here = std::net::TcpStream::connect(closed)
+            .expect_err("nothing listens")
+            .to_string();
+        let door = Arc::new(TestDoor::identity("bytes"));
+        let mut c = Connection::dial(door, dial(&closed.to_string())).unwrap();
+        assert!(matches!(next(&mut c).await, Err(Failure::Refused(_))));
+        assert_eq!(
+            c.cause(),
+            Some(&ConnCause {
+                stage: CAUSE_CONNECT,
+                text: here
+            })
+        );
+        // Connection security.
+        let server = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![leaf.into()],
+                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+            )
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            while let Ok((s, _)) = l.accept().await {
+                let _ = acceptor.accept(s).await;
+            }
+        });
+        let secure = |far: &str| {
+            let mut d = dial(far);
+            d.tls = Some(Arc::new(
+                crate::tls::client::build_client_config(&Default::default())
+                    .expect("the default config"),
+            ));
+            d
+        };
+        let door = Arc::new(TestDoor::new(
+            "sec",
+            &["sec"],
+            &[],
+            Knobs {
+                secure_name: Some("localhost"),
+                ..Knobs::default()
+            },
+        ));
+        let mut c = Connection::dial(door.clone(), secure(&far)).unwrap();
+        assert!(matches!(next(&mut c).await, Err(Failure::Refused(_))));
+        let unknown = rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer);
+        assert_eq!(
+            c.cause(),
+            Some(&ConnCause {
+                stage: CAUSE_SECURITY,
+                text: unknown.to_string()
+            })
+        );
+        // A handshake that never finishes.
+        let mut d = secure(&silent().await);
+        d.open_timeout = Duration::from_millis(200);
+        let mut c = Connection::dial(door, d).unwrap();
+        assert_eq!(next(&mut c).await, Err(Failure::Timeout));
+        assert_eq!(
+            c.cause(),
+            Some(&ConnCause {
+                stage: CAUSE_DEADLINE,
+                text: String::new()
+            })
+        );
     });
 }

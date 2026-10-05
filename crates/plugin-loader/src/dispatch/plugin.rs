@@ -499,10 +499,33 @@ impl Instance {
             if !from_settings(need) {
                 continue;
             }
-            let resolve = |path: &str| doc.as_ref().and_then(|d| resolve_setting(d, path));
-            let target = resolve(&need.target_from);
-            let trust = resolve(&need.trust_from);
             let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
+            // THE MEMBER-PROGRAM PATH (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): each
+            // registration that names a program is a member, its `command`/`args`/`env` its
+            // program (every other key its own), sealed per member: the table keeps one long-lived
+            // program per member, and a re-declaration retires a member that changed or is gone.
+            if busbar_contract::section::member_program(&need.target_from) {
+                let programs = doc.as_ref().map(member_programs).unwrap_or_default();
+                let _ = table.declare_member_programs(*instance, id, need, &programs);
+                continue;
+            }
+            // A PROGRAM the settings spell at the path (`{command, args, env}`) is declared as one:
+            // the table spawns it (ARCHITECT round 4 (e)). One the settings misspell is declared
+            // with no target, which the table refuses.
+            let at = doc.as_ref().and_then(|d| setting_at(d, &need.target_from));
+            if let Some(value) = at.filter(|v| v.is_object()) {
+                let _ = match busbar_contract::conn::Program::from_settings(value) {
+                    Ok(program) => table.declare_program(*instance, id, need, &program),
+                    Err(_) => table.declare(*instance, id, need, None, None),
+                };
+                continue;
+            }
+            let target = doc
+                .as_ref()
+                .and_then(|d| resolve_target(d, &need.target_from));
+            let trust = doc
+                .as_ref()
+                .and_then(|d| resolve_setting(d, &need.trust_from));
             let _ = table.declare(*instance, id, need, target.as_deref(), trust.as_deref());
         }
     }
@@ -1142,6 +1165,17 @@ impl<K: Kind> Plugin<K> {
         self.inner.instance
     }
 
+    /// The host's connection table the instance's needs were declared on at bind; `None` when its
+    /// Statement declares no need or the bind lent none (the composition root holds its members'
+    /// auth bindings on it).
+    pub fn conn_table(&self) -> Option<Arc<dyn busbar_contract::conn::DeclaredConns>> {
+        self.inner
+            .wake
+            .conn
+            .get()
+            .map(|(_, table)| Arc::clone(table))
+    }
+
     /// `max_inflight`, as the host clamped it.
     pub fn max_inflight(&self) -> u32 {
         self.inner.cap
@@ -1281,6 +1315,78 @@ pub(crate) fn resolve_setting(settings: &serde_json::Value, path: &str) -> Optio
     let rest = path.strip_prefix("settings.")?;
     rest.split('.')
         .try_fold(settings, |v, key| v.get(key))
+        .and_then(serde_json::Value::as_str)
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned)
+}
+
+/// How a member program's `env` secret REFERENCE turns into its value: a string secret resolved
+/// through the secret plugins the build links (the root installs it once, at boot). `Err` names
+/// the reference's source, never a byte of the secret.
+pub type MemberSecretFn = fn(&busbar_contract::secret_ref::SecretRef) -> Result<String, String>;
+
+/// The installed [`MemberSecretFn`]; until one is installed no reference resolves (fail-closed: a
+/// member whose program needs one is no member).
+static MEMBER_SECRETS: std::sync::OnceLock<MemberSecretFn> = std::sync::OnceLock::new();
+
+/// Install how a member program's `env` secret references resolve ([`member_programs`]); the first
+/// install holds. Answers whether this one was installed.
+pub fn install_member_secrets(resolve: MemberSecretFn) -> bool {
+    MEMBER_SECRETS.set(resolve).is_ok()
+}
+
+/// EVERY MEMBER'S PROGRAM a member-program need reaches (`busbar_contract::section::MEMBER_PROGRAM`):
+/// each registration of the settings that names a `command`, read by
+/// [`busbar_contract::conn::Program::of_member`] (its other keys ignored), in the settings' order.
+/// An `env` value written as a secret REFERENCE (`{ env: X }`, `{ file: P }`) is resolved here, by
+/// the installed [`MemberSecretFn`], as the previous release resolved it at the spawn: the program is handed
+/// the value, the settings keep the reference. A registration whose program does not read (a
+/// relative command, a reference that does not resolve) is no member: an open naming it is refused.
+pub(crate) fn member_programs(
+    settings: &serde_json::Value,
+) -> Vec<(String, busbar_contract::conn::Program)> {
+    let Some(map) = settings.as_object() else {
+        return Vec::new();
+    };
+    map.iter()
+        .filter_map(|(name, registration)| {
+            let mut registration = registration.clone();
+            if let Some(env) = registration
+                .get_mut("env")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                for value in env.values_mut() {
+                    if value.is_string() {
+                        continue;
+                    }
+                    let reference =
+                        serde_json::from_value::<busbar_contract::secret_ref::SecretRef>(
+                            value.clone(),
+                        )
+                        .ok()?;
+                    *value = serde_json::Value::String(MEMBER_SECRETS.get()?(&reference).ok()?);
+                }
+            }
+            let program = busbar_contract::conn::Program::of_member(&registration)?.ok()?;
+            Some((name.clone(), program))
+        })
+        .collect()
+}
+
+/// The value a need's `target_from` path (`settings.<key>[.<key>...]`) names in an instance's
+/// settings, whatever it is.
+pub(crate) fn setting_at<'v>(
+    settings: &'v serde_json::Value,
+    path: &str,
+) -> Option<&'v serde_json::Value> {
+    let rest = path.strip_prefix("settings.")?;
+    rest.split('.').try_fold(settings, |v, key| v.get(key))
+}
+
+/// What a need's `target_from` names in an instance's settings: `settings.<key>[.<key>...]`, walked
+/// through the settings object to a non-empty string. Anything else resolves to nothing.
+pub(crate) fn resolve_target(settings: &serde_json::Value, path: &str) -> Option<String> {
+    setting_at(settings, path)
         .and_then(serde_json::Value::as_str)
         .filter(|t| !t.is_empty())
         .map(str::to_owned)

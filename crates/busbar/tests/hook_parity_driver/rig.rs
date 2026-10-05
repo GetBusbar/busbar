@@ -316,6 +316,15 @@ impl FarEnd for Far {
     fn constrain(&self, _: &Pass<Route>, constraint: Constraint) {
         *self.constraint.lock().unwrap() = Some(constraint);
     }
+
+    /// A request/response far end holds no attempt open for a later frame.
+    fn write<'a>(
+        &'a self,
+        _: &'a Pass<Route>,
+        _: busbar_kernel::plane_driver::OutboundRequest,
+    ) -> impl Future<Output = bool> + Send + 'a {
+        std::future::ready(false)
+    }
 }
 
 // ── the caller and the books ─────────────────────────────────────────────────────────────────────
@@ -339,6 +348,13 @@ impl CallerEnd for Caller {
 
     async fn write_text(&self, bytes: &[u8]) -> bool {
         self.write(bytes).await
+    }
+}
+
+/// A request/response caller sends nothing after its request.
+impl busbar_kernel::plane_driver::SessionCaller for Caller {
+    fn read(&self) -> impl Future<Output = Option<Vec<u8>>> + Send + '_ {
+        std::future::ready(None)
     }
 }
 
@@ -518,6 +534,12 @@ fn door(dispatcher: &Dispatcher, settings: &[u8]) -> Plugin<Plane> {
                 ptr: std::ptr::null(),
                 len: 0,
             },
+            owned: Blob {
+                ptr: std::ptr::null(),
+                len: 0,
+                fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
+                flags: 0,
+            },
         },
         PlaneOpenOut {
             open: OpenOut {
@@ -682,7 +704,7 @@ async fn drive<S, F, C>(units: &busbar_kernel::plane_driver::PlaneUnits<'_, S, F
 where
     S: busbar_kernel::plane_driver::DriverSteps + Sync,
     F: FarEnd,
-    C: CallerEnd,
+    C: busbar_kernel::plane_driver::SessionCaller,
 {
     let kernel = Kernel::new();
     let (gauge, canary, leases, meter) = (

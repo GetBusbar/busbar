@@ -56,6 +56,7 @@ fn request(messages: usize) -> RoutingRequest<'static> {
         prompt: None,
         identity: None,
         signals: SignalBag::new(),
+        session: None,
     }
 }
 
@@ -433,5 +434,55 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
         ),
         "a freed slot must let the next call through: {}",
         decided(2, &resumed)
+    );
+}
+
+/// THE SESSION REACHES A HOOK (ARCHITECT RULING 2026-10-03, Q-FOLD-A2A-2-PROJECT-POOL session
+/// half): the request view's opaque session crosses the hook kind's `decide` through the one
+/// dispatcher, linked and dropped in alike: the fixture refuses the session its settings name and
+/// abstains on any other, and on a request that names none.
+#[tokio::test]
+async fn a_hook_reads_the_request_session_through_both_doors() {
+    let run = |rows: HookRows| async move {
+        let calls = rows
+            .open(
+                NAME,
+                "hooks.gate",
+                &json!({"reject_over_messages": 3, "reject_session": "ctx-7"}),
+                BUDGET,
+            )
+            .expect("the hook opens");
+        let ctx = RoutingContext {
+            pool: "p",
+            budget_remaining: None,
+            budget: &[],
+        };
+        let mut lines = Vec::new();
+        for session in [Some(&b"ctx-7"[..]), Some(&b"ctx-8"[..]), None] {
+            let mut req = request(2);
+            req.session = session;
+            let frame = DecideFrame::first(DecideView::build(&req, &[], &ctx));
+            lines.push(decided(2, &calls.decide(frame, BUDGET).await));
+        }
+        lines
+    };
+    let door = hook_door_plugin::conforming::door;
+    let linked = run(rows(door, "hook_door", Way::Linked).expect("linked")).await;
+    assert!(
+        linked[0].contains("verbs=0x14 ")
+            && linked[0].contains(&format!("reject_status={REJECT_STATUS}")),
+        "the named session is refused: {}",
+        linked[0]
+    );
+    assert!(linked[1].contains("verbs=0x2 "), "{}", linked[1]);
+    assert!(linked[2].contains("verbs=0x2 "), "{}", linked[2]);
+    let Some(dropped_rows) = rows(door, "hook_door", Way::Dropped) else {
+        eprintln!("skip: the hook fixture's cdylib is not built in this scoped run");
+        return;
+    };
+    assert_eq!(
+        linked,
+        run(dropped_rows).await,
+        "the same answers, whichever door"
     );
 }

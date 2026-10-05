@@ -300,6 +300,7 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
                     Vec::new(),
                 )),
                 head_words: Default::default(),
+                anchors: None,
             },
         )
         .expect("the connector dials through the http door");
@@ -373,6 +374,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
                 open_timeout: std::time::Duration::from_secs(5),
                 opening: Some((Vec::new(), b"opening;".to_vec())),
                 head_words: Default::default(),
+                anchors: None,
             },
         )
         .expect("the connector dials through the door");
@@ -503,7 +505,11 @@ fn a_response_with_head_fields_yields_fields_then_body() {
         String::from_utf8_lossy(head),
         "x-b: 1\r\nx-b: 2\r\nx-session-id: s1\r\n"
     );
-    let body: Vec<u8> = got[1..]
+    // The answer whole is the exchange's completion (the stream's empty closing piece), and every
+    // piece between the head and it is Body.
+    let (last, between) = got[1..].split_last().expect("pieces after the head");
+    assert_eq!(last.0, PieceKind::Completion, "{got:?}");
+    let body: Vec<u8> = between
         .iter()
         .inspect(|(k, _, _)| assert_eq!(*k, PieceKind::Body, "{got:?}"))
         .flat_map(|(_, _, b)| b.clone())

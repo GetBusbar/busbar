@@ -29,6 +29,9 @@ pub struct DeclaredPin {
     pub mechanism: String,
     /// Whether that mechanism is an authenticity root.
     pub root: bool,
+    /// Whether that mechanism's material is the far end's key (a pin of its certificate's
+    /// SubjectPublicKeyInfo), which the host seals into the registration's trust anchors.
+    pub peer_key: bool,
     /// The operator's out-of-band material, verbatim; `None` when absent or blank.
     pub key: Option<String>,
     /// The approved fingerprint, where the declaration allows one and the operator wrote it.
@@ -106,9 +109,28 @@ fn read_entry(
             TrustRole::RecoveryBackoff => {
                 out.policy.recovery_backoff_ms = duration_ms(at, decl, value, strict)?;
             }
+            // Read by [`private_reach`] where the host seals the registration's anchors; judged
+            // here so a malformed value refuses the load in the trust keys' own words.
+            TrustRole::PrivateReach => {
+                if value.is_some_and(|v| v.as_bool().is_none()) {
+                    let k = decl.key;
+                    shape::<()>(strict, format!("{at}: `{k}:` must be true or false"))?;
+                }
+            }
         }
     }
     Ok(out)
+}
+
+/// The registration's PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`): `true` only where the plane
+/// declares the key and the registration writes `true` under it; a malformed value reads as `false`
+/// (the load's [`parse_entry`] refuses it first).
+#[must_use]
+pub fn private_reach(entry: &serde_yaml::Value, keys: &[TrustKeyDecl]) -> bool {
+    keys.iter()
+        .filter(|k| k.role == TrustRole::PrivateReach)
+        .filter_map(|k| entry.as_mapping()?.get(k.key)?.as_bool())
+        .any(|b| b)
 }
 
 /// A malformed shape: refused when `strict`, otherwise read as absent.
@@ -140,7 +162,7 @@ pub fn parse_section(
 }
 
 /// The registrations of a plane section, in order: every string key that is not a reserved section
-/// word.
+/// word or the core-owned `work:` bounds.
 pub(crate) fn registrations(
     value: &serde_yaml::Value,
 ) -> impl Iterator<Item = (&str, &serde_yaml::Value)> {
@@ -149,7 +171,10 @@ pub(crate) fn registrations(
         .into_iter()
         .flat_map(|m| m.iter())
         .filter_map(|(k, v)| k.as_str().map(|k| (k, v)))
-        .filter(|(k, _)| !busbar_contract::section::RESERVED_SECTION_KEYS.contains(k))
+        .filter(|(k, _)| {
+            !busbar_contract::section::RESERVED_SECTION_KEYS.contains(k)
+                && *k != busbar_contract::section::RESERVED_WORK_KEY
+        })
 }
 
 /// A pin object: its shape, then the rule that makes the object form worth having — a root needs
@@ -232,6 +257,7 @@ fn pin(
     Ok(Some(DeclaredPin {
         mechanism,
         root: declared.root,
+        peer_key: declared.peer_key,
         key: key.filter(|m| !m.trim().is_empty()),
         fingerprint,
     }))

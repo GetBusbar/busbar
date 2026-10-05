@@ -90,7 +90,10 @@ fixture-secret-file = { package = "busbar-secret-file", git = "https://github.co
 # same rev, one resolved copy in Cargo.lock.
 busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
 # THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "9e6bf2cdbe77e51968dd6e8df6a1eabe96c0a1c4" }
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "9e0d6fee15e14d9a4b6af1f0e1b9f0e95655f03a" }
+# THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
+# links on the transport-door axis (the gRPC module left busbar-transport-http for it).
+busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "5607182ed5d28da20a6e1699aad512909d24142e" }
 # THE WS TRANSPORT: the websocket framer door (kind: transport), pulled at a pinned rev; the logic
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
 busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "1c6a67f010728c96fe9041e41817fb69c8e4fd05" }

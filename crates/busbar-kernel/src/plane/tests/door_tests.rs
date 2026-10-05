@@ -22,13 +22,16 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
     PlaneRegistration {
         key,
         section,
+        owns: Vec::new(),
+        admin_routes: Vec::new(),
+        admin_openapi: None,
+        secret_refs: vec!["settings.*.token.secret", "settings.*.env.*"],
         label: "Fleet",
         subject_noun: "fleet member",
         admin_noun: "member",
         audit_kind: "fleet_member",
         signing: Some(("fleet/signing/v1", "fleet-")),
         dialects: vec!["first", "second"],
-        fallback: false,
         scope_kinds: vec!["member"],
         billable_classes: vec![("bytes", "byte")],
         fee_units: vec!["request"],
@@ -42,6 +45,7 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
                 mechanisms: &[PinMechanismDecl {
                     token: "unpinned",
                     root: false,
+                    peer_key: false,
                 }],
             },
             TrustKeyDecl {
@@ -52,6 +56,8 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
                 mechanisms: &[],
             },
         ],
+        caller_credential_refusal: Some("forwarding a caller credential is refused here"),
+        fallback: false,
         validate: Arc::new(move |bytes: &[u8]| {
             if bytes.is_empty() {
                 return Ok(());
@@ -74,6 +80,17 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
             }
             Ok(())
         }),
+        facing: Arc::new(|_: &[u8], _: &[u8], public_url: Option<&str>| {
+            Ok(busbar_contract::plane_calls::DoorFacing {
+                claims: vec![
+                    ("/fleet".to_string(), "first"),
+                    ("/fleet/{id}".to_string(), "first"),
+                    ("/.well-known/fleet".to_string(), "second"),
+                ],
+                admission: public_url
+                    .map(|u| (format!("{u}/fleet"), format!("{u}/.well-known/fleet"))),
+            })
+        }),
     }
 }
 
@@ -94,6 +111,10 @@ fn a_door_registration_folds_into_a_row_every_word_of_which_is_the_doors() {
     assert_eq!(decl.fee_units, &["request"]);
     assert_eq!(decl.record_kinds, &["member_row"]);
     assert_eq!(decl.trust_keys.len(), 2);
+    assert_eq!(
+        decl.caller_credential_refusal,
+        Some("forwarding a caller credential is refused here")
+    );
     assert_eq!((decl.wire_format_names)(), &["first", "second"]);
     assert!(decl.parse_section.is_some());
     assert!(
@@ -200,4 +221,86 @@ fn an_admin_write_is_judged_by_the_door_in_the_named_map_wording() {
         cfg.entry_document("zed"),
         Some(serde_json::json!({"url": "https://z"}))
     );
+}
+
+#[test]
+fn a_door_rows_claims_and_audience_are_what_its_open_faced_the_world_with() {
+    let decl = fold(registration("door-fold-facing", NAMED)).expect("folds");
+    let reg = registration("door-fold-facing", NAMED);
+    let slot = DoorSlot {
+        section: DoorSection {
+            section: NAMED,
+            value: serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
+        },
+        facing: (reg.facing)(b"{}", b"", Some("https://gw.example")).expect("faces"),
+    };
+    assert_eq!(
+        (decl.claims)(&slot),
+        vec![
+            ("/fleet".to_string(), "first"),
+            ("/.well-known/fleet".to_string(), "second")
+        ],
+        "each claim mounts its literal prefix, once"
+    );
+    let adm = (decl.admission)(&slot).expect("an audience");
+    assert_eq!(adm.audience, "https://gw.example/fleet");
+    assert_eq!(
+        adm.resource_metadata,
+        "https://gw.example/.well-known/fleet"
+    );
+    let unbound = DoorSlot {
+        facing: (reg.facing)(b"{}", b"", None).expect("faces"),
+        ..slot
+    };
+    assert!(
+        (decl.admission)(&unbound).is_none(),
+        "no public base, no audience"
+    );
+    assert!((decl.claims)(&"not a door slot").is_empty());
+}
+
+/// A DOOR'S OWNED SECTION (its endpoint block beside its verb, the Statement's non-declaring
+/// section): the row owns it (`owned_config_sections`), carries it as written through its endpoint
+/// hooks (`DoorOwned`, the door judges it at its open), and its build hands it to the door's facing
+/// as `PlaneOpenIn::owned` does, one JSON object keyed by section name, beside the section the door
+/// judged off the `tools:`-or-`agents:` carrier. A door that owns nothing has no endpoint hooks.
+#[test]
+fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
+    let owned_key: &'static str = "door_fold_owned_block";
+    let mut reg = registration("door-fold-owned", NAMED);
+    reg.owns = vec![owned_key];
+    reg.facing = Arc::new(|_: &[u8], owned: &[u8], _: Option<&str>| {
+        let doc: serde_json::Value = serde_json::from_slice(owned).map_err(|e| e.to_string())?;
+        let audience = doc["door_fold_owned_block"]["uri"]
+            .as_str()
+            .map(|u| (u.to_string(), format!("{u}/meta")));
+        Ok(busbar_contract::plane_calls::DoorFacing {
+            claims: Vec::new(),
+            admission: audience,
+        })
+    });
+    let decl = fold(reg).expect("folds");
+    assert_eq!(decl.owned_config_sections, &[owned_key]);
+    let block: serde_yaml::Value = serde_yaml::from_str("uri: 'https://gw.example/x'").unwrap();
+    let parsed = (decl.parse_endpoint.expect("its endpoint parses"))(&block).expect("carried");
+    assert!(parsed.is_present());
+    let lowered = (decl.lower_endpoint.expect("and lowers"))(&*parsed).expect("as written");
+    let section = DoorSection {
+        section: NAMED,
+        value: serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
+    };
+    let ctx = BuildCtx {
+        endpoint_slot: Some(lowered),
+        agent_defs: &(),
+        tool_defs: &section,
+        public_url: None,
+        prior: None,
+    };
+    let slot = (decl.build)(&ctx).expect("a slot");
+    let adm = (decl.admission)(&*slot).expect("an audience from its owned block");
+    assert_eq!(adm.audience, "https://gw.example/x");
+
+    let plain = fold(registration("door-fold-owns-none", NAMED)).expect("folds");
+    assert!(plain.owned_config_sections.is_empty());
+    assert!(plain.parse_endpoint.is_none() && plain.lower_endpoint.is_none());
 }

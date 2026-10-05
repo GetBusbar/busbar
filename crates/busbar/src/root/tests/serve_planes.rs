@@ -128,8 +128,17 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
     let mut sections = BTreeMap::new();
     sections.insert("test_plane", serde_yaml::Value::Mapping(Default::default()));
     let late = composed_services();
-    let served = compose_planes(&doors, &dispatcher, &late, &sections, &money, None, None)
-        .expect("the door plane composes");
+    let served = compose_planes(
+        &doors,
+        &dispatcher,
+        &late,
+        &sections,
+        None,
+        &money,
+        None,
+        None,
+    )
+    .expect("the door plane composes");
     assert_eq!(served.planes.len(), 1, "one plane composed");
     let p = &served.planes[0];
     assert_eq!(p.instance, instance);
@@ -171,6 +180,7 @@ fn a_door_plane_whose_section_is_absent_stays_unopened() {
         &dispatcher,
         &late,
         &BTreeMap::new(),
+        None,
         &money,
         None,
         None,
@@ -187,6 +197,7 @@ fn no_door_plane_composes_nothing_and_needs_no_services() {
         &dispatcher,
         &LateServices::new(),
         &BTreeMap::new(),
+        None,
         &money,
         None,
         None,

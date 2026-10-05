@@ -358,6 +358,20 @@ pub(crate) fn linked_source(
         out.push_str(&format!("{e}::door, "));
     }
     out.push_str("],\n");
+    // Each door row's place among the plane rows (how many `plane` rows precede it in manifest
+    // order): a door plane's registry row folds in at its row's place, so the layering order is the
+    // manifest's whichever axis a plane registers on.
+    out.push_str("    plane_door_slots: &[");
+    let mut planes_before = 0usize;
+    for (_, axes) in &linked {
+        if axes.iter().any(|a| a == PLANE_DOOR_AXIS) {
+            out.push_str(&format!("{planes_before}, "));
+        }
+        if axes.iter().any(|a| a == "plane") {
+            planes_before += 1;
+        }
+    }
+    out.push_str("],\n");
     out.push_str("    transports: &[");
     let mut door_builds = String::new();
     for (n, (e, axes)) in linked

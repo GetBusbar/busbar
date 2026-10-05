@@ -2678,6 +2678,10 @@
       "kind": "alias",
       "target": "Result<(ChainVerdict, Option<busbar_contract::authz::Scope>), AdminUnavailable>"
     },
+    "type Anchored": {
+      "kind": "alias",
+      "target": "Mutex<HashMap<(InstanceId, NeedId, String), Arc<tls::client::Sealed>>>"
+    },
     "type Answer": {
       "kind": "alias",
       "target": "Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>"
@@ -2714,6 +2718,10 @@
       "kind": "alias",
       "target": "Mutex<HashMap<(InstanceId, NeedId), Arc<Mutex<Listening>>>>"
     },
+    "type Members": {
+      "kind": "alias",
+      "target": "HashMap<String, Arc<Member>>"
+    },
     "type Opening": {
       "kind": "alias",
       "target": "(Vec<(String, Vec<u8>)>, Vec<u8>)"
@@ -2733,6 +2741,10 @@
     "type Rows": {
       "kind": "alias",
       "target": "&'static [(&'static str, &'static str)]"
+    },
+    "type Shard": {
+      "kind": "alias",
+      "target": "Mutex<HashMap<PoolKey, Vec<Entry>>>"
     },
     "type Verdict": {
       "kind": "alias",

@@ -24,8 +24,13 @@
 //!   judged by the door's `validate` over a one-entry section, in the 1.5.3 named-map wording;
 //! * the per-registration hook attach is re-resolved from the section's `hooks:` lists.
 //!
-//! What it does NOT do: claim a path, bind an audience or build an engine runtime. The door's routes
-//! are mounted by the serve row, and the door serves them.
+//! * its runtime slot holds what the door faces the world with for the generation (the snapshot a
+//!   probe instance of the door publishes over the section and the public base URL): the kernel mounts the
+//!   door's claims by their literal prefix and binds its audience from it, so a credential at the
+//!   door is judged for that resource and a refusal there is the resource's RFC 6750 challenge.
+//!
+//! What it does NOT do: build an engine runtime or serve a route. The door's routes are mounted by
+//! the serve row, and the door serves them.
 //!
 //! THE HOOK TABLE. A registry row's hooks are plain `fn` pointers, which carry no state, so each
 //! folded door gets the hooks of its own table index ([`MAX_DOOR_PLANES`] of them, each a
@@ -47,7 +52,7 @@ pub const MAX_DOOR_PLANES: usize = 16;
 struct Folded {
     reg: PlaneRegistration,
     dialects: &'static [&'static str],
-    decl: &'static PlaneDecl,
+    decl: PlaneDecl,
 }
 
 /// The folded doors, by hook-table index.
@@ -79,7 +84,7 @@ pub fn fold(reg: PlaneRegistration) -> Result<&'static PlaneDecl, String> {
         .filter_map(OnceLock::get)
         .find(|f| f.reg.key == reg.key)
     {
-        return Ok(f.decl);
+        return Ok(&f.decl);
     }
     let index = *next;
     if index >= MAX_DOOR_PLANES {
@@ -93,18 +98,18 @@ pub fn fold(reg: PlaneRegistration) -> Result<&'static PlaneDecl, String> {
     // The named-map surface is the 1.5.3 named-definition maps' (the frozen section list), so a
     // door plane whose verb is one of them answers its CRUD and any other answers none.
     let named = busbar_kernel::plane::config::NAMED_MAP_SECTIONS.contains(&reg.section);
-    let decl: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl::assemble(
+    let decl = PlaneDecl::assemble(
         declaration,
-        HOOK_TABLE[index].clone_hooks(named),
-    )));
+        HOOK_TABLE[index].clone_hooks(named, !reg.owns.is_empty(), !reg.admin_routes.is_empty()),
+    );
     let dialects: &'static [&'static str] = reg.dialects.clone().leak();
-    let _ = DOORS[index].set(Folded {
+    let folded = DOORS[index].get_or_init(|| Folded {
         reg,
         dialects,
         decl,
     });
     *next = index + 1;
-    Ok(decl)
+    Ok(&folded.decl)
 }
 
 /// The registration's contract declaration, every word the door's.
@@ -119,7 +124,7 @@ fn declaration_of(reg: &PlaneRegistration) -> PlaneDeclaration {
         audit_kind: reg.audit_kind,
         card_signing_domain: reg.signing.map(|(d, _)| d),
         card_kid_prefix: reg.signing.map(|(_, p)| p),
-        owned_config_sections: &[],
+        owned_config_sections: reg.owns.clone().leak(),
         billable_classes: reg
             .billable_classes
             .iter()
@@ -131,6 +136,7 @@ fn declaration_of(reg: &PlaneRegistration) -> PlaneDeclaration {
         record_kinds: reg.record_kinds.clone().leak(),
         required_config_sections: &[],
         trust_keys: reg.trust_keys.clone().leak(),
+        caller_credential_refusal: reg.caller_credential_refusal,
         served_op_classes: &[],
     }
 }
@@ -300,29 +306,93 @@ fn wire_formats<const I: usize>() -> &'static [&'static str] {
     door(I).map_or(&[], |d| d.dialects)
 }
 
+/// A door plane's runtime slot for one generation: its section, and what its `open` faces the world
+/// with over that section and the deployment's public base URL.
+#[derive(Debug, Clone)]
+pub struct DoorSlot {
+    /// The section, as written.
+    pub section: DoorSection,
+    /// Its claims (mounted by their literal prefix) and its audience.
+    pub facing: busbar_contract::plane_calls::DoorFacing,
+}
+
 fn build<const I: usize>(
     ctx: &BuildCtx,
 ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
     let d = door(I)?;
     let mine = |s: &DoorSection| s.section == d.reg.section && s.is_present();
-    if let Some(s) = ctx
-        .agent_defs
-        .downcast_ref::<DoorSection>()
-        .filter(|s| mine(s))
+    let section = match [ctx.agent_defs, ctx.tool_defs]
+        .into_iter()
+        .filter_map(|defs| defs.downcast_ref::<DoorSection>())
+        .find(|s| mine(s))
     {
-        return Some(std::sync::Arc::new(s.clone()));
-    }
-    let raw = ctx.endpoint_slot.as_deref()?;
-    let (section, value) = raw.downcast_ref::<(&'static str, serde_yaml::Value)>()?;
-    let s = DoorSection {
-        section,
-        value: value.clone(),
+        Some(s) => s.clone(),
+        None => {
+            let raw = ctx.endpoint_slot.as_deref()?;
+            let (section, value) = raw.downcast_ref::<(&'static str, serde_yaml::Value)>()?;
+            let s = DoorSection {
+                section,
+                value: value.clone(),
+            };
+            if !mine(&s) {
+                return None;
+            }
+            s
+        }
     };
-    mine(&s).then(|| std::sync::Arc::new(s) as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+    // A door that will not face the world with this section claims nothing this generation (its
+    // section already passed its `validate`); the refusal is logged, naming it.
+    // Its owned sections, as its endpoint block was carried (`DoorOwned`): handed beside its section.
+    let owned = ctx
+        .endpoint_slot
+        .as_deref()
+        .and_then(|slot| slot.downcast_ref::<DoorOwned>())
+        .map(DoorOwned::bytes)
+        .unwrap_or_default();
+    let facing = match settings_of(&section.value)
+        .and_then(|bytes| (d.reg.facing)(&bytes, &owned, ctx.public_url))
+    {
+        Ok(f) => f,
+        Err(refusal) => {
+            tracing::error!(plane = d.reg.key, "{refusal}");
+            busbar_contract::plane_calls::DoorFacing::default()
+        }
+    };
+    Some(std::sync::Arc::new(DoorSlot { section, facing }))
 }
 
-/// The generation's section of the door at `I`, off the neutral slot seam.
-fn slot_section<const I: usize>(
+/// The path a claim mounts at: the target up to its first `{name}` segment (a pattern answers under
+/// its literal prefix), without a trailing slash.
+fn mount_of(target: &str) -> String {
+    let literal = target.split("/{").next().unwrap_or(target);
+    literal.trim_end_matches('/').to_string()
+}
+
+fn claims<const I: usize>(slot: &dyn std::any::Any) -> Vec<(String, &'static str)> {
+    let Some(s) = slot.downcast_ref::<DoorSlot>() else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, &'static str)> = Vec::new();
+    for (target, dialect) in &s.facing.claims {
+        let path = mount_of(target);
+        if !path.is_empty() && !out.iter().any(|(p, _)| *p == path) {
+            out.push((path, dialect));
+        }
+    }
+    out
+}
+
+fn admission<const I: usize>(slot: &dyn std::any::Any) -> Option<super::PlaneAdmission> {
+    let (audience, resource_metadata) =
+        slot.downcast_ref::<DoorSlot>()?.facing.admission.clone()?;
+    Some(super::PlaneAdmission {
+        audience,
+        resource_metadata,
+    })
+}
+
+/// The generation's slot of the door at `I`, off the neutral slot seam.
+fn slot_of<const I: usize>(
     slots: &dyn crate::plane_host::PlaneSlots,
 ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
     slots.plane_slot(door(I)?.reg.key).cloned()
@@ -331,16 +401,18 @@ fn slot_section<const I: usize>(
 fn named_def_list<const I: usize>(
     slots: &dyn crate::plane_host::PlaneSlots,
 ) -> Vec<crate::api::NamedDefView> {
-    let (Some(d), Some(slot)) = (door(I), slot_section::<I>(slots)) else {
+    let (Some(d), Some(slot)) = (door(I), slot_of::<I>(slots)) else {
         return Vec::new();
     };
-    slot.downcast_ref::<DoorSection>()
-        .map(|s| {
-            s.registrations()
-                .map(|(n, v)| view_of(n, v, &d.reg.trust_keys))
-                .collect()
-        })
-        .unwrap_or_default()
+    let Some(s) = slot.downcast_ref::<DoorSlot>() else {
+        return Vec::new();
+    };
+    let views = s
+        .section
+        .registrations()
+        .map(|(n, v)| view_of(n, v, &d.reg.trust_keys))
+        .collect();
+    views
 }
 
 fn named_def_get<const I: usize>(
@@ -348,9 +420,10 @@ fn named_def_get<const I: usize>(
     name: &str,
 ) -> Option<crate::api::NamedDefView> {
     let d = door(I)?;
-    let slot = slot_section::<I>(slots)?;
-    let s = slot.downcast_ref::<DoorSection>()?;
+    let slot = slot_of::<I>(slots)?;
+    let s = slot.downcast_ref::<DoorSlot>()?;
     let view = s
+        .section
         .registrations()
         .find(|(n, _)| *n == name)
         .map(|(n, v)| view_of(n, v, &d.reg.trust_keys));
@@ -361,11 +434,11 @@ fn registry_contains<const I: usize>(
     slots: &dyn crate::plane_host::PlaneSlots,
     name: &str,
 ) -> bool {
-    let Some(slot) = slot_section::<I>(slots) else {
+    let Some(slot) = slot_of::<I>(slots) else {
         return false;
     };
-    slot.downcast_ref::<DoorSection>()
-        .is_some_and(|s| s.contains_def(name))
+    slot.downcast_ref::<DoorSlot>()
+        .is_some_and(|s| s.section.contains_def(name))
 }
 
 fn reresolve_gates<const I: usize>(next: &mut dyn crate::plane_host::ContainerGateSink) {
@@ -374,7 +447,7 @@ fn reresolve_gates<const I: usize>(next: &mut dyn crate::plane_host::ContainerGa
     };
     let section = next
         .plane_slot(d.reg.key)
-        .and_then(|slot| slot.downcast_ref::<DoorSection>().cloned());
+        .and_then(|slot| slot.downcast_ref::<DoorSlot>().map(|s| s.section.clone()));
     let gates = section
         .map(|s| s.container_gates())
         .unwrap_or(ContainerGateInputs {
@@ -409,6 +482,67 @@ fn config_validate<const I: usize>(name: &str, def: &serde_json::Value) -> Resul
     })
 }
 
+/// A DOOR PLANE'S OWNED SECTION beside its verb (its endpoint block), as written: the door reads it
+/// at its `open` (`PlaneOpenIn::owned`) and judges it there, in its own words; the kernel carries it.
+#[derive(Debug, Clone)]
+pub struct DoorOwned {
+    /// The owned section's key.
+    pub section: &'static str,
+    /// The section as written.
+    pub value: serde_yaml::Value,
+}
+
+impl DoorOwned {
+    /// The owned sections as `PlaneOpenIn::owned` carries them: one JSON object keyed by section
+    /// name; empty when the section is absent or not representable.
+    #[must_use]
+    pub fn bytes(&self) -> Vec<u8> {
+        if self.value.is_null() {
+            return Vec::new();
+        }
+        serde_json::to_value(&self.value)
+            .ok()
+            .and_then(|v| serde_json::to_vec(&serde_json::json!({ self.section: v })).ok())
+            .unwrap_or_default()
+    }
+}
+
+impl crate::plane::config::PlaneEndpointCfg for DoorOwned {
+    fn is_present(&self) -> bool {
+        match &self.value {
+            serde_yaml::Value::Null => false,
+            serde_yaml::Value::Mapping(m) => !m.is_empty(),
+            _ => true,
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+fn parse_endpoint<const I: usize>(
+    value: &serde_yaml::Value,
+) -> Result<Box<dyn crate::plane::config::PlaneEndpointCfg>, String> {
+    let section = door(I)
+        .and_then(|d| d.reg.owns.first().copied())
+        .unwrap_or("");
+    Ok(Box::new(DoorOwned {
+        section,
+        value: value.clone(),
+    }))
+}
+
+fn lower_endpoint<const I: usize>(
+    endpoint: &dyn crate::plane::config::PlaneEndpointCfg,
+) -> Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, String> {
+    endpoint
+        .as_any()
+        .downcast_ref::<DoorOwned>()
+        .map(|o| std::sync::Arc::new(o.clone()) as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+        .ok_or_else(|| "a door plane's endpoint block was not carried as written".to_string())
+}
+
 fn parse_section<const I: usize>(value: &serde_yaml::Value) -> Result<Box<dyn PlaneCfg>, String> {
     let Some(d) = door(I) else {
         return Err("a door plane's section was parsed before its door was folded".to_string());
@@ -427,9 +561,154 @@ fn default_section<const I: usize>() -> Box<dyn PlaneCfg> {
     })
 }
 
+// ── THE ADMIN ROUTES ITS STATEMENT STATES ───────────────────────────────────────────────────────
+
+/// The door's stated admin routes as the admin router mounts them (ARCHITECT Q-L3B-VERBS): each
+/// non-public route at its stated verb and target, a read at `read-only` and anything else at
+/// `full`, audited under its stated word; every one served by the instance's own `serve` op
+/// (`plane_driver::serve::served_at`), its answer framed in the admin taxonomy.
+fn admin_routes<const I: usize>(
+    _slot: &dyn std::any::Any,
+) -> Vec<crate::admin_verbs::AdminRouteSpec> {
+    use crate::admin_verbs::{AdminRouteSpec, AdminScope, AdminVerbKind};
+    use busbar_contract::abi::mechanism::route::RouteMethod;
+    let Some(d) = door(I) else {
+        return Vec::new();
+    };
+    d.reg
+        .admin_routes
+        .iter()
+        .filter(|r| r.flags & busbar_contract::abi::plane::ROUTE_PUBLIC == 0)
+        .filter_map(|r| {
+            let method = [
+                RouteMethod::Get,
+                RouteMethod::Post,
+                RouteMethod::Put,
+                RouteMethod::Patch,
+                RouteMethod::Delete,
+            ]
+            .into_iter()
+            .find(|m| m.as_str().eq_ignore_ascii_case(r.verb))?;
+            let scope = if method == RouteMethod::Get {
+                AdminScope::ReadOnly
+            } else {
+                AdminScope::Full
+            };
+            let kind = if r.audit_verb.is_empty() {
+                AdminVerbKind::Read
+            } else {
+                AdminVerbKind::Audited { verb: r.audit_verb }
+            };
+            let (verb, target) = (method.as_str(), r.target);
+            Some(AdminRouteSpec {
+                method,
+                path: target.to_string(),
+                scope,
+                kind,
+                handler: std::sync::Arc::new(move |ctx: crate::admin_verbs::AdminReqCtx| {
+                    Box::pin(admin_reply(verb, target, ctx)) as crate::admin_verbs::AdminReplyFuture
+                }),
+            })
+        })
+        .collect()
+}
+
+/// The door's stated admin OpenAPI fragment, its paths keyed under the admin mount.
+fn openapi<const I: usize>() -> serde_json::Value {
+    let fragment = door(I)
+        .and_then(|d| d.reg.admin_openapi)
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok());
+    let Some(serde_json::Value::Object(paths)) = fragment else {
+        return serde_json::Value::Object(serde_json::Map::new());
+    };
+    serde_json::Value::Object(
+        paths
+            .into_iter()
+            .map(|(rel, item)| (format!("{}{rel}", crate::api::ADMIN_PREFIX), item))
+            .collect(),
+    )
+}
+
+/// `target` with its `{name}` segment filled by `name`.
+fn filled(target: &str, name: &str) -> String {
+    target
+        .split('/')
+        .map(|seg| {
+            if seg.len() > 1 && seg.starts_with('{') && seg.ends_with('}') {
+                name
+            } else {
+                seg
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// ONE STATED ADMIN ROUTE, SERVED: by the published instance's `serve` op; its answer as the admin
+/// shim frames it: a success's body verbatim, a `404` the taxonomy's not-found, a `400` a
+/// validation refusal in the plane's words (condition-tagged when its reply names the condition,
+/// [`busbar_contract::plane::ADMIN_CONDITION_FIELD`]), anything else internal. A refusal is audited
+/// as rejected when the plane's answer asks for an audit row, and is not audited when it asks for
+/// none (a refusal before anything was judged). No published instance answers is the not-found.
+async fn admin_reply(
+    verb: &'static str,
+    target: &'static str,
+    ctx: crate::admin_verbs::AdminReqCtx,
+) -> crate::admin_verbs::AdminReply {
+    use crate::admin_verbs::{AdminReply, PlaneVerbError};
+    let path = filled(target, &ctx.name);
+    match crate::plane_driver::serve::served_at(verb, &path, &ctx.headers, ctx.body).await {
+        None => AdminReply::Refused(PlaneVerbError::NotFound),
+        Some(Err(unserved)) => AdminReply::Rejected(PlaneVerbError::Internal(format!(
+            "the plane did not serve `{verb} {path}`: {unserved:?}"
+        ))),
+        Some(Ok(served)) => {
+            let text = String::from_utf8_lossy(&served.body).into_owned();
+            let refused = match served.status {
+                200..=299 => return AdminReply::Applied(text),
+                404 => PlaneVerbError::NotFound,
+                400 => match condition_of(&served.fields) {
+                    Some(cond) => PlaneVerbError::ValidationOf(text, cond),
+                    None => PlaneVerbError::Validation(text),
+                },
+                status => {
+                    return AdminReply::Rejected(PlaneVerbError::Internal(format!(
+                        "the plane answered `{verb} {path}` with status {status}"
+                    )))
+                }
+            };
+            if served.audit == busbar_contract::abi::plane::AUDIT_NONE {
+                AdminReply::Refused(refused)
+            } else {
+                AdminReply::Rejected(refused)
+            }
+        }
+    }
+}
+
+/// The admin taxonomy condition a served reply's head fields name, if they name one.
+fn condition_of(
+    fields: &crate::plane_driver::HeadFields,
+) -> Option<crate::admin_verbs::PlaneAdminCond> {
+    use crate::admin_verbs::PlaneAdminCond;
+    use busbar_contract::plane::{
+        ADMIN_CONDITION_FIELD, ADMIN_CONDITION_INVALID_CONFIG, ADMIN_CONDITION_MALFORMED_BODY,
+    };
+    let (_, value) = fields
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(ADMIN_CONDITION_FIELD.as_bytes()))?;
+    match value.as_slice() {
+        v if v == ADMIN_CONDITION_MALFORMED_BODY.as_bytes() => Some(PlaneAdminCond::MalformedBody),
+        v if v == ADMIN_CONDITION_INVALID_CONFIG.as_bytes() => Some(PlaneAdminCond::InvalidConfig),
+        _ => None,
+    }
+}
+
 /// One table index's hooks, as data a `const` table can hold.
 struct HookRow {
     wire_format_names: fn() -> &'static [&'static str],
+    claims: fn(&dyn std::any::Any) -> Vec<(String, &'static str)>,
+    admission: fn(&dyn std::any::Any) -> Option<super::PlaneAdmission>,
     build: fn(&BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     config_validate: fn(&str, &serde_json::Value) -> Result<(), String>,
     named_def_list: fn(&dyn crate::plane_host::PlaneSlots) -> Vec<crate::api::NamedDefView>,
@@ -438,12 +717,23 @@ struct HookRow {
     reresolve_gates: fn(&mut dyn crate::plane_host::ContainerGateSink),
     parse_section: fn(&serde_yaml::Value) -> Result<Box<dyn PlaneCfg>, String>,
     default_section: fn() -> Box<dyn PlaneCfg>,
+    admin_routes: fn(&dyn std::any::Any) -> Vec<crate::admin_verbs::AdminRouteSpec>,
+    openapi: fn() -> serde_json::Value,
+    #[allow(clippy::type_complexity)]
+    parse_endpoint:
+        fn(&serde_yaml::Value) -> Result<Box<dyn crate::plane::config::PlaneEndpointCfg>, String>,
+    #[allow(clippy::type_complexity)]
+    lower_endpoint: fn(
+        &dyn crate::plane::config::PlaneEndpointCfg,
+    ) -> Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, String>,
 }
 
 impl HookRow {
     const fn of<const I: usize>() -> HookRow {
         HookRow {
             wire_format_names: wire_formats::<I>,
+            claims: claims::<I>,
+            admission: admission::<I>,
             build: build::<I>,
             config_validate: config_validate::<I>,
             named_def_list: named_def_list::<I>,
@@ -452,20 +742,24 @@ impl HookRow {
             reresolve_gates: reresolve_gates::<I>,
             parse_section: parse_section::<I>,
             default_section: default_section::<I>,
+            parse_endpoint: parse_endpoint::<I>,
+            lower_endpoint: lower_endpoint::<I>,
+            admin_routes: admin_routes::<I>,
+            openapi: openapi::<I>,
         }
     }
 
     /// The registry row's hooks: this index's, and nothing a door plane does not do; the named-map
     /// surface only when `named`.
-    fn clone_hooks(&self, named: bool) -> PlaneHooks {
+    fn clone_hooks(&self, named: bool, owns: bool, admin: bool) -> PlaneHooks {
         PlaneHooks {
             wire_format_names: self.wire_format_names,
-            claims: |_| Vec::new(),
-            admission: |_| None,
+            claims: self.claims,
+            admission: self.admission,
             build: self.build,
             routes: None,
-            admin_routes: None,
-            openapi: None,
+            admin_routes: admin.then_some(self.admin_routes),
+            openapi: admin.then_some(self.openapi),
             hydrate: None,
             start: None,
             config_validate: named.then_some(self.config_validate),
@@ -476,8 +770,8 @@ impl HookRow {
             openapi_schemas: None,
             on_swap: None,
             parse_section: Some(self.parse_section),
-            parse_endpoint: None,
-            lower_endpoint: None,
+            parse_endpoint: owns.then_some(self.parse_endpoint),
+            lower_endpoint: owns.then_some(self.lower_endpoint),
             build_runtime: None,
             viewer: None,
             retain_verify_gates: None,

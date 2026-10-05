@@ -303,19 +303,29 @@ pub struct DestJudgeIn {
     pub dest: AbiStr,
     /// The egress class whose rules apply; `0` = the host's default.
     pub egress_class: u32,
-    /// [`DEST_RESOLVE`].
+    /// [`DEST_RESOLVE`] | [`DEST_REFUSE_PRIVATE`] | [`DEST_EXPLAIN`].
     pub flags: u32,
     /// Appended: where the judged addresses go under [`DEST_RESOLVE`], one span each (key = the
-    /// address as text, an IP literal without port or brackets; value absent). Written only on
+    /// address as text, an IP literal without port or brackets; value absent). On
     /// [`DEST_ALLOWED`]: every address the judgement admitted, in the resolver's order, the first
     /// the one a dial pins. The set a plane hands back as `EstablishIn::within`, so the judge, its
-    /// overlap check and the dial see one address set. Without [`DEST_RESOLVE`] nothing is written.
+    /// overlap check and the dial see one address set. On a refusal, nothing, unless
+    /// [`DEST_EXPLAIN`] asks for what decided it. Without [`DEST_RESOLVE`] nothing is written.
     pub into: ServiceBufs,
 }
 
 /// [`DestJudgeIn::flags`]: resolve a name and judge every address it answers, and write the
 /// addresses judged into [`DestJudgeIn::into`]; without it the judgement is the name's alone.
 pub const DEST_RESOLVE: u32 = 1;
+/// [`DestJudgeIn::flags`]: refuse every private address (and loopback name) under this judgement,
+/// whatever the deployment's private-address setting and the class: the caller's own
+/// configuration forbids the reach. The metadata refusal and the allow-list stand as they are.
+pub const DEST_REFUSE_PRIVATE: u32 = 2;
+/// [`DestJudgeIn::flags`], with [`DEST_RESOLVE`]: on a refusal an address or the resolution
+/// decided, write ONE span into [`DestJudgeIn::into`] naming what decided it (key = the refused
+/// address as text for [`DEST_INTERNAL`] / [`DEST_METADATA`]; the resolver's own reason for
+/// [`DEST_UNRESOLVABLE`]; value absent). A refusal the name alone decided writes nothing.
+pub const DEST_EXPLAIN: u32 = 4;
 
 /// `dest.judge` verdict: admissible.
 pub const DEST_ALLOWED: u64 = 0;
@@ -356,7 +366,10 @@ pub struct SignIn {
 
 /// [`op::UNIT_NEST`]'s `in`: run a nested unit on whatever plugin serves the named claim, as a child
 /// of the calling unit (its principal, its audit correlation, its admission), depth-capped. The reply
-/// comes back whole: `value` = its status, the bytes its body, the spans its fields.
+/// comes back whole: `value` = its status; span `0`'s value is its body (its key absent), and each
+/// span after it one of its head fields (key = the name, value = the value), all over the bytes
+/// written. Callable only inside a crossing that serves a unit; a call that serves none, nests past
+/// the depth cap or finds no claim to serve it is REFUSED.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct UnitNestIn {
@@ -374,20 +387,35 @@ pub struct UnitNestIn {
 
 // ── work ──────────────────────────────────────────────────────────────────────────────────────
 
-/// [`op::WORK_OPEN`]'s `in`: open a durable work handle. `value` = the handle.
+/// [`op::WORK_OPEN`]'s `in`: open a durable work handle for the calling unit's principal. `value` =
+/// the handle; span `0`'s key is the handle's REFERENCE: [`WORK_REFERENCE_LEN`] lowercase hex digits
+/// naming 128 random bits, the name the caller holds and hands [`op::WORK_FIND`]. A record longer
+/// than [`MAX_WORK_RECORD`] is REFUSED; at the instance's bound of live handles the open is REFUSED
+/// (a live handle is never evicted). Callable only inside a crossing that serves a unit.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct WorkOpenIn {
     /// The head.
     pub head: ServiceHead,
-    /// The work kind (one the plugin declared).
+    /// The work kind (one of the record kinds the plugin declared).
     pub kind: AbiStr,
     /// The handle's record.
     pub record: Blob,
+    /// Appended (ARCHITECT H3: the 128-bit reference): where the reference goes.
+    pub into: ServiceBufs,
 }
 
-/// [`op::WORK_FIND`]'s `in`: the scoped lookup. Every denial answers alike ([`ABSENT`]); found,
-/// `value` = the handle and span `0`'s value its record.
+/// The length of a work handle's reference, in hex digits: 128 bits.
+pub const WORK_REFERENCE_LEN: usize = 32;
+
+/// The most bytes a work handle's record carries (the body lives in the plugin's own records; the
+/// handle's record names it).
+pub const MAX_WORK_RECORD: usize = 256;
+
+/// [`op::WORK_FIND`]'s `in`: the scoped lookup, within the calling instance and the calling unit's
+/// principal. Every denial (no such reference, another instance's, another principal's, a malformed
+/// one) answers alike: READY [`ABSENT`], nothing written. Found, `value` = the handle, span `0`'s key
+/// [`WORK_LIVE`] or [`WORK_SETTLED`] as one byte and its value the record.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct WorkFindIn {
@@ -399,7 +427,14 @@ pub struct WorkFindIn {
     pub into: ServiceBufs,
 }
 
-/// [`op::WORK_SETTLE`]'s `in`: settle a handle with its final record.
+/// `work.find`'s state byte: the handle is live.
+pub const WORK_LIVE: u8 = 1;
+/// `work.find`'s state byte: the handle is settled.
+pub const WORK_SETTLED: u8 = 2;
+
+/// [`op::WORK_SETTLE`]'s `in`: settle a live handle of the calling instance with its final record
+/// (at most [`MAX_WORK_RECORD`] bytes). A settled handle is retained for the instance's retention
+/// and then swept; settling one twice is REFUSED.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct WorkSettleIn {
@@ -411,8 +446,9 @@ pub struct WorkSettleIn {
     pub record: Blob,
 }
 
-/// [`op::WORK_RESUME`]'s `in`: bind the handle's record to the calling unit. A continuation is a
-/// NEW unit, with its own arrival, admission and window; this only binds the record.
+/// [`op::WORK_RESUME`]'s `in`: bind the handle's record to the calling unit, whose principal must be
+/// the one the handle recorded. A continuation is a NEW unit, with its own arrival, admission and
+/// window; this only binds the record: span `0`'s key is the state byte and its value the record.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct WorkResumeIn {
@@ -554,6 +590,12 @@ pub struct EntitlementCheckIn {
 pub const NOT_ENTITLED: u64 = 0;
 /// `entitlement.check`: entitled.
 pub const ENTITLED: u64 = 1;
+
+/// [`op::ENTITLEMENT_CHECK`]'s target that asks whether the unit's PRINCIPAL STILL STANDS: the host
+/// re-resolves it live (gone, disabled, expired, or a role binding withdrawn is not entitled). Every
+/// other target is judged against the principal as re-resolved now, never the one admitted (a
+/// long-lived response re-asks per frame, ARCHITECT round 4 Q-L3B-SURFACES (a)).
+pub const ENTITLEMENT_STANDING: &str = "standing:";
 
 // ── random ────────────────────────────────────────────────────────────────────────────────────
 
@@ -992,7 +1034,29 @@ pub fn check_unit_nest(i: &UnitNestIn, ret: RawOutcome, out: &ServiceOut) -> Res
 ///
 /// The rule the answer breaks.
 pub fn check_work_open(i: &WorkOpenIn, ret: RawOutcome, out: &ServiceOut) -> Result<Filled, Fault> {
-    answer(ret, &i.head, out, bare(op::WORK_OPEN, (1, u64::MAX)))
+    let filled = answer(
+        ret,
+        &i.head,
+        out,
+        into(op::WORK_OPEN, i.into, (1, u64::MAX)),
+    )?;
+    if ret.outcome() == Outcome::Ready && out.items != 1 {
+        return Err(fault(Rule::Contradiction, "work_open.out.items"));
+    }
+    Ok(filled)
+}
+
+/// A `work.open` or `work.settle` record: at most [`MAX_WORK_RECORD`] bytes. The host REFUSES an
+/// `in` that breaks this, before anything is opened or settled.
+///
+/// # Errors
+///
+/// [`Rule::OverMax`].
+pub const fn check_work_record(record: &Blob) -> Result<(), Fault> {
+    if record.len > MAX_WORK_RECORD {
+        return Err(fault(Rule::OverMax, "work.record"));
+    }
+    Ok(())
 }
 
 /// `work.find`'s answer.

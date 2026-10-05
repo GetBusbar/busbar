@@ -45,8 +45,8 @@ use axum::Router;
 // checks without booting, and the last two are the config/providers path precedence the scanners
 // there answer for boot AND for every command.
 use busbar_kernel::{
-    build_app_from_config, build_split_routers_serving, load_config_from_disk, LoadedConfig,
-    ENV_CONFIG,
+    build_app_from_config, build_split_routers_serving_sessions, load_config_from_disk,
+    LoadedConfig, ENV_CONFIG,
 };
 use busbar_kernel::{config, config_validate, diagnostics, export, metrics, tls};
 // The root's own binds listen through the connector's listener (the one listener source).
@@ -715,10 +715,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass.
     let _sealed = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
     // THE PROCESS'S ONE CONNECTOR, right after the transport registry sealed: every linked
-    // transport door as a framer entry, every dial judged by the one destination guard. Inbound
-    // listening and outbound egress both take it from `root::connector::the()`.
+    // transport door as a framer entry opened with the same settings the seal built the transports
+    // from, every dial judged by the one destination guard. Inbound listening and outbound egress
+    // both take it from `root::connector::the()`.
     let _connector = root::connector::boot(
         LINKED_TRANSPORT_DOORS,
+        &root::policy::client_settings(&cfg.limits),
         dest,
         &[cfg.listen.as_str(), cfg.admin_listen.as_str()],
     );
@@ -773,6 +775,19 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The model-serving pools the plane serving the `pools` map walks, with every bound the
     // configuration states (`root::model_egress`).
     let door_model_pools = root::model_egress::ModelPools::of(&cfg);
+    // The unified `pools:` a named-definition carrier's members resolved to, by the carrier's
+    // section key: each door plane's section carries its own pools (DoorPools), captured before
+    // `cfg` is consumed.
+    let door_pools = [
+        (
+            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+            cfg.tool_pools.clone(),
+        ),
+        (
+            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+            cfg.agent_pools.clone(),
+        ),
+    ];
     // The root breaker's per-pool ladders, read off the same `pools:` the build resolves each pool's
     // own dispatch cfg from, before `cfg` is consumed.
     #[cfg(feature = "root-admin")]
@@ -843,7 +858,13 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         .governance
         .clone()
         .map(|g| g as Arc<dyn busbar_kernel::host_services::SignKey>);
-    root::serve::attach(&late_services, signer, &app.demotion_record, &planes);
+    root::serve::attach(
+        &late_services,
+        app.governance.as_deref(),
+        signer,
+        &app.demotion_record,
+        &planes,
+    );
     // THE DOOR PLANES, COMPOSED (`root::serve::compose_served`): opened, driven and ticked here, once,
     // their money posted onto the process's one node, each member's egress sealed over the
     // deployment's providers, the auth plugins that serve its style (the build's own rows, then
@@ -881,26 +902,31 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let door_reach = root::door_steps::DoorReach {
         providers: &door_providers,
         secrets: &*app.secret_resolver,
-        auths: &door_auths,
+        auths: std::sync::Arc::clone(&door_auths),
         conns: Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::PollConns>,
         stream_ceiling_secs: busbar_kernel::config::limits::installed().map_or(
             busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
             |l| l.upstream_request_timeout_secs,
         ),
         models: Some(&door_models),
+        upgrades: root::serve::upgrade_carriers(LINKED.transports),
     };
     let served = root::serve::compose_served(
         app.governance.clone(),
         root::boot::door_planes(),
         &root::dispatch::dispatcher(),
         &late_services,
-        &{
-            let mut sections = deploy.door_sections();
-            for (key, value) in door_kernel_sections {
-                sections.entry(key).or_insert(value);
-            }
-            sections
-        },
+        &root::serve::with_pools(
+            {
+                let mut sections = deploy.door_sections();
+                for (key, value) in door_kernel_sections {
+                    sections.entry(key).or_insert(value);
+                }
+                sections
+            },
+            &door_pools,
+        ),
+        deploy.public_url.as_deref(),
         &door_reach,
         Some({
             // The hooks read the CURRENT generation's host: the App's swap handle once it exists,
@@ -920,7 +946,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     )
     .unwrap_or_else(|e| die(e));
     served.spawn_ticks();
-    let served = std::sync::Arc::new(served);
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
     // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's
     // business, and nothing about it is restored from disk here. The durable config that makes "fix
@@ -990,32 +1015,44 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     .then(|| root::boot::book(&app).unwrap_or_else(|e| die(e)));
     // THE DOOR PLANES' DATA ROUTES (`root::serve::data_routes`): each served plane's claims, as its
     // guest-list lines beside the kernel's own, onto the data router at its construction.
-    let doors = root::serve::data_routes(
-        std::sync::Arc::clone(&served),
+    // Every config apply refreshes each served door plane onto the generation it installed
+    // (ARCHITECT Q-DEL-A2A-APPLY), bound on the handle once the routers are built.
+    let door_appliers = served.appliers();
+    #[cfg(linked_axis_node)]
+    let door_post = served.post.clone();
+    let (doors, sessions) = root::serve::data_mounts(
+        served,
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
+        &root::serve::upgrade_carriers(LINKED.transports),
     )
     .unwrap_or_else(|e| die(e));
-    let (data_router, admin_router, app_handle) = build_split_routers_serving(
+    let (data_router, admin_router, app_handle) = build_split_routers_serving_sessions(
         app,
         doors,
+        sessions,
         req_body_max,
         max_inbound,
         response_headers_cfg.server_timing,
     );
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
-    // A CONFIG APPLY REFRESHES THE DOOR PLANES onto the new generation (`Served::refresh`): the
-    // swapped-in App's projected configuration, its lane table and its secret seam. A build with no
-    // node composes no door plane's money, so it has none to refresh.
+    app_handle.on_apply(Box::new({
+        let door_appliers = door_appliers.clone();
+        move |app| door_appliers.apply(app)
+    }));
+    // A CONFIG APPLY REFRESHES THE PLANE SERVING THE `pools` MAP onto the new generation
+    // (`DoorAppliers::refresh_models`): the swapped-in App's projected configuration, its lane
+    // table and its secret seam. A build with no node composes no door plane's money, so it has
+    // none to refresh.
     #[cfg(linked_axis_node)]
-    if let Some(post) = served.post.clone() {
-        let (served, auths, live) = (
-            std::sync::Arc::clone(&served),
+    if let Some(post) = door_post {
+        let (auths, live) = (
             std::sync::Arc::clone(&door_auths),
             std::sync::Arc::clone(&door_live_handle),
         );
-        app_handle.attach_on_apply(std::sync::Arc::new(move |next| {
+        let upgrades = root::serve::upgrade_carriers(LINKED.transports);
+        app_handle.on_apply(Box::new(move |next| {
             let Some(cfg) = next
                 .config_projection
                 .as_ref()
@@ -1043,7 +1080,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             let reach = root::door_steps::DoorReach {
                 providers: &cfg.providers,
                 secrets: &*next.secret_resolver,
-                auths: &auths,
+                auths: std::sync::Arc::clone(&auths),
                 conns: Arc::clone(root::connector::the())
                     as Arc<dyn busbar_contract::conn::PollConns>,
                 stream_ceiling_secs: busbar_kernel::config::limits::installed().map_or(
@@ -1051,8 +1088,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                     |l| l.upstream_request_timeout_secs,
                 ),
                 models: Some(&models),
+                upgrades: upgrades.clone(),
             };
-            served.refresh(
+            door_appliers.refresh_models(
                 &cfg.sections,
                 &root::serve::DoorEgress {
                     reach: &reach,
@@ -1061,6 +1099,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                 },
             );
         }));
+    }
+    // A door unit's entitlement is judged against its principal AS IT STANDS (re-resolved over the
+    // live snapshot per ask): a long-lived response re-asks per frame.
+    if let Some(kernel) = late_services.kernel() {
+        let _attached =
+            kernel.attach_standing(busbar_kernel::plane_host::live_standing(app_handle.clone()));
     }
     // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to

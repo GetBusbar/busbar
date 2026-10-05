@@ -63,6 +63,12 @@ struct Table {
     bytes: Mutex<HashMap<u64, VecDeque<Vec<u8>>>>,
     next: AtomicU64,
     closed: AtomicU64,
+    /// The need every open was made on.
+    needs: Mutex<Vec<u32>>,
+    /// Whether each write was a text message.
+    texts: Mutex<Vec<bool>>,
+    /// Every write: the connection, the bytes, and whether they completed the caller's message.
+    written: Mutex<Vec<(u64, Vec<u8>, bool)>>,
 }
 
 fn piece(kind: PieceKind, len: usize, status: Option<(u32, Option<u64>)>) -> Piece {
@@ -84,7 +90,8 @@ fn piece(kind: PieceKind, len: usize, status: Option<(u32, Option<u64>)>) -> Pie
 }
 
 impl Conns for Table {
-    fn open(&self, _: InstanceId, _: NeedId, d: &OpenDesc<'_>) -> Result<ConnId, ConnError> {
+    fn open(&self, _: InstanceId, need: NeedId, d: &OpenDesc<'_>) -> Result<ConnId, ConnError> {
+        self.needs.lock().unwrap().push(need.0);
         let host = d
             .target
             .split("://")
@@ -149,11 +156,13 @@ impl Conns for Table {
     fn write(
         &self,
         _: InstanceId,
-        _: ConnId,
+        c: ConnId,
         b: &[u8],
-        _: bool,
-        _: bool,
+        end: bool,
+        text: bool,
     ) -> Result<usize, ConnError> {
+        self.written.lock().unwrap().push((c.0, b.to_vec(), end));
+        self.texts.lock().unwrap().push(text);
         Ok(b.len())
     }
     fn read(&self, _: InstanceId, _: ConnId, _: Ticket, _: &mut [u8]) -> Result<Piece, ConnError> {
@@ -355,6 +364,8 @@ struct Bearer {
     facts: Mutex<Vec<Facts>>,
     /// The point each call was made at and the body it lent.
     points: Mutex<Vec<(AuthPoint, Option<Vec<u8>>)>>,
+    /// The extensions blob each call lent.
+    extensions: Mutex<Vec<Vec<u8>>>,
 }
 struct Done(Fields);
 /// A submitted call that never answers.
@@ -403,6 +414,7 @@ impl OutboundAuth for Bearer {
             .unwrap()
             .push((r.method.clone(), r.authority.clone(), r.path.clone()));
         self.points.lock().unwrap().push((r.point, r.body.clone()));
+        self.extensions.lock().unwrap().push(r.extensions.clone());
         Some(Fields::Ready(vec![AuthField {
             name: b"authorization".to_vec(),
             value: b"Bearer sk-test".to_vec().into(),
@@ -466,6 +478,9 @@ fn rig(
                     base_url: format!("https://{host}/v1/"),
                     provider: format!("p{k}"),
                     keep: super::ResponseKeep::default(),
+                    rides: Vec::new(),
+                    spelled: Vec::new(),
+                    anchors: Default::default(),
                     auth: Some(AuthBinding {
                         auth: auth.clone() as Arc<dyn OutboundAuth>,
                         handle: 1,
@@ -522,6 +537,7 @@ fn token() -> Pass<Route> {
 
 fn request() -> OutboundRequest {
     OutboundRequest {
+        text: false,
         member: String::new(),
         pool: String::new(),
         attempt_no: 1,
@@ -529,6 +545,7 @@ fn request() -> OutboundRequest {
         target: b"/chat".to_vec(),
         fields: vec![(b"content-type".to_vec(), b"application/json".to_vec())],
         body: b"{}".to_vec(),
+        need: 0,
     }
 }
 
@@ -663,6 +680,44 @@ async fn a_529_fails_over_with_its_retry_after() {
         r.auth.calls.load(Ordering::SeqCst),
         2,
         "one auth call per attempt"
+    );
+}
+
+/// AT MOST ONCE (ARCHITECT round 4 Q-L3B-SURFACES (h), the walk does repeatable): a unit whose
+/// operation is performed at most once has a member's ANSWERED failure reach the plane as it came,
+/// never retried on another member; the breaker still records it. The same answer without the flag
+/// fails over (above).
+#[tokio::test]
+async fn an_answered_failure_of_an_at_most_once_operation_is_not_retried_elsewhere() {
+    let r = rig(
+        &[
+            ("a.test", Script::Answer(529, Some(7), vec![b"overloaded"])),
+            ("b.test", Script::Answer(529, Some(7), vec![b"overloaded"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        once: true,
+        ..route()
+    });
+    let Pick::Member { .. } = far.member(&t, 1).await else {
+        panic!("a member")
+    };
+    assert!(far.send(&t, request()).await);
+    let pieces = drain(&far, &t).await;
+    assert!(
+        pieces.iter().all(|p| !p.fail_over),
+        "an at-most-once operation is not failed over once answered: {pieces:?}"
+    );
+    assert_eq!(pieces[0].status.map(|s| s.0), Some(529), "{pieces:?}");
+    let observed = r.book.observed.lock().unwrap().clone();
+    assert!(
+        observed
+            .iter()
+            .any(|(_, o)| matches!(o, Outcome::Transient { .. })),
+        "the breaker still records the answered failure: {observed:?}"
     );
 }
 
@@ -1108,6 +1163,48 @@ async fn trailers_are_handed_to_the_plane() {
     assert!(pieces.last().unwrap().last);
 }
 
+/// THE PER-CALL SCOPE (ARCHITECT round 5 Q-L3B-EXCHANGE (B)): a plane's attempt that states its
+/// scope in the host's own request field has that field taken out of the request before anything
+/// is encoded (the far end never hears it) and its value lent to the member's ONE auth call in the
+/// call's extensions blob; an attempt that states none lends none.
+#[tokio::test]
+async fn a_stated_scope_reaches_the_auth_call_and_never_the_wire() {
+    use busbar_contract::abi::auth::{EXT_SCOPE, SCOPE_REQUEST_FIELD};
+    use busbar_contract::abi::mechanism::extensions;
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    for scope in [Some("fs_read_file fs_write_file"), None] {
+        let far = r.egress.unit(route());
+        let _ = far.member(&t, 1).await;
+        let mut req = request();
+        if let Some(scope) = scope {
+            req.fields.push((
+                SCOPE_REQUEST_FIELD.as_bytes().to_vec(),
+                scope.as_bytes().to_vec(),
+            ));
+        }
+        assert!(far.send(&t, req).await);
+        let _ = drain(&far, &t).await;
+    }
+    let lent = r.auth.extensions.lock().unwrap().clone();
+    assert_eq!(lent.len(), 2);
+    assert_eq!(
+        extensions::get(&lent[0], EXT_SCOPE),
+        Some(&b"fs_read_file fs_write_file"[..])
+    );
+    assert!(lent[1].is_empty(), "no scope stated, no extensions lent");
+    for (_, head, _, _) in r.table.opened.lock().unwrap().iter() {
+        assert!(
+            head.iter().all(|(n, _)| n != SCOPE_REQUEST_FIELD),
+            "the host's field never reaches the wire: {head:?}"
+        );
+    }
+}
+
 /// PASSTHROUGH: a member configured `upstream_credentials: passthrough` has its one auth call carry
 /// the caller's own credential; a member that is not is never handed it.
 #[tokio::test]
@@ -1441,3 +1538,165 @@ async fn every_dispatch_is_recorded_under_its_unit() {
 #[allow(unsafe_code)]
 #[path = "probe_unit_tests.rs"]
 mod probe_unit;
+/// MULTI-NEED (ARCHITECT Q-L5B-NEEDS 2026-10-03): a member binds every need its auth names; a far
+/// request that names one (its declared index plus one) opens on it, one that names none on the
+/// member's own, and one naming a need the member has no binding for is refused before any record
+/// or dial.
+#[tokio::test]
+async fn a_far_request_opens_on_the_need_it_names() {
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    for route in r.egress.routes.values_mut() {
+        route.rides = vec![(NeedId(3), super::ResponseKeep::default())];
+    }
+    let t = token();
+    for (named, opened) in [(4, Some(3)), (0, Some(0)), (1, Some(0)), (9, None)] {
+        let far = r.egress.unit(route());
+        assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+        let before = r.table.needs.lock().unwrap().len();
+        let sent = far
+            .send(
+                &t,
+                OutboundRequest {
+                    need: named,
+                    ..request()
+                },
+            )
+            .await;
+        assert_eq!(sent, opened.is_some(), "named {named}");
+        let needs = r.table.needs.lock().unwrap().clone();
+        assert_eq!(needs.get(before).copied(), opened, "named {named}");
+        drop(far);
+    }
+}
+
+/// SEAM-L(n), A NEED DIALS THE BASE URL IT SPELLS: a member whose second need spells its base URL in
+/// another scheme (the root composes `spelled` from the linked framers) opens a far request naming
+/// that need at the spelled base, joined with the plane's path; a request on its own need dials the
+/// operator's base URL as written. RED: every need dialled the provider's own base URL.
+#[tokio::test]
+async fn a_far_request_on_a_spelled_need_dials_that_needs_base_url() {
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    for route in r.egress.routes.values_mut() {
+        route.rides = vec![(NeedId(3), super::ResponseKeep::default())];
+        route.spelled = vec![(NeedId(3), "wss://a.test/v1/".to_string())];
+    }
+    let t = token();
+    for (named, dialled) in [(4, "wss://a.test/v1/chat"), (0, "https://a.test/v1/chat")] {
+        let far = r.egress.unit(route());
+        assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+        let before = r.table.opened.lock().unwrap().len();
+        let sent = far
+            .send(
+                &t,
+                OutboundRequest {
+                    need: named,
+                    ..request()
+                },
+            )
+            .await;
+        assert!(sent, "named {named}");
+        let opened = r.table.opened.lock().unwrap().clone();
+        assert_eq!(opened[before].0, dialled, "named {named}");
+        drop(far);
+    }
+}
+
+/// A HELD FAR END (ARCHITECT Q-L5-FAR (A)): once the attempt's far end has answered, a later
+/// turn's frame is written into the SAME connection as one whole message, never a second open; a
+/// frame before the answer, or after the answer ended, is refused (nothing holds it).
+#[tokio::test]
+async fn a_held_far_ends_frame_goes_into_the_answered_connection() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"hel", b"lo"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    let frame = |body: &[u8]| OutboundRequest {
+        body: body.to_vec(),
+        ..request()
+    };
+    assert!(
+        !far.write(&t, frame(b"early")).await,
+        "nothing is held before a dial"
+    );
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    assert!(
+        !far.write(&t, frame(b"unanswered")).await,
+        "a dial its far end has not answered holds nothing"
+    );
+    let first = far.next(&t).await.expect("the answer's first piece");
+    assert_eq!(first.status, Some((200, 1)));
+    assert!(far.write(&t, frame(b"two")).await);
+    assert_eq!(
+        *r.table.written.lock().unwrap(),
+        vec![(1, b"two".to_vec(), true)],
+        "into the answered connection, as one message"
+    );
+    assert_eq!(
+        r.table.opened.lock().unwrap().len(),
+        1,
+        "never a second open"
+    );
+    let rest = drain(&far, &t).await;
+    assert!(rest.last().is_some_and(|p| p.last));
+    assert!(
+        !far.write(&t, frame(b"late")).await,
+        "an ended answer holds nothing"
+    );
+    assert_eq!(r.table.written.lock().unwrap().len(), 1);
+}
+
+/// Q-L5B-WS-DIAL: a far request the plane marked text opens its connection bare (no opening body,
+/// which carries no text bit) and is written to it as ONE text message; an unmarked one rides its
+/// opening as before and writes nothing.
+#[tokio::test]
+async fn a_text_request_opens_bare_and_is_written_as_text() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    let sent = far
+        .send(
+            &t,
+            OutboundRequest {
+                text: true,
+                ..request()
+            },
+        )
+        .await;
+    assert!(sent);
+    let opened = r.table.opened.lock().unwrap().clone();
+    assert!(opened[0].2.is_empty(), "the opening carries no body");
+    assert_eq!(
+        r.table.written.lock().unwrap().clone(),
+        [(1, b"{}".to_vec(), true)],
+        "the body is written, whole"
+    );
+    assert_eq!(r.table.texts.lock().unwrap().clone(), [true]);
+    drop(far);
+
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    assert_eq!(r.table.opened.lock().unwrap()[1].2, b"{}");
+    assert_eq!(
+        r.table.written.lock().unwrap().len(),
+        1,
+        "no write of its own"
+    );
+}

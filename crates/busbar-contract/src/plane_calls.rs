@@ -73,6 +73,38 @@ pub type Lent = Arc<dyn Any + Send + Sync>;
 /// A door's own `validate` over a whole section (its settings, JSON): `Ok`, or the door's words.
 pub type SectionJudge = Arc<dyn Fn(&[u8]) -> Result<(), String> + Send + Sync>;
 
+/// WHAT A DOOR FACES THE WORLD WITH for one generation, as its `open` published it: the paths it
+/// answers on (each with the dialect word a refusal on it wears) and the audience it binds, with its
+/// protected-resource metadata document; `None` = it binds none.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DoorFacing {
+    /// Each claimed target, as stated (a pattern keeps its `{name}` segments), and its dialect word.
+    pub claims: Vec<(String, &'static str)>,
+    /// The audience it binds and its resource metadata document.
+    pub admission: Option<(String, String)>,
+}
+
+/// A door's facing for a section, its other owned sections (one JSON object keyed by section name,
+/// as `PlaneOpenIn::owned`; empty = none) and a public base URL (the snapshot a probe instance of it
+/// publishes).
+pub type FacingProbe =
+    Arc<dyn Fn(&[u8], &[u8], Option<&str>) -> Result<DoorFacing, String> + Send + Sync>;
+
+/// ONE ADMIN ROUTE a plane door states in its Statement tail (`PlaneTail::admin_routes`): the verb,
+/// the target relative to the admin mount, its flags and the word it is audited under (empty =
+/// never audited).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatedAdminRoute {
+    /// The verb.
+    pub verb: &'static str,
+    /// The target, relative to the admin mount.
+    pub target: &'static str,
+    /// `ROUTE_PUBLIC` or `0`.
+    pub flags: u32,
+    /// The audit word; empty = never audited.
+    pub audit_verb: &'static str,
+}
+
 /// THE REGISTRY FACTS A PLANE DOOR STATES (ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL; spec #49
 /// and R2-C: a plane's config section, scope kinds and the rest are DERIVED from its Statement,
 /// never declared in the root). The loader reads them off a door's Statement (`sections`) and its
@@ -84,6 +116,19 @@ pub struct PlaneRegistration {
     pub key: &'static str,
     /// The section the Statement declares (`SECTION_DECLARING`): the plane's config verb.
     pub section: &'static str,
+    /// The other sections the Statement owns (neither declaring nor consumed): the plane's
+    /// endpoint block beside its verb, handed to its `open` as `PlaneOpenIn::owned`.
+    pub owns: Vec<&'static str>,
+    /// The Statement's secret-reference paths (`Statement::secret_refs`): the settings paths whose
+    /// values are secret references, each `settings.<key>...`, where `*` stands for every key of
+    /// the map at that point (each registration, each entry). The kernel enumerates the references
+    /// they name in its section, so `--validate` and boot resolve every one.
+    pub secret_refs: Vec<&'static str>,
+    /// The admin routes its tail states (ARCHITECT Q-L3B-VERBS): the kernel's row mounts each on
+    /// the admin router, served by the instance's `serve` op.
+    pub admin_routes: Vec<StatedAdminRoute>,
+    /// Their OpenAPI path fragment, each path relative to the admin mount (JSON); `None` = none.
+    pub admin_openapi: Option<&'static [u8]>,
     /// The tail's label (`PlaneTail::label`).
     pub label: &'static str,
     /// The tail's subject noun.
@@ -106,12 +151,17 @@ pub struct PlaneRegistration {
     pub record_kinds: Vec<&'static str>,
     /// The tail's kernel-owned trust keys.
     pub trust_keys: Vec<crate::plane::TrustKeyDecl>,
+    /// The tail's sentence refusing a forwarded caller credential; `None` = it states none.
+    pub caller_credential_refusal: Option<&'static str>,
     /// Whether the tail states `TAIL_FALLBACK`: the plane is the catch-all every unclaimed path
     /// falls through to, and its card is the flat one (at most one registered plane).
     pub fallback: bool,
     /// The door's own `validate` over a whole section (its settings, JSON): `Ok`, or the door's
     /// words. The kernel runs it where the section is parsed and where an admin write lands.
     pub validate: SectionJudge,
+    /// What the door faces the world with for a section, its owned sections and the deployment's
+    /// public base URL: the kernel mounts its claims and binds its audience from it, per generation.
+    pub facing: FacingProbe,
 }
 
 impl std::fmt::Debug for PlaneRegistration {
@@ -162,6 +212,14 @@ pub trait PlaneCalls: Send + Sync {
     /// The pool a READY `arrive` named ([`ArriveOut::pool`], ARCHITECT Q-SW6), copied out of the
     /// plane's memory while that answer is the instance's last; `None` when it named none.
     fn arrived_pool(&self, out: &ArriveOut) -> Option<Vec<u8>>;
+
+    /// The words a REFUSED `arrive` stated in its `head.error` (abi/plane "A refused arrival"),
+    /// copied out of the plane's memory while that answer is the instance's last; `None` when it
+    /// stated none. Opaque: the kernel hands them to the plane's `refusal` unparsed.
+    fn arrived_refusal(&self, out: &ArriveOut) -> Option<Vec<u8>> {
+        let _ = out;
+        None
+    }
 
     /// `refusal`, ticketless, with the same one re-call as [`PlaneCalls::arrive`].
     fn refusal(

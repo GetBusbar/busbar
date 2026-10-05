@@ -29,6 +29,9 @@
 //!    key failing and records nothing; a transient failure is recorded and the piece fails over
 //!    before the plane sees it. A failure before any answer — refused, reset, the attempt's cap —
 //!    fails over too.
+//! 4. [`FarEnd::write`], for a duplex session's HELD far end only: once the attempt's far end has
+//!    answered, each later turn's frame goes into the same connection (`Conns::write`, one message
+//!    per frame), never a second dial; the reads of step 3 go on until its answer ends.
 //!
 //! Deadlines are 1.5.5's: the walk's whole budget is the pool's request timeout, measured from the
 //! unit's start; the first answer is bounded by the member's attempt cap (never beyond what the walk
@@ -72,6 +75,10 @@ use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
 /// The bytes one read of the far end takes.
 const READ_BYTES: usize = 16 * 1024;
 
+/// The longest pause between two offers of a held far end's frame its connection's buffer had no
+/// room for, milliseconds.
+const WRITE_PAUSE_MAX_MS: u64 = 64;
+
 /// 1.5.5's cap on a buffered far-end ERROR body (`limits.upstream_error_body_max_bytes`, default
 /// 256 KiB; v1.5.5 `DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES`, config/mod.rs): the default for
 /// [`Egress::error_body_max`].
@@ -94,6 +101,57 @@ pub struct MemberRoute {
     /// Which of the far end's response head fields cross to the plane: its need's declared keep
     /// rule (THE DESIGN §5, "The response head and trailers": the kernel copies only those).
     pub keep: ResponseKeep,
+    /// EVERY need bound for the member beside [`Self::need`] (ARCHITECT Q-L5B-NEEDS 2026-10-03: one
+    /// binding per (transport, auth)), each with its keep rule: a far request that names one of
+    /// them (`OutboundRequest::need`) opens on it. Empty = the member rides [`Self::need`] alone.
+    pub rides: Vec<(NeedId, ResponseKeep)>,
+    /// The member's trust anchors (the transport pin, ARCHITECT 2026-10-03): the far end's key pin and
+    /// busbar's client identity, sealed into the connector at the egress's composition so every
+    /// connection to the member, the walk's and the plane's own, is held to them. Default = none.
+    pub anchors: busbar_contract::transport::trust::Anchors,
+    /// The base URL a bound need dials, where its transport spells the member's `base_url` in its
+    /// own scheme (a framer composed over the base URL's carrier: the same authority and path, read
+    /// by that framer); a need not listed dials [`Self::base_url`]. Composed by the root, which
+    /// knows the linked transports; the kernel names no scheme.
+    pub spelled: Vec<(NeedId, String)>,
+}
+
+/// The need a far request opens on: its id, its keep rule and the base URL it dials.
+#[derive(Debug, Clone, Copy)]
+pub struct Ride<'a> {
+    /// The need.
+    pub need: NeedId,
+    /// Its response-head rule.
+    pub keep: &'a ResponseKeep,
+    /// The base URL the far request's target is joined onto.
+    pub base_url: &'a str,
+}
+
+impl MemberRoute {
+    /// The need a far request opens on: the one it names (its declared index plus one), else the
+    /// member's own; `None` when it names a need not bound for the member. It dials the base URL
+    /// that need spells ([`Self::spelled`]), else the member's own.
+    #[must_use]
+    pub fn ride(&self, named: u32) -> Option<Ride<'_>> {
+        let (need, keep) = match named.checked_sub(1) {
+            Some(index) if self.need.0 != index => self
+                .rides
+                .iter()
+                .find(|(need, _)| need.0 == index)
+                .map(|(need, keep)| (*need, keep))?,
+            _ => (self.need, &self.keep),
+        };
+        let base_url = self
+            .spelled
+            .iter()
+            .find(|(n, _)| *n == need)
+            .map_or(self.base_url.as_str(), |(_, url)| url.as_str());
+        Some(Ride {
+            need,
+            keep,
+            base_url,
+        })
+    }
 }
 
 /// A NEED'S RESPONSE-HEAD RULE, as its Statement declares it (`Need::keep_mode`,
@@ -190,6 +248,10 @@ pub struct UnitRoute {
     /// The caller's verified credential, as the identity step read it, for a member configured for
     /// passthrough. Zeroised on drop; never logged, stored or handed to the plane.
     pub caller_credential: Option<Redacted<Vec<u8>>>,
+    /// The unit's operation is performed AT MOST ONCE (the plane's `ROUTE_ONCE`): a member that
+    /// ANSWERED with a failure is not retried on another; its answer reaches the plane as it came.
+    /// A walk still moves on before anything was answered.
+    pub once: bool,
 }
 
 impl Default for UnitRoute {
@@ -202,6 +264,7 @@ impl Default for UnitRoute {
             wants_stream: false,
             leg: 0,
             caller_credential: None,
+            once: false,
         }
     }
 }
@@ -322,6 +385,8 @@ struct Live {
     ended: bool,
     /// A relayed non-success answer: how many more of its body's bytes the plane may be handed.
     error_left: Option<usize>,
+    /// The keep rule of the need the attempt opened on.
+    keep: ResponseKeep,
 }
 
 /// One unit's state: the egress unit's walk, the attempt in flight, and a health probe's one
@@ -636,6 +701,7 @@ impl EgressFarEnd<'_> {
             delivered: false,
             ended: false,
             error_left: None,
+            keep: ResponseKeep::default(),
         });
         Pick::Member {
             name,
@@ -746,6 +812,7 @@ impl EgressFarEnd<'_> {
         binding: &AuthBinding,
         request: &OutboundRequest,
         url: &str,
+        extensions: Vec<u8>,
     ) -> Option<Vec<AuthField>> {
         let (authority, path_query) = split(url);
         let (path, query) = match path_query.split_once('?') {
@@ -785,6 +852,9 @@ impl EgressFarEnd<'_> {
             } else {
                 None
             },
+            // The per-call scope the plane stated for this attempt (ARCHITECT round 5
+            // Q-L3B-EXCHANGE (B): the caller's down-scope), in the call's extensions blob.
+            extensions,
             ..FieldsRequest::default()
         };
         let answer = match binding.auth.fields_now(binding.handle, &facts) {
@@ -809,6 +879,19 @@ impl EgressFarEnd<'_> {
         let e = self.egress;
         // Busbar is invisible to upstreams; the per-connection mechanics are the connection's own.
         crate::proxy::strip_re_derived(&mut request.fields);
+        // THE PLANE'S PER-CALL SCOPE rides its request as the host's own field
+        // (`abi::auth::SCOPE_REQUEST_FIELD`): taken out here, before anything is encoded, and lent
+        // to the member's auth call in its extensions blob. No wire carries it.
+        let mut scope = None;
+        request.fields.retain(|(name, value)| {
+            if busbar_contract::abi::auth::is_scope_field(name) {
+                scope.get_or_insert_with(|| value.clone());
+                false
+            } else {
+                true
+            }
+        });
+        let extensions = busbar_contract::abi::auth::scope_extensions(scope.as_deref());
         let (destination, record) = {
             let w = self.lock();
             let Some(live) = w.live.as_ref() else {
@@ -817,6 +900,16 @@ impl EgressFarEnd<'_> {
             (live.member.destination, live.record.clone())
         };
         let Some(route) = e.routes.get(&destination).cloned() else {
+            return false;
+        };
+        // THE NEED IT RIDES: the one the far request names, bound for the member; a need the member
+        // has no binding for is no destination's fault, and nothing is recorded or dialled.
+        let Some((need, keep, base_url)) = route
+            .ride(request.need)
+            .map(|r| (r.need, r.keep.clone(), r.base_url.to_string()))
+        else {
+            let mut w = self.lock();
+            self.settle(&mut w);
             return false;
         };
         // THE TARGET IS A PATH. Joined onto the operator's base_url, anything else could move the
@@ -843,11 +936,11 @@ impl EgressFarEnd<'_> {
             }
             return false;
         }
-        let url = join(&route.base_url, &request.target);
+        let url = join(&base_url, &request.target);
         // 2. The one auth call; its fields lead the head (1.5.5's order).
         let mut auth = Vec::new();
         if let Some(binding) = &route.auth {
-            match self.auth_fields(binding, &request, &url).await {
+            match self.auth_fields(binding, &request, &url, extensions).await {
                 Some(fields) => auth = fields,
                 None => {
                     // Not the destination's fault: nothing recorded against it; the next member.
@@ -903,30 +996,82 @@ impl EgressFarEnd<'_> {
         // 3. The connector: the judged, pinned dial and the framer's encode.
         let opened = e.conns.open(
             e.caller,
-            route.need,
+            need,
             &OpenDesc {
                 target: &url,
                 fields: &borrowed,
-                body: &request.body,
+                // A TEXT message rides no opening: the connection opens bare and the message is
+                // written to it as text once open (the opening carries no text bit).
+                body: if request.text { &[] } else { &request.body },
                 timeout_ms: cap_ms,
                 method: &request.verb,
                 head_target: path.as_bytes(),
                 within: &[],
+                // The registration the member route reaches: what the host sealed for it alone
+                // (its private reach) applies to this dial.
+                member: &route.provider,
             },
         );
         let now_ms = e.clock.now_millis();
         match opened {
             Ok(conn) => {
-                let mut w = self.lock();
-                if let Some(live) = w.live.as_mut() {
-                    live.conn = Some(conn);
-                    live.anchor_ms = now_ms;
+                {
+                    let mut w = self.lock();
+                    if let Some(live) = w.live.as_mut() {
+                        live.keep = keep;
+                        live.conn = Some(conn);
+                        live.anchor_ms = now_ms;
+                    }
+                }
+                if request.text && !request.body.is_empty() {
+                    return self.write_to(conn, &request.body, true).await;
                 }
                 true
             }
             Err(err) => {
                 let _ = self.no_answer(token, NoAnswer::of(err));
                 false
+            }
+        }
+    }
+
+    /// A HELD FAR END's next frame: `body`, as one message, into the live attempt's connection,
+    /// once its far end has answered and while its answer has not ended. The connection's own
+    /// buffer takes it; while it is full the write waits a short, growing pause and offers the rest
+    /// again (the table's write registers no waker), bounded by the session's own waits.
+    async fn write_frame(&self, body: Vec<u8>, text: bool) -> bool {
+        let conn = {
+            let w = self.lock();
+            match w.live.as_ref() {
+                Some(live) if live.answered && !live.ended => live.conn,
+                _ => None,
+            }
+        };
+        let Some(conn) = conn else {
+            return false;
+        };
+        self.write_to(conn, &body, text).await
+    }
+
+    /// Write `body` whole to `conn` as one message (`text` = a text message), pausing on a full
+    /// buffer.
+    async fn write_to(&self, conn: ConnId, body: &[u8], text: bool) -> bool {
+        let e = self.egress;
+        let (mut at, mut pause_ms) = (0, 1);
+        loop {
+            match e.conns.write(e.caller, conn, &body[at..], true, text) {
+                Ok(n) => {
+                    at += n;
+                    if at >= body.len() {
+                        return true;
+                    }
+                    pause_ms = 1;
+                }
+                Err(ConnError::Pending) => {
+                    tokio::time::sleep(Duration::from_millis(pause_ms)).await;
+                    pause_ms = (pause_ms * 2).min(WRITE_PAUSE_MAX_MS);
+                }
+                Err(_) => return false,
             }
         }
     }
@@ -1014,11 +1159,7 @@ impl EgressFarEnd<'_> {
         use busbar_contract::abi::transport::fields::lines;
         let keep = {
             let w = self.lock();
-            w.live
-                .as_ref()
-                .and_then(|l| self.egress.routes.get(&l.member.destination))
-                .map(|r| r.keep.clone())
-                .unwrap_or_default()
+            w.live.as_ref().map(|l| l.keep.clone()).unwrap_or_default()
         };
         let nominated: Vec<&[u8]> = lines(block)
             .filter(|(n, _)| n.eq_ignore_ascii_case(b"connection"))
@@ -1192,10 +1333,11 @@ impl EgressFarEnd<'_> {
             live.probe = None;
         }
         // The caller's own fault is not the destination's, a hard-down is the plane's to render
-        // (its verdict: an auth failure ends the unit, a billing one retries), and a degraded
-        // dispatch relays the upstream's answer: each reaches the plane as it came.
+        // (its verdict: an auth failure ends the unit, a billing one retries), a degraded dispatch
+        // relays the upstream's answer, and an operation performed at most once is not repeated on
+        // another member once one answered: each reaches the plane as it came.
         let client_fault = matches!(classified.disposition, Disposition::ClientFault);
-        if client_fault || hard || live.degraded {
+        if client_fault || hard || live.degraded || self.route.once {
             if !client_fault && !callers_key {
                 e.telemetry
                     .upstream_failure(&pool, destination, classified.label);
@@ -1327,6 +1469,14 @@ impl FarEnd for EgressFarEnd<'_> {
             .constraint
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(constraint);
+    }
+
+    fn write<'a>(
+        &'a self,
+        _token: &'a Pass<Route>,
+        request: OutboundRequest,
+    ) -> impl Future<Output = bool> + Send + 'a {
+        self.write_frame(request.body, request.text)
     }
 }
 

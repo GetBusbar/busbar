@@ -1769,8 +1769,8 @@ mod door {
     /// judges a section: the kernel folds these into its plane registry before the config prepass.
     #[test]
     fn a_door_states_its_registry_facts_and_judges_its_section() {
-        let check = |p: Plugin<Plane>| {
-            let reg = crate::dispatch::kinds::plane::registration(Arc::new(p));
+        let check = |bind: crate::dispatch::kinds::plane::ProbeBind| {
+            let reg = crate::dispatch::kinds::plane::registration(bind).expect("the door binds");
             assert_eq!(reg.key, "plane-door");
             assert_eq!(reg.section, "door");
             assert_eq!(
@@ -1782,17 +1782,26 @@ mod door {
             assert_eq!(reg.record_kinds, vec!["last"]);
             assert!(reg.scope_kinds.is_empty() && reg.trust_keys.is_empty());
             assert_eq!(reg.signing, None);
+            assert_eq!(reg.caller_credential_refusal, None);
             assert_eq!((reg.validate)(b"{}"), Ok(()));
             assert!(
                 (reg.validate)(plug::BAD_SETTINGS).is_err(),
                 "the door refuses its bad settings"
             );
+            let faced = (reg.facing)(b"{}", b"", None).expect("the door faces the world");
+            assert_eq!(faced.claims, vec![("/echo".to_string(), "door/1")]);
+            assert_eq!(faced.admission, None, "the fixture binds no audience");
+            let again = (reg.facing)(b"{}", b"", None).expect("a probe closes, so it opens again");
+            assert_eq!(again, faced);
             format!("{reg:?}")
         };
-        let linked = check(linked());
-        let Some(dropped) = dropped() else {
+        let linked = check(Arc::new(|| Ok(linked())));
+        if dropped().is_none() {
             return;
-        };
-        assert_eq!(linked, check(dropped), "the same facts, whichever door");
+        }
+        let dropped = check(Arc::new(|| {
+            dropped().ok_or_else(|| "no example".to_string())
+        }));
+        assert_eq!(linked, dropped, "the same facts, whichever door");
     }
 }

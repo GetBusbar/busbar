@@ -64,7 +64,7 @@ pub const ENV_UPSTREAM_HTTP1_ONLY: &str = "BUSBAR_UPSTREAM_HTTP1_ONLY";
 
 /// A deprecated boolean env override on top of a config value: an UNSET var defers to the config
 /// value; a set var wins, with anything other than empty/`"0"` reading as `true`.
-fn upstream_bool_env_override(env: Option<std::ffi::OsString>, config_val: bool) -> bool {
+pub fn upstream_bool_env_override(env: Option<std::ffi::OsString>, config_val: bool) -> bool {
     match env {
         Some(v) => v != "0" && !v.is_empty(),
         None => config_val,
@@ -1281,10 +1281,11 @@ pub fn build_app_from_config(
         let axis = crate::preflight::root_rows()
             .store_axis
             .ok_or_else(|| load_failed("no store axis is installed".to_string()))?;
-        let store: Arc<dyn governance::RecordStore> = axis()
+        let opened = axis()
             .open(door, &g.module, cfg_json.as_bytes())
-            .map_err(load_failed)?
-            .records;
+            .map_err(load_failed)?;
+        let store: Arc<dyn governance::RecordStore> = opened.records;
+        let store_calls = opened.calls;
         // The operator ADMIN credential: the operator-credential entry's `token:` secret ref.
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
@@ -1302,6 +1303,11 @@ pub fn build_app_from_config(
         ) {
             Ok(gs) => {
                 let gs = Arc::new(gs);
+                // The store's typed records, kept for the kernel's host services (plane records
+                // persist in the configured store: ARCHITECT Q-L3B-RECORDS).
+                if let Some(calls) = store_calls {
+                    gs.attach_store_calls(calls);
+                }
                 // BOOT-ONLY crash-recovery: hydrate the in-memory token-ledger cells (key buckets +
                 // budget-group buckets) from the durable store so a restart resumes enforcement from
                 // the persisted ledger. A no-op for the empty RAM store.
@@ -1572,6 +1578,7 @@ pub fn build_app_from_config(
                     // `BuildCtx` names no plane-owned config type; the `agents:` container plane's
                     // `build` closure downcasts it back to its own typed config.
                     agent_defs: cfg.agent_defs.as_any(),
+                    tool_defs: cfg.tool_defs.as_any(),
                     public_url: cfg.public_url.as_deref(),
                     // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated
                     // coordination off its own prior runtime object across this apply — the same

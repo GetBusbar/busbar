@@ -73,7 +73,10 @@ fn the_token_request_is_the_form_1_5_5_posted() {
     );
     assert_eq!(
         req.fields,
-        vec![("content-type", "application/x-www-form-urlencoded")]
+        vec![
+            ("content-type", "application/x-www-form-urlencoded"),
+            ("accept", "*/*"),
+        ]
     );
     assert_eq!(
         req.body.expose_secret(),

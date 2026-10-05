@@ -809,13 +809,14 @@ pub struct AppHandle {
     /// host. Bound once by the composition root ([`attach_on_swap`](Self::attach_on_swap)), which is
     /// the one place allowed to name the plane that owns them; unbound, a swap re-attaches nothing.
     attach: std::sync::OnceLock<fn(&Arc<dyn busbar_kernel::plane_host::EngineHost>)>,
-    /// What the composition root re-seals against a NEW generation once it is swapped in (its door
-    /// planes' refresh); unbound, a swap re-seals nothing.
-    on_apply: std::sync::OnceLock<OnApply>,
+    /// What every [`swap`](Self::swap) tells of the generation it installed: the composition root's
+    /// served door planes, each refreshed onto a new generation of its section (ARCHITECT
+    /// Q-DEL-A2A-APPLY; THE DESIGN §11: plugin memory is "valid to its next refresh generation").
+    appliers: std::sync::Mutex<Vec<Applier>>,
 }
 
-/// The composition root's re-seal over a newly swapped-in generation.
-pub type OnApply = Arc<dyn Fn(&Arc<App>) + Send + Sync>;
+/// One thing told of every generation a [`AppHandle::swap`] installs.
+pub type Applier = Box<dyn Fn(&Arc<App>) + Send + Sync>;
 
 impl AppHandle {
     pub fn new(app: Arc<App>) -> Self {
@@ -825,8 +826,17 @@ impl AppHandle {
             swapping: std::sync::atomic::AtomicBool::new(false),
             snapshot_host: std::sync::Mutex::new(None),
             attach: std::sync::OnceLock::new(),
-            on_apply: std::sync::OnceLock::new(),
+            appliers: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Tell `applier` of every generation a later [`swap`](Self::swap) installs (a config apply,
+    /// reload or mutation), after it is installed.
+    pub fn on_apply(&self, applier: Applier) {
+        self.appliers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(applier);
     }
 
     /// Bind what every [`swap`](Self::swap) runs against the incoming generation's host before the
@@ -835,13 +845,6 @@ impl AppHandle {
     /// binding wins: there is one set of per-generation workers per process.
     pub fn attach_on_swap(&self, attach: fn(&Arc<dyn busbar_kernel::plane_host::EngineHost>)) {
         let _ = self.attach.set(attach);
-    }
-
-    /// Bind what every [`swap`](Self::swap) re-seals against the incoming generation once it is the
-    /// current one: the composition root's door planes, refreshed onto its configuration (spec
-    /// Part 1 line 569, one validated object per `refresh`). First binding wins.
-    pub fn attach_on_apply(&self, on_apply: OnApply) {
-        let _ = self.on_apply.set(on_apply);
     }
 
     /// Bind the composition-root-owned ENGINE HOST for the CURRENT generation — the host the active
@@ -922,9 +925,6 @@ impl AppHandle {
             }
         }
         self.current.store(next.clone());
-        if let Some(on_apply) = self.on_apply.get() {
-            on_apply(&next);
-        }
         // RETIRE the OUTGOING generation's engine host (App-retype WEDGE 2f). The active health probers
         // hold a `Weak<dyn EngineHost>` to the composition-root-owned host of the snapshot they were
         // spawned against; dropping it here makes their `Weak::upgrade` fail, so they exit rather than
@@ -939,6 +939,16 @@ impl AppHandle {
             attach(&host);
         }
         self.set_snapshot_host(host);
+        // EVERY APPLY IS A NEW GENERATION for the composition root's served door planes: each is
+        // refreshed onto the installed generation's section (its plugin memory resets with it).
+        for applier in self
+            .appliers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+        {
+            applier(&next);
+        }
     }
 
     /// Commit a live-config mutation as PERSIST-then-SWAP, FAIL-CLOSED — the ONE sanctioned way to

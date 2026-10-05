@@ -1597,7 +1597,7 @@ fn compute_layout() -> String {
     record!(
         s,
         tkind::BeginIn,
-        [head, side, _reserved, target, facts, sink]
+        [head, side, _reserved, target, facts, sink, fields, fields_len]
     );
     record!(
         s,
@@ -1627,7 +1627,7 @@ fn compute_layout() -> String {
     record!(
         s,
         tkind::RefuseIn,
-        [head, framing, stream, has_stream, _reserved, bytes, len, sink]
+        [head, framing, stream, has_stream, _reserved, bytes, len, sink, status, _reserved2]
     );
     record!(s, tkind::FinishIn, [head, framing, reason, _reserved, sink]);
     record!(s, tkind::FramingIn, [head, framing, sink]);
@@ -1698,7 +1698,11 @@ fn compute_layout() -> String {
             trust_keys,
             trust_keys_len,
             refusal_statuses,
-            refusal_statuses_len
+            refusal_statuses_len,
+            caller_credential_refusal,
+            admin_routes,
+            admin_routes_len,
+            admin_openapi
         ]
     );
     record!(
@@ -1724,10 +1728,11 @@ fn compute_layout() -> String {
             admin_routes_len,
             openapi,
             audience,
-            resource_metadata
+            resource_metadata,
+            resource_facts
         ]
     );
-    record!(s, pkind::PlaneOpenIn, [open, public_url]);
+    record!(s, pkind::PlaneOpenIn, [open, public_url, owned]);
     record!(s, pkind::PlaneOpenOut, [open, snapshot]);
     record!(s, pkind::PlaneRefreshOut, [head, snapshot]);
     record!(s, pkind::UnitCount, [class, source, amount]);
@@ -1758,6 +1763,7 @@ fn compute_layout() -> String {
             cancels,
             pool,
             route,
+            route_flags,
             _route_reserved
         ]
     );
@@ -1815,7 +1821,14 @@ fn compute_layout() -> String {
             arena_written,
             arena_needed,
             verb,
-            target
+            target,
+            need,
+            _need_reserved,
+            lane,
+            final_status,
+            _final_reserved,
+            final_message,
+            final_details
         ]
     );
     record!(
@@ -1837,7 +1850,10 @@ fn compute_layout() -> String {
             unit,
             plane_code,
             retry_after_s,
-            target
+            target,
+            records_buf,
+            records_cap,
+            hook
         ]
     );
     record!(
@@ -1852,15 +1868,30 @@ fn compute_layout() -> String {
             marker,
             fields_written,
             fields_needed,
-            status
+            status,
+            records_written,
+            records_needed
         ]
     );
     record!(
         s,
         pkind::ServeIn,
         [
-            head, route, _reserved, target, fields, fields_len, body, reply_buf, reply_cap,
-            fields_buf, fields_cap, arena_buf, arena_cap
+            head,
+            route,
+            _reserved,
+            target,
+            fields,
+            fields_len,
+            body,
+            reply_buf,
+            reply_cap,
+            fields_buf,
+            fields_cap,
+            arena_buf,
+            arena_cap,
+            records_buf,
+            records_cap
         ]
     );
     record!(
@@ -1875,7 +1906,9 @@ fn compute_layout() -> String {
             status,
             fields_written,
             fields_needed,
-            audit
+            audit,
+            records_written,
+            records_needed
         ]
     );
     record!(s, pkind::PlaneDriveIn, [drive, sessions_buf, sessions_cap]);
@@ -1959,7 +1992,16 @@ fn compute_layout() -> String {
     record!(
         s,
         hconn::StreamFacts,
-        [size, secure, endpoint, agreed_protocol, peer_cert_hash]
+        [
+            size,
+            secure,
+            endpoint,
+            agreed_protocol,
+            peer_cert_hash,
+            peer_key_pin,
+            client_identity,
+            _reserved
+        ]
     );
     record!(s, hconn::CheckoutIn, [head, need, _reserved]);
     record!(s, hconn::CheckinIn, [head, stream, disposition, _reserved]);
@@ -2035,7 +2077,7 @@ fn compute_layout() -> String {
     );
     record!(s, hsvc::SignIn, [head, data, into]);
     record!(s, hsvc::UnitNestIn, [head, verb, target, body, into]);
-    record!(s, hsvc::WorkOpenIn, [head, kind, record]);
+    record!(s, hsvc::WorkOpenIn, [head, kind, record, into]);
     record!(s, hsvc::WorkFindIn, [head, reference, into]);
     record!(s, hsvc::WorkSettleIn, [head, handle, record]);
     record!(s, hsvc::WorkResumeIn, [head, handle, into]);
@@ -2110,7 +2152,8 @@ fn compute_layout() -> String {
             max_tokens,
             flags,
             signals,
-            signals_len
+            signals_len,
+            session
         ]
     );
     record!(

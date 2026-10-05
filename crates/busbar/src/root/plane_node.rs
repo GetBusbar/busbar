@@ -52,7 +52,9 @@ use busbar_contract::caps::{
 use busbar_contract::{LaneId, Registration, UnitKey};
 use busbar_kernel::plane_host::PlaneAnswer;
 use busbar_kernel::slice::GroupLeaseSlip;
-use busbar_kernel::teller::{AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
+use busbar_kernel::teller::{
+    AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units,
+};
 use busbar_kernel_audit::{
     AuditInputs, Controls, FinishClass as RecordFinish, OpClassId as RecordOpClass, OutcomeFacts,
     Subject, Usage as RecordUsage, UsageLine as RecordLine, What,
@@ -595,6 +597,13 @@ impl Node {
         swept
     }
 
+    /// THE PARENT a nested unit is driven under ([`Node::drive_borrowed`]): the unit `key`, while it
+    /// is live in this node's table.
+    #[must_use]
+    pub fn parent(&self, key: UnitKey) -> Option<Parent> {
+        self.inflight.get(key).map(|slot| Parent { key, slot })
+    }
+
     /// A key for one unit this node is about to drive ([`Node::drive_borrowed`]), from the node's
     /// one mint: the steps that serve it are told it before it runs.
     #[must_use]
@@ -616,6 +625,11 @@ impl Node {
     /// once the unit has ended (what it consumed, priced at the card pinned at its door, the node's
     /// one pricing site), else the exit's posting as it stood, its audit record sealed with it.
     /// Answers whether the table took the unit. Dropping the future marks its slot for the sweep.
+    ///
+    /// A NESTED unit (`unit.nest`, THE DESIGN §11.12 unit row) names its `parent`: it enters the
+    /// table as `OriginKind::Nested`, its loop runs with the parent's hold cell as its `Run.parent`
+    /// (so its door accrues against the parent's admission, and its posting goes into the parent's
+    /// hold, or late on its own when the parent exited first), and its record names the parent.
     #[allow(clippy::too_many_arguments)]
     pub async fn drive_borrowed<U: Units + RouteAwait>(
         &self,
@@ -626,15 +640,17 @@ impl Node {
         units: &U,
         late: Late,
         history: Option<crate::root::kernel::PinnedHistory>,
+        parent: Option<&Parent>,
     ) -> bool {
         self.sweep(arrived);
         post.open(key, principal.clone(), arrived, history.clone());
         let meter = Arc::new(AccrualMeter::new());
+        let origin = parent.map_or(OriginKind::Client, |p| OriginKind::Nested { parent: p.key });
         let hold =
             busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
         let Ok(slot) = self.inflight.insert(busbar_kernel::inflight::Enter {
             key,
-            origin: OriginKind::Client,
+            origin,
             session: None,
             admin_listener: false,
             zero_hold_tick: false,
@@ -653,7 +669,7 @@ impl Node {
         };
         let ctx = UnitCtx {
             key,
-            origin: OriginKind::Client,
+            origin,
             session: None,
             generation: busbar_kernel::registry::Generation::FIRST,
             admin_listener: false,
@@ -666,7 +682,7 @@ impl Node {
             &ctx,
             busbar_kernel::teller::Run {
                 cell: slot.cell(),
-                parent: None,
+                parent: parent.map(|p| p.slot.cell()),
                 leases: slot.leases(),
                 gauge: &self.gauge,
                 canary: &self.canary,
@@ -680,7 +696,8 @@ impl Node {
             facts,
             pass,
             key,
-            origin: self.kernel.origin(OriginKind::Client),
+            origin: self.kernel.origin(origin),
+            parent: parent.map(|p| p.key),
         });
         match self.late_arm(Some(late), principal, arrived, history.as_ref()) {
             Some(mut arm) => {
@@ -691,6 +708,72 @@ impl Node {
         }
         occupied.reached_end = true;
         true
+    }
+
+    /// THE BORROWED SESSION OPEN (K6; ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03): one duplex session
+    /// unit whose steps, far end and caller live on the serving task (a plane driver's unit), run
+    /// through the loop's session opener ([`busbar_kernel::teller::open_unit`]: arrival to the door
+    /// and its audit, a session admitting at a zero hold, so nothing is held on the book and there is
+    /// no exit to settle) under this node's in-flight table, sweep and gauge. Its facts are opened on
+    /// `post` for the whole session. What the door said comes back with the unit's context and the
+    /// slot the session holds while it runs: [`SessionSlot::finish`] gives it back once the session
+    /// ended (its money is the session's one line, `PlaneMoney::session_ended`); dropping the slot
+    /// marks it for the sweep. `None` when the table would not take the unit.
+    pub fn open_borrowed<U: Units>(
+        &self,
+        key: UnitKey,
+        arrived: Arrived,
+        principal: &PrincipalId,
+        post: &'_ NodeEndPost,
+        units: &U,
+        history: Option<crate::root::kernel::PinnedHistory>,
+    ) -> Option<(busbar_kernel::teller::SessionOpen, UnitCtx, SessionSlot<'_>)> {
+        self.sweep(arrived);
+        post.open(key, principal.clone(), arrived, history);
+        let meter = Arc::new(AccrualMeter::new());
+        let hold =
+            busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
+        let Ok(slot) = self.inflight.insert(busbar_kernel::inflight::Enter {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            zero_hold_tick: false,
+            arrival: hold,
+            now: arrived.ms(),
+        }) else {
+            post.close(key);
+            return None;
+        };
+        let occupied = Occupied {
+            node: self,
+            slot: Arc::clone(&slot),
+            arrived,
+            reached_end: false,
+        };
+        let ctx = UnitCtx {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        };
+        let borrowed = Borrowed { units, post };
+        let opened = busbar_kernel::teller::open_unit(
+            &self.kernel,
+            &borrowed,
+            &ctx,
+            busbar_kernel::teller::Run {
+                cell: slot.cell(),
+                parent: None,
+                leases: slot.leases(),
+                gauge: &self.gauge,
+                canary: &self.canary,
+                meter: &meter,
+            },
+        );
+        Some((opened, ctx, SessionSlot { occupied, key }))
     }
 
     /// Walk one handed unit through the loop and answer with what the terminal posted.
@@ -1515,6 +1598,29 @@ struct Occupied<'n> {
     reached_end: bool,
 }
 
+/// THE IN-FLIGHT SLOT A BORROWED SESSION HOLDS while it runs ([`Node::open_borrowed`]).
+#[must_use = "a session slot dropped unfinished is marked for the sweep"]
+pub struct SessionSlot<'n> {
+    occupied: Occupied<'n>,
+    key: UnitKey,
+}
+
+impl std::fmt::Debug for SessionSlot<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionSlot")
+            .field("key", &self.key)
+            .finish()
+    }
+}
+
+impl SessionSlot<'_> {
+    /// The session ended on its own path: its facts close on `post` and its slot is given back.
+    pub fn finish(mut self, post: &NodeEndPost) {
+        post.close(self.key);
+        self.occupied.reached_end = true;
+    }
+}
+
 impl Drop for Occupied<'_> {
     fn drop(&mut self) {
         if self.reached_end {
@@ -1584,6 +1690,7 @@ impl Driven<'_> {
             pass,
             key,
             origin: self.node.kernel.origin(OriginKind::Client),
+            parent: None,
         })
     }
 }
@@ -1709,6 +1816,12 @@ impl RouteAwait for Driven<'_> {
             self.op_class,
             self.route.route_leg(token, ctx, destinations),
         )
+    }
+
+    /// The plane's own screen before the door (SEAM-4j: a gate-first plane's hooks), forwarded:
+    /// a wrapper that answered the default would let the gate run after admission.
+    fn screen<'a>(&'a self, ctx: &'a UnitCtx) -> Screen<'a> {
+        self.route.screen(ctx)
     }
 
     /// THE CALLER WENT AWAY MID-DISPATCH, and the end the loop reached for it is POSTED here (item
@@ -1854,6 +1967,11 @@ impl<U: RouteAwait> RouteAwait for Borrowed<'_, U> {
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
         self.units.abandoned(ctx, ended);
     }
+
+    /// The borrowed units' own screen before the door, forwarded (SEAM-4j).
+    fn screen<'a>(&'a self, ctx: &'a UnitCtx) -> Screen<'a> {
+        self.units.screen(ctx)
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1993,7 +2111,11 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
                 facts,
                 pass,
                 key: ctx.key,
-                origin: self.node.kernel.origin(OriginKind::Client),
+                origin: self.node.kernel.origin(ctx.origin),
+                parent: match ctx.origin {
+                    OriginKind::Nested { parent } => Some(parent),
+                    _ => None,
+                },
             });
             self.node
                 .settle_end(&principal, arrived, history.as_ref(), ended, seal);
@@ -2005,6 +2127,33 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
 // The unit's fixed audit record
 // ---------------------------------------------------------------------------------------------
 
+/// A NESTED UNIT'S PARENT, live in the node's table ([`Node::parent`]): its key and its slot, whose
+/// hold cell the child accrues against.
+pub struct Parent {
+    key: UnitKey,
+    slot: Arc<busbar_kernel::inflight::UnitSlot>,
+}
+
+impl Parent {
+    /// The parent's key.
+    #[must_use]
+    pub fn key(&self) -> UnitKey {
+        self.key
+    }
+
+    /// The parent's hold cell.
+    #[must_use]
+    pub fn cell(&self) -> &busbar_contract::caps::HoldCell {
+        self.slot.cell()
+    }
+}
+
+impl std::fmt::Debug for Parent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Parent").field("key", &self.key).finish()
+    }
+}
+
 /// A UNIT'S RECORD-TO-BE: the facts its audit door sealed and the pass that door was lent, handed
 /// back by the loop (`Units::audited`), carried to the unit's one line and sealed there — once, since
 /// sealing consumes the pass. A unit whose audit door never answered has none, so it has no record.
@@ -2013,6 +2162,8 @@ struct UnitSeal {
     pass: Pass<Audit>,
     key: UnitKey,
     origin: busbar_contract::caps::Origin,
+    /// The unit that caused this one (a nested unit's parent).
+    parent: Option<UnitKey>,
 }
 
 impl UnitSeal {
@@ -2038,7 +2189,7 @@ impl UnitSeal {
                 incarnation: 0,
                 op_class: RecordOpClass::new(self.facts.op_class.as_str()),
                 destination: None,
-                parent: None,
+                parent: self.parent,
                 pre_hook_head: None,
                 post_hook_head: None,
             },

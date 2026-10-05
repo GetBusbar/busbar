@@ -19,17 +19,19 @@ use busbar_contract::abi::host::service::{
 };
 use busbar_contract::transport::trust::EgressTrust;
 use busbar_kernel::config::Destinations;
-use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal};
+use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal, Refused};
 
 use crate::guard::{Guard, Resolve, SystemResolver};
+use crate::pool::PoolPosture;
 use crate::registry::{Entry, Transports};
 use crate::{Connector, DialJudge, Judged, Verdict, WakeTicket};
 
 /// THE PROCESS'S CONNECTOR over the framer entries `entries` yields, judging every dial through
 /// `dest` ([`judge`], the node's `own_ports` refused to a loopback-allowed need), securing a
-/// connection with the default outbound trust where its target asks for it, and waking a plugin's
-/// ticket through `wake`. The trust is built before `entries` is asked for, so a boot that cannot
-/// secure a connection loads no transport door.
+/// connection with the default outbound trust where its target asks for it, waking a plugin's
+/// ticket through `wake`, and keeping a dialled connection whose exchange finished whole under the
+/// deployment's `pool` posture ([`crate::pool`]). The trust is built before `entries` is asked for,
+/// so a boot that cannot secure a connection loads no transport door.
 ///
 /// # Errors
 ///
@@ -40,16 +42,14 @@ pub fn build(
     dest: Arc<dyn DestJudge>,
     own_ports: &[u16],
     wake: WakeTicket,
+    pool: PoolPosture,
 ) -> Result<Arc<Connector>, String> {
     let tls = crate::tls::client::build_client_config(&EgressTrust::default())
         .map_err(|e| format!("its connection security: {e}"))?;
     let view = Transports::new(entries()?).map_err(|e| e.to_string())?;
-    Ok(Arc::new(Connector::serving(
-        view,
-        judge(dest, own_ports),
-        Some(Arc::new(tls)),
-        wake,
-    )))
+    Ok(Arc::new(
+        Connector::serving(view, judge(dest, own_ports), Some(Arc::new(tls)), wake).pooling(pool),
+    ))
 }
 
 /// THE DEPLOYMENT'S ONE DESTINATION JUDGE: its [`Guard`] over the system resolver.
@@ -89,7 +89,13 @@ impl GuardJudge {
 
     /// The name and scheme arms: the host, port and scheme to dial, and the literal when the host
     /// is one.
-    fn named(&self, dest: &str, class: u32) -> Result<(String, u16, bool, Option<IpAddr>), u64> {
+    fn named(
+        &self,
+        dest: &str,
+        class: u32,
+        strict: bool,
+        reach: bool,
+    ) -> Result<(String, u16, bool, Option<IpAddr>), u64> {
         // The classes a need may declare are 0..=4; a destination under any other names none.
         if class > EGRESS_LOOPBACK_ALLOWED {
             return Err(DEST_NO_HOST);
@@ -98,7 +104,10 @@ impl GuardJudge {
         if !https && class == EGRESS_OPEN_WEB {
             return Err(DEST_PLAINTEXT);
         }
-        let literal = self.guard.judge_name(&host, class).map_err(|r| r.verdict)?;
+        let literal = self
+            .guard
+            .judge_name_with(&host, class, strict, reach)
+            .map_err(|r| r.verdict)?;
         if let Some(ip) = literal {
             plaintext_to_loopback(class, https, ip)?;
         }
@@ -146,43 +155,27 @@ fn split(dest: &str) -> Result<(String, u16, bool), u64> {
 }
 
 impl DestJudge for GuardJudge {
-    fn judge_name(&self, dest: &str, class: u32) -> Result<(), u64> {
-        self.named(dest, class).map(|_| ())
+    fn judge_name(&self, dest: &str, class: u32, refuse_private: bool) -> Result<(), u64> {
+        self.named(dest, class, refuse_private, false).map(|_| ())
     }
 
     fn judge(
         &self,
         dest: &str,
         class: u32,
+        refuse_private: bool,
         done: Box<dyn FnOnce(Admitted) + Send>,
     ) -> Option<Admitted> {
-        let (host, port, https, literal) = match self.named(dest, class) {
-            Err(v) => return Some(Err(v)),
-            Ok(n) => n,
-        };
-        if let Some(ip) = literal {
-            return Some(Ok((SocketAddr::new(ip, port), vec![ip])));
-        }
-        let guard = self.guard.clone();
-        let name = host.clone();
-        self.resolver.resolve(
-            &name,
-            Box::new(move |answer| {
-                done(match answer {
-                    Err(_) => Err(DEST_UNRESOLVABLE),
-                    Ok(addrs) => guard
-                        .judge_answer(&host, &addrs, class)
-                        .map_err(|r| r.verdict)
-                        .and_then(|()| {
-                            // All admitted, so the first is a choice between equals that keeps
-                            // the resolver's own ordering.
-                            plaintext_to_loopback(class, https, addrs[0])?;
-                            Ok((SocketAddr::new(addrs[0], port), addrs))
-                        }),
-                });
-            }),
-        );
-        None
+        self.judged(dest, class, refuse_private, false, done)
+    }
+
+    fn judge_reaching(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Box<dyn FnOnce(Admitted) + Send>,
+    ) -> Option<Admitted> {
+        self.judged(dest, class, false, true, done)
     }
 
     fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal> {
@@ -200,6 +193,54 @@ impl DestJudge for GuardJudge {
     }
 }
 
+impl GuardJudge {
+    /// The judgement [`DestJudge::judge`] and [`DestJudge::judge_reaching`] share: `reach`, the
+    /// need's private reach to the destination ([`Guard::judge_name_with`]).
+    fn judged(
+        &self,
+        dest: &str,
+        class: u32,
+        refuse_private: bool,
+        reach: bool,
+        done: Box<dyn FnOnce(Admitted) + Send>,
+    ) -> Option<Admitted> {
+        let (host, port, https, literal) = match self.named(dest, class, refuse_private, reach) {
+            Err(v) => return Some(Err(v.into())),
+            Ok(n) => n,
+        };
+        if let Some(ip) = literal {
+            return Some(Ok((SocketAddr::new(ip, port), vec![ip])));
+        }
+        let guard = self.guard.clone();
+        let name = host.clone();
+        self.resolver.resolve(
+            &name,
+            Box::new(move |answer| {
+                done(match answer {
+                    // The resolver's own reason, named.
+                    Err(reason) => Err(Refused {
+                        verdict: DEST_UNRESOLVABLE,
+                        detail: Some(reason),
+                    }),
+                    Ok(addrs) => guard
+                        .judge_answer_with(&host, &addrs, class, refuse_private, reach)
+                        .map_err(|r| Refused {
+                            verdict: r.verdict,
+                            detail: r.addr.map(|a| a.to_string()),
+                        })
+                        .and_then(|()| {
+                            // All admitted, so the first is a choice between equals that keeps
+                            // the resolver's own ordering.
+                            plaintext_to_loopback(class, https, addrs[0])?;
+                            Ok((SocketAddr::new(addrs[0], port), addrs))
+                        }),
+                });
+            }),
+        );
+        None
+    }
+}
+
 /// THE DIAL JUDGE the one Connector holds (spec section 5, "Dialing only what the kernel
 /// judged"): the deployment's one destination judge, every dial under the need's own egress
 /// class, the address it pinned dialled exactly. A loopback-allowed need is held off the node
@@ -207,15 +248,57 @@ impl DestJudge for GuardJudge {
 /// as internal, whether the judgement answered at once or after resolving a name.
 #[must_use]
 pub fn judge(dest: Arc<dyn DestJudge>, own_ports: &[u16]) -> Arc<dyn DialJudge> {
-    let own: Arc<[u16]> = own_ports.into();
-    Arc::new(move |target: &str, class: u32, done: Judged| {
-        let later = Arc::clone(&own);
-        let pin = |v: Admitted| v.map(|(at, _)| at);
+    Arc::new(OneJudge {
+        dest,
+        own: own_ports.into(),
+    })
+}
+
+/// [`judge`]'s dial judge: the one destination judge and the node's own ports.
+struct OneJudge {
+    dest: Arc<dyn DestJudge>,
+    own: Arc<[u16]>,
+}
+
+impl OneJudge {
+    /// A dial judged by `judging` (the plain judgement or the reaching one), its pin held off the
+    /// node itself.
+    fn pinned(
+        &self,
+        class: u32,
+        done: Judged,
+        judging: impl FnOnce(Box<dyn FnOnce(Admitted) + Send>) -> Option<Admitted>,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        let later = Arc::clone(&self.own);
+        let pin = |v: Admitted| v.map(|(at, _)| at).map_err(|r| r.verdict);
         let pended: Box<dyn FnOnce(Admitted) + Send> =
             Box::new(move |v| done(not_the_node(class, &later, pin(v))));
-        dest.judge(target, class, pended)
-            .map(|v| not_the_node(class, &own, pin(v)))
-    })
+        judging(pended).map(|v| not_the_node(class, &self.own, pin(v)))
+    }
+}
+
+impl DialJudge for OneJudge {
+    fn judge_dial(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Judged,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        self.pinned(class, done, |pended| {
+            self.dest.judge(dest, class, false, pended)
+        })
+    }
+
+    fn judge_dial_reaching(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Judged,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        self.pinned(class, done, |pended| {
+            self.dest.judge_reaching(dest, class, pended)
+        })
+    }
 }
 
 /// A loopback-allowed pin on one of the node's own ports, refused (`DEST_INTERNAL`); any other

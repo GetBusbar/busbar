@@ -65,6 +65,17 @@ pub trait MoneySeam: Send + Sync {
         let _ = (ctx, model, provider);
     }
 
+    /// THE UNIT'S LEDGER LANE, as the plane's answer named it (`OnPieceOut::lane`): the billing
+    /// identity its units are priced, ledgered and metered under, which is not the route entry the
+    /// walk picked. The money steps qualify it with the plane's own key, and it holds over the
+    /// serving member for the rest of the unit; the last one named wins. A unit whose answers name
+    /// none is laned by its route entry, as before.
+    ///
+    /// [`OnPieceOut::lane`]: busbar_contract::abi::plane::OnPieceOut::lane
+    fn laned(&self, ctx: &UnitCtx, lane: &str) {
+        let _ = (ctx, lane);
+    }
+
     /// The end of a unit whose caller went away, as the loop's guard reached it: posted by the
     /// money steps exactly as a returned end is. Runs inside a `Drop`: it must not panic, await or
     /// cross a plugin.
