@@ -46,7 +46,7 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
     check_arrive, check_cancel, check_drive, check_on_piece, check_pin_mechanisms, check_project,
     check_refusal, check_refusal_statuses, check_sections, check_serve, check_snapshot, check_tail,
-    check_trust_keys, Bounds, Caps, MAX_SESSIONS,
+    check_trust_keys, Bounds, Caps, ProjectHost, MAX_SESSIONS,
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PinMechanism, PlaneDriveIn,
@@ -505,9 +505,9 @@ impl Kind for Plane {
             slot::SERVE => a
                 .out::<ServeOut>()
                 .is_ok_and(|o| o.reply_needed != 0 || o.fields_needed != 0 || o.arena_needed != 0),
-            slot::PROJECT => a
-                .out::<ProjectOut>()
-                .is_ok_and(|o| o.signals_needed != 0 || o.arena_needed != 0),
+            slot::PROJECT => a.out::<ProjectOut>().is_ok_and(|o| {
+                o.signals_needed != 0 || o.messages_needed != 0 || o.arena_needed != 0
+            }),
             life::DRIVE => a
                 .out::<PlaneDriveOut>()
                 .is_ok_and(|o| o.sessions_needed != 0),
@@ -621,8 +621,8 @@ fn on_piece(a: &Answer) -> Result<(), Fault> {
     check_on_piece(a.outcome, o, (units, records, fields), &caps, bounds(a)?)
 }
 
-/// `project`: the view's signals over the host's `signals_buf`, its strings and body over the
-/// host's arena, every cap from `ProjectIn`.
+/// `project`: the view's signals over the host's `signals_buf`, its prompt turns over the host's
+/// `messages_buf`, its strings and bodies over the host's arena, every cap from `ProjectIn`.
 fn project(a: &Answer) -> Result<(), Fault> {
     let i = a.input::<ProjectIn>()?;
     let o = a.out::<ProjectOut>()?;
@@ -637,12 +637,28 @@ fn project(a: &Answer) -> Result<(), Fault> {
             "project.signals",
         )
     }?;
+    let messages_cap = i.messages_cap as u64;
+    // SAFETY: `messages_buf` is the host's own buffer of `messages_cap` `MessageView`s, named
+    // by this op's `in`.
+    let messages = unsafe {
+        reported(
+            i.messages_buf.cast_const(),
+            o.prompt.message_count,
+            messages_cap,
+            "project.messages",
+        )
+    }?;
     check_project(
         a.outcome,
         o,
-        signals,
-        cap,
-        (i.arena_buf.cast_const(), i.arena_cap as u64),
+        &ProjectHost {
+            signals,
+            signals_cap: cap,
+            messages,
+            messages_cap,
+            arena: (i.arena_buf.cast_const(), i.arena_cap as u64),
+            rewrite: i.rewrite.len != 0,
+        },
     )
 }
 

@@ -9,7 +9,8 @@
 //! A duplex session's pieces ride two request tickets, one per side; its unsolicited output is
 //! named by the instance's one driver ticket's `drive` ([`PlaneCalls::ready`]).
 //!
-//! The pure ops (`arrive`, `refusal`) and the host's own `cancel` are ticketless: they never pend.
+//! The pure ops (`arrive`, `refusal`, `project`) and the host's own `cancel` are ticketless: they
+//! never pend.
 //! `on_piece` and `serve` are submitted on a request ticket and cross on that ticket's worker; the
 //! answer is a future, so the caller's task awaits it and no thread is parked.
 //!
@@ -27,7 +28,8 @@ use std::sync::Arc;
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::plane::{
-    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut, ServeIn, ServeOut,
+    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, ProjectIn, ProjectOut, RefusalIn, RefusalOut,
+    ServeIn, ServeOut,
 };
 
 /// How one ticketed op ended, as the host's dispatcher judged it.
@@ -114,6 +116,16 @@ pub trait PlaneCalls: Send + Sync {
         input: &mut RefusalIn,
         out: &mut RefusalOut,
         grow: Grow<'_, RefusalIn, RefusalOut>,
+    ) -> Outcome;
+
+    /// `project`, ticketless, with the same one re-call as [`PlaneCalls::arrive`]: the hook kind's
+    /// view of the unit's request (once per unit, when a hook is bound), and again with a
+    /// request-stage hook's rewrite for the plane to apply and re-project.
+    fn project(
+        &self,
+        input: &mut ProjectIn,
+        out: &mut ProjectOut,
+        grow: Grow<'_, ProjectIn, ProjectOut>,
     ) -> Outcome;
 
     /// The host's own ticketless `cancel` of `ticket`: the disposition it answered, or `None`

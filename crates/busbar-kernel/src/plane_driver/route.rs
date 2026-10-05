@@ -87,6 +87,15 @@ pub enum Pick {
         /// The Retry-After seconds.
         retry_after: Option<u32>,
     },
+    /// The walk refuses for a hook's restriction: a fallback pool no member of which satisfies a
+    /// required restrict the hooks decided (the previous release failed closed there rather than
+    /// spill to an ineligible far end). The caller is answered as by the hook, with these words.
+    Vetoed {
+        /// The status number.
+        status: u32,
+        /// The words.
+        text: String,
+    },
 }
 
 /// One attempt's request, as the plane bound it for the far end.
@@ -132,6 +141,34 @@ pub trait FarEnd: Sync {
         &'a self,
         token: &'a Pass<Route>,
     ) -> impl Future<Output = Option<FarPiece>> + Send + 'a;
+
+    /// How many of the pool's candidates the walk has not tried yet, as the `routing` stage tap
+    /// tells a hook; `None` when the walk does not say.
+    fn remaining(&self, token: &Pass<Route>) -> Option<usize> {
+        let _ = token;
+        None
+    }
+
+    /// Why the attempt that just failed over failed, in the walk's failover vocabulary (the
+    /// `routing` stage tap's `previous_failure`); `None` when the walk does not say.
+    fn failure(&self, token: &Pass<Route>) -> Option<&'static str> {
+        let _ = token;
+        None
+    }
+
+    /// The candidates of the pool the walk routes the unit over, as the hooks are shown them;
+    /// `None` when the walk names none (the hooks then see no candidate).
+    fn candidates(&self, token: &Pass<Route>) -> Option<super::hooks::Candidates> {
+        let _ = token;
+        None
+    }
+
+    /// The hooks' constraint on the walk: the members it may pick, the order it tries them in, and
+    /// the restricts a fallback pool's members are held to. Called at most once, before the first
+    /// attempt.
+    fn constrain(&self, token: &Pass<Route>, constraint: super::hooks::Constraint) {
+        let _ = (token, constraint);
+    }
 }
 
 /// THE CALLER'S SIDE of the unit: the reply head, then the reply bytes.
@@ -340,6 +377,8 @@ pub(crate) enum End {
     Failed(ReasonCode),
     /// The walk had no member left: its exhaustion terminal's status and Retry-After seconds.
     Exhausted(u32, Option<u32>),
+    /// The walk refused for a hook's restriction: the status and the words.
+    Vetoed(u32, String),
     /// The driver cancels the unit; the answer of the op that was in flight, if one was.
     Cancel(ReasonCode, Option<Answered>),
 }
@@ -652,6 +691,8 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         turn: Option<&session::Turn<'_>>,
     ) -> End {
         let mut attempt_no = 0;
+        // Why the previous attempt failed over, for the next attempt's `routing` stage tap.
+        let mut failed: Option<&'static str> = None;
         'attempt: loop {
             attempt_no += 1;
             let picked = guarded_run(run, self.far.member(run.token, attempt_no)).await;
@@ -679,6 +720,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     status,
                     retry_after,
                 }) => return End::Exhausted(status, retry_after),
+                Ok(Pick::Vetoed { status, text }) => return End::Vetoed(status, text),
                 Err(cause) => return End::Cancel(cause, None),
             };
             run.bufs.member.clear();
@@ -686,6 +728,9 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             run.bufs.pool.clear();
             run.bufs.pool.extend_from_slice(pool.as_bytes());
             let far_bound = !member.is_empty();
+            if far_bound {
+                self.routing_tap(attempt_no, &member, self.far.remaining(run.token), failed);
+            }
             let mut request = OutboundRequest {
                 member,
                 pool,
@@ -746,7 +791,10 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             match guarded_run(run, self.far.send(run.token, request)).await {
                 Ok(true) => {}
                 // Not sent, so nothing reached the caller: fail over.
-                Ok(false) => continue 'attempt,
+                Ok(false) => {
+                    failed = self.far.failure(run.token);
+                    continue 'attempt;
+                }
                 Err(cause) => return End::Cancel(cause, None),
             }
             let mut first = true;
@@ -762,6 +810,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 // THE WALK'S OWN STATUS TABLE: an attempt it fails over never reaches the plane,
                 // while nothing has reached the caller.
                 if piece.fail_over && !run.lock().facts.streamed {
+                    failed = self.far.failure(run.token);
                     continue 'attempt;
                 }
                 run.lock().facts.far_end_answered = true;
@@ -789,7 +838,10 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 };
                 match self.push(run, far, &mut Toward::Caller).await {
                     Step::End(end) => return end,
-                    Step::Retry => continue 'attempt,
+                    Step::Retry => {
+                        failed = self.far.failure(run.token);
+                        continue 'attempt;
+                    }
                     Step::Answered(done) if done || piece.last => return End::Done,
                     Step::Answered(_) => {}
                 }
@@ -880,8 +932,27 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                             let model = String::from_utf8_lossy(&bufs.member);
                             self.driver.money.served(run.ctx, &model, &bufs.provider);
                         }
-                        self.caller
-                            .head(out.reply_status, bufs.fields_of(out.fields_written));
+                        let mut fields = bufs.fields_of(out.fields_written);
+                        // TRANSPARENCY (opt-in, `advanced.response_headers.route_policy`): which
+                        // hook chose the serving member, after the plane's own fields, as 1.5.5
+                        // stamped them; nothing on the default path or when no hook chose.
+                        let chosen = self.lock().route_policy;
+                        if let Some(name) = chosen.filter(|_| {
+                            !bufs.member.is_empty() && crate::proxy::route_policy_headers_enabled()
+                        }) {
+                            fields.push((
+                                crate::proxy::HDR_ROUTE_POLICY.as_bytes().to_vec(),
+                                name.as_bytes().to_vec(),
+                            ));
+                            fields.push((
+                                crate::proxy::HDR_ROUTE_TARGET.as_bytes().to_vec(),
+                                bufs.member.clone(),
+                            ));
+                        }
+                        self.caller.head(out.reply_status, fields);
+                        // The answer's head is the `response` stage (1.5.5 fires it at head time,
+                        // a streamed body still flowing).
+                        self.response_tap(false, out.reply_status);
                     }
                     if n != 0 {
                         run.lock().facts.streamed = true;
