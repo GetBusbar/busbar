@@ -853,7 +853,9 @@ mod tests {
             "[rows.response]\n\"a.id\" = { ir = \"x\" }\n\"a.id\" = { prim = \"id\" }\n",
         );
         let err = super::refuse_repeated_keys("d.toml", &twice).expect_err("refused");
-        assert!(err.contains("d.toml") && err.contains("[rows.response]") && err.contains("`a.id`"));
+        assert!(
+            err.contains("d.toml") && err.contains("[rows.response]") && err.contains("`a.id`")
+        );
         let once = crate::toml_lite::parse_text("[rows.response]\n\"a.id\" = { ir = \"x\" }\n");
         super::refuse_repeated_keys("d.toml", &once).expect("a key stated once");
     }
