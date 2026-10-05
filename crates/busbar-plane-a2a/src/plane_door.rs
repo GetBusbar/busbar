@@ -593,7 +593,7 @@ macro_rules! slot {
 slot!(
     /// `validate`: the settings read as the section, or refused in the grammar's words.
     Validate, ValidateIn, OutHead, |_, input, mut out| {
-        match section(input.field(|i| &i.settings).bytes()) {
+        match section(&door::dealt_section(input.field(|i| &i.settings).bytes())) {
             Ok(_) => Outcome::Ready,
             Err(refusal) => out.fail(refusal),
         }

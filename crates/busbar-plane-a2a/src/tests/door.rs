@@ -278,3 +278,18 @@ fn the_tail_declares_the_op_class_of_every_method_arrive_can_name() {
         assert_eq!(crate::ops::OP_CLASSES[i as usize], row.op);
     }
 }
+
+/// THE DEALT VALIDATE BLOB: the boot's deal hands `{agents: <section>}`, which is unwrapped to the
+/// section; a bare section passes through as it is.
+#[test]
+fn a_dealt_validate_blob_is_unwrapped_to_its_section() {
+    let dealt =
+        br#"{"agents":{"probe":{"url":"https://a.example/","pin":{"mechanism":"unpinned"}}}}"#;
+    assert_eq!(
+        &*crate::door::dealt_section(dealt),
+        br#"{"probe":{"url":"https://a.example/","pin":{"mechanism":"unpinned"}}}"#
+    );
+    let bare = br#"{"probe":{"url":"https://a.example/"},"hooks":[]}"#;
+    assert_eq!(&*crate::door::dealt_section(bare), &bare[..]);
+    assert!(crate::door::read_settings(&crate::door::dealt_section(dealt)).is_ok());
+}

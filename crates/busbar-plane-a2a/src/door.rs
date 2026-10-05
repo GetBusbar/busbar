@@ -551,6 +551,24 @@ pub fn read_settings(settings: &[u8]) -> Result<AgentsCfg, String> {
     })
 }
 
+/// THE SECTION A DEALT `validate` BLOB CARRIES. The boot's stage-3g deal hands a declared-verb
+/// plugin `{<verb>: <section>}` (`config_validate::deal`), where `open` and `refresh` are handed the
+/// section itself; the one verb this plane declares is [`crate::CONFIG_SECTION`], so a blob that is
+/// exactly `{agents: …}` is unwrapped to its section and any other blob is the section already.
+#[must_use]
+pub fn dealt_section(settings: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    match serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(settings) {
+        Ok(map) if map.len() == 1 => match map.get(crate::CONFIG_SECTION) {
+            Some(section) => serde_json::to_vec(section).map_or(
+                std::borrow::Cow::Borrowed(settings),
+                std::borrow::Cow::Owned,
+            ),
+            None => std::borrow::Cow::Borrowed(settings),
+        },
+        _ => std::borrow::Cow::Borrowed(settings),
+    }
+}
+
 /// ONE GENERATION'S SNAPSHOT, owned, for the SDK to publish until that generation's `retire`.
 ///
 /// With a readable `public_url` the plane is admitted: it states its audience and its
