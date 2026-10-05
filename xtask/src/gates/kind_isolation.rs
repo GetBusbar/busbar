@@ -155,6 +155,7 @@ mod closure;
 mod debt_free;
 mod inputs;
 mod matrix;
+mod pinned;
 mod truths;
 
 pub use closure::ROW_CLOSURE;
@@ -401,32 +402,16 @@ const PLANE_ALIASES: &[(&str, &str, &str)] = &[
     ("decisions", "decision", "busbar-plane-decisions"),
 ];
 
-/// Kinds the target scheme defines that the tree does not carry YET, each with its reason. The
-/// dead-kind rule skips these — and the ratchet runs the other way: the day a crate of one of them
-/// exists, the entry must be struck, or a kind would be both pending and live.
-///
-/// `dialect` was a pending kind and it is not a kind at all (DECISIONS #4). `secret` and `export`
-/// are pending because their instances live OUTSIDE this repo: the owner deleted the in-tree
-/// fixtures ("FIXTURES", docs/design/1.6.0-QUESTIONS.md) and each kind is proven by its real plugin
-/// repos. `auth` is no longer pending (AUTH-SPLIT): busbar-auth-header, busbar-auth-sigv4 and
-/// busbar-auth-oauth are in-tree, staged auth-kind plugin crates (ARCHITECT ruling 2026-09-28,
-/// placement (B); each extracts to its own repo at P5, as busbar-auth-webhook-signature did), so
-/// the dead-kind rule watches them like every other kind.
-const PENDING_KINDS: &[(&str, &str)] = &[
-    (
-        "secret",
-        "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
-         secret fixture is deleted (\"FIXTURES\") and the kind is proven by GetBusbar/busbar-secret-vault \
-         through crates/plugin-loader/src/tests/plugin_proof_tests.rs",
-    ),
-    (
-        "export",
-        "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
-         export fixture is deleted (\"FIXTURES\") and the kind is proven by its real sinks \
-         GetBusbar/busbar-export-file, -webhook, -prometheus and -otlp, pinned git dev-dependencies of \
-         busbar-plugin-loader (export_conformance_tests, both ways) and of busbar",
-    ),
-];
+// THERE IS NO PENDING-KIND LIST, AND THERE IS NO SKIP (ARCHITECT ruling W4B-Q1, 2026-10-03;
+// RUN.md:119 "read pinned_exemplars, never skip"). `secret` and `export` were listed here as
+// kinds the dead-kind rule skipped, because every one of their crates lives in its own repo
+// (BUSBAR-1.6.0.md §9, "Every plugin lives in its own repo"), and each crate of a kind leaving
+// (the memory store, the ranking hooks, the last in-tree transport) would have put that kind on
+// the same list. A skipped kind is a kind no rule reads. A kind whose
+// crates are ALL extracted reads them from the pinned checkouts busbar already pulls them from
+// ([`pinned`]): each is laid over the tree at `crates/<package>`, the census reads it, and the
+// dead-kind rule scores the kind like every other — live while a pinned crate of it resolves, dead
+// the day its last pin goes. `dialect` was a pending kind and it is not a kind at all (DECISIONS #4).
 
 /// Edge classes the TARGET scheme has and the tree does not yet. They are allowed without being
 /// scored as dead — a class that cannot exist until the rename lands cannot be a stale allowance.
@@ -591,9 +576,11 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // of each landed; `export` (the built-in sinks, #3 / item 141) and `hooks` (the ranking hooks
     // K5d moved onto the root's linked tables) were left out, so the root doing its job was scored
     // `not-allowed` and the K5d edge `new-forbidden-edge`. `auth` is granted for the root's rows on
-    // the auth axis (ARCHITECT INTEGRATION U17, 2026-09-30). `secret` is absent because the root
-    // links no crate of that kind; a grant with no edge under it is a sentence about a tree that
-    // does not exist. `the_root_is_granted_every_plugin_kind_it_links` measures the
+    // the auth axis (ARCHITECT INTEGRATION U17, 2026-09-30). `secret` is granted for the root's
+    // rows on the secret axis (`secret-env`, `secret-file`, `[package.metadata.busbar.linked]`):
+    // it was absent while those crates sat outside the census, which read only this tree, and the
+    // pinned checkouts entering it (ARCHITECT W4B-Q1) measure the edge it covers.
+    // `the_root_is_granted_every_plugin_kind_it_links` measures the
     // root's shipped edges and refuses a plugin kind the root links without a grant here. The
     // grant is the ROOT's: a non-root crate reaching a plugin crate is still refused (selftest).
     ("root", "auth"),
@@ -605,6 +592,7 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("root", "legacy"),
     ("root", "plane"),
     ("root", "plugin-tooling"),
+    ("root", "secret"),
     ("root", "store"),
     ("root", "transport"),
     // `("transport", "transport")` WAS HERE, AND IT IS STRUCK.
@@ -677,6 +665,7 @@ const SPEC_ALLOWED_MANIFEST: &[(&str, &str)] = &[
     ("root", "export"),
     ("root", "hooks"),
     ("root", "plane"),
+    ("root", "secret"),
     ("root", "store"),
     ("root", "transport"),
 ];
@@ -1617,6 +1606,11 @@ struct CrateInfo {
     dev_deps: Vec<DepDecl>,
     /// Two kinds claimed this name at one precedence — the fusion refusal.
     ambiguous: Vec<&'static str>,
+    /// THE PINNED SOURCE (`git+…`) when this crate is a plugin repo's crate read from its pinned
+    /// checkout rather than a crate of this tree — see [`pinned`]. Such a crate is mounted at
+    /// `crates/<package>` and every rule reads it there; it is off `[workspace.members]` because it
+    /// is a git dependency, not a member, so the census's member arms do not ask it to be one.
+    pinned: Option<String>,
 }
 
 /// Every kind's marker HEAD WORD — `plane`, `transport`, `store`, `kernel`, … — derived from
@@ -1946,6 +1940,7 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
             Some("plane") => declared_meta_keys(cx, &dir, "PlaneMeta"),
             _ => Vec::new(),
         };
+        let pinned = pinned::mounted_source(cx, &name, &dir, kind);
         out.push(CrateInfo {
             dir,
             manifest: rel,
@@ -1958,6 +1953,7 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
             deps,
             dev_deps,
             ambiguous,
+            pinned,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name).then(a.dir.cmp(&b.dir)));
@@ -3453,7 +3449,10 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
         //    the member line arrives with the rest of it; the announcement's own expiry — struck
         //    when the crate is real, RED on the ship sha — is what stops that from becoming a way
         //    to keep a crate out of `--workspace` indefinitely.
-        if !members.contains(&c.dir) && !announced_names.contains(c.name.as_str()) {
+        if !members.contains(&c.dir)
+            && !announced_names.contains(c.name.as_str())
+            && c.pinned.is_none()
+        {
             let reached: Vec<&str> = crates
                 .iter()
                 .filter(|o| {
@@ -3596,33 +3595,21 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
         }
     }
 
-    // A KIND NOBODY INSTANTIATES IS A DEAD ROW in the table, not a kind — unless it is DECLARED
-    // pending, and then the ratchet runs the other way: the first crate of it retires the pending
-    // entry, so a kind can never be both pending and live.
+    // A KIND NOBODY INSTANTIATES IS A DEAD ROW in the table, not a kind. A kind whose crates all
+    // left for their own repos is NOT that: its pinned checkouts are in the census ([`pinned`]),
+    // so it is live exactly while one of them resolves. Nothing is skipped (ARCHITECT W4B-Q1).
     //
-    // An ANNOUNCED kind is the third case, and it is the one that keeps this rule from biting the
-    // wrong way: the crate is being written right now, so the kind is neither dead nor pending —
-    // it is arriving, and the announcement is the claim that it is. Landing it must be GREEN here.
+    // An ANNOUNCED kind is the other case, and it is the one that keeps this rule from biting the
+    // wrong way: the crate is being written right now, so the kind is not dead — it is arriving,
+    // and the announcement is the claim that it is. Landing it must be GREEN here.
     let live: BTreeSet<&str> = crates.iter().filter_map(|c| c.kind).collect();
-    let pending: BTreeSet<&str> = PENDING_KINDS.iter().map(|(k, _)| *k).collect();
     let announced_kinds = reg.announced_kinds();
     for def in KINDS {
-        if !live.contains(def.kind)
-            && !pending.contains(def.kind)
-            && !announced_kinds.contains(def.kind)
-        {
+        if !live.contains(def.kind) && !announced_kinds.contains(def.kind) {
             offenders.push(format!(
-                "dead-kind\tKINDS\t`{}` is in the kind table and no crate is one; strike it or \
-                 build one",
+                "dead-kind\tKINDS\t`{}` is in the kind table and no crate is one, in this tree \
+                 or at a pinned checkout; strike it or build one",
                 def.kind
-            ));
-        }
-    }
-    for (kind, _) in PENDING_KINDS {
-        if live.contains(kind) {
-            offenders.push(format!(
-                "kind-arrived\tPENDING_KINDS\t`{kind}` now has crates in the tree; strike its \
-                 pending entry so the dead-kind rule watches it like every other kind"
             ));
         }
     }
@@ -5130,8 +5117,12 @@ const WIRE_PERMITTED_KINDS: &[&str] = &["root", "transport"];
 /// makes transport a swappable kind like any other). A `plugin-tooling` crate's `[dev-dependencies]`
 /// edge to EXACTLY the crate its own `[package.metadata.busbar.both-ways]` names for kind `transport`
 /// is the fixture both doors of that witness load — the linked rlib and the dropped-in cdylib — and
-/// not a plugin choosing its wire. Nothing else is excused: a NORMAL edge, a dev-edge to any other
-/// wire, or a crate of any other kind is the finding it always was.
+/// not a plugin choosing its wire. A plugin repo is a logic crate plus the cdylib twin that packages
+/// it (BUSBAR-1.6.0.md §9), and when the row names the twin (`busbar-transport-tcp-plugin`), the
+/// LOGIC crate it packages (`busbar-transport-tcp`, the same name without `-plugin`) is the linked
+/// half of the same witness, read now that the pinned checkouts are crates of the census
+/// (ARCHITECT W4B-Q1). Nothing else is excused: a NORMAL edge, a dev-edge to any other wire, or a
+/// crate of any other kind is the finding it always was.
 const WIRE_FIXTURE_KIND: &str = "plugin-tooling";
 
 /// The crate a manifest's `[package.metadata.busbar.both-ways]` table names for kind `transport`.
@@ -5475,7 +5466,11 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
             .then(|| cx.read(&c.manifest).ok())
             .flatten()
             .and_then(|m| both_ways_transport_fixture(&m));
-        let witness = |dep: &crate::manifest::DepDecl| fixture.as_deref() == Some(dep.pkg.as_str());
+        let witness = |dep: &crate::manifest::DepDecl| {
+            fixture.as_deref().is_some_and(|f| {
+                f == dep.pkg || f.strip_suffix("-plugin") == Some(dep.pkg.as_str())
+            })
+        };
         for dep in c
             .deps
             .iter()
@@ -6004,6 +5999,9 @@ impl Gate for KindIsolationGate {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
+        // THE PINNED CHECKOUTS ARE CRATES OF THE CENSUS (ARCHITECT W4B-Q1): see [`pinned`].
+        let mounted = pinned::with_pinned(cx);
+        let cx = &mounted;
         let mut crates = match census(cx) {
             Ok(c) => c,
             Err(e) => {
@@ -6118,6 +6116,13 @@ impl Gate for KindIsolationGate {
     }
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
+        // THE BATTERY READS THE TREE THE GATE READS: the pinned checkouts mounted beneath it
+        // ([`pinned`]), so a case that edits a pinned crate's manifest reads that manifest, and a
+        // plant into a pinned crate is a plant into a crate of the census. A case's own overlay
+        // REPLACES this one (`Ctx::with_overlay`) and `run` lays the mount back beneath it, so the
+        // mount here is for the battery's own reads. It is leaked because the cases borrow it for
+        // the battery's lifetime; one battery runs once per process.
+        let cx: &'a Ctx = Box::leak(Box::new(pinned::with_pinned(cx)));
         let mut report = Report::new();
 
         // THE WRITE ARM PROVES ITSELF WITHOUT WRITING ANYTHING, and that is not a compromise: the
@@ -7488,22 +7493,42 @@ impl Gate for KindIsolationGate {
             &["dead-kind", "contract"],
         ));
 
-        // THE PENDING-KIND RATCHET: a crate of a pending kind retires the pending entry. `secret`
-        // is pending (its instances live in their own repos), so a planted `busbar-secret-*`
-        // manifest makes the kind live while the entry still says pending — the one state the
-        // ratchet exists to refuse.
+        // A KIND WHOSE CRATES ALL LEFT FOR THEIR OWN REPOS IS READ FROM ITS PINS, NEVER SKIPPED
+        // (ARCHITECT W4B-Q1; RUN.md:119). It replaces the pending-kind ratchet, whose list is gone
+        // with the skip it held. `secret` has no crate in this tree: its env and file sources are
+        // pinned git dependencies, mounted at `crates/<package>`, so the kind is live on the real
+        // tree. A `cargo metadata` that resolves no pin is the tree where those crates are nowhere,
+        // and the dead-kind rule must say so by name: the kind is scored, not excused.
+        let mut ov = Overlay::new();
+        ov.set_command("cargo-metadata:Cargo.toml", "{\"packages\":[]}");
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a kind whose crates all left the tree, with its pins gone, is a dead kind",
+            &[ROW_REGISTRY],
+            ov,
+            &["dead-kind", "`secret`", "pinned checkout"],
+        ));
+
+        // …AND A PINNED CRATE IS READ BY EVERY RULE, NOT ONLY COUNTED. A plant into the mounted
+        // checkout of the env secret source is a plant into a crate of the census: naming a plane
+        // crate's path there is the same `undeclared-crate-path` it is anywhere in the tree.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-secret-planted/Cargo.toml",
-            "[package]\nname = \"busbar-secret-planted\"\nversion = \"0.0.0\"\n",
+            "crates/busbar-secret-env/src/planted_leak.rs",
+            "pub fn leak() { let _ = busbar_plane_llm::VERSION; }\n",
         );
         report.push(prove_rows_red(
             cx,
             subject,
-            "a pending kind that now has a crate",
-            &[ROW_REGISTRY],
+            "a pinned crate naming another kind's crate path is read where it is mounted",
+            &[ROW_VOCAB],
             ov,
-            &["kind-arrived", "secret"],
+            &[
+                "undeclared-crate-path",
+                "busbar_plane_llm",
+                "busbar-secret-env",
+            ],
         ));
 
         // THE RENAME ALIAS EXPIRES WITH THE CRATE IT TRANSLATES.
@@ -8863,10 +8888,24 @@ impl Gate for KindIsolationGate {
                 "busbar-transport-stdio [dependencies]",
             ],
         ));
+        // …the LOGIC crate a named cdylib twin packages is the linked half of the same witness
+        // (BUSBAR-1.6.0.md §9: a plugin repo is a logic crate plus its `-plugin` cdylib; the real
+        // table names `busbar-transport-tcp-plugin` and the loader links `busbar-transport-tcp`)…
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "the loader's dev-edge to the logic crate of its declared cdylib fixture is the witness",
+            &[ROW_WIRES],
+            loader(
+                "",
+                "busbar-transport-tcp = { workspace = true }",
+                "busbar-transport-tcp-plugin",
+            ),
+        ));
         // …and a dev-edge to a wire the table does NOT name is a wire chosen, not a fixture. The
         // declared both-ways fixture is a wire OTHER than the dev-edge, so the dev-edge is a choice:
-        // `busbar-transport-tcp` is the canonical exemplar the ledger names, a pinned git dep that
-        // `crates/` never held, so the both-ways metadata names it without the dev-edge matching it.
+        // the table names the tcp twin, as the real one does (`busbar-transport-tcp-plugin`, a pinned
+        // git dep `crates/` never held), and the edge is to the stdio wire.
         report.push(prove_rows_red(
             cx,
             subject,
@@ -8875,7 +8914,7 @@ impl Gate for KindIsolationGate {
             loader(
                 "",
                 "busbar-transport-stdio = { path = \"../busbar-transport-stdio\" }",
-                "busbar-transport-tcp",
+                "busbar-transport-tcp-plugin",
             ),
             &[
                 "wire-dependency",
@@ -10045,13 +10084,14 @@ mod plant_tests {
     use crate::ctx::Change;
     use crate::ledger::Status;
 
+    /// The workspace as the gate reads it: the pinned checkouts mounted beneath ([`pinned`]).
     fn ws() -> Ctx {
-        Ctx::workspace().expect("the workspace opens")
+        pinned::with_pinned(&Ctx::workspace().expect("the workspace opens"))
     }
 
-    /// The census exactly as [`KindIsolationGate::run`] builds it.
+    /// The census exactly as [`KindIsolationGate::run`] builds it, over the pinned mount.
     fn crates_of(cx: &Ctx) -> (Vec<CrateInfo>, BTreeSet<String>) {
-        let mut crates = census(cx).expect("the census reads");
+        let mut crates = census(&pinned::with_pinned(cx)).expect("the census reads");
         let (planes, ports) = vocabularies(&crates);
         assign_instances(&mut crates, &planes, &ports);
         (crates, planes)
@@ -10098,12 +10138,70 @@ mod plant_tests {
             format!("{host}/src/planted_wire/meta.rs"),
             "impl TransportMeta for PlantedWire {\n    const KEY: &'static str = \"plantedwire\";\n}\n",
         );
-        let planted = cx.with_overlay(ov);
+        // The plant replaces the mounted overlay, so the mount goes back beneath it, as `run` does.
+        let planted = pinned::with_pinned(&cx.with_overlay(ov));
         let (_, ports) = vocabularies(&census(&planted).expect("the planted census reads"));
         assert!(
             ports.contains("plantedwire"),
             "a declared key did not join the transport vocabulary: {ports:?}"
         );
+    }
+
+    /// THE PINNED CHECKOUTS ARE CRATES OF THE CENSUS (ARCHITECT W4B-Q1; RUN.md:119 "never skip").
+    /// A plugin crate busbar pulls at a pinned rev is read from its checkout at `crates/<package>`:
+    /// it carries its `git+` source, its kind is live, and it owes no member line. The cdylib twin
+    /// is not mounted, and a `cargo metadata` that resolves no pin mounts nothing — the kind is
+    /// then a dead kind, never a skipped one.
+    #[test]
+    fn a_pinned_checkout_is_a_crate_of_the_census_and_owes_no_member_line() {
+        let cx = ws();
+        let (crates, _) = crates_of(&cx);
+        for name in [
+            "busbar-secret-env",
+            "busbar-export-otlp",
+            "busbar-transport-tcp",
+        ] {
+            let c = crates
+                .iter()
+                .find(|c| c.name == name)
+                .unwrap_or_else(|| panic!("{name} is pinned by the root and is in the census"));
+            assert_eq!(c.dir, format!("crates/{name}"));
+            assert!(
+                c.pinned.as_deref().is_some_and(|s| s.starts_with("git+")),
+                "{name} carries its pinned source: {:?}",
+                c.pinned
+            );
+        }
+        assert!(
+            !crates
+                .iter()
+                .any(|c| c.pinned.is_some() && c.name.ends_with("-plugin")),
+            "a cdylib twin is not mounted"
+        );
+        let row = rule_registry(&cx, &crates, &reg_of(&cx), false);
+        for kind in ["store", "secret", "export", "transport"] {
+            assert!(
+                !row.detail.contains(&format!("dead-kind\tKINDS\t`{kind}`")),
+                "`{kind}` is live through its pins: {}",
+                row.detail
+            );
+        }
+        assert!(
+            !row.detail.contains("unmembered\tcrates/busbar-secret-env"),
+            "a pinned crate is a git dependency, not a member: {}",
+            row.detail
+        );
+
+        let mut ov = Overlay::new();
+        ov.set_command("cargo-metadata:Cargo.toml", "{\"packages\":[]}");
+        let unpinned = pinned::with_pinned(&Ctx::workspace().expect("ws").with_overlay(ov));
+        let (crates, _) = crates_of(&unpinned);
+        assert!(
+            crates.iter().all(|c| c.pinned.is_none()),
+            "no pin resolves, so nothing is mounted"
+        );
+        let row = rule_registry(&unpinned, &crates, &reg_of(&unpinned), false);
+        assert_red_naming(&row, &["dead-kind", "`secret`", "pinned checkout"]);
     }
 
     /// THE PLANT MUST BITE against the tree it is planted over: no removal of a path that tree has
@@ -10621,6 +10719,7 @@ mod plant_tests {
             deps: Vec::new(),
             dev_deps: Vec::new(),
             ambiguous: Vec::new(),
+            pinned: None,
         }
     }
 
@@ -11029,7 +11128,7 @@ mod spec_allowed_tests {
             assert!(spec_allows_manifest(from, to), "{from} -> {to}");
         }
         // The root's dependency list may name what it links; its Rust source may not.
-        for to in ["plane", "transport", "store", "export", "hooks"] {
+        for to in ["plane", "transport", "store", "export", "hooks", "secret"] {
             assert!(spec_allows_manifest("root", to), "root -> {to}");
             assert!(!spec_allows_source("root", to), "root -> {to} in source");
         }
