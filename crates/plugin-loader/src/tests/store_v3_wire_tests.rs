@@ -10,7 +10,8 @@
 //! * a kept connection the far end dropped fails its op and is not kept; a store that retries on a
 //!   fresh connection ([`Wire::reconnect`]) answers;
 //! * a store's dial timeout reaches the table; a `unix:` target is a unix-domain stream; a stream
-//!   secured with TLS trusting the test CA carries the op.
+//!   secured through the table's TLS carries the op (the TLS a test double of the connector's: TLS
+//!   stays in the connector, whose own suite proves the real `upgrade_secure`).
 
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -28,7 +29,77 @@ use crate::dispatch::kinds::store::Store;
 use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
 use crate::store_v3::wrap::Hooks;
 use crate::store_v3::LoadedStore;
-use crate::tcp_conns::TcpConns;
+use crate::tcp_conns::{SecureDial, SecuredSock, TcpConns};
+
+// ── the table's TLS: a double of the connector's ─────────────────────────────────────────────
+
+/// A TEST DOUBLE of the TLS a table secures with (TLS itself is the connector's, which this crate
+/// cannot name; the real wrap's `upgrade_secure`, verify-off included, is proven in
+/// the connector's own suite). It hands the stream back as it is, counting the handshakes
+/// and recording what each asked for; told its backend is self-signed, it refuses a VERIFYING
+/// handshake, as a verifying handshake refuses a self-signed certificate.
+#[derive(Default)]
+struct TlsDouble {
+    self_signed: bool,
+    asked: Mutex<Vec<(String, bool)>>,
+}
+
+impl TlsDouble {
+    fn asked(&self) -> Vec<(String, bool)> {
+        self.asked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl SecureDial for TlsDouble {
+    fn secure(
+        &self,
+        server: &str,
+        verify_off: bool,
+        tcp: std::net::TcpStream,
+    ) -> std::io::Result<Box<dyn SecuredSock>> {
+        self.asked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((server.to_owned(), verify_off));
+        if self.self_signed && !verify_off {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid peer certificate: the backend's certificate is self-signed",
+            ));
+        }
+        Ok(Box::new(Secured(tcp)))
+    }
+}
+
+/// The stream the double secured: the socket as it is.
+struct Secured(std::net::TcpStream);
+
+impl std::io::Read for Secured {
+    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(b)
+    }
+}
+
+impl Write for Secured {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.write(b)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl SecuredSock for Secured {
+    fn tcp(&self) -> &std::net::TcpStream {
+        &self.0
+    }
+    fn close(&mut self) {
+        let _ = self.0.shutdown(std::net::Shutdown::Both);
+    }
+}
 
 // ── backends ───────────────────────────────────────────────────────────────────────────────────
 
@@ -379,77 +450,18 @@ fn a_unix_target_is_a_unix_domain_stream() {
 
 wire_store!(OverTls, over_tls, max: 1, timeout: 0, tls: Tls::Verified, retry: false);
 
-/// RED (TLS): the store's stream secured with TLS (`upgrade_secure`) trusting the test CA carries
-/// the handshake and the ops; the kept connection stays secure (one TLS handshake).
+/// RED (TLS): the store's stream secured with TLS (`upgrade_secure`) through the table's TLS carries
+/// the handshake and the ops; the kept connection stays secure (one TLS handshake, for the target's
+/// host name).
 #[test]
 fn a_tls_secured_stream_carries_the_stores_ops() {
-    let ca_key = rcgen::KeyPair::generate().expect("ca key");
-    let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("ca params");
-    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    let ca = ca_params.self_signed(&ca_key).expect("ca");
-    let issuer = rcgen::Issuer::from_params(&ca_params, ca_key);
-    let key = rcgen::KeyPair::generate().expect("key");
-    let leaf = rcgen::CertificateParams::new(vec!["localhost".to_string()])
-        .expect("params")
-        .signed_by(&key, &issuer)
-        .expect("leaf");
-    let server = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .expect("versions")
-    .with_no_client_auth()
-    .with_single_cert(
-        vec![leaf.der().clone()],
-        rustls_pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()),
-    )
-    .expect("server config");
-    let server = Arc::new(server);
-    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = l.local_addr().expect("addr").port();
-    let accepted = Arc::new(AtomicUsize::new(0));
-    let count = accepted.clone();
-    std::thread::spawn(move || {
-        for s in l.incoming() {
-            let Ok(s) = s else { return };
-            count.fetch_add(1, Ordering::SeqCst);
-            let conn = rustls::ServerConnection::new(server.clone()).expect("tls conn");
-            std::thread::spawn(move || {
-                let tls = rustls::StreamOwned::new(conn, s);
-                let shared = Arc::new(Mutex::new(tls));
-                struct Half(
-                    Arc<Mutex<rustls::StreamOwned<rustls::ServerConnection, std::net::TcpStream>>>,
-                );
-                impl std::io::Read for Half {
-                    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
-                        self.0
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .read(b)
-                    }
-                }
-                impl Write for Half {
-                    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-                        self.0
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .write(b)
-                    }
-                    fn flush(&mut self) -> std::io::Result<()> {
-                        self.0
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .flush()
-                    }
-                }
-                serve_lines(Half(shared.clone()), Half(shared), Behaviour::default());
-            });
-        }
-    });
+    let (addr, accepted) = tcp_backend(Behaviour::default());
+    let port = addr.rsplit_once(':').expect("host:port").1.to_owned();
     *OverTls::target().lock().expect("target") = format!("localhost:{port}");
-    let ca_der = ca.der().to_vec();
+    let tls = Arc::new(TlsDouble::default());
+    let table_tls = Arc::clone(&tls);
     let s = open_over(over_tls::door, move |d| {
-        Arc::new(TcpConns::with_roots(d.conn_waker(), &ca_der))
+        Arc::new(TcpConns::with_tls(d.conn_waker(), table_tls))
     });
     for _ in 0..2 {
         assert_eq!(
@@ -461,6 +473,11 @@ fn a_tls_secured_stream_carries_the_stores_ops() {
         accepted.load(Ordering::SeqCst),
         1,
         "one TLS connection, kept"
+    );
+    assert_eq!(
+        tls.asked(),
+        vec![("localhost".to_string(), false)],
+        "one verifying handshake, for the target's host"
     );
 }
 
@@ -740,61 +757,22 @@ const TCP_OPERATOR: &[busbar_contract::abi::host::conn::connector::Need] =
         ..TCP[0]
     }];
 
-/// A TLS line backend presenting a SELF-SIGNED `localhost` certificate: its port.
+/// A line backend whose certificate the table's TLS double is told is SELF-SIGNED: its port.
 fn self_signed_tls_backend() -> u16 {
-    let kp = rcgen::KeyPair::generate().expect("key");
-    let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
-        .expect("params")
-        .self_signed(&kp)
-        .expect("self-signed");
-    let server = Arc::new(
-        rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .expect("versions")
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![cert.der().clone()],
-            rustls_pki_types::PrivateKeyDer::Pkcs8(kp.serialize_der().into()),
-        )
-        .expect("server config"),
-    );
-    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = l.local_addr().expect("addr").port();
-    std::thread::spawn(move || {
-        for s in l.incoming() {
-            let Ok(s) = s else { return };
-            let Ok(conn) = rustls::ServerConnection::new(server.clone()) else {
-                return;
-            };
-            std::thread::spawn(move || {
-                let mut tls = rustls::StreamOwned::new(conn, s);
-                let mut r = Vec::new();
-                let mut byte = [0_u8; 1];
-                use std::io::Read;
-                while tls.read(&mut byte).is_ok_and(|n| n == 1) {
-                    if byte[0] != b'\n' {
-                        r.push(byte[0]);
-                        continue;
-                    }
-                    let got = String::from_utf8_lossy(&r).into_owned();
-                    r.clear();
-                    let reply = if got == "HELLO" {
-                        "WELCOME".to_owned()
-                    } else {
-                        format!("echo {got}")
-                    };
-                    if tls.write_all(format!("{reply}\n").as_bytes()).is_err()
-                        || tls.flush().is_err()
-                    {
-                        return;
-                    }
-                }
-            });
-        }
-    });
-    port
+    let (addr, _) = tcp_backend(Behaviour::default());
+    addr.rsplit_once(':')
+        .expect("host:port")
+        .1
+        .parse()
+        .expect("a port")
+}
+
+/// The table's TLS for the self-signed backend.
+fn self_signed_tls() -> Arc<dyn SecureDial> {
+    Arc::new(TlsDouble {
+        self_signed: true,
+        ..TlsDouble::default()
+    })
 }
 
 wire_store!(SelfSignedVerified, self_signed_verified, max: 1, timeout: 0, tls: Tls::Verified, retry: false, needs: TCP_OPERATOR);
@@ -808,16 +786,10 @@ wire_store!(InsecureOtherClass, insecure_other_class, max: 1, timeout: 0, tls: T
 fn a_self_signed_backend_is_accepted_only_with_verify_off_on_an_operator_need() {
     let port = self_signed_tls_backend();
     let target = format!("localhost:{port}");
-    // A CA the backend's certificate does not chain to: the verifying table trusts it alone.
-    let other_ca = rcgen::KeyPair::generate().expect("key");
-    let mut other = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
-    other.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    let other = other.self_signed(&other_ca).expect("ca").der().to_vec();
 
     *SelfSignedVerified::target().lock().expect("target") = target.clone();
-    let roots = other.clone();
     let s = open_over(self_signed_verified::door, move |d| {
-        Arc::new(TcpConns::with_roots(d.conn_waker(), &roots))
+        Arc::new(TcpConns::with_tls(d.conn_waker(), self_signed_tls()))
     });
     assert!(
         ping_of(&s).is_err(),
@@ -825,9 +797,8 @@ fn a_self_signed_backend_is_accepted_only_with_verify_off_on_an_operator_need() 
     );
 
     *SelfSignedInsecure::target().lock().expect("target") = target.clone();
-    let roots = other.clone();
     let s = open_over(self_signed_insecure::door, move |d| {
-        Arc::new(TcpConns::with_roots(d.conn_waker(), &roots))
+        Arc::new(TcpConns::with_tls(d.conn_waker(), self_signed_tls()))
     });
     assert_eq!(
         ping_of(&s).expect("accepted with the opt-in"),

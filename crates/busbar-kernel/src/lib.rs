@@ -292,6 +292,11 @@ pub mod ratelimit;
 /// THE DURABLE PER-PRINCIPAL RESIDUAL LOG: one hash-chained `usage.residual` row per settle that
 /// carried usage counts no billing class records (MONEY LAW). See the module header.
 pub mod residual_log;
+/// THE CONNECTOR'S TLS WRAP, as the kernel reaches it: this crate names no TLS library (THE DESIGN:
+/// TLS stays in the connector); the egress engine's https arm, the duplex `wss` dial and the
+/// client-identity PEM parse ask this seam, answered through the root-installed egress-trust
+/// capability. See the module header.
+pub mod secure;
 // THE NEUTRAL PER-SESSION SUBSTRATE relocated DOWN to busbar-substrate (std-only, money-safe, zero
 // busbar deps). Core re-exports it so `crate::session::{SessionStore, SessionKey, OwnerKey}` — the
 // gate's screen-cache tenant, the appbuild session_store construction and the App field — are
