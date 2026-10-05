@@ -142,10 +142,10 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar/src/main.rs",
+   "id": "crates/busbar/src",
    "kind": "production",
    "paths": [
-    "crates/busbar/src/main.rs"
+    "crates/busbar/src"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -154,7 +154,11 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar/src/root",
+    "crates/busbar/src/tests"
+   ]
   },
   {
    "id": "crates/busbar/build.rs",
@@ -999,6 +1003,36 @@
    ]
   },
   {
+   "id": "crates/busbar-contract/include",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-contract/include"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-llm/dialects",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-llm/dialects"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar/src/tests",
    "kind": "test",
    "paths": [
@@ -1209,6 +1243,21 @@
    "fixed_at": null
   },
   {
+   "id": "crates/busbar-auth-webhook-signature/examples",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-webhook-signature/examples"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-contract/src/tests",
    "kind": "test",
    "paths": [
@@ -1303,6 +1352,21 @@
    "kind": "test",
    "paths": [
     "crates/busbar-core-connector/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-core-connector/examples",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-core-connector/examples"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -1792,10 +1856,40 @@
    "fixed_at": null
   },
   {
+   "id": "crates/busbar-plane-decisions/examples",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-decisions/examples"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-plane-llm/tests",
    "kind": "test",
    "paths": [
     "crates/busbar-plane-llm/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-llm/examples",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-llm/examples"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -1972,6 +2066,21 @@
    "fixed_at": null
   },
   {
+   "id": "crates/hooks-ranking/examples",
+   "kind": "test",
+   "paths": [
+    "crates/hooks-ranking/examples"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/plugin-loader/src/tests",
    "kind": "test",
    "paths": [
@@ -2062,6 +2171,21 @@
      "report": "Thorough conformance and round-trip tests reaching no kernel internals, but the only door-level test drives the retired cold JSON door and nothing drives the shipped store door; the suite pins plane-instance row shapes, names sibling stores, describes the ask ledger as making a tool execute once, and carries stale prose. Read fully."
     }
    ]
+  },
+  {
+   "id": "xtask/tests",
+   "kind": "test",
+   "paths": [
+    "xtask/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "scripts",
@@ -2609,6 +2733,96 @@
      "report": "The root testing README describes a deleted workflow and only the A2A batteries, and justifies a non-failing A2A subject leg with the claim that busbar does not serve A2A, a premise no longer true and checked by nothing. Read fully."
     }
    ]
+  },
+  {
+   "id": ".mailmap",
+   "kind": "instrument",
+   "paths": [
+    ".mailmap"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": ".measure",
+   "kind": "instrument",
+   "paths": [
+    ".measure"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "bin",
+   "kind": "instrument",
+   "paths": [
+    "bin"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "conformance",
+   "kind": "instrument",
+   "paths": [
+    "conformance"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "fuzz",
+   "kind": "instrument",
+   "paths": [
+    "fuzz"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "tests",
+   "kind": "instrument",
+   "paths": [
+    "tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   }
  ]
 }
