@@ -1023,14 +1023,29 @@
    "paths": [
     "crates/busbar-plane-llm/dialects"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "b71f280e8c98fe978983ecacfdd7d395461cda272d24458a45c7c8d652dad5f0",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 2
+   },
+   "report": "The dialect tables sit inside the plane crate and compile into const tables under a registered drift gate, so Law 5 holds; but the Responses table repeats two keys, which is invalid TOML that the compiler accepts and emits as contradictory rows unchecked, and the Anthropic drop warning carries a run of stray spaces into the log. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "b71f280e8c98fe978983ecacfdd7d395461cda272d24458a45c7c8d652dad5f0",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "The dialect tables sit inside the plane crate and compile into const tables under a registered drift gate, so Law 5 holds; but the Responses table repeats two keys, which is invalid TOML that the compiler accepts and emits as contradictory rows unchecked, and the Anthropic drop warning carries a run of stray spaces into the log. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar/src/tests",
@@ -1891,14 +1906,25 @@
    "paths": [
     "crates/busbar-plane-llm/examples"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "c3d84d811ae3cc8d86267763ed9d01eb281602a778b110897664e9c6ec05544e",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "zero",
    "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "report": "The example is the plane's dropped-in door image over the same door function the linked row holds, built as a cdylib and loaded by the plane's conformance test beside the linked door; a missing artifact fails rather than skips. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "c3d84d811ae3cc8d86267763ed9d01eb281602a778b110897664e9c6ec05544e",
+     "counts": {},
+     "report": "The example is the plane's dropped-in door image over the same door function the linked row holds, built as a cdylib and loaded by the plane's conformance test beside the linked door; a missing artifact fails rather than skips. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-mcp/src/tests",
@@ -2740,14 +2766,29 @@
    "paths": [
     ".mailmap"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "975afc350a2ce2cf34c4307c2ef805565bf04c704d9e166c46b832f610cf2d5e",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "The mailmap claims every commit shows under one canonical identity but maps only one historical address; five other author addresses with several hundred commits pass through unchanged, so the claimed canonicalization and the planned history rewrite are incomplete. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "975afc350a2ce2cf34c4307c2ef805565bf04c704d9e166c46b832f610cf2d5e",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "The mailmap claims every commit shows under one canonical identity but maps only one historical address; five other author addresses with several hundred commits pass through unchanged, so the claimed canonicalization and the planned history rewrite are incomplete. Read fully."
+    }
+   ]
   },
   {
    "id": ".measure",
@@ -2755,14 +2796,31 @@
    "paths": [
     ".measure"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "96dbc9475dd3ce880322a8498b774d92ed8d1b488e75ce0a59094117e01c0323",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "LOW": 1
+   },
+   "report": "A hidden top-level directory tracks an unreferenced 57 MB git bundle holding the repository's complete history and a stale, uncompilable copy of the WebSocket conformance subject; the bundle freezes the pre-rewrite history in a blob, defeating the planned author rewrite and bloating every clone, so it must be deleted and purged from history. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "96dbc9475dd3ce880322a8498b774d92ed8d1b488e75ce0a59094117e01c0323",
+     "counts": {
+      "HIGH": 1,
+      "LOW": 1
+     },
+     "report": "A hidden top-level directory tracks an unreferenced 57 MB git bundle holding the repository's complete history and a stale, uncompilable copy of the WebSocket conformance subject; the bundle freezes the pre-rewrite history in a blob, defeating the planned author rewrite and bloating every clone, so it must be deleted and purged from history. Read fully."
+    }
+   ]
   },
   {
    "id": "bin",
@@ -2770,14 +2828,29 @@
    "paths": [
     "bin"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "a4378e95b9b386aaab99a1f7676a6ce592f52f539578d9d4ea822f6d6f7ad0dd",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 3
+   },
+   "report": "The oracle shim resolves a full-SHA source pin and fails closed on a missing pin, ref or engine; but it builds the engine without enforcing the lockfile its pin claims, leaves a CI token in the clone's on-disk git config, and stamps override paths with the pinned identity without checking them. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "a4378e95b9b386aaab99a1f7676a6ce592f52f539578d9d4ea822f6d6f7ad0dd",
+     "counts": {
+      "LOW": 3
+     },
+     "report": "The oracle shim resolves a full-SHA source pin and fails closed on a missing pin, ref or engine; but it builds the engine without enforcing the lockfile its pin claims, leaves a CI token in the clone's on-disk git config, and stamps override paths with the pinned identity without checking them. Read fully."
+    }
+   ]
   },
   {
    "id": "conformance",
@@ -2785,14 +2858,31 @@
    "paths": [
     "conformance"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "0c69162620973ed683ff998831699077c476000ca5389f80a8ae067afafdbd49",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "LOW": 4
+   },
+   "report": "The claim pipeline renders nothing green without a fresh pass, but the committed verdict records the decisions plane suite failing because no route serves its operation; the README is stale, the registry's green heading tops suites with no verdict, one verdict breaks its own schema with no evidence, and the suite roster is hand-kept with no floor. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "0c69162620973ed683ff998831699077c476000ca5389f80a8ae067afafdbd49",
+     "counts": {
+      "HIGH": 1,
+      "LOW": 4
+     },
+     "report": "The claim pipeline renders nothing green without a fresh pass, but the committed verdict records the decisions plane suite failing because no route serves its operation; the README is stale, the registry's green heading tops suites with no verdict, one verdict breaks its own schema with no evidence, and the suite roster is hand-kept with no floor. Read fully."
+    }
+   ]
   },
   {
    "id": "fuzz",
@@ -2800,14 +2890,29 @@
    "paths": [
     "fuzz"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "e775b1b32d4b4fa0906fd74634348d9a31bccf1bfbca3c2b1b031a93dd9ff28b",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "The single fuzz harness drives the plane's real embeddings request readers for four dialects, but nothing invokes it since its workflow was removed, so it is an instrument that never runs, and the main chat request readers are unfuzzed. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "e775b1b32d4b4fa0906fd74634348d9a31bccf1bfbca3c2b1b031a93dd9ff28b",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "The single fuzz harness drives the plane's real embeddings request readers for four dialects, but nothing invokes it since its workflow was removed, so it is an instrument that never runs, and the main chat request readers are unfuzzed. Read fully."
+    }
+   ]
   },
   {
    "id": "tests",
@@ -2815,14 +2920,29 @@
    "paths": [
     "tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "f4675e0f60a5e1ce18f10ef2ff186d36e19bb8fc203a5e71651b4b80a52f9f49",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 2
+   },
+   "report": "The captured 1.5.5 validate golden is compared byte for byte, but its consumer skips any case whose module is not linked and passes with zero judged cases, an unarmed floor; the cases file is read by nothing and its capture script is gone. The migration corpus is confirmed captured data, sampled.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "f4675e0f60a5e1ce18f10ef2ff186d36e19bb8fc203a5e71651b4b80a52f9f49",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "The captured 1.5.5 validate golden is compared byte for byte, but its consumer skips any case whose module is not linked and passes with zero judged cases, an unarmed floor; the cases file is read by nothing and its capture script is gone. The migration corpus is confirmed captured data, sampled."
+    }
+   ]
   }
  ]
 }
