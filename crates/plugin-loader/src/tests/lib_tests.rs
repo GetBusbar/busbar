@@ -4,8 +4,6 @@
 //! Tests for `crates/plugin-loader/src/lib.rs`.
 
 use super::*;
-// The artifact table lives in `crate::test_support`; this crate's tests name it here.
-pub(crate) use crate::test_support::artifact;
 use busbar_contract::abi::cold::{
     STATUS_PANIC, STATUS_PROTOCOL, STATUS_UNSUPPORTED, TRANSPORT_VERSION,
 };
