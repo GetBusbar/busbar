@@ -54,7 +54,12 @@ fn the_summed_rows_hold_one_row_per_cell_and_fold_to_the_recorders_sums() {
     let recorded = RecordingRows::new();
     let summed = SummedRows::new();
     let (mut r, mut s) = (recorded.clone(), summed.clone());
-    let cells = [("p1", "b1", 10u64), ("p1", "b1", 20), ("p2", "b1", 10), ("p1", "b2", 10)];
+    let cells = [
+        ("p1", "b1", 10u64),
+        ("p1", "b1", 20),
+        ("p2", "b1", 10),
+        ("p1", "b2", 10),
+    ];
     for n in 0..1_000u64 {
         let (principal, bucket, window) = cells[(n % 4) as usize];
         let p = posting(principal, bucket, window, n);
@@ -63,7 +68,11 @@ fn the_summed_rows_hold_one_row_per_cell_and_fold_to_the_recorders_sums() {
     }
 
     assert_eq!(recorded.written().len(), 1_000);
-    assert_eq!(summed.len(), cells.len(), "one row per cell, whatever the traffic");
+    assert_eq!(
+        summed.len(),
+        cells.len(),
+        "one row per cell, whatever the traffic"
+    );
 
     type Sums = BTreeMap<(String, u64), (u64, u64, u64, u64)>;
     let sum = |sums: &mut Sums, p: &crate::LegacyPosting| {

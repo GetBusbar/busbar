@@ -39,4 +39,3 @@ pub(crate) fn plain(lines: &[(&'static str, u64)]) -> Vec<UsageLine> {
         })
         .collect()
 }
-

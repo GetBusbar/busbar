@@ -79,7 +79,9 @@ fn held_after(binding: &mut dyn LegacyRows, n: u64) -> i64 {
     let before = live();
     for i in 0..n {
         let p = posting(i);
-        binding.write(&p).expect("an in-memory binding always writes");
+        binding
+            .write(&p)
+            .expect("an in-memory binding always writes");
         drop(p);
     }
     live() - before
@@ -99,7 +101,10 @@ fn the_summed_rows_hold_the_same_bytes_after_a_thousand_postings_and_a_hundred_t
 
     assert_eq!(small.len(), CELLS.len());
     assert_eq!(large.len(), CELLS.len());
-    assert!(held_small > 0, "the rows are real allocations: {held_small}");
+    assert!(
+        held_small > 0,
+        "the rows are real allocations: {held_small}"
+    );
     assert_eq!(
         held_large, held_small,
         "a hundred times the postings, the same memory: bounded by cells, not by postings"
