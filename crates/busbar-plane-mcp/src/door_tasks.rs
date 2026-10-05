@@ -1207,19 +1207,25 @@ fn resolve(
 /// drains): a continuation running on it leaves its task `cancelled` — the transition a caller's
 /// `tasks/cancel` makes, as the served engine's runner settled a task its shutdown stopped. The
 /// handle is settled by the next create's sweep.
-pub(super) fn cancelled(plane: &McpDoor, ticket: Ticket) {
+///
+/// Answers the ids of the tasks it moved to `cancelled`: each is audited as the served engine's
+/// runner audited a task its shutdown stopped (`mcp_task.cancel`).
+pub(super) fn cancelled(plane: &McpDoor, ticket: Ticket) -> Vec<String> {
     let now = clock_now(plane);
+    let mut moved = Vec::new();
     plane.tasks.with_all(|m| {
-        for t in m.values_mut() {
+        for (id, t) in m.iter_mut() {
             if t.runner.is_some_and(|(_, tk)| tk == ticket) {
                 let at = now.unwrap_or(t.stamps().1);
                 if t.cancel(at) {
                     t.unsettled = true;
+                    moved.push(id.clone());
                 }
                 t.runner = None;
             }
         }
     });
+    moved
 }
 
 /// The kernel refused the continuation `unit` (`text`: its walk was exhausted, its budget said no)

@@ -4037,8 +4037,8 @@ mod hook_parity {
         .expect("a hook document")
     }
 
-    /// The env that loads the test cdylib as `test-hook` (`prompt: rw`, `user: ro`). Its absence is
-    /// a hard failure: with no gate to load every assertion here is vacuous.
+    /// The env whose `test-hook` is the kernel's in-process hook double (`prompt: rw`, `user: ro`;
+    /// no test plugin, OWNER 2026-10-03): its `settings:` choose its answer.
     fn hook_env() -> busbar_kernel::hooks::HookEnv {
         busbar_kernel::test_support::test_hook_env(
             &["test-hook"],
@@ -4046,10 +4046,6 @@ mod hook_parity {
                 prompt: busbar_plugin_loader::sign::NeedLevel::Rw,
                 user: busbar_plugin_loader::sign::NeedLevel::Ro,
             },
-        )
-        .expect(
-            "the busbar-hook-test-plugin cdylib is not built; this battery cannot be skipped. \
-             Build it: `cargo build -p busbar-hook-test-plugin`.",
         )
     }
 

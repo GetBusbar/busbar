@@ -40,16 +40,17 @@ use std::sync::Arc;
 use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
+    GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::plane::{
-    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn,
-    PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, ProjectIn, ProjectOut, RecordWrite, RefusalIn,
-    RefusalOut, ServeIn, ServeOut, UnitCount, AUDIT_APPLIED, AUDIT_REJECTED, CANCEL_ABORTED,
-    EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS,
-    PIECE_LAST, PRINCIPAL_REQUIRED, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE, REFUSAL_GATE,
-    ROUTE_DIRECT, ROUTE_POOL, UNITS_REPORTED, VERDICT_RETRY,
+    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneCancelIn, PlaneCancelOut,
+    PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
+    ProjectIn, ProjectOut, RecordWrite, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
+    AUDIT_APPLIED, AUDIT_REJECTED, CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER,
+    FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_REQUIRED, RECORD_AUDIT,
+    RECORD_PUT, REFUSAL_ARRIVE, REFUSAL_GATE, ROUTE_DIRECT, ROUTE_POOL, UNITS_REPORTED,
+    VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::life::Refusal;
@@ -364,15 +365,33 @@ slot!(
 
 slot!(
     /// `cancel`: the cancelled unit's state is dropped; nothing it holds had moved.
-    Cancel, CancelIn, CancelOut, |instance, input, mut out| {
+    Cancel, PlaneCancelIn, PlaneCancelOut, |instance, input, mut out| {
+        let mut stopped = Vec::new();
         if let Some(plane) = instance.get() {
-            let ticket = input.get().ticket;
-            // A task's continuation the kernel cancelled leaves its task cancelled.
-            door_tasks::cancelled(plane, ticket);
+            let ticket = input.get().cancel.ticket;
+            // A task's continuation the kernel cancelled leaves its task cancelled, audited as the
+            // served engine audited a task its shutdown stopped (SEAM-L(r)).
+            stopped = door_tasks::cancelled(plane, ticket);
             plane.units.with_all(|m| m.retain(|_, u| u.ticket != Some(ticket)));
             door_listen::cancelled(plane, ticket);
         }
-        out.set(|o| &o.disposition, CANCEL_ABORTED);
+        // The rows ride the one cancel answer (it is never re-called): what fits is written.
+        let (mut records, mut arena) = (input.records_buf(), input.arena_buf());
+        for id in &stopped {
+            let row = crate::call::AuditRow::task_cancel(id);
+            records.push(RecordWrite {
+                kind: AUDIT_APPLIED,
+                op: RECORD_AUDIT,
+                key: arena.span(row.action.as_bytes()),
+                value: arena.span(row.resource.as_bytes()),
+            });
+        }
+        let short = !(records.fits() && arena.fits());
+        let (rw, _) = records.settle(short);
+        let (aw, _) = arena.settle(short);
+        out.set(|o| &o.records_written, rw as u32);
+        out.set(|o| &o.arena_written, aw as u64);
+        out.set(|o| &o.cancel.disposition, CANCEL_ABORTED);
         Outcome::Ready
     }
 );
