@@ -19,6 +19,7 @@
 //!
 //! ```json
 //! { "settings": <the settings it opens over>,
+//!   "secrets": ["<each secret the Statement's secret_refs name, in order>", ...],   (optional)
 //!   "auth": {
 //!     "bad_settings": [<settings `open` must refuse, FAILED with a reason>, ...],
 //!     "rotated_settings": <settings for ANOTHER credential: no identity case identifies there>,
@@ -52,8 +53,8 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement, MARK_WORD_CARRIER};
 
 use super::{
-    bind, called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh,
-    tick, validate, Fold, Leg, Recorder, Subject,
+    bind, called, close, crossings, dispatcher, input, load, open_with, output, ready_step,
+    refresh_with, tick, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::auth::Auth;
 use crate::dispatch::{now_ns, Dispatcher, Frame, Plugin};
@@ -320,6 +321,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         st.caps
     );
     let settings = s.settings();
+    let secrets = s.secrets();
     let bad: Vec<Vec<u8>> = k["bad_settings"]
         .as_array()
         .expect("conformance.json: auth.bad_settings must be an array")
@@ -385,9 +387,11 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         verify_now(&p, &mut cases[identity_at])
     });
     for (i, b) in bad.iter().enumerate() {
-        r.line(&format!("open bad #{i}"), 1, || called(&open(&p, b)));
+        r.line(&format!("open bad #{i}"), 1, || {
+            called(&open_with(&p, b, &secrets))
+        });
     }
-    r.line("open", 1, || called(&open(&p, &settings)));
+    r.line("open", 1, || called(&open_with(&p, &settings, &secrets)));
     ready_step(&mut r, s, &p, &d);
     for (i, c) in cases.iter_mut().enumerate() {
         r.line(&format!("verify #{i}"), 1, || verify_now(&p, c));
@@ -421,7 +425,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         format!("{} next={next}", called(&c))
     });
     // The admin cache flush: `refresh` with a new generation and unchanged settings.
-    r.line("refresh", 1, || called(&refresh(&p, &settings)));
+    r.line("refresh", 1, || {
+        called(&refresh_with(&p, &settings, &secrets))
+    });
     r.line("verify after refresh", 1, || {
         verify_now(&p, &mut cases[identity_at])
     });
@@ -434,7 +440,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     // THE ROTATED CREDENTIAL, on an instance of its own: no identity case identifies there.
     let q = load::<Auth>(s, leg, bind(&d, "auth-rotated")).expect("the auth door loads");
     let mut rq = Recorder::new(crossings(&q));
-    rq.line("open rotated", 1, || called(&open(&q, &rotated)));
+    rq.line("open rotated", 1, || {
+        called(&open_with(&q, &rotated, &secrets))
+    });
     for (i, c) in cases.iter_mut().enumerate() {
         if expected[i].contains("Identity(") {
             rq.line(&format!("verify #{i} rotated"), 1, || verify_now(&q, c));

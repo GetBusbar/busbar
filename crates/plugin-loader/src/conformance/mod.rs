@@ -53,7 +53,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, InHead, OutHead, Outcome, RawOutcome, BLOB_JSON,
+    AbiStr, Blob, InHead, OutHead, Outcome, RawOutcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::abi::mechanism::door::{Door, DoorFn};
 use busbar_contract::abi::mechanism::lifecycle::{
@@ -161,6 +161,30 @@ impl Subject {
             None | Some(serde_json::Value::Null) => b"{}".to_vec(),
             Some(serde_json::Value::String(s)) => s.as_bytes().to_vec(),
             Some(v) => v.to_string().into_bytes(),
+        }
+    }
+
+    /// The resolved secrets the instance opens with (`inputs.secrets`: one string per key the
+    /// Statement's `secret_refs` names, in that order), as the kernel hands them to `open` and
+    /// `refresh` once the secret kind resolved them. None when absent: a plugin that states no
+    /// secret reference opens with none.
+    ///
+    /// # Panics
+    /// When `inputs.secrets` is not an array of strings.
+    #[must_use]
+    pub fn secrets(&self) -> Vec<Vec<u8>> {
+        match self.inputs.get("secrets") {
+            None | Some(serde_json::Value::Null) => Vec::new(),
+            Some(serde_json::Value::Array(a)) => a
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .unwrap_or_else(|| panic!("conformance.json: every secret is a string"))
+                        .as_bytes()
+                        .to_vec()
+                })
+                .collect(),
+            Some(_) => panic!("conformance.json: `secrets` is an array of strings"),
         }
     }
 
@@ -450,24 +474,64 @@ pub fn validate<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
 /// `open` over `settings`, generation 1, in the frame the kernel opens kind `K` with: a plane's
 /// `open` is `PlaneOpenIn`/`PlaneOpenOut` (its `out` carries the first generation's snapshot, and
 /// the kind's check FAULTs an `open` whose `out` cannot hold it); every other kind's is the
-/// lifecycle's `OpenIn`/`OpenOut`.
+/// lifecycle's `OpenIn`/`OpenOut`. No secrets: [`open_with`] hands the resolved ones.
 pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
+    open_with(p, settings, &[])
+}
+
+/// A [`BLOB_SECRET`] octet blob over each of `secrets`, in order.
+fn secret_blobs(secrets: &[Vec<u8>]) -> Vec<Blob> {
+    secrets
+        .iter()
+        .map(|v| Blob {
+            ptr: v.as_ptr(),
+            len: v.len(),
+            fmt: BLOB_OCTETS,
+            flags: BLOB_SECRET,
+        })
+        .collect()
+}
+
+/// [`open`] with the resolved `secrets` ([`Subject::secrets`]), as the kernel opens an instance
+/// whose Statement names secret references.
+pub fn open_with<K: Kind>(p: &Plugin<K>, settings: &[u8], secrets: &[Vec<u8>]) -> Called {
+    let blobs = secret_blobs(secrets);
+    let (at, len) = if blobs.is_empty() {
+        (std::ptr::null(), 0)
+    } else {
+        (blobs.as_ptr(), blobs.len())
+    };
     if K::CODE == KindCode::Plane {
         let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
         f.input.open.settings = json(settings);
+        f.input.open.secrets = at;
+        f.input.open.secrets_len = len;
         f.input.open.generation = 1;
         return p.call(life::OPEN, &mut f);
     }
     let mut f: Frame<OpenIn, OpenOut> = Frame::new(input(), output());
     f.input.settings = json(settings);
+    f.input.secrets = at;
+    f.input.secrets_len = len;
     f.input.generation = 1;
     p.call(life::OPEN, &mut f)
 }
 
 /// `refresh` over `settings`, generation 2.
 pub fn refresh<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
+    refresh_with(p, settings, &[])
+}
+
+/// [`refresh`] with the resolved `secrets`, as the kernel refreshes an instance whose Statement
+/// names secret references.
+pub fn refresh_with<K: Kind>(p: &Plugin<K>, settings: &[u8], secrets: &[Vec<u8>]) -> Called {
+    let blobs = secret_blobs(secrets);
     let mut f: Frame<RefreshIn, OutHead> = Frame::new(input(), output());
     f.input.settings = json(settings);
+    if !blobs.is_empty() {
+        f.input.secrets = blobs.as_ptr();
+        f.input.secrets_len = blobs.len();
+    }
     f.input.generation = 2;
     p.call(life::REFRESH, &mut f)
 }
@@ -797,7 +861,7 @@ pub fn red_ready(s: &Subject) {
         let row = LinkedRow::of(ready_fails_door).expect("the restated door states its Statement");
         let p = load_linked::<K>(&row, bind(&d, "red-ready")).expect("the restated door loads");
         assert!(p.has_ready());
-        let o = open(&p, &settings);
+        let o = open_with(&p, &settings, &s.secrets());
         assert_eq!(o.outcome, Outcome::Ready, "open: {}", called(&o));
         let before = crossings(&p).load(Ordering::SeqCst);
         let refused = p.ready(&d, READY_DEADLINE).expect_err("a failing ready refuses the boot");
