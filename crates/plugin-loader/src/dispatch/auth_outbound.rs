@@ -48,7 +48,7 @@ pub struct OutboundInstance {
 /// (`busbar-kernel/src/trust/mod.rs` `Approval::serves`, the dispatch gate) -- a different concept
 /// (auth-style serving, not trust dispatch); the neutrality census keeps `fn serves(` kernel-only.
 #[must_use]
-pub fn serves_style(plugin: &Plugin<Auth>, style: &str) -> Option<OutboundStyle> {
+pub fn outbound_style(plugin: &Plugin<Auth>, style: &str) -> Option<OutboundStyle> {
     plugin
         .context::<AuthFacts>()?
         .styles
