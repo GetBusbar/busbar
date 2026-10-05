@@ -121,13 +121,23 @@ pub struct Anchors {
     pub key_pin: Option<String>,
     /// The client identity to present; `None` = present none.
     pub client_identity: Option<ClientIdentity>,
+    /// The destination's PRIVATE REACH for the need (`abi::plane::TRUST_PRIVATE_REACH`): a private
+    /// address it stands for is admitted, as an allowlist entry naming its host would; a
+    /// cloud-metadata address stays refused, and the need keeps its egress class.
+    pub private_reach: bool,
 }
 
 impl Anchors {
     /// Whether these anchor nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.key_pin.is_none() && self.client_identity.is_none()
+        !self.secures() && !self.private_reach
+    }
+
+    /// Whether these hold the connection's security to anything (a key pin or a client identity).
+    #[must_use]
+    pub fn secures(&self) -> bool {
+        self.key_pin.is_some() || self.client_identity.is_some()
     }
 }
 
@@ -137,6 +147,7 @@ impl core::fmt::Debug for Anchors {
         f.debug_struct("Anchors")
             .field("key_pin", &self.key_pin)
             .field("client_identity", &self.client_identity)
+            .field("private_reach", &self.private_reach)
             .finish()
     }
 }

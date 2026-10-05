@@ -421,6 +421,8 @@ pub enum TrustRole {
     ReverifyTtl,
     /// How long after a drift a clean answer is disbelieved, a `<n><s|m|h|d>` duration.
     RecoveryBackoff,
+    /// The registration's private reach, a boolean (`abi::plane::TRUST_PRIVATE_REACH`).
+    PrivateReach,
 }
 
 /// One pin mechanism a [`TrustRole::Pin`] key accepts.
