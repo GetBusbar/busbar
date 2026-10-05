@@ -146,7 +146,7 @@ pub fn unverified_client_config() -> rustls::ClientConfig {
     let crypto = crate::tls::installed_crypto();
     rustls::ClientConfig::builder()
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(AcceptsAnyCertificate(provider)))
+        .with_custom_certificate_verifier(Arc::new(AcceptsAnyCertificate(crypto)))
         .with_no_client_auth()
 }
 
