@@ -229,9 +229,11 @@ fn bare_call(line: &str, name: &str) -> bool {
 /// of those is reached through a plugin handle whose method takes plugin arguments —
 /// `busbar_contract::auth::AuthModule::authenticate` takes `Option<&str>`, the presented credential, and
 /// nothing else. `busbar_kernel::teller::Units` is a DIFFERENT trait that happens to spell one of
-/// its steps `authenticate`, and the kernel calls it as `units.authenticate(&UnitToken::<
-/// Authenticate>::mint(seal), ctx)`. A `UnitToken` is a capability the kernel mints against its own
-/// `seal` for the length of one call; it is not a type a plugin's ABI can name, and `busbar-kernel`
+/// its steps `authenticate`, and the kernel calls it as `units.authenticate(&Pass::<
+/// Authenticate>::mint(seal), ctx)`. A `Pass` (`busbar_contract::caps::Pass`, the stage-pass this
+/// carve-out spelled `UnitToken` before W2.e e9cf31c260 renamed it — the old name is in no source
+/// file any more) is a capability the kernel mints against its own `seal` for the length of one
+/// call, and the seal is acquired only inside `busbar-kernel` (`token-sealed:kernel-seal`); it is not a type a plugin's ABI can name, and `busbar-kernel`
 /// depends on `busbar-caps`, `busbar-contract` and `busbar-grammar` — it links no plugin loader and
 /// no async runtime at all, so there is no Tokio worker there to park. So the mint spelling is not
 /// "a call we have decided to trust": it is the one textual form a plugin call CANNOT take.
@@ -246,7 +248,7 @@ fn bare_call(line: &str, name: &str) -> bool {
 fn opens_with_capability_token(rest: &str) -> bool {
     let arg = rest.trim_start();
     let arg = arg.strip_prefix('&').unwrap_or(arg).trim_start();
-    arg.starts_with("UnitToken::<")
+    arg.starts_with("Pass::<")
 }
 
 /// `.name` followed by optional whitespace and `(`. The shell's `\.(a|b)[[:space:]]*\(`, plus the
@@ -813,7 +815,7 @@ impl Gate for BlockingFfiGate {
         ov.set(
             format!("{CORE}/planted_kernel_step.rs"),
             "pub async fn run_unit_async<U: Units>(units: &U, ctx: &UnitCtx) -> Ended {\n\
-             \x20   let opened = units.authenticate(&UnitToken::<Authenticate>::mint(seal), ctx);\n\
+             \x20   let opened = units.authenticate(&Pass::<Authenticate>::mint(seal), ctx);\n\
              \x20   let outcome = module.authenticate(bearer);\n\
              \x20   opened\n}\n",
         );

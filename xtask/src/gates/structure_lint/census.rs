@@ -152,15 +152,12 @@ pub fn table(a: &Addresses) -> Vec<CensusRow> {
         r("the-one-generation-source", "GENERATION-SOURCE-FORKED", r"fn[[:space:]]+next_generation[^a-zA-Z0-9_]", 1, tree_and_substrate.clone(),
           "every versioned snapshot in the process takes its generation from one monotonic source; a second source is two numbering schemes that compare equal by accident, and zero means nothing is versioned"),
 
-        // ── THE THIRD CATALOGUE WALK, RECORDED HERE BECAUSE THE PLANE LEDGER STRUCTURALLY CANNOT
-        //    HOLD IT: that ledger's whole mechanism is CROSS-plane duplication, and this function
-        //    exists once. A duplication the ledger cannot express is exactly the kind that gets
-        //    forgotten, so it is expressed where the instrument fits — a count of the subject
-        //    itself. THE TARGET IS THIS ROW'S DELETION, not its count: when the walk is routed
-        //    through the one catalogue the function goes, the count becomes zero, and the failure is
-        //    the instruction to delete the row.
-        r("the-third-catalogue-walk", "THIRD-CATALOGUE-WALK", r"fn[[:space:]]+visible_catalogue[^a-zA-Z0-9_]", 1, tree.clone(),
-          "the outbound client leg still walks its own catalogue instead of the one walk, filtering through the egress gate rather than the ordered validator; this row is that debt, and the count is 1 until somebody routes it through and deletes the row"),
+        // ── THE THIRD CATALOGUE WALK — DELETED, AS ITS OWN TEXT ASKED. Its row said: "THE TARGET IS
+        //    THIS ROW'S DELETION ... when the walk is routed through the one catalogue the function
+        //    goes, the count becomes zero, and the failure is the instruction to delete the row."
+        //    `fn visible_catalogue` left the tree with the engine that held it (P3 DEL-MCP, ARCHITECT
+        //    2026-10-05: busbar-mcp deleted; the mcp door's one catalogue answers visibility through
+        //    `Catalogue::tools_for`), and `census:subject` reported the zero.
 
         // ── THE ONE PARSE-TIME PLANE-BOUNDARY RULE. Both halves lived TWICE — each plane's config
         //    carried a byte-identical copy with its own hardcoded section list in a file no compiler

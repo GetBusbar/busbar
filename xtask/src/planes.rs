@@ -16,7 +16,19 @@
 //! * more than one — [`PlaneRootError::Ambiguous`], naming both claimants. A half-finished move or
 //!   a duplicated plane; picking whichever sorts first would freeze one home and quietly un-freeze
 //!   the other.
+//!
+//! A DOOR-ONLY PLANE (P3 DEL-MCP, ARCHITECT 2026-10-05): a plane whose legacy engine is deleted and
+//! which is served through its memory-ABI door alone carries no `pub const PLANE_DECL` anywhere —
+//! its declaration is its DOOR ROW in the composition root's manifest
+//! (`crates/busbar/Cargo.toml`: a `[package.metadata.busbar.linked]` row naming a
+//! `busbar-plane-<key>` crate whose `[package.metadata.busbar.linked-axes]` row carries the
+//! `plane-door` axis, e.g. `plane-mcp-door`). Its home is that crate's `src`, read by
+//! [`door_planes`]. The door is consulted ONLY for a plane no grammar declaration claims, so a
+//! plane that still has its engine beside a door row (`llm-on-driver`) keeps the engine as its
+//! home; a door row that names no crate on disk is still `Missing`, never a pass. This is the same
+//! reading `gates::config_schema::declared` gives a door-only plane's Statement.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -26,6 +38,58 @@ pub const PLANE_KEYS: [&str; 4] = ["llm", "mcp", "a2a", "voice"];
 /// The default ownership grammar. Overridable for a fixture tree, the way
 /// `PLANE_ROOTS_GRAMMAR` is in the shell.
 pub const PLANE_GRAMMAR: &str = "pub const PLANE_DECL";
+
+/// The composition root's manifest, relative to the `crates/` search root: where a door-only
+/// plane's door row is declared.
+pub const DOOR_MANIFEST: &str = "busbar/Cargo.toml";
+
+/// The `linked-axes` axis that makes a linked row a plane's memory-ABI DOOR (`root::linked`).
+pub const PLANE_DOOR_AXIS: &str = "plane-door";
+
+/// The `key = "value"` rows of one `[table]` of a manifest, in file order — the reading
+/// `crates/busbar/src/linked_gen.rs` gives `build.rs` (one row per line, both sides optionally
+/// quoted, `#` starts a comment). An absent table is no rows.
+fn manifest_rows(manifest: &str, table: &str) -> Vec<(String, String)> {
+    let header = format!("[{table}]");
+    let mut inside = false;
+    let mut rows = Vec::new();
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            inside = code == header;
+            continue;
+        }
+        if let (true, Some((k, v))) = (inside, code.split_once('=')) {
+            rows.push((
+                k.trim().trim_matches('"').to_string(),
+                v.trim().trim_matches('"').to_string(),
+            ));
+        }
+    }
+    rows
+}
+
+/// THE DOOR PLANES the composition root's manifest declares: plane key -> the crate its door row
+/// links. A row counts when its `linked-axes` row carries [`PLANE_DOOR_AXIS`] and the crate it
+/// links is a `busbar-plane-<key>` crate (the plane kind's naming, the one
+/// `structure_lint::roots::declaration_home` reads a plane crate's key off). A door row linking a
+/// crate of any other name declares no plane key here — it stays unlocatable, which is the loud
+/// answer.
+pub fn door_planes(manifest: &str) -> BTreeMap<String, String> {
+    let doors: Vec<String> = manifest_rows(manifest, "package.metadata.busbar.linked-axes")
+        .into_iter()
+        .filter(|(_, axes)| axes.split_whitespace().any(|a| a == PLANE_DOOR_AXIS))
+        .map(|(feature, _)| feature)
+        .collect();
+    manifest_rows(manifest, "package.metadata.busbar.linked")
+        .into_iter()
+        .filter(|(feature, _)| doors.contains(feature))
+        .filter_map(|(_, krate)| {
+            let key = krate.strip_prefix("busbar-plane-")?.to_string();
+            Some((key, krate))
+        })
+        .collect()
+}
 
 /// Every plane key EXCEPT `llm` — `busbar-llm` owns the LLM dialect names and is never scanned as
 /// a plane key by the grep gate, which bans the dialects there instead. Derived from
@@ -177,9 +241,12 @@ impl fmt::Display for PlaneRootError {
             } => write!(
                 f,
                 "PLANE-ROOT-MISSING: no directory named `{plane}` under {}/ carries its `{grammar}` \
-                 declaration. Every rule that names this plane is now scanning NOTHING, and zero is \
-                 the passing answer to a ban. If the plane legitimately moved somewhere this rule \
-                 cannot see it, fix the search — do not delete the rows or lower a scan floor.",
+                 declaration, and no `{PLANE_DOOR_AXIS}` row in {}/{DOOR_MANIFEST} links a \
+                 `busbar-plane-{plane}` crate on disk (a door-only plane's declaration). Every rule \
+                 that names this plane is now scanning NOTHING, and zero is the passing answer to a \
+                 ban. If the plane legitimately moved somewhere this rule cannot see it, fix the \
+                 search — do not delete the rows or lower a scan floor.",
+                search_root.display(),
                 search_root.display()
             ),
             PlaneRootError::Ambiguous { plane, candidates } => write!(
@@ -227,11 +294,24 @@ impl PlaneRoots {
         named.sort();
         named.dedup();
 
-        let owned: Vec<PathBuf> = named
+        let mut owned: Vec<PathBuf> = named
             .into_iter()
             .filter(|d| declares_here(d, &self.grammar))
             .collect();
+        // A DOOR-ONLY PLANE: no grammar declaration claims it, so its door row is its declaration.
+        if owned.is_empty() {
+            owned.extend(self.door_home(plane));
+        }
         self.judge(plane, owned)
+    }
+
+    /// The `src` of the crate the manifest's door row for `plane` links, when it is on disk and
+    /// directly holds a source file. `None` for no door row, or a door row naming nothing here.
+    pub fn door_home(&self, plane: &str) -> Option<PathBuf> {
+        let manifest = std::fs::read_to_string(self.search_root.join(DOOR_MANIFEST)).ok()?;
+        let krate = door_planes(&manifest).remove(plane)?;
+        let src = self.search_root.join(krate).join("src");
+        holds_source(&src).then_some(src)
     }
 
     /// The three-answers rule, over candidates somebody else located. THE SAME judgement the disk
@@ -288,6 +368,14 @@ fn find_dirs_named(dir: &Path, name: &str, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// A directory DIRECTLY holding a `*.rs` — a door crate's `src` with its `lib.rs`.
+fn holds_source(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|rd| {
+        rd.filter_map(|e| e.ok())
+            .any(|e| e.path().extension().and_then(|x| x.to_str()) == Some("rs"))
+    })
+}
+
 /// A candidate must DIRECTLY hold a `*.rs` declaring the grammar — not merely reference it three
 /// directories over.
 fn declares_here(dir: &Path, grammar: &str) -> bool {
@@ -307,4 +395,46 @@ fn declares_here(dir: &Path, grammar: &str) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MANIFEST: &str = "[package.metadata.busbar.linked]\n\
+        proto-llm = \"busbar-llm\"\n\
+        llm-on-driver = \"busbar-plane-llm\"\n\
+        plane-mcp-door = \"busbar-plane-mcp\"\n\
+        transport-tcp = \"busbar-transport-tcp\"\n\n\
+        [package.metadata.busbar.linked-axes]\n\
+        proto-llm = \"plane claims\"\n\
+        llm-on-driver = \"plane-door\"\n\
+        plane-mcp-door = \"plane-door\" # the door\n\
+        transport-tcp = \"transport transport-door\"\n";
+
+    /// A door row is read by its axis, and its key off the plane crate's name; a row on any other
+    /// axis (`transport-door` included) declares no plane.
+    #[test]
+    fn a_plane_door_row_declares_its_plane_crate() {
+        let doors = door_planes(MANIFEST);
+        assert_eq!(
+            doors.get("mcp").map(String::as_str),
+            Some("busbar-plane-mcp")
+        );
+        assert_eq!(
+            doors.get("llm").map(String::as_str),
+            Some("busbar-plane-llm")
+        );
+        assert_eq!(doors.len(), 2, "{doors:?}");
+    }
+
+    /// The same row without the `plane-door` axis is no declaration.
+    #[test]
+    fn a_row_off_the_door_axis_declares_nothing() {
+        let off = MANIFEST.replace(
+            "plane-mcp-door = \"plane-door\"",
+            "plane-mcp-door = \"plane\"",
+        );
+        assert!(!door_planes(&off).contains_key("mcp"));
+    }
 }

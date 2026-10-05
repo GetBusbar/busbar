@@ -318,8 +318,11 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         ChokeRow {
             id: "H-operator-authored-ask".into(),
             tag: "ASK-NOT-OPERATOR-AUTHORED".into(),
-            owner: format!("crates/busbar-plane-mcp/src/tools_config.rs (AskEntryCfg, deserialised from operator YAML; the tools: grammar moved into the plane, MCP-1 M1a) + {mcp}/callerask.rs (the private `authored` module, sole constructor)"),
-            class_test: format!("{mcp}/tests/callerask_tests.rs::the_asks_params_are_the_operators_bytes_and_nothing_else"),
+            owner: format!("crates/busbar-plane-mcp/src/tools_config.rs (AskEntryCfg, deserialised from operator YAML; the tools: grammar moved into the plane, MCP-1 M1a) + {mcp}/ask.rs (the private `authored` module, sole constructor)"),
+            // P3 DEL-MCP (ARCHITECT 2026-10-05): the engine's `callerask.rs` and its class test are
+            // deleted; the door carries the same `authored` module (`ask.rs`) and the same test by
+            // name in `tests/ask.rs`.
+            class_test: format!("{mcp}/tests/ask.rs::the_asks_params_are_the_operators_bytes_and_nothing_else"),
             remedy: "let the operator write the ask: an AskEntryCfg is deserialised, never assembled".into(),
             rules: vec![BanRule::new(
                 r"AskEntryCfg[[:space:]]*\{",
