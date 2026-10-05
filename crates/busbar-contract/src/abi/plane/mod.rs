@@ -473,6 +473,19 @@ pub const EMIT_WATCH_CATALOGUE: u32 = 1 << 3;
 /// [`EMIT_WATCH_CATALOGUE`].
 pub const EMIT_UNWATCH_CATALOGUE: u32 = 1 << 4;
 
+/// [`OnPieceOut::flags`]: MESSAGE BOUNDARY. The bytes this answer emits toward the caller END one
+/// message: a carrier that frames messages (a length-prefixed message stream) frames ONE message on
+/// this boundary, however many answers its bytes spanned (a message past one reply buffer is still
+/// one message); a carrier with no message framing ignores it. An answer may carry it with no bytes
+/// of its own (the boundary after bytes already emitted). Not on a request bound for the far end.
+pub const EMIT_MESSAGE_END: u32 = 1 << 5;
+/// [`OnPieceOut::flags`]: FINAL STATUS. On the closing answer ([`EMIT_DONE`]): the reply ends with
+/// the status [`OnPieceOut::final_status`] states, its message and details in the arena, in the
+/// numbering the claim's transport declares for its own statuses. A carrier that reports a reply's
+/// status AFTER its bytes (trailing fields) reports this one there, so a reply that fails after its
+/// first message still ends with its own status; any other carrier ignores it.
+pub const EMIT_FINAL_STATUS: u32 = 1 << 6;
+
 /// Whether every flag in `flags` is one bit and no two share it. Each flag set below is asserted
 /// with it, so two lanes that pick the same bit for different flags fail to compile.
 const fn one_bit_each(flags: &[u32]) -> bool {
@@ -501,6 +514,8 @@ const _: () = assert!(one_bit_each(&[
     PIECE_OUT_TEXT,
     EMIT_WATCH_CATALOGUE,
     EMIT_UNWATCH_CATALOGUE,
+    EMIT_MESSAGE_END,
+    EMIT_FINAL_STATUS,
 ]));
 
 /// [`OnPieceOut::verdict`]: no verdict; the walk's status table alone decides.
@@ -1517,6 +1532,16 @@ pub struct OnPieceOut {
     /// the last one an answer of the unit named holds, and a unit whose answers name none is laned
     /// by the entry its route picked. UTF-8, without control characters. A tail addition.
     pub lane: Span,
+    /// With [`EMIT_FINAL_STATUS`]: the reply's final status number, in the numbering the claim's
+    /// transport declares for its own statuses. A tail addition.
+    pub final_status: u32,
+    /// Alignment padding.
+    pub _final_reserved: u32,
+    /// With [`EMIT_FINAL_STATUS`]: the final status's message, in the arena; a zero length = none.
+    pub final_message: Span,
+    /// With [`EMIT_FINAL_STATUS`]: the final status's details, opaque bytes the carrier hands on
+    /// verbatim, in the arena; a zero length = none.
+    pub final_details: Span,
 }
 
 /// `refusal`'s `in`.

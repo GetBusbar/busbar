@@ -268,6 +268,9 @@ impl FarEnd for Far {
 /// A reply head as the caller saw it.
 type Head = (u32, Vec<(Vec<u8>, Vec<u8>)>);
 
+/// A reply's final status: its number, its message and its details bytes.
+pub(crate) type Finale = (u32, Vec<u8>, Vec<u8>);
+
 /// A caller whose every write waits one turn of the runtime (its side becoming writable).
 #[derive(Default)]
 pub(crate) struct Caller {
@@ -276,6 +279,10 @@ pub(crate) struct Caller {
     writes: AtomicU64,
     /// Writes that came as ONE text message.
     texts: AtomicU64,
+    /// Message boundaries the caller's side was handed.
+    pub(crate) boundaries: AtomicU64,
+    /// The reply's final status, message and details, once stated.
+    pub(crate) finale: Mutex<Option<Finale>>,
 }
 
 impl CallerEnd for Caller {
@@ -294,6 +301,24 @@ impl CallerEnd for Caller {
         self.texts.fetch_add(1, Ordering::SeqCst);
         self.write(bytes).await
     }
+
+    async fn write_piece(&self, bytes: &[u8], text: bool, message_end: bool) -> bool {
+        if message_end {
+            self.boundaries.fetch_add(1, Ordering::SeqCst);
+        }
+        if bytes.is_empty() {
+            return true;
+        }
+        if text {
+            self.write_text(bytes).await
+        } else {
+            self.write(bytes).await
+        }
+    }
+
+    fn final_status(&self, status: u32, message: &[u8], details: &[u8]) {
+        *self.finale.lock().unwrap() = Some((status, message.to_vec(), details.to_vec()));
+    }
 }
 
 /// A request's caller: its side carries no piece of its own (a unit's route leg may be a session,
@@ -305,7 +330,7 @@ impl SessionCaller for Caller {
 }
 
 impl Caller {
-    fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         String::from_utf8_lossy(&self.bytes.lock().unwrap()).into_owned()
     }
     pub(crate) fn status(&self) -> Option<u32> {
@@ -434,7 +459,7 @@ pub(crate) async fn drive(units: &PlaneUnits<'_, TestUnits, Far, Caller>) -> Out
     }
 }
 
-const CHUNKS: &[&[u8]] = &[b"hello ", b"far ", b"end"];
+pub(crate) const CHUNKS: &[&[u8]] = &[b"hello ", b"far ", b"end"];
 
 // ── one unit ─────────────────────────────────────────────────────────────────────────
 

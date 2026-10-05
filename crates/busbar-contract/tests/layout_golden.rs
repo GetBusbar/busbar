@@ -1824,7 +1824,11 @@ fn compute_layout() -> String {
             target,
             need,
             _need_reserved,
-            lane
+            lane,
+            final_status,
+            _final_reserved,
+            final_message,
+            final_details
         ]
     );
     record!(

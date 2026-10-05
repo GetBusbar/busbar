@@ -748,6 +748,10 @@ fn zero_piece_out() -> OnPieceOut {
         need: 0,
         _need_reserved: 0,
         lane: span,
+        final_status: 0,
+        _final_reserved: 0,
+        final_message: span,
+        final_details: span,
     }
 }
 
