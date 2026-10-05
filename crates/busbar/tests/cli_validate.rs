@@ -1725,6 +1725,7 @@ fn validate_refuses_an_http_token_url_on_a_public_host() {
             dir.join("config.yaml"),
             format!(
                 r#"listen: "127.0.0.1:0"
+store: {{module: memory}}
 providers:
   entra:
     api_key: {{ env: MOCK_KEY }}
