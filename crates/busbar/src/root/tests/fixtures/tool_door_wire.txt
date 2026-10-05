@@ -33,3 +33,7 @@ scope_tool = mcp_tool
 endpoint_section = mcp
 # The registry key the plane files its per-entry hooks under (lib.rs PLANE_KEY).
 plane_key = mcp
+# The audit row a tools/call writes on the kernel's audit chain (call.rs ACTION_TOOL_CALL, and the
+# resource noun AuditRow::tool names a tool by: `<noun>:<published name>`).
+audit_action_tool_call = mcp_tool.call
+audit_resource_tool = mcp_tool

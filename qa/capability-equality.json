@@ -84,12 +84,12 @@
       "note": "the LLM plane over the loop: LlmNode::answer driving the kernel's ten steps, compared against the shipped entry point on six fixtures"
     },
     "root-mcp": {
-      "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
+      "file": "crates/busbar/src/root/serve.rs",
       "columns": [
         "mcp-client",
         "mcp-server"
       ],
-      "note": "the MCP plane's SERVED root leg: `tools/call` driven through the kernel-loop rider `gauntlet_install::install()` registers for the plane's key (DECISIONS #28), each root cell running the plane's own served witness (`busbar_mcp::testkit::SERVED`) and requiring its `drive` to have run inside the loop"
+      "note": "the MCP plane served through its memory-ABI door on the kernel's plane driver: the door bound through the loader's one load, composed by root/serve.rs (compose_planes, its egress sealed by DoorEgress, the K5 hook stage) and mounted on the data router by door_routes; each loop cell drives a tools/call (or listing) through that router and asserts the capability where it lands -- the walk's breaker cell, the hook stage, the call log's host chain and the kernel's audit chain, the governance book, /metrics, the trust state, the connector's destination guard and the plane's argument guard, the member's auth binding, the caller's catalogue. Its cells are in serve.rs's #[path] test file root/tests/serve_door.rs (module door_tests::mcp)."
     },
     "root-a2a": {
       "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
@@ -148,18 +148,18 @@
       "capability": "breaker-trip",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/breaker_fastfail_tests.rs::a_hard_down_http_server_trips_and_the_second_call_fast_fails_without_touching_it",
+      "test": "crates/busbar/src/root/tests/serve_door.rs::a_failing_tool_server_trips_its_breaker_cell_through_the_composed_door",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-mcp",
-        "reason": "the served rider carries the breaker inside the plane's `drive`, but no served-leg witness takes an upstream down through the rider, so nothing records into the cell over the loop yet; the plane's own battery (`test`) proves the trip on the inline path"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::a_failing_tool_server_trips_its_breaker_cell_through_the_composed_door"
       }
     },
     {
       "capability": "breaker-trip",
       "plane": "mcp-server",
       "state": "not-applicable",
-      "reason": "the front door is inbound; there is no upstream target whose availability could be recorded. A peer-initiated sampling/createMessage rides the LLM engine and is the llm cell's evidence.",
+      "reason": "the front door is inbound; there is no upstream target whose availability could be recorded. An upstream's sampling/roots/elicitation ask is RELAYED to the caller (Law 11), never satisfied by a model leg busbar dials, so this role triggers no outbound of its own.",
       "root": {
         "state": "not-applicable",
         "leg": "root-mcp"
@@ -212,18 +212,18 @@
       "capability": "breaker-fastfail",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/breaker_fastfail_tests.rs::a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fails",
+      "test": "crates/busbar/src/root/tests/serve_door.rs::a_tripped_tool_server_is_refused_before_dispatch_without_waiting",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-mcp",
-        "reason": "no served-leg witness trips an upstream and then calls it again through the rider, so the fast-fail refusal is not watched over the loop; the plane's own battery (`test`) watches it on the inline path, inside the same `drive`"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::a_tripped_tool_server_is_refused_before_dispatch_without_waiting"
       }
     },
     {
       "capability": "breaker-fastfail",
       "plane": "mcp-server",
       "state": "not-applicable",
-      "reason": "the front door is inbound; admission-before-dispatch has no upstream target on this role. The outbound legs it triggers are the llm and mcp-client cells.",
+      "reason": "the front door is inbound; admission-before-dispatch has no upstream target on this role. The only outbound a call through it triggers is the mcp-client leg (an upstream's ask is relayed to the caller, Law 11), which is that cell's evidence.",
       "root": {
         "state": "not-applicable",
         "leg": "root-mcp"
@@ -276,18 +276,18 @@
       "capability": "failover-reroute",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/reroute_pool_tests.rs::a_tripped_pool_primary_reroutes_the_next_tools_call_to_its_twin_and_stays_untouched",
+      "test": "crates/busbar/src/root/tests/door_steps.rs::a_tool_pool_fails_over_through_the_one_walk_and_repeats_only_what_it_names",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-mcp",
-        "reason": "no served-leg witness registers a pool with a second member, so the rider never carries a reroute; `failover::walk` runs inside the plane's `drive` and the plane's own battery (`test`) proves it there"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::a_tripped_pool_member_reroutes_the_next_call_to_its_twin_through_the_walk"
       }
     },
     {
       "capability": "failover-reroute",
       "plane": "mcp-server",
       "state": "not-applicable",
-      "reason": "inbound role; there is no candidate set to walk. Failover for work this role triggers belongs to the outbound cells (llm, mcp-client).",
+      "reason": "inbound role; there is no candidate set to walk. Failover for the work this role triggers belongs to the outbound mcp-client cell (an upstream's ask is relayed to the caller, Law 11, and dials nothing).",
       "root": {
         "state": "not-applicable",
         "leg": "root-mcp"
@@ -340,24 +340,22 @@
       "capability": "hooks-tap",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_tool_call_arguments_before_they_go_upstream",
-      "note": "the `prompt: rw` transform pass at mcp/method.rs (through the EngineHost::transform_over host seam, mirroring the LLM apply_global_rewrites) rewrites the tool-call arguments over the SAME InvokeReq projection the gate builds, BEFORE the upstream credential is leased. One wiring at the method layer covers both directions (no ungated production entry to the client leg), exactly as the hooks-gate cells.",
+      "test": "crates/busbar/src/root/tests/door_steps.rs::a_rewrite_hook_edits_the_tool_call_arguments_before_they_go_upstream",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-mcp",
-        "reason": "no served-leg witness installs an observe or transform hook, so the rider carries no payload a hook rewrote; the tap runs inside the plane's `drive` and the plane's own battery (`test`) proves it on the tool-call arguments"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::a_rewrite_hook_rewrites_the_arguments_on_the_composed_door"
       }
     },
     {
       "capability": "hooks-tap",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_tool_call_arguments_before_they_go_upstream",
-      "note": "same transform_over wiring at mcp/method.rs; the test asserts on the arguments the real upstream peer received (peer.last_mcp()). BYTE-IDENTICAL when no rewrite hook is attached (tap_attached misses).",
+      "test": "crates/busbar-plane-mcp/src/tests/call.rs::a_rewrite_replaces_the_arguments_by_the_invoke_contract",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-mcp",
-        "reason": "no served-leg witness installs an observe or transform hook, so the rider on the front door carries no payload a hook rewrote; the tap runs inside the plane's `drive` and the plane's own battery (`test`) proves it on the tool-call arguments"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::a_rewrite_hook_rewrites_the_arguments_on_the_composed_door"
       }
     },
     {
@@ -410,23 +408,22 @@
       "capability": "hooks-gate",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/hook_gate_tests.rs::tools_hooks_reject_all_rejects_a_tools_call",
-      "note": "the gate sits at the method layer (mcp/method.rs) BEFORE the upstream leg; there is no ungated production entry to the client leg, so one battery covers both directions.",
+      "test": "crates/busbar/src/root/tests/door_steps.rs::tools_hooks_reject_all_rejects_a_tools_call",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-mcp",
-        "reason": "no served-leg witness attaches a gating hook to a registration, so hooks::gate::decide is reached by no unit the rider carries; the gate runs inside the plane's `drive` and the plane's own battery (`test`) proves the refusal"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::a_gate_hook_refuses_the_call_before_it_is_dispatched"
       }
     },
     {
       "capability": "hooks-gate",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/hook_gate_tests.rs::tools_hooks_reject_all_rejects_a_tools_call",
+      "test": "crates/busbar/src/root/tests/door_steps.rs::the_calls_content_reaches_the_gate",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-mcp",
-        "reason": "no served-leg witness attaches a gating hook to a registration, so hooks::gate::decide is reached by no unit the rider on the front door carries; the gate runs inside the plane's `drive` and the plane's own battery (`test`) proves the refusal"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::a_gate_hook_refuses_the_call_before_it_is_dispatched"
       }
     },
     {
@@ -476,23 +473,22 @@
       "capability": "audit-chain",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/calllog_dispatch_tests.rs::the_client_legs_own_outcome_is_what_the_chain_records_success_and_failure_apart",
-      "note": "the outcome of the leg BUSBAR issues is what the chain carries: a leg that went out and came back badly is chained as `dispatched` + `upstream_failed`, a leg that worked as `dispatched` with an empty reason. Both are driven through one principal, one server and one tool differing only in the upstream's answer, so the pin cannot be satisfied by a constant. Watched red: deleting the reason token at method.rs's Outcome::UpstreamFailed arm fails it and leaves the two front-door tests green.",
+      "test": "crates/busbar/src/root/tests/door_steps.rs::a_tools_call_is_served_through_the_tool_door_and_its_money_posted",
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_chains_what_it_audits"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::every_call_is_chained_on_the_call_log_and_the_kernels_audit_chain"
       }
     },
     {
       "capability": "audit-chain",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/calllog_dispatch_tests.rs::a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_store_plugin",
+      "test": "crates/busbar-plane-mcp/src/tests/call.rs::an_unknown_and_an_ungranted_tool_read_the_same_and_log_apart",
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_chains_what_it_audits"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::every_call_is_chained_on_the_call_log_and_the_kernels_audit_chain"
       }
     },
     {
@@ -545,23 +541,24 @@
       "capability": "governance-budget",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/sampling_satisfy_tests.rs::the_per_upstream_budget_refuses_the_completion_past_the_cap_before_it_runs",
-      "note": "the per-upstream sampling budget, charged BEFORE the model leg in mcp::sampling::satisfy_upstream_ask when busbar itself originates the completion. Red-proven by deleting the try_spend call from the production path: this test failed and the other five sampling_satisfy tests plus all three sampling_spend unit tests stayed green.",
+      "test": "crates/busbar/src/root/tests/door_steps.rs::a_tools_call_is_served_through_the_tool_door_and_its_money_posted",
+      "note": "the door charges the presenting key and refuses a spent budget before dispatch (429, over budget); the admission's wait does NOT reach the caller on this path -- the root's Refusal carries LimitBlocked's retry_after, but the kernel plane driver renders an admission refusal from its reason alone (plane_driver encode -> render_as with no walk terminal: retry_after_s 0), so neither a Retry-After head nor retryAfterSeconds is sent. Open: the Retry-After clause of this capability is a kernel-driver gap on every door plane.",
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_charges_the_presenting_key"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::a_call_is_charged_to_the_presenting_key_and_a_spent_budget_refuses_it"
       }
     },
     {
       "capability": "governance-budget",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/method_tests.rs::a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane",
+      "test": "crates/busbar/src/root/tests/door_steps.rs::a_tools_call_is_served_through_the_tool_door_and_its_money_posted",
+      "note": "the door charges the presenting key and refuses a spent budget before dispatch (429, over budget); the admission's wait does NOT reach the caller on this path -- the root's Refusal carries LimitBlocked's retry_after, but the kernel plane driver renders an admission refusal from its reason alone (plane_driver encode -> render_as with no walk terminal: retry_after_s 0), so neither a Retry-After head nor retryAfterSeconds is sent. Open: the Retry-After clause of this capability is a kernel-driver gap on every door plane.",
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_charges_the_presenting_key"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::a_call_is_charged_to_the_presenting_key_and_a_spent_budget_refuses_it"
       }
     },
     {
@@ -613,11 +610,11 @@
       "capability": "disposition",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/reroute_pool_tests.rs::a_client_fault_answer_never_penalizes_the_member",
+      "test": "crates/busbar-plane-mcp/src/tests/call.rs::an_upstream_error_is_a_tool_failure_naming_the_server",
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_classifies_the_upstream_answer"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::a_client_fault_answer_is_relayed_and_never_penalizes_the_member"
       }
     },
     {
@@ -678,23 +675,22 @@
       "capability": "metrics",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/client_leg_metrics_tests.rs::a_tool_call_counts_an_upstream_attempt_naming_the_registration_it_was_issued_to",
-      "note": "the MODEL PLANE'S OWN client-leg families -- busbar_upstream_attempts_total / busbar_upstream_failures_total, same label keys, same disposition vocabulary -- emitted from the one counted wire seam (mcp::client::wire::send), so the plane label is no longer front-door-only. Its twin an_upstream_that_cannot_be_reached_is_counted_as_a_transient_failure_beside_its_attempt covers the failure half.",
+      "test": "crates/busbar/src/root/tests/serve_door.rs::the_doors_traffic_appears_on_the_metrics_scrape_under_its_plane",
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_counts_the_upstream_attempt"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::the_doors_traffic_appears_on_the_metrics_scrape_under_its_plane"
       }
     },
     {
       "capability": "metrics",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-kernel/tests/plane_integration.rs::mounted_plane_traffic_appears_on_a_real_metrics_scrape",
+      "test": "crates/busbar/src/root/tests/serve_door.rs::the_doors_traffic_appears_on_the_metrics_scrape_under_its_plane",
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_counts_the_upstream_attempt"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::the_doors_traffic_appears_on_the_metrics_scrape_under_its_plane"
       }
     },
     {
@@ -745,22 +741,22 @@
       "capability": "trust-pinning",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/client/tests/rugpull_tests.rs::a_changed_schema_under_a_live_cache_is_detected_demoted_and_refused",
+      "test": "crates/busbar/src/root/tests/door_steps.rs::verify_on_call_judges_the_live_list_reuses_a_fresh_look_and_fails_closed",
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_an_unpinned_peer"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::a_rug_pulled_tool_is_detected_demoted_and_refused_before_it_is_sent"
       }
     },
     {
       "capability": "trust-pinning",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/trust_gate_tests.rs::the_routed_gate_answers_exactly_what_the_deleted_inline_decision_answered",
+      "test": "crates/busbar-plane-mcp/src/tests/catalogue.rs::a_quarantined_tool_is_hidden_and_only_granted_tools_are_asked",
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_an_unpinned_peer"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::a_rug_pulled_tool_is_detected_demoted_and_refused_before_it_is_sent"
       }
     },
     {
@@ -810,18 +806,18 @@
       "capability": "net-guard",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/client/tests/ssrf_tests.rs::plaintext_http_to_a_public_host_is_refused_because_the_credential_rides_the_request",
+      "test": "crates/busbar/src/root/tests/door_steps.rs::a_metadata_url_in_the_arguments_is_refused_before_the_call_is_sent",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-mcp",
-        "reason": "no served-leg witness hands the rider a registration whose derived destination the SSRF guard refuses; the guard runs inside the plane's `drive` at the dial and the plane's own battery (`test`) proves the refusal"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::the_destination_guard_and_the_argument_guard_refuse_before_anything_is_sent"
       }
     },
     {
       "capability": "net-guard",
       "plane": "mcp-server",
       "state": "not-applicable",
-      "reason": "the inbound listener derives no outbound destination of its own; the destinations its work triggers are guarded in the mcp-client and llm cells.",
+      "reason": "the inbound listener derives no outbound destination of its own; the destinations its work triggers are the mcp-client cell's, and an upstream's ask is relayed to the caller (Law 11), so busbar dials no model for it.",
       "root": {
         "state": "not-applicable",
         "leg": "root-mcp"
@@ -876,18 +872,18 @@
       "capability": "egress-auth",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/client/tests/egress_tests.rs::each_upstream_gets_a_token_bound_to_its_own_resource",
+      "test": "crates/busbar/src/root/tests/door_steps.rs::a_token_exchange_registration_presents_the_token_exchanged_for_the_callers_down_scope",
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_presents_only_the_planned_credential"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::each_member_presents_only_the_credential_its_registration_plans"
       }
     },
     {
       "capability": "egress-auth",
       "plane": "mcp-server",
       "state": "not-applicable",
-      "reason": "this role's only outbound (peer sampling) rides the LLM engine, whose credential injection is the llm cell; inbound caller authentication is the Auth plugin's subject, not egress.",
+      "reason": "this role has no outbound of its own: an upstream's sampling/roots/elicitation ask is relayed to the caller (Law 11), never answered by a model leg busbar would credential; inbound caller authentication is the Auth plugin's subject, not egress.",
       "root": {
         "state": "not-applicable",
         "leg": "root-mcp"
@@ -941,22 +937,22 @@
       "capability": "catalogue",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/client/tests/catalogue_tests.rs::a_registered_server_serves_nothing_until_it_is_approved",
+      "test": "crates/busbar/src/root/tests/door_steps.rs::a_tools_call_outside_the_callers_grant_is_refused_before_it_dials",
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_serves_only_the_callers_catalogue"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::each_grant_sees_and_calls_only_its_own_catalogue"
       }
     },
     {
       "capability": "catalogue",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/catalogue_tests.rs::two_grants_see_two_different_catalogues_and_a_third_sees_none",
+      "test": "crates/busbar-plane-mcp/src/tests/catalogue.rs::two_grants_see_two_catalogues_and_a_third_sees_none",
       "root": {
         "state": "proven",
         "leg": "root-mcp",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_serves_only_the_callers_catalogue"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::each_grant_sees_and_calls_only_its_own_catalogue"
       }
     },
     {

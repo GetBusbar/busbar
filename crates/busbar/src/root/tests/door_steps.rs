@@ -510,7 +510,7 @@ fn a_member_that_cannot_be_reached_refuses_the_load_naming_it() {
 /// open recorded, each open answered by the endpoint's next reply (`expires_in` 2, then 3600), one
 /// piece per read.
 #[derive(Default)]
-struct TokenEndpoint {
+pub(crate) struct TokenEndpoint {
     slab: busbar_contract::conn::ConnSlab<()>,
     declared: std::sync::Mutex<Vec<(u32, u32, Option<String>)>>,
     opened: std::sync::Mutex<Vec<Opened>>,
@@ -843,7 +843,7 @@ fn a_registration_member_is_reached_at_its_own_target() {
 /// linked row binds it. The dropped-in fold of the same door is the plane crate's own
 /// conformance suite (`tests/conformance.rs`, one transcript through both loads).
 #[cfg(all(linked_axis_plane_door, linked_axis_node))]
-mod tool_door {
+pub(crate) mod tool_door {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
@@ -882,14 +882,14 @@ mod tool_door {
         });
 
     /// The governance book's admin token.
-    pub(super) const ADMIN_TOKEN: &str = "admintok";
+    pub(crate) const ADMIN_TOKEN: &str = "admintok";
 
     /// The deployment's public base URL: the door claims its routes under it.
-    pub(super) const PUBLIC_URL: &str = "http://127.0.0.1";
+    pub(crate) const PUBLIC_URL: &str = "http://127.0.0.1";
 
     /// The plane's wire words that its Statement does not carry, as DATA
     /// (`tests/fixtures/tool_door_wire.txt`): one `key = value` per line, `#` a comment.
-    pub(super) fn surface(key: &str) -> &'static str {
+    pub(crate) fn surface(key: &str) -> &'static str {
         include_str!("fixtures/tool_door_wire.txt")
             .lines()
             .map(str::trim)
@@ -903,7 +903,7 @@ mod tool_door {
 
     /// The section the tool door owns beside its settings: its endpoint block, as the fixture
     /// states it (the root spells no plane's section).
-    pub(super) fn endpoint_section() -> &'static str {
+    pub(crate) fn endpoint_section() -> &'static str {
         surface("endpoint_section")
     }
 
@@ -913,13 +913,13 @@ mod tool_door {
     }
 
     /// The revision the door speaks, as a request states it.
-    pub(super) fn protocol_version() -> &'static str {
+    pub(crate) fn protocol_version() -> &'static str {
         surface("protocol_version")
     }
 
     /// THE TOOL DOOR: of the linked plane doors, the one whose Statement owns the endpoint section
     /// the fixture names (found by binding each, once).
-    pub(super) fn line_door() -> DoorFn {
+    pub(crate) fn line_door() -> DoorFn {
         static DOOR: std::sync::OnceLock<DoorFn> = std::sync::OnceLock::new();
         *DOOR.get_or_init(|| {
             let section = endpoint_section();
@@ -949,7 +949,7 @@ mod tool_door {
     }
 
     /// A stateless-revision `tools/call` of the one approved tool.
-    pub(super) const CALL: &str = r#"{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"fs_read_file","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+    pub(crate) const CALL: &str = r#"{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"fs_read_file","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
 
     /// A stateless-revision `tools/list`: the plane's own to answer.
     const LIST: &str = r#"{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
@@ -958,7 +958,7 @@ mod tool_door {
     const ANSWER: &str = r#"{"jsonrpc":"2.0","id":0,"result":{"content":[{"type":"text","text":"from the server"}]}}"#;
 
     /// The `tools:` section: one server on loopback at `port`, one approved tool.
-    pub(super) fn section(port: u16) -> serde_yaml::Value {
+    pub(crate) fn section(port: u16) -> serde_yaml::Value {
         serde_yaml::from_str(&format!(
             "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
          tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n",
@@ -969,20 +969,20 @@ mod tool_door {
 
     /// The one tool the test server serves, as its `tools/list` states it: what verify-on-call
     /// fetches before a call, and what the section approves.
-    pub(super) const TOOL_DESCRIPTION: &str = "reads a file from disk";
+    pub(crate) const TOOL_DESCRIPTION: &str = "reads a file from disk";
 
     /// That tool's input schema.
-    pub(super) fn tool_schema() -> serde_json::Value {
+    pub(crate) fn tool_schema() -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}})
     }
 
     /// That tool's digest: the approval the section writes.
-    pub(super) fn tool_digest() -> String {
+    pub(crate) fn tool_digest() -> String {
         surface("tool_digest").to_string()
     }
 
     /// That tool, listed.
-    pub(super) fn tool_listing() -> serde_json::Value {
+    pub(crate) fn tool_listing() -> serde_json::Value {
         serde_json::json!([
             {"name": "read_file", "description": TOOL_DESCRIPTION, "inputSchema": tool_schema()}
         ])
@@ -990,7 +990,7 @@ mod tool_door {
 
     /// A POST of `body` (a `tools/call`) to the door's endpoint on `router`, with `token` as its bearer
     /// or with none: the response's status and body.
-    pub(super) async fn send(
+    pub(crate) async fn send(
         router: &axum::Router,
         token: Option<&str>,
         body: &str,
@@ -1000,7 +1000,7 @@ mod tool_door {
 
     /// A POST of `body` naming `method` (and the tool `name`, where it names one) to the door's
     /// endpoint: the response's status and body.
-    pub(super) async fn send_as(
+    pub(crate) async fn send_as(
         router: &axum::Router,
         token: Option<&str>,
         body: &str,
@@ -1038,13 +1038,13 @@ mod tool_door {
 
     /// A tool server on loopback answering every request with [`ANSWER`]; what it was sent comes back
     /// on the channel, one request per connection.
-    pub(super) async fn tool_server() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
+    pub(crate) async fn tool_server() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
         tool_server_listing(Arc::new(std::sync::Mutex::new(tool_listing()))).await
     }
 
     /// [`tool_server`], answering a `tools/list` with the tool list `tools` holds when it is asked
     /// (the list may change under it: the rug-pull).
-    pub(super) async fn tool_server_listing(
+    pub(crate) async fn tool_server_listing(
         tools: Arc<std::sync::Mutex<serde_json::Value>>,
     ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
         tool_server_answering(Arc::new(move |request: &str| {
@@ -1061,18 +1061,18 @@ mod tool_door {
 
     /// A tool server on loopback answering each request (its head and body, as text) with what
     /// `answer` makes of it; every request is heard.
-    pub(super) async fn tool_server_answering(
+    pub(crate) async fn tool_server_answering(
         answer: Arc<dyn Fn(&str) -> String + Send + Sync>,
     ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
         tool_server_replying(Arc::new(move |request: &str| (200, answer(request)))).await
     }
 
     /// What a test server answers a request with: its status and body.
-    pub(super) type Replies = Arc<dyn Fn(&str) -> (u16, String) + Send + Sync>;
+    pub(crate) type Replies = Arc<dyn Fn(&str) -> (u16, String) + Send + Sync>;
 
     /// A tool server on loopback answering each request with the status and body `answer` makes of
     /// it; every request is heard.
-    pub(super) async fn tool_server_replying(
+    pub(crate) async fn tool_server_replying(
         answer: Replies,
     ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1137,33 +1137,33 @@ mod tool_door {
 
     /// THE COMPOSED MCP DOOR, served: the data router built with its routes, the governance book with
     /// one minted key, the money steps and the node's book the unit settles on.
-    pub(super) struct Rig {
-        pub(super) router: axum::Router,
+    pub(crate) struct Rig {
+        pub(crate) router: axum::Router,
         /// The admin router, with the door's stated admin routes mounted.
-        pub(super) admin: axum::Router,
-        pub(super) gov: Arc<GovState>,
-        pub(super) app: Arc<busbar_kernel::state::App>,
-        pub(super) key: Arc<busbar_contract::records::VirtualKey>,
-        pub(super) token: String,
+        pub(crate) admin: axum::Router,
+        pub(crate) gov: Arc<GovState>,
+        pub(crate) app: Arc<busbar_kernel::state::App>,
+        pub(crate) key: Arc<busbar_contract::records::VirtualKey>,
+        pub(crate) token: String,
         money_steps: Arc<PlaneMoney>,
         post: Arc<NodeEndPost>,
-        pub(super) book: crate::root::durability::NodeBook,
-        pub(super) plane_key: String,
+        pub(crate) book: crate::root::durability::NodeBook,
+        pub(crate) plane_key: String,
         /// The record store the kernel's services persist the plane's records in.
-        store: Arc<busbar_kernel::governance::MemoryStore>,
+        pub(crate) store: Arc<busbar_kernel::governance::MemoryStore>,
         /// The token endpoint the auth plugins' own needs reach: each RFC 8693 exchange is answered
         /// `tok-<its scope, as the form carried it>`, and every request is recorded.
-        pub(super) tokens: Arc<super::TokenEndpoint>,
+        pub(crate) tokens: Arc<super::TokenEndpoint>,
         /// The door's routes the data router was built with: `(path, method, admission bar)`.
-        pub(super) door_table: Vec<(
+        pub(crate) door_table: Vec<(
             String,
             String,
             busbar_contract::abi::mechanism::route::RouteAuth,
         )>,
         /// The door, as bound: what a new generation is published through (`refresh`).
-        pub(super) plane: crate::root::boot::DoorPlane,
+        pub(crate) plane: crate::root::boot::DoorPlane,
         /// How far the kernel's monotonic clock (`clock.now`) reads ahead of the runtime's.
-        pub(super) clock: Arc<std::sync::atomic::AtomicU64>,
+        pub(crate) clock: Arc<std::sync::atomic::AtomicU64>,
     }
 
     impl Rig {
@@ -1182,7 +1182,7 @@ mod tool_door {
         }
 
         /// [`Self::new`], its kernel `App` configured further by `configure` before it is built.
-        pub(super) fn with(
+        pub(crate) fn with(
             instance: &'static str,
             port: u16,
             allowed_pools: Option<Vec<String>>,
@@ -1196,7 +1196,7 @@ mod tool_door {
             // THE CONNECTOR, over every linked transport door (the default distribution links the
             // http framer's door), its dials judged by a destination guard that admits loopback.
             let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
-                block_private_addresses: false,
+                block_private_addresses: footing.guarded,
                 ..Default::default()
             })
             .expect("the guard");
@@ -1417,7 +1417,7 @@ mod tool_door {
         }
 
         /// The key's admitted requests on the governance ledger.
-        pub(super) fn admitted(&self) -> u64 {
+        pub(crate) fn admitted(&self) -> u64 {
             self.gov
                 .usage_for(&self.app.cost, &self.key.id, busbar_kernel::store::now())
                 .expect("a read")
@@ -1426,13 +1426,13 @@ mod tool_door {
         }
 
         /// Every unit closed on the money steps and the node (one terminal, no unit left open).
-        pub(super) fn all_ended(&self) -> bool {
+        pub(crate) fn all_ended(&self) -> bool {
             self.money_steps.open_units() == 0 && self.post.open_units() == 0
         }
     }
 
     /// [`Rig::with`], for a sibling module.
-    pub(super) fn rig_with(
+    pub(crate) fn rig_with(
         instance: &'static str,
         port: u16,
         allowed_pools: Option<Vec<String>>,
@@ -1452,7 +1452,7 @@ mod tool_door {
     }
 
     /// [`Rig::with`] over the `tools:` section `tools`, standing on `footing`, for a sibling module.
-    pub(super) fn rig_on(
+    pub(crate) fn rig_on(
         instance: &'static str,
         port: u16,
         tools: serde_yaml::Value,
@@ -1462,7 +1462,7 @@ mod tool_door {
     }
 
     /// [`Rig::with`] over the `tools:` section `tools`, for a sibling module.
-    pub(super) fn rig_tools(
+    pub(crate) fn rig_tools(
         instance: &'static str,
         port: u16,
         tools: serde_yaml::Value,
@@ -1521,23 +1521,28 @@ mod tool_door {
 
     /// What a rig stands on: the record store its host services bind, and whose governance book it
     /// reads (its own, or a first node's: a fleet).
-    pub(super) struct Footing<'a> {
-        pub(super) ledger: Ledger,
-        pub(super) book: Option<&'a Rig>,
+    pub(crate) struct Footing<'a> {
+        pub(crate) ledger: Ledger,
+        pub(crate) book: Option<&'a Rig>,
+        /// The connector's destination guard refuses private addresses (a deployment's
+        /// `destinations.block_private_addresses`); `false` admits loopback, where the test servers
+        /// listen.
+        pub(crate) guarded: bool,
     }
 
     impl Footing<'_> {
         /// Its own in-memory store and its own book.
-        pub(super) fn own() -> Self {
+        pub(crate) fn own() -> Self {
             Footing {
                 ledger: Ledger::Memory,
                 book: None,
+                guarded: false,
             }
         }
     }
 
     /// The record store a rig's host services bind.
-    pub(super) enum Ledger {
+    pub(crate) enum Ledger {
         /// A fresh in-memory store (the rig's own).
         Memory,
         /// The given store: a handle on a durable journal (a restart or a fleet node).
@@ -1878,7 +1883,7 @@ mod tool_door {
     }
 
     /// The raw (form-encoded) value of `key` in a form body.
-    pub(super) fn form_value(body: &str, key: &str) -> String {
+    pub(crate) fn form_value(body: &str, key: &str) -> String {
         body.split('&')
             .find_map(|pair| pair.strip_prefix(&format!("{key}=")))
             .unwrap_or_default()
@@ -1886,7 +1891,7 @@ mod tool_door {
     }
 
     /// Every token request the rig's token endpoint was sent: `(target, form body)`.
-    pub(super) fn exchanges(rig: &Rig) -> Vec<(String, String)> {
+    pub(crate) fn exchanges(rig: &Rig) -> Vec<(String, String)> {
         rig.tokens
             .opened
             .lock()
@@ -1897,7 +1902,7 @@ mod tool_door {
     }
 
     /// The tool server's three tools, listed as the token-exchange section approves them.
-    fn three_tools() -> serde_json::Value {
+    pub(crate) fn three_tools() -> serde_json::Value {
         serde_json::json!([
             {"name": "read_file", "description": TOOL_DESCRIPTION, "inputSchema": tool_schema()},
             {"name": "write_file", "description": "writes a file to disk", "inputSchema": tool_schema()},
@@ -1910,7 +1915,7 @@ mod tool_door {
 
     /// The token endpoint a token-exchange registration names (the rig's token table answers it:
     /// an `open-web` need dials over connection security only).
-    pub(super) const TOKEN_URL: &str = "https://as.example/token";
+    pub(crate) const TOKEN_URL: &str = "https://as.example/token";
 
     /// A `token_exchange:` registration on loopback `port` (`aud:` the server's origin), three
     /// approved tools.
@@ -2509,7 +2514,7 @@ mod tool_door {
 /// claims are mounted by the composition root at the data router's construction, Q-SW1, so these
 /// assertions live where the mount does; the kernel keeps no HOT-route assumption).
 #[cfg(all(linked_axis_plane_door, linked_axis_node))]
-mod door_boundary {
+pub(crate) mod door_boundary {
     use std::sync::Arc;
 
     use busbar_contract::abi::mechanism::route::RouteAuth;
@@ -2523,7 +2528,7 @@ mod door_boundary {
     use crate::root::serve::planes_tests::{Published, PUBLISHING};
 
     /// The mcp door's registry row, folded from its Statement as the composition root folds it.
-    pub(super) fn row() -> &'static PlaneDecl {
+    pub(crate) fn row() -> &'static PlaneDecl {
         use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
         busbar_kernel::plane::door::fold(
             registration(linked_probe(
@@ -2538,14 +2543,14 @@ mod door_boundary {
     /// The door's row in the process's plane registry, as the composition root installs it beside
     /// the linked rows (a registration, not an isolation: the served request reads the registry on
     /// another worker while the test awaits it).
-    pub(super) fn registry(row: &'static PlaneDecl) {
+    pub(crate) fn registry(row: &'static PlaneDecl) {
         busbar_kernel::plane::registry::register_test_plane(row);
     }
 
     /// The kernel's plane dispatch for the door, as `build_dispatch` configures it from the folded
     /// row: its slot built over `section` and the public base URL, every path it claims mounted,
     /// the admission it declares bound.
-    fn dispatched(
+    pub(crate) fn dispatched(
         mut app: TestApp,
         row: &'static PlaneDecl,
         slot: &Arc<dyn std::any::Any + Send + Sync>,
@@ -2566,7 +2571,7 @@ mod door_boundary {
     }
 
     /// The door's slot over the `tools:` section `value`, under [`PUBLIC_URL`].
-    fn slot_over(
+    pub(crate) fn slot_over(
         row: &'static PlaneDecl,
         value: serde_yaml::Value,
     ) -> Arc<dyn std::any::Any + Send + Sync> {
@@ -3153,7 +3158,16 @@ mod spent_ledger {
 
     /// One node of the deployment on `port`, standing on `ledger`, reading `book`'s governance.
     fn node(port: u16, ledger: Ledger, book: Option<&Rig>) -> Rig {
-        rig_on(INSTANCE, port, tools(port), Footing { ledger, book })
+        rig_on(
+            INSTANCE,
+            port,
+            tools(port),
+            Footing {
+                ledger,
+                book,
+                guarded: false,
+            },
+        )
     }
 
     /// One served answer: the HTTP status and the JSON-RPC body.
@@ -3477,8 +3491,12 @@ mod upstream_ask_relay {
                 sent = Some(request);
             }
         }
-        let sent: serde_json::Value =
-            serde_json::from_str(&sent.expect("the retry reached the member")).expect("JSON");
+        // What was heard is the whole request, head included: its body follows the blank line.
+        let sent = sent.expect("the retry reached the member");
+        let body = sent
+            .split_once("\r\n\r\n")
+            .map_or(sent.as_str(), |(_, b)| b);
+        let sent: serde_json::Value = serde_json::from_str(body).expect("JSON");
         assert_eq!(sent["params"]["requestState"], "s", "{sent}");
         assert_eq!(
             sent["params"]["inputResponses"]["draft"]["content"]["text"], "the caller's own draft",
@@ -3488,8 +3506,11 @@ mod upstream_ask_relay {
         // RED: the state is spent once, and a forged one is refused.
         let (status, body) = call(&rig, &retry(&state)).await;
         assert_eq!(status, 400, "a spent state is refused: {body}");
+        // A forged state is not busbar's: on a tool with no rounds of busbar's own it is state
+        // nobody asked for, refused before anything is sent.
         let (status, body) = call(&rig, &retry("forged")).await;
-        assert_eq!(status, 400, "a forged state is refused: {body}");
+        assert_eq!(status, 403, "a forged state is refused: {body}");
+        assert_eq!(body["error"]["data"]["reason"], "ask_unsolicited_state", "{body}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3992,13 +4013,16 @@ mod task_continuation {
 /// (`kind: gate` on the hermetic test cdylib), the same attaches (`tools.hooks`, the section-level
 /// list every server takes), the same verdicts, read off the far end the door dials.
 #[cfg(all(linked_axis_plane_door, linked_axis_node))]
-mod hook_parity {
+pub(crate) mod hook_parity {
     use super::tool_door::{send_as, surface, tool_server, Footing, Rig};
     use crate::root::serve::planes_tests::{Published, PUBLISHING};
 
     /// A `kind: gate` on the hermetic test cdylib, `prompt` the grant it holds (the served
     /// battery's `gate()` / `rewrite()` documents, as an operator writes them).
-    fn gate(prompt: &str, settings: serde_json::Value) -> busbar_kernel::config::HookCfg {
+    pub(crate) fn gate(
+        prompt: &str,
+        settings: serde_json::Value,
+    ) -> busbar_kernel::config::HookCfg {
         serde_json::from_value(serde_json::json!({
             "kind": "gate",
             "module": "test-hook",
@@ -4019,7 +4043,7 @@ mod hook_parity {
 
     /// The env whose `test-hook` is the kernel's in-process hook double (`prompt: rw`, `user: ro`;
     /// no test plugin, OWNER 2026-10-03): its `settings:` choose its answer.
-    fn hook_env() -> busbar_kernel::hooks::HookEnv {
+    pub(crate) fn hook_env() -> busbar_kernel::hooks::HookEnv {
         busbar_kernel::test_support::test_hook_env(
             &["test-hook"],
             busbar_plugin_loader::sign::HookNeeds {
@@ -4031,7 +4055,7 @@ mod hook_parity {
 
     /// The door composed as `instance` against the server on `port`, `hooks` (name, document) all
     /// attached section-level (`tools.hooks`).
-    fn rig(
+    pub(crate) fn rig(
         instance: &'static str,
         port: u16,
         hooks: Vec<(&'static str, busbar_kernel::config::HookCfg)>,
@@ -4068,7 +4092,7 @@ mod hook_parity {
     }
 
     /// A `tools/call` of the one approved tool with `arguments`.
-    fn call(arguments: serde_json::Value) -> String {
+    pub(crate) fn call(arguments: serde_json::Value) -> String {
         serde_json::json!({
             "jsonrpc": "2.0", "id": 30, "method": "tools/call",
             "params": {
@@ -4083,7 +4107,9 @@ mod hook_parity {
     }
 
     /// The `tools/call` requests the server heard, as their raw bytes.
-    fn calls_heard(heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -> Vec<String> {
+    pub(crate) fn calls_heard(
+        heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) -> Vec<String> {
         std::iter::from_fn(|| heard.try_recv().ok())
             .filter(|r| r.contains("\"tools/call\""))
             .collect()
