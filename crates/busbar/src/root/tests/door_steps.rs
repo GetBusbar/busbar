@@ -1320,6 +1320,7 @@ mod tool_door {
                 auths: Arc::new(auths),
                 conns: Arc::clone(&connector) as Arc<dyn PollConns>,
                 stream_ceiling_secs: 600,
+                upgrades: Vec::new(),
             };
             let egress = crate::root::serve::DoorEgress {
                 reach: &reach,
