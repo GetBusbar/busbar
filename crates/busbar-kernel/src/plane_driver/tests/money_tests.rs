@@ -41,6 +41,11 @@ fn ctx(key: u64) -> UnitCtx {
 /// A cost model: one group `g` capping spend at `budget_cents` over all time, a card pricing model
 /// `m`'s input at 1 micro-unit per token, and a flat fee of `fee` cents per request.
 fn cost(budget_cents: Option<u64>, fee: i64) -> Arc<CostModel> {
+    Arc::new(cost_model(budget_cents, fee))
+}
+
+/// [`cost`], unshared.
+fn cost_model(budget_cents: Option<u64>, fee: i64) -> CostModel {
     let limits = budget_cents
         .map(|amount| {
             vec![LimitCfg {
@@ -70,7 +75,7 @@ fn cost(budget_cents: Option<u64>, fee: i64) -> Arc<CostModel> {
     };
     // `m2` is the member a failed-over unit is served by.
     let card = BTreeMap::from([("m".to_string(), rate()), ("m2".to_string(), rate())]);
-    Arc::new(CostModel::resolve_parts(Some(&card), fee, &groups))
+    CostModel::resolve_parts(Some(&card), fee, &groups)
 }
 
 fn key() -> Arc<VirtualKey> {
@@ -763,4 +768,66 @@ fn a_sessions_line_carries_reported_and_floor_counts_never_an_estimate() {
     );
     r.money.session_ended(&ctx(1));
     assert_eq!(usage(&r).0, 7);
+}
+
+/// A SESSION'S FEE IS REFUNDED WHEN ITS OPEN FAILS, AS ITS OWN FEE UNIT (ARCHITECT Q-L5-FEE (A);
+/// Q17-6; TODO row 17): a session plane declares `per_session` as its fee unit and a billable class.
+/// A session whose far end never answered reports no fee unit, and its end gives back ONE
+/// `per_session` from the plane's fee lane; a session whose far end answered reports it `1` and
+/// keeps its fee. The fee unit is never ledgered as usage.
+#[test]
+fn a_session_whose_open_failed_is_refunded_its_per_session_fee() {
+    use busbar_contract::plane::PER_SESSION;
+    use busbar_kernel_ledger::cost::{plane_fee_lane, PlaneFees};
+    let fees = crate::config::PlaneFeesMap::from([(
+        "sp".to_string(),
+        PlaneFees {
+            per_request: 0,
+            per_session: 40,
+        },
+    )]);
+    let cost = Arc::new(cost_model(None, 0).with_plane_fees(&fees));
+    let pool = format!("sp{}", crate::governance::PLANE_LANE_SEP);
+    let spend = |gov: &GovState| {
+        gov.derived_bucket_usage(&cost, "k", WINDOW_TOTAL, true, NOW)
+            .expect("usage")
+            .spend_cents
+    };
+    let one = BTreeMap::from([(PER_SESSION.to_string(), 1)]);
+    for (answered, kept) in [(false, 0), (true, 40)] {
+        let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
+        let money = PlaneMoney::new(gov.clone(), Arc::new(Posted::default()));
+        money.open(
+            UnitKey::new(1),
+            UnitMoney {
+                key: key(),
+                cost: cost.clone(),
+                pool: pool.clone(),
+                model: "m".into(),
+                classes: Arc::from(vec![
+                    "input".to_string(),
+                    "output".to_string(),
+                    PER_SESSION.to_string(),
+                ]),
+                arrived: NOW,
+                mode: ExhaustionMode::FinishUnit,
+                fee: plane_fees(),
+                charge: Default::default(),
+            },
+        );
+        // The session's fee, charged at its open on the plane's fee lane.
+        gov.record_usage(&cost, &key(), "", &plane_fee_lane("sp"), &one, NOW);
+        assert_eq!(spend(&gov), 40, "the session fee charged");
+        assert_eq!(money.session_opened(&ctx(1)), Ok(()));
+        if answered {
+            let _ = money.checkpoint(&ctx(1), &[fee_reported(1), reported(7)[0]]);
+        }
+        money.session_ended(&ctx(1));
+        money.settle_end(UnitKey::new(1), 101);
+        assert_eq!(
+            spend(&gov),
+            kept,
+            "answered={answered}: refunded only when the far end never answered"
+        );
+    }
 }

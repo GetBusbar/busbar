@@ -204,7 +204,24 @@ impl PlaneMoney {
             }
         }
         if m.fee.refunds(caller_status, &open.last) {
-            self.gov.refund_charge(&m.charge);
+            match &m.fee {
+                FeeRefund::CallerStatus => self.gov.refund_charge(&m.charge),
+                // A PLANE'S REFUND RETURNS ITS OWN FEE UNIT (TODO row 17, Q17-6): a session's
+                // `per_session` comes back from the plane's fee lane by its class name.
+                // The admission's charge (its request fee) comes back as it was charged; any other
+                // fee unit the plane declares by its own name.
+                FeeRefund::PlaneFeeUnits(fees) => {
+                    self.gov.refund_charge(&m.charge);
+                    for unit in fees
+                        .iter()
+                        .filter_map(|c| m.classes.get(*c as usize))
+                        .filter(|u| u.as_str() != busbar_contract::plane::PER_REQUEST)
+                    {
+                        self.gov
+                            .refund_fee_unit(&m.cost, &m.key, &m.pool, m.arrived, unit);
+                    }
+                }
+            }
         }
     }
 
