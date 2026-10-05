@@ -41,6 +41,13 @@ use std::path::{Path, PathBuf};
 /// and located by its door row ([`door_planes`]) wherever a gate resolves the plane's home.
 pub const PLANE_KEYS: [&str; 3] = ["llm", "a2a", "voice"];
 
+/// Plane keys with NO legacy-engine crate: the plane lives only in its plane-kind crate
+/// `busbar-plane-<key>` and is located by its door row ([`door_planes`]). Twin of
+/// `scripts/plane-keys.sh`'s `PLANE_KEYS_KIND_ONLY`. A roster that must notice a plane VANISHING
+/// (structure-lint's plane-roots row) reads these beside [`PLANE_KEYS`]: leaving the legacy roster
+/// must not take a plane off the roster that refuses an unlocatable plane.
+pub const PLANE_KEYS_KIND_ONLY: [&str; 1] = ["mcp"];
+
 /// The default ownership grammar. Overridable for a fixture tree, the way
 /// `PLANE_ROOTS_GRAMMAR` is in the shell.
 pub const PLANE_GRAMMAR: &str = "pub const PLANE_DECL";

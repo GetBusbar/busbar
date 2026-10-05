@@ -507,6 +507,21 @@ fn the_plane_key_contract_matches_plane_keys_sh() {
         planes::PLANE_KEYS.to_vec(),
         "xtask::planes::PLANE_KEYS and scripts/plane-keys.sh's PLANE_KEYS are ONE list"
     );
+    let kind_only_line = std::fs::read_to_string(repo_root().join("scripts/plane-keys.sh"))
+        .expect("scripts/plane-keys.sh is readable")
+        .lines()
+        .find_map(|l| {
+            l.trim()
+                .strip_prefix("PLANE_KEYS_KIND_ONLY=\"")?
+                .strip_suffix('"')
+                .map(str::to_string)
+        })
+        .expect("scripts/plane-keys.sh declares a `PLANE_KEYS_KIND_ONLY=\"...\"` line");
+    assert_eq!(
+        kind_only_line.split_whitespace().collect::<Vec<_>>(),
+        planes::PLANE_KEYS_KIND_ONLY.to_vec(),
+        "xtask::planes::PLANE_KEYS_KIND_ONLY and scripts/plane-keys.sh's PLANE_KEYS_KIND_ONLY are ONE list"
+    );
     let src = planes::plane_src_roots();
     assert_eq!(src[0], "crates/busbar-llm/src");
     assert!(!src.contains(&"crates/busbar-llm-codec/src".to_string()));

@@ -202,7 +202,13 @@ pub fn resolve(cx: &Ctx, f: &mut Findings) -> Addresses {
         }
     }
 
-    let mut roster: Vec<String> = PLANE_KEYS.iter().map(|k| (*k).to_string()).collect();
+    // The legacy roster AND the kind-only keys (mcp since P3 DEL-MCP): a door-only plane whose door
+    // row vanished must still be PLANE-ROOT-MISSING, not silently off the roster.
+    let mut roster: Vec<String> = PLANE_KEYS
+        .iter()
+        .chain(crate::planes::PLANE_KEYS_KIND_ONLY.iter())
+        .map(|k| (*k).to_string())
+        .collect();
     for key in homes.keys() {
         if !roster.contains(key) {
             roster.push(key.clone());

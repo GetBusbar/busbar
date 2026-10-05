@@ -677,6 +677,15 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         "PLANE-DUPLICATE (symbol): `planted_derived_plane_helper`".to_string(),
         "planted:crates/busbar-planted/src/lib.rs".to_string(),
     ];
+    // The ledger's one surviving row since P3 DEL-MCP (ARCHITECT 2026-10-05) signs a MODULE
+    // (`config.rs`); its symbol rows went with the deleted engine. A signed module is planted the
+    // same way: the debt-free base takes the standing copies out of view, and the plant puts the
+    // signed file back in a2a and grows it in voice, a plane the claim was never signed for.
+    let signed_module = t
+        .plane_ledger
+        .iter()
+        .find(|r| r.planes.iter().all(|p| p != "voice") && r.name.ends_with(".rs"))
+        .map(|r| r.name.clone());
     if let Some(name) = &signed {
         ov.set(
             format!("{voice}/planted_third_copy.rs"),
@@ -684,10 +693,18 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         );
         naming.push(format!("PLANE-DUPLICATE (symbol): `{name}`"));
         naming.push("signs for".to_string());
+    } else if let Some(name) = &signed_module {
+        ov.set(
+            format!("{}/{name}", addresses.a2a),
+            "pub fn a2a_grammar() {}\n",
+        );
+        ov.set(format!("{voice}/{name}"), "pub fn voice_grammar() {}\n");
+        naming.push(format!("PLANE-DUPLICATE (module): `{name}`"));
+        naming.push("signs for".to_string());
     } else {
         report.note_infra_failure(
-            "structure-lint selftest: no ledger row signs for a symbol outside voice, so the \
-             third-copy plant has nothing to copy",
+            "structure-lint selftest: no ledger row signs for a symbol or a module outside voice, \
+             so the third-copy plant has nothing to copy",
         );
     }
     let naming: Vec<&str> = naming.iter().map(String::as_str).collect();
