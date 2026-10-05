@@ -11,9 +11,16 @@
 //! case is presented as the host presents a request: the kernel's extracted candidate credential
 //! (`VerifyIn::credential`, a secret blob) and the carrier lines (`VerifyIn::carrier`), each a
 //! carrier the Statement states (its `MARK_WORD_CARRIER` word marks), unless the tail states
-//! `FACT_INBOUND_ALL_HEADERS`. The op families the tail does NOT declare (`CAP_LOGIN`,
-//! `CAP_OUTBOUND`) are each called once and must answer REFUSED. A tail declaring the login or the
-//! outbound family is not driven by this script yet and FAILS the suite, never passes it unseen.
+//! `FACT_INBOUND_ALL_HEADERS`. A tail declaring the LOGIN family (`CAP_LOGIN`) has it driven too:
+//! `begin_login` (its authorize URL, leased, then released) and `complete_login` SUBMITTED on a
+//! ticket (the plugin's own token exchange over its declared need). A login-only tail (no
+//! `CAP_INBOUND`) is driven through the login family alone. The op families the tail does NOT
+//! declare are each called once and must answer REFUSED. A tail declaring the outbound family is
+//! not driven by this script yet and FAILS the suite, never passes it unseen.
+//!
+//! A plugin whose needs reach a far end (an IdP's JWKS, its token endpoint) names those far ends
+//! in `far_ends` (see the suite's module docs): each instance is bound to a connection table that
+//! serves them, as the host's connector would, and the plugin holds no socket.
 //!
 //! Inputs (`conformance.json`):
 //!
@@ -26,7 +33,14 @@
 //!       { "credential": "<the extracted candidate>" | null,
 //!         "carriers": { "<carrier line>": "<its value>", ... },
 //!         "verdict": "identity:<subject>" | "reject" | "pass" }, ... ],
-//!     "never_echoed": ["<text no answer may carry: the token, the raw settings>", ...] } }
+//!     "never_echoed": ["<text no answer may carry: the token, the raw settings>", ...],
+//!     "login": {                                   // required when the tail states CAP_LOGIN
+//!       "begin": { "redirect_uri": "..", "state": "..", "code_challenge": "..", "nonce": ".." },
+//!       "authorize_prefix": "<the authorize URL starts with this>",
+//!       "complete": { "code": "..", "state": "..", "nonce": "..", "redirect_uri": "..",
+//!                     "code_verifier": ".." },
+//!       "complete_verdict": "identity:<subject>" | "reject" | "outage" | "security",
+//!       "complete_crossings": <crossings of the submitted complete_login, default 1> } } }
 //! ```
 //!
 //! The cases must reach every verdict (an identity, a reject, a pass), so the two legs' equality
@@ -43,7 +57,8 @@ use std::time::Duration;
 use busbar_contract::abi::auth::{
     self, slot, AuthTail, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut,
     IdentifyOut, IdentityBuf, NamedValue, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn,
-    OutboundReadyOut, StripName, VerifyIn, SPAN_ABSENT, VERDICT_IDENTITY, VERDICT_PASS,
+    OutboundReadyOut, StripName, VerifyIn, BEGIN_AUTHORIZE, LOGIN_BAD_CREDENTIAL, LOGIN_IDENTITY,
+    LOGIN_OUTAGE, LOGIN_SECURITY_CHECK_FAILED, SPAN_ABSENT, VERDICT_IDENTITY, VERDICT_PASS,
     VERDICT_REJECT,
 };
 use busbar_contract::abi::mechanism::call::{
@@ -52,8 +67,8 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement, MARK_WORD_CARRIER};
 
 use super::{
-    bind, called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh,
-    tick, validate, Fold, Leg, Recorder, Subject,
+    bind_far, called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh,
+    release, tick, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::auth::Auth;
 use crate::dispatch::{now_ns, Dispatcher, Frame, Plugin};
@@ -304,19 +319,143 @@ fn undeclared<I: crate::dispatch::InFrame, O: crate::dispatch::OutFrame>(
     called(&p.call(s, &mut f))
 }
 
+/// A login input's text (`""` when absent).
+fn word(v: &serde_json::Value, key: &str) -> Vec<u8> {
+    v[key].as_str().unwrap_or_default().as_bytes().to_vec()
+}
+
+/// `begin_login` over `begin`'s inputs, then the release of the lease its URL is held under: the
+/// answer, the shape, and the URL as the plugin answered it.
+fn begin_login(p: &Plugin<Auth>, begin: &serde_json::Value) -> String {
+    let (redirect, state, challenge, nonce) = (
+        word(begin, "redirect_uri"),
+        word(begin, "state"),
+        word(begin, "code_challenge"),
+        word(begin, "nonce"),
+    );
+    let mut f: Frame<BeginLoginIn, BeginLoginOut> = Frame::new(input(), output());
+    f.input.redirect_uri = AbiStr::over(&redirect);
+    f.input.state = AbiStr::over(&state);
+    f.input.code_challenge = AbiStr::over(&challenge);
+    f.input.nonce = AbiStr::over(&nonce);
+    let c = p.call(slot::BEGIN_LOGIN, &mut f);
+    let url = f.out.authorize_url;
+    let url = if url.ptr.is_null() {
+        String::new()
+    } else {
+        // SAFETY: a READY `begin_login` names its URL in plugin memory held under the answer's
+        // lease, valid until that lease is released (below, after this copy).
+        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(url.ptr, url.len) })
+            .into_owned()
+    };
+    let released = if c.lease == 0 {
+        "none".to_string()
+    } else {
+        called(&release(p, c.lease))
+    };
+    format!(
+        "{} authorize={} url={url} released={released}",
+        called(&c),
+        f.out.shape == BEGIN_AUTHORIZE
+    )
+}
+
+/// `complete_login` over `complete`'s inputs, SUBMITTED on a ticket and awaited (the plugin makes
+/// its own token exchange over its need): the answer and the verdict it names.
+fn complete_submitted(p: &Plugin<Auth>, d: &Dispatcher, complete: &serde_json::Value) -> String {
+    let (code, state, nonce, redirect, verifier) = (
+        word(complete, "code"),
+        word(complete, "state"),
+        word(complete, "nonce"),
+        word(complete, "redirect_uri"),
+        word(complete, "code_verifier"),
+    );
+    let mut bytes = vec![0_u8; auth::IDENTITY_BUF_BYTES];
+    let mut groups = vec![Span { offset: 0, len: 0 }; auth::IDENTITY_GROUPS as usize];
+    let mut f: Frame<CompleteLoginIn, IdentifyOut> = Frame::new(input(), output());
+    f.input.code = secret(&code);
+    f.input.state = AbiStr::over(&state);
+    f.input.nonce = AbiStr::over(&nonce);
+    f.input.redirect_uri = AbiStr::over(&redirect);
+    f.input.code_verifier = secret(&verifier);
+    f.input.out_buf = IdentityBuf {
+        buf: bytes.as_mut_ptr(),
+        buf_cap: bytes.len(),
+        groups: groups.as_mut_ptr(),
+        groups_cap: groups.len() as u32,
+        _reserved: 0,
+    };
+    let ticket = d.mint(0).expect("a ticket is free");
+    let deadline = now_ns().saturating_add(SUBMIT_WAIT.as_nanos() as u64);
+    let reply = d.submit(
+        p,
+        ticket,
+        slot::COMPLETE_LOGIN,
+        f,
+        DeadlineClass::Call,
+        deadline,
+    );
+    let done = reply.wait(SUBMIT_WAIT);
+    drop(reply);
+    d.recycle(ticket);
+    let Some(done) = done else {
+        return "no answer".to_string();
+    };
+    let verdict = match &done.frame {
+        Some(f) if done.outcome == Outcome::Ready => match f.out.verdict {
+            LOGIN_IDENTITY => {
+                let s = f.out.identity.subject;
+                let subject = if s.offset == SPAN_ABSENT {
+                    "<absent>".to_string()
+                } else {
+                    let at = s.offset as usize;
+                    String::from_utf8_lossy(&bytes[at..at + s.len as usize]).into_owned()
+                };
+                format!("verdict=Identity({subject})")
+            }
+            LOGIN_BAD_CREDENTIAL => "verdict=Reject".to_string(),
+            LOGIN_OUTAGE => "verdict=Outage".to_string(),
+            LOGIN_SECURITY_CHECK_FAILED => "verdict=Security".to_string(),
+            other => format!("verdict={other}"),
+        },
+        _ => "verdict=none".to_string(),
+    };
+    format!("{:?} lease={} {verdict}", done.outcome, done.lease != 0)
+}
+
+/// A login's expected verdict, as the transcript spells it.
+fn expected_login(v: &serde_json::Value) -> String {
+    let v = v
+        .as_str()
+        .expect("conformance.json: auth.login.complete_verdict names the verdict");
+    match v.split_once(':') {
+        Some(("identity", subject)) => format!("verdict=Identity({subject})"),
+        None if v == "reject" => "verdict=Reject".to_string(),
+        None if v == "outage" => "verdict=Outage".to_string(),
+        None if v == "security" => "verdict=Security".to_string(),
+        _ => panic!(
+            "conformance.json: login verdict '{v}' is not identity:<subject>, reject, outage or \
+             security"
+        ),
+    }
+}
+
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = s.kind_inputs("auth");
     assert!(k.is_object(), "conformance.json has no `auth` inputs");
     let st = stated(s);
+    let inbound = st.caps & auth::CAP_INBOUND != 0;
+    let login = st.caps & auth::CAP_LOGIN != 0;
     assert!(
-        st.caps & auth::CAP_INBOUND != 0,
-        "the auth script drives the inbound family (`verify`); this door states caps={}",
+        inbound || login,
+        "the auth script drives the inbound family (`verify`) or the login family; this door \
+         states caps={}",
         st.caps
     );
     assert!(
-        st.caps & (auth::CAP_LOGIN | auth::CAP_OUTBOUND) == 0,
-        "the auth script does not drive the login or the outbound family yet (caps={}): this \
-         suite fails rather than pass a family it did not run",
+        st.caps & auth::CAP_OUTBOUND == 0,
+        "the auth script does not drive the outbound family yet (caps={}): this suite fails \
+         rather than pass a family it did not run",
         st.caps
     );
     let settings = s.settings();
@@ -330,16 +469,22 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         !bad.is_empty(),
         "conformance.json: auth.bad_settings is empty"
     );
-    let rotated = text(&k["rotated_settings"]);
-    let specs = k["cases"]
-        .as_array()
-        .expect("conformance.json: auth.cases must be an array");
+    let specs: Vec<serde_json::Value> = if inbound {
+        k["cases"]
+            .as_array()
+            .expect("conformance.json: auth.cases must be an array")
+            .clone()
+    } else {
+        Vec::new()
+    };
     let expected: Vec<String> = specs.iter().map(expected_verdict).collect();
-    for want in ["Identity(", "Reject", "Pass"] {
-        assert!(
-            expected.iter().any(|v| v.contains(want)),
-            "conformance.json: auth.cases must reach a {want} verdict"
-        );
+    if inbound {
+        for want in ["Identity(", "Reject", "Pass"] {
+            assert!(
+                expected.iter().any(|v| v.contains(want)),
+                "conformance.json: auth.cases must reach a {want} verdict"
+            );
+        }
     }
     let mut cases: Vec<Presented> = specs.iter().map(Presented::new).collect();
     if st.facts & auth::FACT_INBOUND_ALL_HEADERS == 0 {
@@ -354,13 +499,17 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             }
         }
     }
-    let identity_at = expected
-        .iter()
-        .position(|v| v.contains("Identity("))
-        .expect("an identity case");
+    let identity_at = expected.iter().position(|v| v.contains("Identity("));
+    let lg = &k["login"];
+    if login {
+        assert!(
+            lg.is_object(),
+            "conformance.json: the tail states CAP_LOGIN, so auth.login drives it"
+        );
+    }
 
     let d = dispatcher();
-    let p = load::<Auth>(s, leg, bind(&d, "auth")).expect("the auth door loads");
+    let p = load::<Auth>(s, leg, bind_far(&d, "auth", s)).expect("the auth door loads");
     let mut r = Recorder::new(crossings(&p));
     r.line("facts", 0, || {
         format!(
@@ -380,33 +529,49 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         });
     }
     r.line("validate", 1, || called(&validate(&p, &settings)));
-    // 0: the host refuses a kind op on an instance that is not open, before any crossing.
-    r.line("verify unopened", 0, || {
-        verify_now(&p, &mut cases[identity_at])
-    });
+    if let Some(at) = identity_at {
+        // 0: the host refuses a kind op on an instance that is not open, before any crossing.
+        r.line("verify unopened", 0, || verify_now(&p, &mut cases[at]));
+    }
     for (i, b) in bad.iter().enumerate() {
         r.line(&format!("open bad #{i}"), 1, || called(&open(&p, b)));
     }
     r.line("open", 1, || called(&open(&p, &settings)));
     ready_step(&mut r, s, &p, &d);
-    for (i, c) in cases.iter_mut().enumerate() {
-        r.line(&format!("verify #{i}"), 1, || verify_now(&p, c));
-    }
-    for (i, c) in cases.iter_mut().enumerate() {
-        r.line(&format!("verify #{i} submitted"), 1, || {
-            verify_submitted(&p, &d, c)
+    if inbound {
+        for (i, c) in cases.iter_mut().enumerate() {
+            r.line(&format!("verify #{i}"), 1, || verify_now(&p, c));
+        }
+        for (i, c) in cases.iter_mut().enumerate() {
+            r.line(&format!("verify #{i} submitted"), 1, || {
+                verify_submitted(&p, &d, c)
+            });
+        }
+        let at = identity_at.expect("an identity case");
+        // 2: the short answer, then the ONE re-call with the buffers it named.
+        r.line("verify short, re-called", 2, || {
+            verify_short(&p, &mut cases[at])
+        });
+    } else {
+        r.line("verify undeclared", 1, || {
+            undeclared::<VerifyIn, IdentifyOut>(&p, slot::VERIFY)
         });
     }
-    // 2: the short answer, then the ONE re-call with the buffers it named.
-    r.line("verify short, re-called", 2, || {
-        verify_short(&p, &mut cases[identity_at])
-    });
-    r.line("begin_login undeclared", 1, || {
-        undeclared::<BeginLoginIn, BeginLoginOut>(&p, slot::BEGIN_LOGIN)
-    });
-    r.line("complete_login undeclared", 1, || {
-        undeclared::<CompleteLoginIn, IdentifyOut>(&p, slot::COMPLETE_LOGIN)
-    });
+    if login {
+        // 2: the call, then the release of the lease its URL is held under.
+        r.line("begin_login", 2, || begin_login(&p, &lg["begin"]));
+        let pinned = lg["complete_crossings"].as_u64().unwrap_or(1);
+        r.line("complete_login submitted", pinned, || {
+            complete_submitted(&p, &d, &lg["complete"])
+        });
+    } else {
+        r.line("begin_login undeclared", 1, || {
+            undeclared::<BeginLoginIn, BeginLoginOut>(&p, slot::BEGIN_LOGIN)
+        });
+        r.line("complete_login undeclared", 1, || {
+            undeclared::<CompleteLoginIn, IdentifyOut>(&p, slot::COMPLETE_LOGIN)
+        });
+    }
     r.line("open_outbound undeclared", 1, || {
         undeclared::<OpenOutboundIn, OpenOutboundOut>(&p, slot::OPEN_OUTBOUND)
     });
@@ -422,30 +587,66 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     // The admin cache flush: `refresh` with a new generation and unchanged settings.
     r.line("refresh", 1, || called(&refresh(&p, &settings)));
-    r.line("verify after refresh", 1, || {
-        verify_now(&p, &mut cases[identity_at])
-    });
-    r.line("close", 1, || called(&close(&p)));
-    // 0: a closed instance answers FAULT without a crossing.
-    r.line("verify after close", 0, || {
-        verify_now(&p, &mut cases[identity_at])
-    });
-
-    // THE ROTATED CREDENTIAL, on an instance of its own: no identity case identifies there.
-    let q = load::<Auth>(s, leg, bind(&d, "auth-rotated")).expect("the auth door loads");
-    let mut rq = Recorder::new(crossings(&q));
-    rq.line("open rotated", 1, || called(&open(&q, &rotated)));
-    for (i, c) in cases.iter_mut().enumerate() {
-        if expected[i].contains("Identity(") {
-            rq.line(&format!("verify #{i} rotated"), 1, || verify_now(&q, c));
-        }
+    if let Some(at) = identity_at {
+        r.line("verify after refresh", 1, || verify_now(&p, &mut cases[at]));
     }
-    rq.line("close rotated", 1, || called(&close(&q)));
-    r.absorb(rq);
+    r.line("close", 1, || called(&close(&p)));
+    if let Some(at) = identity_at {
+        // 0: a closed instance answers FAULT without a crossing.
+        r.line("verify after close", 0, || verify_now(&p, &mut cases[at]));
+    }
+
+    if inbound {
+        // THE ROTATED CREDENTIAL, on an instance of its own (opened and made ready as the host
+        // opens every instance): no identity case identifies there.
+        let rotated = text(&k["rotated_settings"]);
+        let q = load::<Auth>(s, leg, bind_far(&d, "auth-rotated", s)).expect("the auth door loads");
+        let mut rq = Recorder::new(crossings(&q));
+        rq.line("open rotated", 1, || called(&open(&q, &rotated)));
+        ready_step(&mut rq, s, &q, &d);
+        for (i, c) in cases.iter_mut().enumerate() {
+            if expected[i].contains("Identity(") {
+                rq.line(&format!("verify #{i} rotated"), 1, || verify_now(&q, c));
+            }
+        }
+        rq.line("close rotated", 1, || called(&close(&q)));
+        r.absorb(rq);
+    }
 
     let fold = r.fold();
     contract(&fold, &expected, identity_at, &never_echoed(k));
+    if login {
+        login_contract(&fold, lg);
+    }
     fold
+}
+
+/// THE LOGIN FAMILY'S CONTRACT: `begin_login` answers READY with an authorize URL that starts as
+/// the inputs say, leased and then released; the submitted `complete_login` answers READY with
+/// the login's verdict, unleased.
+fn login_contract(fold: &Fold, lg: &serde_json::Value) {
+    let at = |label: &str| {
+        fold.iter()
+            .find(|s| s.label == label)
+            .map(|s| s.answer.as_str())
+            .unwrap_or_else(|| panic!("the script ran no step '{label}'"))
+    };
+    let begin = at("begin_login");
+    let prefix = lg["authorize_prefix"]
+        .as_str()
+        .expect("conformance.json: auth.login.authorize_prefix");
+    assert!(
+        begin.starts_with("Ready lease=true ")
+            && begin.contains(&format!("authorize=true url={prefix}"))
+            && begin.ends_with("released=Ready lease=false "),
+        "begin_login answers its authorize URL under a lease it then releases: {begin}"
+    );
+    let complete = at("complete_login submitted");
+    let want = expected_login(&lg["complete_verdict"]);
+    assert!(
+        complete.starts_with("Ready lease=false ") && complete.ends_with(&want),
+        "complete_login: {complete} (want {want})"
+    );
 }
 
 /// A case's verdict as the transcript spells it.
@@ -479,21 +680,22 @@ fn never_echoed(k: &serde_json::Value) -> Vec<String> {
 /// short answer is re-called once into the case's verdict; settings `open` refuses are FAILED with
 /// a reason; undeclared families are REFUSED; the flush keeps serving; a closed instance serves
 /// nothing; a rotated credential identifies no one; no answer carries what must never be echoed.
-fn contract(fold: &Fold, expected: &[String], identity_at: usize, never: &[String]) {
+fn contract(fold: &Fold, expected: &[String], identity_at: Option<usize>, never: &[String]) {
     let at = |label: &str| {
         fold.iter()
             .find(|s| s.label == label)
             .map(|s| s.answer.as_str())
             .unwrap_or_else(|| panic!("the script ran no step '{label}'"))
     };
-    for label in [
-        "validate",
-        "open",
-        "refresh",
-        "close",
-        "open rotated",
-        "close rotated",
-    ] {
+    let rotated: &[&str] = if identity_at.is_some() {
+        &["open rotated", "close rotated"]
+    } else {
+        &[]
+    };
+    for label in ["validate", "open", "refresh", "close"]
+        .iter()
+        .chain(rotated)
+    {
         assert!(at(label).starts_with("Ready "), "{label}: {}", at(label));
     }
     let verdict_ok = |answer: &str, want: &str| {
@@ -515,19 +717,21 @@ fn contract(fold: &Fold, expected: &[String], identity_at: usize, never: &[Strin
             );
         }
     }
-    let short = at("verify short, re-called");
-    assert!(
-        short.starts_with("short=true Ready lease=false ")
-            && short.ends_with(&expected[identity_at]),
-        "a short identity is re-called once into its verdict: {short}"
-    );
-    assert!(
-        verdict_ok(at("verify after refresh"), &expected[identity_at]),
-        "the flush keeps serving: {}",
-        at("verify after refresh")
-    );
-    for label in ["verify unopened", "verify after close"] {
-        assert!(!at(label).starts_with("Ready"), "{label}: {}", at(label));
+    if let Some(identity_at) = identity_at {
+        let short = at("verify short, re-called");
+        assert!(
+            short.starts_with("short=true Ready lease=false ")
+                && short.ends_with(&expected[identity_at]),
+            "a short identity is re-called once into its verdict: {short}"
+        );
+        assert!(
+            verdict_ok(at("verify after refresh"), &expected[identity_at]),
+            "the flush keeps serving: {}",
+            at("verify after refresh")
+        );
+        for label in ["verify unopened", "verify after close"] {
+            assert!(!at(label).starts_with("Ready"), "{label}: {}", at(label));
+        }
     }
     for st in fold.iter().filter(|s| s.label.starts_with("open bad #")) {
         assert!(

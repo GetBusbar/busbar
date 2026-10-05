@@ -20,6 +20,11 @@
 //! with `busbar-plugin-loader = { git = …, rev = <the pin>, features = ["conformance"] }` as a
 //! dev-dependency. The macro emits the suite's tests; `plugin-ci.yml` runs them under `--release`.
 //!
+//! A plugin whose declared needs reach a far end (an IdP's JWKS or token endpoint) names those far
+//! ends in its inputs, `"far_ends": [{ "url", "cert_pem", "status", "body" }, ...]`: each instance
+//! the suite opens is bound to a connection table serving them, as the host's connector carries
+//! the plugin's requests ([`Subject::far_ends`]); the plugin holds no socket and no TLS.
+//!
 //! WHAT ONE RUN PROVES, for the kind the door states:
 //!
 //! * the dropped-in library states exactly the linked door's Statement (the signed manifest's
@@ -164,6 +169,33 @@ impl Subject {
         }
     }
 
+    /// THE FAR ENDS the plugin's needs reach (`inputs.far_ends`), as a framed connection table
+    /// ([`crate::https_conns::HttpsConns`]): each `{ "url", "cert_pem", "status", "body" }` is served
+    /// at its exact URL, to a need trusting `cert_pem` (its `trust_from`), or to any need when
+    /// `cert_pem` is `null` (a far end chaining to the public roots); every other URL is refused as
+    /// unreachable. `None` when the inputs name none (the instance is handed no table).
+    ///
+    /// # Panics
+    /// When a far end names no `url`.
+    #[must_use]
+    pub fn far_ends(&self) -> Option<Arc<dyn busbar_contract::conn::DeclaredConns>> {
+        let ends = self.inputs.get("far_ends")?.as_array()?;
+        let table = crate::https_conns::HttpsConns::new();
+        for e in ends {
+            let url = e["url"]
+                .as_str()
+                .expect("conformance.json: every far end names its url");
+            let body = match &e["body"] {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Null => String::new(),
+                other => other.to_string(),
+            };
+            let status = u32::try_from(e["status"].as_u64().unwrap_or(200)).unwrap_or(200);
+            table.serve(url, e["cert_pem"].as_str(), status, &body);
+        }
+        Some(Arc::new(table))
+    }
+
     /// The kind's own inputs (`inputs.<kind>`), `Null` when absent.
     #[must_use]
     pub fn kind_inputs(&self, kind: &str) -> &serde_json::Value {
@@ -254,6 +286,16 @@ pub fn bind(d: &Dispatcher, instance: &str) -> Bind {
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
         conns: None,
+    }
+}
+
+/// [`bind`], the instance bound to a connection table serving the subject's far ends
+/// ([`Subject::far_ends`]) when it names any: the plugin's declared needs reach them there, as the
+/// host's connector would carry them.
+pub fn bind_far(d: &Dispatcher, instance: &str, s: &Subject) -> Bind {
+    Bind {
+        conns: s.far_ends(),
+        ..bind(d, instance)
     }
 }
 

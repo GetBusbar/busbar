@@ -59,9 +59,10 @@ mod host;
 /// publishes (fetched artifacts, the high-water marks, plugin log directories) goes through it.
 pub(crate) use busbar_kernel_wal::durable;
 mod hostlog;
-/// TEST ONLY: the framed connection-table stand-in with in-process far ends (`test-support`), for
-/// a build that cannot link the process's connector. No TLS library: TLS stays in the connector.
-#[cfg(any(test, feature = "test-support"))]
+/// NEVER SHIPPED: the framed connection-table stand-in with in-process far ends (`test-support`,
+/// and the published conformance suite's `far_ends`), for a build that cannot link the process's
+/// connector. No TLS library: TLS stays in the connector.
+#[cfg(any(test, feature = "test-support", feature = "conformance"))]
 pub mod https_conns;
 mod legacy_usage;
 pub mod observe;

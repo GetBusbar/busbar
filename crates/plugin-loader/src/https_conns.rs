@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A TEST STAND-IN FOR THE HOST'S CONNECTION TABLE, FRAMED: [`HttpsConns`] serves a plugin's
-//! declared outbound needs over the `http` transport (the scheme the http framer claims), to
-//! `https` targets, as the connector's framed `exchange()` does, so a plugin that fetches over the
-//! host (an IdP's JWKS) can be opened on a [`Dispatcher`](crate::dispatch::Dispatcher) in a build
-//! that cannot link the process's connector (a kernel test). A test double: it never ships
-//! (`test-support`), and it names no TLS library (TLS stays in the connector).
+//! A STAND-IN FOR THE HOST'S CONNECTION TABLE, FRAMED (tests, and the published conformance
+//! suite): [`HttpsConns`] serves a plugin's declared outbound needs over the `http` transport (the
+//! scheme the http framer claims), to `https` targets, as the connector's framed `exchange()`
+//! does, so a plugin that fetches over the host (an IdP's JWKS) can be opened on a
+//! [`Dispatcher`](crate::dispatch::Dispatcher) in a build that cannot link the process's connector
+//! (a kernel test, a plugin repo's conformance run). It never ships (`test-support`,
+//! `conformance`), and it names no TLS library (TLS stays in the connector).
 //!
-//! Its far ends are IN PROCESS: each is a URL the test registers ([`HttpsConns::serve`]) with the
-//! certificate it presents and its answer. As the connector does, the table refuses a need whose
+//! Its far ends are IN PROCESS: each is a URL the test (or the published conformance suite, from a
+//! plugin's `far_ends`) registers ([`HttpsConns::serve`]) with the certificate it presents and its
+//! answer. As the connector does, the table refuses a need whose
 //! `target_from` or `trust_from` resolved to nothing, dials only the target a need's config names
 //! when it names one, and reaches a far end only over a need that trusts the certificate that far
 //! end presents (the operator CA its `trust_from` named; a test has no public roots): a need trusting
@@ -36,10 +38,11 @@ struct Declared {
     trust: Option<String>,
 }
 
-/// One far end: the certificate it presents and its answer.
+/// One far end: the certificate it presents (`None`: one chaining to the public roots) and its
+/// answer.
 #[derive(Clone)]
 struct FarEnd {
-    cert_pem: String,
+    cert_pem: Option<String>,
     status: u32,
     body: Vec<u8>,
 }
@@ -74,16 +77,16 @@ impl HttpsConns {
         Self::default()
     }
 
-    /// Serve `url` (exact, query included) under the certificate `cert_pem`, answering `status`
-    /// and `body`.
-    pub fn serve(&self, url: &str, cert_pem: &str, status: u32, body: &str) {
+    /// Serve `url` (exact, query included) under the certificate `cert_pem` (`None`: one chaining
+    /// to the public roots, which every need trusts), answering `status` and `body`.
+    pub fn serve(&self, url: &str, cert_pem: Option<&str>, status: u32, body: &str) {
         self.far
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(
                 url.to_owned(),
                 FarEnd {
-                    cert_pem: cert_pem.to_owned(),
+                    cert_pem: cert_pem.map(str::to_owned),
                     status,
                     body: body.as_bytes().to_vec(),
                 },
@@ -91,8 +94,14 @@ impl HttpsConns {
     }
 
     /// Serve a test issuer's JWKS at its URL, under its certificate.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn serve_issuer(&self, issuer: &crate::test_issuer::Issuer) {
-        self.serve(issuer.jwks_url(), issuer.cert_pem(), 200, issuer.jwks());
+        self.serve(
+            issuer.jwks_url(),
+            Some(issuer.cert_pem()),
+            200,
+            issuer.jwks(),
+        );
     }
 
     /// Every request made, `(need, target)`, in order (refused ones included).
@@ -199,8 +208,10 @@ impl Conns for HttpsConns {
             .ok_or(ConnError::Refused)?;
         // The peer is reached only over a need trusting the certificate it presents (the PEM's
         // content, as a TLS stack reads it: line breaks and surrounding space are not content).
-        if trust.as_deref().map(pem_content) != Some(pem_content(&far.cert_pem)) {
-            return Err(ConnError::Refused);
+        if let Some(cert) = &far.cert_pem {
+            if trust.as_deref().map(pem_content) != Some(pem_content(cert)) {
+                return Err(ConnError::Refused);
+            }
         }
         self.slab.insert(
             caller,
