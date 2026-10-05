@@ -2125,3 +2125,9 @@ abi = 1
 # NEW name AND a row here naming old -> new, the commit that moved it and why. A rename with no row
 # stays RED: nothing else says the new crate is the old one. A broken row (a field missing or empty,
 # a commit that does not resolve) is itself a census problem.
+
+[[gate.census.renamed]]
+from = "busbar-hooks-ranking"
+to = "busbar-hook-ranking"
+commit = "3b74ca71fb716fed371b7592b9c445c6a8863630"
+reason = "P5 item hook-ranking: the crate moved to GetBusbar/busbar-hook-ranking under the singular kind name (Part 2 #3, busbar-<kind>-<name>); the root pins busbar-hook-ranking at one rev"
