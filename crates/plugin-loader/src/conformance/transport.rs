@@ -26,10 +26,14 @@
 //!                                                       (ws's 101), read before the first frame */
 //!         "emit":   "<one frame the host emits>",   "wire":   "<the wire bytes it becomes>",
 //!         "ingest": "<bytes from the far side>",    "frames": ["<the frames they are>", ...],
+//!         "ingest_wire": "<what reading them writes>", /* optional: the far side closed in them
+//!                                                       and the close is answered (ws); the
+//!                                                       frames end there */
 //!         "finish": "<what finish writes>" },       /* optional, default "" (ws's close) */
 //!     "encode": [{ "body": "<body>", "fields": [["<name>", "<value>"], ...],
 //!                  "wire": "<the rendering>" | null /* FAILED */ }, ...],
 //!     "refuse": { "bytes": "<a refusal>", "wire": "<the wire bytes it becomes>",
+//!                 "ends": true,                                       /* optional: it closes */
 //!                 "opening": "<far bytes the accepted framing reads first>",  /* optional */
 //!                 "answer":  "<what reading them writes>" },                 /* optional */
 //!     "handoff": "refused" | {
@@ -307,7 +311,7 @@ impl Yielded {
 enum Op<'a> {
     Begin(u32, &'a [u8]),
     Ingest(&'a [u8], bool),
-    Emit(&'a [u8]),
+    Emit(&'a [u8], bool),
     Refuse(&'a [u8]),
     Encode(&'a [u8], &'a [Field]),
     Adopt(&'a [u8]),
@@ -322,7 +326,8 @@ impl Op<'_> {
     fn again(self) -> Self {
         match self {
             Op::Ingest(_, end) => Op::Ingest(&[], end),
-            Op::Emit(_) => Op::Emit(&[]),
+            // The host's re-call carries no bytes and completes no frame (as the connector's does).
+            Op::Emit(..) => Op::Emit(&[], false),
             Op::Refuse(_) => Op::Refuse(&[]),
             Op::Adopt(_) | Op::Begin(..) => Op::Timer,
             other => other,
@@ -355,10 +360,10 @@ fn cross(p: &Plugin<Transport>, framing: u64, op: Op<'_>, sink: &mut Sink) -> (C
                 (framing, bytes.as_ptr(), bytes.len(), u32::from(end), raw);
             go(p, slot::INGEST, i)
         }
-        Op::Emit(bytes) => {
+        Op::Emit(bytes, end) => {
             let mut i: EmitIn = input();
             (i.framing, i.bytes, i.len, i.end_of_frame, i.sink) =
-                (framing, bytes.as_ptr(), bytes.len(), 1, raw);
+                (framing, bytes.as_ptr(), bytes.len(), u32::from(end), raw);
             go(p, slot::EMIT, i)
         }
         Op::Refuse(bytes) => {
@@ -691,18 +696,26 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         ));
     }
     r.line("emit", sinkfuls(wire.len(), TIGHT_WIRE), || {
-        pump(&p, token, Op::Emit(&emit), &mut tight).line()
+        pump(&p, token, Op::Emit(&emit, true), &mut tight).line()
     });
     want.push((
         "emit".into(),
         Want::Is(yielded_line(&wire, &[], &[], 0, false)),
     ));
-    r.line("ingest", frame_sinkfuls(&frames), || {
+    // What reading them writes back (a ws close answered), absent = nothing.
+    let answered = opt_text(&dial["ingest_wire"], "dial.ingest_wire");
+    let ingest_calls = sinkfuls(answered.len(), TIGHT_WIRE).max(frame_sinkfuls(&frames));
+    r.line("ingest", ingest_calls, || {
         pump(&p, token, Op::Ingest(&ingest, false), &mut tight).line()
     });
+    let ingest_flags = if dial["ingest_wire"].is_null() {
+        0
+    } else {
+        YIELD_ENDED
+    };
     want.push((
         "ingest".into(),
-        Want::Is(yielded_line(&[], &frames, &[], 0, false)),
+        Want::Is(yielded_line(&answered, &frames, &[], ingest_flags, false)),
     ));
     r.line("ingest end", 1, || {
         pump(&p, token, Op::Ingest(&[], true), &mut tight).line()
@@ -797,14 +810,22 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("refuse", sinkfuls(wire.len(), TIGHT_WIRE), || {
         pump(&p, token, Op::Refuse(&bytes), &mut tight).line()
     });
+    // A wire whose refusal closes its connection (ws: the refusal message, then its close) states
+    // `"ends": true`; its connection is over, and a timer on it fails.
+    let ends = refuse["ends"].as_bool().unwrap_or(false);
+    let ended = if ends { YIELD_ENDED } else { 0 };
     want.push((
         "refuse".into(),
-        Want::Is(yielded_line(&wire, &[], &[], 0, false)),
+        Want::Is(yielded_line(&wire, &[], &[], ended, false)),
     ));
     r.line("timer", 1, || pump(&p, token, Op::Timer, &mut tight).line());
     want.push((
         "timer".into(),
-        Want::Is(yielded_line(&[], &[], &[], 0, false)),
+        if ends {
+            Want::Starts("Failed ")
+        } else {
+            Want::Is(yielded_line(&[], &[], &[], 0, false))
+        },
     ));
     r.line("finish refused", 1, || {
         once(&p, token, Op::Finish, &mut tight).line()
