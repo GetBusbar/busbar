@@ -335,7 +335,6 @@ dependencies = [
  "busbar-kernel-scope",
  "busbar-kernel-wal",
  "busbar-llm",
- "busbar-mcp",
  "busbar-plane-decisions",
  "busbar-plane-llm",
  "busbar-plane-mcp",

@@ -54,17 +54,13 @@ getrandom = { workspace = true }
 ed25519-dalek = { workspace = true }
 # THE PROTOCOL CRATES — the composition root's knowledge, per the manifest header above. ONE CRATE
 # PER PROTOCOL: `busbar-llm` carries the LLM protocol's six dialects together (an operator picks LLM
-# coverage or none, never a subset), and `busbar-mcp` is a different protocol and therefore a
-# different plugin — it carries the MCP protocol codec today (folded in from the former
-# `busbar-proto-mcp`) and the MCP plane in a later plane-split step, both behind the ONE `plane-mcp`
-# switch. Each is optional behind a feature so the deletion gate can build the binary WITHOUT a
-# protocol and watch it refuse that protocol's config rather than serve it
-# (scripts/proto-deletion-gate.sh). Default-on: the shipped binary speaks both.
+# coverage or none, never a subset). It is optional behind a feature so the deletion gate can build
+# the binary WITHOUT the protocol and watch it refuse that protocol's config rather than serve it
+# (scripts/proto-deletion-gate.sh). Default-on: the shipped binary speaks it.
 busbar-llm = { path = "../busbar-llm", optional = true }
 # THE LLM PLANE, through its memory-ABI door: the edge the development-only `llm-on-driver` switch
 # carries (see that feature). Off by default: the `proto-llm` row serves llm until the flip.
 busbar-plane-llm = { path = "../busbar-plane-llm", optional = true }
-busbar-mcp = { path = "../busbar-mcp", optional = true }
 # THE MCP PLANE, through its memory-ABI door: the edge `plane-mcp` carries through its door row
 # (`plane-mcp-door`, see that feature).
 busbar-plane-mcp = { path = "../busbar-plane-mcp", optional = true }
@@ -239,11 +235,9 @@ default = ["auth-admin-tokens", "auth-header", "hooks-ranking", "proto-llm", "pl
 # second, per-node switch (spec #17: one feature per plane, no `root-*`; ARCHITECT K2i residue).
 proto-llm = ["dep:busbar-llm"]
 # THE MCP PLANE, ONE switch (spec #17: one feature per plane). Default-on: the shipped binary speaks
-# MCP. The plane is served through its memory-ABI door (`plane-mcp-door`, the row that owns the
-# `mcp` key's plane axis, SEAM-L(s)); `busbar-mcp` stays linked for the axes the door does not yet
-# register (stdio serve, CLI help, the one-shot runner, protocols, diagnostics, claims, egress)
-# until they move into the door and the crate is deleted (P3 DEL-MCP).
-plane-mcp = ["dep:busbar-mcp", "plane-mcp-door", "busbar-kernel/plane-mcp", "busbar-core-admin/plane-mcp"]
+# MCP. The plane is served through its memory-ABI door alone (`plane-mcp-door`): every word the root
+# reads about it is the door's own (its Statement, its tail's `cli_help`, its `declares.json`).
+plane-mcp = ["plane-mcp-door", "busbar-kernel/plane-mcp", "busbar-core-admin/plane-mcp"]
 # THE A2A PLANE, now the `busbar-a2a` crate, behind this switch which carries that crate edge. ONE
 # switch for A2A the plane and the A2A crate — never two — the exact analogue of `plane-mcp` above.
 # Default-on: the shipped binary speaks A2A. Forwards to `busbar-kernel/plane-a2a` (= `busbar-substrate/
@@ -306,8 +300,8 @@ llm-on-driver = ["proto-llm", "dep:busbar-plane-llm"]
 # is gone: the plane is flipped onto the driver, BUSBAR-1.6.0.md Part 3 section 12). The plane's
 # memory-ABI door (`busbar_plane_mcp::plane_door::door`) is a `plane-door` row, bound through the
 # loader's one load beside every dropped-in plane door, the same table as its dropped-in cdylib
-# (`mcp_door`; #2, #30; THE DESIGN section 11.4). It owns the `mcp` key's plane axis; the linked
-# `busbar-mcp` row keeps its other axes (SEAM-L(s)).
+# (`mcp_door`; #2, #30; THE DESIGN section 11.4). It is complete on its own: no linked row of the
+# plane's key stands beside it.
 plane-mcp-door = ["dep:busbar-plane-mcp"]
 # THE REQUEST-LOG FILE SINK, DEFAULT ON: the `busbar-export-file` crate on the export axis. Off, the
 # module resolves only when a signed tarball of the sink is dropped into `plugins/`.
@@ -351,7 +345,7 @@ auth-admin-tokens = ["dep:busbar-auth-admin-tokens-plugin"]
 # binds only when a signed tarball of the module is dropped into `plugins/`.
 auth-header = ["dep:busbar-auth-header"]
 hooks-ranking = ["dep:busbar-hooks-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
-openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
+openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 
 # ── THE LINKED PLUGINS (K1, #2 rule (1)) ─────────────────────────────────────────────────────────────
@@ -371,7 +365,6 @@ loom-model = ["busbar-kernel/loom-model"]
 # names any crate or root module listed here.
 [package.metadata.busbar.linked]
 proto-llm = "busbar-llm"
-plane-mcp = "busbar-mcp"
 plane-a2a = "busbar-a2a"
 plane-streaming = "busbar-voice"
 plane-decisions = "busbar-plane-decisions"
@@ -422,7 +415,6 @@ plane-mcp-door = "busbar-plane-mcp"
 # `export-doors`: a memory-ABI `kind: export` sink's `NAME`, `ALIAS`, `DECLARES` and `door`.
 [package.metadata.busbar.linked-axes]
 proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams diagnostics on-host cli-help node gauntlet-one-shot"
-plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
 plane-a2a = "plane claims diagnostics egress plane-sections admin-envelope gauntlet-one-shot"
 plane-streaming = "plane claims diagnostics ws-arrivals compose gauntlet-session"
 plane-decisions = "plane claims"
@@ -470,6 +462,11 @@ busbar-export-prometheus = "busbar_export_prometheus::door"
 busbar-export-otlp = "busbar_export_otlp::door"
 
 # The key an `auths` row answers on the auth axis — the name its signed tarball's manifest states.
+# Each linked plane door's declared metadata (its manifest `declares` section, as JSON): the item that
+# holds it. A door row with no row here declares nothing.
+[package.metadata.busbar.linked-declares]
+plane-mcp-door = "busbar_plane_mcp::DECLARES"
+
 [package.metadata.busbar.linked-name]
 auth-admin-tokens = "admin-tokens"
 auth-header = "busbar-auth-header"
@@ -483,7 +480,6 @@ auth-header = "busbar-auth-header"
 # registers for that plane's key. Test builds only (`build.rs` emits `$OUT_DIR/served_witness.rs`, which
 # `root/tests/gauntlet_kernel.rs` includes); each crate is linked with `test-support` by the dev-deps.
 [package.metadata.busbar.served-witness]
-plane-mcp = "busbar-mcp"
 plane-a2a = "busbar-a2a"
 plane-streaming = "busbar-voice"
 
@@ -508,7 +504,6 @@ async-trait = { workspace = true }
 # The root's own llm tests install the plane's seams.
 busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # The served planes' test kits: `testkit::SERVED` (their served-leg witnesses) is `test-support` only.
-busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
 busbar-voice = { path = "../busbar-voice", features = ["test-support"] }
 # `root::door_steps` tests: a member bound under an OAuth grant, its credential minted by the real

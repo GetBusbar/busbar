@@ -76,6 +76,10 @@ pub struct Linked {
     /// Each plane door row's place among [`Linked::planes`] (how many plane rows precede it in
     /// manifest order), parallel to [`Linked::plane_doors`]: where its folded registry row goes.
     pub plane_door_slots: &'static [usize],
+    /// Each linked plane door's DECLARED METADATA, `(row, declares)`: its manifest `declares` section
+    /// as JSON (the crate's `declares.json`, named by `[package.metadata.busbar.linked-declares]`),
+    /// read as every default-linked plugin's is. A linked door is first-party.
+    pub plane_door_declares: &'static [(&'static str, &'static str)],
     /// Protocol declarations, appended to the installed protocol set in this order.
     pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
     /// URL-model arrivals, by protocol name.
@@ -1180,6 +1184,13 @@ pub fn register_diagnostics(linked: &Linked) {
         .iter()
         .flat_map(|diags| diags.iter().copied())
         .collect();
+    match door_declared_diagnostics(linked.plane_door_declares, &installed) {
+        Ok(declared) => installed.extend(declared),
+        Err(refusal) => {
+            eprintln!("busbar: {refusal}");
+            std::process::exit(2);
+        }
+    }
     if let Some(registry) = DROPPED.get() {
         match declared_diagnostics(registry, &installed) {
             Ok(declared) => installed.extend(declared),
@@ -1201,10 +1212,7 @@ pub fn declared_diagnostics(
     registry: &crate::root::loader::PluginRegistry,
     taken: &[&'static busbar_contract::diagnostic::Diagnostic],
 ) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
-    use busbar_contract::diagnostic::{Class, Diagnostic, Severity};
-    use busbar_kernel::diagnostics::REGISTRY;
-    let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
-    let mut declared: Vec<&'static Diagnostic> = Vec::new();
+    let mut declared = Vec::new();
     for p in registry.linked().iter().chain(registry.loadable()) {
         let (name, decls) = (&p.manifest.name, &p.manifest.declares.diagnostics);
         if !decls.is_empty() && !p.first_party() {
@@ -1213,6 +1221,47 @@ pub fn declared_diagnostics(
                  plugin's codes join the catalogue"
             ));
         }
+        let held: Vec<_> = taken.iter().chain(&declared).copied().collect();
+        declared.extend(catalogue_entries(name, decls, &held)?);
+    }
+    Ok(declared)
+}
+
+/// THE DIAGNOSTICS LINKED PLANE DOORS DECLARE (`declares.json`, first-party by being linked), each
+/// judged as a dropped plugin's declaration is ([`declared_diagnostics`]).
+///
+/// # Errors
+///
+/// A declaration that is not a `declares` section, or one the catalogue refuses.
+pub fn door_declared_diagnostics(
+    doors: &[(&'static str, &'static str)],
+    taken: &[&'static busbar_contract::diagnostic::Diagnostic],
+) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
+    let mut declared = Vec::new();
+    for (name, json) in doors {
+        let declares: crate::root::loader::sign::Declares =
+            serde_json::from_str(json).map_err(|e| {
+                format!("plugin '{name}' states a `declares` section that does not read: {e}")
+            })?;
+        let held: Vec<_> = taken.iter().chain(&declared).copied().collect();
+        declared.extend(catalogue_entries(name, &declares.diagnostics, &held)?);
+    }
+    Ok(declared)
+}
+
+/// One plugin's declared diagnostics as catalogue entries, beside the `held` ones: a class that is
+/// not the host's, a severity that is not a token, or a code the catalogue holds is refused.
+fn catalogue_entries(
+    name: &str,
+    decls: &[crate::root::loader::sign::DiagnosticDecl],
+    held_already: &[&'static busbar_contract::diagnostic::Diagnostic],
+) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
+    use busbar_contract::diagnostic::{Class, Diagnostic, Severity};
+    use busbar_kernel::diagnostics::REGISTRY;
+    let taken = held_already;
+    let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
+    let mut declared: Vec<&'static Diagnostic> = Vec::new();
+    {
         for d in decls {
             let refuse = |why: &str| {
                 Err(format!(
