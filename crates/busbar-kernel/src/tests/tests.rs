@@ -922,8 +922,8 @@ fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
     assert_eq!((row.manifest.kind.as_str(), row.ephemeral), ("store", true));
     let stores = reg.linked().iter().filter(|p| p.manifest.kind == "store");
     assert_eq!((stores.count(), reg.loadable().len()), (1, 0));
-    reg.open_store(name, "{}")
-        .expect("the row opens through open_store");
+    reg.store_door(name)
+        .expect("the row states its door to boot");
 
     let dir = tmp_plugin_dir("linked-store");
     let tarball = unsigned_tarball(plugin_manifest(name, "acme-ram", "acme"), b"lib");

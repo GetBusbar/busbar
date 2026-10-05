@@ -925,9 +925,9 @@ impl Store for MemoryStore {
     }
 }
 
-/// Open this store. It reads no configuration, so every body opens the same fresh RAM store — the
-/// ONE constructor both doors reach: the linked row ([`linked::STORE`]) calls it in process, and the
-/// dropped-in `cdylib` calls it from `busbar_open` ([`exports`]).
+/// Open this store in process. It reads no configuration, so every body opens the same fresh RAM
+/// store. The kernel reaches the store through its door ([`door`]), compiled in or dropped in; this
+/// constructor is the Rust-side twin a test drives directly.
 pub fn open(_cfg: &str) -> Result<Box<dyn Store>, String> {
     Ok(Box::new(MemoryStore::new()))
 }
@@ -948,39 +948,15 @@ pub mod door_export {
     busbar_contract::export_door!(crate::v3::door);
 }
 
-// M6: the legacy cold export below goes with the cold ABI (TODO M6 COLD-DELETE). It is kept only as
-// the in-tree subject of the legacy store adapter's tests; production never loads it.
-/// THE LEGACY COLD DOOR (feature `cold-dropped-in`): [`open`] exported through the contract's cold
-/// store export macro. The frozen symbols the loader looks up are the contract's. Unsafe code is
-/// allowed here because the C-ABI boundary functions the macro generates are
-/// `unsafe extern "C-unwind"` by the cold ABI's own definition.
-#[cfg(feature = "cold-dropped-in")]
-#[allow(unsafe_code)]
-pub mod exports {
-    busbar_contract::abi::sdk::export_store_plugin!(super::open);
-}
-
-/// The legacy cold door's boundary as a LINKED entry (the loader's legacy both-ways proof).
-#[cfg(feature = "cold-dropped-in")]
-pub use exports::BUSBAR_COLD_ENTRY;
-
 /// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a build that links this store registers onto the
-/// cold-kind axis — the same row a dropped-in store takes, opened in process. `STORE` is
-/// `(name, ephemeral, open, door)`: the name `store.module` selects it by, its statement that what it
-/// holds is lost on restart, the open handed the row's configuration (this backend reads none), and
+/// store axis — the same door a dropped-in store exports. `STORE` is `(name, ephemeral, door)`:
+/// the name `store.module` selects it by, its statement that what it holds is lost on restart, and
 /// its store v3 door, which boot opens it through (the store axis). It claims no default: a config
 /// names its store (Q-STORE = (B)).
 pub mod linked {
-    /// An in-process store row's open.
-    pub type Open = fn(&str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String>;
-
-    /// `(name, ephemeral, open, door)`.
-    pub const STORE: (
-        &str,
-        bool,
-        Open,
-        busbar_contract::abi::mechanism::door::DoorFn,
-    ) = ("memory", true, super::open, super::door);
+    /// `(name, ephemeral, door)`.
+    pub const STORE: (&str, bool, busbar_contract::abi::mechanism::door::DoorFn) =
+        ("memory", true, super::door);
 }
 
 mod v3;
