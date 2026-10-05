@@ -36,6 +36,16 @@ fn fixture_dir(tag: &str) -> PathBuf {
     d
 }
 
+/// The `store:` line a fixture config carries unless the block under test writes its own: a config
+/// names its store (owner ruling Q-STORE = (B), 2026-09-27).
+fn store_unless_written(extra: &str) -> &'static str {
+    if extra.lines().any(|l| l.starts_with("store:")) {
+        ""
+    } else {
+        "store: {module: memory}\n"
+    }
+}
+
 /// A minimal VALID providers.yaml + config.yaml pair. `extra` is appended verbatim to config.yaml
 /// (the governance/plugins blocks under test).
 fn write_configs(dir: &Path, extra: &str) {
@@ -58,7 +68,8 @@ providers:
 models:
   test-model:
     provider: mock
-{extra}"#
+{}{extra}"#,
+            store_unless_written(extra)
         ),
     )
     .unwrap();
@@ -79,7 +90,10 @@ fn write_tools_only_configs(dir: &Path, extra: &str) {
     };
     std::fs::write(
         dir.join("config.yaml"),
-        format!("listen: \"127.0.0.1:0\"\n{catalog}{extra}"),
+        format!(
+            "listen: \"127.0.0.1:0\"\n{catalog}{}{extra}",
+            store_unless_written(extra)
+        ),
     )
     .unwrap();
 }
@@ -501,7 +515,12 @@ fn migrate_config_omits_changes_and_warnings_sections_when_empty() {
     let dir = fixture_dir("migrate-clean");
     std::fs::create_dir_all(&dir).unwrap();
     let legacy = dir.join("legacy.yaml");
-    std::fs::write(&legacy, "listen: \"127.0.0.1:8080\"\n").unwrap();
+    // Names its store, so the Q-STORE insertion has nothing to add either.
+    std::fs::write(
+        &legacy,
+        "listen: \"127.0.0.1:8080\"\nstore: {module: memory}\n",
+    )
+    .unwrap();
 
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .args(["--migrate-config", legacy.to_str().unwrap()])
@@ -1090,6 +1109,7 @@ fn providers_flag_overrides_providers_file_and_default() {
     std::fs::write(
         &config,
         "listen: \"127.0.0.1:0\"\n\
+         store: {module: memory}\n\
          providers:\n\
          \x20 mock:\n\
          \x20   api_key: { env: MOCK_KEY }\n\
@@ -1207,6 +1227,7 @@ fn write_configs_with_api_key(dir: &Path, api_key_yaml: &str, extra: &str) {
         dir.join("config.yaml"),
         format!(
             r#"listen: "127.0.0.1:0"
+store: {{module: memory}}
 providers:
   mock:
     api_key: {api_key_yaml}
@@ -1338,6 +1359,7 @@ fn write_decisions_configs(dir: &Path, protocol: &str, decisions_yaml: &str) {
         dir.join("config.yaml"),
         format!(
             r#"listen: "127.0.0.1:0"
+store: {{module: memory}}
 providers:
   mock:
     api_key: {{ env: MOCK_KEY }}

@@ -62,6 +62,7 @@ fn write_configs(dir: &Path) {
 admin_listen: "127.0.0.1:0"
 advanced:
   allow_destinations: ["127.0.0.1"]
+store: {module: memory}
 admin_require_mtls: false
 auth:
   chain: []
