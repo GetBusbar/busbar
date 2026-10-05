@@ -240,6 +240,11 @@ fn field_lines_read_a_closing_block_in_order() {
         field_lines(b"a: 1\r\nb:2 \r\n\r\n").unwrap(),
         pairs(&[("a", "1"), ("b", "2")])
     );
+    assert_eq!(
+        field_lines(b":status: 200\r\nc: 3\r\n").unwrap(),
+        pairs(&[(":status", "200"), ("c", "3")])
+    );
     assert!(field_lines(b"no colon\r\n").is_err());
+    assert!(field_lines(b":: pseudo with no name\r\n").is_err());
     assert!(field_lines(b": empty name\r\n").is_err());
 }

@@ -163,7 +163,8 @@ fn closing(y: &Yielded) -> Result<FieldLines, Refused> {
     field_lines(&y.wire)
 }
 
-/// FIELD LINES (`name: value` CRLF each, a blank line or the end closing them), read in order.
+/// FIELD LINES (`name: value` CRLF each, a blank line or the end closing them), read in order. A
+/// name may be a pseudo-field's (`:status`), as the data listener's own wire states its head's.
 ///
 /// # Errors
 ///
@@ -175,12 +176,14 @@ pub fn field_lines(block: &[u8]) -> Result<FieldLines, Refused> {
         if line.is_empty() {
             continue;
         }
-        let colon = line
+        let pseudo = usize::from(line.first() == Some(&b':'));
+        let colon = line[pseudo..]
             .iter()
             .position(|b| *b == b':')
+            .map(|c| c + pseudo)
             .ok_or_else(|| fault("the closing field block has a line with no `:`"))?;
         let (name, value) = line.split_at(colon);
-        if name.is_empty() || name.iter().any(|b| b.is_ascii_whitespace()) {
+        if name.len() == pseudo || name.iter().any(|b| b.is_ascii_whitespace()) {
             return Err(fault("the closing field block has a line with no name"));
         }
         let value = &value[1..];

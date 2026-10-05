@@ -470,6 +470,17 @@ impl Connector {
             .is_some()
     }
 
+    /// The framer entry that answers `scheme`, where a loaded one does: what frames a stream that
+    /// arrived on that claim (ARCHITECT 4l, [`framed_stream`]).
+    #[must_use]
+    pub fn framer_for(&self, scheme: &str) -> Option<Arc<dyn framer::FramerDoor>> {
+        self.transports
+            .read()
+            .expect("transports")
+            .serving(scheme)
+            .map(|s| Arc::clone(&s.entry.door))
+    }
+
     /// Record that `owner` declared `need` over `transport` (a scheme the registry view serves), in
     /// the default egress class ([`DEFAULT_CLASS`]).
     ///
