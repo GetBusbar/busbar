@@ -436,9 +436,11 @@ transport-tcp = "transport transport-door"
 # sink's outbound `http` need is served compiled-in; the wire the registry folds keeps its build.
 transport-http = "transport connector-door"
 transport-sse = "transport"
-# The ws framer's door, opened on the same one Connector (ARCHITECT Q-L5B-WS-DOOR 2026-10-03,
-# packaging Part 0, as the http door): the streaming door's inbound and outbound ws needs bind.
-transport-ws = "transport connector-door"
+# The ws framer's door, single-entry and door-only as stdio's (ARCHITECT ruling (A); Q-L5B-WS-DOOR
+# ruled 2026-10-04): the wire is built from the door (`transport-door`, a framer composed over the
+# layer the registry folds under it, SEAM-4f/4n) and the door is opened on the one Connector
+# (`connector-door`, packaging Part 0, as the http door), so the streaming door's ws needs bind.
+transport-ws = "transport transport-door connector-door"
 transport-grpc = "transport transport-door"
 transport-stdio = "transport transport-door"
 plane-decisions-door = "plane-door"

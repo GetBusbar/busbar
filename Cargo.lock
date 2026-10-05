@@ -1118,14 +1118,11 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=acf30119313d5778345c1b8dcb67d4dec7256b03#acf30119313d5778345c1b8dcb67d4dec7256b03"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=a6787c0245993b0a9e366df4652b1e829db1b6cf#a6787c0245993b0a9e366df4652b1e829db1b6cf"
 dependencies = [
  "busbar-contract",
- "futures",
  "serde_json",
- "tokio",
  "tokio-tungstenite",
- "tokio-util",
 ]
 
 [[package]]
