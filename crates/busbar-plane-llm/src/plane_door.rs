@@ -76,15 +76,17 @@ use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
 use busbar_contract::abi::sdk::{
     open_failed, Generations, HostBuf, Instance, Lent, Out, Safe, SafeSlot, Services,
 };
+use busbar_contract::abi::transport::{FAULT_CALLER, FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT};
 use busbar_contract::ids::{MeterClassDecl, OpClassId};
 use busbar_contract::plane::PlaneMeta;
+use busbar_contract::upstream::Disposition;
 use serde_json::Value;
 
 use crate::codec::ir::rerank::SEARCH_UNITS_CLASS;
 use crate::dialect::DIALECTS;
 use crate::exchange::arrive::{self, envelope_for, Arrived, Declined};
 use crate::exchange::attempt::{self, stream_intent, FarRequest};
-use crate::exchange::reply::{At, Piece, Reply, ReplyCtx, Units, Verdict};
+use crate::exchange::reply::{At, Fault, Piece, Reply, ReplyCtx, Units, Verdict};
 use crate::exchange::shaping::{sections, Shaping};
 use crate::exchange::{handler_of, probe, project, refuse};
 use crate::LlmPlane;
@@ -425,6 +427,8 @@ struct Answer {
     units: Vec<UnitCount>,
     /// `VERDICT_*`.
     verdict: u32,
+    /// `FAULT_*`: the breaker's reading of this answer, written once, on its first window.
+    fault: u8,
     /// The caller's reply is complete.
     done: bool,
     /// The unit's audit rows, `(action, resource)`, each written as a degraded `RECORD_AUDIT`:
@@ -680,6 +684,28 @@ pub fn counts(units: &Units) -> Vec<UnitCount> {
     out
 }
 
+/// THE BREAKER'S READING of a judged answer (ARCHITECT BREAKER OUTCOME: one neutral vocabulary,
+/// stated apart from the walk's verdict), as 1.5.5's classifier recorded it per disposition (v1.5.5
+/// `crates/busbar-llm/src/engine/attempt/classify.rs`): the caller's own bad input records nothing
+/// against the destination; a transient failure (an `error_map` entry naming `rate_limit` among
+/// them) counts toward the pool cell's trip; a refused credential or account trips every cell; a
+/// request too large for the window fails over with nothing recorded. A 2xx that failed after its
+/// head (a stream's terminal error, a cut body, an untranslatable answer, a failed generation) is
+/// the compensating transient 1.5.5 recorded.
+#[must_use]
+pub fn breaker_fault(f: Option<&Fault>) -> u8 {
+    match f {
+        None => FAULT_NONE,
+        Some(Fault::Transient(_)) => FAULT_TRANSIENT,
+        Some(Fault::Judged { disposition, .. }) => match disposition {
+            Disposition::ClientFault => FAULT_CALLER,
+            Disposition::TransientUpstream => FAULT_TRANSIENT,
+            Disposition::HardDown => FAULT_HARD,
+            Disposition::ContextLength => FAULT_NONE,
+        },
+    }
+}
+
 fn verdict(v: Verdict) -> u32 {
     match v {
         Verdict::None => VERDICT_NONE,
@@ -714,6 +740,7 @@ fn fee_unit(unit: &mut UnitState, answer: &mut Answer) {
 
 /// A reply piece as the caller's answer.
 fn to_caller(piece: Piece<'_>) -> Answer {
+    let fault = breaker_fault(piece.fault.as_ref());
     let (status, fields) = piece
         .head
         .map_or((0, Vec::new()), |h| (u32::from(h.status), owned(&h.fields)));
@@ -723,6 +750,7 @@ fn to_caller(piece: Piece<'_>) -> Answer {
         bytes: piece.bytes.into_owned(),
         units: counts(&piece.units),
         verdict: verdict(piece.verdict),
+        fault,
         done: piece.done,
         ..Answer::default()
     }
@@ -976,6 +1004,8 @@ fn deliver(
     out.set(|o| &o.emitted, n as u64);
     out.set(|o| &o.more, u32::from(more));
     out.set(|o| &o.verdict, p.answer.verdict);
+    // Once per answer: a reading recorded on every window of a long answer would count it again.
+    out.set(|o| &o.fault, std::mem::take(&mut p.answer.fault));
     out.set(|o| &o.flags, far | if done { EMIT_DONE } else { 0 });
     if !more {
         unit.pending = None;
