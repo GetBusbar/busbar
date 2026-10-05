@@ -255,6 +255,13 @@ fn each_declared_scheme_presents_what_its_dialect_builder_wrote() {
     for row in fixture()["rows"].as_array().expect("rows") {
         let dialect = row["dialect"].as_str().expect("dialect");
         let key = String::from_utf8(hex(&row["key_hex"])).expect("utf-8 key");
+        // AN EMPTY KEY NEVER REACHES THE BUILDER ON THE WIRE: the lane's writer asks for no header
+        // at all for a key that presents (1.5.5's `lane_auth_headers` and the passthrough rule;
+        // `test_keyless_lane_sends_no_auth_header`), so the builder's raw answer for it was never
+        // sent and is no byte-identity obligation of the plugin's.
+        if key.is_empty() {
+            continue;
+        }
         let body = hex(&row["body_hex"]);
         let ctx = SigningContext {
             host: row["host"].as_str().expect("host"),
