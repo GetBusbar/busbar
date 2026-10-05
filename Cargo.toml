@@ -105,7 +105,7 @@ busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", 
 busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "aaeaad28ce132335c2ef46373d6f674ace681552" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin.
-busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "2a13554733f7a2bcb0554e66e6a1f5907a8ea189" }
+busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "fac7dde1dd70544ceee4d7b2e01325030a3c985d" }
 # THE RANKING HOOK (kind: hook), pulled at a pinned rev: the logic crate the root links on its hooks
 # axis (feature `hooks-ranking`). The same package at the same rev, under the role the kernel's test
 # build gives it (`fixture-hook`: a kernel source names no plugin). A rev bump moves both lines.
