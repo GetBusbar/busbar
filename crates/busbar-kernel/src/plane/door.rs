@@ -158,9 +158,38 @@ pub struct DoorSection {
     pub section: &'static str,
     /// The section as written (`Null` when absent).
     pub value: serde_yaml::Value,
+    /// The secret references the section holds at its door's declared paths
+    /// (`PlaneRegistration::secret_refs`), each with the config path it was read at.
+    refs: Vec<(String, busbar_contract::secret_ref::SecretRef)>,
 }
 
 impl DoorSection {
+    /// The section `section` as written, with the secret references it holds at its door's
+    /// declared paths (`settings.<segment>…`, `*` every key of the map there) read out, so
+    /// `--validate` and boot resolve each one as they resolve every other reference.
+    #[must_use]
+    pub fn new(section: &'static str, value: serde_yaml::Value) -> Self {
+        let paths = DOORS
+            .iter()
+            .filter_map(OnceLock::get)
+            .find(|f| f.reg.section == section)
+            .map(|f| f.reg.secret_refs.as_slice())
+            .unwrap_or_default();
+        let mut refs = Vec::new();
+        for path in paths {
+            let Some(rest) = path.strip_prefix("settings.") else {
+                continue;
+            };
+            let segments: Vec<&str> = rest.split('.').collect();
+            collect_refs(&value, &segments, section.to_string(), &mut refs);
+        }
+        Self {
+            section,
+            value,
+            refs,
+        }
+    }
+
     fn registrations(&self) -> impl Iterator<Item = (&str, &serde_yaml::Value)> {
         crate::trust::section::registrations(&self.value)
     }
@@ -181,9 +210,8 @@ impl DoorSection {
 
 impl PlaneCfg for DoorSection {
     fn secret_refs(&self) -> Vec<(String, &busbar_contract::secret_ref::SecretRef)> {
-        // A door resolves its own settings' references through the secret service it is handed; the
-        // kernel holds no typed reference of a door's section.
-        Vec::new()
+        // The references at the door's declared paths, so `--validate` and boot resolve each one.
+        self.refs.iter().map(|(at, r)| (at.clone(), r)).collect()
     }
 
     fn contains_def(&self, name: &str) -> bool {
@@ -209,6 +237,8 @@ impl PlaneCfg for DoorSection {
         if let Some(m) = self.value.as_mapping_mut() {
             m.insert(serde_yaml::Value::String(name.to_string()), entry);
         }
+        // The written entry's references are the section's too.
+        *self = Self::new(self.section, std::mem::take(&mut self.value));
         Ok(())
     }
 
@@ -244,6 +274,39 @@ impl PlaneCfg for DoorSection {
 
     fn clone_arc_any(&self) -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
         std::sync::Arc::new(self.clone())
+    }
+}
+
+/// Every secret reference under `value` at `segments` (a `*` segment is every key of the map there),
+/// each with its config path. A value at the path that is not a reference (a plain scalar beside
+/// references in one map) is not one: the door's own `validate` judged the section's shape.
+fn collect_refs(
+    value: &serde_yaml::Value,
+    segments: &[&str],
+    at: String,
+    out: &mut Vec<(String, busbar_contract::secret_ref::SecretRef)>,
+) {
+    let Some((head, rest)) = segments.split_first() else {
+        if value.is_mapping() {
+            if let Ok(r) =
+                serde_yaml::from_value::<busbar_contract::secret_ref::SecretRef>(value.clone())
+            {
+                out.push((at, r));
+            }
+        }
+        return;
+    };
+    let Some(map) = value.as_mapping() else {
+        return;
+    };
+    if *head == "*" {
+        for (k, v) in map {
+            if let Some(k) = k.as_str() {
+                collect_refs(v, rest, format!("{at}.{k}"), out);
+            }
+        }
+    } else if let Some(v) = map.get(*head) {
+        collect_refs(v, rest, format!("{at}.{head}"), out);
     }
 }
 
@@ -327,13 +390,20 @@ fn build<const I: usize>(
         .find(|s| mine(s))
     {
         Some(s) => s.clone(),
+        // ITS ENDPOINT BLOCK ALONE CONFIGURES IT (LAW 7): an owned block carried as written, with no
+        // registration in the section, builds the slot over the section as absent and that block.
+        None if ctx
+            .endpoint_slot
+            .as_deref()
+            .and_then(|slot| slot.downcast_ref::<DoorOwned>())
+            .is_some_and(crate::plane::config::PlaneEndpointCfg::is_present) =>
+        {
+            DoorSection::new(d.reg.section, serde_yaml::Value::Null)
+        }
         None => {
             let raw = ctx.endpoint_slot.as_deref()?;
             let (section, value) = raw.downcast_ref::<(&'static str, serde_yaml::Value)>()?;
-            let s = DoorSection {
-                section,
-                value: value.clone(),
-            };
+            let s = DoorSection::new(section, value.clone());
             if !mine(&s) {
                 return None;
             }
@@ -548,17 +618,14 @@ fn parse_section<const I: usize>(value: &serde_yaml::Value) -> Result<Box<dyn Pl
         return Err("a door plane's section was parsed before its door was folded".to_string());
     };
     (d.reg.validate)(&settings_of(value)?)?;
-    Ok(Box::new(DoorSection {
-        section: d.reg.section,
-        value: value.clone(),
-    }))
+    Ok(Box::new(DoorSection::new(d.reg.section, value.clone())))
 }
 
 fn default_section<const I: usize>() -> Box<dyn PlaneCfg> {
-    Box::new(DoorSection {
-        section: door(I).map_or("", |d| d.reg.section),
-        value: serde_yaml::Value::Null,
-    })
+    Box::new(DoorSection::new(
+        door(I).map_or("", |d| d.reg.section),
+        serde_yaml::Value::Null,
+    ))
 }
 
 // ── THE ADMIN ROUTES ITS STATEMENT STATES ───────────────────────────────────────────────────────

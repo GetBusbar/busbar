@@ -1023,6 +1023,26 @@ drain   = "delete the busbar-a2a dependency from busbar-kernel's Cargo.toml. A c
 
 [[dep]]
 from    = "busbar-kernel"
+to      = "busbar-plane-mcp"
+half    = "test"
+count   = "1"
+verdict = "test-linked-door"
+cite    = "P3 DEL-MCP; ARCHITECT 2026-10-03 L3B-MCP round 4 Q-L3B-GATES (1): a test-only row for a test-linked door, no production edge. BUSBAR-1.6.0.md THE DESIGN, §1 / §9 grants no production pair. It replaces the kernel's test edge onto the deleted busbar-mcp: the kernel's cross-plane harness folds a test-linked door's Statement into its registry (`test-linked` row `door:busbar-plane-mcp`), so the one test plane owning the `tools:` section is the mcp door, bound through the loader's one load. The number does not grow: one test edge onto the mcp plane before, one after."
+why     = "busbar-kernel names busbar-plane-mcp: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "test-only: the test-linked door moves to the plugin repo in W4 (OWNER BUSBAR-CI-PLUGIN-AGNOSTIC); no production edge"
+
+[[dep]]
+from    = "busbar-core-admin"
+to      = "busbar-plane-mcp"
+half    = "test"
+count   = "1"
+verdict = "test-linked-door"
+cite    = "P3 DEL-MCP; ARCHITECT 2026-10-03 L3B-MCP round 4 Q-L3B-GATES (1): a test-only row for a test-linked door, no production edge. BUSBAR-1.6.0.md THE DESIGN, §1 / §9 grants no production pair. Moved, not added: the admin harness drove the deleted busbar-mcp; it now folds the mcp door's Statement (`test-linked` row `door:busbar-plane-mcp`)."
+why     = "busbar-core-admin names busbar-plane-mcp: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "test-only: the test-linked door moves to the plugin repo in W4 (OWNER BUSBAR-CI-PLUGIN-AGNOSTIC); no production edge"
+
+[[dep]]
+from    = "busbar-kernel"
 to      = "busbar-llm"
 half    = "test"
 count   = "1"
