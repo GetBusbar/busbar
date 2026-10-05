@@ -136,6 +136,15 @@ pub struct ServedFacts {
     /// (THE DESIGN §6 step 2: a provider entry's `auth:`, else this), and the style's parameters
     /// for it, a JSON object's text (empty: none; ARCHITECT RULING 2026-10-03, Q-L6-AUTHPARAMS).
     pub dialect_auth: Vec<(u32, &'static str, &'static [u8])>,
+    /// The tail's `label`, `subject_noun` and `admin_noun` (what the kernel's registry entry names
+    /// the plane and one registration by).
+    pub nouns: (&'static str, &'static str, &'static str),
+    /// The tail's billable classes' unit families, parallel to [`Self::billable_classes`].
+    pub billable_families: Vec<&'static str>,
+    /// Whether the tail states `TAIL_PROBES`: the plane answers the kernel's health probe unit.
+    pub probes: bool,
+    /// Whether the tail states `TAIL_FALLBACK`: the plane is the catch-all.
+    pub fallback: bool,
 }
 
 /// ONE NEED'S RESPONSE-HEAD RULE, as its Statement declares it.
@@ -246,6 +255,17 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
                 .into_iter()
                 .map(|d| (d.dialect, kept(d.style), kept_blob(d.params)))
                 .collect(),
+            nouns: (
+                kept(tail.label),
+                kept(tail.subject_noun),
+                kept(tail.admin_noun),
+            ),
+            billable_families: listed(tail.billable_classes, tail.billable_classes_len)
+                .into_iter()
+                .map(|c| kept(c.family))
+                .collect(),
+            probes: tail.flags & busbar_contract::abi::plane::TAIL_PROBES != 0,
+            fallback: tail.flags & busbar_contract::abi::plane::TAIL_FALLBACK != 0,
         },
     })
 }
@@ -354,6 +374,82 @@ impl crate::dispatch::Plugin<Plane> {
         self.inner
             .context::<PlaneFacts>()
             .map_or(0, |f| f.bounds.dialects)
+    }
+}
+
+/// THE REGISTRY FACTS `plugin` STATES (ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL): its Statement
+/// name, its declaring section and its tail's words, read off the facts kept at bind, and its own
+/// `validate` (ticket-less; it never pends) over a whole section. The same function for a linked and
+/// a dropped door: both bound through the one load.
+#[must_use]
+pub fn registration(
+    plugin: Arc<crate::dispatch::Plugin<Plane>>,
+) -> busbar_contract::plane_calls::PlaneRegistration {
+    let served = plugin.served();
+    let declared = plugin.declared();
+    let (label, subject_noun, admin_noun) = served.nouns;
+    let key: &'static str = plugin.name().to_string().leak();
+    busbar_contract::plane_calls::PlaneRegistration {
+        key,
+        section: served.section,
+        label,
+        subject_noun,
+        admin_noun,
+        audit_kind: served.audit_kind,
+        signing: declared.signing,
+        dialects: served.dialects.clone(),
+        scope_kinds: declared.scope_kinds.clone(),
+        billable_classes: served
+            .billable_classes
+            .iter()
+            .copied()
+            .zip(served.billable_families.iter().copied())
+            .collect(),
+        fee_units: served.fee_units.clone(),
+        record_kinds: declared.record_kinds.clone(),
+        trust_keys: declared.trust_keys.clone(),
+        fallback: served.fallback,
+        validate: Arc::new(move |settings: &[u8]| validate(&plugin, settings)),
+    }
+}
+
+/// `validate` `settings` on `plugin` (ticket-less; it never pends): `Ok` when READY, else the
+/// plugin's words.
+fn validate(plugin: &crate::dispatch::Plugin<Plane>, settings: &[u8]) -> Result<(), String> {
+    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
+    use busbar_contract::abi::mechanism::lifecycle::ValidateIn;
+    let blob = if settings.is_empty() {
+        Blob {
+            ptr: std::ptr::null(),
+            len: 0,
+            fmt: BLOB_ABSENT,
+            flags: 0,
+        }
+    } else {
+        Blob {
+            ptr: settings.as_ptr(),
+            len: settings.len(),
+            fmt: BLOB_JSON,
+            flags: 0,
+        }
+    };
+    let mut f = Frame::new(
+        ValidateIn {
+            head: in_head(),
+            settings: blob,
+            err_buf: std::ptr::null_mut(),
+            err_cap: 0,
+        },
+        out_head(),
+    );
+    let c = plugin.call(life::VALIDATE, &mut f);
+    match c.outcome {
+        Outcome::Ready => Ok(()),
+        o => Err(c
+            .error
+            .map(|e| String::from_utf8_lossy(&e).into_owned())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| format!("{o:?}"))),
     }
 }
 

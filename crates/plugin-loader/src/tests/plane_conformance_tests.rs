@@ -1763,4 +1763,36 @@ mod door {
             assert_eq!(first, published, "generation 1's copy outlives its retire");
         }
     }
+
+    /// DECL-FOLD (ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL): the registry facts a door states are
+    /// read off its Statement and tail at bind, linked and dropped alike, and its own `validate`
+    /// judges a section: the kernel folds these into its plane registry before the config prepass.
+    #[test]
+    fn a_door_states_its_registry_facts_and_judges_its_section() {
+        let check = |p: Plugin<Plane>| {
+            let reg = crate::dispatch::kinds::plane::registration(Arc::new(p));
+            assert_eq!(reg.key, "plane-door");
+            assert_eq!(reg.section, "door");
+            assert_eq!(
+                (reg.label, reg.subject_noun, reg.admin_noun, reg.audit_kind),
+                ("Door", "door", "door", "door")
+            );
+            assert_eq!(reg.dialects, vec!["door/1"]);
+            assert_eq!(reg.billable_classes, vec![("bytes", "bytes")]);
+            assert_eq!(reg.record_kinds, vec!["last"]);
+            assert!(reg.scope_kinds.is_empty() && reg.trust_keys.is_empty());
+            assert_eq!(reg.signing, None);
+            assert_eq!((reg.validate)(b"{}"), Ok(()));
+            assert!(
+                (reg.validate)(plug::BAD_SETTINGS).is_err(),
+                "the door refuses its bad settings"
+            );
+            format!("{reg:?}")
+        };
+        let linked = check(linked());
+        let Some(dropped) = dropped() else {
+            return;
+        };
+        assert_eq!(linked, check(dropped), "the same facts, whichever door");
+    }
 }

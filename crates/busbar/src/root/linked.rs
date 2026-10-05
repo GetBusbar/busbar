@@ -460,11 +460,47 @@ pub fn plane_rows(
         .map(hot_plane_row)
         .collect::<Result<Vec<PlaneDecl>, String>>()?
         .leak();
-    let rows: Vec<&'static PlaneDecl> = linked.planes.iter().chain(hot_rows).collect();
+    let mut rows: Vec<&'static PlaneDecl> = linked.planes.iter().chain(hot_rows).collect();
+    rows.extend(door_rows()?);
     let declared: Vec<&PlaneDeclaration> = rows.iter().map(|d| &d.declaration).collect();
     busbar_contract::plane::check_metric_families(&declared, PLANE_CARRIED_SERIES)?;
     busbar_contract::plane::check_served_op_classes(&declared)?;
     Ok(rows)
+}
+
+/// THE DOOR PLANES' REGISTRY ROWS (DECL-FOLD; ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL; spec #49
+/// and R2-C): every plane [`dropped_planes_of`] discovered through a door, linked or dropped, bound
+/// once through the loader's one load on a dispatcher of its own (the process's is built after the
+/// configuration is read, and the rows must be in before the config prepass), and its Statement
+/// folded into a registry row by the kernel (`busbar_kernel::plane::door::fold`). The row's every
+/// word is the door's; a plane a linked row already registers keeps that row (the boot fold keeps
+/// the first row of a key). A door that will not bind refuses the boot, as its load would.
+fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
+    let doors = crate::root::boot::DOOR_CANDIDATES
+        .get()
+        .map_or(&[][..], Vec::as_slice);
+    if doors.is_empty() {
+        return Ok(Vec::new());
+    }
+    let probe: &'static crate::root::loader::dispatch::Dispatcher =
+        Box::leak(Box::new(crate::root::loader::dispatch::Dispatcher::new(
+            crate::root::loader::dispatch::DispatchConfig::default(),
+        )));
+    crate::root::loader::boot::load_planes(
+        doors,
+        crate::root::boot::plugin_logs(),
+        Arc::new(crate::root::loader::dispatch::NoSink),
+        probe.adopter(),
+        u32::MAX,
+        None,
+    )?
+    .into_iter()
+    .map(|(_, plane)| {
+        busbar_kernel::plane::door::fold(crate::root::loader::dispatch::kinds::plane::registration(
+            Arc::new(plane),
+        ))
+    })
+    .collect()
 }
 
 /// THE FIRST-PARTY SERIES A PLANE MAY CARRY — the host-owned list a plane's `busbar_`-named metric
