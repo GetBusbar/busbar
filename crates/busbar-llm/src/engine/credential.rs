@@ -34,8 +34,13 @@ fn presentation(p: CredentialHeader) -> Value {
 /// The binding a DECLARED egress scheme is opened under: a static scheme on the `api-key` style
 /// with its whole presentation table as parameters, a per-request signature on the `sigv4` style
 /// with its service, the region its host names (else its default) and its content type. The
-/// dialect's static fields follow the plugin's.
-fn declared(decl: &'static ProtocolDecl, scheme: EgressScheme, host: &str) -> StyleBinding {
+/// dialect's static fields (`decl`'s) follow the plugin's.
+#[must_use]
+pub fn declared_binding(
+    decl: &'static ProtocolDecl,
+    scheme: EgressScheme,
+    host: &str,
+) -> StyleBinding {
     let (style, params) = match scheme {
         EgressScheme::Static {
             families,
@@ -81,6 +86,18 @@ fn declared(decl: &'static ProtocolDecl, scheme: EgressScheme, host: &str) -> St
         params,
         uses_key: true,
         statics: decl.static_headers,
+    }
+}
+
+/// THE `auth: api-key` OVERRIDE's binding: the credential verbatim in `api-key` whatever the
+/// dialect, and none of the dialect's static fields.
+#[must_use]
+pub fn api_key_override_binding() -> StyleBinding {
+    StyleBinding {
+        style: "api-key".to_string(),
+        params: json!({}),
+        uses_key: true,
+        statics: &[],
     }
 }
 
@@ -135,19 +152,12 @@ fn binding_for(protocol: &'static str, lane: &LaneInput, host: &str, api_key: &s
                 statics: &[],
             })
         }
-        // `auth: api-key` overrides the dialect: the credential verbatim in `api-key`, and none of
-        // the dialect's static fields.
-        AuthStyleInput::ApiKey => Binding::Style(StyleBinding {
-            style: "api-key".to_string(),
-            params: json!({}),
-            uses_key: true,
-            statics: &[],
-        }),
+        AuthStyleInput::ApiKey => Binding::Style(api_key_override_binding()),
         // No override, or `auth: bearer`: the dialect's own declared scheme.
         AuthStyleInput::Default | AuthStyleInput::Bearer => {
             match busbar_kernel::proto::decl_for(protocol) {
                 Some(decl) => match (decl.egress_scheme, decl.egress_auth_headers) {
-                    (Some(scheme), _) => Binding::Style(declared(decl, scheme, host)),
+                    (Some(scheme), _) => Binding::Style(declared_binding(decl, scheme, host)),
                     (None, Some(headers_for)) => Binding::Builder(Arc::new(DeclaredBuilder {
                         headers_for,
                         lane_constant: decl.egress_auth_lane_constant,

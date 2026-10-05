@@ -128,3 +128,7 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
 #[cfg(test)]
 #[path = "tests/dispatch.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/declared_credentials.rs"]
+mod declared_credentials_tests;

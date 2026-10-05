@@ -69,7 +69,7 @@ pub(crate) type CallerCredential = KernelCallerCredential;
 use busbar_kernel::store::{now, Permit};
 
 pub(crate) mod build_runtime;
-pub(crate) mod credential;
+pub mod credential;
 pub(crate) mod tables;
 
 pub(crate) mod egress;
