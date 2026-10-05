@@ -34,7 +34,7 @@ const CANONICAL: &str = "https://gateway.example.com/mcp";
 const SUBJECT: &str = "busbar-own-subject-token-for-the-exchange";
 const ISSUED: &str = "downscoped-access-token-issued-by-the-as";
 
-/// A `prompt: rw` REWRITE gate backed by the hermetic test cdylib. `raw_transform_reply` drives its
+/// A `prompt: rw` REWRITE gate backed by the kernel's hook double. `raw_transform_reply` drives its
 /// `transform` reply verbatim, so a test states the exact replacement `arguments` object the hook
 /// returns — the invoke-family apply seam then swaps it in for the caller's arguments.
 fn rewrite(raw_transform_reply: serde_json::Value) -> serde_json::Value {
@@ -69,20 +69,14 @@ fn screen(reject_if_contains: &str) -> serde_json::Value {
     def
 }
 
-/// The env that loads the test cdylib under the alias `test-hook`, declaring the `prompt: rw` /
-/// `user: ro` manifest intent the operator grant is met against. ABSENCE IS A HARD FAILURE, never a
-/// skip: with no gate to load every assertion below is vacuous. The panic names the fix.
+/// The env whose registry holds the `kind: hook` row `test-hook`, declaring the `prompt: rw` /
+/// `user: ro` manifest intent the operator grant is met against, answered by the kernel's hook
+/// double. It cannot be absent, so nothing here can skip.
 ///
 /// The acceptance criterion this battery answers, verbatim: "the rewrite half of the hook surface
 /// fires on a non-LLM protocol".
 fn hook_env() -> HookEnvHandle {
-    engine()
-        .hook_env(&["test-hook"], HookNeed::Rw, HookNeed::Ro)
-    .expect(
-        "the busbar-hook-test-plugin cdylib is not built. This battery is the acceptance test for \
-         the rewrite half of the hook surface firing on the MCP plane (the criterion is quoted on \
-         `hook_env`) and it CANNOT be skipped. Build it: `cargo build -p busbar-hook-test-plugin`.",
-    )
+    engine().hook_env(&["test-hook"], HookNeed::Rw, HookNeed::Ro)
 }
 
 /// THE ACCEPTANCE TEST. `tools.hooks: [rewrite]` with a `prompt: rw` gate whose rewrite replaces the
@@ -293,7 +287,7 @@ fn the_rewrite_apply_site_never_falls_back_to_the_caller_s_original_arguments() 
 /// **WHAT A PANICKING `prompt: rw` HOOK ACTUALLY PRODUCES — and it is not a join failure.**
 ///
 /// This is the reachability leg for [`crate::mcp::method::tap_join_verdict`], and it is driven
-/// through the REAL cdylib rather than asserted from the source, because the whole disposition
+/// through the kernel's hook port rather than asserted from the source, because the whole disposition
 /// question at that join turns on what can arrive there. A missing check is not a vulnerability
 /// until the line is shown to execute.
 ///
