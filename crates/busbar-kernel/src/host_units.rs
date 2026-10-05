@@ -20,6 +20,9 @@ use busbar_contract::records::VirtualKey;
 pub struct UnitRecord {
     /// The unit's verified principal; `None` = the deployment is ungoverned.
     pub principal: Option<Arc<VirtualKey>>,
+    /// How deep the unit is nested: `0` for a unit a caller sent, one more than its parent's for a
+    /// unit `unit.nest` ran (the depth cap reads it).
+    pub depth: u32,
 }
 
 /// Every unit in flight, by unit key.

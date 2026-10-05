@@ -7,5 +7,5 @@ tcp -
 http -
 sse http
 ws http
-grpc http
+grpc -
 stdio -

@@ -18,13 +18,12 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
-use rustls_pki_types::pem::PemObject;
 
 use super::client::PoolConfig;
 use super::pool;
 use super::resolve::ResolveNames;
 use super::*;
-use crate::egress::fixtures::{ca_and_leaf, certs_from_pem};
+use crate::egress::fixtures::{ca_and_leaf, DoublePeer};
 
 // The scripted-dial machinery and connector builders are shared with the h1 battery.
 use super::pool_tests::{
@@ -275,9 +274,9 @@ async fn stale_h2_driver_exit_does_not_clear_newer_conn() {
 
 // ── The KnownProto transition rule ───────────────────────────────────────────────────────────────
 
-/// The evidence-learning/revoking fixture: TLS where the ALPN OFFER is switchable per
-/// connection era, h2 conns served by hyper's h2 server (with a GOAWAY trigger), h1 conns by
-/// hyper's h1 server. `stall_tls` freezes the handshake so a burst's dials can be counted while
+/// The evidence-learning/revoking fixture: the TLS test double's far end (`DoublePeer`) where the
+/// ALPN OFFER is switchable per connection era, h2 conns served by hyper's h2 server (with a GOAWAY
+/// trigger), h1 conns by hyper's h1 server. `stall_tls` freezes the handshake so a burst's dials can be counted while
 /// they exist.
 struct AlpnSwitchFixture {
     addr: SocketAddr,
@@ -291,22 +290,13 @@ struct AlpnSwitchFixture {
 }
 
 fn spawn_alpn_switch(material: &crate::egress::fixtures::CaLeaf) -> AlpnSwitchFixture {
-    let chain = certs_from_pem(&material.leaf_pem);
-    let key = rustls_pki_types::PrivateKeyDer::from_pem_slice(material.leaf_key_pem.as_bytes())
-        .expect("fixture key");
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mk = |alpn: Vec<Vec<u8>>| {
-        let mut config = rustls::ServerConfig::builder_with_provider(Arc::clone(&provider))
-            .with_safe_default_protocol_versions()
-            .expect("protocol versions")
-            .with_no_client_auth()
-            .with_single_cert(chain.clone(), key.clone_key())
-            .expect("fixture cert");
-        config.alpn_protocols = alpn;
-        Arc::new(config)
+    let mk = |alpn: &[&[u8]]| DoublePeer {
+        leaf: Some(material.leaf_der.clone()),
+        alpn: alpn.iter().map(|p| p.to_vec()).collect(),
+        ..DoublePeer::default()
     };
-    let cfg_h2 = mk(vec![b"h2".to_vec(), b"http/1.1".to_vec()]);
-    let cfg_h1 = mk(vec![b"http/1.1".to_vec()]);
+    let cfg_h2 = mk(&[b"h2", b"http/1.1"]);
+    let cfg_h1 = mk(&[b"http/1.1"]);
     let offer_h2 = Arc::new(AtomicBool::new(true));
     let stall_tls = Arc::new(AtomicBool::new(false));
     let goaway = Arc::new(tokio::sync::Notify::new());
@@ -335,9 +325,9 @@ fn spawn_alpn_switch(material: &crate::egress::fixtures::CaLeaf) -> AlpnSwitchFi
                 };
                 accepted2.fetch_add(1, Ordering::SeqCst);
                 let config = if offer2.load(Ordering::SeqCst) {
-                    Arc::clone(&cfg_h2)
+                    cfg_h2.clone()
                 } else {
-                    Arc::clone(&cfg_h1)
+                    cfg_h1.clone()
                 };
                 let stall = Arc::clone(&stall2);
                 let goaway = Arc::clone(&goaway2);
@@ -346,11 +336,12 @@ fn spawn_alpn_switch(material: &crate::egress::fixtures::CaLeaf) -> AlpnSwitchFi
                     while stall.load(Ordering::SeqCst) {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
-                    let acceptor = tokio_rustls::TlsAcceptor::from(config);
-                    let Ok(tls) = acceptor.accept(stream).await else {
+                    let mut tls = stream;
+                    let hello = config.accept_tokio(&mut tls).await;
+                    if !hello.ok {
                         return;
-                    };
-                    let negotiated_h2 = tls.get_ref().1.alpn_protocol() == Some(b"h2");
+                    }
+                    let negotiated_h2 = hello.alpn.as_deref() == Some(b"h2");
                     let svc = hyper::service::service_fn(
                         |_req: http::Request<hyper::body::Incoming>| async {
                             Ok::<_, std::convert::Infallible>(http::Response::new(Full::new(
@@ -390,7 +381,7 @@ fn spawn_alpn_switch(material: &crate::egress::fixtures::CaLeaf) -> AlpnSwitchFi
     }
 }
 
-/// The transition rule, end to end over real ALPN: an authority LEARNS h2 from one negotiation, a GOAWAY clears
+/// The transition rule, end to end over the agreed ALPN: an authority LEARNS h2 from one negotiation, a GOAWAY clears
 /// the entry AND the learned proto (evidence dies with the entry), and the next cold burst
 /// against the now-h1 fleet runs the FULL h1 dial bound in parallel — not the h2 singleflight of
 /// 1 — then completes on h1. (The unicast half of the reverted regime is pinned by
@@ -400,7 +391,6 @@ async fn goaway_then_h1_redial_reverts_to_unknown_bound_and_unicast() {
     let material = ca_and_leaf(&["alpn.test"]);
     let fixture = spawn_alpn_switch(&material);
     let connector = tls_connector_all_versions(
-        &material.ca_pem,
         EgressResolver::Pinned {
             host: Arc::from("alpn.test"),
             addr: fixture.addr.ip(),
@@ -481,7 +471,6 @@ async fn the_second_unknown_era_h2_dial_is_closed_never_parked() {
     let material = ca_and_leaf(&["straggle.test"]);
     let fixture = spawn_alpn_switch(&material); // offers h2 to every connection
     let connector = tls_connector_all_versions(
-        &material.ca_pem,
         EgressResolver::Pinned {
             host: Arc::from("straggle.test"),
             addr: fixture.addr.ip(),

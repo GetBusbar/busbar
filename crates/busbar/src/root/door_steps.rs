@@ -32,7 +32,7 @@ use busbar_contract::caps::{
 use busbar_contract::records::VirtualKey;
 use busbar_contract::section::{
     MODEL_PROTOCOL_KEYS, MODEL_PROVIDER_KEY, POOL_MEMBERS_KEY, RESERVED_MODELS_KEY,
-    RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS,
+    RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS, RESERVED_WORK_KEY,
 };
 use busbar_contract::MeterClassId;
 use busbar_kernel::config::groups::ExhaustionMode;
@@ -80,7 +80,11 @@ impl DoorPools {
             None => map
                 .keys()
                 .filter_map(key)
-                .filter(|k| k != RESERVED_POOLS_KEY && !RESERVED_SECTION_KEYS.contains(&k.as_str()))
+                .filter(|k| {
+                    k != RESERVED_POOLS_KEY
+                        && k != RESERVED_WORK_KEY
+                        && !RESERVED_SECTION_KEYS.contains(&k.as_str())
+                })
                 .collect(),
         };
         let pools = map
@@ -357,6 +361,10 @@ pub struct DoorSteps<'s> {
     /// The host's unit records: a host service the plane calls inside the unit's crossings
     /// (`entitlement.check`) answers for the principal recorded here.
     records: Option<Arc<busbar_kernel::host_units::UnitRecords>>,
+    /// How deep the unit is nested.
+    depth: u32,
+    /// A nested unit's parent's hold cell: its door accrues against the parent's admission.
+    parent: Option<&'s busbar_contract::caps::HoldCell>,
     unit: Mutex<DoorUnit>,
 }
 
@@ -382,6 +390,8 @@ pub struct DoorCaller {
     pub arrived: u64,
     /// The host's unit records the unit's principal is written on while it runs.
     pub records: Option<Arc<busbar_kernel::host_units::UnitRecords>>,
+    /// How deep the unit is nested (`0` for a unit a caller sent), written on its record.
+    pub depth: u32,
 }
 
 impl<'s> DoorSteps<'s> {
@@ -408,8 +418,20 @@ impl<'s> DoorSteps<'s> {
             open: caller.open,
             arrived: caller.arrived,
             records: caller.records,
+            depth: caller.depth,
+            parent: None,
             unit: Mutex::new(DoorUnit::default()),
         }
+    }
+
+    /// The same steps for a NESTED unit (`unit.nest`, THE DESIGN §11.12 unit row): a child of the
+    /// unit whose hold cell is `parent`, so its door accrues against the parent's admission (an
+    /// accrual of nothing at admission; its reported units are its own line, at its end, under the
+    /// same principal) rather than opening a reservation of its own.
+    #[must_use]
+    pub fn under(mut self, parent: &'s busbar_contract::caps::HoldCell) -> Self {
+        self.parent = Some(parent);
+        self
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, DoorUnit> {
@@ -569,6 +591,7 @@ impl Units for DoorSteps<'_> {
                         ctx.key.get(),
                         busbar_kernel::host_units::UnitRecord {
                             principal: self.key.clone(),
+                            depth: self.depth,
                         },
                     );
                     self.lock().recorded = Some(ctx.key.get());
@@ -647,7 +670,18 @@ impl Units for DoorSteps<'_> {
             return SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination));
         }
         // The door reserves nothing: the unit's hold opens at zero and the money steps ledger what
-        // the plane reported, at its end.
+        // the plane reported, at its end. A NESTED unit accrues against its parent's admission
+        // instead (zero at admission, ARCHITECT H3): one admission chain, its posting into the
+        // parent's hold. A parent that already exited, or any refusal of the accrual, leaves the
+        // child its own zero hold: it posts on its own.
+        if let Some(cell) = self.parent {
+            if let Ok(accrual) = cell.accrue_child(principal, 0, admit) {
+                return SeatVerdict::proceed(
+                    token,
+                    busbar_contract::caps::Admission::Accrual(accrual),
+                );
+            }
+        }
         SeatVerdict::proceed(
             token,
             busbar_kernel::door::admitted_at_zero(admit, principal.clone()),
@@ -874,36 +908,38 @@ pub struct ProviderRoute {
     pub credential: busbar_contract::secret_ref::SecretRef,
     /// `auth:`, the style it overrides its plane's dialect default with.
     pub style: Option<String>,
-    /// The style's parameters, as the config typed them (`token_url`, `scope`, `subject`, where
-    /// stated). Carried TYPED, never as an opaque `serde_json::Value` settings bag, so no engine
-    /// type holds a raw settings bag (settings-leak gate; Law 11, secret-hygiene). They are
-    /// assembled into the one JSON object the auth plugin opens the binding with only at the
-    /// `open_outbound` boundary ([`ProviderRoute::style_params`]); this type is never serialized
-    /// and never reaches an admin read.
+    /// The style's parameters (`token_url`, `scope`, `subject`, where stated).
+    pub params: StyleParams,
+}
+
+/// THE PARAMETERS A PROVIDER'S `auth:` STYLE IS OPENED WITH, typed: the three keys a provider states
+/// (`token_url`, `scope`, `subject`), each present only where the operator wrote it. The JSON object
+/// the auth plugin's `open_outbound` reads is built from them at the call, never carried as a bag.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StyleParams {
+    /// `token_url`, where stated.
     pub token_url: Option<String>,
-    /// See [`ProviderRoute::token_url`].
+    /// `scope`, where stated.
     pub scope: Option<String>,
-    /// See [`ProviderRoute::token_url`].
+    /// `subject`, where stated.
     pub subject: Option<String>,
 }
 
-impl ProviderRoute {
-    /// The style's parameters as the ONE JSON object `open_outbound` opens the binding with: the
-    /// stated `token_url`/`scope`/`subject`, each omitted when unset, in that order — byte-identical
-    /// to the bag the config's typed fields spell. Built at the ABI boundary, never a stored field.
+impl StyleParams {
+    /// The one JSON object `open_outbound` reads: the stated keys, in this order, and no others.
     #[must_use]
-    pub fn style_params(&self) -> serde_json::Value {
-        let mut bag = serde_json::Map::new();
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut object = serde_json::Map::new();
         for (key, value) in [
             ("token_url", &self.token_url),
             ("scope", &self.scope),
             ("subject", &self.subject),
         ] {
             if let Some(v) = value {
-                bag.insert(key.to_string(), serde_json::Value::String(v.clone()));
+                object.insert(key.to_string(), serde_json::Value::String(v.clone()));
             }
         }
-        serde_json::Value::Object(bag)
+        serde_json::Value::Object(object)
     }
 }
 
@@ -934,9 +970,11 @@ pub fn provider_routes(
                     protocol: p.protocol.clone(),
                     credential: p.api_key.clone(),
                     style: p.auth.map(|a| style_word(a).to_string()),
-                    token_url: p.token_url.clone(),
-                    scope: p.scope.clone(),
-                    subject: p.subject.clone(),
+                    params: StyleParams {
+                        token_url: p.token_url.clone(),
+                        scope: p.scope.clone(),
+                        subject: p.subject.clone(),
+                    },
                 },
             )
         })
@@ -1069,9 +1107,9 @@ impl OutboundAuths {
         style: &str,
         settings: &serde_json::Value,
     ) -> Result<Option<Serving>, String> {
-        use crate::root::loader::dispatch::auth_outbound::{serves_style, OutboundInstance};
+        use crate::root::loader::dispatch::auth_outbound::{outbound_style, OutboundInstance};
         for (name, plugin) in self.rows() {
-            let Some(decl) = serves_style(&plugin, style) else {
+            let Some(decl) = outbound_style(&plugin, style) else {
                 continue;
             };
             let per_binding = plugin.targets_from_settings();
@@ -1249,7 +1287,7 @@ pub fn member_routes(
                 .resolve(&r.provider.credential)
                 .map_err(|e| format!("provider '{}' credential: {e}", r.name))?
         };
-        let settings = r.provider.style_params();
+        let settings = r.provider.params.to_json();
         let (auth, decl) = reach.auths.serving(&r.style, &settings)?.ok_or_else(|| {
             format!(
                 "member '{}': no linked or dropped-in auth plugin serves the style '{}'",

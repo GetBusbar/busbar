@@ -635,9 +635,12 @@ pub fn door_planes() -> &'static [(String, DoorPlane)] {
 /// boot seal folds them beside the linked wires (`crate::root::registry::compose`) and a wire the
 /// data door serves through lives as long as the door. Each image is opened on the lane it speaks: a
 /// memory-ABI door through the one dispatcher, served over the host's sockets
-/// (`crate::root::doors`); a HOT decl through its adapter. A trusted transport that will not LOAD
-/// refuses the boot, as a linked plane's would.
-pub fn dropped_transports() -> crate::root::registry::Dropped {
+/// (`crate::root::doors`, opened with the deployment's `settings`; the boot's call is the one that
+/// loads them); a HOT decl through its adapter. A trusted transport that will not LOAD refuses the
+/// boot, as a linked plane's would.
+pub fn dropped_transports(
+    settings: &busbar_contract::transport::TransportSettings,
+) -> crate::root::registry::Dropped {
     type Held = (
         Vec<crate::root::loader::DynTransport>,
         Vec<crate::root::registry::DroppedDoor>,
@@ -660,7 +663,7 @@ pub fn dropped_transports() -> crate::root::registry::Dropped {
                             .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
                         let key = facts.claims.first().copied().unwrap_or_default();
                         let composes_over = facts.composes_over;
-                        let wire = crate::root::doors::host_wire(plugin)?;
+                        let wire = crate::root::doors::host_wire(plugin, settings)?;
                         Ok(crate::root::registry::DroppedDoor {
                             key,
                             composes_over,

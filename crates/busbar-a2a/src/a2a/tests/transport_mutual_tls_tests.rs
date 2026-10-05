@@ -8,127 +8,49 @@
 //! configured for mutual TLS refused every card fetch at the handshake. A mechanism that cannot
 //! complete a connection is a claim, not a control.
 //!
-//! Every test here runs a REAL rustls handshake against a server built with a
-//! [`rustls::server::WebPkiClientVerifier`] — the same verifier the engine's TLS module installs on busbar's own
-//! inbound listener when an operator sets `tls.client_ca`. That is deliberate: the peer in these
-//! tests demands exactly what busbar demands, so "busbar can talk to an mTLS peer" is proven against
-//! the same rule busbar enforces rather than against a lenient fixture.
+//! Every test here drives the production transport over a real socket to a far end that DEMANDS a
+//! client certificate — and, where a test needs it, accepts only one particular certificate — behind
+//! the kernel's TLS test double (`transport_tests::tls_double`). TLS lives only in the connector,
+//! which this crate does not name, so what is proven here is this plane's side: which identity each
+//! registration hands the engine, and that a peer's refusal comes back as no card. The same demands
+//! made by a REAL `WebPkiClientVerifier` peer — refusing a hop that presents no certificate, refusing
+//! a certificate from a CA it does not trust, completing against exactly the carried identity's leaf
+//! — are proven where TLS lives, the connector's `tls/engine_tests.rs`
+//! (`an_mtls_peer_refuses_a_hop_that_presents_no_client_certificate_for_that_reason`,
+//! `an_mtls_peer_accepts_its_own_clients_certificate_and_refuses_a_foreign_one_as_invalid`,
+//! `client_cert_fixture_accepts_only_the_carried_identity`).
 //!
-//! The server fixtures, the CA/leaf generator and the HTTP responder are `transport_tests`', reused
-//! rather than copied. A second TLS harness would be a second thing that could stop matching
-//! production — which is the note that file already makes about `transport_pin_tests`.
+//! The far end, the CA/leaf generator and the HTTP responder are `transport_tests`', reused rather
+//! than copied.
 
 use crate::testkit::engine_boot::engine;
-use std::io::Write;
-use std::net::{Ipv4Addr, SocketAddr, TcpListener};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::net::SocketAddr;
 
-use super::transport_tests::{ca_and_leaf, http_response, read_request, url, HOST, LOOPBACK};
+use super::transport_tests::{
+    ca_and_leaf, der, spawn_tls, tls_double, url, wait_for_hellos, DoublePeer, ObservedHellos,
+    HOST, LOOPBACK,
+};
 use super::*;
 use crate::a2a::fetch::{FetchPolicy, Transport};
 
-/// What each connection to the mTLS server did about its client certificate: `Ok(n)` when the
-/// handshake completed and the peer presented `n` certificates, `Err(reason)` — the SERVER's own
-/// rustls error — when it failed. Recorded so a refusal can be read as "the peer never
-/// authenticated, and here is what the peer objected to" rather than inferred from a client-side
-/// error string alone.
-///
-/// The reason is kept, not just the failure, because two refusals that both look like "handshake
-/// failed" are different defects: "peer sent no certificates" means the client offered nothing, and
-/// an "invalid peer certificate" means it offered SOMETHING the peer would not take — which is the
-/// difference between a registration presenting no certificate and one borrowing another
-/// registration's. Reading it off the server keeps it portable: the client-side text for the same
-/// refusal is the OS socket's on Windows (`os error 10053`, the reset that discards the peer's
-/// alert), not TLS's.
-type ClientCerts = Arc<Mutex<Vec<Result<usize, String>>>>;
-
-/// A real rustls server that REQUIRES a client certificate chaining to `client_ca_pem`.
-///
-/// Built with `WebPkiClientVerifier`, which is the same construction the engine's inbound TLS server config
-/// uses for busbar's own inbound mTLS. A client that presents nothing is refused during the
-/// handshake and never reaches the HTTP layer at all.
+/// A far end presenting `server_leaf_pem`'s certificate that REQUIRES a client certificate and
+/// accepts only `client_leaf_pem`'s: a client that presents nothing, or presents another
+/// certificate, is refused during the handshake and never reaches the HTTP layer at all. Each
+/// connection's hello is recorded — the identity it carried, and whether the peer completed.
 pub(super) fn spawn_mutual_tls(
-    server_cert_pem: &str,
-    server_key_pem: &str,
-    client_ca_pem: &str,
+    server_leaf_pem: &str,
+    client_leaf_pem: &str,
     body: String,
-) -> (SocketAddr, ClientCerts) {
-    engine().install_crypto_provider();
-    use rustls_pki_types::pem::PemObject;
-    let certs: Vec<rustls_pki_types::CertificateDer<'static>> =
-        rustls_pki_types::CertificateDer::pem_slice_iter(server_cert_pem.as_bytes())
-            .collect::<Result<Vec<_>, _>>()
-            .expect("server cert PEM");
-    let key = rustls_pki_types::PrivateKeyDer::from_pem_slice(server_key_pem.as_bytes())
-        .expect("server key PEM");
-    let mut roots = rustls::RootCertStore::empty();
-    for ca in rustls_pki_types::CertificateDer::pem_slice_iter(client_ca_pem.as_bytes()) {
-        roots
-            .add(ca.expect("client CA PEM"))
-            .expect("add client CA");
-    }
-    let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-        .build()
-        .expect("client verifier");
-    let config = Arc::new(
-        rustls::ServerConfig::builder()
-            .with_client_cert_verifier(verifier)
-            .with_single_cert(certs, key)
-            .expect("server config"),
-    );
-
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind loopback");
-    let addr = listener.local_addr().expect("local addr");
-    let seen: ClientCerts = Arc::new(Mutex::new(Vec::new()));
-    let recorder = Arc::clone(&seen);
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { break };
-            let Ok(mut conn) = rustls::ServerConnection::new(Arc::clone(&config)) else {
-                continue;
-            };
-            if let Err(e) = conn.complete_io(&mut stream) {
-                // The server's OWN reason for refusing, as rustls words it.
-                let reason = conn
-                    .process_new_packets()
-                    .err()
-                    .map_or_else(|| e.to_string(), |te| te.to_string());
-                recorder.lock().expect("record").push(Err(reason));
-                continue;
-            }
-            recorder
-                .lock()
-                .expect("record")
-                .push(Ok(conn.peer_certificates().map_or(0, <[_]>::len)));
-            let mut tls = rustls::Stream::new(&mut conn, &mut stream);
-            let mut reader = std::io::BufReader::new(&mut tls);
-            let _ = read_request(&mut reader);
-            let mut tls = rustls::Stream::new(&mut conn, &mut stream);
-            let _ = tls.write_all(&http_response(200, "OK", &[], &body));
-            let _ = tls.flush();
-        }
-    });
-    (addr, seen)
-}
-
-/// The server thread records after its own handshake attempt returns; poll rather than sleep a fixed
-/// amount, so the assertion is neither flaky nor slow. Mirrors `transport_tests::wait_for_sni`.
-pub(super) fn wait_for_conns(seen: &ClientCerts) -> Vec<Result<usize, String>> {
-    wait_for_conns_len(seen, 1)
-}
-
-/// [`wait_for_conns`] for a peer that takes SEVERAL connections in a test: wait until `n` handshake
-/// attempts have been recorded, so the assertion reads a settled sequence rather than a prefix.
-fn wait_for_conns_len(seen: &ClientCerts, n: usize) -> Vec<Result<usize, String>> {
-    for _ in 0..200 {
-        let got = seen.lock().expect("conns").clone();
-        if got.len() >= n {
-            return got;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    seen.lock().expect("conns").clone()
+) -> (SocketAddr, ObservedHellos) {
+    spawn_tls(
+        DoublePeer {
+            leaf: Some(der(server_leaf_pem)),
+            require_identity: true,
+            accept_only: vec![der(client_leaf_pem)],
+            ..DoublePeer::default()
+        },
+        body,
+    )
 }
 
 const CARD: &str = r#"{"protocolVersion":"0.3.0","name":"planner"}"#;
@@ -169,6 +91,8 @@ pub(super) fn identity_from_config(
     let mut cfg = crate::a2a::config::AgentsCfg::default();
     cfg.agents.insert("planner".to_string(), def);
 
+    // The identity's PEM walk is the TLS wrap's, so the wrap is installed first.
+    tls_double();
     let identities = crate::a2a::transport::resolve_client_identities(
         &cfg,
         engine().builtin_secret_resolver().as_ref(),
@@ -191,9 +115,9 @@ pub(super) fn identity_from_config(
 /// by an mTLS peer, which is the honest outcome and not a silent downgrade to a one-way handshake.
 #[test]
 fn a_mutual_tls_peer_refuses_a_card_fetch_that_presents_no_client_certificate() {
-    let (server_ca, server_leaf, server_key) = ca_and_leaf(vec![HOST.to_string()]);
-    let (client_ca, _client_leaf, _client_key) = ca_and_leaf(vec!["busbar.example".to_string()]);
-    let (addr, seen) = spawn_mutual_tls(&server_leaf, &server_key, &client_ca, CARD.to_string());
+    let (server_ca, server_leaf, _server_key) = ca_and_leaf(vec![HOST.to_string()]);
+    let (_client_ca, client_leaf, _client_key) = ca_and_leaf(vec!["busbar.example".to_string()]);
+    let (addr, seen) = spawn_mutual_tls(&server_leaf, &client_leaf, CARD.to_string());
 
     let policy = FetchPolicy::default();
     let err = ReqwestTransport::new(&policy)
@@ -207,22 +131,23 @@ fn a_mutual_tls_peer_refuses_a_card_fetch_that_presents_no_client_certificate() 
                      that has none",
         );
 
-    let seen = wait_for_conns(&seen);
-    let [Err(reason)] = seen.as_slice() else {
-        panic!("the refusal must be the PEER's, at the handshake: {seen:?} (client saw: {err})");
+    let seen = wait_for_hellos(&seen, 1);
+    let [hello] = seen.as_slice() else {
+        panic!("one hop, one handshake: {seen:?} (client saw: {err})");
     };
     assert!(
-        reason.contains("no certificates"),
-        "and the peer's objection must be that nothing was presented: {reason}"
+        !hello.ok && hello.client_leaf.is_none(),
+        "the refusal must be the PEER's, at the handshake, and what it refused is a hop that \
+         presented nothing: {hello:?} (client saw: {err})"
     );
 }
 
 /// THE FIX: the same peer, the same socket, the same CA — and a client identity to present.
 #[test]
 fn a_mutual_tls_peer_accepts_the_card_fetch_when_the_registration_names_a_client_identity() {
-    let (server_ca, server_leaf, server_key) = ca_and_leaf(vec![HOST.to_string()]);
-    let (client_ca, client_leaf, client_key) = ca_and_leaf(vec!["busbar.example".to_string()]);
-    let (addr, seen) = spawn_mutual_tls(&server_leaf, &server_key, &client_ca, CARD.to_string());
+    let (server_ca, server_leaf, _server_key) = ca_and_leaf(vec![HOST.to_string()]);
+    let (_client_ca, client_leaf, client_key) = ca_and_leaf(vec!["busbar.example".to_string()]);
+    let (addr, seen) = spawn_mutual_tls(&server_leaf, &client_leaf, CARD.to_string());
 
     // The identity is built the way the boot path builds it: the operator's two `SecretRef`s
     // resolved to PEM and handed to the TLS stack as one buffer. Here the references are `file:`
@@ -244,12 +169,7 @@ fn a_mutual_tls_peer_accepts_the_card_fetch_when_the_registration_names_a_client
     assert!(String::from_utf8(resp.body)
         .expect("utf-8")
         .contains("planner"));
-    assert_eq!(
-        wait_for_conns(&seen),
-        vec![Ok(1)],
-        "the peer must have completed the handshake against busbar's own certificate"
-    );
-    let _ = (client_leaf, client_key);
+    assert_completed_with(&seen, &client_leaf);
 }
 
 /// THE VERB LAYER REACHES AN mTLS VENDOR TOO, and with THAT registration's certificate.
@@ -268,9 +188,9 @@ fn the_verb_layers_probe_fetches_a_mutual_tls_vendors_card_with_that_registratio
     // `.test` hostname would fail at the lookup and prove nothing about the transport. A literal is
     // judged by the same guard and skips the resolver entirely, which leaves the client certificate
     // as the only thing this test varies.
-    let (server_ca, server_leaf, server_key) = ca_and_leaf(vec!["127.0.0.1".to_string()]);
-    let (client_ca, client_leaf, client_key) = ca_and_leaf(vec!["busbar.example".to_string()]);
-    let (addr, seen) = spawn_mutual_tls(&server_leaf, &server_key, &client_ca, CARD.to_string());
+    let (server_ca, server_leaf, _server_key) = ca_and_leaf(vec!["127.0.0.1".to_string()]);
+    let (_client_ca, client_leaf, client_key) = ca_and_leaf(vec!["busbar.example".to_string()]);
+    let (addr, seen) = spawn_mutual_tls(&server_leaf, &client_leaf, CARD.to_string());
 
     let mut identities = crate::a2a::transport::ClientIdentities::new();
     identities.insert(
@@ -312,10 +232,18 @@ fn the_verb_layers_probe_fetches_a_mutual_tls_vendors_card_with_that_registratio
         "and the seam carries the mutual half onward, so the verb layer verifies the same card the \
          sweep does"
     );
-    assert_eq!(
-        wait_for_conns(&seen),
-        vec![Ok(1)],
-        "the peer completed the handshake against exactly one certificate of busbar's"
+    assert_completed_with(&seen, &client_leaf);
+}
+
+/// The far end completed exactly one handshake, against exactly `client_leaf_pem`'s certificate.
+fn assert_completed_with(seen: &ObservedHellos, client_leaf_pem: &str) {
+    let conns = wait_for_hellos(seen, 1);
+    assert!(
+        conns.len() == 1
+            && conns[0].ok
+            && conns[0].client_leaf.as_deref() == Some(der(client_leaf_pem).as_slice()),
+        "the peer must have completed the handshake against exactly busbar's own certificate for \
+         this registration: {conns:?}"
     );
 }
 
@@ -328,19 +256,22 @@ fn the_verb_layers_probe_fetches_a_mutual_tls_vendors_card_with_that_registratio
 /// other vendor as well. Here the bundle is the one the re-verification job builds, and each hop is made
 /// with the transport `for_agent` hands out.
 ///
-/// The two peers demand certificates from DIFFERENT CAs and are otherwise identical — same server
-/// certificate, same trusted root on the client, same loopback. So the only thing that can decide
-/// whether a hop succeeds is WHICH CLIENT CERTIFICATE IT PRESENTED.
+/// The two peers each accept only their own registration's certificate and are otherwise identical
+/// — same server certificate, same trusted root on the client, same loopback. So the only thing
+/// that can decide whether a hop succeeds is WHICH CLIENT CERTIFICATE IT PRESENTED, and each peer
+/// records which one that was. (A real peer refusing a certificate from a CA it does not trust, as
+/// an invalid certificate, is the connector's
+/// `an_mtls_peer_accepts_its_own_clients_certificate_and_refuses_a_foreign_one_as_invalid`.)
 #[test]
 fn each_registration_presents_its_own_certificate_and_not_another_registrations() {
-    let (server_ca, server_leaf, server_key) = ca_and_leaf(vec![HOST.to_string()]);
-    let (planner_ca, planner_leaf, planner_key) = ca_and_leaf(vec!["busbar.example".to_string()]);
-    let (payments_ca, payments_leaf, payments_key) =
+    let (server_ca, server_leaf, _server_key) = ca_and_leaf(vec![HOST.to_string()]);
+    let (_planner_ca, planner_leaf, planner_key) = ca_and_leaf(vec!["busbar.example".to_string()]);
+    let (_payments_ca, payments_leaf, payments_key) =
         ca_and_leaf(vec!["busbar.example".to_string()]);
     let (planner_peer, planner_seen) =
-        spawn_mutual_tls(&server_leaf, &server_key, &planner_ca, CARD.to_string());
+        spawn_mutual_tls(&server_leaf, &planner_leaf, CARD.to_string());
     let (payments_peer, payments_seen) =
-        spawn_mutual_tls(&server_leaf, &server_key, &payments_ca, CARD.to_string());
+        spawn_mutual_tls(&server_leaf, &payments_leaf, CARD.to_string());
     let planner_url = url("https", planner_peer.port(), "/.well-known/agent-card.json");
     let payments_url = url(
         "https",
@@ -388,46 +319,40 @@ fn each_registration_presents_its_own_certificate_and_not_another_registrations(
             "no identity means no certificate to present, and a mutual-TLS peer refuses that",
         );
 
-    // THE REFUSALS, READ AT THE PEER RATHER THAN OFF A CLIENT-SIDE ERROR STRING — which is what
-    // `ClientCerts` exists for, and what the first test in this file already does.
-    //
-    // The three cross hops used to be checked by matching "alert"/"certificate"/"CertificateRequired"
-    // in the client's error. That text is the OS socket's as often as it is TLS's: on Windows the
-    // peer's fatal alert is discarded by the reset that follows it, and the client reports
-    // "An established connection was aborted by the software in your host machine. (os error 10053)"
-    // for a refusal that did happen exactly as intended (CI, `windows build · test`). The peer's own
-    // record is both portable and a STRONGER claim, because it carries the peer's own reason: a
-    // foreign certificate is refused as an invalid one, and the registration that named no identity
-    // is refused for presenting NOTHING — which is what rules out its having borrowed a certificate
-    // from a registration that had one. (Presenting planner's own cert to planner's peer would have
-    // succeeded outright; presenting payments' would have been refused too, but as an invalid
-    // certificate, not as an absent one. Only the reason separates those.)
-    let planner_conns = wait_for_conns_len(&planner_seen, 3);
-    let [Ok(1), Err(foreign), Err(none_at_all)] = planner_conns.as_slice() else {
-        panic!(
-            "planner's peer: its own registration authenticates and the other two do not: \
-             {planner_conns:?}"
-        );
-    };
-    assert!(
-        foreign.contains("invalid peer certificate"),
-        "payments' certificate reaches planner's peer and is rejected as a certificate: {foreign}"
-    );
-    assert!(
-        none_at_all.contains("no certificates"),
-        "the registration that named no identity presented NOTHING — it did not borrow another \
-         registration's certificate: {none_at_all}"
+    // THE REFUSALS, READ AT THE PEER RATHER THAN OFF A CLIENT-SIDE ERROR STRING: each peer records
+    // WHICH certificate every hop carried. Planner's own registration completes; payments' hop
+    // carried payments' certificate (and was refused); the registration that named no identity
+    // carried NOTHING — which is what rules out its having borrowed a certificate from a
+    // registration that had one.
+    let planner = der(&planner_leaf);
+    let payments = der(&payments_leaf);
+    let planner_conns = wait_for_hellos(&planner_seen, 3);
+    let carried: Vec<(bool, Option<&[u8]>)> = planner_conns
+        .iter()
+        .map(|h| (h.ok, h.client_leaf.as_deref()))
+        .collect();
+    assert_eq!(
+        carried,
+        vec![
+            (true, Some(planner.as_slice())),
+            (false, Some(payments.as_slice())),
+            (false, None),
+        ],
+        "planner's peer: its own registration authenticates, payments' certificate is refused, and \
+         the registration that named no identity presented NOTHING"
     );
 
-    let payments_conns = wait_for_conns_len(&payments_seen, 2);
-    let [Ok(1), Err(foreign)] = payments_conns.as_slice() else {
-        panic!(
-            "payments' peer: its own registration authenticates and planner's does not: \
-             {payments_conns:?}"
-        );
-    };
-    assert!(
-        foreign.contains("invalid peer certificate"),
-        "planner's certificate reaches payments' peer and is rejected as a certificate: {foreign}"
+    let payments_conns = wait_for_hellos(&payments_seen, 2);
+    let carried: Vec<(bool, Option<&[u8]>)> = payments_conns
+        .iter()
+        .map(|h| (h.ok, h.client_leaf.as_deref()))
+        .collect();
+    assert_eq!(
+        carried,
+        vec![
+            (true, Some(payments.as_slice())),
+            (false, Some(planner.as_slice()))
+        ],
+        "payments' peer: its own registration authenticates and planner's certificate is refused"
     );
 }
