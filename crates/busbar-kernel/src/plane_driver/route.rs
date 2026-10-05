@@ -1062,7 +1062,9 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     if out.verdict == VERDICT_RETRY && !streamed {
                         return Step::Retry;
                     }
-                    if !streamed && (out.reply_status != 0 || !emitted.is_empty()) {
+                    let headed = run.lock().facts.headed;
+                    if !headed && !streamed && (out.reply_status != 0 || !emitted.is_empty()) {
+                        run.lock().facts.headed = true;
                         // THE ANSWER COMMITS: no failover after the first byte, so the member that
                         // answered is the unit's serving member, the one 1.5.5 ledgered and metered
                         // the response under (v1.5.5 `crates/busbar/src/proxy/usage.rs`

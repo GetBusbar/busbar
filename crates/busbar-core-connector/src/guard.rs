@@ -427,6 +427,25 @@ impl Guard {
         class: u32,
         strict: bool,
     ) -> Result<Option<IpAddr>, Refusal> {
+        self.judge_name_with(host, class, strict, false)
+    }
+
+    /// [`Guard::judge_name_as`] for a destination its need holds a PRIVATE REACH to (`reach`, the
+    /// registration's `abi::plane::TRUST_PRIVATE_REACH`, sealed per need and destination): the host
+    /// is admitted as an allowlist entry naming it would be, for this judgement alone — a private
+    /// address or a loopback name passes, a cloud-metadata name or address never does, and the
+    /// class is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// The [`Refusal`] the name (or the literal) decides.
+    pub fn judge_name_with(
+        &self,
+        host: &str,
+        class: u32,
+        strict: bool,
+        reach: bool,
+    ) -> Result<Option<IpAddr>, Refusal> {
         let name = norm(host);
         let refuse = |verdict| {
             Err(Refusal {
@@ -448,13 +467,13 @@ impl Guard {
             return refuse(DEST_OBFUSCATED);
         }
         if let Some(ip) = host_ip(&name) {
-            self.judge_address(host, ip, class, strict)?;
+            self.judge_address(host, ip, class, strict, reach)?;
             return Ok(Some(ip));
         }
         // The `localhost` family RFC 6761 reserves to loopback (the metadata names were decided
         // above).
         let loopback_name = name == "localhost" || name.ends_with(".localhost");
-        if loopback_name && self.refuses_private(class, strict) && !allowed {
+        if loopback_name && self.refuses_private(class, strict) && !allowed && !reach {
             return refuse(DEST_INTERNAL);
         }
         Ok(None)
@@ -482,6 +501,23 @@ impl Guard {
         class: u32,
         strict: bool,
     ) -> Result<(), Refusal> {
+        self.judge_answer_with(host, addrs, class, strict, false)
+    }
+
+    /// [`Guard::judge_answer_as`] for a destination its need holds a private reach to
+    /// ([`Guard::judge_name_with`]).
+    ///
+    /// # Errors
+    ///
+    /// No address answered ([`DEST_NO_ADDRESSES`]), or the first refused address's [`Refusal`].
+    pub fn judge_answer_with(
+        &self,
+        host: &str,
+        addrs: &[IpAddr],
+        class: u32,
+        strict: bool,
+        reach: bool,
+    ) -> Result<(), Refusal> {
         if addrs.is_empty() {
             return Err(Refusal {
                 verdict: DEST_NO_ADDRESSES,
@@ -491,7 +527,7 @@ impl Guard {
         }
         addrs
             .iter()
-            .try_for_each(|a| self.judge_address(host, *a, class, strict))
+            .try_for_each(|a| self.judge_address(host, *a, class, strict, reach))
     }
 
     /// One address `host` stands for, in the order the module header states.
@@ -501,6 +537,7 @@ impl Guard {
         addr: IpAddr,
         class: u32,
         strict: bool,
+        reach: bool,
     ) -> Result<(), Refusal> {
         let name = norm(host);
         let m = self.metadata();
@@ -509,10 +546,11 @@ impl Guard {
         let named = |l: &[Entry]| l.iter().any(|e| e.names(&name));
         // The 1.5.5 carve-outs, a provider dial's only (`Metadata::lifts`): a NAME there admits
         // its metadata answer, as 1.5.5's did; `allow_all_metadata` admits every metadata address
-        // and every extra blocked one.
+        // and every extra blocked one. A need's private reach to the destination admits as a HOST
+        // entry naming it would: never a metadata address.
         let admitted = listed(&self.allow)
             || m.lifts(&name, Some(addr), class)
-            || (!metadata && named(&self.allow));
+            || (!metadata && (named(&self.allow) || reach));
         if admitted {
             return Ok(());
         }

@@ -759,33 +759,59 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
 }
 
 impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
+    /// A request stage that stopped the unit: what the caller is answered (rendered by the plane),
+    /// and the reason the unit is refused under.
+    fn stopped(&self, stopped: hooks::Stopped) -> ReasonCode {
+        match stopped {
+            hooks::Stopped::Veto(veto) => {
+                // A HOOK VETO wears the hook's own clamped status and words, rendered by the
+                // plane in its dialect; nothing was charged.
+                let rendered = self.render_as(
+                    ReasonCode::HookVeto,
+                    Some((veto.status, None)),
+                    Some(veto.text.as_str()),
+                );
+                self.lock().rendered = Some(rendered);
+                self.response_tap(true, veto.status);
+                ReasonCode::HookVeto
+            }
+            hooks::Stopped::Unreadable => {
+                // 1.5.5 answered an unreadable request a rewrite hook had to see as a gate's
+                // refusal: the response tap reports it so.
+                let status = self.status_for(ReasonCode::DecodeFailed);
+                self.response_tap(true, status);
+                ReasonCode::DecodeFailed
+            }
+        }
+    }
+
+    /// THE SESSION OPEN'S HOOK STAGE (ARCHITECT Q-L5B-PROJECT 2026-10-03; K5): the request stage the
+    /// route leg runs, run once for a duplex session, after its admission and before its caller is
+    /// answered: the plane's `project` of the session's open, the operator's gates and rewrites over
+    /// it. `Err` when a hook stopped it; what the caller is answered is then the plane's rendering
+    /// ([`Self::take_rendered`]), and nothing was charged.
+    ///
+    /// # Errors
+    ///
+    /// The reason a hook stopped the session's open.
+    pub async fn open_hooks(&self, token: &Pass<Route>, ctx: &UnitCtx) -> Result<(), ReasonCode> {
+        match self.request_stage(token).await {
+            Ok(()) => Ok(()),
+            Err(stopped) => {
+                let reason = self.stopped(stopped);
+                self.driver.money.finished(ctx);
+                Err(reason)
+            }
+        }
+    }
+
     /// S3, the route step: the pump over the unit's own ticket, then the cancel the driver makes
     /// itself on a deadline, a cut or a reload.
     async fn route_async(&self, token: &Pass<Route>, ctx: &UnitCtx) -> StepAnswer<Route> {
         let d = self.driver;
         d.sweep();
         if let Err(stopped) = self.request_stage(token).await {
-            let reason = match stopped {
-                hooks::Stopped::Veto(veto) => {
-                    // A HOOK VETO wears the hook's own clamped status and words, rendered by the
-                    // plane in its dialect; nothing was charged.
-                    let rendered = self.render_as(
-                        ReasonCode::HookVeto,
-                        Some((veto.status, None)),
-                        Some(veto.text.as_str()),
-                    );
-                    self.lock().rendered = Some(rendered);
-                    self.response_tap(true, veto.status);
-                    ReasonCode::HookVeto
-                }
-                hooks::Stopped::Unreadable => {
-                    // 1.5.5 answered an unreadable request a rewrite hook had to see as a gate's
-                    // refusal: the response tap reports it so.
-                    let status = self.status_for(ReasonCode::DecodeFailed);
-                    self.response_tap(true, status);
-                    ReasonCode::DecodeFailed
-                }
-            };
+            let reason = self.stopped(stopped);
             d.money.finished(ctx);
             return StepAnswer::refuse(token, Refusal::new(reason));
         }

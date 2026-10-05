@@ -410,6 +410,7 @@ extern "C" {
 #define BB_PLANE_TRUST_PIN UINT32_C(1) /* [`TrustKey::role`]: the key holds the registration's pin object, `{mechanism, key?, */
 #define BB_PLANE_TRUST_REVERIFY_TTL UINT32_C(2) /* [`TrustKey::role`]: the key holds the longest a verification may be reused before the */
 #define BB_PLANE_TRUST_RECOVERY_BACKOFF UINT32_C(3) /* [`TrustKey::role`]: the key holds how long after a drift a clean answer is disbelieved, a */
+#define BB_PLANE_TRUST_PRIVATE_REACH UINT32_C(4) /* [`TrustKey::role`]: the key holds a boolean, the registration's PRIVATE REACH: `true` admits a */
 #define BB_PLANE_PIN_FINGERPRINT UINT32_C(1) /* [`TrustKey::flags`], on a [`TRUST_PIN`] key only: the pin object may also carry `fingerprint`. */
 #define BB_PLANE_MECHANISM_ROOT UINT32_C(1) /* [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key */
 #define BB_PLANE_MECHANISM_PEER_KEY UINT32_C(2) /* [`PinMechanism::flags`], on a root only: the mechanism's key material is the FAR END'S KEY, a pin */

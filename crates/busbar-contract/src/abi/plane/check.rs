@@ -33,7 +33,7 @@ use super::{
     PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT,
     ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION,
     SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TRUST_PIN,
-    TRUST_RECOVERY_BACKOFF, UNITS_ESTIMATED, VERDICT_HARD,
+    TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -1096,7 +1096,7 @@ pub fn check_trust_keys(keys: &[TrustKey]) -> Result<(), Fault> {
         code(
             u64::from(k.role),
             u64::from(TRUST_PIN),
-            u64::from(TRUST_RECOVERY_BACKOFF),
+            u64::from(TRUST_PRIVATE_REACH),
             "trust_key.role",
         )?;
         text(k.default, "trust_key.default")?;
@@ -1117,6 +1117,9 @@ pub fn check_trust_keys(keys: &[TrustKey]) -> Result<(), Fault> {
             bits(u64::from(k.flags), 0, "trust_key.duration_flags")?;
             if k.mechanisms_len != 0 {
                 return Err(fault(Rule::Contradiction, "trust_key.duration_mechanisms"));
+            }
+            if k.role == TRUST_PRIVATE_REACH && !k.default.ptr.is_null() {
+                return Err(fault(Rule::Contradiction, "trust_key.reach_default"));
             }
         }
         if keys[..i].iter().any(|p| p.role == k.role) {

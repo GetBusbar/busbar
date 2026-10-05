@@ -50,6 +50,7 @@ mod line;
 pub mod listen;
 pub mod pool;
 pub mod process;
+mod program;
 pub mod registry;
 pub mod socket;
 pub mod stream;
@@ -57,7 +58,7 @@ pub mod tls;
 pub mod udp;
 pub mod wire;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -113,6 +114,19 @@ pub trait DialJudge: Send + Sync {
         class: u32,
         done: Judged,
     ) -> Option<Result<SocketAddr, Verdict>>;
+
+    /// [`DialJudge::judge_dial`] for a destination the dialling need holds a PRIVATE REACH to (the
+    /// registration's `abi::plane::TRUST_PRIVATE_REACH`, sealed by [`PollConns::anchor`]): a
+    /// private address is admitted as an allowlist entry naming the host would; cloud metadata
+    /// never is; the class is unchanged. The default honours no reach (fail-closed).
+    fn judge_dial_reaching(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Judged,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        self.judge_dial(dest, class, done)
+    }
 }
 
 /// Any function of the judge's shape is a judge: [`process::judge`] joins the deployment's one
@@ -144,6 +158,23 @@ impl DialJudge for LiteralsOnly {
         Some(
             self.0
                 .judge_answer(&at.ip().to_string(), &[at.ip()], class)
+                .map(|()| at)
+                .map_err(|r| r.verdict),
+        )
+    }
+
+    fn judge_dial_reaching(
+        &self,
+        dest: &str,
+        class: u32,
+        _: Judged,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        let Some(at) = socket::address_of(dest) else {
+            return Some(Err(busbar_contract::abi::host::service::DEST_UNRESOLVABLE));
+        };
+        Some(
+            self.0
+                .judge_answer_with(&at.ip().to_string(), &[at.ip()], class, false, true)
                 .map(|()| at)
                 .map_err(|r| r.verdict),
         )
@@ -183,6 +214,9 @@ struct DeclaredNeed {
     tls: Option<Arc<rustls::ClientConfig>>,
     /// The program the need's `target_from` resolved to: every open spawns it.
     program: Option<busbar_contract::conn::Program>,
+    /// A member-program need's members (`busbar_contract::section::MEMBER_PROGRAM`): every open
+    /// names one and leases its one long-lived program connection.
+    members: Option<Arc<program::Members>>,
 }
 
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
@@ -217,6 +251,8 @@ struct Redial {
     dial: Dial,
     egress_class: u32,
     judged_class: u32,
+    /// The need's private reach to the destination ([`DialJudge::judge_dial_reaching`]).
+    reach: bool,
     /// The bytes the line's socket had taken when the exchange was lent it.
     mark: u64,
 }
@@ -238,6 +274,8 @@ struct Held {
     whole: AtomicBool,
     /// The one redial an exchange lent a pooled line keeps.
     redial: Mutex<Option<Redial>>,
+    /// A LEASE on a member's long-lived program connection, in place of a connection of its own.
+    lease: Option<(Arc<program::Member>, u64)>,
 }
 
 impl Held {
@@ -254,11 +292,22 @@ impl Held {
             pooled,
             whole: AtomicBool::new(false),
             redial: Mutex::new(None),
+            lease: None,
         }
     }
 
     fn line(&self) -> Option<(Arc<Line>, u64)> {
         self.line.lock().expect("line").clone()
+    }
+}
+
+impl Drop for Held {
+    /// A lease no one closed (its owner dropped it) is closed as it goes: the member's program does
+    /// not keep frames for a reader that is gone.
+    fn drop(&mut self) {
+        if let Some((member, lease)) = self.lease.take() {
+            member.close(lease);
+        }
     }
 }
 
@@ -290,6 +339,10 @@ pub struct Connector {
     pools: Pools,
     /// The trust anchors each sealed destination's connections are held to.
     anchored: Anchored,
+    /// The destinations a need holds a PRIVATE REACH to (`abi::plane::TRUST_PRIVATE_REACH`), by the
+    /// need's owner, the need and the destination's authority (lower-case, `host:port`), sealed
+    /// with its anchors ([`PollConns::anchor`]).
+    reaching: Mutex<HashSet<(InstanceId, NeedId, String)>>,
     /// Each member's auth binding, by (instance, need, target origin): what a plugin's own request
     /// to that member is authenticated with ([`DeclaredConns::bind_auth`]).
     auths: Mutex<HashMap<(InstanceId, NeedId, String), busbar_contract::conn::ConnAuth>>,
@@ -314,6 +367,7 @@ impl Default for Connector {
             listeners: Mutex::new(HashMap::new()),
             pools: Pools::new(PoolPosture::NONE),
             anchored: Mutex::new(HashMap::new()),
+            reaching: Mutex::new(HashSet::new()),
             auths: Mutex::new(HashMap::new()),
         }
     }
@@ -488,20 +542,119 @@ impl Connector {
         };
         let Some((door, alpn)) = served else {
             // Any earlier record of the need is dropped with it.
-            self.over.lock().expect("needs").remove(&(owner, need));
+            self.set_need(owner, need, None);
             return Err(ConnError::Refused);
         };
         self.slab.declare(owner, need);
-        self.over.lock().expect("needs").insert(
-            (owner, need),
-            DeclaredNeed {
+        self.set_need(
+            owner,
+            need,
+            Some(DeclaredNeed {
                 door,
                 alpn,
                 egress_class,
                 declared_target: declared_target.map(str::to_owned),
                 tls,
                 program: None,
-            },
+                members: None,
+            }),
+        );
+        Ok(())
+    }
+
+    /// Record (or, with `None`, drop) what the connector holds for `owner`'s `need`: a member of an
+    /// earlier record that the new one does not keep is RETIRED (no open reaches it again; its
+    /// program is killed once its last open closes).
+    fn set_need(&self, owner: InstanceId, need: NeedId, record: Option<DeclaredNeed>) {
+        let kept = record.as_ref().and_then(|r| r.members.clone());
+        let before = {
+            let mut over = self.over.lock().expect("needs");
+            match record {
+                Some(r) => over.insert((owner, need), r),
+                None => over.remove(&(owner, need)),
+            }
+        };
+        for (name, member) in before.and_then(|b| b.members).iter().flat_map(|m| m.iter()) {
+            if !kept
+                .as_ref()
+                .and_then(|k| k.get(name))
+                .is_some_and(|k| Arc::ptr_eq(k, member))
+            {
+                member.retire();
+            }
+        }
+    }
+
+    /// THE MEMBER-PROGRAM NEED (`busbar_contract::section::MEMBER_PROGRAM`): `owner`'s outbound
+    /// `need` reaches each member's own program (its pipes framed by the entry serving
+    /// `transport`), ONE long-lived connection per member, carried as a program need is
+    /// ([`Connector::record_program`]: operator-infrastructure only, no auth style, an entry that
+    /// frames a byte stream directly). A member whose program is unchanged keeps its running
+    /// program across the re-declaration; one that is gone or changed is retired.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Refused`] for anything else; any earlier record of the need is dropped (its
+    /// members retired).
+    fn record_members(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        programs: &[(String, busbar_contract::conn::Program)],
+    ) -> Result<(), ConnError> {
+        let served = {
+            let view = self.transports.read().expect("transports");
+            view.serving(&spec.transport)
+                .filter(|served| served.entry.door.facts().composes_over.is_empty())
+                .map(|served| (Arc::clone(&served.entry.door), served.entry.alpn.clone()))
+        };
+        let carried = spec.direction == DIRECTION_OUTBOUND
+            && spec.egress_class == EGRESS_OPERATOR_INFRASTRUCTURE
+            && spec.auth.is_empty()
+            && busbar_contract::section::member_program(&spec.target_from)
+            && programs.iter().all(|(_, p)| p.command.starts_with('/'));
+        let Some((door, alpn)) = served.filter(|_| carried) else {
+            self.set_need(owner, need, None);
+            return Err(ConnError::Refused);
+        };
+        let before = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .and_then(|d| d.members.clone());
+        let members: program::Members = programs
+            .iter()
+            .map(|(name, p)| {
+                let kept = before
+                    .as_ref()
+                    .and_then(|b| b.get(name))
+                    .filter(|m| m.program() == p)
+                    .cloned();
+                let member = kept.unwrap_or_else(|| {
+                    Arc::new(program::Member::new(
+                        p.clone(),
+                        Arc::clone(&door),
+                        alpn.clone(),
+                    ))
+                });
+                (name.clone(), member)
+            })
+            .collect();
+        self.slab.declare(owner, need);
+        self.set_need(
+            owner,
+            need,
+            Some(DeclaredNeed {
+                door,
+                alpn,
+                egress_class: spec.egress_class,
+                declared_target: None,
+                tls: None,
+                program: None,
+                members: Some(Arc::new(members)),
+            }),
         );
         Ok(())
     }
@@ -533,20 +686,22 @@ impl Connector {
             && spec.auth.is_empty()
             && program.command.starts_with('/');
         let Some((door, alpn)) = served.filter(|_| carried) else {
-            self.over.lock().expect("needs").remove(&(owner, need));
+            self.set_need(owner, need, None);
             return Err(ConnError::Refused);
         };
         self.slab.declare(owner, need);
-        self.over.lock().expect("needs").insert(
-            (owner, need),
-            DeclaredNeed {
+        self.set_need(
+            owner,
+            need,
+            Some(DeclaredNeed {
                 door,
                 alpn,
                 egress_class: spec.egress_class,
                 declared_target: None,
                 tls: None,
                 program: Some(program.clone()),
-            },
+                members: None,
+            }),
         );
         Ok(())
     }
@@ -713,20 +868,26 @@ impl Connector {
         egress_class: u32,
         judged_class: u32,
         within: &[IpAddr],
+        reach: bool,
     ) -> Result<(Option<Connection>, Option<Judging>), ConnError> {
         let answer: Answer = Arc::new(Mutex::new((None, None)));
         let answering = Arc::clone(&answer);
-        let judged = self.judge.judge_dial(
-            planned.authority(),
-            judged_class,
-            Box::new(move |v| {
-                let mut a = answering.lock().expect("judgement");
-                a.0 = Some(v);
-                if let Some(w) = a.1.take() {
-                    w.wake();
-                }
-            }),
-        );
+        let done: Judged = Box::new(move |v| {
+            let mut a = answering.lock().expect("judgement");
+            a.0 = Some(v);
+            if let Some(w) = a.1.take() {
+                w.wake();
+            }
+        });
+        // A destination the need holds a private reach to is judged with it (the one guard, as an
+        // allowlist entry naming it; the class unchanged).
+        let judged = if reach {
+            self.judge
+                .judge_dial_reaching(planned.authority(), judged_class, done)
+        } else {
+            self.judge
+                .judge_dial(planned.authority(), judged_class, done)
+        };
         Ok(match judged {
             // Decided at once: a refusal answers the open, as 1.5.5 answered it.
             Some(Err(_)) => return Err(ConnError::Refused),
@@ -767,7 +928,7 @@ impl Connector {
         *held.line.lock().expect("line") = None;
         self.let_go(held, &line, stream, false);
         let planned = Planned::locate(r.door, r.dial).map_err(|f| map(&f))?;
-        match self.dial_judged(planned, r.egress_class, r.judged_class, &[])? {
+        match self.dial_judged(planned, r.egress_class, r.judged_class, &[], r.reach)? {
             (Some(conn), _) => {
                 self.ride(held, conn);
             }
@@ -800,6 +961,9 @@ impl Connector {
         buf: &mut [u8],
     ) -> Result<Piece, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
+        if let Some((member, lease)) = &held.lease {
+            return member.read(*lease, waker, buf);
+        }
         let mut rest = held.rest.lock().expect("rest");
         let (piece, bytes) = match rest.0.take() {
             Some(p) => (p, std::mem::take(&mut rest.1)),
@@ -993,7 +1157,7 @@ impl DeclaredConns for Connector {
                 self.record(owner, need, &spec.transport, spec.egress_class, target, tls)
             }
             _ => {
-                self.over.lock().expect("needs").remove(&(owner, need));
+                self.set_need(owner, need, None);
                 Err(ConnError::Refused)
             }
         };
@@ -1137,6 +1301,21 @@ impl DeclaredConns for Connector {
             .get(&(owner, need, origin.to_string()))
             .cloned()
     }
+
+    fn declare_member_programs(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        programs: &[(String, busbar_contract::conn::Program)],
+    ) -> Result<(), ConnError> {
+        let answer = self.record_members(owner, need, spec, programs);
+        self.declared
+            .lock()
+            .expect("declared needs")
+            .insert((owner, need), (spec.clone(), answer));
+        answer
+    }
 }
 
 impl Conns for Connector {
@@ -1155,6 +1334,7 @@ impl Conns for Connector {
             declared_target,
             tls,
             program,
+            members,
         } = self
             .over
             .lock()
@@ -1162,6 +1342,23 @@ impl Conns for Connector {
             .get(&(caller, need))
             .cloned()
             .ok_or(ConnError::Refused)?;
+        // A MEMBER-PROGRAM NEED leases the long-lived program of the member the target names (a
+        // member its config does not name is refused); the open's body is the lease's first
+        // message. No address is judged: no network is dialled.
+        if let Some(members) = members {
+            if !desc.fields.is_empty() {
+                return Err(ConnError::Refused);
+            }
+            let member = members
+                .get(program::member_of(desc.target))
+                .cloned()
+                .ok_or(ConnError::Refused)?;
+            let lease = member.lease(desc.body)?;
+            let mut held = Held::over(None, None, None);
+            held.lease = Some((member, lease));
+            // A refused insert drops the held lease, which closes it.
+            return self.slab.insert(caller, need, held);
+        }
         // A PROGRAM NEED spawns the program its config names, and nothing else: an open naming a
         // target of its own is refused. No address is judged: no network is dialled.
         if let Some(program) = program {
@@ -1272,6 +1469,13 @@ impl Conns for Connector {
             return Err(ConnError::Refused);
         }
         let planned = planned.anchored(anchors);
+        // THE DESTINATION'S PRIVATE REACH for this need (`abi::plane::TRUST_PRIVATE_REACH`, sealed
+        // with its anchors): its dial is judged with it.
+        let reach = self.reaching.lock().expect("reach").contains(&(
+            caller,
+            need,
+            planned.authority().to_ascii_lowercase(),
+        ));
         // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (THE DESIGN §5 egress-class
         // table, owner-signed 2026-09-27): in a request-data class its address is judged as
         // operator infrastructure. A provider need keeps its class: it is refused a private
@@ -1307,6 +1511,7 @@ impl Conns for Connector {
                     secure: planned.secure(),
                     name: planned.name().map(str::to_owned),
                     class: (judged_class, egress_class),
+                    reach,
                 },
             )
         });
@@ -1318,6 +1523,7 @@ impl Conns for Connector {
                     dial: planned.dial().clone(),
                     egress_class,
                     judged_class,
+                    reach,
                     mark: line.flushed(),
                 };
                 let (opening, words) = planned.into_opening();
@@ -1337,7 +1543,8 @@ impl Conns for Connector {
                 }
             }
         }
-        let (conn, judging) = self.dial_judged(planned, egress_class, judged_class, desc.within)?;
+        let (conn, judging) =
+            self.dial_judged(planned, egress_class, judged_class, desc.within, reach)?;
         let held = Held::over(None, judging, pooled);
         if let Some(conn) = conn {
             self.ride(&held, conn);
@@ -1359,6 +1566,9 @@ impl Conns for Connector {
         text: bool,
     ) -> Result<usize, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
+        if let Some((member, lease)) = &held.lease {
+            return member.write(*lease, bytes);
+        }
         if !self.settle(&held, None)? {
             if let Some(j) = held.judging.lock().expect("judging").as_mut() {
                 // Held until the judgement answers, under the same cap a connection's buffer has.
@@ -1396,6 +1606,12 @@ impl Conns for Connector {
         let mut cx = Context::from_waker(&waker);
         for (at, conn) in set.iter().enumerate() {
             let (_, held) = self.slab.get(caller, *conn)?;
+            if let Some((member, lease)) = &held.lease {
+                match member.ready(*lease, &waker) {
+                    Ok(false) => continue,
+                    _ => return Ok(at),
+                }
+            }
             if held.rest.lock().expect("rest").0.is_some() {
                 return Ok(at);
             }
@@ -1416,6 +1632,9 @@ impl Conns for Connector {
 
     fn facts(&self, caller: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
+        if let Some((member, lease)) = &held.lease {
+            return member.facts(*lease);
+        }
         if !self.settle(&held, None)? {
             return Err(ConnError::Pending);
         }
@@ -1442,6 +1661,10 @@ impl Conns for Connector {
 
     fn close(&self, caller: InstanceId, conn: ConnId) -> Result<(), ConnError> {
         let held = self.slab.remove(caller, conn)?;
+        if let Some((member, lease)) = &held.lease {
+            // The lease ends here; the member's program runs on for the next open.
+            member.close(*lease);
+        }
         let line = held.line.lock().expect("line").take();
         if let Some((line, stream)) = line {
             // An exchange that finished whole hands its line back to the pool it came from once
@@ -1491,16 +1714,28 @@ impl PollConns for Connector {
             // Nothing to hold: any earlier seal for the destination is dropped.
             if let Some(at) = at {
                 self.anchored.lock().expect("anchors").remove(&at);
+                self.reaching.lock().expect("reach").remove(&at);
             }
             return Ok(());
         }
         let at = at.ok_or(ConnError::Refused)?;
-        let sealed =
-            tls::client::seal(self.tls.as_deref(), anchors).map_err(|_| ConnError::Refused)?;
-        self.anchored
-            .lock()
-            .expect("anchors")
-            .insert(at, Arc::new(sealed));
+        if anchors.secures() {
+            let sealed =
+                tls::client::seal(self.tls.as_deref(), anchors).map_err(|_| ConnError::Refused)?;
+            self.anchored
+                .lock()
+                .expect("anchors")
+                .insert(at.clone(), Arc::new(sealed));
+        } else {
+            self.anchored.lock().expect("anchors").remove(&at);
+        }
+        // The private reach rides beside the security anchors: a seal without it drops it.
+        let mut reaching = self.reaching.lock().expect("reach");
+        if anchors.private_reach {
+            reaching.insert(at);
+        } else {
+            reaching.remove(&at);
+        }
         Ok(())
     }
 }

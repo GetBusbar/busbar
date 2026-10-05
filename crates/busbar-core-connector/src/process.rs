@@ -94,6 +94,7 @@ impl GuardJudge {
         dest: &str,
         class: u32,
         strict: bool,
+        reach: bool,
     ) -> Result<(String, u16, bool, Option<IpAddr>), u64> {
         // The classes a need may declare are 0..=4; a destination under any other names none.
         if class > EGRESS_LOOPBACK_ALLOWED {
@@ -105,7 +106,7 @@ impl GuardJudge {
         }
         let literal = self
             .guard
-            .judge_name_as(&host, class, strict)
+            .judge_name_with(&host, class, strict, reach)
             .map_err(|r| r.verdict)?;
         if let Some(ip) = literal {
             plaintext_to_loopback(class, https, ip)?;
@@ -155,7 +156,7 @@ fn split(dest: &str) -> Result<(String, u16, bool), u64> {
 
 impl DestJudge for GuardJudge {
     fn judge_name(&self, dest: &str, class: u32, refuse_private: bool) -> Result<(), u64> {
-        self.named(dest, class, refuse_private).map(|_| ())
+        self.named(dest, class, refuse_private, false).map(|_| ())
     }
 
     fn judge(
@@ -165,7 +166,45 @@ impl DestJudge for GuardJudge {
         refuse_private: bool,
         done: Box<dyn FnOnce(Admitted) + Send>,
     ) -> Option<Admitted> {
-        let (host, port, https, literal) = match self.named(dest, class, refuse_private) {
+        self.judged(dest, class, refuse_private, false, done)
+    }
+
+    fn judge_reaching(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Box<dyn FnOnce(Admitted) + Send>,
+    ) -> Option<Admitted> {
+        self.judged(dest, class, false, true, done)
+    }
+
+    fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal> {
+        self.guard
+            .judge_answer(host, addrs, class)
+            .map_err(|r| DestRefusal {
+                verdict: r.verdict,
+                reason: r.to_string(),
+            })
+    }
+
+    /// A config commit re-publishes the guard's metadata lists ([`Guard::publish`]).
+    fn destinations_applied(&self, d: &Destinations) {
+        self.guard.publish(d);
+    }
+}
+
+impl GuardJudge {
+    /// The judgement [`DestJudge::judge`] and [`DestJudge::judge_reaching`] share: `reach`, the
+    /// need's private reach to the destination ([`Guard::judge_name_with`]).
+    fn judged(
+        &self,
+        dest: &str,
+        class: u32,
+        refuse_private: bool,
+        reach: bool,
+        done: Box<dyn FnOnce(Admitted) + Send>,
+    ) -> Option<Admitted> {
+        let (host, port, https, literal) = match self.named(dest, class, refuse_private, reach) {
             Err(v) => return Some(Err(v.into())),
             Ok(n) => n,
         };
@@ -184,7 +223,7 @@ impl DestJudge for GuardJudge {
                         detail: Some(reason),
                     }),
                     Ok(addrs) => guard
-                        .judge_answer_as(&host, &addrs, class, refuse_private)
+                        .judge_answer_with(&host, &addrs, class, refuse_private, reach)
                         .map_err(|r| Refused {
                             verdict: r.verdict,
                             detail: r.addr.map(|a| a.to_string()),
@@ -200,20 +239,6 @@ impl DestJudge for GuardJudge {
         );
         None
     }
-
-    fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal> {
-        self.guard
-            .judge_answer(host, addrs, class)
-            .map_err(|r| DestRefusal {
-                verdict: r.verdict,
-                reason: r.to_string(),
-            })
-    }
-
-    /// A config commit re-publishes the guard's metadata lists ([`Guard::publish`]).
-    fn destinations_applied(&self, d: &Destinations) {
-        self.guard.publish(d);
-    }
 }
 
 /// THE DIAL JUDGE the one Connector holds (spec section 5, "Dialing only what the kernel
@@ -223,15 +248,57 @@ impl DestJudge for GuardJudge {
 /// as internal, whether the judgement answered at once or after resolving a name.
 #[must_use]
 pub fn judge(dest: Arc<dyn DestJudge>, own_ports: &[u16]) -> Arc<dyn DialJudge> {
-    let own: Arc<[u16]> = own_ports.into();
-    Arc::new(move |target: &str, class: u32, done: Judged| {
-        let later = Arc::clone(&own);
+    Arc::new(OneJudge {
+        dest,
+        own: own_ports.into(),
+    })
+}
+
+/// [`judge`]'s dial judge: the one destination judge and the node's own ports.
+struct OneJudge {
+    dest: Arc<dyn DestJudge>,
+    own: Arc<[u16]>,
+}
+
+impl OneJudge {
+    /// A dial judged by `judging` (the plain judgement or the reaching one), its pin held off the
+    /// node itself.
+    fn pinned(
+        &self,
+        class: u32,
+        done: Judged,
+        judging: impl FnOnce(Box<dyn FnOnce(Admitted) + Send>) -> Option<Admitted>,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        let later = Arc::clone(&self.own);
         let pin = |v: Admitted| v.map(|(at, _)| at).map_err(|r| r.verdict);
         let pended: Box<dyn FnOnce(Admitted) + Send> =
             Box::new(move |v| done(not_the_node(class, &later, pin(v))));
-        dest.judge(target, class, false, pended)
-            .map(|v| not_the_node(class, &own, pin(v)))
-    })
+        judging(pended).map(|v| not_the_node(class, &self.own, pin(v)))
+    }
+}
+
+impl DialJudge for OneJudge {
+    fn judge_dial(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Judged,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        self.pinned(class, done, |pended| {
+            self.dest.judge(dest, class, false, pended)
+        })
+    }
+
+    fn judge_dial_reaching(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Judged,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        self.pinned(class, done, |pended| {
+            self.dest.judge_reaching(dest, class, pended)
+        })
+    }
 }
 
 /// A loopback-allowed pin on one of the node's own ports, refused (`DEST_INTERNAL`); any other

@@ -1489,10 +1489,21 @@ pub fn member_routes(
             let key = busbar_contract::section::member_target(path)?;
             Some((busbar_contract::conn::NeedId(u32::try_from(at).ok()?), key))
         });
+    // A PROGRAM MEMBER (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): where the plane's need states
+    // the member-program path, an entry whose registration names a program is reached at its own
+    // long-lived program, which the connector keeps per member (the loader declared each one from
+    // the instance's settings); its route's base is the member's own name, the open's target.
+    let member_program = served
+        .need_targets
+        .iter()
+        .position(|path| busbar_contract::section::member_program(path))
+        .and_then(|at| u32::try_from(at).ok())
+        .map(busbar_contract::conn::NeedId);
+    let mut programs = BTreeMap::new();
     for entry in pools.entries() {
         let Some(member) = member_entry(section, entry) else {
+            let registration = section.get(entry.as_str());
             if let Some((need, key)) = member_target {
-                let registration = section.get(entry.as_str());
                 if let Some((registration, target)) = registration
                     .and_then(|r| entry_text(r, key).filter(|t| !t.is_empty()).map(|t| (r, t)))
                 {
@@ -1502,6 +1513,17 @@ pub fn member_routes(
                         entry.clone(),
                         (need, origin_of(target).to_string(), anchors),
                     );
+                    continue;
+                }
+            }
+            // A PROGRAM MEMBER (Q-L3B-STDIO-UPSTREAM (A)): a registration that names a program is
+            // reached at its own long-lived child, the connector keeps it per member.
+            if let Some(need) = member_program {
+                if registration
+                    .and_then(|r| entry_text(r, busbar_contract::conn::PROGRAM_KEYS[0]))
+                    .is_some()
+                {
+                    programs.insert(entry.clone(), need);
                 }
             }
             continue;
@@ -1625,6 +1647,22 @@ pub fn member_routes(
             },
         );
     }
+    // Each program member: no auth binding (no credential rides a pipe), its metering rows naming
+    // the registration.
+    for (entry, need) in programs {
+        routes.insert(
+            entry.clone(),
+            MemberRoute {
+                rides: Vec::new(),
+                need,
+                base_url: entry.clone(),
+                auth: None,
+                provider: entry,
+                keep: busbar_kernel::plane_driver::ResponseKeep::default(),
+                anchors: busbar_contract::transport::trust::Anchors::default(),
+            },
+        );
+    }
     for r in resolved {
         let credential = if r.provider.credential.is_none() {
             Vec::new()
@@ -1680,8 +1718,10 @@ pub fn member_routes(
 /// THE TRUST ANCHORS OF ONE REGISTRATION MEMBER (ARCHITECT 2026-10-03, THE TRANSPORT PIN: "the connector enforces pins itself"): its pin's key, where the plane declares the pin's
 /// mechanism pins the far end's key (`PinMechanismDecl::peer_key`), and busbar's client identity,
 /// where the member-target need's `trust_from` names a member path (`settings.*.<key>`) and the
-/// registration writes it (`{cert, key}`, secret references, resolved here once). The connector
-/// holds every connection to the member to them ([`compose_egress`] seals them).
+/// registration writes it (`{cert, key}`, secret references, resolved here once), and its PRIVATE
+/// REACH where the plane declares that key (`abi::plane::TRUST_PRIVATE_REACH`: the member's need,
+/// alone, may dial a private address at the member's own target). The connector holds every
+/// connection to the member to them ([`compose_egress`] seals them).
 ///
 /// # Errors
 ///
@@ -1699,6 +1739,10 @@ fn registration_anchors(
         .pin
         .filter(|p| p.peer_key)
         .and_then(|p| p.key);
+    // THE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, SEAM-4f): sealed beside
+    // its pin, honoured by the connector's one guard for this member's need alone.
+    let private_reach =
+        busbar_kernel::trust::section::private_reach(registration, &served.trust_keys);
     let identity_at = served
         .need_trust
         .get(need.0 as usize)
@@ -1728,6 +1772,7 @@ fn registration_anchors(
     Ok(busbar_contract::transport::trust::Anchors {
         key_pin: pin,
         client_identity,
+        private_reach,
     })
 }
 
