@@ -160,7 +160,7 @@ fn a_present_agents_card_silent_about_an_agent_refuses_the_config() {
     crate::testkit::install_test_seams();
     let resolved = |card: &str| {
         let text = format!(
-            "providers: {{}}\nmodels: {{}}\nagents:\n  \
+            "store: {{module: memory}}\nproviders: {{}}\nmodels: {{}}\nagents:\n  \
              planner: {{ url: https://planner.example/a2a, pin: {{ mechanism: unpinned }} }}\n  \
              payments: {{ url: https://payments.example/a2a, pin: {{ mechanism: unpinned }} }}\n  \
              rate_card:\n{card}"
@@ -362,7 +362,7 @@ async fn a_hop_refused_before_the_socket_keeps_no_fee() {
 /// function over `limits`.
 fn spend_at_fee(h: &Harness, fee: u64, limits: Vec<LimitCfg>) -> i64 {
     let deploy = config::deploy_from_yaml_str(&format!(
-        "providers: {{}}\nmodels: {{}}\nagents:\n  fees: {{ per_request: {fee} }}\n"
+        "store: {{module: memory}}\nproviders: {{}}\nmodels: {{}}\nagents:\n  fees: {{ per_request: {fee} }}\n"
     ))
     .expect("the config parses");
     let root = config::resolve(&deploy, &Default::default()).expect("resolves");
@@ -465,7 +465,7 @@ async fn a_hop_pinned_to_a_member_the_caller_may_not_reach_keeps_no_fee() {
 async fn agents_fees_per_request_boots_and_charges_and_per_session_refuses() {
     crate::testkit::install_test_seams();
     let resolved = |yaml: &str| {
-        let text = format!("providers: {{}}\nmodels: {{}}\n{yaml}");
+        let text = format!("store: {{module: memory}}\nproviders: {{}}\nmodels: {{}}\n{yaml}");
         let deploy = config::deploy_from_yaml_str(&text).expect("the config parses");
         config::resolve(&deploy, &Default::default()).expect("resolves")
     };

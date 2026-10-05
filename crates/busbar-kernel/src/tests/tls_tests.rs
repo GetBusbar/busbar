@@ -3,99 +3,50 @@
 
 //! Tests for `crates/busbar-core/src/tls.rs`.
 
-//! End-to-end TLS / mTLS transport tests. Each spins a real busbar TLS listener on an ephemeral
-//! port with rcgen-generated certs and drives it with a real reqwest https client over the wire —
-//! exercising the actual rustls handshake (incl. client-cert verification), not a mock.
+//! The TLS listener's serving loop (`serve`) over its opaque connection-security wrap. The wrap
+//! itself is the connector's — TLS stays in the connector and this crate names no TLS library — so
+//! the loop is driven here over a connection-security TEST DOUBLE (a one-line hello, no
+//! cryptography): every accepted connection goes through the wrap, a connection the wrap refuses is
+//! dropped alone and the listener keeps serving. The same loop over the connector's REAL wrap — the
+//! trusted client's 200, the mutual handshake accepting a client certificate chaining to
+//! `client_ca` and refusing none or a foreign one, the `http/1.1`-only ALPN — is the connector's
+//! `tls/engine_tests.rs`.
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use axum::routing::get;
 use axum::Router;
-use rcgen::{CertificateParams, CertifiedKey, IsCa, Issuer, KeyPair};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
-use crate::config::TlsCfg;
+/// A connection-security TEST DOUBLE: a connection whose first line is `LET-ME-IN` is admitted
+/// (handed back as it is, the line consumed); any other is refused, as a handshake the wrap refuses
+/// is. The real wrap is the connector's.
+struct HelloWrap;
 
-// The production `rustls::ServerConfig` BUILD moved to `busbar-core-connector` (DECISIONS #40) —
-// this crate no longer names a rustls type for that job at all (see `tls.rs`'s module doc). This
-// crate's OWN tests still need a real `ConnectionSecurity` to hand `super::serve`, so the small
-// helpers below are a TEST-ONLY fixture: they are not a second production copy of
-// `busbar_core_connector::tls::build_server_config` (that function is `busbar-core-connector`'s own,
-// tested there) — a cross-crate dev-dependency back-edge to reuse it directly was tried and
-// reverted: `busbar-core-connector` normal-depends on this crate with `default-features = false`,
-// which does not unify with this crate's own (default-feature) test build and Cargo links TWO
-// distinct compiled instances of `busbar_kernel`, breaking every type shared between them (a
-// well-known dev-dependency-cycle pitfall, not something worth carrying for a handful of tests).
-struct TestTlsSecurity(std::sync::Arc<rustls::ServerConfig>);
-
-impl busbar_contract::transport::wire::ConnectionSecurity for TestTlsSecurity {
+impl busbar_contract::transport::wire::ConnectionSecurity for HelloWrap {
     fn wrap<'a>(
         &'a self,
-        io: Box<dyn busbar_contract::transport::wire::RawIo>,
+        mut io: Box<dyn busbar_contract::transport::wire::RawIo>,
     ) -> busbar_contract::transport::wire::SecuredIoFut<'a> {
         Box::pin(async move {
-            use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
-            let tokio_io = FuturesAsyncReadCompatExt::compat(io);
-            let acceptor = tokio_rustls::TlsAcceptor::from(self.0.clone());
-            let tls_stream = acceptor.accept(tokio_io).await?;
-            let raw: Box<dyn busbar_contract::transport::wire::RawIo> =
-                Box::new(TokioAsyncReadCompatExt::compat(tls_stream));
-            Ok(raw)
+            use futures::io::AsyncReadExt as _;
+            let mut line = Vec::new();
+            let mut byte = [0_u8; 1];
+            while io.read(&mut byte).await? == 1 && byte[0] != b'\n' {
+                line.push(byte[0]);
+            }
+            if line == b"LET-ME-IN" {
+                Ok(io)
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "the wrap refused the connection",
+                ))
+            }
         })
     }
-}
-
-/// TEST-ONLY: build a `rustls::ServerConfig` from a `TlsCfg`, exactly like
-/// `busbar_core_connector::tls::build_server_config` (the production function this fixture stands in
-/// for) — client-cert verifier installed when `client_ca` is set, `http/1.1`-only ALPN otherwise.
-fn test_build_server_config(
-    tls: &TlsCfg,
-    resolver: &crate::config::secret::SecretResolver,
-) -> Result<rustls::ServerConfig, String> {
-    use rustls::pki_types::pem::PemObject;
-    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-    use rustls::server::WebPkiClientVerifier;
-    use rustls::RootCertStore;
-
-    let load = |secret: &crate::config::SecretRef| -> Result<Vec<u8>, String> {
-        super::read_pem(resolver, secret, "test")
-    };
-
-    let cert_bytes = load(&tls.cert)?;
-    let certs = CertificateDer::pem_slice_iter(&cert_bytes)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("cannot parse TLS cert: {e}"))?;
-    let key_bytes = load(&tls.key)?;
-    let key = PrivateKeyDer::from_pem_slice(&key_bytes)
-        .map_err(|e| format!("cannot parse TLS key: {e}"))?;
-
-    let builder = rustls::ServerConfig::builder();
-    let builder = match &tls.client_ca {
-        Some(ca) => {
-            let ca_bytes = load(ca)?;
-            let cas = CertificateDer::pem_slice_iter(&ca_bytes)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| format!("cannot parse TLS client_ca: {e}"))?;
-            let mut roots = RootCertStore::empty();
-            for ca in cas {
-                roots
-                    .add(ca)
-                    .map_err(|e| format!("invalid CA certificate in TLS client_ca: {e}"))?;
-            }
-            let verifier = WebPkiClientVerifier::builder(std::sync::Arc::new(roots))
-                .build()
-                .map_err(|e| format!("cannot build client-cert verifier: {e}"))?;
-            builder.with_client_cert_verifier(verifier)
-        }
-        None => builder.with_no_client_auth(),
-    };
-    let mut config = builder
-        .with_single_cert(certs, key)
-        .map_err(|e| format!("TLS cert/key are not a valid pair: {e}"))?;
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
-    Ok(config)
 }
 
 /// `crate::limits::install` is a PROCESS-GLOBAL swap, and cargo runs this file's `#[tokio::test]`
@@ -168,60 +119,12 @@ fn test_router() -> Router {
     Router::new().route("/healthz", get(|| async { "ok" }))
 }
 
-/// Write `contents` to a uniquely-named temp file and return its path. Used to hand the
-/// PEM-on-disk config grammar the same file paths an operator would.
-fn temp_pem(tag: &str, contents: &str) -> std::path::PathBuf {
-    let mut p = std::env::temp_dir();
-    let uniq = format!(
-        "busbar-tls-test-{tag}-{}-{:?}.pem",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    p.push(uniq);
-    std::fs::write(&p, contents).unwrap();
-    p
-}
-
-/// Generate a self-signed server cert for `localhost`/`127.0.0.1`. Returns (cert_pem, key_pem).
-fn gen_self_signed() -> (String, String) {
-    let CertifiedKey { cert, signing_key } =
-        rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()]).unwrap();
-    (cert.pem(), signing_key.serialize_pem())
-}
-
-/// Generate a CA + a leaf signed by it (for mTLS). Returns (ca_cert_pem, leaf_cert_pem,
-/// leaf_key_pem). The leaf is the client identity; the CA is what the server verifies against.
-fn gen_ca_and_leaf(cn_sans: Vec<String>) -> (String, String, String) {
-    let ca_kp = KeyPair::generate().unwrap();
-    let mut ca_params = CertificateParams::new(Vec::new()).unwrap();
-    ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    let ca_cert = ca_params.self_signed(&ca_kp).unwrap();
-
-    // rcgen 0.14: leaf signing goes through an `Issuer` (CA params + CA key) rather than
-    // passing the CA cert + key positionally. `from_params` borrows the CA params and takes
-    // ownership of the CA key pair, which we no longer need after this.
-    let issuer = Issuer::from_params(&ca_params, ca_kp);
-    let leaf_kp = KeyPair::generate().unwrap();
-    let leaf_params = CertificateParams::new(cn_sans).unwrap();
-    let leaf_cert = leaf_params.signed_by(&leaf_kp, &issuer).unwrap();
-
-    (ca_cert.pem(), leaf_cert.pem(), leaf_kp.serialize_pem())
-}
-
-/// Boot a busbar TLS listener from a `TlsCfg` on an ephemeral port. Returns the bound address and
-/// a shutdown sender (drop or send to stop + drain). Mirrors `main`'s TLS branch (DECISIONS #40):
-/// install the crypto provider, build the `ConnectionSecurity` wrap (the test fixture above stands
-/// in for `busbar_core_connector::tls::prepare`), then hand the opaque wrap to `tls::serve`.
-async fn spawn_tls_server(tls: &TlsCfg) -> (SocketAddr, oneshot::Sender<()>) {
-    super::install_crypto_provider();
-    let config =
-        test_build_server_config(tls, &crate::config::secret::SecretResolver::builtins_only())
-            .expect("valid test TLS config");
-    let security: std::sync::Arc<dyn busbar_contract::transport::wire::ConnectionSecurity> =
-        std::sync::Arc::new(TestTlsSecurity(std::sync::Arc::new(config)));
+/// Boot the busbar TLS listener's serving loop on an ephemeral port over the connection-security
+/// wrap `security` (what `main` hands it from `busbar_core_connector::tls::prepare`). Returns the
+/// bound address and a shutdown sender (drop or send to stop + drain).
+async fn spawn_secured_server(
+    security: std::sync::Arc<dyn busbar_contract::transport::wire::ConnectionSecurity>,
+) -> (SocketAddr, oneshot::Sender<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (tx, rx) = oneshot::channel::<()>();
@@ -240,131 +143,48 @@ async fn spawn_tls_server(tls: &TlsCfg) -> (SocketAddr, oneshot::Sender<()>) {
     (addr, tx)
 }
 
-/// TEST 1 — TLS happy path: a client trusting the server's self-signed cert completes an https
-/// request and gets 200.
-#[tokio::test]
-async fn tls_happy_path_trusted_client_gets_200() {
-    let (cert_pem, key_pem) = gen_self_signed();
-    let cert_file = temp_pem("srv-cert", &cert_pem);
-    let key_file = temp_pem("srv-key", &key_pem);
-    let tls = TlsCfg {
-        cert: crate::config::SecretRef::file(cert_file.to_string_lossy().into_owned()),
-        key: crate::config::SecretRef::file(key_file.to_string_lossy().into_owned()),
-        client_ca: None,
-    };
-    let (addr, _stop) = spawn_tls_server(&tls).await;
-
-    let client = reqwest::Client::builder()
-        .add_root_certificate(reqwest::Certificate::from_pem(cert_pem.as_bytes()).unwrap())
-        .build()
-        .unwrap();
-    let resp = client
-        .get(format!("https://localhost:{}/healthz", addr.port()))
-        .send()
-        .await
-        .expect("https request should succeed over TLS");
-    assert_eq!(resp.status(), 200);
-    assert_eq!(resp.text().await.unwrap(), "ok");
+/// One `GET /healthz` over a fresh connection that opens with `hello`: the response's bytes, empty
+/// when the server dropped the connection without answering.
+async fn healthz_after(addr: SocketAddr, hello: &[u8]) -> Vec<u8> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    let _ = s.write_all(hello).await;
+    let _ = s
+        .write_all(b"GET /healthz HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n")
+        .await;
+    let mut got = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut got)).await;
+    got
 }
 
-/// TEST 2 — mTLS required + valid client cert: client presents a leaf signed by the configured
-/// CA ⇒ 200.
+/// TESTS 1-3 — the serving loop over its wrap: a connection the wrap admits is served (200), a
+/// connection the wrap refuses is dropped unanswered, and the listener survives the refusals and
+/// keeps serving admitted connections.
 #[tokio::test]
-async fn mtls_valid_client_cert_gets_200() {
-    let (srv_cert_pem, srv_key_pem) = gen_self_signed();
-    let (ca_pem, leaf_pem, leaf_key_pem) = gen_ca_and_leaf(vec!["busbar-client".into()]);
+async fn every_connection_is_served_through_the_wrap_and_a_refused_one_is_dropped_alone() {
+    let (addr, _stop) = spawn_secured_server(std::sync::Arc::new(HelloWrap)).await;
 
-    let cert_file = temp_pem("m2-srv-cert", &srv_cert_pem);
-    let key_file = temp_pem("m2-srv-key", &srv_key_pem);
-    let ca_file = temp_pem("m2-ca", &ca_pem);
-    let tls = TlsCfg {
-        cert: crate::config::SecretRef::file(cert_file.to_string_lossy().into_owned()),
-        key: crate::config::SecretRef::file(key_file.to_string_lossy().into_owned()),
-        client_ca: Some(crate::config::SecretRef::file(
-            ca_file.to_string_lossy().into_owned(),
-        )),
-    };
-    let (addr, _stop) = spawn_tls_server(&tls).await;
-
-    let identity =
-        reqwest::Identity::from_pem(format!("{leaf_pem}{leaf_key_pem}").as_bytes()).unwrap();
-    let client = reqwest::Client::builder()
-        .add_root_certificate(reqwest::Certificate::from_pem(srv_cert_pem.as_bytes()).unwrap())
-        .identity(identity)
-        .use_rustls_tls()
-        .build()
-        .unwrap();
-    let resp = client
-        .get(format!("https://localhost:{}/healthz", addr.port()))
-        .send()
-        .await
-        .expect("mTLS request with valid client cert should succeed");
-    assert_eq!(resp.status(), 200);
-}
-
-/// TEST 3 — mTLS required + no/wrong client cert: the handshake is rejected, the server stays up,
-/// and a subsequent valid client still succeeds.
-#[tokio::test]
-async fn mtls_rejects_bad_client_then_serves_valid() {
-    let (srv_cert_pem, srv_key_pem) = gen_self_signed();
-    let (ca_pem, leaf_pem, leaf_key_pem) = gen_ca_and_leaf(vec!["busbar-client".into()]);
-
-    let cert_file = temp_pem("m3-srv-cert", &srv_cert_pem);
-    let key_file = temp_pem("m3-srv-key", &srv_key_pem);
-    let ca_file = temp_pem("m3-ca", &ca_pem);
-    let tls = TlsCfg {
-        cert: crate::config::SecretRef::file(cert_file.to_string_lossy().into_owned()),
-        key: crate::config::SecretRef::file(key_file.to_string_lossy().into_owned()),
-        client_ca: Some(crate::config::SecretRef::file(
-            ca_file.to_string_lossy().into_owned(),
-        )),
-    };
-    let (addr, _stop) = spawn_tls_server(&tls).await;
-    let url = format!("https://localhost:{}/healthz", addr.port());
-
-    // (a) Client presenting NO client cert ⇒ rejected (server requires one).
-    let no_cert_client = reqwest::Client::builder()
-        .add_root_certificate(reqwest::Certificate::from_pem(srv_cert_pem.as_bytes()).unwrap())
-        .use_rustls_tls()
-        .build()
-        .unwrap();
-    let err = no_cert_client.get(&url).send().await;
+    let served = healthz_after(addr, b"LET-ME-IN\n").await;
     assert!(
-        err.is_err(),
-        "mTLS server must reject a client with no certificate"
+        served.starts_with(b"HTTP/1.1 200"),
+        "an admitted connection is served: {:?}",
+        String::from_utf8_lossy(&served)
     );
 
-    // (b) Client presenting a cert from a DIFFERENT CA ⇒ also rejected.
-    let (_other_ca, wrong_leaf, wrong_key) = gen_ca_and_leaf(vec!["impostor".into()]);
-    let wrong_identity =
-        reqwest::Identity::from_pem(format!("{wrong_leaf}{wrong_key}").as_bytes()).unwrap();
-    let wrong_client = reqwest::Client::builder()
-        .add_root_certificate(reqwest::Certificate::from_pem(srv_cert_pem.as_bytes()).unwrap())
-        .identity(wrong_identity)
-        .use_rustls_tls()
-        .build()
-        .unwrap();
-    let wrong = wrong_client.get(&url).send().await;
-    assert!(
-        wrong.is_err(),
-        "mTLS server must reject a client cert from an untrusted CA"
-    );
+    for refused_hello in [&b"\n"[..], b"IMPOSTOR\n"] {
+        let refused = healthz_after(addr, refused_hello).await;
+        assert!(
+            refused.is_empty(),
+            "a refused connection is dropped unanswered: {:?}",
+            String::from_utf8_lossy(&refused)
+        );
+    }
 
-    // (c) Server survived both rejections and still serves a valid client.
-    let good_identity =
-        reqwest::Identity::from_pem(format!("{leaf_pem}{leaf_key_pem}").as_bytes()).unwrap();
-    let good_client = reqwest::Client::builder()
-        .add_root_certificate(reqwest::Certificate::from_pem(srv_cert_pem.as_bytes()).unwrap())
-        .identity(good_identity)
-        .use_rustls_tls()
-        .build()
-        .unwrap();
-    let resp = good_client
-        .get(&url)
-        .send()
-        .await
-        .expect("server must remain up and serve a valid client after rejecting bad ones");
-    assert_eq!(resp.status(), 200);
+    let after = healthz_after(addr, b"LET-ME-IN\n").await;
+    assert!(
+        after.starts_with(b"HTTP/1.1 200"),
+        "the listener survives the refusals and serves the next admitted connection"
+    );
 }
 
 /// TEST 4a — config regression: with NO `tls` block the plain-HTTP path still works. Drives the
@@ -963,11 +783,13 @@ fn recv_side_from_std_failure_releases_the_sender_increment() {
     );
 }
 
-/// Binding: the ingress server posture is ALPN `http/1.1` only (never advertise h2, since axum's
-/// server here does not speak it), a hyper HTTP/1 header-read timeout of 30s, a
+/// Binding: the ingress server posture is a hyper HTTP/1 header-read timeout of 30s, a
 /// `tls_handshake_timeout_secs` default of 10, and a `request_body_read_timeout_secs` default of
-/// 30. Asserted against the real `build_server_config` output and the real default-limits
-/// accessors (uninstalled state), not a re-typed copy of the literals.
+/// 30, asserted against the real default-limits accessors (uninstalled state), not a re-typed copy
+/// of the literals. Its ALPN half — `http/1.1` only, never h2, since axum's server here does not
+/// speak it — is the connector's `build_server_config`, asserted on its real output by
+/// `busbar_core_connector::tls::tests::build_server_config_and_prepare_build_from_operator_config`
+/// (TLS stays in the connector).
 #[tokio::test]
 async fn server_posture_matches_the_1_5_5_defaults() {
     let _guard = LIMITS_TEST_LOCK.lock().await;
@@ -983,26 +805,6 @@ async fn server_posture_matches_the_1_5_5_defaults() {
         crate::limits::request_body_read_timeout_secs(),
         30,
         "request_body_read_timeout_secs default"
-    );
-
-    super::install_crypto_provider();
-    let (cert_pem, key_pem) = gen_self_signed();
-    let cert_file = temp_pem("posture-cert", &cert_pem);
-    let key_file = temp_pem("posture-key", &key_pem);
-    let tls = TlsCfg {
-        cert: crate::config::SecretRef::file(cert_file.to_string_lossy().into_owned()),
-        key: crate::config::SecretRef::file(key_file.to_string_lossy().into_owned()),
-        client_ca: None,
-    };
-    let server_config = test_build_server_config(
-        &tls,
-        &crate::config::secret::SecretResolver::builtins_only(),
-    )
-    .expect("valid test TLS config");
-    assert_eq!(
-        server_config.alpn_protocols,
-        vec![b"http/1.1".to_vec()],
-        "ALPN must advertise http/1.1 only, never h2"
     );
 
     // The hyper HTTP/1 connection builder: `header_read_timeout` requires a `Timer` or hyper
