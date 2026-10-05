@@ -123,8 +123,6 @@ const CONFIG_SCHEMA: &str = r#"{
           "resources_allow": { "type": "object" },
           "transport": { "type": "string" },
           "grants": { "type": "object" },
-          "roots": { "type": "array" },
-          "sampling": { "type": "object" },
           "allow_private": { "type": "boolean" },
           "upstream_credentials": { "type": "object" },
           "hooks": { "type": "array", "items": { "type": "string" } }

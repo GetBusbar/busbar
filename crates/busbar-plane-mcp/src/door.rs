@@ -36,7 +36,7 @@ use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec
 use crate::tool_claims::{
     CARRIER_HTTP, CARRIER_SSE, CARRIER_STDIO, DEFAULT_METADATA, DEFAULT_MOUNT, TASK_RUN_MOUNT,
 };
-use crate::tools_config::{ToolsCfg, DEFAULT_MCP_VERIFY_TTL, SECTION, SUBJECT_NOUN};
+use crate::tools_config::{ToolsCfg, DEFAULT_MCP_VERIFY_TTL, SUBJECT_NOUN};
 
 /// The grant kind that admits traffic on this plane: one registered server.
 pub const SCOPE: &str = "mcp_server";
@@ -76,14 +76,16 @@ const NONE: AbiStr = AbiStr {
 
 /// THE SECTIONS THE PLANE'S STATEMENT DECLARES: `tools:`, which it owns and judges, and its endpoint
 /// block beside it.
+/// The names are literals (the config-schema census reads a door-only plane's sections off this
+/// table); a test holds them equal to the grammar's `tools_config::SECTION` and [`ENDPOINT_SECTION`].
 pub const SECTIONS: &[Section] = &[
     Section {
-        name: abi_str(SECTION),
+        name: abi_str("tools"),
         flags: SECTION_DECLARING,
         _reserved: 0,
     },
     Section {
-        name: abi_str(ENDPOINT_SECTION),
+        name: abi_str("mcp"),
         flags: 0,
         _reserved: 0,
     },

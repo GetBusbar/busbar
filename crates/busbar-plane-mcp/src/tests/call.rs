@@ -12,7 +12,7 @@ use crate::catalogue::{Catalogue, ToolEntry};
 /// One server: an approved tool whose `path` argument is mirrored in `Mcp-Param-Path`, a tool
 /// awaiting approval, a tool that must be answered as a task, and a tool that asks its caller.
 const SECTION: &str = r#"{"fs": {"url": "https://mcp.example/fs", "pin": {"mechanism": "unpinned"},
-  "grants": {"roots": true}, "roots": [{"uri": "file:///work", "name": "work"}],
+  "grants": {"roots": true},
   "tools_allow": {
     "read_file": {"schema_hash": "sha256:aa", "input_schema": {"type": "object", "properties": {"path": {"type": "string", "x-mcp-header": "Path"}}}, "output_schema": {"type": "object", "required": ["n"]}},
     "draft": {},
@@ -287,10 +287,21 @@ fn the_request_is_the_dialect_builders_at_the_members_path() {
         "the upstream's own name"
     );
     assert_eq!(body["id"], json!(0));
+    // A RELAYED ASK NEEDS A CALLER WHO CAN ANSWER IT (Law 11): the roots grant alone advertises
+    // nothing to a caller that declared no roots; with the caller's roots declared it is.
+    assert_eq!(
+        body["params"]["_meta"][crate::codec::META_CLIENT_CAPABILITIES],
+        json!({}),
+        "nothing is advertised the caller could not answer"
+    );
+    let mut declaring = admitted();
+    declaring.capabilities = json!({ "roots": {}, "sampling": {} });
+    let o = outbound(&declaring, "fs", def, 0, None).expect("reachable");
+    let body: Value = serde_json::from_slice(&o.body).expect("json");
     assert_eq!(
         body["params"]["_meta"][crate::codec::META_CLIENT_CAPABILITIES],
         json!({ "roots": {} }),
-        "the roots grant with roots declared is advertised"
+        "the roots grant and the caller's roots advertise roots; an ungranted kind is not"
     );
     assert!(
         o.fields.iter().all(|(n, _)| n != "authorization"),

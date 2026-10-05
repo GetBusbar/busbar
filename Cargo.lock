@@ -557,7 +557,6 @@ dependencies = [
  "busbar-kernel",
  "busbar-kernel-ledger",
  "busbar-llm",
- "busbar-mcp",
  "busbar-plugin-loader",
  "flate2",
  "hex",
@@ -730,7 +729,6 @@ dependencies = [
  "busbar-kernel-scope",
  "busbar-kernel-wal",
  "busbar-llm",
- "busbar-mcp",
  "busbar-plugin-loader",
  "busbar-secret-env",
  "busbar-secret-file",
@@ -877,41 +875,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
-]
-
-[[package]]
-name = "busbar-mcp"
-version = "1.6.0"
-dependencies = [
- "async-trait",
- "axum",
- "base64 0.22.1",
- "busbar-auth-admin-tokens-plugin",
- "busbar-contract",
- "busbar-core-admin",
- "busbar-kernel",
- "busbar-llm",
- "busbar-plane-mcp",
- "bytes",
- "futures",
- "getrandom 0.3.4",
- "hex",
- "http",
- "http-body-util",
- "indexmap",
- "rcgen",
- "reqwest",
- "ring",
- "rmcp",
- "schemars",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "serde_yaml_ng",
- "sha2",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3310,23 +3273,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
-]
-
-[[package]]
-name = "rmcp"
-version = "3.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8dddc5b1924b9a59fba420166160ca2c4663a4e01803e52eda33070f56d63c8"
-dependencies = [
- "chrono",
- "futures",
- "pin-project-lite",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
 ]
 
 [[package]]

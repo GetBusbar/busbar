@@ -1686,6 +1686,17 @@ mod both_ways {
         load_dropped(&path, &stated, bind(d)).expect("the dropped door loads")
     }
 
+    /// The Statement's sections, as the loader reads them, are the grammar's: `tools:` declared and
+    /// the `mcp:` endpoint block owned beside it (the door states them as literals, which the
+    /// config-schema census reads).
+    #[test]
+    fn the_statements_sections_are_the_grammars() {
+        let d = Dispatcher::new(DispatchConfig::default());
+        let served = linked(&d).served();
+        assert_eq!(served.section, busbar_plane_mcp::tools_config::SECTION);
+        assert_eq!(served.owns, vec![door::ENDPOINT_SECTION]);
+    }
+
     #[test]
     fn the_linked_and_the_dropped_in_door_answer_every_op_the_same() {
         let d = Dispatcher::new(DispatchConfig::default());

@@ -280,7 +280,6 @@ pub const MOVED_SOURCES: &[(&str, &str)] = &[(
 /// not exist is a HARD ERROR rather than a skip: a source silently dropping out of the set would
 /// silently un-freeze its grammar, which is the failure this gate exists to prevent.
 pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
-    let mcp = plane_dir(cx, "crates", "mcp", "config.rs")?;
     let a2a = plane_dir(cx, "crates", "a2a", "config.rs")?;
     // THE CORE KIND, BY CENSUS. Each core-kind crate contributes its grammar directory; the three
     // leaf files below are resolved ACROSS the census rather than under one hardcoded crate.
@@ -319,12 +318,12 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // client may ever hold.
         "crates/busbar-core-oauth2/src/config.rs".to_string(),
         format!("{a2a}/creds.rs"),
-        format!("{mcp}/config.rs"),
         // `tools:` — the MCP plane's grammar, moved VERBATIM out of the engine's `mcp/config.rs`
-        // into the plane crate (MCP-1: the door judges its own section). The engine's file stays
-        // tracked above (it keeps the host glue and re-exports the grammar), and this is the same
-        // tracked SOURCE relocation as `ModelCfg`'s, so the snapshot does not move by a byte.
+        // into the plane crate (MCP-1: the door judges its own section); the engine crate is
+        // deleted (P3 DEL-MCP), its file carried no grammar of its own (re-exports and host glue).
         "crates/busbar-plane-mcp/src/tools_config.rs".to_string(),
+        // `mcp:` — the plane's endpoint block (`McpCfg`), in the plane crate beside `tools:`.
+        "crates/busbar-plane-mcp/src/endpoint.rs".to_string(),
         // `tool_pools:` / `agent_pools:` — one type, two sections, and `repeatable:` is the SAFETY
         // declaration that decides whether an operation with effects may be performed twice.
         core_file(cx, &core, "failover/mod.rs")?,

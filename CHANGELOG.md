@@ -783,9 +783,15 @@ each dialect translates, field by field, is listed in the generated
   single operator confirmation could execute a money-moving tool twice behind a load balancer. This
   needs a durable governance store: with the default `store: memory` the ledger is still the
   in-process one, so the guarantee is single-use per node, exactly as before.
-- **An upstream's `sampling/createMessage` ask can be satisfied under an operator-capped budget.**
-  `tools.<server>.sampling` declares the model the completion runs on, a `max_tokens` ceiling and
-  `max_requests_per_minute`. Deny-by-default is unchanged: with no grant, the ask is refused.
+- **An upstream's `sampling/createMessage`, `roots/list` or `elicitation/create` ask is relayed to
+  your caller, never answered by Busbar.** Busbar answers nothing on a caller's behalf: the caller
+  receives the upstream's `inputRequests` exactly as sent, under Busbar's own sealed `requestState`
+  (bound to that caller, that tool call and the server that asked), and its retry goes back to that
+  same server with the caller's answers and the server's own state, verbatim. `tools.<server>.grants`
+  decides which asks a server may put to your callers; with no grant the ask is refused, and Busbar
+  only declares a capability upstream that both the grant and the caller declare. The
+  `tools.<server>.roots:` and `tools.<server>.sampling:` blocks — Busbar's own answers to those asks
+  — are removed, and a config that writes either is refused at startup.
 - **An upstream's `notifications/resources/updated` is relayed to subscribed clients**, gated on
   the subscriber's own grant, and `server/discover` now declares `resources.subscribe: true`.
 - **Busbar serves A2A over gRPC** at `/lf.a2a.v1.A2AService/*`, on the same data port and data
