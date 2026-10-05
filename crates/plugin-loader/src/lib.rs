@@ -543,7 +543,9 @@ mod response_shape {
 /// are explicitly NOT unsupported and always propagate. This is the revocation-denylist fail-open,
 /// closed BY CONSTRUCTION.
 pub(crate) struct TransportError {
-    /// The semantic classification a loader caller keys on (see [`TransportErrorKind`]).
+    /// The semantic classification a loader caller keys on (see [`TransportErrorKind`]). Read by
+    /// [`Self::is_unsupported`] only, which the JSON-lane auth residue's tests hold.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) kind: TransportErrorKind,
     /// The human-readable failure message (plugin body on a plugin error, engine text otherwise).
     pub(crate) message: String,
@@ -629,6 +631,7 @@ impl TransportError {
     /// the request enum because it predates the variant. CANNOT be produced by a panic — a current-SDK
     /// panic is [`STATUS_PANIC`] (Fault) and a v1-SDK panic is a bare [`STATUS_PROTOCOL`] (Protocol),
     /// so neither can open a safe-default fallback.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn is_unsupported(&self) -> bool {
         matches!(self.kind, TransportErrorKind::Unsupported)
     }
