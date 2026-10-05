@@ -82,6 +82,7 @@ impl TestDoor {
                 name: name.to_owned(),
                 claims: claims.to_vec(),
                 composes_over: composes_over.to_vec(),
+                upgrades: Vec::new(),
             },
             knobs,
             framings: Mutex::new(HashMap::new()),
@@ -92,6 +93,12 @@ impl TestDoor {
             begun_fields: Mutex::new(Vec::new()),
             begun_targets: Mutex::new(Vec::new()),
         }
+    }
+
+    /// This door, its every claim opening at an UPGRADE (`UNIT0_UPGRADE` on its claim rows).
+    pub fn upgrading(mut self) -> Self {
+        self.facts.upgrades = self.facts.claims.clone();
+        self
     }
 
     /// An identity entry over the host's socket, claiming `scheme`.

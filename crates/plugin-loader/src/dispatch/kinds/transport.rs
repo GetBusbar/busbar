@@ -60,6 +60,24 @@ pub struct TransportFacts {
     /// The customer settings it reads, by their 1.5.5 config paths (`TransportTail::settings`), in
     /// its order: the host deals each one's value to its `open`.
     pub settings: Vec<&'static str>,
+    /// The claims whose first unit opens at an UPGRADE (`Claim::unit0_trigger` =
+    /// `UNIT0_UPGRADE`): the host's upgrade lines, read off the claim rows and never off a layer
+    /// list (ARCHITECT Q128 U7). A framer with one adopts the stream another framer hands up at the
+    /// upgrade (its `detach`), whatever that framer is.
+    pub upgrades: Vec<&'static str>,
+}
+
+/// WHAT A COMPILED-IN TRANSPORT DOOR STATES, read off its Statement without binding it (no
+/// `validate` or `open` runs), checked as a bind checks it.
+///
+/// # Errors
+///
+/// The door, its Statement or its transport tail is refused.
+pub fn stated(
+    door_fn: busbar_contract::abi::mechanism::door::DoorFn,
+) -> Result<TransportFacts, String> {
+    let st = crate::dispatch::load::statement_of(door_fn).map_err(|e| e.to_string())?;
+    tail_facts(&st)
 }
 
 /// A plugin string, interned.
@@ -125,6 +143,12 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         settings: settings
             .iter()
             .map(|s| owned(s.path, "settings"))
+            .collect::<Result<_, _>>()?,
+        upgrades: names
+            .iter()
+            .zip(rows)
+            .filter(|(_, row)| row.unit0_trigger == transport::UNIT0_UPGRADE)
+            .map(|(c, _)| owned(*c, "claim"))
             .collect::<Result<_, _>>()?,
     })
 }

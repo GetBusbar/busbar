@@ -411,6 +411,14 @@ impl HostWire {
         !self.door.facts().composes_over.is_empty()
     }
 
+    /// Whether this entry ADOPTS a stream another framer hands up: it composes over that layer, or
+    /// a claim of its opens at an upgrade (ARCHITECT Q128 U7: an upgrade framer composes over
+    /// nothing and is entered by `adopt` after the upgraded framer's `detach`).
+    #[must_use]
+    pub fn adopts(&self) -> bool {
+        self.composes() || !self.door.facts().upgrades.is_empty()
+    }
+
     /// What a framing on this entry is told the handshake established: its claim.
     fn established(&self) -> Established {
         Established {
@@ -474,7 +482,8 @@ impl HostWire {
     /// # Errors
     ///
     /// [`TransportError::HandoffMismatch`]: `raw` comes from a layer this entry does not declare it
-    /// composes over; [`TransportError::Framing`]: the entry refused to adopt it.
+    /// composes over, and no claim of the entry opens at an upgrade; [`TransportError::Framing`]:
+    /// the entry refused to adopt it.
     pub async fn adopt_from(
         &self,
         raw: RawStream,
@@ -482,7 +491,8 @@ impl HostWire {
         door: Option<Arc<dyn FramerDoor>>,
     ) -> Result<Conn, TransportError> {
         let door = door.unwrap_or_else(|| Arc::clone(&self.door));
-        if !door.facts().composes_over.contains(&raw.from()) {
+        let facts = door.facts();
+        if !facts.composes_over.contains(&raw.from()) && facts.upgrades.is_empty() {
             return Err(TransportError::HandoffMismatch);
         }
         let (framing, y) = Framing::adopt(door, SIDE_ACCEPT, &[], &self.established())

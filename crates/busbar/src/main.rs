@@ -861,7 +861,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             |l| l.upstream_request_timeout_secs,
         ),
         catalog: Some(&deploy.models),
-        upgrades: root::serve::upgrade_carriers(LINKED.transports),
+        upgrades: root::serve::upgrade_carriers(LINKED_TRANSPORT_DOORS),
     };
     // The kernel's own App through its swap handle once it exists (a config apply replaces the
     // generation a unit's hooks are read off), the boot App's until then.
@@ -960,7 +960,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         served,
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
-        &root::serve::upgrade_carriers(LINKED.transports),
+        &root::serve::upgrade_carriers(LINKED_TRANSPORT_DOORS),
     )
     .unwrap_or_else(|e| die(e));
     let (data_router, admin_router, app_handle) = build_split_routers_serving_sessions(

@@ -6,6 +6,6 @@
 tcp -
 http -
 sse http
-ws http
+ws -
 grpc -
 stdio -

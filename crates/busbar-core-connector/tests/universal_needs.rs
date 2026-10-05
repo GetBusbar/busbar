@@ -258,6 +258,7 @@ fn open_door(
             name: plugin.name().to_owned(),
             claims: stated.claims,
             composes_over: stated.composes_over,
+            upgrades: stated.upgrades,
         },
         plugin,
     }))

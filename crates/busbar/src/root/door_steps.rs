@@ -1314,8 +1314,8 @@ pub struct DoorReach<'a> {
     /// The top-level models catalog a section's `session.model` names an entry of
     /// (`root::serve::catalog_routes`, ARCHITECT Q-L5B-ROUTE); `None` = the section's own table.
     pub catalog: Option<&'a std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
-    /// The linked wires composed over the data carrier (`crate::root::serve::upgrade_carriers`):
-    /// a need over one dials its member's base URL in its own scheme ([`spelled_for`]).
+    /// The linked upgrade lines (`crate::root::serve::upgrade_carriers`: the claims that open at an
+    /// upgrade): a need over one dials its member's base URL in its own scheme ([`spelled_for`]).
     pub upgrades: Vec<&'static str>,
 }
 
@@ -1745,9 +1745,9 @@ pub fn member_routes(
     Ok(routes)
 }
 
-/// THE BASE URL A NEED'S FRAMER READS: a need over `transport`, a framer composed over the
-/// carrier the operator's `base_url` names (`upgrades`: the linked wires composing over the data
-/// carrier, `crate::root::serve::upgrade_carriers`), dials the same authority and path under the
+/// THE BASE URL A NEED'S FRAMER READS: a need over `transport`, a framer the carrier the operator's
+/// `base_url` names is upgraded to (`upgrades`: the linked claims that open at an upgrade,
+/// `crate::root::serve::upgrade_carriers`), dials the same authority and path under the
 /// framer's own scheme, its secured form for a secured base (`http://h` -> `<key>://h`,
 /// `https://h` -> `<key>s://h`, the pairing every upgrade-over-HTTP scheme keeps, RFC 6455 section
 /// 3). `None` when the need dials the base URL as written.

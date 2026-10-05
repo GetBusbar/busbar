@@ -1355,17 +1355,19 @@ fn line_auth(flags: u32, data_chain: &[String]) -> busbar_kernel::guest::LineAut
 #[cfg(linked_axis_node)]
 const CORE_CLAIMANT: &str = "core";
 
-/// The data listener's own framer: a claim over a carrier that composes over it is an upgrade line.
-const DATA_CARRIER: &str = "http";
-
-/// THE UPGRADE CARRIERS: the linked wires that compose over the data listener's own framer, whose
-/// claims are upgrade lines (their connection handed over after the head) and served as sessions.
+/// THE UPGRADE CARRIERS: the claims of the linked transport doors whose first unit opens at an
+/// UPGRADE (`UNIT0_UPGRADE` on the claim row) — upgrade lines (their connection handed over after the
+/// head), served as sessions. Read off the claim rows, never off a layer list (ARCHITECT Q128 U7): an
+/// upgrade framer composes over nothing. A door whose Statement is refused contributes none; its
+/// refusal is the boot's, at the connector's build.
 #[must_use]
-pub fn upgrade_carriers(transports: &[crate::root::linked::LinkedTransport]) -> Vec<&'static str> {
-    transports
+pub fn upgrade_carriers(
+    doors: &[(&str, busbar_contract::abi::mechanism::door::DoorFn)],
+) -> Vec<&'static str> {
+    doors
         .iter()
-        .filter(|t| t.composes_over.contains(&DATA_CARRIER))
-        .map(|t| t.key)
+        .filter_map(|(_, door)| crate::root::loader::dispatch::kinds::transport::stated(*door).ok())
+        .flat_map(|facts| facts.upgrades)
         .collect()
 }
 

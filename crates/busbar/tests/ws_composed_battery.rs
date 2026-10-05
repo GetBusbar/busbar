@@ -1,27 +1,35 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The upgrade wire's cross-transport composition battery: the six cells that drive a real instance
-//! of the layers it composes over underneath it.
+//! The upgrade wire's cross-transport battery: the six cells that drive a real instance of the
+//! framer an upgrade arrives on, and the wire entered by ADOPT after that framer's `detach`.
+//!
+//! ## The shape (ARCHITECT Q128 U7 / Q8)
+//!
+//! The wire composes over NOTHING: no transport names another, the carrier under a dial is the
+//! connector's choice from the target's scheme, and an inbound upgrade reaches the wire by `adopt` of
+//! the stream the upgraded framer's `detach` hands up (its claim row states the upgrade). These cells
+//! were the composition battery while the wire composed over `http`/`tcp`; they keep their observable
+//! bytes on the detach -> adopt path.
 //!
 //! ## Why this lives here and not in the wire's own crate
 //!
 //! A transport crate is a plugin-kind crate: its own `Cargo.toml` is not allowed to name a sibling
 //! transport even in `[dev-dependencies]`, because a dev-dependency's SHIPPED closure is linked into
 //! that crate's `cargo test` binary whole (`kind-isolation:closure`'s `closure-test-reach`
-//! finding). Composing OVER another wire is real and shipped (an adoption through a contract trait),
-//! but PROVING it with a real lower layer needs every layer linked, and the one crate that links
+//! finding). The hand-up across two framers is real and shipped (an adoption through a contract
+//! trait), but PROVING it with a real upgraded framer needs both linked, and the one crate that links
 //! them all is the composition root.
 //!
 //! ## How this file reaches the wires
 //!
 //! Through the linked transport table, exactly as the boot seal does: build.rs hands this test each
 //! linked row's `KEY`, `COMPOSES_OVER` and `build` (`$OUT_DIR/linked_transports.rs`) and the same
-//! bottom-up fold `root::registry::compose` runs. The wire under test is named once, as data
-//! (`tests/fixtures/composed_battery_wire.txt`); the layer it is built over, and the layer under
-//! that, are read off the fold — and the layer it is built over is held to the shipped fold
-//! (`src/root/tests/fixtures/transport_fold.txt`), so a declaration that re-layers the wire turns
-//! this battery red. The file names no transport crate and spells no transport key.
+//! bottom-up fold `root::registry::compose` runs. The wire under test and the framer it is upgraded
+//! from are named once, as data (`tests/fixtures/composed_battery_wire.txt`); the wire's own layer is
+//! held to the shipped fold (`src/root/tests/fixtures/transport_fold.txt`: it is built over
+//! nothing), so a declaration that re-layers the wire turns this battery red. The file names no
+//! transport crate and spells no transport key.
 //!
 //! The file needs every linked wire (`linked_every_transport`, emitted by build.rs): a build that
 //! leaves one unlinked is a different composition, not a smaller one.
@@ -57,31 +65,27 @@ fn rows(text: &'static str) -> impl Iterator<Item = (&'static str, &'static str)
         .map(|l| l.split_once(' ').expect("a `<key> <value>` row"))
 }
 
-/// The wire under test, its layers and its targets — every key read off the linked table.
+/// The wire under test, the framer it is upgraded from, and its targets — every key read off the
+/// linked table.
 struct Stack {
     /// The wire's linked row.
     wire: &'static LinkedWire,
-    /// The wire as the fold built it, over `upper`.
-    composed: Arc<dyn Transport>,
-    /// The layer the fold built the wire over (the one an inbound upgrade arrives on).
+    /// The framer an inbound upgrade arrives on, as the fold built it.
     upper: Arc<dyn Transport>,
-    /// The first linked layer `upper` declares (the one an outbound dial goes through).
-    bottom: Arc<dyn Transport>,
-    /// The scheme of a target the wire must refuse over a cleartext layer.
+    /// The scheme of a target the wire must refuse over a cleartext carrier.
     secure: &'static str,
 }
 
 impl Stack {
     /// A fresh fold of every linked wire at the default settings.
     fn fold() -> Self {
-        Self::fold_with(&TransportSettings::default())
-    }
-
-    fn fold_with(settings: &TransportSettings) -> Self {
-        let (key, secure) = rows(BATTERY_WIRE)
+        let (key, rest) = rows(BATTERY_WIRE)
             .next()
             .expect("the battery names its wire");
-        let built = fold_linked_transports(settings);
+        let (secure, from) = rest
+            .split_once(' ')
+            .expect("`<wire> <secure scheme> <upgraded from>`");
+        let built = fold_linked_transports(&TransportSettings::default());
         let find = |key: &str| {
             built
                 .iter()
@@ -89,29 +93,19 @@ impl Stack {
                 .map(|(row, t)| (*row, Arc::clone(t)))
                 .unwrap_or_else(|| panic!("`{key}` is not a linked wire"))
         };
-        let (wire, composed) = find(key);
-        let upper_key = composed
-            .composed_over()
-            .unwrap_or_else(|| panic!("the fold built `{key}` over nothing"));
+        let (wire, folded) = find(key);
         let (_, shipped) = rows(TRANSPORT_FOLD)
             .find(|(k, _)| *k == key)
             .unwrap_or_else(|| panic!("the shipped fold has no `{key}` row"));
         assert_eq!(
-            upper_key, shipped,
-            "the fold built `{key}` over a layer the shipped fold does not name"
+            (folded.composed_over(), shipped),
+            (None, "-"),
+            "the fold built `{key}` over nothing, as the shipped fold says"
         );
-        let (upper_row, upper) = find(upper_key);
-        let bottom_key = upper_row
-            .composes_over
-            .iter()
-            .find(|l| LINKED_TRANSPORTS.iter().any(|r| r.key == **l))
-            .unwrap_or_else(|| panic!("`{upper_key}` declares no linked layer"));
-        let (_, bottom) = find(bottom_key);
+        let (_, upper) = find(from);
         Self {
             wire,
-            composed,
             upper,
-            bottom,
             secure,
         }
     }
@@ -125,17 +119,57 @@ impl Stack {
         (self.wire.build)(lower, settings)
     }
 
-    /// A fresh instance of the wire over the dial layer, at the default settings.
+    /// A fresh instance of the wire, at the default settings: it dials over the carrier the
+    /// connector picks from the target's scheme.
     fn dialler(&self) -> Arc<dyn Transport> {
-        self.build(
-            Some(Arc::clone(&self.bottom)),
-            &TransportSettings::default(),
-        )
+        self.build(None, &TransportSettings::default())
     }
 
     /// A cleartext target on `addr`, whose scheme is the wire's key.
     fn target(&self, addr: impl std::fmt::Display, path: &str) -> &'static str {
         Box::leak(format!("{}://{addr}{path}", self.wire.key).into_boxed_str())
+    }
+
+    /// THE UPGRADED PAIR: the upgraded-from framer listens and accepts the dialler's upgrade, the
+    /// wire built at `server` ADOPTS the stream that framer hands up, and `client` dials the wire's
+    /// target at `path`. Answers (the client wire, its connection, the adopting wire, its
+    /// connection).
+    async fn upgraded(
+        &self,
+        server: &TransportSettings,
+        client: Arc<dyn Transport>,
+        path: &str,
+    ) -> (
+        Arc<dyn Transport>,
+        busbar_contract::transport::wire::Conn,
+        Arc<dyn Transport>,
+        busbar_contract::transport::wire::Conn,
+    ) {
+        let upper = Arc::clone(&self.upper);
+        let adopter = self.build(None, server);
+        let keys = test_key_handle();
+        let listener = upper
+            .listen(&ListenerCfg("127.0.0.1:0".to_string(), None), &keys)
+            .await
+            .unwrap();
+        let addr = listener.local_addr();
+        let upgrade_task = {
+            let (upper, adopter) = (upper.clone(), adopter.clone());
+            tokio::spawn(async move {
+                let keys = test_key_handle();
+                let upper_conn = upper.accept(&listener).await.unwrap();
+                adopter.adopt(&*upper, upper_conn, &keys).await.unwrap()
+            })
+        };
+        let client_conn = client
+            .dial(
+                &verified_upstream(self.wire.key, self.target(addr, path)),
+                &keys,
+            )
+            .await
+            .unwrap();
+        let server_conn = upgrade_task.await.unwrap();
+        (client, client_conn, adopter, server_conn)
     }
 }
 
@@ -181,11 +215,11 @@ fn verified_upstream(
     )
 }
 
-/// The in-band upgrade, driven through the seam the design names: the layer below accepts the
-/// connection, the wire adopts the stream it gives up, and the handshake runs on the layer that
-/// speaks it. The facts of the pre-upgrade layer do not survive it — that layer no longer knows the
-/// connection — and the composed chain the adopted connection reports is the real one, not a name
-/// for itself.
+/// The in-band upgrade, driven through the seam the design names: the upgraded-from framer accepts
+/// the connection, the wire adopts the stream it gives up (its `detach`), and the handshake runs on
+/// the wire that speaks it. The facts of the pre-upgrade framer do not survive it — that framer no
+/// longer knows the connection — and the chain the adopted connection reports is the real one, not
+/// a name for itself.
 #[tokio::test]
 async fn an_in_band_upgrade_over_the_layer_below_with_cleared_facts() {
     let stack = Stack::fold();
@@ -221,13 +255,13 @@ async fn an_in_band_upgrade_over_the_layer_below_with_cleared_facts() {
 
     assert_eq!(
         before,
-        vec![stack.bottom.key(), upper.key()],
-        "the layer below named itself"
+        vec![upper.key()],
+        "the upgraded-from framer named itself"
     );
     assert_eq!(
         adopter.arrival(&upgraded).transport_chain,
-        vec![stack.bottom.key(), upper.key(), stack.wire.key],
-        "the composed chain, not a name for itself"
+        vec![upper.key(), stack.wire.key],
+        "the real chain, not a name for itself"
     );
     assert_eq!(
         after_source.port, 0,
@@ -249,38 +283,24 @@ async fn an_in_band_upgrade_over_the_layer_below_with_cleared_facts() {
     assert_eq!(frame.bytes.as_slice(), b"after the upgrade");
 }
 
-/// The genuine network path, over the layers this wire composes over rather than over sockets of
-/// its own: the upper layer binds and accepts, the bottom layer dials, and this one does the one
-/// thing it owns — the handshake — on the streams they give up.
+/// The genuine network path: the upgraded-from framer binds and accepts, the wire dials over the
+/// carrier its target's scheme picks, and the wire does the one thing it owns — the handshake — on
+/// both ends, the accepting end on the stream the upgraded-from framer gave up.
 #[tokio::test]
 async fn a_composed_round_trip_over_the_layers_below() {
     let stack = Stack::fold();
-    let server_t = Arc::clone(&stack.composed);
-    let client_t = stack.dialler();
-    let keys = test_key_handle();
-    let listener = server_t
-        .listen(&ListenerCfg("127.0.0.1:0".to_string(), None), &keys)
-        .await
-        .unwrap();
-    let addr = listener.local_addr();
-
-    let accept_task = {
-        let server_t = server_t.clone();
-        tokio::spawn(async move { server_t.accept(&listener).await })
-    };
-
-    let dest = verified_upstream(stack.wire.key, stack.target(addr, "/"));
-    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
-    let server_conn = accept_task.await.unwrap().unwrap();
+    let (client_t, client_conn, server_t, server_conn) = stack
+        .upgraded(&TransportSettings::default(), stack.dialler(), "/")
+        .await;
 
     // Both ends report the stack they actually stand on, not a name for themselves.
     assert_eq!(
         server_t.arrival(&server_conn).transport_chain,
-        vec![stack.bottom.key(), stack.upper.key(), stack.wire.key]
+        vec![stack.upper.key(), stack.wire.key]
     );
     assert_eq!(
         client_t.arrival(&client_conn).transport_chain,
-        vec![stack.bottom.key(), stack.wire.key]
+        vec![stack.wire.key]
     );
 
     client_t
@@ -296,78 +316,46 @@ async fn a_composed_round_trip_over_the_layers_below() {
     assert_eq!(frame.bytes.as_slice(), b"hello over the layers below");
 }
 
-/// The layer this instance reports is the one it was built over, and it is one the wire declares —
-/// which is what the registry's boot check compares. A composition nobody declared refuses the boot
-/// rather than running as a stack the declarations do not describe.
+/// The layer this instance reports is the one it declares: NONE. An upgrade wire composes over
+/// nothing, so it is built over nothing whatever the fold hands it, and reports no layer — which is
+/// what the registry's boot check compares. RED: a wire that still declared a layer would be built
+/// over it and report it.
 #[tokio::test]
 async fn the_layer_reported_is_one_the_transport_declares() {
     let stack = Stack::fold();
     let settings = TransportSettings::default();
-    let built = fold_linked_transports(&settings);
-    let mut over = Vec::new();
-    for layer in stack.wire.composes_over {
-        let Some((_, lower)) = built.iter().find(|(row, _)| row.key == *layer) else {
-            continue;
-        };
-        let t = stack.build(Some(Arc::clone(lower)), &settings);
-        let used = t.composed_over().expect("built over a layer, it names one");
-        assert_eq!(
-            used, *layer,
-            "the layer reported is the one it was built over"
-        );
-        assert!(
-            stack.wire.composes_over.contains(&used),
-            "`{used}` is a layer this wire declares it composes over"
-        );
-        over.push(used);
-    }
-    // Both halves of the stack the other cells stand on were built over and answered.
     assert!(
-        over.contains(&stack.upper.key()),
-        "built over the upper layer"
-    );
-    assert!(
-        over.contains(&stack.bottom.key()),
-        "built over the dial layer"
+        stack.wire.composes_over.is_empty(),
+        "the upgrade wire declares no layer: {:?}",
+        stack.wire.composes_over
     );
     assert_eq!(stack.build(None, &settings).composed_over(), None);
+    assert_eq!(
+        stack
+            .build(Some(Arc::clone(&stack.upper)), &settings)
+            .composed_over(),
+        None,
+        "handed a layer it does not declare, it is still built over nothing"
+    );
+    assert!(stack.wire.session, "the upgrade wire carries sessions");
 }
 
 /// The size of message this connection will accept is the operator's number, not the WebSocket
-/// library's. Left to the default, a listener declaring a 1 KiB body cap would still buffer 64 MiB
+/// library's. Left to the default, a deployment declaring a 1 KiB body cap would still buffer 64 MiB
 /// per connection before saying no — the deployment's own limit silently widened by four orders of
-/// magnitude, at the one layer where an oversized message is cheapest to refuse.
+/// magnitude, at the one layer where an oversized message is cheapest to refuse. The accepting wire
+/// is built with the deployment's cap, as the composition root builds it, and adopts the upgrade.
 #[tokio::test]
 async fn the_message_cap_is_the_operator_s_and_not_the_library_s() {
     const CAP: usize = 1024;
     let stack = Stack::fold();
-    let t = Arc::clone(&stack.composed);
-    // The listener is where the operator's configuration reaches this transport at all.
-    let keys = test_key_handle();
-    let listener = t
-        .listen(
-            &ListenerCfg("127.0.0.1:0".to_string(), Some(CAP as i64)),
-            &keys,
-        )
-        .await
-        .unwrap();
-    let addr = listener.local_addr();
-    let accept_task = {
-        let t = t.clone();
-        tokio::spawn(async move { t.accept(&listener).await })
+    let capped = TransportSettings {
+        request_body_max_bytes: CAP,
+        ..TransportSettings::default()
     };
-
     // The peer is not capped at the operator's number, because the cap this test is about is the
     // RECEIVER's: a limit that only holds when the far side agrees to it is not a limit.
-    let peer = stack.dialler();
-    let a = peer
-        .dial(
-            &verified_upstream(stack.wire.key, stack.target(addr, "/")),
-            &keys,
-        )
-        .await
-        .unwrap();
-    let b = accept_task.await.unwrap().unwrap();
+    let (peer, a, t, b) = stack.upgraded(&capped, stack.dialler(), "/").await;
 
     let oversized = vec![b'w'; 2 * CAP];
     peer.write(&a, StreamId(0), ScratchBytes::new(&oversized))
@@ -386,45 +374,19 @@ async fn the_message_cap_is_the_operator_s_and_not_the_library_s() {
     );
 }
 
-/// And the other lifecycle: an instance that only ever DIALS holds the same ceiling.
-///
-/// The cell above reaches the transport through `listen`, which is the seam a served instance
-/// learns the deployment's configuration through. A dial-side instance never reaches it — nothing
-/// binds it, so nothing hands it a config view — and an upstream that streams audio is exactly the
-/// connection an unbounded message ceiling costs the most on. The composition root holds the number
-/// in both cases, so it names it at the wire's build here — the settings the linked row is built
-/// with — and the same field answers.
+/// And the other lifecycle: an instance that only ever DIALS holds the same ceiling — the settings
+/// the linked row is built with, since nothing binds a dial-side instance or hands it a config view.
 #[tokio::test]
 async fn a_dial_only_instance_holds_the_ceiling_its_root_named() {
     const CAP: usize = 1024;
     let stack = Stack::fold();
-    // No `listen` on this instance: the ceiling arrives only through the build's settings.
     let capped = TransportSettings {
         request_body_max_bytes: CAP,
         ..TransportSettings::default()
     };
-    let t = stack.build(Some(Arc::clone(&stack.bottom)), &capped);
-
+    let t = stack.build(None, &capped);
     // The upstream is not capped at this number: it is the dialler's ceiling under test.
-    let upstream = Arc::clone(&stack.composed);
-    let keys = test_key_handle();
-    let listener = upstream
-        .listen(&ListenerCfg("127.0.0.1:0".to_string(), None), &keys)
-        .await
-        .unwrap();
-    let addr = listener.local_addr();
-    let accept_task = {
-        let upstream = upstream.clone();
-        tokio::spawn(async move { upstream.accept(&listener).await })
-    };
-    let mine = t
-        .dial(
-            &verified_upstream(stack.wire.key, stack.target(addr, "/")),
-            &keys,
-        )
-        .await
-        .unwrap();
-    let theirs = accept_task.await.unwrap().unwrap();
+    let (t, mine, upstream, theirs) = stack.upgraded(&TransportSettings::default(), t, "/").await;
 
     // At the ceiling the message is a message, so this is a ceiling and not a smaller default.
     let at_cap = vec![b'k'; CAP];
@@ -453,8 +415,8 @@ async fn a_dial_only_instance_holds_the_ceiling_its_root_named() {
 }
 
 /// A secure target is a statement that the bytes are encrypted before they leave, and this wire
-/// encrypts nothing: it upgrades whatever stream the layer below gives it. Over a cleartext lower
-/// layer the handshake would therefore go out as a plain HTTP GET, with no certificate ever
+/// encrypts nothing: it frames whatever stream its carrier gives it. Over a cleartext carrier the
+/// handshake would therefore go out as a plain HTTP GET, with no certificate ever
 /// validated, while the destination said it was secure. The dial is refused instead, and nothing
 /// reaches the wire.
 #[tokio::test]

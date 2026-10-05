@@ -155,6 +155,7 @@ impl Dispatched {
             name: plugin.name().to_owned(),
             claims: stated.claims,
             composes_over: stated.composes_over,
+            upgrades: stated.upgrades,
         };
         Ok(Self {
             plugin,
@@ -415,14 +416,16 @@ impl busbar_contract::Transport for RootWire {
     }
 
     /// A composing entry ([`HostWire::composed`]) adopts the stream the layer under it hands up
-    /// (`from`'s own detach); an entry over the host's socket adopts nothing.
+    /// (`from`'s own detach), and so does an UPGRADE framer (a claim of its opens at an upgrade:
+    /// it composes over nothing and is entered by adopt after the upgraded framer's detach, ARCHITECT
+    /// Q128 U7 / Q8); any other entry over the host's socket adopts nothing.
     fn adopt<'a>(
         &'a self,
         from: &'a dyn busbar_contract::Transport,
         conn: busbar_contract::transport::wire::Conn,
         keys: &'a busbar_contract::TransportKeyHandle,
     ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
-        if !self.wire.composes() {
+        if !self.wire.adopts() {
             return self.wire.adopt(conn, keys);
         }
         Box::pin(async move {

@@ -556,6 +556,58 @@ fn a_composing_entry_adopts_the_stream_its_lower_layer_hands_up() {
     });
 }
 
+/// AN UPGRADE FRAMER IS ENTERED BY ADOPT (ARCHITECT Q128 U7 / Q8): an entry that composes over
+/// nothing frames the host's own socket, and when a claim of its opens at an upgrade it ADOPTS the
+/// stream another framer hands up at the upgrade (that framer's `detach`), what the lower framer
+/// held first in front of it, framing both ways from there. RED: the same entry with no upgrade claim
+/// refuses the stream as a handoff mismatch (the rule read the layer list alone, so an upgrade
+/// framer that names no layer could never be entered).
+#[test]
+fn an_upgrade_framer_adopts_the_stream_another_framer_hands_up() {
+    worker().block_on(async {
+        let upgrading = HostWire::new(Arc::new(
+            TestDoor::new("msg", &["msg"], &[], Knobs::default()).upgrading(),
+        ))
+        .expect("over the host's socket");
+        assert!(upgrading.adopts() && !upgrading.composes());
+        let lower = wire();
+        let (client, server, _l) = pair(&lower).await;
+        lower
+            .write(&client, StreamId(0), ScratchBytes::new(b"early"), false)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let raw = lower.detach(&server).expect("hands up");
+        let adopted = upgrading
+            .adopt_from(raw, Vec::new(), None)
+            .await
+            .expect("adopted at the upgrade");
+        assert_eq!(read_n(&upgrading, &adopted, 5).await, b"early");
+        upgrading
+            .write(&adopted, StreamId(0), ScratchBytes::new(b"over"), false)
+            .await
+            .unwrap();
+        assert_eq!(read_n(&lower, &client, 4).await, b"over");
+        upgrading.close(adopted, CloseReason::Normal);
+
+        let plain = HostWire::new(Arc::new(TestDoor::new(
+            "msg",
+            &["msg"],
+            &[],
+            Knobs::default(),
+        )))
+        .expect("over the host's socket");
+        assert!(!plain.adopts());
+        let (_c2, s2, _l2) = pair(&lower).await;
+        let raw = lower.detach(&s2).expect("hands up");
+        assert_eq!(
+            plain.adopt_from(raw, Vec::new(), None).await.err(),
+            Some(TransportError::HandoffMismatch),
+            "an entry with no upgrade claim and no layer adopts nothing"
+        );
+    });
+}
+
 /// RED (SEAM-4n, ARCHITECT ruling): a dialled framing is begun with the FULL target its need
 /// declared (`scheme://host:port/path`), never the bare authority; the socket goes to the authority
 /// the entry's own `locate` reads off that target. A target that asks for connection security is

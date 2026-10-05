@@ -62,6 +62,10 @@ pub struct DoorFacts {
     pub claims: Vec<&'static str>,
     /// The claims it composes over; empty = directly over the host's socket.
     pub composes_over: Vec<&'static str>,
+    /// Its claims whose first unit opens at an UPGRADE (`UNIT0_UPGRADE` on the claim row): an entry
+    /// with one ADOPTS the stream another framer hands up at the upgrade (that framer's `detach`),
+    /// read off its claim rows, never off a layer list (ARCHITECT Q128 U7).
+    pub upgrades: Vec<&'static str>,
 }
 
 /// A transport entry's framer table, as the host reaches it.
