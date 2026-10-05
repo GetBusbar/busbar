@@ -479,6 +479,7 @@ fn rig(
                     provider: format!("p{k}"),
                     keep: super::ResponseKeep::default(),
                     rides: Vec::new(),
+                    spelled: Vec::new(),
                     anchors: Default::default(),
                     auth: Some(AuthBinding {
                         auth: auth.clone() as Arc<dyn OutboundAuth>,
@@ -1420,6 +1421,42 @@ async fn a_far_request_opens_on_the_need_it_names() {
         assert_eq!(sent, opened.is_some(), "named {named}");
         let needs = r.table.needs.lock().unwrap().clone();
         assert_eq!(needs.get(before).copied(), opened, "named {named}");
+        drop(far);
+    }
+}
+
+/// SEAM-L(n), A NEED DIALS THE BASE URL IT SPELLS: a member whose second need spells its base URL in
+/// another scheme (the root composes `spelled` from the linked framers) opens a far request naming
+/// that need at the spelled base, joined with the plane's path; a request on its own need dials the
+/// operator's base URL as written. RED: every need dialled the provider's own base URL.
+#[tokio::test]
+async fn a_far_request_on_a_spelled_need_dials_that_needs_base_url() {
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    for route in r.egress.routes.values_mut() {
+        route.rides = vec![(NeedId(3), super::ResponseKeep::default())];
+        route.spelled = vec![(NeedId(3), "wss://a.test/v1/".to_string())];
+    }
+    let t = token();
+    for (named, dialled) in [(4, "wss://a.test/v1/chat"), (0, "https://a.test/v1/chat")] {
+        let far = r.egress.unit(route());
+        assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+        let before = r.table.opened.lock().unwrap().len();
+        let sent = far
+            .send(
+                &t,
+                OutboundRequest {
+                    need: named,
+                    ..request()
+                },
+            )
+            .await;
+        assert!(sent, "named {named}");
+        let opened = r.table.opened.lock().unwrap().clone();
+        assert_eq!(opened[before].0, dialled, "named {named}");
         drop(far);
     }
 }

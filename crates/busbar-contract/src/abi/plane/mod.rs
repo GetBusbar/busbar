@@ -550,9 +550,17 @@ const _: () = assert!(MAX_REFUSAL_TEXT >= LARGEST_ADMITTED_FIELD_LINE);
 /// from [`REFUSAL_GATE`]; [`RefusalOut::marker`] from a plane is always `0`.
 pub const MARK_GATE_REJECTED: u32 = 1;
 
-/// [`RecordWrite::op`]: put, the one record write there is. A put of an EMPTY value is a tombstone:
-/// the record reads as absent. A code past it is FAULT, never a write the kernel drops.
+/// [`RecordWrite::op`]: put, the one write to a record kind of the plane's own. A put of an EMPTY
+/// value is a tombstone: the record reads as absent. A code that is neither it nor
+/// [`RECORD_AUDIT`] is FAULT, never a write the kernel drops.
 pub const RECORD_PUT: u32 = 1;
+/// [`RecordWrite::op`]: THE UNIT'S AUDIT RECORD, a row on the kernel's own audit chain (the one
+/// fixed record), not a record of the plane's: its `key` is the row's action, its `value` the
+/// resource it names, and its `kind` the row's outcome, [`AUDIT_APPLIED`] or [`AUDIT_REJECTED`]
+/// (not a record kind). The kernel writes the row under the unit's principal, which the plane never
+/// sees. The action and the resource are UTF-8, the action never empty. (`2` is the retired
+/// delete and never reused.)
+pub const RECORD_AUDIT: u32 = 3;
 
 /// [`AdminRoute::flags`]: a public route. [`slot::SERVE`] serves it to an unauthenticated caller;
 /// the arrival gate and the audit still run, it meters nothing, and a signature it carries is
@@ -1303,9 +1311,9 @@ pub struct UnitCount {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RecordWrite {
-    /// Index into [`PlaneTail::record_kinds`].
+    /// Index into [`PlaneTail::record_kinds`]; with [`RECORD_AUDIT`], the audit row's outcome.
     pub kind: u32,
-    /// [`RECORD_PUT`].
+    /// [`RECORD_PUT`] | [`RECORD_AUDIT`].
     pub op: u32,
     /// The key.
     pub key: Span,
@@ -1517,6 +1525,13 @@ pub struct OnPieceOut {
     pub need: u32,
     /// Alignment padding.
     pub _need_reserved: u32,
+    /// THE UNIT'S LEDGER LANE, in the arena; a zero length = none named. The billing identity the
+    /// unit's units are priced, ledgered and metered under, which is not the route entry the walk
+    /// picked (a call of one tool on a pooled server is the tool's lane, not the server's). The
+    /// kernel qualifies it with the plane's own key, so a plane names lanes of its own card alone;
+    /// the last one an answer of the unit named holds, and a unit whose answers name none is laned
+    /// by the entry its route picked. UTF-8, without control characters. A tail addition.
+    pub lane: Span,
     /// With [`EMIT_FINAL_STATUS`]: the reply's final status number, in the numbering the claim's
     /// transport declares for its own statuses. A tail addition.
     pub final_status: u32,
@@ -1571,6 +1586,15 @@ pub struct RefusalIn {
     /// authenticates first): the plane then chooses its envelope from the target by its own rule;
     /// the kernel never picks a dialect.
     pub target: AbiStr,
+    /// HOST buffer for record writes: the refusal's record writes, as an `on_piece` answer's
+    /// ([`RecordWrite`], their bytes in the arena), so a plane writes its declared audit row
+    /// ([`RECORD_AUDIT`]) for a unit the kernel refused. A tail addition.
+    pub records_buf: *mut RecordWrite,
+    /// Its capacity.
+    pub records_cap: usize,
+    /// With [`REFUSAL_GATE`]: the name of the hook that vetoed the unit, opaque bytes; absent on
+    /// every other refusal. A tail addition.
+    pub hook: AbiStr,
 }
 
 /// `refusal`'s `out`.
@@ -1596,6 +1620,10 @@ pub struct RefusalOut {
     /// The status number the rendered reply carries, in [`RefusalIn::status`]'s space; the
     /// transport maps it to its wire. `0` = keep [`RefusalIn::status`].
     pub status: u32,
+    /// Record writes written to `records_buf`. A tail addition.
+    pub records_written: u32,
+    /// Short answer: the record writes `records_buf` needs.
+    pub records_needed: u32,
 }
 
 /// `serve`'s `in`.
@@ -1628,6 +1656,13 @@ pub struct ServeIn {
     pub arena_buf: *mut u8,
     /// Its capacity.
     pub arena_cap: usize,
+    /// HOST buffer for record writes: the served request's record writes, as an `on_piece`
+    /// answer's ([`RecordWrite`], their bytes in the arena), so a route (a public callback among
+    /// them) writes the state transition it recorded to the plane's record chain itself. A tail
+    /// addition.
+    pub records_buf: *mut RecordWrite,
+    /// Its capacity.
+    pub records_cap: usize,
 }
 
 /// `serve`'s `out`.
@@ -1652,6 +1687,10 @@ pub struct ServeOut {
     pub fields_needed: u32,
     /// `AUDIT_*`: the row the kernel audits the request with, under the route's `audit_verb`.
     pub audit: u32,
+    /// Record writes written to `records_buf`. A tail addition.
+    pub records_written: u32,
+    /// Short answer: the record writes `records_buf` needs.
+    pub records_needed: u32,
 }
 
 /// The plane's `drive` `in`: the lifecycle's, plus a HOST buffer for the sessions with output

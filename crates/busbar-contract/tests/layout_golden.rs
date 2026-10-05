@@ -1823,7 +1823,12 @@ fn compute_layout() -> String {
             verb,
             target,
             need,
-            _need_reserved
+            _need_reserved,
+            lane,
+            final_status,
+            _final_reserved,
+            final_message,
+            final_details
         ]
     );
     record!(
@@ -1845,7 +1850,10 @@ fn compute_layout() -> String {
             unit,
             plane_code,
             retry_after_s,
-            target
+            target,
+            records_buf,
+            records_cap,
+            hook
         ]
     );
     record!(
@@ -1860,15 +1868,30 @@ fn compute_layout() -> String {
             marker,
             fields_written,
             fields_needed,
-            status
+            status,
+            records_written,
+            records_needed
         ]
     );
     record!(
         s,
         pkind::ServeIn,
         [
-            head, route, _reserved, target, fields, fields_len, body, reply_buf, reply_cap,
-            fields_buf, fields_cap, arena_buf, arena_cap
+            head,
+            route,
+            _reserved,
+            target,
+            fields,
+            fields_len,
+            body,
+            reply_buf,
+            reply_cap,
+            fields_buf,
+            fields_cap,
+            arena_buf,
+            arena_cap,
+            records_buf,
+            records_cap
         ]
     );
     record!(
@@ -1883,7 +1906,9 @@ fn compute_layout() -> String {
             status,
             fields_written,
             fields_needed,
-            audit
+            audit,
+            records_written,
+            records_needed
         ]
     );
     record!(s, pkind::PlaneDriveIn, [drive, sessions_buf, sessions_cap]);

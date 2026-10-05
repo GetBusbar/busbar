@@ -609,7 +609,7 @@ fn a_non_ready_on_piece_still_has_its_units_and_records_judged() {
     let mut o: OnPieceOut = z();
     o.records_written = 1;
     let mut r: RecordWrite = z();
-    r.op = 3;
+    r.op = 4;
     assert_eq!(
         check_on_piece(Pending, &o, (&[], &[r], &[]), &caps(), &bounds()),
         f(Rule::UnknownCode, "record.op")
@@ -681,6 +681,147 @@ fn a_record_write_that_is_not_a_put_is_fault() {
         r.op = op;
         assert_eq!(piece(&o, &[], &[r], &[]), f(Rule::UnknownCode, "record.op"));
     }
+}
+
+/// SEAM-L(k), THE UNIT'S AUDIT RECORD: a [`RECORD_AUDIT`] write names the row's outcome where a
+/// put names its kind (so it needs no record kind of the plane's: here a tail with none), its
+/// action in `key` (never empty) and its resource in `value`, both inside the arena. RED: every
+/// write but a put was FAULT, and its outcome was judged as a record kind.
+#[test]
+fn an_audit_record_names_its_outcome_and_action() {
+    let mut o: OnPieceOut = z();
+    o.records_written = 1;
+    o.arena_written = 8;
+    let mut r: RecordWrite = z();
+    r.op = RECORD_AUDIT;
+    r.key = sp(0, 4);
+    r.value = sp(4, 4);
+    let none = Bounds {
+        record_kinds: 0,
+        ..bounds()
+    };
+    for outcome in [AUDIT_APPLIED, AUDIT_REJECTED] {
+        r.kind = outcome;
+        assert_eq!(
+            check_on_piece(Ready, &o, (&[], &[r], &[]), &caps(), &none),
+            Ok(()),
+            "outcome {outcome}"
+        );
+    }
+    for outcome in [AUDIT_NONE, AUDIT_REJECTED + 1, u32::MAX] {
+        r.kind = outcome;
+        assert_eq!(
+            piece(&o, &[], &[r], &[]),
+            f(Rule::UnknownCode, "record.audit_outcome")
+        );
+    }
+    r.kind = AUDIT_APPLIED;
+    r.key = sp(0, 0);
+    assert_eq!(
+        piece(&o, &[], &[r], &[]),
+        f(Rule::Contradiction, "record.audit_without_action")
+    );
+    r.key = sp(6, 4);
+    assert_eq!(
+        piece(&o, &[], &[r], &[]),
+        f(Rule::SpanOutOfBounds, "record.key")
+    );
+    r.key = sp(0, 4);
+    r.value = sp(6, 4);
+    assert_eq!(
+        piece(&o, &[], &[r], &[]),
+        f(Rule::SpanOutOfBounds, "record.value")
+    );
+}
+
+/// SEAM-L(j), THE UNIT'S LEDGER LANE: an answer may name the lane its units are priced under, in
+/// the arena written, on any answer; none named is a zero length. RED: the answer had no lane.
+#[test]
+fn a_ledger_lane_rides_the_arena() {
+    let mut o: OnPieceOut = z();
+    o.arena_written = 8;
+    o.lane = sp(2, 6);
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    o.lane = sp(4, 6);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::SpanOutOfBounds, "on_piece.lane")
+    );
+    o.lane = sp(SPAN_ABSENT, 1);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::SpanNotAbsent, "on_piece.lane")
+    );
+    o.lane = sp(0, 0);
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+}
+
+/// SEAM-L(o), A REFUSAL'S RECORD WRITES: judged as an `on_piece` answer's, under the short-buffer
+/// rule over the host's `records_buf`: an audit row inside the arena passes; a write past the cap,
+/// an unknown op or a span outside the arena is FAULT. RED: a refusal had no record slot.
+#[test]
+fn a_refusals_record_writes_are_judged_as_an_answers() {
+    let mut o: RefusalOut = z();
+    o.records_written = 1;
+    o.arena_written = 8;
+    let mut r: RecordWrite = z();
+    r.op = RECORD_AUDIT;
+    r.kind = AUDIT_REJECTED;
+    r.key = sp(0, 4);
+    r.value = sp(4, 4);
+    assert_eq!(check_refusal_records(Ready, &o, &[r], 1, &bounds()), Ok(()));
+    assert_eq!(
+        check_refusal_records(Ready, &o, &[r], 0, &bounds()),
+        f(Rule::OverCap, "refusal.records")
+    );
+    let mut bad = r;
+    bad.op = 4;
+    assert_eq!(
+        check_refusal_records(Ready, &o, &[bad], 1, &bounds()),
+        f(Rule::UnknownCode, "record.op")
+    );
+    let mut bad = r;
+    bad.value = sp(6, 4);
+    assert_eq!(
+        check_refusal_records(Ready, &o, &[bad], 1, &bounds()),
+        f(Rule::SpanOutOfBounds, "record.value")
+    );
+    let none: RefusalOut = z();
+    assert_eq!(
+        check_refusal_records(Ready, &none, &[], 0, &bounds()),
+        Ok(())
+    );
+}
+
+/// SEAM-L(t), A SERVED REQUEST'S RECORD WRITES: judged as an answer's: a put of a declared kind
+/// inside the arena passes; a short buffer is a short answer; a kind past the tail is FAULT. RED: a
+/// served request had no record slot.
+#[test]
+fn a_served_requests_record_writes_are_judged_as_an_answers() {
+    let mut o: ServeOut = z();
+    o.records_written = 1;
+    o.arena_written = 8;
+    let mut r: RecordWrite = z();
+    r.op = RECORD_PUT;
+    r.key = sp(0, 4);
+    r.value = sp(4, 4);
+    assert_eq!(check_serve_records(Ready, &o, &[r], 1, &bounds()), Ok(()));
+    let mut bad = r;
+    bad.kind = 1;
+    assert_eq!(
+        check_serve_records(Ready, &o, &[bad], 1, &bounds()),
+        f(Rule::IndexOutOfRange, "record.kind")
+    );
+    let mut short: ServeOut = z();
+    short.records_needed = 2;
+    assert_eq!(
+        check_serve_records(Failed, &short, &[], 1, &bounds()),
+        Ok(())
+    );
+    assert_eq!(
+        check_serve_records(Ready, &short, &[], 1, &bounds()),
+        f(Rule::NeededNotFailed, "serve.records")
+    );
 }
 
 // ── refusal, serve, cancel ──

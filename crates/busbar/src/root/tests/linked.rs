@@ -1357,3 +1357,50 @@ fn the_secret_axis_resolves_the_linked_sources_over_the_one_dispatcher() {
     );
     assert!(axis.shared("vault").is_err());
 }
+
+/// SEAM-L(s), THE PER-AXIS FOLD: a door row and a legacy row sharing a plane key — the door owns the
+/// plane axis for it (the kernel's boot fold keeps the door's row), and the legacy row yields that
+/// axis alone: a legacy row of another key is untouched, and nothing on any other axis is read here
+/// (the legacy crate's other tables are its own). RED: the linked row came first and won the key,
+/// so a plane flipped onto its door only when its legacy row left whole.
+#[test]
+fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
+    let legacy = &native("seam-l-shared")[0];
+    let other = &native("seam-l-other")[0];
+    let door = &native("seam-l-shared")[0];
+    let rows = doors_own_their_plane_keys(vec![legacy, other, door], &[door]);
+    assert_eq!(rows.len(), 2, "the legacy row yields the shared key");
+    assert!(
+        std::ptr::eq(rows[0], other),
+        "a legacy row of another key stays"
+    );
+    assert!(std::ptr::eq(rows[1], door), "the door serves the plane");
+    let folded = merged_boot_plane_decls(&rows, &[]);
+    let shared = folded
+        .iter()
+        .find(|d| d.key == "seam-l-shared")
+        .expect("the shared key is registered");
+    assert!(
+        std::ptr::eq(*shared, door),
+        "the boot fold keeps the door's row"
+    );
+}
+
+/// SEAM-L(s): a key two door rows both register on the same axis is a boot refusal naming both.
+#[test]
+fn a_key_two_doors_register_refuses_the_boot_naming_both() {
+    assert!(refuse_a_key_two_doors_register(&[
+        ("door-a".to_string(), "k1"),
+        ("door-b".to_string(), "k2"),
+    ])
+    .is_ok());
+    let refusal = refuse_a_key_two_doors_register(&[
+        ("door-a".to_string(), "k1"),
+        ("door-b".to_string(), "k1"),
+    ])
+    .expect_err("one axis, one owner");
+    assert!(
+        refusal.contains("door-a") && refusal.contains("door-b") && refusal.contains("k1"),
+        "{refusal}"
+    );
+}

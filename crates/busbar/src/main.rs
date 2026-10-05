@@ -874,6 +874,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
             |l| l.upstream_request_timeout_secs,
         ),
+        upgrades: root::serve::upgrade_carriers(LINKED.transports),
     };
     // The kernel's own App through its swap handle once it exists (a config apply replaces the
     // generation a unit's hooks are read off), the boot App's until then.

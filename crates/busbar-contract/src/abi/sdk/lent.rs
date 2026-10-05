@@ -519,12 +519,14 @@ lend! {
         buf(reply_buf, reply_cap) -> u8;
         buf(fields_buf, fields_cap) -> OutField;
         buf(arena_buf, arena_cap) -> u8;
+        buf(records_buf, records_cap) -> RecordWrite;
     }
     ServeIn {
         list(fields, fields_len) -> Field;
         buf(reply_buf, reply_cap) -> u8;
         buf(fields_buf, fields_cap) -> OutField;
         buf(arena_buf, arena_cap) -> u8;
+        buf(records_buf, records_cap) -> RecordWrite;
     }
     PlaneDriveIn { buf(sessions_buf, sessions_cap) -> u64; }
     ProjectIn {

@@ -399,7 +399,8 @@ extern "C" {
 #define BB_PLANE_MAX_REFUSAL_TEXT UINT64_C(0x80000) /* The most bytes of text a REFUSED `arrive` may carry in its `head.error`. More is a FAULT of */
 #define BB_PLANE_LARGEST_ADMITTED_FIELD_LINE UINT64_C(0x66000) /* The largest field line a transport admits: a textual head is read into at most 8 KiB plus */
 #define BB_PLANE_MARK_GATE_REJECTED UINT32_C(1) /* The gate-rejected audit marker (the `GateRejected` marker the kernel keeps). The kernel sets it */
-#define BB_PLANE_RECORD_PUT UINT32_C(1) /* [`RecordWrite::op`]: put, the one record write there is. A put of an EMPTY value is a tombstone: */
+#define BB_PLANE_RECORD_PUT UINT32_C(1) /* [`RecordWrite::op`]: put, the one write to a record kind of the plane's own. A put of an EMPTY */
+#define BB_PLANE_RECORD_AUDIT UINT32_C(3) /* [`RecordWrite::op`]: THE UNIT'S AUDIT RECORD, a row on the kernel's own audit chain (the one */
 #define BB_PLANE_ROUTE_PUBLIC UINT32_C(1) /* [`AdminRoute::flags`]: a public route. [`slot::SERVE`] serves it to an unauthenticated caller; */
 #define BB_PLANE_AUDIT_NONE UINT32_C(0) /* [`ServeOut::audit`]: no audit row. */
 #define BB_PLANE_AUDIT_APPLIED UINT32_C(1) /* [`ServeOut::audit`]: the request applied; the row's outcome is `applied`. */
@@ -2646,6 +2647,7 @@ struct bb_plane_OnPieceOut {
     bb_mech_Span target;
     uint32_t need;
     uint32_t _need_reserved;
+    bb_mech_Span lane;
     uint32_t final_status;
     uint32_t _final_reserved;
     bb_mech_Span final_message;
@@ -2670,6 +2672,9 @@ struct bb_plane_RefusalIn {
     uint32_t plane_code;
     uint32_t retry_after_s;
     bb_mech_AbiStr target;
+    bb_plane_RecordWrite *records_buf;
+    size_t records_cap;
+    bb_mech_AbiStr hook;
 };
 
 /* `refusal`'s `out`. */
@@ -2683,6 +2688,8 @@ struct bb_plane_RefusalOut {
     uint32_t fields_written;
     uint32_t fields_needed;
     uint32_t status;
+    uint32_t records_written;
+    uint32_t records_needed;
 };
 
 /* `serve`'s `in`. */
@@ -2700,6 +2707,8 @@ struct bb_plane_ServeIn {
     size_t fields_cap;
     uint8_t *arena_buf;
     size_t arena_cap;
+    bb_plane_RecordWrite *records_buf;
+    size_t records_cap;
 };
 
 /* `serve`'s `out`. */
@@ -2713,6 +2722,8 @@ struct bb_plane_ServeOut {
     uint32_t fields_written;
     uint32_t fields_needed;
     uint32_t audit;
+    uint32_t records_written;
+    uint32_t records_needed;
 };
 
 /* The plane's `drive` `in`: the lifecycle's, plus a HOST buffer for the sessions with output */
@@ -4842,7 +4853,7 @@ BB_ASSERT(offsetof(bb_plane_OnPieceIn, head_fields) == 288, "bb_plane_OnPieceIn.
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, head_fields_len) == 296, "bb_plane_OnPieceIn.head_fields_len: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, passthrough) == 304, "bb_plane_OnPieceIn.passthrough: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, _reserved_tail) == 308, "bb_plane_OnPieceIn._reserved_tail: offset");
-BB_ASSERT(sizeof(bb_plane_OnPieceOut) == 208, "bb_plane_OnPieceOut: size");
+BB_ASSERT(sizeof(bb_plane_OnPieceOut) == 216, "bb_plane_OnPieceOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_OnPieceOut) == 8, "bb_plane_OnPieceOut: alignment");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, head) == 0, "bb_plane_OnPieceOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, emitted) == 96, "bb_plane_OnPieceOut.emitted: offset");
@@ -4862,7 +4873,12 @@ BB_ASSERT(offsetof(bb_plane_OnPieceOut, verb) == 160, "bb_plane_OnPieceOut.verb:
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, target) == 168, "bb_plane_OnPieceOut.target: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, need) == 176, "bb_plane_OnPieceOut.need: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, _need_reserved) == 180, "bb_plane_OnPieceOut._need_reserved: offset");
-BB_ASSERT(sizeof(bb_plane_RefusalIn) == 200, "bb_plane_RefusalIn: size");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, lane) == 184, "bb_plane_OnPieceOut.lane: offset");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_status) == 192, "bb_plane_OnPieceOut.final_status: offset");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, _final_reserved) == 196, "bb_plane_OnPieceOut._final_reserved: offset");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_message) == 200, "bb_plane_OnPieceOut.final_message: offset");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_details) == 208, "bb_plane_OnPieceOut.final_details: offset");
+BB_ASSERT(sizeof(bb_plane_RefusalIn) == 232, "bb_plane_RefusalIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_RefusalIn) == 8, "bb_plane_RefusalIn: alignment");
 BB_ASSERT(offsetof(bb_plane_RefusalIn, head) == 0, "bb_plane_RefusalIn.head: offset");
 BB_ASSERT(offsetof(bb_plane_RefusalIn, cause) == 88, "bb_plane_RefusalIn.cause: offset");
@@ -4880,7 +4896,10 @@ BB_ASSERT(offsetof(bb_plane_RefusalIn, unit) == 168, "bb_plane_RefusalIn.unit: o
 BB_ASSERT(offsetof(bb_plane_RefusalIn, plane_code) == 176, "bb_plane_RefusalIn.plane_code: offset");
 BB_ASSERT(offsetof(bb_plane_RefusalIn, retry_after_s) == 180, "bb_plane_RefusalIn.retry_after_s: offset");
 BB_ASSERT(offsetof(bb_plane_RefusalIn, target) == 184, "bb_plane_RefusalIn.target: offset");
-BB_ASSERT(sizeof(bb_plane_RefusalOut) == 144, "bb_plane_RefusalOut: size");
+BB_ASSERT(offsetof(bb_plane_RefusalIn, records_buf) == 200, "bb_plane_RefusalIn.records_buf: offset");
+BB_ASSERT(offsetof(bb_plane_RefusalIn, records_cap) == 208, "bb_plane_RefusalIn.records_cap: offset");
+BB_ASSERT(offsetof(bb_plane_RefusalIn, hook) == 216, "bb_plane_RefusalIn.hook: offset");
+BB_ASSERT(sizeof(bb_plane_RefusalOut) == 152, "bb_plane_RefusalOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_RefusalOut) == 8, "bb_plane_RefusalOut: alignment");
 BB_ASSERT(offsetof(bb_plane_RefusalOut, head) == 0, "bb_plane_RefusalOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_RefusalOut, reply_written) == 96, "bb_plane_RefusalOut.reply_written: offset");
@@ -4891,7 +4910,9 @@ BB_ASSERT(offsetof(bb_plane_RefusalOut, marker) == 128, "bb_plane_RefusalOut.mar
 BB_ASSERT(offsetof(bb_plane_RefusalOut, fields_written) == 132, "bb_plane_RefusalOut.fields_written: offset");
 BB_ASSERT(offsetof(bb_plane_RefusalOut, fields_needed) == 136, "bb_plane_RefusalOut.fields_needed: offset");
 BB_ASSERT(offsetof(bb_plane_RefusalOut, status) == 140, "bb_plane_RefusalOut.status: offset");
-BB_ASSERT(sizeof(bb_plane_ServeIn) == 200, "bb_plane_ServeIn: size");
+BB_ASSERT(offsetof(bb_plane_RefusalOut, records_written) == 144, "bb_plane_RefusalOut.records_written: offset");
+BB_ASSERT(offsetof(bb_plane_RefusalOut, records_needed) == 148, "bb_plane_RefusalOut.records_needed: offset");
+BB_ASSERT(sizeof(bb_plane_ServeIn) == 216, "bb_plane_ServeIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ServeIn) == 8, "bb_plane_ServeIn: alignment");
 BB_ASSERT(offsetof(bb_plane_ServeIn, head) == 0, "bb_plane_ServeIn.head: offset");
 BB_ASSERT(offsetof(bb_plane_ServeIn, route) == 88, "bb_plane_ServeIn.route: offset");
@@ -4906,7 +4927,9 @@ BB_ASSERT(offsetof(bb_plane_ServeIn, fields_buf) == 168, "bb_plane_ServeIn.field
 BB_ASSERT(offsetof(bb_plane_ServeIn, fields_cap) == 176, "bb_plane_ServeIn.fields_cap: offset");
 BB_ASSERT(offsetof(bb_plane_ServeIn, arena_buf) == 184, "bb_plane_ServeIn.arena_buf: offset");
 BB_ASSERT(offsetof(bb_plane_ServeIn, arena_cap) == 192, "bb_plane_ServeIn.arena_cap: offset");
-BB_ASSERT(sizeof(bb_plane_ServeOut) == 144, "bb_plane_ServeOut: size");
+BB_ASSERT(offsetof(bb_plane_ServeIn, records_buf) == 200, "bb_plane_ServeIn.records_buf: offset");
+BB_ASSERT(offsetof(bb_plane_ServeIn, records_cap) == 208, "bb_plane_ServeIn.records_cap: offset");
+BB_ASSERT(sizeof(bb_plane_ServeOut) == 152, "bb_plane_ServeOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ServeOut) == 8, "bb_plane_ServeOut: alignment");
 BB_ASSERT(offsetof(bb_plane_ServeOut, head) == 0, "bb_plane_ServeOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_ServeOut, reply_written) == 96, "bb_plane_ServeOut.reply_written: offset");
@@ -4917,6 +4940,8 @@ BB_ASSERT(offsetof(bb_plane_ServeOut, status) == 128, "bb_plane_ServeOut.status:
 BB_ASSERT(offsetof(bb_plane_ServeOut, fields_written) == 132, "bb_plane_ServeOut.fields_written: offset");
 BB_ASSERT(offsetof(bb_plane_ServeOut, fields_needed) == 136, "bb_plane_ServeOut.fields_needed: offset");
 BB_ASSERT(offsetof(bb_plane_ServeOut, audit) == 140, "bb_plane_ServeOut.audit: offset");
+BB_ASSERT(offsetof(bb_plane_ServeOut, records_written) == 144, "bb_plane_ServeOut.records_written: offset");
+BB_ASSERT(offsetof(bb_plane_ServeOut, records_needed) == 148, "bb_plane_ServeOut.records_needed: offset");
 BB_ASSERT(sizeof(bb_plane_PlaneDriveIn) == 112, "bb_plane_PlaneDriveIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneDriveIn) == 8, "bb_plane_PlaneDriveIn: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneDriveIn, drive) == 0, "bb_plane_PlaneDriveIn.drive: offset");
