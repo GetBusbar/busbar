@@ -325,7 +325,7 @@ fn resolve_over(
     resolve_upgrading(section, providers, served, Vec::new())
 }
 
-/// [`resolve_over`], with `upgrades` the linked framers composed over the data carrier.
+/// [`resolve_over`], with `upgrades` the linked claims that open at an upgrade.
 fn resolve_upgrading(
     section: &str,
     providers: &[(&str, super::ProviderRoute)],

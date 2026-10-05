@@ -182,6 +182,9 @@ pub struct LinkedTransport {
     /// Every scheme its entry claims, its own first: a door row's are read off the door's
     /// Statement (ONE ENTRY PER PLUGIN, the schemes are its claims), and the seal registers each.
     pub claims: ClaimsOf,
+    /// The claims whose unit 0 opens at an UPGRADE, read off the door's Statement: the data door's
+    /// upgrade lines (`crate::root::serve::upgrade_carriers`; ARCHITECT ruling Q128 U7).
+    pub upgrades: ClaimsOf,
 }
 
 /// A row's claims, read when the seal runs.

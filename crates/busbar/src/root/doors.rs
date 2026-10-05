@@ -386,3 +386,16 @@ pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
         .map(|facts| facts.claims)
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
+
+/// The claims a linked row's door opens at an UPGRADE (their row's `unit0_trigger`), read off the
+/// door's Statement: the data door's upgrade lines (ARCHITECT ruling Q128 U7).
+///
+/// # Panics
+///
+/// The build's own door is refused, as [`build`] panics for it.
+#[must_use]
+pub fn upgrades_of(door: DoorFn) -> Vec<&'static str> {
+    super::loader::dispatch::kinds::transport::linked_facts(door)
+        .map(|facts| facts.upgrades)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+}

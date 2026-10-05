@@ -54,6 +54,11 @@ pub struct TransportFacts {
     /// Every scheme the entry answers for, in order (interned: one allocation per distinct name for
     /// the process).
     pub claims: Vec<&'static str>,
+    /// The claims whose unit 0 opens at an UPGRADE (their row's `unit0_trigger` is
+    /// `UNIT0_UPGRADE`): the host's upgrade lines, read off the claim rows and never off a layer
+    /// list (ARCHITECT ruling Q128 U7). The handoff target on an upgrade is the claim that owns the
+    /// requested scheme.
+    pub upgrades: Vec<&'static str>,
     /// The claims it composes over; empty = directly over the host's socket (a framer) or the
     /// bottom of its stack (a carrier).
     pub composes_over: Vec<&'static str>,
@@ -112,12 +117,21 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         unsafe { std::slice::from_raw_parts(tail.settings, tail.settings_len) }
     };
     check_settings(settings).map_err(broke)?;
+    let claims: Vec<&'static str> = names
+        .iter()
+        .map(|c| owned(*c, "claim"))
+        .collect::<Result<_, _>>()?;
+    // Row `i` describes `claims[i]` (`check_claim_rows` held the counts equal).
+    let upgrades = claims
+        .iter()
+        .zip(rows)
+        .filter(|(_, row)| row.unit0_trigger == busbar_contract::abi::transport::UNIT0_UPGRADE)
+        .map(|(name, _)| *name)
+        .collect();
     Ok(TransportFacts {
         role: tail.role,
-        claims: names
-            .iter()
-            .map(|c| owned(*c, "claim"))
-            .collect::<Result<_, _>>()?,
+        claims,
+        upgrades,
         composes_over: under
             .iter()
             .map(|s| owned(*s, "composes_over"))

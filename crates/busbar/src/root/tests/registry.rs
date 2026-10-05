@@ -881,6 +881,7 @@ fn the_wires_linked_row(wire: &DroppedDoor) -> LinkedTransport {
         composes_over: &[],
         build: |_, _| dropped_doors()[0].wire.clone(),
         claims: || vec![dropped_doors()[0].key],
+        upgrades: Vec::new,
     }
 }
 
@@ -1000,4 +1001,25 @@ fn a_dropped_in_wire_on_a_linked_key_is_refused_as_a_second_linked_row_is() {
         "{dropped}"
     );
     assert_eq!(dropped.to_string(), linked.to_string());
+}
+
+/// THE UPGRADE LINES ARE THE LINKED CLAIMS THAT OPEN AT AN UPGRADE, read off the door Statements
+/// (ARCHITECT ruling Q128 U7; never a layer list): the session plane's wire, where this build links
+/// it, and nothing else. (RED, at the loader: a claim row stating any other trigger is no line,
+/// `an_upgrade_line_is_a_claim_whose_unit_zero_opens_at_the_upgrade`.)
+#[test]
+fn the_upgrade_lines_are_read_off_the_door_statements() {
+    let lines = crate::root::serve::upgrade_carriers(crate::LINKED.transports);
+    if session_linked() {
+        assert_eq!(
+            lines,
+            ["ws"],
+            "the session wire's claim opens at the upgrade"
+        );
+    } else {
+        assert!(
+            lines.is_empty(),
+            "no session wire, no upgrade line: {lines:?}"
+        );
+    }
 }
