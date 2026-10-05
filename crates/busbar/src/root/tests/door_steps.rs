@@ -1676,7 +1676,10 @@ mod tool_door {
     }
 
     /// THE APPROVE STEP: a caller whose grant holds no scope of the plane's (an explicit empty pool
-    /// grant: no scopes, never all) is refused before it is charged or dialled.
+    /// grant: no scopes, never all) is refused before it is charged or dialled, in the served
+    /// engine's words (BUSBAR-1.6.0.md Part 3 section 12: a new plane's statuses equal current
+    /// predev): `404`, the sentence an unknown tool gets, `data.reason` `not_granted`
+    /// (scripts/mcp-subject/h2-verify-refusal.sh holds predev to the same).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tools_call_outside_the_callers_grant_is_refused_before_it_dials() {
         let _one = PUBLISHING.lock().await;
@@ -1686,13 +1689,10 @@ mod tool_door {
         let rig = Rig::new(instance, port, Some(Vec::new()));
 
         let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
-        let denied = u16::try_from(refusal_status(ReasonCode::ScopeDenied)).expect("a status");
-        assert_eq!(
-            status.as_u16(),
-            denied,
-            "{}",
-            String::from_utf8_lossy(&body)
-        );
+        assert_eq!(status.as_u16(), 404, "{}", String::from_utf8_lossy(&body));
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
+        assert_eq!(body["error"]["data"]["reason"], "not_granted", "{body}");
+        assert_eq!(body["id"], 30, "the caller's id: {body}");
         assert_eq!(rig.admitted(), 0, "nothing charged");
         assert!(heard.try_recv().is_err(), "nothing dialled");
         assert!(rig.all_ended(), "no unit left open");

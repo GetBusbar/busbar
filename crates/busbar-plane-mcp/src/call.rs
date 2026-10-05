@@ -157,6 +157,20 @@ fn not_exposed(name: &str) -> String {
     format!("`{name}` is not a tool this server exposes")
 }
 
+/// THE ANSWER TO A CALL THE CALLER IS NOT GRANTED, in the served engine's words: `404`, the same
+/// sentence an unknown tool gets (the catalogue does not leak what it hides), its audit reason
+/// `not_granted` in `data`. The kernel's grant check refuses such a call before the plane decides it
+/// (`ScopeDenied`), and the plane renders that refusal as the served engine answered it.
+#[must_use]
+pub fn not_granted(id: &Value, name: &str) -> Refusal {
+    catalogue_refusal(
+        STATUS_NOT_FOUND,
+        id,
+        not_exposed(name),
+        vocab::REASON_NOT_GRANTED,
+    )
+}
+
 /// Whether the caller's `_meta` client capabilities declare the tasks extension.
 #[must_use]
 pub fn client_declares_tasks(capabilities: &Value) -> bool {

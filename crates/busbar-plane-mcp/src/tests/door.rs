@@ -245,3 +245,26 @@ fn a_registration_busbar_would_launch_is_refused_with_the_reason() {
     }
     read_tools_section(GOOD).expect("a network registration reads");
 }
+
+/// THE DNS-REBINDING ALLOWLIST is the `mcp:` block's `allowed_origins` (none without a block), and
+/// the refusal is the served engine's words: an OAuth-style `invalid_origin` object.
+#[test]
+fn the_admitted_origins_are_the_blocks_and_the_refusal_is_the_served_words() {
+    assert_eq!(allowed_origins(b""), Ok(Vec::new()));
+    let owned = br#"{"mcp":{"canonical_uri":"https://gw.example/mcp","allowed_origins":["https://app.example"]}}"#;
+    assert_eq!(
+        allowed_origins(owned),
+        Ok(vec!["https://app.example".to_string()])
+    );
+    let body: serde_json::Value =
+        serde_json::from_slice(&forbidden_origin_body()).expect("a JSON object");
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "error": "invalid_origin",
+            "error_description":
+                "This Origin is not allowed. Browser origins must be listed in mcp.allowed_origins.",
+        })
+    );
+    assert_eq!(STATUS_FORBIDDEN_ORIGIN, 403);
+}

@@ -290,6 +290,42 @@ pub fn method_not_allowed_body() -> Vec<u8> {
     .unwrap_or_default()
 }
 
+/// The status an arrival from a browser origin the deployment does not admit is refused with.
+pub const STATUS_FORBIDDEN_ORIGIN: u32 = 403;
+
+/// THE DNS-REBINDING REFUSAL's body (the served engine's `ForbiddenOrigin` words, as its envelope
+/// rendered them): an OAuth-style error object, not a JSON-RPC one.
+#[must_use]
+pub fn forbidden_origin_body() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "error": "invalid_origin",
+        "error_description":
+            "This Origin is not allowed. Browser origins must be listed in mcp.allowed_origins.",
+    }))
+    .unwrap_or_default()
+}
+
+/// THE BROWSER ORIGINS the deployment admits beyond loopback: the `mcp:` block's
+/// `allowed_origins` (none when it writes no block).
+///
+/// # Errors
+///
+/// The block, written and malformed, in its grammar's words.
+pub fn allowed_origins(owned: &[u8]) -> Result<Vec<String>, String> {
+    if owned.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(block) = serde_json::from_slice::<serde_json::Value>(owned)
+        .map_err(|e| e.to_string())?
+        .get(ENDPOINT_SECTION)
+        .cloned()
+    else {
+        return Ok(Vec::new());
+    };
+    let cfg: crate::endpoint::McpCfg = serde_json::from_value(block).map_err(|e| e.to_string())?;
+    Ok(cfg.allowed_origins)
+}
+
 /// THE STATEMENT TAIL: the plane's static facts.
 pub const TAIL: &PlaneTail = &PlaneTail {
     head: KindTailHead {

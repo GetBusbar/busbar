@@ -149,6 +149,8 @@ pub struct McpDoor {
     admitted: Option<(String, String)>,
     /// Its protected-resource facts ([`door::resource_facts`]).
     facts: Option<Vec<u8>>,
+    /// The browser origins it admits beyond loopback ([`door::allowed_origins`]).
+    origins: Vec<String>,
     services: Option<Services>,
     generations: Generations<PlaneSnapshot, Held>,
     units: Keyed<u64, CallUnit>,
@@ -257,9 +259,14 @@ slot!(
             Ok(facts) => facts,
             Err(text) => return out.fail(Refusal::refused(text)),
         };
+        let origins = match door::allowed_origins(owned) {
+            Ok(origins) => origins,
+            Err(text) => return out.fail(Refusal::refused(text)),
+        };
         let plane = McpDoor {
             admitted,
             facts,
+            origins,
             services: input
                 .field(|i| &i.open)
                 .host()
@@ -651,18 +658,29 @@ fn refused_arrival(out: &mut Out<'_, ArriveOut>, status: u32, text: String) -> O
 /// The words of an arrival on a verb the endpoint does not serve.
 const NOT_ALLOWED_TEXT: &str = r#"{"allow":"POST"}"#;
 
+/// The words of an arrival from a browser origin the deployment does not admit.
+const FORBIDDEN_ORIGIN_TEXT: &str = r#"{"origin":"forbidden"}"#;
+
+/// The head field a browser names its origin in.
+const ORIGIN: &str = "origin";
+
 /// What a refused arrival said.
 enum Words {
     /// A JSON-RPC refusal.
     Rpc(crate::tool_arrival::Refusal),
     /// A verb the endpoint does not serve.
     NotAllowed,
+    /// A browser origin the deployment does not admit.
+    ForbiddenOrigin,
 }
 
 /// A refused arrival's words read back.
 fn words_of(text: &[u8]) -> Option<Words> {
     if text == NOT_ALLOWED_TEXT.as_bytes() {
         return Some(Words::NotAllowed);
+    }
+    if text == FORBIDDEN_ORIGIN_TEXT.as_bytes() {
+        return Some(Words::ForbiddenOrigin);
     }
     refusal_of(text).map(Words::Rpc)
 }
@@ -697,6 +715,24 @@ slot!(
             out.set(|o| &o.refusal, UNSERVED);
             out.set(|o| &o.refusal_status, STATUS_NOT_FOUND);
             return out.fail(Refusal::bare());
+        }
+        // THE ORIGIN FIRST (the served engine's order: who may speak at all, one field read): a
+        // browser origin that is neither loopback nor on the operator's allowlist is refused, the
+        // DNS-rebinding defence. A request with no `Origin` is not a browser's, and goes on.
+        let origin = fields
+            .iter()
+            .find(|f| {
+                f.field(|f| &f.name)
+                    .as_str()
+                    .is_ok_and(|n| n.eq_ignore_ascii_case(ORIGIN))
+            })
+            .and_then(|f| f.field(|f| &f.value).as_str().ok());
+        if origin.is_some_and(|o| !busbar_contract::jsonrpc::origin_admitted(o, &plane.origins)) {
+            return refused_arrival(
+                &mut out,
+                door::STATUS_FORBIDDEN_ORIGIN,
+                FORBIDDEN_ORIGIN_TEXT.to_string(),
+            );
         }
         if claim.is_some_and(|r| r.verb != "POST") {
             return refused_arrival(                &mut out,
@@ -2027,6 +2063,16 @@ slot!(
             })
         });
         let text = input.field(|i| &i.text).bytes();
+        // The tool a refused `tools/call` named, where its arrival read one.
+        let called = instance.get().and_then(|plane| {
+            plane.units.with(&given.unit, |unit| {
+                let unit = unit?;
+                matches!(&unit.disposition, Disposition::Request { row, .. }
+                    if row.op == crate::tool_ops::OP_TOOL_CALL)
+                .then(|| unit.params.as_ref()?.get("name")?.as_str().map(str::to_string))
+                .flatten()
+            })
+        });
         // What the refused unit is to the tasks extension: a call that would have created a task
         // (its budget refusal is the served engine's task-path words), or a task's continuation
         // (its task fails).
@@ -2050,6 +2096,11 @@ slot!(
                     door::method_not_allowed_body(),
                     true,
                 ),
+                Some(Words::ForbiddenOrigin) => (
+                    door::STATUS_FORBIDDEN_ORIGIN,
+                    door::forbidden_origin_body(),
+                    false,
+                ),
                 None => return Outcome::Failed,
             }
         } else {
@@ -2063,6 +2114,19 @@ slot!(
             ]
             .into_iter()
             .any(|r| r.code() == given.reason);
+            // A CALL THE CALLER IS NOT GRANTED (the kernel's grant check said no before the plane
+            // decided it): answered as the served engine answered it, `404 not_granted` in the
+            // words an unknown tool gets.
+            let ungranted = given.reason
+                == busbar_contract::abi::plane::RefusalCode::ScopeDenied.code()
+                && !creates_task;
+            if let (true, Some(name)) = (ungranted, called.as_deref()) {
+                let refusal = crate::call::not_granted(
+                    unit_id.as_ref().unwrap_or(&Value::Null),
+                    name,
+                );
+                (refusal.status, refusal.body(), false)
+            } else {
             let refusal = if budget && creates_task {
                 door_tasks::budget_refused(unit_id.clone(), message)
             } else if budget {
@@ -2083,6 +2147,7 @@ slot!(
                 }
             };
             (0, refusal.body(), false)
+            }
         };
         let (mut reply, mut field_buf, mut arena) =
             (input.reply_buf(), input.fields_buf(), input.arena_buf());
