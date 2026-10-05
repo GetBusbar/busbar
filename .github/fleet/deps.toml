@@ -65,6 +65,24 @@ version = "1"
 repos = ["busbar-store-mysql"]
 reason = "TESTS ONLY: sortable ids the mysql store's conformance battery writes (a dev-dependency since busbar-store-mysql#15)."
 
+# ── Extra semver lines (Cargo.lock parity, ARCHITECT 2026-10-05) ──────────────────────────────────
+# Parity is ONE vetted version per semver-compatible line, shared by busbar and its plugins: where busbar's
+# lock holds a version in a crate's compatible line, a plugin's lock holds exactly that version (any drift
+# is RED). A line busbar's lock holds NO version of is a different crate to Cargo; a plugin may carry it
+# only when it is declared HERE for that plugin repo: `crate`, `line` (`1`, `0.11`, `0.0.3`), `repos`,
+# `use` (`shipped` | `tests-only`) and `reason`. Undeclared is RED, by name (`plugin-gates parity`). A
+# declaration never exempts an advisory: cargo-deny's advisory check stays blocking, and the parity gate
+# is RED on a declared line it refused.
+[parity-lines]
+allow = [
+    { crate = "sha2", line = "0.11", repos = ["busbar-store-postgres"], use = "shipped", reason = "postgres-protocol >= 0.6.11 (SCRAM-SHA-256; 0.6.10 carries RUSTSEC-2026-0179/0180) is on the sha2 0.11 line; busbar holds 0.10" },
+    { crate = "digest", line = "0.11", repos = ["busbar-store-postgres"], use = "shipped", reason = "sha2 0.11's digest line (postgres-protocol >= 0.6.11 SCRAM)" },
+    { crate = "block-buffer", line = "0.12", repos = ["busbar-store-postgres"], use = "shipped", reason = "digest 0.11's block-buffer line (postgres-protocol >= 0.6.11 SCRAM)" },
+    { crate = "crypto-common", line = "0.2", repos = ["busbar-store-postgres"], use = "shipped", reason = "digest 0.11's crypto-common line (postgres-protocol >= 0.6.11 SCRAM)" },
+    { crate = "const-oid", line = "0.10", repos = ["busbar-store-postgres"], use = "shipped", reason = "digest 0.11's const-oid line (postgres-protocol >= 0.6.11 SCRAM)" },
+    { crate = "wasi", line = "0.14", repos = ["busbar-store-postgres"], use = "tests-only", reason = "the independent `postgres` test client (tokio-postgres 0.7.18 -> whoami 2) the live tests verify the store with; never shipped" },
+]
+
 # ── cargo-deny [bans] ─────────────────────────────────────────────────────────────────────────────
 # ONE protocol = ONE library, ONE crypto backend = ring (BUSBAR-1.6.0.md §Libraries). Rendered into
 # every plugin's deny.toml; `cargo deny check` runs on it in the harness. These apply to the whole
