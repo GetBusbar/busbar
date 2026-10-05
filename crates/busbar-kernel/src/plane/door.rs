@@ -327,6 +327,19 @@ fn build<const I: usize>(
         .find(|s| mine(s))
     {
         Some(s) => s.clone(),
+        // ITS ENDPOINT BLOCK ALONE CONFIGURES IT (LAW 7): an owned block carried as written, with no
+        // registration in the section, builds the slot over the section as absent and that block.
+        None if ctx
+            .endpoint_slot
+            .as_deref()
+            .and_then(|slot| slot.downcast_ref::<DoorOwned>())
+            .is_some_and(crate::plane::config::PlaneEndpointCfg::is_present) =>
+        {
+            DoorSection {
+                section: d.reg.section,
+                value: serde_yaml::Value::Null,
+            }
+        }
         None => {
             let raw = ctx.endpoint_slot.as_deref()?;
             let (section, value) = raw.downcast_ref::<(&'static str, serde_yaml::Value)>()?;
