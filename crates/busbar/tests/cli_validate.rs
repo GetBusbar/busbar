@@ -1680,3 +1680,58 @@ fn validate_refuses_a_selected_plugin_built_for_another_host() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// THE MINT ENDPOINT'S SCHEME, AT `--validate` (ARCHITECT ruling D1 2026-10-05, MINT CLASS (B); RED):
+/// the token endpoint need is operator-infrastructure, so the connector would dial plaintext, and
+/// the 1.5.5 rule is `--validate`'s to keep: an `http` `token_url` on a PUBLIC host is refused (it
+/// would POST the client secret in clear), and on a loopback host it is not, as in 1.5.5.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn validate_refuses_an_http_token_url_on_a_public_host() {
+    let run = |token_url: &str| {
+        let dir = fixture_dir("mint-scheme");
+        std::fs::write(
+            dir.join("providers.yaml"),
+            r#"entra:
+  protocol: openai
+  base_url: "https://res.example.com"
+  api_key_env: MOCK_KEY
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("config.yaml"),
+            format!(
+                r#"listen: "127.0.0.1:0"
+providers:
+  entra:
+    api_key: {{ env: MOCK_KEY }}
+    auth: oauth-client-credentials
+    token_url: "{token_url}"
+    scope: "api://x/.default"
+models:
+  test-model:
+    provider: entra
+"#
+            ),
+        )
+        .unwrap();
+        let out = run_busbar(&dir, &["--validate"]);
+        let _ = std::fs::remove_dir_all(&dir);
+        out
+    };
+    let refused = |stdout: &str, stderr: &str| {
+        format!("{stdout}{stderr}").contains("token_url must use https for a public host")
+    };
+    let (code, stdout, stderr) = run("http://token.example.com/oauth2/token");
+    assert_ne!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        refused(&stdout, &stderr),
+        "an http token_url on a public host is refused at --validate: stdout={stdout} stderr={stderr}"
+    );
+    let (_, stdout, stderr) = run("http://127.0.0.1:9/oauth2/token");
+    assert!(
+        !refused(&stdout, &stderr),
+        "an http token_url on loopback is 1.5.5's to allow: stdout={stdout} stderr={stderr}"
+    );
+}

@@ -606,8 +606,10 @@ deregister}` on the per-worker reactor.
 | Class | Used by | Rule |
 |---|---|---|
 | `provider` | plane upstreams | allow-list + `allow_metadata_hosts` |
-| `operator-infrastructure` | databases, vault, ldap | private, loopback and plaintext allowed; pinned; cloud metadata hosts refused (accepted difference, owner 2026-09-27) |
-| `open-web` | webhook; auth mint endpoints (`token_url`, `token_uri`) | public https only |
+| `operator-infrastructure` | databases, vault, ldap; auth mint endpoints (`token_url`, `token_uri`) | private, loopback and plaintext allowed; pinned; cloud metadata hosts refused (accepted difference, owner 2026-09-27) |
+| `open-web` | webhook; ~~auth mint endpoints (`token_url`, `token_uri`)~~ | public https only |
+
+~~auth mint endpoints in `open-web`~~ STRUCK 2026-10-05 by ARCHITECT (D1, MINT CLASS (B)): the mint need takes operator-infrastructure semantics. Law beats table: customer-visible behaviour stays 1.5.5 unless the owner signs (Part 1), and 1.5.5 minted over plaintext to a private or loopback token endpoint; the owner signed only the destination guard change below. `--validate` keeps refusing an http mint endpoint on a public host, as 1.5.5 did, and the ONE destination guard in the connector still applies on top. Proven byte-identical by the oracle cells `egress.auth|oauth-cc|mint-refresh` and `egress.auth|jwt-bearer|mint-refresh`.
 | `loopback-allowed` | otlp, webrequest | https, or loopback plaintext; the node's own ports refused |
 
 **Destination guard — ONE check for every outbound connection (OWNER ruling, DESTINATION GUARD,
