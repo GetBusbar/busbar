@@ -14,30 +14,48 @@
 //! fold of the same door is the plane crate's own conformance suite (`tests/conformance.rs`, one
 //! transcript through both loads); this harness builds no cdylib of it.
 
+#[cfg(feature = "plane-decisions")]
 use std::collections::BTreeMap;
+#[cfg(feature = "plane-decisions")]
 use std::sync::Arc;
 
+#[cfg(feature = "plane-decisions")]
 use axum::http::StatusCode;
+#[cfg(feature = "plane-decisions")]
 use busbar_contract::caps::ReasonCode;
+#[cfg(feature = "plane-decisions")]
 use busbar_contract::conn::{DeclaredConns, PollConns};
+#[cfg(feature = "plane-decisions")]
 use busbar_kernel::cost::CostModel;
+#[cfg(feature = "plane-decisions")]
 use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
+#[cfg(feature = "plane-decisions")]
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec, PLANE_LANE_SEP};
+#[cfg(feature = "plane-decisions")]
 use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
+#[cfg(feature = "plane-decisions")]
 use busbar_plane_decisions::plane_door::door as decisions_door;
+#[cfg(feature = "plane-decisions")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[cfg(feature = "plane-decisions")]
 use super::planes_tests::{composed_services, money, Published, PUBLISHING};
+#[cfg(feature = "plane-decisions")]
 use super::{compose_planes, door_routes, DoorEgress};
+#[cfg(feature = "plane-decisions")]
 use crate::root::door_steps::{provider_routes, DoorReach, OutboundAuths};
+#[cfg(feature = "plane-decisions")]
 use crate::root::loader::dispatch::kinds::plane::Plane;
+#[cfg(feature = "plane-decisions")]
 use crate::root::loader::dispatch::{
     load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
 };
+#[cfg(feature = "plane-decisions")]
 use crate::root::plane_node::{Node, NodeEndPost};
 
 /// The deployment's dated card history the served unit is pinned to at its door: one entry, no
 /// price (billing off: the counts are the unit's fact and price at nothing).
+#[cfg(feature = "plane-decisions")]
 static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
     std::sync::LazyLock::new(|| {
         let holder = crate::root::kernel::RootHistory::default();
@@ -53,16 +71,20 @@ static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
     });
 
 /// The decisions plane's one claim, with one model configured.
+#[cfg(feature = "plane-decisions")]
 const CLAIMED: &str = "/v1/systemone";
 
 /// The provider's credential, as its file holds it.
+#[cfg(feature = "plane-decisions")]
 const CREDENTIAL: &str = "sk-door-test";
 
 /// The far end's answer: a decision, and the one unit it reports using.
+#[cfg(feature = "plane-decisions")]
 const ANSWER: &str = r#"{"id":"d-1","decision":"approve","usage":{"units":1}}"#;
 
 /// A POST of the caller's decision state to `path` on `router`, with `token` as its bearer or with
 /// none: the response.
+#[cfg(feature = "plane-decisions")]
 async fn send(router: &axum::Router, path: &str, token: Option<&str>) -> axum::response::Response {
     use tower::ServiceExt as _;
     let mut req = axum::http::Request::builder().method("POST").uri(path);
@@ -81,6 +103,7 @@ async fn send(router: &axum::Router, path: &str, token: Option<&str>) -> axum::r
 
 /// A far end on loopback answering every request with [`ANSWER`]; what it was sent comes back on
 /// the channel, one request head per connection.
+#[cfg(feature = "plane-decisions")]
 async fn far_end() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -135,6 +158,7 @@ async fn far_end() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
 /// THE EXIT TEST: a keyed caller's claimed request is SERVED through the decisions door, 200, the
 /// far end's answer relayed as it came, and the unit's money posted on both books.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "plane-decisions")]
 async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-served";
@@ -345,6 +369,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
 /// it; a path the door does not claim is the router's own. An unkeyed caller on the door's claim (it
 /// takes a credential) is refused before anything is charged, rendered by the plane.
 #[tokio::test]
+#[cfg(feature = "plane-decisions")]
 async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door";
@@ -422,6 +447,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
 /// on the data listener, the first in its claim order; the data router builds with it. RED: each
 /// claim mounted its own route, and the router refused the second as an overlapping method route.
 #[tokio::test]
+#[cfg(feature = "plane-decisions")]
 async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-carriers";
@@ -483,5 +509,355 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     assert_eq!(
         send(&router, CLAIMED, None).await.status().as_u16(),
         refused
+    );
+}
+
+// ── THE DOOR SERVING THE `pools` MAP: ITS CAPABILITY CELLS (Q128 U14) ───────────────────────────
+//
+// The capability-equality matrix's root column for this plane, witnessed on its door path: each
+// cell below drives a keyed caller through the data router built with the door's claims, the
+// kernel's hook stage, the model-serving walk over the kernel's lane cells and the node's book
+// (`super::hook_seat_tests::rig`), and reads the capability where the kernel keeps it.
+
+#[cfg(linked_fold_on_driver)]
+use super::hook_seat_tests::{far_end_answering, rig, RigOpts, REWRITTEN};
+#[cfg(linked_fold_on_driver)]
+use super::planes_tests::{Published as Withdrawn, PUBLISHING as ONE_PUBLISHER};
+
+/// A served chat completion, marked by the member that answered it.
+#[cfg(linked_fold_on_driver)]
+const SERVED_BY_TWIN: &str = r#"{"id":"chatcmpl-2","object":"chat.completion","created":0,"model":"m1","choices":[{"index":0,"message":{"role":"assistant","content":"served-by-the-twin"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
+
+/// A far end that cannot serve now.
+#[cfg(linked_fold_on_driver)]
+const OVERLOADED: &str = r#"{"error":{"message":"overloaded","type":"server_error"}}"#;
+
+/// A far end refusing the request itself.
+#[cfg(linked_fold_on_driver)]
+const MALFORMED: &str = r#"{"error":{"message":"bad request","type":"invalid_request_error"}}"#;
+
+/// BREAKER-TRIP: a member whose far end fails records into the kernel's ONE breaker cell for its
+/// (pool, lane), and the cell opens: the walk's failure benched it.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_trips_a_failing_members_breaker_cell() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-breaker-trip";
+    let _published = Withdrawn(instance);
+    let (down, twin) = (
+        far_end_answering(503, OVERLOADED).await,
+        far_end_answering(200, SERVED_BY_TWIN).await,
+    );
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(down.port, 100), (twin.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let ready = || rig.app.store.ready_in("p", 0, busbar_kernel::store::now());
+    assert!(ready(), "the member's cell admits before any failure");
+    let (status, _, _) = rig.chat().await;
+    assert_eq!(status, 200, "the twin serves");
+    assert_eq!(down.served(), 1, "the failing member was dialled once");
+    assert!(
+        !ready(),
+        "the failure recorded into the member's (pool, lane) cell and opened it"
+    );
+}
+
+/// BREAKER-FASTFAIL: a tripped member is refused before dispatch, at once: the next unit never
+/// dials it, and its twin serves.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_refuses_a_tripped_member_before_dispatch() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-breaker-fastfail";
+    let _published = Withdrawn(instance);
+    let (down, twin) = (
+        far_end_answering(503, OVERLOADED).await,
+        far_end_answering(200, SERVED_BY_TWIN).await,
+    );
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(down.port, 100), (twin.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200);
+    assert_eq!(down.served(), 1);
+    let started = std::time::Instant::now();
+    assert_eq!(rig.chat().await.0, 200, "the twin serves the next unit");
+    assert_eq!(
+        down.served(),
+        1,
+        "the tripped member is refused before dispatch: never dialled again"
+    );
+    assert_eq!(twin.served(), 2);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "refused at once, not after a timeout"
+    );
+}
+
+/// FAILOVER-REROUTE: a second interchangeable candidate is tried before the first byte, through
+/// the one walk: the first member fails, the twin's answer is the caller's.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_reroutes_to_the_twin_before_the_first_byte() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-failover";
+    let _published = Withdrawn(instance);
+    let (down, twin) = (
+        far_end_answering(503, OVERLOADED).await,
+        far_end_answering(200, SERVED_BY_TWIN).await,
+    );
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(down.port, 100), (twin.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig.chat().await;
+    assert_eq!(status, 200);
+    assert!(
+        String::from_utf8_lossy(&body).contains("served-by-the-twin"),
+        "the twin's answer reached the caller: {}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!((down.served(), twin.served()), (1, 1));
+}
+
+/// DISPOSITION: the far end's answer is classified before it is relayed: a refusal of the request
+/// itself is the caller's own fault, relayed with its status, never failed over and never charged
+/// to the member's breaker cell.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_classifies_a_refused_request_as_the_callers_fault() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-disposition";
+    let _published = Withdrawn(instance);
+    let (refusing, twin) = (
+        far_end_answering(400, MALFORMED).await,
+        far_end_answering(200, SERVED_BY_TWIN).await,
+    );
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(refusing.port, 100), (twin.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, _) = rig.chat().await;
+    assert_eq!(status, 400, "the far end's refusal is relayed");
+    assert_eq!(
+        (refusing.served(), twin.served()),
+        (1, 0),
+        "a caller's fault is not failed over"
+    );
+    assert!(
+        rig.app.store.ready_in("p", 0, busbar_kernel::store::now()),
+        "nor charged to the member's cell"
+    );
+}
+
+/// EGRESS-AUTH: the member's credential is the one the egress mechanism binds and injects; the
+/// caller's own token never crosses.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_injects_the_members_credential_not_the_callers() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-egress-auth";
+    let _published = Withdrawn(instance);
+    let far = far_end_answering(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200);
+    let seen = far.authorizations.lock().unwrap().clone();
+    assert_eq!(seen, vec!["Bearer sk-seats".to_string()]);
+    assert!(
+        !seen[0].contains(&rig.token),
+        "the caller's token never crosses"
+    );
+}
+
+/// METRICS: the door's traffic appears on the scrape, under the pool and lane it was served on.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_doors_traffic_appears_on_the_metrics_scrape() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-metrics";
+    let _published = Withdrawn(instance);
+    let far = far_end_answering(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200);
+    let scrape = busbar_kernel::metrics::render();
+    assert!(
+        scrape
+            .lines()
+            .any(|l| l.starts_with("busbar_upstream_attempts_total{")
+                && l.contains("pool=\"p\"")
+                && l.contains("lane=\"m0\"")),
+        "the attempt is on the scrape under its pool and lane:\n{scrape}"
+    );
+}
+
+/// GOVERNANCE-BUDGET: the unit's spend is attributed to the presenting key, and a key whose budget
+/// is spent is refused before any far end is dialled.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_attributes_spend_and_a_spent_budget_refuses() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-budget";
+    let _published = Withdrawn(instance);
+    let far = far_end_answering(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            budget_cents: Some(1),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200);
+    let (requests, spend, _, billable) = rig.ledger_after(1).await;
+    assert_eq!(
+        (requests, spend, billable),
+        (1, 1, 1),
+        "the one fee on the key"
+    );
+    let (status, head, _) = rig.chat().await;
+    assert_eq!(status, 429, "the spent budget refuses");
+    assert!(
+        head.contains_key("retry-after"),
+        "with a Retry-After: {head:?}"
+    );
+    assert_eq!(far.served(), 1, "the refused unit dialled nothing");
+}
+
+/// AUDIT-CHAIN: every unit the door serves seals exactly one record on the node's chain.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_seals_one_audit_record_per_unit() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-audit";
+    let _published = Withdrawn(instance);
+    let far = far_end_answering(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200);
+    let _ = rig.ledger_after(1).await;
+    assert_eq!(rig.audit_records(), 1, "one record for the one unit");
+}
+
+/// HOOKS-GATE: a decision gate refuses the door's traffic before dispatch.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_doors_gate_hook_refuses_before_dispatch() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-gate";
+    let _published = Withdrawn(instance);
+    let far = far_end_answering(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            reject_at_gate: true,
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 451, "the gate's own status");
+    assert_eq!(far.served(), 0, "nothing was dispatched");
+}
+
+/// HOOKS-TAP: the rewrite and observe hooks run over the door's payloads: the request-stage tap
+/// sees the request as the global rewrite left it.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_doors_tap_hooks_observe_the_rewritten_request() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-tap";
+    let _published = Withdrawn(instance);
+    let far = far_end_answering(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200);
+    let payload = rig
+        .request_tap_payload(2_000)
+        .await
+        .expect("the request-stage tap is delivered");
+    let text = String::from_utf8_lossy(&payload);
+    assert!(text.contains(REWRITTEN), "{text}");
+    assert!(!text.contains("the original prompt"), "{text}");
+}
+
+/// CATALOGUE: what a restricted key may SEE is the one catalogue walk's answer: the pool it may
+/// reach and that pool's members, never a model it cannot reach.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_doors_catalogue_shows_a_restricted_key_only_what_it_reaches() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-catalogue";
+    let _published = Withdrawn(instance);
+    let (a, b) = (
+        far_end_answering(200, SERVED_BY_TWIN).await,
+        far_end_answering(200, SERVED_BY_TWIN).await,
+    );
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(a.port, 1), (b.port, 1)],
+            pooled: Some(1),
+            allowed_pools: Some(&["p"]),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig.send("GET", "/v1/models", None).await;
+    assert_eq!(status, 200);
+    let listed: serde_json::Value = serde_json::from_slice(&body).expect("a JSON list");
+    let ids: Vec<&str> = listed["data"]
+        .as_array()
+        .expect("the list")
+        .iter()
+        .filter_map(|m| m["id"].as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        ["p", "m0"],
+        "the reachable pool and its member, nothing else"
     );
 }

@@ -91,7 +91,7 @@ static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
     });
 
 /// The marker the rewrite hook plants in the prompt; a tap payload carrying it saw the rewrite.
-const REWRITTEN: &str = "rewritten-by-the-global-rewrite-seat";
+pub(super) const REWRITTEN: &str = "rewritten-by-the-global-rewrite-seat";
 
 /// The far end's answer: an openai chat completion.
 const ANSWER: &str = r#"{"id":"chatcmpl-1","object":"chat.completion","created":0,"model":"m0","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
@@ -191,18 +191,40 @@ async fn delivered(tap: &SeatProbe, budget_ms: u64) -> Option<Vec<u8>> {
     None
 }
 
-/// A far end on loopback answering every request with [`ANSWER`].
-async fn far_end() -> u16 {
+/// A FAR END ON LOOPBACK: every request it reads is answered with its status and body; it counts
+/// the requests it served and keeps each one's `authorization` field.
+pub(super) struct FarEnd {
+    /// Its port.
+    pub port: u16,
+    /// The requests it served.
+    pub hits: Arc<std::sync::atomic::AtomicUsize>,
+    /// Each served request's `authorization` field, as received.
+    pub authorizations: Arc<Mutex<Vec<String>>>,
+}
+
+impl FarEnd {
+    /// The requests it served so far.
+    pub fn served(&self) -> usize {
+        self.hits.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// A far end on loopback answering every request with `status` and `body` (JSON).
+pub(super) async fn far_end_answering(status: u16, body: &'static str) -> FarEnd {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("a loopback port");
     let port = listener.local_addr().expect("its address").port();
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let authorizations = Arc::new(Mutex::new(Vec::new()));
+    let (served, seen) = (Arc::clone(&hits), Arc::clone(&authorizations));
     tokio::spawn(async move {
         while let Ok((mut socket, _)) = listener.accept().await {
+            let (served, seen) = (Arc::clone(&served), Arc::clone(&seen));
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 16 * 1024];
                 let mut got = Vec::new();
-                loop {
+                let head = loop {
                     let Ok(n) = socket.read(&mut buf).await else {
                         return;
                     };
@@ -212,36 +234,48 @@ async fn far_end() -> u16 {
                     got.extend_from_slice(&buf[..n]);
                     let text = String::from_utf8_lossy(&got).to_string();
                     if let Some(at) = text.find("\r\n\r\n") {
-                        let length = text[..at]
-                            .lines()
-                            .find_map(|l| {
-                                let (name, value) = l.split_once(':')?;
-                                name.eq_ignore_ascii_case("content-length")
-                                    .then(|| value.trim().parse::<usize>().ok())
-                                    .flatten()
+                        let field = |name: &str| {
+                            text[..at].lines().find_map(|l| {
+                                let (n, v) = l.split_once(':')?;
+                                n.eq_ignore_ascii_case(name).then(|| v.trim().to_string())
                             })
+                        };
+                        let length = field("content-length")
+                            .and_then(|v| v.parse::<usize>().ok())
                             .unwrap_or(0);
                         if got.len() >= at + 4 + length {
-                            break;
+                            break field("authorization").unwrap_or_default();
                         }
                     }
-                }
+                };
+                served.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                seen.lock().unwrap().push(head);
+                let reason = if status == 200 { "OK" } else { "Error" };
                 let reply = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
-                     connection: close\r\n\r\n{ANSWER}",
-                    ANSWER.len()
+                    "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
                 );
                 let _ = socket.write_all(reply.as_bytes()).await;
                 let _ = socket.shutdown().await;
             });
         }
     });
-    port
+    FarEnd {
+        port,
+        hits,
+        authorizations,
+    }
+}
+
+/// A far end on loopback answering every request with [`ANSWER`].
+async fn far_end() -> u16 {
+    far_end_answering(200, ANSWER).await.port
 }
 
 /// The key's ledger as the test reads it: (admission count, derived spend in cents, the durable
 /// row's admission count, the durable row's billable count).
-type Ledger = (u64, i64, u64, u64);
+pub(super) type Ledger = (u64, i64, u64, u64);
 
 /// What a run left: the caller's status, the seat log, the two tap probes and the ledger reader.
 struct Ran {
@@ -252,12 +286,120 @@ struct Ran {
     read: Arc<dyn Fn() -> Ledger + Send + Sync>,
 }
 
-/// ONE KEYED REQUEST through the llm door with the four probed seats installed, a rejecting gate
-/// when `reject_at_gate`.
-async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
+/// HOW A RIG IS BUILT: the far ends of its pool `p`'s members (each a model `m<i>` on a provider
+/// of its own, at `weight`), the gate's verdict, and the key's all-time budget.
+#[derive(Clone, Copy, Default)]
+pub(super) struct RigOpts<'a> {
+    /// Each member's far-end port and weight, in order.
+    pub members: &'a [(u16, u32)],
+    /// The global gate rejects with 451.
+    pub reject_at_gate: bool,
+    /// The key's group holds this many cents a day (a flat 1-cent fee per request).
+    pub budget_cents: Option<u64>,
+    /// How many of the members (the first ones) pool `p` holds; the rest are models no pool
+    /// names. `None`: all of them.
+    pub pooled: Option<usize>,
+    /// The pools the key may reach (`None`: every pool).
+    pub allowed_pools: Option<&'a [&'a str]>,
+}
+
+/// THE LLM DOOR, SERVED END TO END, as production composes it: the data router built with the
+/// door's claims, a keyed caller's token, the generation's App and the node's book.
+pub(super) struct DoorRig {
+    /// The data router.
+    pub router: axum::Router,
+    /// The caller's bearer token.
+    pub token: String,
+    /// The generation.
+    pub app: Arc<busbar_kernel::state::App>,
+    /// The node's book: every unit's line and audit record.
+    pub book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
+    /// The key's id.
+    pub key_id: String,
+    log: Arc<Mutex<Vec<String>>>,
+    request_tap: Arc<SeatProbe>,
+    candidate_tap: Arc<SeatProbe>,
+    read: Arc<dyn Fn() -> Ledger + Send + Sync>,
+}
+
+impl DoorRig {
+    /// One request through the door as the keyed caller: its status, head and body.
+    pub async fn send(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> (u16, axum::http::HeaderMap, Vec<u8>) {
+        use tower::ServiceExt as _;
+        let mut req = axum::http::Request::builder()
+            .method(method)
+            .uri(path)
+            .header("authorization", format!("Bearer {}", self.token));
+        if body.is_some() {
+            req = req.header("content-type", "application/json");
+        }
+        let req = req
+            .body(match body {
+                Some(b) => axum::body::Body::from(b.to_string()),
+                None => axum::body::Body::empty(),
+            })
+            .expect("a request");
+        let response = self
+            .router
+            .clone()
+            .oneshot(req)
+            .await
+            .expect("the router answers");
+        let status = response.status().as_u16();
+        let head = response.headers().clone();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("the body")
+            .to_vec();
+        (status, head, bytes)
+    }
+
+    /// One chat completion on pool `p`.
+    pub async fn chat(&self) -> (u16, axum::http::HeaderMap, Vec<u8>) {
+        self.send(
+            "POST",
+            "/v1/chat/completions",
+            Some(serde_json::json!({"model": "p", "max_tokens": 16,
+                "messages": [{"role": "user", "content": "the original prompt"}]})),
+        )
+        .await
+    }
+
+    /// The key's ledger, once its last unit's money settled (bounded).
+    pub async fn ledger_after(&self, billable: u64) -> Ledger {
+        let mut ledger = (self.read)();
+        for _ in 0..200 {
+            if ledger.3 >= billable {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            ledger = (self.read)();
+        }
+        ledger
+    }
+
+    /// The audit records the node's book sealed so far.
+    pub fn audit_records(&self) -> usize {
+        self.book
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .audit_records
+            .len()
+    }
+}
+
+/// BUILD THE RIG: the door serving the `pools` map, linked and bound through the loader's one load
+/// on the process connector, over `opts`' far ends, its egress the model-serving walk over the
+/// kernel's lane cells, its hooks the kernel's stage with the four probed seats installed.
+pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     // The registry rows that own the `pools:`/`models:` sections the deployment writes.
     node_plane::testkit::install_test_seams();
-    let port = far_end().await;
+    busbar_kernel::metrics::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: false,
         ..Default::default()
@@ -293,45 +435,94 @@ async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
     )
     .expect("the linked door binds");
 
-    // THE DEPLOYMENT: one openai provider on the far end, one model, pool `p` over it.
+    // THE DEPLOYMENT: one openai provider per member, one model per provider, pool `p` over them.
     let key_file = std::env::temp_dir().join(format!(
         "busbar-hook-seats-{}-{instance}",
         std::process::id()
     ));
     std::fs::write(&key_file, "sk-seats").expect("the credential file");
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(&format!(
-        "providers:\n  oai:\n    api_key: {{ file: '{}' }}\nmodels:\n  m0:\n    provider: oai\n\
-         pools:\n  p:\n    members:\n      - model: m0\n",
-        key_file.display()
-    ))
-    .expect("a deployment");
-    let defs: HashMap<String, busbar_kernel::config::ProviderDef> = serde_yaml::from_str(&format!(
-        "oai:\n  protocol: openai\n  base_url: 'http://127.0.0.1:{port}'\n"
-    ))
-    .expect("the providers");
+    let mut yaml = String::from("providers:\n");
+    for (i, _) in opts.members.iter().enumerate() {
+        yaml.push_str(&format!(
+            "  oai{i}:\n    api_key: {{ file: '{}' }}\n",
+            key_file.display()
+        ));
+    }
+    yaml.push_str("models:\n");
+    for (i, _) in opts.members.iter().enumerate() {
+        yaml.push_str(&format!("  m{i}:\n    provider: oai{i}\n"));
+    }
+    yaml.push_str("pools:\n  p:\n    members:\n");
+    let pooled = opts.pooled.unwrap_or(opts.members.len());
+    for (i, (_, weight)) in opts.members.iter().enumerate().take(pooled) {
+        yaml.push_str(&format!("      - model: m{i}\n        weight: {weight}\n"));
+    }
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("a deployment");
+    let mut defs_yaml = String::new();
+    for (i, (port, _)) in opts.members.iter().enumerate() {
+        defs_yaml.push_str(&format!(
+            "oai{i}:\n  protocol: openai\n  base_url: 'http://127.0.0.1:{port}'\n"
+        ));
+    }
+    let defs: HashMap<String, busbar_kernel::config::ProviderDef> =
+        serde_yaml::from_str(&defs_yaml).expect("the providers");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
     let providers = provider_routes(&cfg.providers);
     let sections = kernel_sections(&cfg);
     let model_pools = crate::root::model_egress::ModelPools::of(&cfg);
 
-    // THE MONEY: a signing governance book with one minted key, the node's book bound.
+    // THE MONEY: a signing governance book with one minted key (in a budgeted group when asked),
+    // the node's book bound.
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let gov = Arc::new(
         GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
             .expect("governance"),
     );
+    let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = opts
+        .budget_cents
+        .map(|amount| {
+            let limit = busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Budget,
+                amount,
+                per: Some(busbar_kernel::config::groups::LimitWindow::Day),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
+            };
+            (
+                format!("{instance}-group"),
+                busbar_kernel::config::GroupCfg {
+                    parent: None,
+                    enabled: true,
+                    limits: vec![limit],
+                    ..Default::default()
+                },
+            )
+        })
+        .into_iter()
+        .collect();
+    let cost = if groups.is_empty() {
+        CostModel::flat(1)
+    } else {
+        CostModel::resolve_parts(None, 1, &groups)
+    };
     let (key, token) = gov
         .mint_signed(
             NewKeySpec {
                 name: "seats".to_string(),
+                group: groups.keys().next().cloned(),
+                allowed_pools: opts
+                    .allowed_pools
+                    .map(|pools| pools.iter().map(|p| (*p).to_string()).collect()),
                 ..Default::default()
             },
             4_000_000_000,
             1_700_000_000,
         )
         .expect("mint");
-    gov.hydrate_budgets(&CostModel::flat(1), 0)
-        .expect("hydrate");
+    gov.hydrate_budgets(&cost, 0).expect("hydrate");
     let node = Arc::new(Node::new());
     let book = crate::root::durability::node_book_over(Box::new(|| CARD.pin()));
     node.bind_book(Arc::clone(&book.durability));
@@ -345,18 +536,26 @@ async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
         ))
     };
 
-    // THE GENERATION: the lane, the pool, the flat 1-cent fee, and the four seats.
-    let mut app = busbar_kernel::test_support::TestApp::new()
+    // THE GENERATION: the lanes, the pool, the fee, and the four seats.
+    let mut builder = busbar_kernel::test_support::TestApp::new()
         .keys_chain()
         .governance(Arc::clone(&gov))
-        .cost(CostModel::flat(1))
-        .lane(busbar_kernel::test_support::LaneSpec::new(
-            "m0",
+        .cost(cost);
+    for (i, (port, _)) in opts.members.iter().enumerate() {
+        builder = builder.lane(busbar_kernel::test_support::LaneSpec::new(
+            &format!("m{i}"),
             "openai",
             &format!("http://127.0.0.1:{port}"),
-        ))
-        .pool("p", &[(0, 1)])
-        .build();
+        ));
+    }
+    let weights: Vec<(usize, u32)> = opts
+        .members
+        .iter()
+        .enumerate()
+        .take(pooled)
+        .map(|(i, (_, w))| (i, *w))
+        .collect();
+    let mut app = builder.pool("p", &weights).build();
     let log = Arc::new(Mutex::new(Vec::new()));
     let read: Arc<dyn Fn() -> Ledger + Send + Sync> = {
         let (gov, cost, key_id) = (Arc::clone(&gov), app.cost.clone(), key.id.clone());
@@ -382,7 +581,7 @@ async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
     let request_tap = Arc::new(SeatProbe::new("request-tap", &log));
     let candidate_tap = Arc::new(SeatProbe::new("candidate-tap", &log));
     let mut gate_probe = SeatProbe::new("gate", &log);
-    if reject_at_gate {
+    if opts.reject_at_gate {
         gate_probe.reject = Some((451, "the gate says no"));
     }
     {
@@ -408,7 +607,9 @@ async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
     ));
     let models = crate::root::model_egress::ModelServing {
         pools: model_pools,
-        lanes: HashMap::from([("m0".to_string(), 0)]),
+        lanes: (0..opts.members.len())
+            .map(|i| (format!("m{i}"), i))
+            .collect(),
         app: {
             let app = Arc::clone(&app);
             Arc::new(move || Arc::clone(&app))
@@ -456,35 +657,51 @@ async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
     .expect("its claims mount");
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
-
-    // THE REQUEST, as the keyed caller.
-    let response = {
-        use tower::ServiceExt as _;
-        let req = axum::http::Request::builder()
-            .method("POST")
-            .uri("/v1/chat/completions")
-            .header("authorization", format!("Bearer {}", token.expose_secret()))
-            .header("content-type", "application/json")
-            .body(axum::body::Body::from(
-                serde_json::json!({"model": "p", "max_tokens": 16,
-                    "messages": [{"role": "user", "content": "the original prompt"}]})
-                .to_string(),
-            ))
-            .expect("a request");
-        router
-            .clone()
-            .oneshot(req)
-            .await
-            .expect("the router answers")
-    };
-    let status = response.status().as_u16();
-    let _ = axum::body::to_bytes(response.into_body(), 1 << 16).await;
-    Ran {
-        status,
+    DoorRig {
+        router,
+        token: token.expose_secret().to_string(),
+        app,
+        book: Arc::clone(&book.durability),
+        key_id: key.id.to_string(),
         log,
         request_tap,
         candidate_tap,
         read,
+    }
+}
+
+/// ONE KEYED REQUEST through the llm door with the four probed seats installed, a rejecting gate
+/// when `reject_at_gate`.
+async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
+    let port = far_end().await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(port, 1)],
+            reject_at_gate,
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, _) = rig.chat().await;
+    Ran {
+        status,
+        log: Arc::clone(&rig.log),
+        request_tap: Arc::clone(&rig.request_tap),
+        candidate_tap: Arc::clone(&rig.candidate_tap),
+        read: Arc::clone(&rig.read),
+    }
+}
+
+impl DoorRig {
+    /// The request-stage tap's last delivered projection (bounded wait).
+    pub async fn request_tap_payload(&self, budget_ms: u64) -> Option<Vec<u8>> {
+        delivered(&self.request_tap, budget_ms).await
+    }
+
+    /// The seat log.
+    pub fn seats(&self) -> Vec<String> {
+        self.log.lock().unwrap().clone()
     }
 }
 

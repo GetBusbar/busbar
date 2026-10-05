@@ -2975,7 +2975,13 @@ mod tests;
 #[path = "tests/serve_planes.rs"]
 mod planes_tests;
 
-#[cfg(all(test, feature = "plane-decisions", linked_axis_node))]
+// The door test file: the decisions door's served route, and the capability cells of the door
+// serving the `pools` map under the fold switch.
+#[cfg(all(
+    test,
+    linked_axis_node,
+    any(feature = "plane-decisions", linked_fold_on_driver)
+))]
 #[path = "tests/serve_door.rs"]
 mod door_tests;
 
