@@ -30,11 +30,11 @@
 // the flag falls through to the listener path (main.rs, "a build without MCP falls through to its
 // listener path"), so the spawned child is a normal HTTP server that never emits a stdio frame and
 // never exits on stdin EOF. These end-to-end tests drive that stdio channel, so they belong to the
-// same feature as the mode they exercise — matching the binary's own `#[cfg(feature = "plane-mcp")]`
-// on the serve block.
+// build that links the plane that serves it.
 // The plane under test is the door `plane-mcp` carries, served on the root's line carrier (SEAM-S1)
-// through the stdio claim its door states.
-#![cfg(feature = "plane-mcp")]
+// through the stdio claim its door states; gated on `linked_section_tools`, set exactly when the
+// linked door declaring `tools:` is in the build.
+#![cfg(linked_section_tools)]
 
 mod common;
 

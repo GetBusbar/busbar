@@ -139,6 +139,23 @@ fn main() {
     for cfg in linked_axis_cfgs(&manifest, &enabled).0 {
         println!("cargo::rustc-cfg={cfg}");
     }
+    // THE LINKED-SECTION CFGS: `linked_section_<section>` for every enabled
+    // `[package.metadata.busbar.linked-section]` row (a linked plane door's declaring section), and
+    // the same sections as `BUSBAR_LINKED_SECTIONS`, which the root's tests hold to each door's
+    // Statement.
+    let mut sections: Vec<String> = Vec::new();
+    for (feature, section) in metadata_map(&manifest, "package.metadata.busbar.linked-section") {
+        let cfg = format!("linked_section_{}", section.replace('-', "_"));
+        println!("cargo::rustc-check-cfg=cfg({cfg})");
+        if enabled(&feature) {
+            println!("cargo::rustc-cfg={cfg}");
+            sections.push(section);
+        }
+    }
+    println!(
+        "cargo:rustc-env=BUSBAR_LINKED_SECTIONS={}",
+        sections.join(" ")
+    );
     // `BUSBAR_ENABLED_FEATURES`: the cargo features this build enabled, space-separated — so a test
     // that maps a manifest row to "is it compiled into this build" reads the answer as data rather
     // than spelling a `cfg(feature = "...")` per plugin.

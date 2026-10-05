@@ -519,7 +519,7 @@ fn no_unjustified_single_plane_method_on_universal_engine_host() {
 }
 
 /// SELF-TEST (the detector is NON-VACUOUS): the SAME detector must (1) enumerate the known slice
-/// methods, (2) classify a KNOWN single-plane method (`synthesize_completion`) as single-plane, (3)
+/// methods, (2) classify a KNOWN single-plane method (`pool_label`) as single-plane, (3)
 /// still see a KNOWN ≥2-plane method (`clock_now_secs`) as multi-plane, and (4) a KNOWN 0-plane method
 /// (`plane_defs`) as neutral. A broken scan that "finds nothing" (all-0, or all-1) fails HERE loudly,
 /// so a green real witness above is meaningful. It also proves `.plane_slot(` ≠ `plane_slot_live`
@@ -545,31 +545,28 @@ fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
         );
     }
 
-    // (2) A KNOWN single-plane method: `synthesize_completion`. Its ONLY host call site is MCP's
-    //     sampling/complete bridge (busbar-llm holds the impl as a free fn, not a host-seam call), so
-    //     the caller-count classifies it single-plane — the F3 case this whole gate exists to pin.
-    let synth = scan
-        .callers
-        .get("synthesize_completion")
-        .expect("enumerated");
+    // (2) A KNOWN single-plane method: `pool_label`. Its ONLY host call site is the LLM plane's
+    //     request path, so the caller-count classifies it single-plane — the case this whole gate
+    //     exists to pin. (It was `synthesize_completion` until FLIP-MCP deleted its one caller.)
+    let single = scan.callers.get("pool_label").expect("enumerated");
     assert_eq!(
-        synth.len(),
+        single.len(),
         1,
-        "detector failed to classify `synthesize_completion` as SINGLE-plane (got callers {synth:?}); \
+        "detector failed to classify `pool_label` as SINGLE-plane (got callers {single:?}); \
          a scan that cannot see a single-plane method makes the real witness vacuous"
     );
     let recorded = single_plane_allowlist()
         .iter()
-        .find(|(m, _, _)| *m == "synthesize_completion")
+        .find(|(m, _, _)| *m == "pool_label")
         .map(|(_, p, _)| *p)
-        .expect("`synthesize_completion` is allowlisted");
+        .expect("`pool_label` is allowlisted");
     assert!(
-        synth.contains(recorded),
-        "the sole `synthesize_completion` host caller should be the sampling bridge the allowlist \
-         records (`{recorded}`), got {synth:?}"
+        single.contains(recorded),
+        "the sole `pool_label` host caller should be the plane the allowlist records \
+         (`{recorded}`), got {single:?}"
     );
 
-    // (3) A KNOWN ≥2-plane method: `clock_now_secs` (mcp + a2a). Proves the detector DISTINGUISHES
+    // (3) A KNOWN ≥2-plane method: `clock_now_secs` (llm + a2a + voice). Proves the detector DISTINGUISHES
     //     shared capabilities — it does not collapse everything to single-plane.
     let clock = scan.callers.get("clock_now_secs").expect("enumerated");
     assert!(

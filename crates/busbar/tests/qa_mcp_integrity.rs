@@ -33,8 +33,9 @@
 //!    plane's own `the_digest_of_the_cross_language_pin_fixture_is_pinned`. A drift here would make
 //!    the control fail for the wrong reason; this test names that reason instead.
 
-// The plane under test is the one `plane-mcp` switches on (served through its door).
-#![cfg(all(feature = "plane-mcp", feature = "auth-admin-tokens"))]
+// The plane under test is the one `plane-mcp` switches on (served through its door), gated on
+// `linked_section_tools`: set exactly when the linked door declaring `tools:` is in the build.
+#![cfg(all(linked_section_tools, feature = "auth-admin-tokens"))]
 
 mod common;
 
