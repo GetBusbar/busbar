@@ -2790,7 +2790,21 @@ slot!(
                     None => return Outcome::Refused,
                 }
             }
-            Line::Open => return Outcome::Refused,
+            // A card read on the open line carries no request to screen (1.5.5 answered it with no
+            // hook in the way): its view names no entry and no turn, so no entry's hooks bind.
+            Line::Open => {
+                let mut arena = input.arena_buf();
+                let dialect = arena.span(crate::PLANE_KEY.as_bytes());
+                let short = !arena.fits();
+                let (aw, and) = arena.settle(short);
+                out.set(|o| &o.arena_written, aw as u64);
+                out.set(|o| &o.arena_needed, and as u64);
+                if short {
+                    return Outcome::Failed;
+                }
+                out.host_str(|o| &o.view.ingress_dialect, &arena, dialect);
+                return Outcome::Ready;
+            }
         };
         let rewrite = input.field(|i| &i.rewrite).bytes();
         let applied = (!rewrite.is_empty())

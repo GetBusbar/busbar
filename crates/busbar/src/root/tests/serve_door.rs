@@ -3024,6 +3024,48 @@ mod agent_door {
         assert!(card["signatures"][0]["protected"].is_string(), "{body}");
     }
 
+    /// A CARD READ IS NOT SCREENED: with a gate attached to the agent that refuses every
+    /// submission, the agent's card is still served to a granted caller (1.5.5 answered a card read
+    /// with no hook in the way), while a submission to the same agent is refused by the gate.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_gated_agents_card_is_still_served_and_its_submission_refused() {
+        // A build that links no agent door has nothing for this cell to drive.
+        if linked_door().is_none() {
+            return;
+        }
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-gated-card";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let s = hooked(
+            instance,
+            &agent,
+            "reject-all",
+            hook_def(
+                "ro",
+                serde_json::json!({
+                    "raw_decide_reply": {"reject": {"status": 403, "message": "no delegation today"}}
+                }),
+            ),
+        );
+        approve(&s, "planner").await;
+        let (status, body) = answered(
+            &s.router,
+            get(&format!("{}/agents/planner", mount()), Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "the card is served: {body}");
+        let card: serde_json::Value = serde_json::from_str(&body).expect("a card");
+        assert!(card["name"].is_string(), "{body}");
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(!agent.relayed(), "the refused submission was not relayed");
+    }
+
     /// BUSBAR'S EXTENDED CARD on the plane's own endpoint: one skill per agent the caller's own
     /// catalogue holds, answered by busbar, never relayed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
