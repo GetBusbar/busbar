@@ -238,8 +238,8 @@ pub(crate) mod test_ca {
     use std::sync::LazyLock;
 
     pub(crate) struct TestCa {
-        pub(crate) leaf_pem: String,
-        pub(crate) leaf_key_pem: String,
+        /// The leaf, DER — what the test peer presents.
+        pub(crate) leaf_der: Vec<u8>,
         /// The `sha256/…` pin, computed from `rcgen`'s OWN SPKI encoding of the leaf key — NOT from
         /// anything in this plane's transport walk — so a test whose expectation came from the code
         /// under test cannot agree with a walk that read the wrong member.
@@ -255,7 +255,7 @@ pub(crate) mod test_ca {
         let mut ca_params = CertificateParams::new(Vec::new()).expect("ca params");
         ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         let ca_cert = ca_params.self_signed(&ca_kp).expect("self-signed ca");
-        let ca_der = busbar_kernel::egress::fixtures::certs_from_pem(&ca_cert.pem());
+        let ca_der = vec![ca_cert.der().to_vec()];
 
         let issuer = Issuer::from_params(&ca_params, ca_kp);
         let leaf_kp = KeyPair::generate().expect("leaf key");
@@ -275,8 +275,7 @@ pub(crate) mod test_ca {
             ))
         );
         TestCa {
-            leaf_pem: leaf_cert.pem(),
-            leaf_key_pem: leaf_kp.serialize_pem(),
+            leaf_der: leaf_cert.der().to_vec(),
             expected_pin,
             trust_anchor_ref,
         }
