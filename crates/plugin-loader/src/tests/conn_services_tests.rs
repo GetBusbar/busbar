@@ -46,7 +46,16 @@ struct Recording {
     unserved: Vec<&'static str>,
     /// Every program declaration: owner, need and the program.
     programs: Mutex<Vec<(InstanceId, NeedId, busbar_contract::conn::Program)>>,
+    /// Every member-program declaration: owner, need and the members' programs.
+    members: Mutex<Vec<MemberDeclared>>,
 }
+
+/// One member-program declaration as it reached the table.
+type MemberDeclared = (
+    InstanceId,
+    NeedId,
+    Vec<(String, busbar_contract::conn::Program)>,
+);
 
 impl DeclaredConns for Recording {
     fn declare(
@@ -89,6 +98,20 @@ impl DeclaredConns for Recording {
             .lock()
             .unwrap()
             .push((owner, need, program.clone()));
+        self.slab.declare(owner, need);
+        Ok(())
+    }
+    fn declare_member_programs(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        _spec: &ReadNeed,
+        programs: &[(String, busbar_contract::conn::Program)],
+    ) -> Result<(), ConnError> {
+        self.members
+            .lock()
+            .unwrap()
+            .push((owner, need, programs.to_vec()));
         self.slab.declare(owner, need);
         Ok(())
     }
@@ -1485,4 +1508,88 @@ fn an_upgrades_verify_off_reaches_the_table_and_a_v1_in_reads_none() {
         assert_eq!(out.outcome, RawOutcome::of(Outcome::Ready));
     }
     assert_eq!(*table.verify_offs.lock().unwrap(), vec![true, false, false]);
+}
+
+/// An `env` secret reference's value, as the linked `env` secret plugin resolves it.
+fn env_reference(r: &busbar_contract::secret_ref::SecretRef) -> Result<String, String> {
+    (r.module == busbar_contract::secret_ref::SECRET_MODULE_ENV)
+        .then(|| r.settings.get("key").and_then(serde_json::Value::as_str))
+        .flatten()
+        .and_then(|k| std::env::var(k).ok())
+        .ok_or_else(|| format!("{} does not resolve", r.describe()))
+}
+
+/// The member-program need (`settings.*`): each registration that names a program is a member.
+const MEMBER_NEEDS: [Need; 1] = [Need {
+    target_from: abi_str("settings.*"),
+    ..NEEDS[0]
+}];
+
+/// RED (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): a need whose `target_from` is the
+/// member-program path is declared with ONE program per registration that names a `command` —
+/// its `command`, `args` and `env`, every other key ignored, an `env` secret reference resolved —
+/// at `open` and again at every `refresh` (so the table can retire a changed or removed member); a
+/// registration naming no program is no member, and one whose program does not read is left out.
+#[test]
+fn a_member_program_need_is_declared_with_each_registrations_program() {
+    use busbar_contract::conn::Program;
+    // The variable one member's `env` reference names; set for this test alone.
+    std::env::set_var("BUSBAR_LOADER_MEMBER_PROGRAM_SECRET", "resolved-value");
+    // The root installs the linked secret plugins' resolver; this one reads `env` references alone.
+    let _ = crate::dispatch::install_member_secrets(env_reference);
+    let table = Arc::new(Recording::default());
+    let p = bound(Box::leak(Box::new(MEMBER_NEEDS)), &table);
+    assert_eq!(
+        open_with(
+            &p,
+            br#"{"one":{"transport":"stdio","command":"/usr/bin/one","args":["--serve"],
+                 "env":{"PLAIN":"v","KEY":{"env":"BUSBAR_LOADER_MEMBER_PROGRAM_SECRET"}},
+                 "pin":{"mechanism":"unpinned"},"tools_allow":["a"]},
+                "web":{"url":"https://upstream.example/rpc","pin":{"mechanism":"unpinned"}},
+                "bad":{"transport":"stdio","command":"relative"},
+                "pools":{"p":{"members":["one"]}}}"#
+        ),
+        Outcome::Ready
+    );
+    let members = table.members.lock().unwrap().clone();
+    assert_eq!(
+        members,
+        vec![(
+            p.instance(),
+            NeedId(0),
+            vec![(
+                "one".to_owned(),
+                Program {
+                    command: "/usr/bin/one".into(),
+                    args: vec!["--serve".into()],
+                    env: vec![
+                        ("KEY".into(), "resolved-value".into()),
+                        ("PLAIN".into(), "v".into()),
+                    ],
+                }
+            )]
+        )]
+    );
+    assert!(
+        targets(&table, &p).is_empty(),
+        "no target string was declared"
+    );
+    assert!(table.programs.lock().unwrap().is_empty());
+    assert_eq!(
+        refresh_with(&p, br#"{"two":{"command":"/usr/bin/two"}}"#),
+        Outcome::Ready
+    );
+    let members = table.members.lock().unwrap().clone();
+    assert_eq!(members.len(), 2, "a refresh declares the members again");
+    assert_eq!(
+        members[1].2,
+        vec![(
+            "two".to_owned(),
+            Program {
+                command: "/usr/bin/two".into(),
+                args: Vec::new(),
+                env: Vec::new(),
+            }
+        )]
+    );
 }

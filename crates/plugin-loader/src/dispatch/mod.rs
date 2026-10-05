@@ -63,8 +63,8 @@ pub use load::{
 };
 pub use log_file::{LogLevel, PluginLogConfig, PluginLogSink};
 pub use plugin::{
-    Bind, Called, Diagnostic, Dropped, EnvelopeSink, Metric, NoSink, Plugin, Recall, MAX_LOG_BYTES,
-    MAX_LOG_RECORDS,
+    install_member_secrets, Bind, Called, Diagnostic, Dropped, EnvelopeSink, MemberSecretFn,
+    Metric, NoSink, Plugin, Recall, MAX_LOG_BYTES, MAX_LOG_RECORDS,
 };
 pub use services::{HostServices, Later, Ran, Reading, Stored};
 pub use ticket::{Completions, Redeem};

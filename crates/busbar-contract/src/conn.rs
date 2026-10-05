@@ -365,6 +365,30 @@ pub trait DeclaredConns: Conns {
         let _ = (owner, need, target);
         None
     }
+
+    /// Record that `owner` declared `need` (as [`DeclaredConns::declare`]), its `target_from` the
+    /// member-program path ([`crate::section::MEMBER_PROGRAM`]): `programs` is every member's own
+    /// program, by member name, as the instance's settings spell them. The host keeps ONE
+    /// long-lived connection per member, spawned on its first open and shared by every open that
+    /// names the member (an open's target names the member: its text up to the first `/`), each
+    /// open reading every frame the program writes after it; a program that ends is spawned anew
+    /// on the next open, a new GENERATION. Declaring the need again replaces the set: a member that
+    /// is gone, or whose program changed, is retired (no open reaches it again; its program is
+    /// killed once the last open on it closes). A table that carries no program refuses it.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Refused`] when the host will not carry the need as declared.
+    fn declare_member_programs(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        programs: &[(String, Program)],
+    ) -> Result<(), ConnError> {
+        let _ = (owner, need, spec, programs);
+        Err(ConnError::Refused)
+    }
 }
 
 /// THE ORIGIN of a URL, `scheme://authority`: what a member's route is sealed at and its binding
@@ -416,6 +440,15 @@ impl std::fmt::Debug for ConnAuth {
     }
 }
 
+/// The field a member-program connection's HEAD carries (the first piece every open on it reads,
+/// a fields piece whose status is a success): the GENERATION of the program it reaches, a decimal
+/// counting the spawns of that member's program from `1`. Two opens that read the same generation
+/// reach the same running program.
+pub const PROGRAM_GENERATION_FIELD: &str = "generation";
+
+/// The registration keys a member's program is read from ([`Program::of_member`]).
+pub const PROGRAM_KEYS: [&str; 3] = ["command", "args", "env"];
+
 /// A PROGRAM a need dials (its `transport` a byte-stream framer the program's pipes carry): the
 /// three things a spawn needs that one target string cannot spell — the absolute path
 /// of the executable, its argument vector and its environment — read from the instance's settings.
@@ -465,6 +498,25 @@ pub enum ProgramRefused {
 }
 
 impl Program {
+    /// A REGISTRATION's program ([`crate::section::MEMBER_PROGRAM`]): its `command`, `args` and
+    /// `env` keys read as [`Program::from_settings`] reads them; every other key of the
+    /// registration is its own, not the program's. `None` for a registration that names no
+    /// `command` (or is not a map): it is not a member of a program need.
+    ///
+    /// # Errors
+    ///
+    /// The [`ProgramRefused`] naming what the three keys break.
+    pub fn of_member(registration: &serde_json::Value) -> Option<Result<Self, ProgramRefused>> {
+        let map = registration.as_object()?;
+        map.get("command")?;
+        let picked: serde_json::Map<String, serde_json::Value> = map
+            .iter()
+            .filter(|(k, _)| PROGRAM_KEYS.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        Some(Self::from_settings(&serde_json::Value::Object(picked)))
+    }
+
     /// The settings' spelling of a program: `{command, args?, env?}` — `command` an absolute path,
     /// `args` a list of strings, `env` a map of string to string; any other key, type or a NUL byte
     /// is refused.
