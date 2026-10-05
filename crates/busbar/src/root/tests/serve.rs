@@ -658,7 +658,14 @@ mod a2a_door {
         };
         let opened = busbar_contract::store_calls::StoreAxis::open(
             &axis,
-            busbar_contract::store_calls::StoreDoor::Linked(busbar_store_memory::linked::STORE.4),
+            busbar_contract::store_calls::StoreDoor::Linked(
+                crate::LINKED
+                    .stores
+                    .iter()
+                    .find(|s| s.2)
+                    .expect("the build links a default store")
+                    .4,
+            ),
             instance,
             b"{}",
         )
