@@ -220,8 +220,25 @@
 # a capture cell may name its plugins' release line. da60cad9 (above) is an ancestor, so the --version first-line
 # read rides along.
 #
+# 2026-10-04 (OWNER Q-STEP7-a D1 "the oracle baseline names its store"; ARCHITECT ruling on the mechanism):
+# moved 7b039b65795c -> 0a1aa7c0dc9a (busbar-release `rel-qstore-d1`, PR #155 into main, cut from main 7d34f5b,
+# which carries 7b039b65795c). The engine names `store: {module: memory}` in every config it hands a binary at
+# run time (recorder/store_baseline.rs): the configs it writes and boots, a boot mutation's output, a capture
+# cell's config, the admin config-apply/validate bodies and `upgrade-config` (every script cell's config step).
+# No cells.json definition moves and no golden is re-recorded. The range also carries main's corpus generator,
+# which adds three neutrality|routes|*-shaped-404 cells this cells.json does not hold yet (`cells --check`
+# reports them; RELEASE_REF 2ada212 already carries that generator). Feature branch head; re-pin to the merge
+# commit when it lands. The same head also carries the second owner-approved (2026-10-04) run-time input: a
+# binary on the 1.6 line (which has the destination guard) is handed `advanced.allow_destinations: ["127.0.0.1"]`,
+# the address every oracle mock binds; 1.5.5 refuses that key, so the golden side is not given it.
+#
+# 2026-10-04: moved 0a1aa7c0dc9a -> 4a7a7bba2cef (busbar-release DEV, the merge of #156 = the same three
+# commits as #155). The engine lives on dev (2ada212 is an ancestor); #155's merge into busbar-release main
+# (c7de1ab) lacks dev's engine fixes and is NOT pinned. promote.yml RELEASE_REF moves to the same sha in the
+# same commit, so CI and lane proofs run ONE engine.
+#
 # 2026-10-05 (P6 ORACLE-STRICT, ARCHITECT rulings 2026-10-05): moved on to 99780d72d1ae (busbar-release
-# `p6-engine-oracle`, PR #158 into dev, cut from dev 4a7a7bba2c, which carries the 1.6 mock allowlist and
+# `p6-engine-oracle`, PR #158 into dev, cut from dev 4a7a7bba2c (the pin above), which carries the 1.6 mock allowlist and
 # the store baseline). 4b212f4: a skipped cell of an unwritable variant still resets the config for the
 # next cell (the admin.ops PostGroups/PostConfigApply reds were overlay left by earlier cells). 6a9cbe5:
 # a capture cell that addresses its own mock by `localhost` has that name allowlisted, for that cell

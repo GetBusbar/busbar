@@ -130,7 +130,7 @@ fn decisions_registered() -> busbar_kernel::plane::registry::TestRegistryIsolati
 /// A document whose only interesting key is `decisions:`. The three other top-level keys are the
 /// minimum `DeployCfg` shape the sibling config tests already use.
 fn doc(decisions: &str) -> String {
-    format!("providers: {{}}\nmodels: {{}}\npools: {{}}\n{decisions}")
+    format!("store: {{module: memory}}\nproviders: {{}}\nmodels: {{}}\npools: {{}}\n{decisions}")
 }
 
 /// THE FINDING, AS A TEST. `decisions: "hello"` is not a section — it is a scalar where a mapping
