@@ -13,7 +13,7 @@ use crate::dispatch::kinds::plane::PlaneFacts;
 use busbar_contract::abi::hook::SignalEntry;
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, Span};
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut, GenIn, RefreshIn};
+use busbar_contract::abi::mechanism::lifecycle::{slot as life, GenIn, RefreshIn};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::Bounds;
 use busbar_contract::abi::plane::{
@@ -411,22 +411,29 @@ fn refresh_green_and_red_on_its_snapshot() {
 
 #[test]
 fn cancel_green_and_red_on_its_disposition() {
-    let i: InHead = z();
-    let mut o: CancelOut = z();
+    let i: busbar_contract::abi::plane::PlaneCancelIn = z();
+    let mut o: busbar_contract::abi::plane::PlaneCancelOut = z();
     for d in [CANCEL_OK_PARTIAL, CANCEL_ABORTED] {
-        o.disposition = d;
+        o.cancel.disposition = d;
         assert_eq!(
             Plane::check(&answer(life::CANCEL, Outcome::Ready, &i, &o)),
             Ok(())
         );
     }
     for d in [0, CANCEL_ABORTED + 1] {
-        o.disposition = d;
+        o.cancel.disposition = d;
         assert_eq!(
             Plane::check(&answer(life::CANCEL, Outcome::Ready, &i, &o)),
             f(Rule::UnknownCode, "cancel.disposition")
         );
     }
+    // SEAM-L(r): a write counted past the host's record buffer is FAULT.
+    o.cancel.disposition = CANCEL_ABORTED;
+    o.records_written = 1;
+    assert_eq!(
+        Plane::check(&answer(life::CANCEL, Outcome::Ready, &i, &o)),
+        f(Rule::OverCap, "cancel.records")
+    );
 }
 
 #[test]

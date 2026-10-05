@@ -472,8 +472,8 @@ use crate::abi::hook::{
 use crate::abi::mechanism::lifecycle::{OpenIn, ReadyIn, RefreshIn, ValidateIn};
 use crate::abi::mechanism::ticket::HostTables;
 use crate::abi::plane::{
-    ArriveIn, OnPieceIn, OutField, PlaneDriveIn, ProjectIn, RecordWrite, RefusalIn, ServeIn,
-    UnitCount,
+    ArriveIn, OnPieceIn, OutField, PlaneCancelIn, PlaneDriveIn, ProjectIn, RecordWrite, RefusalIn,
+    ServeIn, UnitCount,
 };
 use crate::abi::transport::{
     AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FramePiece, FramerSink,
@@ -529,6 +529,10 @@ lend! {
         buf(records_buf, records_cap) -> RecordWrite;
     }
     PlaneDriveIn { buf(sessions_buf, sessions_cap) -> u64; }
+    PlaneCancelIn {
+        buf(records_buf, records_cap) -> RecordWrite;
+        buf(arena_buf, arena_cap) -> u8;
+    }
     ProjectIn {
         list(fields, fields_len) -> Field;
         buf(signals_buf, signals_cap) -> crate::abi::hook::SignalEntry;

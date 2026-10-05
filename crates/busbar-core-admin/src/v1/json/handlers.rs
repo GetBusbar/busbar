@@ -3208,8 +3208,8 @@ pub(crate) async fn patch_hook_settings(
     let pre_push_version = current.config_version;
     let settings_version = pre_push_version.wrapping_add(1);
     // PUSH first, COMMIT on ack — a hook that NACKs invalid settings (its `configure` veto) must be
-    // able to REJECT the patch BEFORE anything commits (`hook-test-plugin`'s `nack_configure` pins
-    // this: "a rejected push does not commit over the seam"), so the push cannot move to after the
+    // able to REJECT the patch BEFORE anything commits (the kernel's `dlopen_configure_nack_does_not_
+    // commit` pins this: "a rejected push does not commit over the seam"), so the push cannot move to after the
     // txn. But a SUCCESSFUL push has already made the new settings LIVE on the running hook, while the
     // txn that follows can still reject (409 drift / build / persist). Those reject arms therefore
     // COMPENSATE (see the `Err(e)` arm below) — re-pushing the committed settings so a REJECTED patch

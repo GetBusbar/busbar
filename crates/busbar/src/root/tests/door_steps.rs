@@ -379,7 +379,9 @@ fn a_need_over_an_upgrade_framer_spells_the_base_url_in_its_scheme() {
 
 /// SEAM-L(n), THE MEMBER'S ROUTE: a member bound over an upgrade framer's need dials that need at
 /// its base URL in the framer's scheme, its own (http) need at the base as written. RED: the route
-/// carried the provider's base URL alone, so the framer's need dialled https.
+/// carried the provider's base URL alone, so the framer's need dialled https. The bearer style is the
+/// linked header auth plugin's, so the leg runs where it is linked.
+#[cfg(feature = "auth-header")]
 #[test]
 fn a_member_bound_over_an_upgrade_need_dials_its_spelled_base() {
     use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;

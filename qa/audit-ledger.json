@@ -628,24 +628,6 @@
    ]
   },
   {
-   "id": "crates/hook-test-plugin/src",
-   "kind": "production",
-   "paths": [
-    "crates/hook-test-plugin/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/hook-test-plugin/src/tests"
-   ]
-  },
-  {
    "id": "crates/hooks-ranking/src",
    "kind": "production",
    "paths": [

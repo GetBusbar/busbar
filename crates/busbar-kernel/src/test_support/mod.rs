@@ -2054,76 +2054,6 @@ impl TestApp {
 // checked) named `mcp::runtime`/`mcp::client` types and so RELOCATED to `busbar_mcp::testkit`
 // alongside the plane it serves — core's `test_support` stays plane-neutral.
 
-/// THE HOOK-KIND FIXTURE'S cdylib: the newest of the "uplifted" `<profile_dir>/<name>` copy (only
-/// refreshed when `[lib]` is a ROOT build target, e.g. `cargo build --all-targets`) and the raw
-/// `<profile_dir>/deps/<name>` compiler output (refreshed on every build that recompiles the lib) —
-/// a scoped `cargo test` / `cargo build` never uplifts, so checking only `profile_dir` silently found
-/// nothing and every hook test quietly no-op'd. When NEITHER exists — a scoped
-/// `cargo test -p busbar-kernel` never builds another package's cdylib — the fixture is BUILT here,
-/// once per process, into its own `<target>/fixture-build` directory (its own build lock, so it never
-/// waits on the build that is running these tests); `None` only when that build fails. Before this, a
-/// scoped run skipped all 37 hook-plugin tests silently off CI and failed them all under `CI`. The
-/// fixture is named by DATA — `[package.metadata.busbar] test-fixtures` in this crate's Cargo.toml,
-/// exported by build.rs — so no source names the plugin. The one lookup the hook tests, the admin
-/// suite and the root's `hook_path` bench share.
-pub fn hook_fixture_cdylib() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let profile_dir = exe.parent()?.parent()?;
-    let name = busbar_plugin_loader::plugin_library_filename(env!("BUSBAR_FIXTURE_HOOK"));
-    let newest = |dirs: &[std::path::PathBuf]| {
-        dirs.iter()
-            .map(|d| d.join(&name))
-            .filter_map(|p| {
-                std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(|mtime| (p, mtime))
-            })
-            .max_by_key(|(_, mtime)| *mtime)
-            .map(|(p, _)| p)
-    };
-    if let Some(found) = newest(&[profile_dir.to_path_buf(), profile_dir.join("deps")]) {
-        return Some(found);
-    }
-    static BUILT: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
-    BUILT
-        .get_or_init(|| {
-            let profile = profile_dir.file_name()?.to_str()?.to_string();
-            let target = profile_dir.parent()?.join("fixture-build");
-            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| env!("CARGO").into());
-            let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-            let mut cmd = std::process::Command::new(cargo);
-            cmd.current_dir(&workspace)
-                .args([
-                    "build",
-                    "--locked",
-                    "-p",
-                    env!("BUSBAR_FIXTURE_HOOK_PACKAGE"),
-                ])
-                .arg("--target-dir")
-                .arg(&target);
-            if profile == "release" {
-                cmd.arg("--release");
-            }
-            let status = cmd.status().ok()?;
-            if !status.success() {
-                return None;
-            }
-            let dir = target.join(&profile);
-            newest(&[dir.clone(), dir.join("deps")])
-        })
-        .clone()
-}
-
-/// The hook fixture's Statement rendering, as a signed manifest states it (lowercase hex): what
-/// the dropped-in door admits the fixture against.
-pub fn hook_fixture_statement(cdylib: &std::path::Path) -> String {
-    let rendering = busbar_plugin_loader::dispatch::rendering_of_library(cdylib)
-        .expect("the hook fixture loads")
-        .expect("the hook fixture exports its door");
-    hex::encode(rendering)
-}
-
 /// THE STAND-IN HOOK AXIS: `preflight::RootInstall`'s `hook_axis` in a test build (a test build has
 /// no root). The loader's hook rows over `registry` — the rows the root's axis answers with — on a
 /// dispatcher of their own, of the root's no-boot shape (`root::dispatch::dispatcher`: one worker,
@@ -2152,59 +2082,91 @@ pub fn hook_axis_stand_in(
     Ok(std::sync::Arc::new(rows))
 }
 
-/// Build a [`crate::hooks::HookEnv`] whose registry loads the hermetic `busbar-hook-test-plugin`
-/// cdylib under the given alias(es) (all pointing at the SAME cdylib) with the given declared manifest
-/// `needs`. `None` when the cdylib is not built (the caller skips). Uses the unsigned +
-/// `allow_unsigned` path (tests can't sign with the embedded first-party key) — still the full
-/// scan/trust/load pipeline. Shared by the admin + resolution tests that need a hook to actually load.
+/// THE HOOK DOUBLE (OWNER 2026-10-03, no test plugins): the kernel's hook port answered in
+/// process. See [`hook_double`].
+pub mod hook_double;
+
+/// A [`crate::hooks::HookEnv`] whose registry holds one `kind: hook` row per alias (each stating the
+/// given manifest `needs`, as a dropped-in plugin's signed manifest does) and whose hook axis is the
+/// [`hook_double::HookAxisDouble`] answering those aliases, beside the build's linked rows. The
+/// manifest is the kernel's own reading of a plugin (the grant meet, the schema fallback); the axis
+/// is the port every open goes through. No plugin is loaded: the rows carry no image.
 pub fn test_hook_env(
     aliases: &[&str],
     needs: busbar_plugin_loader::sign::HookNeeds,
-) -> Option<crate::hooks::HookEnv> {
+) -> crate::hooks::HookEnv {
     test_hook_env_with_schema(aliases, needs, None)
 }
 
-/// As [`test_hook_env`], but lets a test stamp the loaded plugin's manifest with a
-/// `settings_schema` — needed to exercise `GET /plugins/{name}/schema`'s describe→manifest
-/// fallback (a real loaded hook whose live `describe` answers `schema: null` still has a real
-/// manifest baseline to fall back to).
+/// As [`test_hook_env`], but every row's manifest also states a `settings_schema` — the baseline
+/// `GET /plugins/{name}/schema` falls back to when the live `describe` answers no schema.
 pub fn test_hook_env_with_schema(
     aliases: &[&str],
     needs: busbar_plugin_loader::sign::HookNeeds,
     settings_schema: Option<&str>,
-) -> Option<crate::hooks::HookEnv> {
-    let cdylib = {
-        let candidate = hook_fixture_cdylib();
-        let Some(candidate) = candidate else {
-            if std::env::var_os("CI").is_some() {
-                panic!(
-                    "the hook-test plugin cdylib is not built under CI (checked both the uplifted \
-                     target dir and target/deps); refusing to silently skip the hook-plugin \
-                     admin/resolution coverage"
-                );
-            }
-            return None;
-        };
-        candidate
-    };
-    let lib = std::fs::read(&cdylib).expect("read hook cdylib");
-    let stated = hook_fixture_statement(&cdylib);
+) -> crate::hooks::HookEnv {
+    let rows = aliases
+        .iter()
+        .enumerate()
+        .map(|(i, alias)| {
+            let mut m = fixture_manifest(
+                &format!("hook-double-{i}"),
+                alias,
+                "hook",
+                hook_double::DOUBLE_ROW_BYTES,
+            );
+            m.needs = needs.clone();
+            m.settings_schema = settings_schema.map(str::to_string);
+            m
+        })
+        .collect();
+    hook_double_env(rows, aliases)
+}
+
+/// As [`test_hook_env`] for `hook_alias`, beside a second row under `wrong_kind_alias` whose
+/// manifest states `kind: "secret"` — the "resolves, but to a non-hook kind" arm of
+/// `probe_transport`, which only ever reads the row's `manifest.kind`.
+pub fn test_hook_env_with_wrong_kind_plugin(
+    hook_alias: &str,
+    wrong_kind_alias: &str,
+) -> crate::hooks::HookEnv {
+    let rows = vec![
+        fixture_manifest(
+            "hook-double-real",
+            hook_alias,
+            "hook",
+            hook_double::DOUBLE_ROW_BYTES,
+        ),
+        fixture_manifest(
+            "hook-double-wrongkind",
+            wrong_kind_alias,
+            "secret",
+            hook_double::DOUBLE_ROW_BYTES,
+        ),
+    ];
+    hook_double_env(rows, &[hook_alias])
+}
+
+/// The registry of `rows` (each packed as the unsigned tarball an operator drops in and admitted
+/// through the full scan/trust pipeline under `allow_unsigned`) behind the hook axis double that
+/// answers `doubled`.
+fn hook_double_env(
+    rows: Vec<busbar_plugin_loader::sign::Manifest>,
+    doubled: &[&str],
+) -> crate::hooks::HookEnv {
     // A monotonic counter, NOT a clock read: two threads can read the same nanosecond, and a
-    // colliding fixture path means one test scans a tarball another is still writing.
+    // colliding path means one test scans a tarball another is still writing.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!(
+    let dir = scratch_dir(&format!(
         "busbar-test-hook-env-{}-{}",
         std::process::id(),
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    std::fs::create_dir_all(&dir).unwrap();
-    for (i, alias) in aliases.iter().enumerate() {
-        let mut m = fixture_manifest(&format!("busbar-hook-test-plugin-{i}"), alias, "hook", &lib);
-        m.needs = needs.clone();
-        m.settings_schema = settings_schema.map(str::to_string);
-        m.statement = Some(stated.clone());
-        let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();
-        std::fs::write(dir.join(format!("hook{i}.tar.gz")), tarball).unwrap();
+    for (i, m) in rows.into_iter().enumerate() {
+        let tarball =
+            busbar_plugin_loader::tarball::package(&m, "lib.so", hook_double::DOUBLE_ROW_BYTES)
+                .expect("pack a hook double row");
+        std::fs::write(dir.join(format!("hook{i}.tar.gz")), tarball).expect("write the row");
     }
     let policy = busbar_plugin_loader::sign::TrustPolicy {
         binary_version: "1.5.0".into(),
@@ -2213,78 +2175,10 @@ pub fn test_hook_env_with_schema(
     };
     let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("scan");
     let _ = std::fs::remove_dir_all(&dir);
-    Some(
-        crate::hooks::HookEnv::new(
-            std::sync::Arc::new(registry),
-            std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-        )
-        .expect("the fixture registry's hook axis"),
-    )
-}
-
-/// As [`test_hook_env`], but ALSO packs a second tarball under `wrong_kind_alias` whose manifest
-/// claims `kind: "secret"` (reusing the SAME hook-test-plugin cdylib bytes — harmless, since a
-/// resolves-to-wrong-kind check only ever reads `manifest.kind`, never `dlopen`s the wrong-kind
-/// entry). Lets a test reach `probe_transport`'s "resolves, but to a non-hook kind" arm, which
-/// `test_hook_env` alone cannot produce (every plugin it packs is `kind: "hook"`).
-pub fn test_hook_env_with_wrong_kind_plugin(
-    hook_alias: &str,
-    wrong_kind_alias: &str,
-) -> Option<crate::hooks::HookEnv> {
-    let cdylib = hook_fixture_cdylib();
-    let Some(cdylib) = cdylib else {
-        if std::env::var_os("CI").is_some() {
-            panic!(
-                "the hook-test plugin cdylib is not built under CI (checked both the uplifted \
-                 target dir and target/deps); refusing to silently skip the wrong-kind-resolution \
-                 coverage"
-            );
-        }
-        return None;
-    };
-    let lib = std::fs::read(&cdylib).expect("read hook cdylib");
-    let stated = hook_fixture_statement(&cdylib);
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-test-hook-env-wrongkind-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let manifest_for =
-        |name: &str, alias: &str, kind: &str| fixture_manifest(name, alias, kind, &lib);
-    let mut hook_manifest = manifest_for("busbar-hook-test-plugin-real", hook_alias, "hook");
-    hook_manifest.statement = Some(stated);
-    let hook_tarball =
-        busbar_plugin_loader::tarball::package(&hook_manifest, "lib.so", &lib).unwrap();
-    std::fs::write(dir.join("real-hook.tar.gz"), hook_tarball).unwrap();
-    // `kind: "secret"` is arbitrary — any non-"hook" kind proves the resolves-to-wrong-kind arm;
-    // "secret" is a real ABI kind this cdylib's manifest can validate under without needing a
-    // matching implementation, since `probe_transport` never dlopens this entry.
-    let wrong_kind_tarball = busbar_plugin_loader::tarball::package(
-        &manifest_for(
-            "busbar-hook-test-plugin-wrongkind",
-            wrong_kind_alias,
-            "secret",
-        ),
-        "lib.so",
-        &lib,
-    )
-    .unwrap();
-    std::fs::write(dir.join("wrong-kind.tar.gz"), wrong_kind_tarball).unwrap();
-    let policy = busbar_plugin_loader::sign::TrustPolicy {
-        binary_version: "1.5.0".into(),
-        allow_unsigned: true,
-        ..Default::default()
-    };
-    let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("scan");
-    let _ = std::fs::remove_dir_all(&dir);
-    Some(
-        crate::hooks::HookEnv::new(
-            std::sync::Arc::new(registry),
-            std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-        )
-        .expect("the fixture registry's hook axis"),
+    crate::hooks::HookEnv::with_axis(
+        std::sync::Arc::new(registry),
+        hook_double::HookAxisDouble::new(doubled),
+        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
     )
 }
 
