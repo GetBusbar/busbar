@@ -798,6 +798,7 @@ mod a2a_door {
                 reach: &reach,
                 journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
             }),
+            None,
         )
         .expect("the a2a door composes");
         composed.post = Some(post);
