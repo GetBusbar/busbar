@@ -272,6 +272,9 @@ pub enum CardAsk {
     Own,
     /// A fronted agent's card, `GET /a2a/agents/{agent_id}`: the agent the target names.
     Agent,
+    /// Busbar's EXTENDED card, `GetExtendedAgentCard` on the plane's own endpoint (no agent
+    /// named): built from the caller's own catalogue and answered by the plane.
+    Extended,
 }
 
 impl Disposition {

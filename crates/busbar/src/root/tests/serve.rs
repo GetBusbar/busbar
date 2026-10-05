@@ -775,7 +775,7 @@ mod a2a_door {
         super::super::attach(
             &services,
             Some(&gov),
-            None,
+            Some(Arc::clone(&gov) as Arc<dyn busbar_kernel::host_services::SignKey>),
             &Arc::new(super::super::DemotionRecord::default()),
             &[],
         );
@@ -2625,6 +2625,122 @@ mod a2a_door {
         assert!(
             !heard.contains("\"plan\""),
             "the caller's original prose never reaches the agent: {heard}"
+        );
+    }
+
+    // ── THE OPEN LINE'S CARDS (the engine's `receive::well_known_card` and `receive::card`) and
+    //    the extended card on the plane's own endpoint (`route::extended_agent_card`). ───────────
+
+    /// A `GET` of `path` on the data router, bearing `token` or none.
+    fn get(path: &str, token: Option<&str>) -> axum::http::Request<axum::body::Body> {
+        let mut req = axum::http::Request::builder().method("GET").uri(path);
+        if let Some(token) = token {
+            req = req.header("authorization", format!("Bearer {token}"));
+        }
+        req.body(axum::body::Body::empty()).expect("a request")
+    }
+
+    /// BUSBAR'S OWN CARD at the well-known path: unauthenticated, cacheable for an hour, describing
+    /// busbar (every binding it serves, no fronted agent enumerated) and signed with busbar's key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn busbars_own_card_is_served_at_the_well_known_path_signed_and_naming_no_agent() {
+        use tower::ServiceExt as _;
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-a2a-door-own-card";
+        let _published = Published(instance);
+        let agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        let response = s
+            .router
+            .clone()
+            .oneshot(get("/.well-known/agent-card.json", None))
+            .await
+            .expect("the router answers");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "public, max-age=3600");
+        assert_eq!(
+            response.headers()["content-type"],
+            "application/json; charset=utf-8"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .expect("the body");
+        let card: serde_json::Value = serde_json::from_slice(&body).expect("a card");
+        assert_eq!(card["name"], "busbar");
+        assert_eq!(card["skills"], serde_json::json!([]));
+        assert_eq!(
+            card["supportedInterfaces"][0],
+            serde_json::json!({
+                "url": "https://gw.example/a2a",
+                "protocolBinding": "JSONRPC",
+                "protocolVersion": "1.0",
+            })
+        );
+        let protected = card["signatures"][0]["protected"]
+            .as_str()
+            .expect("signed with busbar's key");
+        assert!(!protected.is_empty());
+        assert!(
+            !String::from_utf8_lossy(&body).contains("planner"),
+            "no agent is enumerated"
+        );
+    }
+
+    /// A FRONTED AGENT'S CARD behind the caller's credential: refused without one, and once the
+    /// agent is approved, its card with every URL busbar's and busbar's own scheme and signature.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_fronted_agents_card_is_served_rewritten_through_busbar_behind_its_grant() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-a2a-door-agent-card";
+        let _published = Published(instance);
+        let agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        let (status, _) = answered(&s.router, get("/a2a/agents/planner", None)).await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "the card needs a credential"
+        );
+        approve(&s, "planner").await;
+        let (status, body) = answered(&s.router, get("/a2a/agents/planner", Some(&s.token))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let card: serde_json::Value = serde_json::from_str(&body).expect("a card");
+        assert!(
+            !body.contains(&format!("127.0.0.1:{}", agent.port)),
+            "the backend authority is never published: {body}"
+        );
+        assert_eq!(
+            card["securityRequirements"],
+            serde_json::json!([{ "schemes": { "busbarA2aInbound": { "list": [] } } }])
+        );
+        assert_eq!(card["capabilities"]["extendedAgentCard"], true);
+        assert!(card["signatures"][0]["protected"].is_string(), "{body}");
+    }
+
+    /// BUSBAR'S EXTENDED CARD on the plane's own endpoint: one skill per agent the caller's own
+    /// catalogue holds, answered by busbar, never relayed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_extended_card_on_the_planes_endpoint_names_the_callers_agents() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-a2a-door-extended-card";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let (status, body) = answered(
+            &s.router,
+            rpc("", "GetExtendedAgentCard", "{}", Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("an answer");
+        assert_eq!(doc["id"], 1);
+        let skills = doc["result"]["skills"].as_array().expect("skills");
+        assert_eq!(skills.len(), 1, "{body}");
+        assert_eq!(skills[0]["id"], "planner");
+        assert!(
+            !agent.relayed(),
+            "the extended card is busbar's, never relayed"
         );
     }
 }

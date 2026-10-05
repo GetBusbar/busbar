@@ -611,6 +611,30 @@ slot!(
         // that would serve it as its candidates, which the kernel intersects with the caller's
         // grant.
         let section = plane.generations.current();
+        // BUSBAR'S EXTENDED CARD, on the plane's own endpoint: the caller named no agent, so the
+        // verb asks busbar about itself and the plane answers it (the engine's
+        // `route::extended_agent_card`), before any agent is selected.
+        if agent.is_none()
+            && matches!(&disposition, Disposition::Request { row, .. }
+                if row.op == crate::ops::OP_AGENT_CARD)
+        {
+            out.local();
+            keep(
+                &plane.units,
+                MAX_UNITS,
+                given.unit,
+                Unit {
+                    disposition,
+                    agent,
+                    section,
+                    hop: None,
+                    pass: crate::task_door::Pass::default(),
+                    envelope,
+                    generation,
+                },
+            );
+            return Outcome::Ready;
+        }
         match &agent {
             Some(agent) => {
                 out.route(ROUTE_DIRECT, agent);
@@ -1329,9 +1353,17 @@ slot!(
             return Outcome::Failed;
         };
         let unit = input.get().unit;
-        let card = plane.units.with(&unit, |u| match u.map(|u| &u.disposition) {
-            Some(Disposition::Card(ask)) => Some(*ask),
-            _ => None,
+        let card = plane.units.with(&unit, |u| match u {
+            Some(u) => match &u.disposition {
+                Disposition::Card(ask) => Some(*ask),
+                Disposition::Request { row, .. }
+                    if row.op == crate::ops::OP_AGENT_CARD && u.agent.is_none() =>
+                {
+                    Some(arrival::CardAsk::Extended)
+                }
+                _ => None,
+            },
+            None => None,
         });
         if let Some(ask) = card {
             return crate::task_door::card_piece(plane, &instance, input, out, ask);

@@ -626,6 +626,23 @@ impl HostSigner<'_> {
     }
 }
 
+impl HostSigner<'_> {
+    /// `entitlement.check` of the unit's caller for `target` (`<scope kind>:<name>`), on the next
+    /// handle; a check the host cannot answer is no entitlement.
+    fn entitled(&mut self, target: &str) -> bool {
+        let Some(services) = self.services else {
+            return false;
+        };
+        let handle = CompletionHandle {
+            ticket: self.ticket,
+            seq: self.seq,
+            _reserved: 0,
+        };
+        self.seq += 1;
+        services.entitled(handle, target).unwrap_or(false)
+    }
+}
+
 impl crate::served_card::Signer for HostSigner<'_> {
     fn kid(&mut self) -> Option<String> {
         self.signed(b"").map(|(kid, _)| kid)
@@ -633,6 +650,74 @@ impl crate::served_card::Signer for HostSigner<'_> {
 
     fn sign(&mut self, input: &[u8]) -> Option<Vec<u8>> {
         self.signed(input).map(|(_, sig)| sig)
+    }
+}
+
+/// BUSBAR'S EXTENDED CARD for the unit's caller (the engine's `route::extended_agent_card`): one
+/// skill per fronted agent the caller's own catalogue holds (granted, approved, its card held),
+/// signed, in a JSON-RPC answer; a deployment fronting no agent answers
+/// `ExtendedAgentCardNotConfigured`, a card that cannot be built `Internal`.
+fn extended_card(
+    plane: &A2aDoor,
+    signer: &mut HostSigner<'_>,
+    section: Option<&crate::a2a::config::AgentsCfg>,
+    generation: u64,
+    public_url: &str,
+    rpc: Value,
+) -> (u32, Vec<u8>) {
+    use crate::served_card as served;
+    let refusal = |status: u32, code: i64, message: &str| {
+        let refusal = crate::arrival::Refusal {
+            status,
+            id: Some(rpc.clone()),
+            code,
+            message: message.to_string(),
+        };
+        (
+            status,
+            serde_json::to_vec(&refusal.envelope()).unwrap_or_default(),
+        )
+    };
+    let agents = section.map(|s| &s.agents).filter(|a| !a.is_empty());
+    let Some(agents) = agents else {
+        return refusal(
+            400,
+            -32007,
+            "this deployment fronts no agents, so there is no extended agent card to serve",
+        );
+    };
+    let mut held = Vec::new();
+    for (name, def) in agents {
+        if !signer.entitled(&format!("{}:{name}", crate::door::SCOPE)) {
+            continue;
+        }
+        if crate::plane_door::admit_unit(plane, (name, def), None, generation, None).is_err() {
+            continue;
+        }
+        held.push((
+            name.as_str(),
+            def.url.as_str(),
+            plane.cards.at(name, generation),
+        ));
+    }
+    let entitled: Vec<served::EntitledAgent<'_>> = held
+        .iter()
+        .map(|(agent_id, backend_url, card)| served::EntitledAgent {
+            agent_id,
+            backend_url,
+            card: card.as_deref(),
+        })
+        .collect();
+    match served::extended_card_document(public_url, &entitled)
+        .ok_or_else(String::new)
+        .and_then(|card| served::sign_card(&card, signer))
+    {
+        Ok(doc) => (
+            200,
+            serde_json::to_vec(&serde_json::json!({ "jsonrpc": "2.0", "id": rpc, "result": doc }))
+                .unwrap_or_default(),
+        ),
+        Err(_) => refusal(500, -32603, "the extended agent card could not be built"),
     }
 }
 
@@ -655,18 +740,26 @@ pub fn card_piece(
 ) -> Outcome {
     use crate::served_card::{self as served, OWN_CARD_CACHE_CONTROL, OWN_CARD_MEDIA_TYPE};
     let unit = input.get().unit;
-    let Some((rest, answered, agent, section, generation, issued)) = plane.units.with(&unit, |u| {
-        u.map(|u| {
-            (
-                std::mem::take(&mut u.pass.rest),
-                u.pass.answered,
-                u.agent.clone(),
-                u.section.clone(),
-                u.generation,
-                u.pass.issued,
-            )
+    let Some((rest, answered, agent, section, generation, issued, rpc, composed)) =
+        plane.units.with(&unit, |u| {
+            u.map(|u| {
+                let rpc = match &u.disposition {
+                    Disposition::Request { id, .. } => id.clone(),
+                    _ => Value::Null,
+                };
+                (
+                    std::mem::take(&mut u.pass.rest),
+                    u.pass.answered,
+                    u.agent.clone(),
+                    u.section.clone(),
+                    u.generation,
+                    u.pass.issued,
+                    rpc,
+                    u.envelope.is_some(),
+                )
+            })
         })
-    }) else {
+    else {
         return Outcome::Refused;
     };
     if !rest.is_empty() {
@@ -698,6 +791,22 @@ pub fn card_piece(
                     false,
                 ),
             }
+        }
+        crate::arrival::CardAsk::Extended => {
+            let (status, body) = extended_card(
+                plane,
+                &mut signer,
+                section.as_deref(),
+                generation,
+                &public_url,
+                rpc,
+            );
+            let body = if composed {
+                crate::rest::reframe(status, &body)
+            } else {
+                body
+            };
+            (status, body, false)
         }
         crate::arrival::CardAsk::Agent => {
             let agent = agent.unwrap_or_default();
