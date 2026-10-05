@@ -648,6 +648,57 @@ pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
     p.call(life::OPEN, &mut f)
 }
 
+/// `open` over `settings` THE WAY THE KERNEL OPENS IT (Q-P4-6): submitted on a ticket of `d`'s, so
+/// an `open` that answers PENDING (a store connecting to its backend) is RESUMED on its wake until
+/// it answers; the frame [`open`]'s.
+pub fn open_resumed<K: Kind>(p: &Plugin<K>, d: &Dispatcher, settings: &[u8]) -> Called {
+    fn on_ticket<K: Kind, I: InFrame, O: OutFrame>(
+        p: &Plugin<K>,
+        d: &Dispatcher,
+        f: Frame<I, O>,
+    ) -> Called {
+        let Some(ticket) = d.mint(0) else {
+            return Called {
+                outcome: Outcome::Refused,
+                error: None,
+                lease: 0,
+                recall: None,
+            };
+        };
+        let deadline = crate::dispatch::now_ns().saturating_add(OPEN_DEADLINE.as_nanos() as u64);
+        let done = d
+            .submit(
+                p,
+                ticket,
+                life::OPEN,
+                f,
+                busbar_contract::abi::mechanism::call::DeadlineClass::Call,
+                deadline,
+            )
+            .wait_done();
+        d.recycle(ticket);
+        Called {
+            outcome: done.outcome,
+            error: done.error,
+            lease: done.lease,
+            recall: None,
+        }
+    }
+    if K::CODE == KindCode::Plane {
+        let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
+        f.input.open.settings = json(settings);
+        f.input.open.generation = 1;
+        return on_ticket(p, d, f);
+    }
+    let mut f: Frame<OpenIn, OpenOut> = Frame::new(input(), output());
+    f.input.settings = json(settings);
+    f.input.generation = 1;
+    on_ticket(p, d, f)
+}
+
+/// How long the suite waits for one resumed `open`: the store bridge's call deadline.
+const OPEN_DEADLINE: Duration = Duration::from_secs(30);
+
 /// `refresh` over `settings`, generation 2.
 pub fn refresh<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
     let mut f: Frame<RefreshIn, OutHead> = Frame::new(input(), output());
@@ -970,9 +1021,12 @@ pub fn red_kind_abi(s: &Subject) {
 }
 
 /// **RED: a `ready` that fails refuses the boot with the plugin's text** (#391's arm, on the real
-/// plugin). The real door restated with a `ready` that answers FAILED is loaded and opened as the
-/// kernel opens it; its `ready` is awaited and refused, naming the plugin and the reason, in one
-/// crossing. The honest door's `ready` (its own, or none) serves.
+/// plugin). The real door restated with a `ready` that answers FAILED is loaded and opened AS THE
+/// KERNEL OPENS IT (Q-P4-6: a store through [`LoadedStore::open`](crate::store_v3::LoadedStore::open),
+/// which awaits `ready` inside it; every other kind's `open` resumed on its ticket
+/// ([`open_resumed`]), never one raw crossing, so a door that connects in its `open` answers
+/// PENDING there and is resumed); its `ready` is awaited and refused, naming the plugin and the
+/// reason, in one first invocation. The honest door's `ready` (its own, or none) serves.
 ///
 /// # Panics
 /// When the failing `ready` serves.
@@ -985,12 +1039,36 @@ pub fn red_ready(s: &Subject) {
         ..real
     });
     let settings = s.settings();
+    if s.kind() == KindCode::Store {
+        let d = dispatcher();
+        let row = LinkedRow::of(ready_fails_door).expect("the restated door states its Statement");
+        let p =
+            load_linked::<Store>(&row, s.bind(&d, "red-ready")).expect("the restated door loads");
+        assert!(p.has_ready());
+        let name = p.name().to_owned();
+        let held = p.clone();
+        let (before, _) = crossings(&held).read();
+        let refused =
+            crate::store_v3::LoadedStore::open(p, Arc::clone(&d), &settings, store::leg_mint)
+                .map(|_| ())
+                .expect_err("a failing ready refuses the store's open");
+        assert_eq!(
+            refused,
+            format!("plugin '{name}' ready failed: {READY_FAILURE}")
+        );
+        assert_eq!(
+            crossings(&held).read().0 - before,
+            2,
+            "one open and one ready, first invocations, the ready not retried"
+        );
+        return;
+    }
     by_kind!(s.kind(), K => {
         let d = dispatcher();
         let row = LinkedRow::of(ready_fails_door).expect("the restated door states its Statement");
         let p = load_linked::<K>(&row, s.bind(&d, "red-ready")).expect("the restated door loads");
         assert!(p.has_ready());
-        let o = open(&p, &settings);
+        let o = open_resumed(&p, &d, &settings);
         assert_eq!(o.outcome, Outcome::Ready, "open: {}", called(&o));
         let (before, _) = crossings(&p).read();
         let refused = p.ready(&d, READY_DEADLINE).expect_err("a failing ready refuses the boot");

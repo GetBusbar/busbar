@@ -306,3 +306,108 @@ fn red_a_networked_fold_whose_dialing_step_never_resumed_is_refused() {
     assert!(e.contains("resumed no op"), "{e}");
     assert_eq!(resumed(&honest(), false, &[]), Ok(()));
 }
+
+// ── THE KERNEL'S OPEN, RESUMED (Q-P4-6) ──
+
+mod resumed_open {
+    use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+
+    use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome, RawOutcome};
+    use busbar_contract::abi::mechanism::door::Door;
+    use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut, OpsHead};
+
+    use super::super::{bind, crossings, dispatcher, open, open_resumed};
+    use crate::dispatch::load_linked;
+    use crate::dispatch::LinkedRow;
+    use crate::dispatch_test_plugin as plug;
+    use crate::dispatch_tests::TestKind;
+
+    /// The real `open`, behind the restated one.
+    static REAL_OPEN: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+    /// The restated `open` has pended once (it connects in its `open`, as a networked store).
+    static PENDED: AtomicBool = AtomicBool::new(false);
+    static SLOT: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+
+    /// An `open` that connects in its connect step: its first invocation opens as the real one
+    /// does (its instance box handed back) but answers PENDING, waking its own ticket (the latch);
+    /// RESUMED on that box, it answers READY.
+    extern "C" fn open_pends(
+        instance: *mut std::ffi::c_void,
+        input: *const std::ffi::c_void,
+        out: *mut std::ffi::c_void,
+    ) -> RawOutcome {
+        if PENDED.swap(true, Ordering::SeqCst) {
+            // SAFETY: the host hands a resumed `open` its box and an `OpenOut`.
+            unsafe {
+                let o = &mut *out.cast::<OpenOut>();
+                o.instance = instance;
+                o.head.outcome = RawOutcome::of(Outcome::Ready);
+            }
+            return RawOutcome::of(Outcome::Ready);
+        }
+        // SAFETY: stored from the real door's `open` below.
+        let real: busbar_contract::abi::mechanism::call::Op =
+            unsafe { std::mem::transmute(REAL_OPEN.load(Ordering::SeqCst)) };
+        if real(instance, input, out) != RawOutcome::of(Outcome::Ready) {
+            return unsafe { (*out.cast::<OutHead>()).outcome };
+        }
+        // SAFETY: the host hands `open` an `OpenIn` and an `OpenOut`.
+        unsafe {
+            let head = &*input.cast::<InHead>();
+            let tables = &*(*input.cast::<OpenIn>()).host;
+            if head.ticket.generation != 0 {
+                if let Some(wake) = tables.wake {
+                    wake(tables.ctx, head.ticket);
+                }
+            }
+            (*out.cast::<OutHead>()).outcome = RawOutcome::of(Outcome::Pending);
+        }
+        RawOutcome::of(Outcome::Pending)
+    }
+
+    extern "C" fn pending_open_door() -> *const Door {
+        let have = SLOT.load(Ordering::SeqCst);
+        if !have.is_null() {
+            return have;
+        }
+        // SAFETY: the test plugin's door and its lifecycle table are `'static`.
+        let real: Door = unsafe { plug::busbar_plugin_door().read_unaligned() };
+        let ops: OpsHead = unsafe { real.ops.read_unaligned() };
+        REAL_OPEN.store(
+            ops.open.expect("the test plugin opens") as *mut (),
+            Ordering::SeqCst,
+        );
+        let ops: &'static OpsHead = Box::leak(Box::new(OpsHead {
+            open: Some(open_pends),
+            ..ops
+        }));
+        let door = Box::into_raw(Box::new(Door { ops, ..real }));
+        SLOT.store(door, Ordering::SeqCst);
+        door
+    }
+
+    /// RED: an `open` that pends (a store connecting in its connect step) cannot be opened by one
+    /// raw, ticket-less crossing (its PENDING is a FAULT there); opened as the kernel opens it, on a ticket, it is RESUMED and answers READY:
+    /// one first invocation and one resume.
+    #[test]
+    fn red_a_pending_open_is_resumed_by_the_kernels_open_never_one_raw_crossing() {
+        let d = dispatcher();
+        let row = LinkedRow::of(pending_open_door).expect("the restated door states itself");
+        let raw = load_linked::<TestKind>(&row, bind(&d, "raw")).expect("it loads");
+        PENDED.store(false, Ordering::SeqCst);
+        // A ticket-less crossing may not pend: the host FAULTs the raw open's PENDING.
+        assert_eq!(
+            open(&raw, b"{}").outcome,
+            Outcome::Fault,
+            "one raw crossing cannot open it"
+        );
+
+        let p = load_linked::<TestKind>(&row, bind(&d, "resumed")).expect("it loads");
+        PENDED.store(false, Ordering::SeqCst);
+        let (first, resumes) = crossings(&p).read();
+        let o = open_resumed(&p, &d, b"{}");
+        assert_eq!(o.outcome, Outcome::Ready, "resumed on its wake, it opens");
+        let (first_after, resumes_after) = crossings(&p).read();
+        assert_eq!((first_after - first, resumes_after - resumes), (1, 1));
+    }
+}

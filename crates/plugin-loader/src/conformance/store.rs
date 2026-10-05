@@ -112,7 +112,7 @@ static MINT_NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::n
 
 /// The host's `op_id` allocator for one leg (`LoadedStore::open`'s mint): `node`'s half, counted
 /// from 1.
-fn leg_mint() -> OpId {
+pub(super) fn leg_mint() -> OpId {
     use std::sync::atomic::Ordering::Relaxed;
     OpId::from_parts(MINT_NODE.load(Relaxed), MINT_NEXT.fetch_add(1, Relaxed) + 1)
 }
