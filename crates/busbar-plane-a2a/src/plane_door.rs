@@ -1811,6 +1811,19 @@ slot!(
             .iter()
             .any(|c| c.code() == given.reason);
             let text = if governance { arrival::BUDGET_SPENT } else { text };
+            // A caller whose grant does not reach the agent it addressed: the engine's
+            // `NotInScope` sentence, naming the agent's scope.
+            let ungranted = (given.reason == Code::ScopeDenied.code())
+                .then(|| {
+                    instance.get().and_then(|plane| {
+                        plane
+                            .units
+                            .with(&given.unit, |u| u.and_then(|u| u.agent.clone()))
+                    })
+                })
+                .flatten()
+                .map(|agent| arrival::not_granted(&door::agent_resource(&agent)));
+            let text = ungranted.as_deref().unwrap_or(text);
             arrival::render(dialect, &arrival::kernel_refusal(given.status, text), false)
         };
         // ON THE gRPC LINE the rendered envelope is the status the call ends with, as the engine's

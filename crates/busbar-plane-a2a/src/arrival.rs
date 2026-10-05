@@ -454,6 +454,14 @@ pub fn kernel_refusal(status: u32, text: &str) -> Refusal {
     Refusal::unnamed(status, CODE_UNSUPPORTED_OPERATION, text)
 }
 
+/// THE UNGRANTED CALLER'S SENTENCE (1.5.5's `InboundRefusal::NotInScope`): the caller's grant does
+/// not reach `resource` (`agent:<id>`). 1.5.5 named the key's id where this says `this key`: the
+/// refusal the kernel hands a plane carries no principal.
+#[must_use]
+pub fn not_granted(resource: &str) -> String {
+    format!("this key is not granted `{resource}`")
+}
+
 /// The status a unit refused by its agent's open breaker answers with.
 pub const STATUS_UNAVAILABLE: u32 = 503;
 

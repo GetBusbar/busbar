@@ -405,3 +405,12 @@ fn an_open_breaker_refusal_names_the_agent_and_the_seconds_to_wait() {
     assert_eq!(doc["id"], 7);
     assert_eq!(doc["error"]["code"], -32004);
 }
+
+/// THE UNGRANTED CALLER is told the scope its grant does not reach, in 1.5.5's words.
+#[test]
+fn an_ungranted_caller_is_told_the_scope_it_does_not_hold() {
+    assert_eq!(
+        not_granted("agent:probe"),
+        "this key is not granted `agent:probe`"
+    );
+}
