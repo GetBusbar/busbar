@@ -27,7 +27,7 @@
 //!   buckets (64) and sanitizes every name/label/value, so a hostile hook cannot flood or
 //!   exfiltrate through the scrape.
 
-use super::wire::HookMetric;
+use busbar_contract::hook_wire::reply::HookMetric;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -150,7 +150,7 @@ async fn refresh(
         Some(status) => status
             .metrics
             .as_ref()
-            .map(|m| super::wire::parse_status_metrics(m))
+            .map(|m| busbar_contract::hook_wire::reply::parse_status_metrics(m))
             .unwrap_or_default(),
         // Unreachable / doesn't speak status: cache an empty set so it contributes no series and is
         // not re-hammered every scrape until the TTL elapses (fail-open).

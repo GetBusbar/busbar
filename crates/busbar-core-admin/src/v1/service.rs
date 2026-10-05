@@ -21,7 +21,7 @@ use busbar_kernel::diagnostics::{
 };
 use busbar_kernel::state::App;
 
-use busbar_kernel::admin::v1::contract::{
+use crate::v1::contract::{
     AdminAuthView, AdminError, AuthView, BuildInfo, ConfigValidateView, EffectiveConfigView,
     GroupView, HookHealthView, HookTransportView, HookView, InfoView, KeyUsageView, ModelUsageView,
     ModelView, NamedDefView, Page, PluginView, PoolDetailView, PoolMemberStatusView,
@@ -732,7 +732,7 @@ fn validate_plugin_filename(file: &str) -> Result<String, AdminError> {
             ));
         }
     }
-    if !busbar_plugin_loader::tarball::is_plugin_tarball(file) {
+    if !busbar_kernel::plugin_admission::tarball::is_plugin_tarball(file) {
         return Err(AdminError::Validation(
             "plugin filename must be a `.tar.gz` (or `.tgz`) signed plugin tarball".into(),
         ));
@@ -1156,7 +1156,7 @@ fn manifest_schema_url_and_error(
     };
     let url = Some(format!(
         "{}/plugins/{name}/schema",
-        busbar_kernel::admin::v1::contract::ADMIN_PREFIX
+        crate::v1::contract::ADMIN_PREFIX
     ));
     match serde_json::from_str::<serde_json::Value>(s) {
         Ok(_) => (url, None),

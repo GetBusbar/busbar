@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-kernel/src/hooks/wire.rs`, and v1.5.5's hook reply tests (its `wire.rs`
+//! Tests for the hook reply wire (`busbar_contract::hook_wire::reply`, the kernel's `hooks::wire` until
+//! P2 D4), and v1.5.5's hook reply tests (its `wire.rs`
 //! inline suite, M4 HOOK-PARITY), verbatim. The 1.5.5 host normalized a JSON reply here; on the
 //! memory ABI the reply is lowered by the hook SDK into the kind's fixed `out` and read back by the
-//! kernel (`plugin::decision` / `transformed`), so `norm` runs that chain.
+//! kernel (`policy::decision` / `transformed`), so `norm` runs that chain.
 
 /// A hook-supplied multi-byte help/label/unit must cap at a CHAR
 /// boundary, never panic (String::truncate takes bytes — 100 × '€' panicked the admin handler).
@@ -15,28 +16,28 @@ fn status_metric_hints_cap_char_safe() {
         serde_json::json!({"name": "ok_total", "type": "counter", "value": 1.0,
                                     "help": long_euro, "label": long_euro, "unit": long_euro}),
     ];
-    let parsed = super::parse_status_metrics(&m);
+    let parsed = reply::parse_status_metrics(&m);
     assert_eq!(parsed.len(), 1);
     let metric = &parsed[0];
     assert_eq!(metric.name, "ok_total");
     assert_eq!(
         metric.help.as_ref().unwrap().chars().count(),
-        super::MAX_METRIC_HELP_CHARS
+        reply::MAX_METRIC_HELP_CHARS
     );
     assert_eq!(
         metric.label.as_ref().unwrap().chars().count(),
-        super::MAX_METRIC_LABEL_CHARS
+        reply::MAX_METRIC_LABEL_CHARS
     );
     assert_eq!(
         metric.unit.as_ref().unwrap().chars().count(),
-        super::MAX_METRIC_UNIT_CHARS
+        reply::MAX_METRIC_UNIT_CHARS
     );
     // Out-of-vocabulary viz + non-finite max drop individually; the metric survives.
     let m2 = [
         serde_json::json!({"name": "g", "type": "gauge", "value": 0.5,
                                      "viz": "hologram", "max": f64::NAN}),
     ];
-    let parsed2 = super::parse_status_metrics(&m2);
+    let parsed2 = reply::parse_status_metrics(&m2);
     assert_eq!(parsed2.len(), 1);
     assert!(parsed2[0].viz.is_none());
     assert!(parsed2[0].max.is_none());
@@ -66,7 +67,7 @@ fn status_metrics_labels_quantiles_and_estimates() {
         serde_json::json!({"name":"Bad Name","type":"counter","value":1.0}),
         serde_json::json!({"name":"weird","type":"summary","value":1.0}),
     ];
-    let parsed = super::parse_status_metrics(&m);
+    let parsed = reply::parse_status_metrics(&m);
     assert_eq!(parsed.len(), 5, "2 bad entries dropped whole");
     let by = |i: usize| &parsed[i];
     // Labels: valid key kept, out-of-charset key dropped.
@@ -97,11 +98,11 @@ fn status_metrics_caps_the_quantile_count() {
         serde_json::json!({"name":"h","type":"histogram","value":1.0,
                                      "quantiles": quantiles}),
     ];
-    let parsed = super::parse_status_metrics(&m);
+    let parsed = reply::parse_status_metrics(&m);
     assert_eq!(parsed.len(), 1);
     assert_eq!(
         parsed[0].quantiles.as_ref().unwrap().len(),
-        super::MAX_METRIC_LABELS,
+        reply::MAX_METRIC_LABELS,
         "quantile count must be capped exactly like labels and buckets"
     );
 }
@@ -120,7 +121,7 @@ fn status_metrics_validates_native_buckets() {
         serde_json::json!({"name":"all_bad","type":"histogram","value":1.0,
                                "buckets":{"x":1.0,"y":-1.0}}),
     ];
-    let parsed = super::parse_status_metrics(&m);
+    let parsed = reply::parse_status_metrics(&m);
     assert_eq!(parsed.len(), 2);
     let good = parsed[0].buckets.as_ref().expect("valid buckets kept");
     assert_eq!(good.len(), 3, "3 valid bounds; bad key & neg-count dropped");
@@ -134,8 +135,7 @@ fn status_metrics_validates_native_buckets() {
     );
 }
 
-use super::super::plugin::{decision, transformed};
-use super::*;
+use super::{decision, transformed};
 use crate::hooks::{
     CallerIdentity, Candidate, PromptProjection, RoutingContext, RoutingDecision, RoutingRequest,
 };
@@ -145,6 +145,7 @@ use busbar_contract::abi::hook::{
 use busbar_contract::abi::sdk::hook::{
     lower_decide_reply, lower_transform_reply, RewriteVerdict, Verdict,
 };
+use busbar_contract::hook_wire::reply::{self, *};
 use busbar_contract::hook_wire::{build, parse_restrict, OP_DECIDE};
 use busbar_contract::hooks::TransformOutcome;
 

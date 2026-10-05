@@ -477,6 +477,11 @@ use crate::diagnostics::{
 /// `OnceLock` serializes the single global install across threads and tests.
 static HANDLE: OnceLock<Option<&'static source::Source>> = OnceLock::new();
 
+/// The process's one observation source, held in a `static` for the process's life (the global
+/// recorder borrows it for `'static`), built once by [`init_with`]'s single install. A static, not a
+/// leaked box: nothing is forgotten, the value lives where every other process-global does.
+static SOURCE: OnceLock<source::Source> = OnceLock::new();
+
 /// Whether the operator opted in to metrics (`observability.metrics` present). Set SYNCHRONOUSLY by
 /// [`configure`] at startup, before the router is built, while the recorder install itself happens on
 /// a background thread — so route mounting reads a settled decision rather than racing the install.
@@ -799,11 +804,8 @@ pub fn init_with(buffer: Duration) {
     // panic would be silent, leaving `/metrics` empty with no operator-visible cause. Storing `None`
     // degrades gracefully (empty exposition) AND emits an error log so the cause is discoverable.
     HANDLE.get_or_init(|| {
-        let source = Box::leak(Box::new(source::Source::new(
-            bucket,
-            SUMMARY_BUCKETS,
-            GAUGE_IDLE_TIMEOUT,
-        )));
+        let source =
+            SOURCE.get_or_init(|| source::Source::new(bucket, SUMMARY_BUCKETS, GAUGE_IDLE_TIMEOUT));
         install(source, bucket)
     });
 }

@@ -134,7 +134,7 @@ pub fn fire_stage_taps(
 pub fn fire_stage_taps_where(
     taps: &[crate::hooks::TapEntry],
     shape: &StageShape<'_>,
-    stage: crate::hooks::wire::HookStageProjection<'_>,
+    stage: busbar_contract::hook_wire::HookStageProjection<'_>,
     signals: busbar_contract::signal::SignalBag,
     fires: &dyn Fn(&[String]) -> bool,
 ) {

@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! TEST-SCAFFOLDING: bind the self-enveloping admin-verb backing the composition root's `main` binds
-//! in production — core's own `CorePlaneAdminEnvelope`. The A2A plane's `Prebuilt` admin verbs
+//! in production — core-admin's `CorePlaneAdminEnvelope` (moved from the kernel, P2 D4; this crate's
+//! own test binary only, where core-admin is a dev-dependency). The A2A plane's `Prebuilt` admin verbs
 //! (`connect`/`approve`) reach the frozen `err_json`/`err_json_cond` helpers through it, so the router
 //! that serves a plane verb in a test MUST have THIS crate's dependency copy of `busbar_kernel` bound —
 //! not some other copy's — or the response's condition `Tag` (a `busbar_kernel` type, distinct per copy)
@@ -18,6 +19,6 @@
 /// Bind core's `CorePlaneAdminEnvelope` into the substrate seam, idempotently (first-wins `OnceLock`).
 pub(crate) fn install() {
     busbar_kernel::admin_verbs::install_plane_admin_envelope(
-        &busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope,
+        &busbar_core_admin::planeverbs::CorePlaneAdminEnvelope,
     );
 }

@@ -259,7 +259,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
             fire_stage_taps(
                 host.tap_hooks_response(),
                 &shape,
-                busbar_kernel::hooks::wire::HookStageProjection {
+                busbar_contract::hook_wire::HookStageProjection {
                     at: "response",
                     model: None,
                     attempt_number: None,
@@ -1763,7 +1763,7 @@ fn capture_candidate_taps<'a>(
         fire_stage_taps(
             host.tap_hooks_candidate(),
             shape,
-            busbar_kernel::hooks::wire::HookStageProjection {
+            busbar_contract::hook_wire::HookStageProjection {
                 at: "candidate",
                 model: None,
                 attempt_number: None,
@@ -1803,7 +1803,7 @@ fn fire_routing_tap(
         fire_stage_taps(
             host.tap_hooks_routing(),
             shape,
-            busbar_kernel::hooks::wire::HookStageProjection {
+            busbar_contract::hook_wire::HookStageProjection {
                 at: "routing",
                 model: Some(&EngineTables::new(rt).lanes()[i].model),
                 attempt_number: Some(

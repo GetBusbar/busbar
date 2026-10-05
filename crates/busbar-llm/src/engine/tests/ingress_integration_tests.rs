@@ -2107,7 +2107,10 @@ async fn test_served_request_increments_hot_path_metrics() {
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
 
-    let dur_count = format!("{}_count", busbar_kernel::snapshot::REQUEST_DURATION_SECONDS);
+    let dur_count = format!(
+        "{}_count",
+        busbar_kernel::snapshot::REQUEST_DURATION_SECONDS
+    );
     let req_before = metric_sum(
         busbar_kernel::snapshot::REQUESTS_TOTAL,
         &[("pool", POOL), ("outcome", "ok")],

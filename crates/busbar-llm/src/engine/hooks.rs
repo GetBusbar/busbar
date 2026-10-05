@@ -1019,8 +1019,8 @@ pub(crate) fn map_decision(
         // defense in depth: no policy, present or future, can mint a success/redirect/5xx or a
         // log/client-injecting message through this path.
         RoutingDecision::Reject { status, message } => PolicyOutcome::RejectRequest {
-            status: busbar_kernel::hooks::wire::clamp_reject_status(status),
-            message: busbar_kernel::hooks::wire::sanitize_reject_message(&message),
+            status: busbar_contract::hook_wire::reply::clamp_reject_status(status),
+            message: busbar_contract::hook_wire::reply::sanitize_reject_message(&message),
             name: policy_name,
         },
         // The hook's RESTRICT verb: keep only candidates carrying one of `tags_any` (a compliance

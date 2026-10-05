@@ -11,7 +11,7 @@
 //! metric strings reach `/metrics/hooks` and the admin hook status, so the extra character is a
 //! customer-visible change that nobody signed. These tests hold the 1.5.5 bytes.
 
-use busbar_kernel::hooks::wire::{
+use busbar_contract::hook_wire::reply::{
     parse_status_metrics, sanitize_reject_message, MAX_METRIC_HELP_CHARS, MAX_METRIC_LABEL_CHARS,
     MAX_METRIC_UNIT_CHARS, REJECT_MESSAGE_MAX_CHARS,
 };

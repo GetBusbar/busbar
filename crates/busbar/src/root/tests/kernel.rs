@@ -842,7 +842,7 @@ fn usage_row_micros(holder: &RootHistory, priced_from_ms: u64, input: u64) -> i6
         &live,
         &cost,
         FLAT_LANE,
-        &busbar_kernel::admin::v1::contract::UsageBreakdown {
+        &busbar_core_admin::v1::contract::UsageBreakdown {
             tokens_input: input,
             tokens_output: 0,
             tokens_cache_read: 0,

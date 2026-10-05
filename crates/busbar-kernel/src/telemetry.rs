@@ -393,7 +393,8 @@ pub fn failover_on(pool_label: &str, reason: &'static str) {
 /// depth its walk keeps (a pool served through a plane's door; the engine's pools are read at
 /// scrape).
 pub fn pool_queued_on(pool_label: &str, depth: i64) {
-    metrics::gauge!(crate::snapshot::POOL_QUEUED, "pool" => pool_label.to_owned()).set(depth as f64);
+    metrics::gauge!(crate::snapshot::POOL_QUEUED, "pool" => pool_label.to_owned())
+        .set(depth as f64);
 }
 
 /// `busbar_translations_total` for one cross-protocol hop. Both names come from the fixed protocol

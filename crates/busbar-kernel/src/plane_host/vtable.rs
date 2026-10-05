@@ -315,8 +315,13 @@ extern "C-unwind" fn counter_add(
         for (i, key) in family.label_keys.iter().enumerate() {
             // SAFETY: `values_ptr` addresses `values_len` live entries (ABI), each a live range.
             let v = unsafe { core::ptr::read_unaligned(values_ptr.add(i)) };
-            let bytes =
-                unsafe { borrowed(v.ptr, v.len, crate::hooks::wire::MAX_METRIC_LABEL_CHARS) };
+            let bytes = unsafe {
+                borrowed(
+                    v.ptr,
+                    v.len,
+                    busbar_contract::hook_wire::reply::MAX_METRIC_LABEL_CHARS,
+                )
+            };
             let Some(value) = bytes.and_then(|b| std::str::from_utf8(b).ok()) else {
                 return StatusClass::Refused;
             };

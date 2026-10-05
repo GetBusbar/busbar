@@ -140,7 +140,7 @@ use busbar_core_admin::v1::service::read_path_money as admin;
 fn admin_row(
     counts: &[(&'static str, u64)],
     requests: u64,
-) -> busbar_kernel::admin::v1::contract::UsageBreakdown {
+) -> busbar_core_admin::v1::contract::UsageBreakdown {
     let at = |unit: &str| {
         counts
             .iter()
@@ -148,7 +148,7 @@ fn admin_row(
             .map(|(_, v)| *v)
             .unwrap_or(0)
     };
-    busbar_kernel::admin::v1::contract::UsageBreakdown {
+    busbar_core_admin::v1::contract::UsageBreakdown {
         tokens_input: at(INPUT),
         tokens_output: at(OUTPUT),
         tokens_cache_read: at(CACHE_READ),

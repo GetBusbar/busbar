@@ -17,7 +17,7 @@
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use busbar_kernel::admin::v1::contract::{AdminError, HookView};
+use crate::v1::contract::{AdminError, HookView};
 
 /// Virtual-key metadata: the `key_meta()` shape returned by `GET /keys/{id}`, `PATCH /keys/{id}`,
 /// and as each item of `GET /keys`. Never the secret or its hash. 1.5.0: keys are PURE AUTH, no

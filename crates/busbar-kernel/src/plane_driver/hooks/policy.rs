@@ -12,13 +12,13 @@
 //! parsed fail-closed, the status metrics bounded. The plugin side lowered its own reply to the
 //! fixed `out` (`abi::sdk::hook`); everything the 1.5.5 HOST did to a reply is done here.
 
-use super::wire;
 use busbar_contract::abi::hook::{
     VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
 };
 use busbar_contract::abi::host::hook::{DecideFrame, DecideView, NotifyFrame};
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::hook_calls::{Answered, HookCalls};
+use busbar_contract::hook_wire::reply as wire;
 use busbar_contract::hooks::{
     Candidate, HookStatus, PolicyError, PolicyResult, RoutingContext, RoutingDecision,
     RoutingPolicy, RoutingRequest, TransformOutcome,
@@ -240,3 +240,8 @@ impl RoutingPolicy for HookPolicy {
         self.calls.notify(tap, budget).await;
     }
 }
+
+// v1.5.5's hook reply suite (M4 HOOK-PARITY), verbatim, run through this read-back.
+#[cfg(test)]
+#[path = "tests/wire_tests.rs"]
+mod wire_tests;

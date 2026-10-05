@@ -50,6 +50,9 @@ pub mod admin_codec;
 pub mod governance;
 pub mod idempotency;
 pub mod mint;
+// THE PLANE TRUST VERB ENVELOPE (moved from the kernel's `admin::planeverbs`, P2 D4): the core-admin
+// backing [`install`] binds into the kernel's `admin_verbs` seam.
+pub mod planeverbs;
 pub mod posture;
 pub mod rate;
 pub mod refusal;
@@ -92,6 +95,10 @@ pub fn install() {
             record_boot: seam_record_boot,
         },
     );
+    // The plane trust-verb envelope (moved here from the kernel, P2 D4): bound with the mount it is
+    // served under, so every path that mounts the admin surface has it. Idempotent (first bind wins);
+    // the composition root binds the same backing.
+    busbar_kernel::admin_verbs::install_plane_admin_envelope(&planeverbs::CorePlaneAdminEnvelope);
 }
 
 /// The boot-floor record the seam calls: this app's snapshot as version 0, so the history always has a

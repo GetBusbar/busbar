@@ -11,6 +11,9 @@
 use crate::hooks::{Candidate, RoutingContext, RoutingRequest};
 use serde::Serialize;
 
+/// The REPLY side: what the host reads back of a hook's 1.5.5 JSON (P2 D4).
+pub mod reply;
+
 /// PER-REQUEST message kinds — the explicit `op` discriminator every per-request payload carries
 /// (before it, the three kinds were wire-indistinguishable; a hook binary receiving bytes
 /// had to infer the kind from field presence/endpoint, and two registrations sharing one socket

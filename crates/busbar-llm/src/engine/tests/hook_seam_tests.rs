@@ -728,7 +728,7 @@ async fn substrate_fire_stage_taps_honors_group_scope_via_host_seam() {
         crate::proto_codec::PROTO_ANTHROPIC,
         false,
     );
-    let stage = || busbar_kernel::hooks::wire::HookStageProjection {
+    let stage = || busbar_contract::hook_wire::HookStageProjection {
         at: "response",
         model: None,
         attempt_number: None,

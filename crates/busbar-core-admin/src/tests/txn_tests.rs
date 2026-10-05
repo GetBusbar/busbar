@@ -19,8 +19,8 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use serde_json::json;
 
+use crate::v1::contract::AdminError;
 use crate::v1::json::{delete_group, install_plugin};
-use busbar_kernel::admin::v1::contract::AdminError;
 use busbar_kernel::config::transaction::{config_transaction, Outcome};
 use busbar_kernel::governance::{GovState, MemoryStore};
 use busbar_kernel::state::AppHandle;
@@ -676,7 +676,7 @@ async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {
 /// "gate absent"; the SECRET resolution happens first and is what this measures.
 fn parking_secret_hook_env(delay: Duration) -> busbar_kernel::hooks::HookEnv {
     busbar_kernel::hooks::HookEnv::new(
-        Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
+        Arc::new(busbar_kernel::plugin_admission::PluginRegistry::empty()),
         Arc::new(busbar_kernel::config::secret::SecretResolver::with_plugin(
             Box::new(move |_module: &str, _settings: &str| {
                 std::thread::sleep(delay);

@@ -246,10 +246,10 @@ pub mod host_services;
 pub mod json;
 pub mod limits;
 pub mod lineage;
-pub mod snapshot;
 pub mod net_guard;
 pub mod oauth_as;
 pub mod observability;
+pub mod snapshot;
 // `operation` is the neutral operation vocabulary (`OpVerb`, `OpShape`), re-exported wholesale
 // from `busbar-contract` so `crate::operation::OpVerb` and `busbar_kernel::operation::*` resolve
 // for every existing user. THE ONE GAUNTLET (`run`, the single canonical resolved-operation entry
@@ -274,6 +274,17 @@ pub mod plane;
 #[allow(unsafe_code)]
 pub mod plane_host;
 pub mod plugin_routes;
+/// THE PLUGIN-ADMISSION MACHINERY the operator surface drives (upload, verify, inventory, rescan):
+/// the loader's own items by `pub use`, the same types and the same functions, no wrapper. The
+/// admin cleanliness crate reaches them through the kernel it serves, its one-way dependency
+/// (BUSBAR-1.6.0.md:3780, R2/#37), never by naming the loader: `kernel -> plugin-tooling` is a class
+/// the architecture grants and `cleanliness -> plugin-tooling` is not.
+pub mod plugin_admission {
+    pub use busbar_plugin_loader::{
+        inventory_tarballs, scan_and_validate, sign, supported_abi, tarball, LoadablePlugin,
+        PluginRegistry,
+    };
+}
 // The ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`). DECISIONS #83a, and
 // the #83(d) test decides it: a stage vocabulary, a bucket cap and a reservoir policy are an
 // implementation's own instrument — a second honest implementation could bucket differently, or not

@@ -52,7 +52,7 @@ fn grp_principal(id: &str, roles: &[&str]) -> Principal {
 /// (no principal) is full.
 #[test]
 fn admin_scope_resolution() {
-    use crate::admin::v1::contract::{Grants, Scope};
+    use busbar_contract::authz::{Grants, Scope};
     let rb = bindings_for(
         "test-groups-module",
         &[
@@ -123,7 +123,7 @@ fn admin_scope_resolution() {
 /// principal identified by the test-groups-module.
 #[test]
 fn admin_scope_bindings_are_module_scoped() {
-    use crate::admin::v1::contract::{Grants, Scope};
+    use busbar_contract::authz::{Grants, Scope};
     let rb = bindings_for(
         "other-module",
         &[("admins", binding(None, None, Some("full")))],
@@ -1871,7 +1871,7 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
 ///   - a credential no module identifies is denied outright.
 #[test]
 fn test_admin_scope_cap_ceilings_external_module() {
-    use crate::admin::v1::contract::{Grants, Scope};
+    use busbar_contract::authz::{Grants, Scope};
     crate::snapshot::init();
 
     let mk_app = |cap: Option<&str>, bind_module: &str| {
@@ -1926,7 +1926,7 @@ fn test_admin_scope_cap_ceilings_external_module() {
 /// restart opt-in.
 #[test]
 fn test_dry_run_empty_admin_chain_is_not_full() {
-    use crate::admin::v1::contract::{Grants, Scope};
+    use busbar_contract::authz::{Grants, Scope};
     crate::snapshot::init();
 
     let mut app = crate::test_support::TestApp::new().build();

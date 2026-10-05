@@ -170,7 +170,7 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     let versions_before = handle
         .load()
         .versions()
-        .list(0, busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX)
+        .list(0, crate::v1::contract::LIST_LIMIT_MAX)
         .len();
 
     let status = mint_with_parent(&handle, "k", PROVISION_FAIL_GROUP, "team").await;
@@ -205,9 +205,7 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
             .any(|e| e.outcome == busbar_kernel::audit_ring::OUTCOME_APPLIED),
         "the committed provision is in the audit trail"
     );
-    let versions = live
-        .versions()
-        .list(0, busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX);
+    let versions = live.versions().list(0, crate::v1::contract::LIST_LIMIT_MAX);
     assert!(
         versions.len() > versions_before,
         "the committed provision is in the version log"

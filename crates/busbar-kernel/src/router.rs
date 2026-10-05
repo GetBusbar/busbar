@@ -10,8 +10,8 @@ use axum::Router;
 use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, export, failover, governance, handlers,
-    hooks, ingress, ir, json, limits, snapshot, net_guard, oauth_as, observability, operation,
-    plane, plugin_routes, profile, proto, proxy, state, store, telemetry, tls, transport, trust,
+    hooks, ingress, ir, json, limits, net_guard, oauth_as, observability, operation, plane,
+    plugin_routes, profile, proto, proxy, snapshot, state, store, telemetry, tls, transport, trust,
 };
 
 /// Response header name for the W3C Server-Timing field.
@@ -45,18 +45,18 @@ pub fn fallback_error_response(
     // leaked `{error:{type}}` bodies onto a surface that promises `{error:{code}}`.
     // Boundary-safe: exact root or root + '/'.
     {
-        use crate::admin::v1::contract::{AdminError, API_ROOT};
+        use crate::admin::gate::{ApiError, API_ROOT};
         if path == API_ROOT || path.starts_with(&format!("{API_ROOT}/")) {
             let e = if status == axum::http::StatusCode::METHOD_NOT_ALLOWED {
-                AdminError::MethodNotAllowed
+                ApiError::MethodNotAllowed
             } else if status == axum::http::StatusCode::INTERNAL_SERVER_ERROR {
                 // The request-panic boundary ([`CatchPanicLayer`]) is the one caller that asks for
                 // a 500 here; on the native-API root that is the frozen envelope's own `internal`.
-                AdminError::Internal
+                ApiError::Internal
             } else {
-                AdminError::not_found("resource")
+                ApiError::NotFound
             };
-            return crate::admin::v1::json::err_json(&e);
+            return crate::admin::gate::err_json(&e);
         }
     }
     // ONE resolver, ONE shaping seam. Each dialect's own vendor-pinned response headers (Bedrock

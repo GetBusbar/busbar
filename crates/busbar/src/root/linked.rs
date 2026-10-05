@@ -1163,7 +1163,7 @@ pub fn register_seams() {
     );
     #[cfg(linked_admin_envelope)]
     busbar_kernel::admin_verbs::install_plane_admin_envelope(
-        &busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope,
+        &busbar_core_admin::planeverbs::CorePlaneAdminEnvelope,
     );
 }
 

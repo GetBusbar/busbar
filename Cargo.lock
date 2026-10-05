@@ -553,7 +553,6 @@ dependencies = [
  "busbar-kernel-ledger",
  "busbar-llm",
  "busbar-mcp",
- "busbar-plugin-loader",
  "flate2",
  "hex",
  "http-body-util",
