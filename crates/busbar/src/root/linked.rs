@@ -523,10 +523,15 @@ pub fn refuse_a_key_two_doors_register(named: &[(String, &str)]) -> Result<(), S
     Ok(())
 }
 
+/// The dispatcher a door row's probe binds on: the process's one ([`crate::root::dispatch`]).
+pub(crate) fn door_probe_dispatcher() -> Arc<crate::root::loader::dispatch::Dispatcher> {
+    crate::root::dispatch::dispatcher()
+}
+
 /// THE DOOR PLANES' REGISTRY ROWS (DECL-FOLD; ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL; spec #49
 /// and R2-C): every plane [`dropped_planes_of`] discovered through a door, linked or dropped, bound
-/// once through the loader's one load on the process's one dispatcher (booted as main's first act,
-/// before any plane registers and before the config prepass), and its Statement
+/// once through the loader's one load on a dispatcher of its own (the process's is built after the
+/// configuration is read, and the rows must be in before the config prepass), and its Statement
 /// folded into a registry row by the kernel (`busbar_kernel::plane::door::fold`). The row's every
 /// word is the door's; a door owns the plane axis for its key, a linked legacy row of the same key
 /// keeping only its other axes ([`doors_own_their_plane_keys`]), and two doors registering one key
@@ -538,10 +543,10 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
     if doors.is_empty() {
         return Ok(Vec::new());
     }
-    // The probe binds ride the process's one dispatcher, booted as main's first act before any plane
-    // registers (so the fold adds no worker of its own to the process's thread count); a probe
-    // plugin it adopted is refreshed through it at every generation.
-    let probe = crate::root::dispatch::dispatcher();
+    // The probe binds on the PROCESS'S ONE DISPATCHER (booted first, in `main`), never one of
+    // their own: a second dispatcher is a second set of `busbar-dispatch` threads. A probe plugin
+    // it adopted is refreshed through it at every generation.
+    let probe = door_probe_dispatcher();
     let registrations = doors
         .iter()
         .map(|candidate| {

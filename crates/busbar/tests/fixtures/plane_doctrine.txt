@@ -1,22 +1,25 @@
 # THE PLANE DOCTRINE (capability_equality.rs, plane_isomorphism.rs) — data, so the test sources
 # name no plugin.
 #
-# plane <column>: the owner's directional plane list, verbatim — the one-direction planes (llm, and
-# decisions: both halves in one column, its only need outbound), and the three bidirectional
-# protocols counted in both directions. Must equal qa/capability-equality.json `planes`.
+# plane <column>: the owner's directional plane list, verbatim — the five planes (llm, mcp, a2a,
+# streaming, decisions; U14), each a single column when it declares needs in one direction alone
+# (llm, decisions) and counted in both directions otherwise. Must equal qa/capability-equality.json
+# `planes`.
 plane llm
+plane decisions
 plane mcp-client
 plane mcp-server
 plane a2a-client
 plane a2a-server
-plane voice-client
-plane voice-server
-plane decisions
+plane streaming-client
+plane streaming-server
+#
+# dialect <name>: a plane's dialect, never a column (U14: `voice` is the streaming plane's).
+dialect voice
 #
 # root-leg <leg> <cargo feature that compiles it into this build>: the six root legs. Must equal
 # qa/capability-equality.json `root_legs`. The mcp, a2a and voice legs are the served kernel-loop
-# rider (the voice leg its session rider), and the decisions leg its door served end to end, so the
-# feature that links the plane gates them.
+# rider (the voice leg its session rider), so the feature that links the plane gates them.
 root-leg root-a2a plane-a2a
 root-leg root-admin root-admin
 root-leg root-llm proto-llm
@@ -29,14 +32,15 @@ root-leg root-decisions plane-decisions
 crate llm llm
 crate mcp mcp-client mcp-server
 crate a2a a2a-client a2a-server
-crate voice voice-client voice-server
+crate voice streaming-client streaming-server
 crate plane-llm llm
 crate plane-mcp mcp-client mcp-server
 crate plane-a2a a2a-client a2a-server
-crate plane-streaming voice-client voice-server
+crate plane-streaming streaming-client streaming-server
 crate plane-decisions decisions
 #
-# owed <crate suffix>: workspace plane crates that answer to no ledger column yet, pinned exactly.
+# owed <crate suffix>: workspace plane crates that answer to no ledger column yet, pinned exactly
+# (none since U14 gave the decisions plane its column).
 #
 # installed <plane key> <ledger column>...: the doctrine's installed-plane axis (plane_isomorphism.rs)
 # — each plane the composition root installs from its own linked entry, and the directional ledger
@@ -44,7 +48,7 @@ crate plane-decisions decisions
 installed llm llm
 installed mcp mcp-client mcp-server
 installed a2a a2a-client a2a-server
-installed streaming voice-client voice-server
+installed streaming streaming-client streaming-server
 #
 # owned-section <plane key> <declaring section> <owned section>...: the linked planes that own the
 # grammar of a top-level section, and those sections (plane_owned_sections_boot.rs).

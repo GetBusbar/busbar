@@ -189,6 +189,9 @@ fn io_reactor() -> tokio::runtime::Handle {
 #[path = "tests/connector.rs"]
 mod tests;
 
-#[cfg(test)]
+// The h2/http1 battery composes every linked wire and dials through the stack they fold into: a
+// build that leaves a linked wire unlinked (served dropped in instead) is a different composition,
+// so the battery needs every linked wire (`linked_every_transport`, emitted by build.rs).
+#[cfg(all(test, linked_every_transport))]
 #[path = "tests/connector_h2.rs"]
 mod h2_tests;
