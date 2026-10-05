@@ -58,8 +58,6 @@ pub(super) struct ProgramRelay {
     replies: u32,
     /// The answer (or why there is none), held while the replies are written.
     settled: Option<Result<Vec<u8>, String>>,
-    /// The further round's exchange, while it pends.
-    pub(super) round: Option<ProgramExchange>,
 }
 
 impl ProgramRelay {
@@ -72,7 +70,6 @@ impl ProgramRelay {
             replying: None,
             replies: 0,
             settled: None,
-            round: None,
         }
     }
 }
@@ -340,46 +337,6 @@ pub(super) fn far(
 /// The progress frames the relay's reading kept, taken.
 pub(super) fn progress(relay: &mut ProgramRelay) -> Vec<Value> {
     std::mem::take(&mut relay.corr.progress)
-}
-
-/// A FURTHER ROUND to a stdio member: its `tools/call` carrying the continuation, on a lease of its
-/// own, answered by `id` (the unit's for that round). The answer, or why there is none.
-#[allow(clippy::too_many_arguments)] // the round's request beside the unit's facts
-pub(super) fn round(
-    plane: &McpDoor,
-    ticket: Ticket,
-    member: &str,
-    def: &crate::tools_config::McpServerDefCfg,
-    relay: &mut ProgramRelay,
-    body: Vec<u8>,
-    id: u64,
-    base: u32,
-) -> std::task::Poll<Result<Vec<u8>, String>> {
-    let Some(host) = plane.host.as_ref() else {
-        return std::task::Poll::Ready(Err(
-            busbar_contract::abi::sdk::conn::ConnFailure::Unarmed.to_string()
-        ));
-    };
-    let mut exchange = relay.round.take().unwrap_or_else(|| {
-        ProgramExchange::new(member, door::NEED_PROGRAM, vec![(body, Some(id))], true)
-    });
-    match exchange_child(plane, host, ticket, base, member, def, &mut exchange) {
-        std::task::Poll::Pending => {
-            relay.round = Some(exchange);
-            std::task::Poll::Pending
-        }
-        std::task::Poll::Ready(answer) => {
-            relay
-                .corr
-                .progress
-                .extend(exchange.progress().iter().cloned());
-            relay.wait = id;
-            std::task::Poll::Ready(answer.and_then(|d| {
-                d.answer
-                    .ok_or_else(|| crate::tool_program::CLOSED.to_string())
-            }))
-        }
-    }
 }
 
 /// The id unit `key`'s call carries on a child, round `round`.

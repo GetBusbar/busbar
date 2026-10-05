@@ -359,3 +359,82 @@ fn the_asks_params_are_the_operators_bytes_and_nothing_else() {
             .expect("json");
     assert_eq!(body["result"]["inputRequests"]["confirm"]["params"], params);
 }
+
+/// LAW 11 (U16): AN UPSTREAM'S ASK IS RELAYED under busbar's one sealed state, which pins the member
+/// and nests the upstream's own. Its retry, on a tool with or without rounds of busbar's own, is
+/// the relayed retry, spent once; the state presented by another principal, on another call, or
+/// forged is refused.
+#[test]
+fn a_relayed_asks_retry_is_pinned_spent_once_and_bound_to_its_caller() {
+    let mut seal = Plain::default();
+    let leg = UpstreamLeg {
+        member: "fs".into(),
+        state: Some(json!("upstream-state")),
+        round: 1,
+    };
+    let state = relay_state(bind("k"), "d", leg.clone(), &mut seal).expect("sealed");
+    let answers = json!({ "r": { "roots": [] } });
+    let retry = Retry {
+        responses: Some(&answers),
+        state: Some(&state),
+    };
+    // Busbar's own rounds do not stand in its way: they were answered before the call went out.
+    for rounds in [Vec::new(), confirm()] {
+        let mut fresh = Plain::default();
+        assert_eq!(
+            decide(&rounds, 3, &caps(), retry, bind("k"), "d", Some(&mut fresh)),
+            AskDecision::Relayed(leg.clone())
+        );
+    }
+    // RED: spent once.
+    assert_eq!(
+        decide(&[], 3, &caps(), retry, bind("k"), "d", Some(&mut seal)),
+        AskDecision::Relayed(leg.clone())
+    );
+    assert_eq!(
+        decide(&[], 3, &caps(), retry, bind("k"), "d", Some(&mut seal)),
+        AskDecision::Refuse(AskRefusal::StateRejected(Rejected::AlreadySpent))
+    );
+    // RED: another principal, another call's arguments.
+    let mut other = Plain::default();
+    assert_eq!(
+        decide(&[], 3, &caps(), retry, bind("other"), "d", Some(&mut other)),
+        AskDecision::Refuse(AskRefusal::StateRejected(Rejected::WrongPrincipal))
+    );
+    assert_eq!(
+        decide(&[], 3, &caps(), retry, bind("k"), "e", Some(&mut other)),
+        AskDecision::Refuse(AskRefusal::StateRejected(Rejected::WrongRequest))
+    );
+    // RED: a forged state is never a relayed retry.
+    let forged = Retry {
+        responses: Some(&answers),
+        state: Some("forged"),
+    };
+    assert!(matches!(
+        decide(
+            &confirm(),
+            3,
+            &caps(),
+            forged,
+            bind("k"),
+            "d",
+            Some(&mut other)
+        ),
+        AskDecision::Refuse(AskRefusal::StateRejected(_))
+    ));
+}
+
+/// The relayed result is the upstream's, `inputRequests` verbatim; only its state is busbar's.
+#[test]
+fn the_relayed_result_keeps_the_upstreams_requests_verbatim() {
+    let upstream = json!({
+        "resultType": "input_required",
+        "inputRequests": { "s": { "method": "sampling/createMessage", "params": { "x": [1, 2] } } },
+        "requestState": "theirs",
+    });
+    let body: Value =
+        serde_json::from_slice(&relayed_result(&json!(7), &upstream, "ours")).expect("json");
+    assert_eq!(body["id"], json!(7));
+    assert_eq!(body["result"]["inputRequests"], upstream["inputRequests"]);
+    assert_eq!(body["result"]["requestState"], json!("ours"));
+}

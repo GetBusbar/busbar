@@ -2438,8 +2438,10 @@ mod both_ways {
             "the stream's last event"
         );
 
+        // A GRANTED ASK IS RELAYED under busbar's sealed state (Law 11); a host that signs nothing
+        // cannot seal it, so the ask is refused, never answered by busbar.
         let ask = step(&t, "answer ask");
-        assert_eq!((ask.status, ask.reply.clone()), settled(FAR_ASK, false));
+        assert_eq!(ask.status, 403);
         assert_eq!(
             document(&ask.reply)["error"]["data"]["reason"],
             json!("ask_unsatisfiable")

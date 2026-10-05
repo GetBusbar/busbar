@@ -119,6 +119,27 @@ pub struct AskState {
     /// The principal's roots epoch at mint, when the exchange includes a roots ask.
     #[serde(rename = "e", default, skip_serializing_if = "Option::is_none")]
     pub roots_epoch: Option<u64>,
+    /// THE UPSTREAM'S ASK RELAYED TO THE CALLER (Law 11: busbar answers nothing on the caller's
+    /// behalf): the member that asked, and its own `requestState`, nested in this one sealed state.
+    /// Present only on a state minted for a relayed ask; busbar's own rounds were already answered.
+    #[serde(rename = "u", default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<UpstreamLeg>,
+}
+
+/// AN UPSTREAM'S ASK, RELAYED: the pool member that asked (the retry goes back to it), the state it
+/// sealed for itself (handed back to it verbatim on the retry; `None` when it sealed none), and how
+/// many of its rounds this call has relayed.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UpstreamLeg {
+    /// The registration that asked.
+    #[serde(rename = "m")]
+    pub member: String,
+    /// The upstream's own `requestState`, verbatim.
+    #[serde(rename = "s", default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<Value>,
+    /// The upstream rounds relayed so far: the next request is round `round`.
+    #[serde(rename = "r")]
+    pub round: u32,
 }
 
 /// Why a presented `requestState` was refused.
@@ -245,6 +266,10 @@ pub enum AskDecision {
     },
     /// Refused.
     Refuse(AskRefusal),
+    /// THE RETRY OF A RELAYED UPSTREAM ASK: the caller's answers go to the member that asked,
+    /// with the upstream's own state, verbatim. Busbar's own rounds were answered before the call
+    /// went out, and this state is spent once.
+    Relayed(UpstreamLeg),
 }
 
 /// Why the caller's side of the exchange was refused.
@@ -440,6 +465,29 @@ pub fn decide(
     seal: Option<&mut dyn Seal>,
 ) -> AskDecision {
     let capability = || bind.capability.to_string();
+    let mut seal = seal;
+    // A RELAYED ASK'S RETRY: the state opened and matched as busbar's own is, then spent once.
+    if let (Some(blob), Some(sealer)) = (retry.state, seal.as_deref_mut()) {
+        if let Ok(opened) = sealer.open(blob) {
+            if let Some(leg) = opened.upstream.clone() {
+                if let Err(e) = opened.matches(
+                    bind.principal,
+                    bind.method,
+                    bind.capability,
+                    args_digest,
+                    bind.generation,
+                    bind.now,
+                ) {
+                    return AskDecision::Refuse(AskRefusal::StateRejected(e));
+                }
+                let expires_at = opened.issued_at.saturating_add(opened.ttl_secs);
+                if !sealer.redeem(&opened.nonce, expires_at, bind.now) {
+                    return AskDecision::Refuse(AskRefusal::StateRejected(Rejected::AlreadySpent));
+                }
+                return AskDecision::Relayed(leg);
+            }
+        }
+    }
     if rounds.is_empty() {
         if retry.state.is_some() || retry.responses.is_some() {
             return AskDecision::Refuse(AskRefusal::Unsolicited {
@@ -453,7 +501,6 @@ pub fn decide(
             capability: capability(),
         })
     };
-    let mut seal = seal;
     let mut presented: Option<(String, u64)> = None;
     let next_round = match retry.state {
         None => 0u32,
@@ -563,6 +610,7 @@ pub fn decide(
         issued_at: bind.now,
         ttl_secs: DEFAULT_TTL_SECS,
         roots_epoch: exchange_asks_roots.then_some(bind.roots_epoch),
+        upstream: None,
     }) else {
         return no_sealer();
     };
@@ -596,6 +644,42 @@ pub fn input_required_result(id: &Value, asks: &[CallerAsk], request_state: &str
     envelope.insert("id".into(), id.clone());
     envelope.insert("result".into(), Value::Object(value));
     serde_json::to_vec(&Value::Object(envelope)).unwrap_or_default()
+}
+
+/// THE STATE A RELAYED UPSTREAM ASK IS ANSWERED UNDER: busbar's one sealed `requestState`, bound to
+/// the principal, the call (method, tool, arguments as the caller sent them) and the catalogue
+/// generation, nesting the member that asked and its own state. `None` when it cannot be sealed.
+#[must_use]
+pub fn relay_state(
+    bind: Bind<'_>,
+    args_digest: &str,
+    leg: UpstreamLeg,
+    seal: &mut dyn Seal,
+) -> Option<String> {
+    let nonce = seal.nonce()?;
+    seal.mint(&AskState {
+        principal: bind.principal.to_string(),
+        method: bind.method.to_string(),
+        capability: bind.capability.to_string(),
+        args_digest: args_digest.to_string(),
+        generation: bind.generation,
+        round: 0,
+        nonce,
+        issued_at: bind.now,
+        ttl_secs: DEFAULT_TTL_SECS,
+        roots_epoch: None,
+        upstream: Some(leg),
+    })
+}
+
+/// THE UPSTREAM'S `InputRequiredResult`, RELAYED: its result as it came (`inputRequests` verbatim),
+/// its own `requestState` replaced by busbar's sealed `state`.
+#[must_use]
+pub fn relayed_result(id: &Value, upstream: &Value, state: &str) -> Vec<u8> {
+    let mut result = upstream.as_object().cloned().unwrap_or_default();
+    result.insert("requestState".into(), state.into());
+    serde_json::to_vec(&json!({ "jsonrpc": "2.0", "id": id, "result": Value::Object(result) }))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -168,10 +168,6 @@ pub struct McpDoor {
     /// state it records lapses. Consulted before the host's one-time claim, so a node refuses its
     /// own replay without a round trip, and the whole gate where the host binds no store.
     spent: Keyed<String, u64>,
-    /// THE LOCAL HALF OF THE PER-UPSTREAM SAMPLING BUDGET: each registered server's minute window
-    /// ([`crate::tool_sampling::SampleWindow`]), counted before a completion slot's claim is issued
-    /// on the host's ledger, and the whole gate where the host binds no store.
-    sampled: Keyed<String, crate::tool_sampling::SampleWindow>,
     /// When each registered server's tool list was last fetched (Unix ms, the kernel's clock): what
     /// verify-on-call reads its `verify_ttl` against.
     checked: Keyed<String, u64>,
@@ -285,7 +281,6 @@ slot!(
                 .map(|h| busbar_contract::abi::sdk::conn::Host::of(h.get())),
             sightings: Keyed::new(),
             spent: Keyed::new(),
-            sampled: Keyed::new(),
             checked: Keyed::new(),
             wake: input
                 .field(|i| &i.open)
@@ -463,14 +458,8 @@ struct Relay {
     sse: bool,
     /// The far end's answer, gathered until its last piece.
     far: Vec<u8>,
-    /// The continuation of the further round in flight (MRTR): the upstream asked for something
-    /// busbar grants and satisfies, and the retry carrying the answer is on the door's own need.
-    next: Option<(Value, &'static str)>,
-    /// The progress the rounds before the one in flight relayed.
+    /// The progress the stdio member's answer carried ahead of it.
     frames: Vec<Value>,
-    /// The sampling ask being satisfied (its completions run as nested units), kept across the
-    /// pends of its host calls.
-    sample: Option<crate::tool_sampling::SampleRun>,
     /// A call relayed to a stdio member: its answer read by id among its child's messages.
     program: Option<door_program::ProgramRelay>,
     /// A `token_exchange:` member's down-scope for this caller, stated on every round's request.
@@ -1459,15 +1448,37 @@ fn answer_body(
                     unit.relay = Some(Relay::of(admitted));
                     return Some(Step::Taken);
                 };
+                // A RELAYED ASK'S RETRY goes back to the member that asked, and no other: the walk
+                // is declined on any other member (the state pins it).
+                if admitted.relay.as_ref().is_some_and(|r| r.member != member) {
+                    return Some(Step::Decline);
+                }
                 let def = held.section.servers.get(&member)?;
                 let mut relay = Relay::of(admitted);
+                let (round, continuation) = match &relay.admitted.relay {
+                    Some(r) => (r.round, Some(r.continuation.clone())),
+                    None => (0, None),
+                };
+                relay.round = round;
                 let mut outbound = if door_program::is_program(def) {
                     // A stdio member: the call carries the unit's own id on the child.
-                    let id = door_program::id_of(unit.key, 0);
+                    let id = door_program::id_of(unit.key, round);
                     relay.program = Some(door_program::ProgramRelay::waiting(id));
-                    crate::call::outbound_program(&relay.admitted, &member, def, None, id)?
+                    crate::call::outbound_program(
+                        &relay.admitted,
+                        &member,
+                        def,
+                        continuation.as_ref(),
+                        id,
+                    )?
                 } else {
-                    crate::call::outbound(&relay.admitted, &member, def, 0, None)?
+                    crate::call::outbound(
+                        &relay.admitted,
+                        &member,
+                        def,
+                        round,
+                        continuation.as_ref(),
+                    )?
                 };
                 // A member's token_exchange down-scope / passthrough lend rides its outbound
                 // (Q-L3B-DOOR-EXCHANGE); a stdio child carries none.
@@ -1530,6 +1541,16 @@ fn answer_body(
                     AskDecision::Refuse(refusal) => {
                         audit = Some(crate::call::AuditRow::prompt_ask(&prompt.namespaced, false));
                         let r = refusal.refusal(id);
+                        (r.status, r.body())
+                    }
+                    // A prompt never goes upstream, so no state of a relayed ask is its own: the
+                    // state is refused as one this request did not ask for.
+                    AskDecision::Relayed(_) => {
+                        audit = Some(crate::call::AuditRow::prompt_ask(&prompt.namespaced, false));
+                        let r = crate::ask::AskRefusal::StateRejected(
+                            crate::ask::Rejected::WrongRequest,
+                        )
+                        .refusal(id);
                         (r.status, r.body())
                     }
                     AskDecision::Ask {
@@ -1668,9 +1689,7 @@ impl Relay {
             status: 0,
             sse: false,
             far: Vec::new(),
-            next: None,
             frames: Vec::new(),
-            sample: None,
             program: None,
             scope: None,
         }
@@ -1811,16 +1830,9 @@ slot!(
                     let def = held
                         .as_ref()
                         .and_then(|h| h.section.servers.get(unit.member.as_deref()?));
-                    // A re-call on a further round's (or a sampling completion's) wake carries the
-                    // same piece: it is not read twice.
-                    let mut settled = match relay.next.clone() {
-                        Some((continuation, kind)) => Settled::Next { continuation, kind },
-                        // The run is kept on the relay: its payload is read from there.
-                        None if relay.sample.is_some() => Settled::Sample {
-                            payload: Value::Null,
-                        },
+                    let settled = match () {
                         // A stdio member: its answer is the message carrying the call's id.
-                        None if relay.program.is_some() => {
+                        () if relay.program.is_some() => {
                             let member = unit.member.as_deref().unwrap_or_default();
                             let (Some(def), Some(program)) = (def, relay.program.as_mut()) else {
                                 return None;
@@ -1862,7 +1874,7 @@ slot!(
                                 }
                             }
                         }
-                        None => {
+                        () => {
                             if piece.flags & PIECE_HAS_STATUS != 0 {
                                 relay.status = piece.status_code;
                                 relay.sse = far_type
@@ -1883,184 +1895,82 @@ slot!(
                             )
                         }
                     };
-                    // THE FURTHER ROUNDS (MRTR): the upstream asked for something busbar grants
-                    // and can satisfy, so the retry carrying the answer is sent on the door's own
-                    // need to the same registration, round by round, under the round cap the
-                    // judgement holds; each answer is settled as the first was.
-                    // The progress every round relayed, in arrival order, bounded as one request's.
                     let mut frames = std::mem::take(&mut relay.frames);
-                    loop {
-                        match settled {
-                            Settled::Next { continuation, kind } => {
-                                let Some(def) = def else {
-                                    settled = further_round_refused(&relay.admitted, kind);
-                                    continue;
-                                };
-                                let member = unit.member.clone().unwrap_or_default();
-                                let round = relay.round + 1;
-                                let base = ROUND_SEQ.saturating_add(round.saturating_mul(ROUND_SEQ_SPAN));
-                                // A stdio member's further round goes to its own child, by id.
-                                if let Some(program) = relay.program.as_mut() {
-                                    let id = door_program::id_of(key, round);
-                                    let Some(outbound) = crate::call::outbound_program(
-                                        &relay.admitted,
-                                        &member,
-                                        def,
-                                        Some(&continuation),
-                                        id,
-                                    ) else {
-                                        settled = further_round_refused(&relay.admitted, kind);
-                                        continue;
-                                    };
-                                    relay.next = Some((continuation, kind));
-                                    let std::task::Poll::Ready(answer) = door_program::round(
-                                        plane, ticket, &member, def, program, outbound.body, id, base,
-                                    ) else {
-                                        relay.frames = frames;
-                                        return Some(Step::Pending);
-                                    };
-                                    relay.next = None;
-                                    relay.round = round;
-                                    frames.extend(door_program::progress(program));
-                                    frames.truncate(MAX_PROGRESS_FRAMES);
-                                    settled = match answer {
-                                        Ok(reply) => {
-                                            relay.status = 200;
-                                            relay.far = reply;
-                                            crate::call::settle_call_as(
-                                                &relay.admitted,
-                                                Some(def),
-                                                relay.status,
-                                                &relay.far,
-                                                false,
-                                                relay.round,
-                                                id,
-                                            )
-                                        }
-                                        Err(reason) => {
-                                            relay.status = 0;
-                                            relay.far.clear();
-                                            crate::call::upstream_failed(&relay.admitted, &reason)
-                                        }
-                                    };
-                                    continue;
-                                }
-                                let Some(mut outbound) = crate::call::outbound(
-                                    &relay.admitted,
-                                    &member,
-                                    def,
-                                    round,
-                                    Some(&continuation),
-                                ) else {
-                                    settled = further_round_refused(&relay.admitted, kind);
-                                    continue;
-                                };
-                                scoped(&mut outbound.fields, relay.scope.as_deref());
-                                relay.next = Some((continuation, kind));
-                                let answer = exchange_at(
-                                    &instance,
-                                    plane.host.as_ref(),
-                                    base,
-                                    &def.url,
-                                    &member,
-                                    || busbar_contract::abi::sdk::exchange::Request {
-                                        method: outbound.verb.as_bytes().to_vec(),
-                                        target: outbound.target.into_bytes(),
-                                        fields: outbound
-                                            .fields
-                                            .iter()
-                                            .map(|(n, v)| {
-                                                (n.as_bytes().to_vec(), v.as_bytes().to_vec())
-                                            })
-                                            .collect(),
-                                        body: outbound.body,
-                                        timeout_ms: CONNECT_TIMEOUT_MS,
-                                    },
-                                );
-                                let std::task::Poll::Ready(answer) = answer else {
-                                    relay.frames = frames;
-                                    return Some(Step::Pending);
-                                };
-                                relay.next = None;
-                                relay.round = round;
-                                if relay.sse {
-                                    frames.extend(crate::call::progress_frames(&relay.far));
-                                    frames.truncate(MAX_PROGRESS_FRAMES);
-                                }
-                                match answer {
-                                    Ok(reply) => {
-                                        relay.status = u32::from(reply.status);
-                                        relay.sse = reply.fields.iter().any(|(n, v)| {
-                                            n.eq_ignore_ascii_case(CONTENT_TYPE.as_bytes())
-                                                && v.starts_with(EVENT_STREAM.as_bytes())
-                                        });
-                                        relay.far = reply.body;
-                                    }
-                                    Err(_) => {
-                                        relay.status = 0;
-                                        relay.far.clear();
-                                    }
-                                }
-                                settled = crate::call::settle_call(
-                                    &relay.admitted,
-                                    Some(def),
-                                    relay.status,
-                                    &relay.far,
-                                    relay.sse,
-                                    relay.round,
-                                );
-                            }
-                            // A granted sampling ask: one completion per entry, each a nested unit
-                            // under the caller's key and budget ([`crate::tool_sampling`]); its
-                            // answer is the next round's continuation, sent as a roots answer is.
-                            Settled::Sample { payload } => {
-                                let member = unit
-                                    .member
-                                    .clone()
-                                    .unwrap_or_else(|| relay.admitted.entry.server.clone());
-                                let run = relay.sample.get_or_insert_with(|| {
-                                    crate::tool_sampling::SampleRun::new(payload)
-                                });
-                                let mut host = DoorSampler {
-                                    services: plane.services,
+                    // AN UPSTREAM'S ASK, RELAYED (Law 11): its result goes to the caller with
+                    // `inputRequests` verbatim, under busbar's one sealed state, which pins the
+                    // member that asked and nests the upstream's own; busbar answers none of it.
+                    let settled = match settled {
+                        Settled::Relay { result, round } if task_run => {
+                            let _ = (result, round);
+                            crate::call::ask_refused(
+                                &relay.admitted,
+                                &crate::call::AskRefusal::Unsatisfiable {
+                                    server: relay.admitted.entry.server.clone(),
+                                    kind: "input".to_string(),
+                                    reason: "a task's continuation has no caller waiting to relay \
+                                             the upstream's ask to"
+                                        .to_string(),
+                                },
+                            )
+                        }
+                        Settled::Relay { result, round } => {
+                            let member = unit.member.clone().unwrap_or_default();
+                            let leg = crate::ask::UpstreamLeg {
+                                member,
+                                state: result.get("requestState").cloned(),
+                                round: round.saturating_add(1),
+                            };
+                            let sealed = plane.services.and_then(|services| {
+                                let mut seal = DoorSeal {
+                                    services,
                                     ticket,
-                                    base: SAMPLE_SEQ.saturating_add(
-                                        relay
-                                            .round
-                                            .saturating_mul(crate::tool_sampling::SAMPLE_SEQ_SPAN),
+                                    issued: &mut unit.issued,
+                                    claim: &mut unit.claim,
+                                    spent: &plane.spent,
+                                    pending: false,
+                                };
+                                let now = seal.now();
+                                let bind = crate::ask::Bind {
+                                    principal,
+                                    method: crate::codec::METHOD_TOOLS_CALL,
+                                    capability: &relay.admitted.entry.namespaced,
+                                    generation: held
+                                        .as_ref()
+                                        .map_or(0, |h| h.catalogue.generation()),
+                                    now,
+                                    roots_epoch: 0,
+                                };
+                                crate::ask::relay_state(
+                                    bind,
+                                    &relay.admitted.sent_digest,
+                                    leg,
+                                    &mut seal,
+                                )
+                            });
+                            match sealed {
+                                Some(state) => Settled::Answer {
+                                    status: 200,
+                                    body: crate::ask::relayed_result(
+                                        &relay.admitted.id,
+                                        &result,
+                                        &state,
                                     ),
-                                    windows: &plane.sampled,
-                                };
-                                let std::task::Poll::Ready(answer) = run.drive(
-                                    &member,
-                                    def.and_then(|d| d.sampling.as_ref()),
-                                    &mut host,
-                                ) else {
-                                    relay.frames = frames;
-                                    return Some(Step::Pending);
-                                };
-                                relay.sample = None;
-                                settled = match answer {
-                                    Ok(continuation) => Settled::Next {
-                                        continuation,
-                                        kind: "sampling",
+                                    line: crate::call::relayed_line(&relay.admitted.entry),
+                                },
+                                None => crate::call::ask_refused(
+                                    &relay.admitted,
+                                    &crate::call::AskRefusal::Unsatisfiable {
+                                        server: relay.admitted.entry.server.clone(),
+                                        kind: "input".to_string(),
+                                        reason: "this deployment cannot seal the state a relayed \
+                                                 ask is answered under (no `auth.signing_key`)"
+                                            .to_string(),
                                     },
-                                    Err(reason) => crate::call::ask_refused(
-                                        &relay.admitted,
-                                        &crate::call::AskRefusal::Unsatisfiable {
-                                            server: relay.admitted.entry.server.clone(),
-                                            kind: "sampling".to_string(),
-                                            reason,
-                                        },
-                                    ),
-                                };
-                            }
-                            answered @ Settled::Answer { .. } => {
-                                settled = answered;
-                                break;
+                                ),
                             }
                         }
-                    }
+                        answered => answered,
+                    };
                     if relay.sse {
                         frames.extend(crate::call::progress_frames(&relay.far));
                         frames.truncate(MAX_PROGRESS_FRAMES);
@@ -2140,19 +2050,6 @@ slot!(
         }
     }
 );
-
-/// A refused further round: the engine's unsatisfiable-ask refusal for an ask of `kind` this path
-/// cannot carry to the far end.
-fn further_round_refused(admitted: &AdmittedCall, kind: &str) -> Settled {
-    let refusal = crate::call::AskRefusal::Unsatisfiable {
-        server: admitted.entry.server.clone(),
-        kind: kind.to_string(),
-        reason: "the plane carries one request to the far end per attempt, so a further round is \
-                 not sent; the ask terminates here and is not proxied to you"
-            .to_string(),
-    };
-    crate::call::ask_refused(admitted, &refusal)
-}
 
 /// The far end's progress frames, mapped to the caller's own `progressToken` (none when the caller
 /// asked for no progress).
@@ -2465,158 +2362,8 @@ const CONNECT_CLOCK_SEQ: u32 = SIGHT_SEQ + 1;
 /// clear of the unit's own handles (counted from `0`) and of the further rounds'.
 const VERIFY_SEQ: u32 = 1 << 29;
 
-/// The first handle a further round's (MRTR) exchange numbers its services from, per round
-/// ([`ROUND_SEQ_SPAN`] apart): each exchange on one ticket counts its own handles.
-const ROUND_SEQ: u32 = 1 << 28;
-
-/// How many handles one further round's exchange may number.
+/// How many handles one attempt's verify-on-call exchange may number.
 const ROUND_SEQ_SPAN: u32 = 1 << 12;
-
-/// The first handle a sampling ask's host calls (its clock, its budget's claims, its nested
-/// completions) number from, per answered round ([`crate::tool_sampling::SAMPLE_SEQ_SPAN`] apart):
-/// above [`SIGHT_SEQ`], so clear of the unit's own handles, the further rounds' and every attempt's
-/// verify-on-call fetch.
-const SAMPLE_SEQ: u32 = 3 << 29;
-
-/// The bytes a nested completion's reply is first read into; a longer one is re-read once, on the
-/// same handle, at the size the host names (up to [`crate::tool_sampling::MAX_COMPLETION_BYTES`]).
-const SAMPLE_REPLY_BYTES: usize = 64 * 1024;
-
-/// The spans a nested completion's reply is first read into: its body's, and its head fields'.
-const SAMPLE_REPLY_SPANS: usize = 64;
-
-/// THE SAMPLING SATISFIER'S HOST ([`crate::tool_sampling::SampleHost`]) over the host's services
-/// for one unit: the kernel's clock, the local half of the per-upstream budget and its one-time
-/// slot claims of [`door::KIND_APPROVAL`], and `unit.nest` for each completion. Every call is
-/// numbered from `base`; a call that pends is re-issued under the number it was first issued under.
-struct DoorSampler<'a> {
-    services: Option<Services>,
-    ticket: Ticket,
-    base: u32,
-    windows: &'a Keyed<String, crate::tool_sampling::SampleWindow>,
-}
-
-impl DoorSampler<'_> {
-    fn handle(&self, seq: u32) -> CompletionHandle {
-        CompletionHandle {
-            ticket: self.ticket,
-            seq: self.base.saturating_add(seq),
-            _reserved: 0,
-        }
-    }
-}
-
-impl crate::tool_sampling::SampleHost for DoorSampler<'_> {
-    fn now_secs(&mut self, seq: u32) -> u64 {
-        let handle = self.handle(seq);
-        self.services
-            .and_then(|s| s.clock_now(handle).ok())
-            .map_or(0, |r| r.wall_ns / 1_000_000_000)
-    }
-
-    fn reserve(&mut self, server: &str, cap: u32, now: u64) -> Result<u32, String> {
-        self.windows.with_all(|windows| {
-            let window = windows.entry(server.to_string()).or_insert((now / 60, 0));
-            crate::tool_sampling::reserve_sample_slot(window, server, cap, now)
-        })
-    }
-
-    fn claim(
-        &mut self,
-        seq: u32,
-        key: &str,
-        ttl_ms: u64,
-    ) -> std::task::Poll<crate::tool_sampling::SlotClaim> {
-        use crate::tool_sampling::SlotClaim;
-        use std::task::Poll;
-        let Some(services) = self.services else {
-            return Poll::Ready(SlotClaim::Unbound);
-        };
-        match services.records_claim(
-            self.handle(seq),
-            door::KIND_APPROVAL,
-            key.as_bytes(),
-            ttl_ms,
-        ) {
-            Poll::Pending => Poll::Pending,
-            // THE HOST'S LEDGER answered: its word is final.
-            Poll::Ready(Ok(true)) => Poll::Ready(SlotClaim::Won),
-            Poll::Ready(Ok(false)) => Poll::Ready(SlotClaim::Lost),
-            Poll::Ready(Err(ServiceError::Declined(Outcome::Refused) | ServiceError::Unserved)) => {
-                Poll::Ready(SlotClaim::Unbound)
-            }
-            Poll::Ready(Err(_)) => Poll::Ready(SlotClaim::Unreadable),
-        }
-    }
-
-    fn complete(
-        &mut self,
-        seq: u32,
-        body: &[u8],
-    ) -> std::task::Poll<crate::tool_sampling::Completion> {
-        use crate::tool_sampling::{
-            Completion, COMPLETION_FAILED, COMPLETION_OVERSIZED, MAX_COMPLETION_BYTES,
-        };
-        use busbar_contract::abi::host::service::ItemSpan;
-        use busbar_contract::abi::mechanism::call::Span;
-        use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
-        use std::task::Poll;
-        let Some(services) = self.services else {
-            return Poll::Ready(Completion::Unserved);
-        };
-        let handle = self.handle(seq);
-        let absent = Span {
-            offset: SPAN_ABSENT,
-            len: 0,
-        };
-        let mut sizes = (SAMPLE_REPLY_BYTES, SAMPLE_REPLY_SPANS);
-        // At most twice: a short answer is re-issued ONCE, on the same handle, at the size it names.
-        for _ in 0..2 {
-            let mut buf = vec![0u8; sizes.0];
-            let mut spans = vec![
-                ItemSpan {
-                    key: absent,
-                    value: absent,
-                };
-                sizes.1
-            ];
-            let answer = services.unit_nest(
-                handle,
-                crate::tool_sampling::COMPLETION_VERB,
-                crate::tool_sampling::COMPLETION_TARGET,
-                body,
-                &mut buf,
-                &mut spans,
-            );
-            match answer {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Ok(nested)) => {
-                    return Poll::Ready(Completion::Answered {
-                        status: nested.status,
-                        body: nested.body.to_vec(),
-                    })
-                }
-                Poll::Ready(Err(ServiceError::Short { bytes, items })) => {
-                    let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
-                    let items = usize::try_from(items).unwrap_or(usize::MAX);
-                    if bytes > MAX_COMPLETION_BYTES.saturating_add(SAMPLE_REPLY_BYTES)
-                        || items > SAMPLE_REPLY_SPANS.saturating_mul(16)
-                    {
-                        return Poll::Ready(Completion::Failed(COMPLETION_OVERSIZED));
-                    }
-                    sizes = (bytes.max(sizes.0), items.max(sizes.1));
-                }
-                // Nothing serves the claim, or the host refused the nested unit (no nesting, too
-                // deep, too many at once): no completion server answers this ask.
-                Poll::Ready(Err(
-                    ServiceError::Declined(Outcome::Refused) | ServiceError::Unserved,
-                )) => return Poll::Ready(Completion::Unserved),
-                Poll::Ready(Err(_)) => return Poll::Ready(Completion::Failed(COMPLETION_FAILED)),
-            }
-        }
-        Poll::Ready(Completion::Failed(COMPLETION_FAILED))
-    }
-}
 
 /// ONE EXCHANGE ON A UNIT'S TICKET, its connector services numbered from `base` (a unit's ticket
 /// carries several exchanges, one after another: each counts its own handles, so none reads

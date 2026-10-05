@@ -32,9 +32,7 @@ use crate::codec::{
 use crate::identity::{ServerId, ToolKey};
 use crate::jsonrpc::RESULT_TYPE_COMPLETE;
 use crate::tool_arrival::Refusal;
-use crate::tools_config::{
-    McpServerDefCfg, RootCfg, TaskSupport, DEFAULT_MAX_INPUT_REQUIRED_ROUNDS,
-};
+use crate::tools_config::{McpServerDefCfg, TaskSupport, DEFAULT_MAX_INPUT_REQUIRED_ROUNDS};
 use busbar_contract::vocab;
 
 /// The audit reason of a call whose arguments the argument guard refused.
@@ -63,6 +61,8 @@ pub const REASON_TASKS_UNDECLARED: &str = "tasks_capability_undeclared";
 pub const REASON_ANSWER_UNDECLARED: &str = "caller_ask_answer_undeclared";
 /// The call-log reason of an upstream ask that reached the terminal check.
 pub const REASON_ASK_NOT_PROXIED: &str = "ask_not_proxied";
+/// The call-log reason of a call whose upstream asked its caller something, relayed to the caller.
+pub const REASON_ASK_RELAYED: &str = "ask_relayed";
 
 /// The tasks extension's identifier.
 pub const TASKS_EXTENSION_ID: &str = crate::answer::TASKS_EXTENSION_ID;
@@ -195,6 +195,24 @@ pub struct AdmittedCall {
     pub id: Value,
     /// The caller's own `progressToken`, when it asked for progress.
     pub progress_token: Option<Value>,
+    /// The digest of the arguments AS THE CALLER SENT THEM (before any answer of busbar's own asks
+    /// was merged): what a relayed ask's state is bound to.
+    pub sent_digest: String,
+    /// THE RETRY OF A RELAYED UPSTREAM ASK: the member that asked (the call goes back to it and no
+    /// other) and the continuation it is sent (the caller's `inputResponses` and the upstream's own
+    /// `requestState`, verbatim). `None` for every other call.
+    pub relay: Option<RelayedRetry>,
+}
+
+/// A relayed ask's retry: where it goes and what it carries.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelayedRetry {
+    /// The registration that asked.
+    pub member: String,
+    /// The upstream round it answers.
+    pub round: u32,
+    /// `{inputResponses, requestState}`, the caller's answers and the upstream's state verbatim.
+    pub continuation: Value,
 }
 
 /// What [`admit`] decided.
@@ -442,6 +460,7 @@ pub fn admit_trusted(
         .and_then(|p| p.get("arguments"))
         .cloned()
         .unwrap_or_else(|| json!({}));
+    let sent_digest = crate::ask::digest_arguments(&arguments);
     let Some(entry) = catalogue.tool(name) else {
         return Admission::Refused(
             catalogue_refusal(STATUS_NOT_FOUND, id, not_exposed(name), "unknown_tool"),
@@ -511,8 +530,25 @@ pub fn admit_trusted(
     }
     // BUSBAR'S OWN ASK, decided over the arguments as the caller sent them: the state is sealed over
     // their digest, so the answers are merged only after it.
+    let mut relay = None;
     match ask(entry, &arguments) {
         crate::ask::AskDecision::Proceed => {}
+        // A RELAYED ASK'S RETRY: the caller's answers are the upstream's, sent back to the member
+        // that asked with its own state, verbatim; none of them becomes an argument.
+        crate::ask::AskDecision::Relayed(leg) => {
+            let mut continuation = Map::new();
+            if let Some(responses) = params.and_then(|p| p.get("inputResponses")) {
+                continuation.insert("inputResponses".to_string(), responses.clone());
+            }
+            if let Some(state) = leg.state {
+                continuation.insert("requestState".to_string(), state);
+            }
+            relay = Some(RelayedRetry {
+                member: leg.member,
+                round: leg.round,
+                continuation: Value::Object(continuation),
+            });
+        }
         crate::ask::AskDecision::Refuse(refusal) => {
             return Admission::Refused(
                 refusal.refusal(id),
@@ -540,6 +576,7 @@ pub fn admit_trusted(
     if let Some(responses) = params
         .and_then(|p| p.get("inputResponses"))
         .and_then(Value::as_object)
+        .filter(|_| relay.is_none())
     {
         let declared: std::collections::BTreeSet<&str> = entry
             .ask_caller
@@ -611,6 +648,8 @@ pub fn admit_trusted(
             .and_then(|m| m.get("progressToken"))
             .filter(|v| !v.is_null())
             .cloned(),
+        sent_digest,
+        relay,
     })
 }
 
@@ -954,74 +993,6 @@ impl AskRefusal {
     }
 }
 
-/// SATISFY a granted `roots` ask from the operator's declared roots: MRTR's continuation members,
-/// `inputResponses` keyed as the ask keyed its entries and the upstream's `requestState` echoed.
-/// Any other kind keeps the standing refusal.
-///
-/// # Errors
-///
-/// Why the ask cannot be satisfied, in the engine's words.
-pub fn satisfy_roots(
-    kind: &str,
-    payload: &Value,
-    server: &str,
-    roots: &[RootCfg],
-) -> Result<Value, String> {
-    if kind != "roots" {
-        return Err(format!(
-            "busbar holds the `{kind}` grant for this server but has no satisfier for that ask in \
-             this release; the ask terminates here and is not proxied to you"
-        ));
-    }
-    if roots.is_empty() {
-        return Err(format!(
-            "busbar holds the `roots` grant for server `{server}` and no `tools.{server}.roots` \
-             list is declared, so there is nothing busbar may disclose; the ask terminates here \
-             and is not proxied to you. Declare `tools.{server}.roots:` if the operator intends \
-             this server to be told about a workspace."
-        ));
-    }
-    let Some(requests) = payload.get("inputRequests").and_then(Value::as_object) else {
-        return Err(
-            "the upstream's roots ask names no `inputRequests` entry to address an answer to; \
-             the ask terminates here"
-                .to_string(),
-        );
-    };
-    let answer = json!({
-        "roots": roots
-            .iter()
-            .map(|r| match &r.name {
-                Some(name) => json!({ "uri": r.uri, "name": name }),
-                None => json!({ "uri": r.uri }),
-            })
-            .collect::<Vec<_>>(),
-    });
-    let mut responses = Map::new();
-    for (entry, request) in requests {
-        if request.get("method").and_then(Value::as_str) != Some("roots/list") {
-            return Err(format!(
-                "the upstream's ask mixes `roots/list` with a method busbar has no satisfier \
-                 for; the ask terminates here (entry `{entry}`)"
-            ));
-        }
-        responses.insert(entry.clone(), answer.clone());
-    }
-    if responses.is_empty() {
-        return Err(
-            "the upstream's roots ask carries an empty `inputRequests` map; the ask terminates \
-             here"
-                .to_string(),
-        );
-    }
-    let mut continuation = Map::new();
-    continuation.insert("inputResponses".to_string(), Value::Object(responses));
-    if let Some(state) = payload.get("requestState") {
-        continuation.insert("requestState".to_string(), state.clone());
-    }
-    Ok(Value::Object(continuation))
-}
-
 /// What one far-end answer came to.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Settled {
@@ -1034,18 +1005,14 @@ pub enum Settled {
         /// The call-log line.
         line: CallLine,
     },
-    /// The upstream asked for something busbar grants and can satisfy: the next round's
-    /// continuation, and the kind it satisfies.
-    Next {
-        /// The continuation the next round carries.
-        continuation: Value,
-        /// The ask's kind.
-        kind: &'static str,
-    },
-    /// The upstream asked for a completion busbar grants: a nested unit answers it.
-    Sample {
-        /// The ask's payload: the upstream's result.
-        payload: Value,
+    /// THE UPSTREAM ASKED ITS CALLER something the operator lets this server put to callers
+    /// (Law 11: busbar answers nothing on the caller's behalf): its result, relayed to the caller
+    /// with `inputRequests` verbatim and its state nested in busbar's sealed one.
+    Relay {
+        /// The upstream's `InputRequiredResult`, as it came.
+        result: Value,
+        /// The upstream round it asked on.
+        round: u32,
     },
 }
 
@@ -1193,7 +1160,9 @@ pub fn task_line(entry: &ToolEntry, reason: &str) -> CallLine {
     line
 }
 
-/// The ask judged: the bound, then the grant, then the satisfier.
+/// The ask judged: the bound, then the grant of EVERY kind it asks for (an unknown method is judged
+/// as the most privileged, as the recogniser reads it). A granted ask is relayed to the caller;
+/// busbar answers none itself.
 fn judge_ask(
     admitted: &AdmittedCall,
     def: Option<&McpServerDefCfg>,
@@ -1209,26 +1178,38 @@ fn judge_ask(
         return Err(AskRefusal::RoundCapExceeded { server, cap });
     }
     let grants = def.map(|d| d.grants).unwrap_or_default();
-    if !grants.allows(kind) {
+    let mut kinds: Vec<&str> = payload
+        .get("inputRequests")
+        .and_then(Value::as_object)
+        .map(|requests| {
+            requests
+                .values()
+                .map(|r| match r.get("method").and_then(Value::as_str) {
+                    Some("elicitation/create") => "elicitation",
+                    Some("roots/list") => "roots",
+                    _ => "sampling",
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    kinds.push(kind);
+    if let Some(denied) = kinds.into_iter().find(|k| !grants.allows(k)) {
         return Err(AskRefusal::Ungranted {
             server,
-            kind: kind.to_string(),
+            kind: denied.to_string(),
         });
     }
-    if kind == "sampling" {
-        return Ok(Settled::Sample {
-            payload: payload.clone(),
-        });
-    }
-    let roots = def.map_or(&[][..], |d| d.roots.as_slice());
-    match satisfy_roots(kind, payload, &server, roots) {
-        Ok(continuation) => Ok(Settled::Next { continuation, kind }),
-        Err(reason) => Err(AskRefusal::Unsatisfiable {
-            server,
-            kind: kind.to_string(),
-            reason,
-        }),
-    }
+    Ok(Settled::Relay {
+        result: payload.clone(),
+        round,
+    })
+}
+
+/// The call-log line of a call whose upstream's ask was relayed to its caller: it went out and was
+/// answered (`dispatched`, `ask_relayed`), audited as busbar's ask of its caller, applied.
+#[must_use]
+pub fn relayed_line(entry: &ToolEntry) -> CallLine {
+    CallLine::resolved(entry, vocab::OUTCOME_DISPATCHED, REASON_ASK_RELAYED).asking(true)
 }
 
 /// An upstream ask busbar declined: `403`, `-32000`, the refusal's words and reason.

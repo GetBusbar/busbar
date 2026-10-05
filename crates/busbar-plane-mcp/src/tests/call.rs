@@ -400,21 +400,37 @@ fn an_ungranted_ask_is_refused_and_never_forwarded() {
     assert_eq!(line.outcome, "refused");
 }
 
+/// LAW 11 (U16): a granted roots ask is RELAYED to the caller, its result as it came; busbar
+/// answers none of it. RED arm: a satisfier answering from the operator's roots would settle a
+/// next round (an answer busbar wrote) instead of handing the upstream's result back.
 #[test]
-fn a_granted_roots_ask_is_satisfied_from_the_declared_roots() {
-    let s = settle_far(
-        r#"{"jsonrpc":"2.0","id":0,"result":{"resultType":"input_required","inputRequests":{"r":{"method":"roots/list"}},"requestState":"s"}}"#,
-    );
-    match s {
-        Settled::Next { continuation, kind } => {
-            assert_eq!(kind, "roots");
+fn a_granted_roots_ask_is_relayed_to_the_caller_as_it_came() {
+    let far = r#"{"jsonrpc":"2.0","id":0,"result":{"resultType":"input_required","inputRequests":{"r":{"method":"roots/list"}},"requestState":"s"}}"#;
+    match settle_far(far) {
+        Settled::Relay { result, round } => {
+            assert_eq!(round, 0);
+            let sent: Value = serde_json::from_str(far).expect("json");
             assert_eq!(
-                continuation,
-                json!({ "inputResponses": { "r": { "roots": [{ "uri": "file:///work", "name": "work" }] } }, "requestState": "s" })
+                result, sent["result"],
+                "the upstream's result, byte for byte"
             );
         }
-        other => panic!("the next round: {other:?}"),
+        other => panic!("relayed: {other:?}"),
     }
+}
+
+/// An ask mixing a granted kind with an ungranted one is refused naming the ungranted one: the
+/// most privileged kind alone does not decide a map whose lesser entries are ungranted.
+#[test]
+fn an_ask_mixing_an_ungranted_kind_is_refused() {
+    let (status, body, _) = answer_of(settle_far(
+        r#"{"jsonrpc":"2.0","id":0,"result":{"resultType":"input_required","inputRequests":{"r":{"method":"roots/list"},"e":{"method":"elicitation/create"}}}}"#,
+    ));
+    assert_eq!(status, 403);
+    assert_eq!(body["error"]["data"]["reason"], json!("ask_ungranted"));
+    assert!(body["error"]["message"]
+        .as_str()
+        .is_some_and(|m| m.contains("elicitation")));
 }
 
 #[test]

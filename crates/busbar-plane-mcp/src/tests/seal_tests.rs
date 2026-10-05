@@ -23,6 +23,7 @@ fn state() -> AskState {
         issued_at: 100,
         ttl_secs: 300,
         roots_epoch: None,
+        upstream: None,
     }
 }
 

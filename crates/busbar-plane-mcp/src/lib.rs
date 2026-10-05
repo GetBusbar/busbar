@@ -69,7 +69,6 @@ pub mod tool_ops;
 pub mod tool_plane;
 /// The `transport: stdio` servers: one long-lived child per server, its messages correlated by id.
 pub mod tool_program;
-pub mod tool_sampling;
 pub mod tool_scope;
 /// SEP-2663, the tasks extension: a task's state, shapes, sweep and durable rows.
 pub mod tool_tasks;

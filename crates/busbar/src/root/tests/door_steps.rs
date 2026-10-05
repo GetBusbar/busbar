@@ -3367,161 +3367,140 @@ mod spent_ledger {
     }
 }
 
-/// A GRANTED SAMPLING ASK, THROUGH THE DOOR (ARCHITECT round 4, SURFACES (c): "SAMPLING → host
-/// `unit.nest`"): the server answers the call with an input-required result asking for one
-/// completion, the registration grants it and declares the policy, and the door spends the
-/// per-upstream budget on the host's ledger and dispatches the completion as a nested unit on the
-/// caller's key. This build serves no door plane on the completion's claim, so the real
-/// `DataRoutes::nested` answers the claim unserved, and the caller is answered the satisfier's
-/// no-server refusal — busbar-attributed, with no retry sent to the server. The budget spent before
-/// that model leg is kept on the ledger: a fresh process on the same journal finds the minute spent.
+/// LAW 11 (U16): AN UPSTREAM'S ASK IS RELAYED TO THE CALLER, never answered by busbar. A granted
+/// sampling ask reaches the caller with `inputRequests` verbatim under busbar's sealed state; the
+/// caller's retry goes back to the member that asked, carrying the caller's answers and the
+/// upstream's own state verbatim; a forged state and an ungranted ask are refused.
 #[cfg(all(linked_axis_plane_door, linked_axis_node))]
-mod sampling_nest {
+mod upstream_ask_relay {
     use std::sync::Arc;
 
-    use busbar_kernel::test_support::durable_store::{durable_cfg, open_durable};
-
     use super::tool_door::{
-        rig_on, send, tool_digest, tool_listing, tool_server_answering, Footing, Ledger, Rig, CALL,
+        rig_on, send, tool_digest, tool_listing, tool_server_answering, Footing, Rig, CALL,
     };
     use crate::root::serve::planes_tests::{Published, PUBLISHING};
 
-    /// The composed instance: one name across the restart, so the claims are one ledger's.
-    const INSTANCE: &str = "door-sampling-nest";
+    /// The composed instance.
+    const INSTANCE: &str = "door-ask-relay";
 
-    /// The satisfier's refusal when nothing serves the completion's claim.
-    const NO_SERVER: &str = "could not satisfy the ask: no default chat protocol is installed";
+    /// The upstream's ask, as it sends it.
+    const ASK: &str = r#"{"jsonrpc":"2.0","id":0,"result":{"resultType":"input_required","inputRequests":{"draft":{"method":"sampling/createMessage","params":{"messages":[{"role":"user","content":{"type":"text","text":"Draft it."}}],"maxTokens":4096}}},"requestState":"s"}}"#;
 
-    /// The server: a call is answered with one sampling ask; a retry (never sent here) would be
-    /// answered with a result.
+    /// The server: a call is answered with one sampling ask; a retry carrying answers with a result.
     async fn asking_server() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
         tool_server_answering(Arc::new(|request: &str| {
             if request.contains("\"tools/list\"") {
                 serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}})
                     .to_string()
             } else if request.contains("\"inputResponses\"") {
-                r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"sampled"}]}}"#
+                r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"answered by the caller"}]}}"#
                     .to_string()
             } else {
-                r#"{"jsonrpc":"2.0","id":0,"result":{"resultType":"input_required","inputRequests":{"draft":{"method":"sampling/createMessage","params":{"messages":[{"role":"user","content":{"type":"text","text":"Draft it."}}],"maxTokens":4096}}},"requestState":"s"}}"#
-                    .to_string()
+                ASK.to_string()
             }
         }))
         .await
     }
 
-    /// The registration: the ask granted and the policy declared, one completion a minute.
-    fn tools(port: u16) -> serde_yaml::Value {
+    /// The registration: the sampling ask granted as a relay permission, or not.
+    fn tools(port: u16, granted: bool) -> serde_yaml::Value {
         serde_yaml::from_str(&format!(
             "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  \
              pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
-             grants: {{ sampling: true }}\n  \
-             sampling: {{ model: sampler-model, max_tokens: 64, max_requests_per_minute: 1 }}\n  \
+             grants: {{ sampling: {granted} }}\n  \
              tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n",
             tool_digest()
         ))
         .expect("a section")
     }
 
-    /// One call through `rig`'s door: the status and the JSON-RPC body.
-    async fn call(rig: &Rig) -> (u16, serde_json::Value) {
-        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+    /// One call of `body` through `rig`'s door: the status and the JSON-RPC body.
+    async fn call(rig: &Rig, body: &str) -> (u16, serde_json::Value) {
+        let (status, body) = send(&rig.router, Some(&rig.token), body).await;
         (
             status.as_u16(),
             serde_json::from_slice(&body).expect("JSON-RPC"),
         )
     }
 
-    /// The refusal's message.
-    fn message(body: &serde_json::Value) -> &str {
-        body.pointer("/error/message")
-            .and_then(|m| m.as_str())
-            .unwrap_or_default()
-    }
-
-    /// Clear of a minute boundary: the budget's window is the wall clock's minute, and one case's
-    /// calls must fall in one.
-    async fn inside_one_minute() {
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        if secs % 60 >= 50 {
-            tokio::time::sleep(std::time::Duration::from_secs(61 - secs % 60)).await;
-        }
+    /// The call's retry: the caller's answers and the state it was handed.
+    fn retry(state: &str) -> String {
+        let mut body: serde_json::Value = serde_json::from_str(CALL).expect("the call");
+        body["params"]["inputResponses"] = serde_json::json!({ "draft": { "role": "assistant", "content": { "type": "text", "text": "the caller's own draft" } } });
+        body["params"]["requestState"] = state.into();
+        body.to_string()
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_granted_sampling_ask_nests_its_completion_and_an_unserved_claim_refuses() {
+    async fn a_granted_ask_reaches_the_caller_verbatim_and_its_retry_goes_back_to_the_member() {
         let _one = PUBLISHING.lock().await;
         let _published = Published(INSTANCE);
         let (port, mut heard) = asking_server().await;
-        let rig = rig_on(INSTANCE, port, tools(port), Footing::own());
-        inside_one_minute().await;
-        let (status, body) = call(&rig).await;
-        assert_eq!(status, 403, "{body}");
-        assert!(message(&body).ends_with(NO_SERVER), "{body}");
+        let rig = rig_on(INSTANCE, port, tools(port, true), Footing::own());
+        let (status, body) = call(&rig, CALL).await;
+        assert_eq!(status, 200, "{body}");
+        let upstream: serde_json::Value = serde_json::from_str(ASK).expect("the ask");
         assert_eq!(
-            body["error"]["data"]["reason"], "ask_unsatisfiable",
-            "{body}"
+            body["result"]["inputRequests"], upstream["result"]["inputRequests"],
+            "the upstream's requests reach the caller byte for byte: {body}"
+        );
+        let state = body["result"]["requestState"]
+            .as_str()
+            .expect("busbar's state")
+            .to_string();
+        assert_ne!(
+            state, "s",
+            "the upstream's own state is nested in busbar's sealed one"
         );
         let verify = heard
             .try_recv()
             .expect("verify-on-call fetched the tool list");
         assert!(verify.contains("\"tools/list\""), "{verify}");
-        let first = heard
-            .try_recv()
-            .expect("the first round reached the server");
+        let first = heard.try_recv().expect("the call reached the server");
         assert!(!first.contains("inputResponses"), "{first}");
         assert!(
             heard.try_recv().is_err(),
-            "an ask busbar could not satisfy sends no retry: nothing is disclosed upstream"
+            "busbar answered nothing upstream on the caller's behalf"
         );
-        // The budget was spent BEFORE the model leg: the minute's one completion is gone.
-        let (status, body) = call(&rig).await;
-        assert_eq!(status, 403, "{body}");
-        assert!(
-            message(&body).contains("tools.fs.sampling.max_requests_per_minute"),
+
+        // THE RETRY: the caller's answers and the upstream's own state, verbatim, to the member.
+        let (status, body) = call(&rig, &retry(&state)).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            body["result"]["content"][0]["text"], "answered by the caller",
             "{body}"
         );
+        let mut sent = None;
+        while let Ok(request) = heard.try_recv() {
+            if request.contains("inputResponses") {
+                sent = Some(request);
+            }
+        }
+        let sent: serde_json::Value =
+            serde_json::from_str(&sent.expect("the retry reached the member")).expect("JSON");
+        assert_eq!(sent["params"]["requestState"], "s", "{sent}");
+        assert_eq!(
+            sent["params"]["inputResponses"]["draft"]["content"]["text"], "the caller's own draft",
+            "{sent}"
+        );
+
+        // RED: the state is spent once, and a forged one is refused.
+        let (status, body) = call(&rig, &retry(&state)).await;
+        assert_eq!(status, 400, "a spent state is refused: {body}");
+        let (status, body) = call(&rig, &retry("forged")).await;
+        assert_eq!(status, 400, "a forged state is refused: {body}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_restart_does_not_refill_the_per_upstream_sampling_budget() {
+    async fn an_ungranted_ask_is_refused_and_never_relayed() {
         let _one = PUBLISHING.lock().await;
         let _published = Published(INSTANCE);
         let (port, _heard) = asking_server().await;
-        let (_file, cfg) = durable_cfg("door-sampling-restart");
-        inside_one_minute().await;
-        let before = rig_on(
-            INSTANCE,
-            port,
-            tools(port),
-            Footing {
-                ledger: Ledger::Store(open_durable(&cfg)),
-                book: None,
-            },
-        );
-        let (_, body) = call(&before).await;
-        assert!(message(&body).ends_with(NO_SERVER), "{body}");
-        let after = rig_on(
-            INSTANCE,
-            port,
-            tools(port),
-            Footing {
-                ledger: Ledger::Store(open_durable(&cfg)),
-                book: Some(&before),
-            },
-        );
-        drop(before);
-        let (status, body) = call(&after).await;
+        let rig = rig_on(INSTANCE, port, tools(port, false), Footing::own());
+        let (status, body) = call(&rig, CALL).await;
         assert_eq!(status, 403, "{body}");
-        assert!(
-            message(&body).contains(
-                "server `fs` has already induced 1 completion(s) this minute, which is the \
-                 ceiling `tools.fs.sampling.max_requests_per_minute` declares"
-            ),
-            "a restart lifted the per-upstream budget: {body}"
-        );
+        assert_eq!(body["error"]["data"]["reason"], "ask_ungranted", "{body}");
+        assert!(body.get("result").is_none(), "{body}");
     }
 }
 

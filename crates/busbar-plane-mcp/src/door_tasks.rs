@@ -930,10 +930,12 @@ fn call(
         return Ok(Step::Decline);
     };
     let admitted = AdmittedCall {
+        sent_digest: crate::ask::digest_arguments(&arguments),
         entry,
         arguments,
         id: json!(0),
         progress_token: None,
+        relay: None,
     };
     let Some(outbound) = crate::call::outbound(&admitted, &member, def, 0, None) else {
         return Err(End::Failed(format!(
