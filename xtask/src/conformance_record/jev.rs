@@ -284,42 +284,6 @@ pub fn jev_subject_config(data: u16, admin: u16, key_file: &Path) -> String {
     )
 }
 
-/// Mint the rig's one data-plane key through the admin API, the ordinary way: its token and its id
-/// (the bucket its spend is ledgered under).
-fn mint_key_and_id(
-    scratch: &Path,
-    admin: u16,
-    admin_token: &str,
-) -> Result<(String, String), String> {
-    let bearer = format!("Bearer {admin_token}");
-    let r = curl(
-        scratch,
-        "POST",
-        &format!("http://127.0.0.1:{admin}/api/v1/admin/keys"),
-        &[
-            ("authorization", bearer.as_str()),
-            ("content-type", "application/json"),
-        ],
-        Some(br#"{"name":"jev-conformance"}"#),
-        &[],
-    )?;
-    let v: Value = serde_json::from_slice(&r.body).unwrap_or(Value::Null);
-    let text = |k: &str| {
-        v.get(k)
-            .and_then(Value::as_str)
-            .filter(|t| !t.is_empty())
-            .map(str::to_string)
-    };
-    match (text("token"), text("id")) {
-        (Some(token), Some(id)) => Ok((token, id)),
-        _ => Err(format!(
-            "the admin API minted no key with a token and an id ({}: {})",
-            r.status,
-            String::from_utf8_lossy(&r.body)
-        )),
-    }
-}
-
 fn check(ok: bool, finding: impl FnOnce() -> String) -> Result<(), String> {
     if ok {
         Ok(())
@@ -435,13 +399,14 @@ impl Runner {
         )
         .ok()
         .map(|r| r.status);
-        let (client_key, client_id) = match mint_key_and_id(&scratch, admin, &admin_token) {
-            Ok(k) => k,
-            Err(e) => {
-                run.boot = Err(format!("{e}: {}", booted.log_tail()));
-                return;
-            }
-        };
+        let (client_key, client_id) =
+            match subject::mint_key(&scratch, admin, &admin_token, "jev-conformance") {
+                Ok(k) => k,
+                Err(e) => {
+                    run.boot = Err(format!("{e}: {}", booted.log_tail()));
+                    return;
+                }
+            };
         let bearer = format!("Bearer {client_key}");
         let nonce = subject::random_hex(8).unwrap_or_else(|_| "probe".to_string());
         let send = |auth: bool| {
