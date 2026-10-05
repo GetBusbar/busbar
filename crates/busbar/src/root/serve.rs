@@ -2667,6 +2667,31 @@ impl FarEnd for DoorFar<'_, '_> {
             None => false,
         }
     }
+
+    // THE WALK'S FACTS FOR THE HOOK STAGE, as the unit's egress walk states them: its candidates,
+    // what it has left and why it last failed, and the hooks' constraint handed to it. Without
+    // these the kernel's hooks were shown no candidate and their constraint never reached the
+    // walk on the door path.
+    fn remaining(&self, token: &Pass<Route>) -> Option<usize> {
+        self.far().and_then(|far| far.remaining(token))
+    }
+
+    fn failure(&self, token: &Pass<Route>) -> Option<&'static str> {
+        self.far().and_then(|far| far.failure(token))
+    }
+
+    fn candidates(
+        &self,
+        token: &Pass<Route>,
+    ) -> Option<busbar_kernel::plane_driver::Candidates> {
+        self.far().and_then(|far| far.candidates(token))
+    }
+
+    fn constrain(&self, token: &Pass<Route>, constraint: busbar_kernel::plane_driver::Constraint) {
+        if let Some(far) = self.far() {
+            far.constrain(token, constraint);
+        }
+    }
 }
 
 // ── a session's caller side over today's upgrade (TRANSITIONAL) ──────────────────────────────────
