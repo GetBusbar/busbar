@@ -534,7 +534,10 @@ fn a_composing_entry_adopts_the_stream_its_lower_layer_hands_up() {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
         let raw = lower.detach(&server).expect("hands up");
-        let adopted = composed.adopt_from(raw).await.expect("adopted");
+        let adopted = composed
+            .adopt_from(raw, Vec::new(), None)
+            .await
+            .expect("adopted");
         assert_eq!(read_n(&composed, &adopted, 5).await, b"early");
         composed
             .write(&adopted, StreamId(0), ScratchBytes::new(b"over"), false)
@@ -547,8 +550,59 @@ fn a_composing_entry_adopts_the_stream_its_lower_layer_hands_up() {
         let raw = lower.detach(&s2).expect("hands up");
         let other = RawStream::new("other", raw.peer().to_owned(), raw.into_io());
         assert_eq!(
-            composed.adopt_from(other).await.err(),
+            composed.adopt_from(other, Vec::new(), None).await.err(),
             Some(TransportError::HandoffMismatch)
+        );
+    });
+}
+
+/// RED (SEAM-4n, ARCHITECT ruling): a dialled framing is begun with the FULL target its need
+/// declared (`scheme://host:port/path`), never the bare authority; the socket goes to the authority
+/// the entry's own `locate` reads off that target. A target that asks for connection security is
+/// refused before any socket exists (this wire secures nothing).
+#[test]
+fn a_dialled_framing_is_begun_with_the_full_declared_target() {
+    worker().block_on(async {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr: &'static str = Box::leak(l.local_addr().unwrap().to_string().into_boxed_str());
+        let door = Arc::new(TestDoor::new(
+            "bytes",
+            &["bytes"],
+            &[],
+            Knobs {
+                authority: Some(addr),
+                ..Knobs::default()
+            },
+        ));
+        let w = HostWire::new(Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>).unwrap();
+        let target = format!("bytes://{addr}/the/declared/path?q=1");
+        let (dialled, far) = tokio::join!(w.dial_target(&target), l.accept());
+        dialled.expect("dialled at the authority locate read off the target");
+        far.expect("the far end was reached at that authority");
+        assert_eq!(
+            door.begun_targets.lock().unwrap().last().map(Vec::as_slice),
+            Some(target.as_bytes()),
+            "the framer was handed the whole declared target"
+        );
+
+        let secure = Arc::new(TestDoor::new(
+            "bytes",
+            &["bytes"],
+            &[],
+            Knobs {
+                authority: Some(addr),
+                secure_name: Some("localhost"),
+                ..Knobs::default()
+            },
+        ));
+        let w = HostWire::new(Arc::clone(&secure) as Arc<dyn crate::framer::FramerDoor>).unwrap();
+        assert_eq!(
+            w.dial_target(&target).await.err(),
+            Some(TransportError::AddressRefused)
+        );
+        assert!(
+            secure.begun_targets.lock().unwrap().is_empty(),
+            "nothing began"
         );
     });
 }
