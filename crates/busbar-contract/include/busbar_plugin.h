@@ -3188,6 +3188,7 @@ struct bb_hconn_EstablishIn {
     uint32_t timeout_ms;
     bb_mech_AbiStr target;
     bb_mech_AbiStr within;
+    bb_mech_AbiStr member;
 };
 
 /* The `in` of [`service::REJECT_ENDPOINT`], [`service::SIDE_STREAM`] and [`service::CLOSE`]. */
@@ -5284,7 +5285,7 @@ BB_ASSERT(offsetof(bb_hconn_Need, keep_mode) == 120, "bb_hconn_Need.keep_mode: o
 BB_ASSERT(offsetof(bb_hconn_Need, _reserved) == 124, "bb_hconn_Need._reserved: offset");
 BB_ASSERT(offsetof(bb_hconn_Need, deny_response_headers) == 128, "bb_hconn_Need.deny_response_headers: offset");
 BB_ASSERT(offsetof(bb_hconn_Need, deny_response_headers_len) == 136, "bb_hconn_Need.deny_response_headers_len: offset");
-BB_ASSERT(sizeof(bb_hconn_EstablishIn) == 64, "bb_hconn_EstablishIn: size");
+BB_ASSERT(sizeof(bb_hconn_EstablishIn) == 80, "bb_hconn_EstablishIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hconn_EstablishIn) == 8, "bb_hconn_EstablishIn: alignment");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, head) == 0, "bb_hconn_EstablishIn.head: offset");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, need) == 24, "bb_hconn_EstablishIn.need: offset");

@@ -1185,9 +1185,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         if self.arrival.claim == CLAIM_PROBE {
             return Ok(());
         }
-        // A GATE-FIRST plane runs its entry's gates, then its rewrites (`gated`).
+        // A GATE-FIRST plane runs its entry's gates, then its rewrites (`gated`), at its screen
+        // before the door; a unit that reached no screen (a session opened at the door) runs them
+        // here.
         if binder.order() == HookOrder::Gated {
-            return self.gated_stage(&**binder, token).await;
+            if self.lock().screened {
+                return Ok(());
+            }
+            return self.gated_stage(&**binder).await;
         }
         let facts = self.far.candidates(token);
         let named = facts.is_some();

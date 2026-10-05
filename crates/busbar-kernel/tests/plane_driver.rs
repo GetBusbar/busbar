@@ -1564,10 +1564,12 @@ async fn a_route_session_arrival_is_driven_as_a_session_whose_caller_leg_is_the_
 
 // ── the gate-first hook order (`TAIL_HOOKS_GATED`; spec Part 3 section 12 "Hooks") ────────────
 
-/// A decision gate that refuses every request at 451 with its own words, counting its calls.
+/// A decision gate that refuses every request at 451 with its own words (or, `abstains`, lets
+/// every request by), counting its calls.
 #[derive(Default)]
 struct Refuses {
     calls: AtomicU32,
+    abstains: bool,
 }
 
 #[async_trait::async_trait]
@@ -1580,6 +1582,9 @@ impl busbar_contract::hooks::RoutingPolicy for Refuses {
         _budget: Duration,
     ) -> busbar_contract::hooks::PolicyResult {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.abstains {
+            return Ok(busbar_contract::hooks::RoutingDecision::Abstain);
+        }
         Ok(busbar_contract::hooks::RoutingDecision::Reject {
             status: 451,
             message: "refused at the entry".into(),
@@ -1638,8 +1643,9 @@ impl busbar_kernel::plane_driver::HookBinder for GateFirst {
 }
 
 /// THE GATE-FIRST ORDER: a plane whose binder states it has its entry's decision gate screen the
-/// unit before anything reaches the far end; a refusal stops the unit at the gate's own status
-/// and words (HookVeto), the binder is asked for the entry the plane's projection names, and
+/// unit before the door (ARCHITECT ruling, Mode B); a refusal stops the unit at the gate's own
+/// status and words (HookVeto, refused at Approve's seat), the binder is asked for the entry the
+/// plane's projection names, the door is never asked (nothing admitted, nothing counted) and
 /// nothing is sent.
 #[tokio::test]
 async fn a_gate_first_plane_screens_its_entry_before_the_far_end_and_stops_at_the_gates_status() {
@@ -1660,8 +1666,8 @@ async fn a_gate_first_plane_screens_its_entry_before_the_far_end_and_stops_at_th
     assert!(
         matches!(
             outcome,
-            busbar_contract::caps::Outcome::Failed(
-                busbar_contract::caps::StepName::Route,
+            busbar_contract::caps::Outcome::Refused(
+                busbar_contract::caps::StepName::Approve,
                 busbar_contract::caps::ReasonCode::HookVeto
             )
         ),
@@ -1672,10 +1678,95 @@ async fn a_gate_first_plane_screens_its_entry_before_the_far_end_and_stops_at_th
         1,
         "the gate screened once"
     );
+    assert!(
+        !steps
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&busbar_contract::caps::StepName::Admit),
+        "a veto admits nothing: the door was never asked"
+    );
     assert_eq!(*binder.asked.lock().unwrap(), vec![String::new()]);
     assert!(far.sent().is_empty(), "nothing reached the far end");
     let rendered = units.take_rendered().expect("the veto is rendered");
     assert_eq!(rendered.status, 451);
+}
+
+/// RED (ARCHITECT ruling, Mode B order): an OVER-BUDGET caller of a gate-first plane is answered
+/// the gate's refusal, not the door's: the gate screens before the door, which is never asked.
+#[tokio::test]
+async fn a_gate_first_planes_over_budget_caller_gets_the_gates_answer_before_the_budgets() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let gate = Arc::new(Refuses::default());
+    let binder = Arc::new(GateFirst {
+        gate: Arc::clone(&gate),
+        asked: Mutex::new(Vec::new()),
+    });
+    let driver = r.driver.with_hooks(binder);
+    let steps = common::TestUnits {
+        refuse_at: Some((
+            busbar_contract::caps::StepName::Admit,
+            busbar_contract::caps::ReasonCode::OverBudget,
+        )),
+        ..common::TestUnits::passing()
+    };
+    let (far, caller) = (cases::Far::new(&["ok"], &[]), cases::Caller::default());
+    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
+    let outcome = cases::drive(&units).await;
+    assert!(
+        matches!(
+            outcome,
+            busbar_contract::caps::Outcome::Refused(
+                busbar_contract::caps::StepName::Approve,
+                busbar_contract::caps::ReasonCode::HookVeto
+            )
+        ),
+        "the gate's answer, not the budget's: {outcome:?}"
+    );
+    assert_eq!(units.take_rendered().expect("rendered").status, 451);
+    assert!(!steps
+        .calls
+        .lock()
+        .unwrap()
+        .contains(&busbar_contract::caps::StepName::Admit));
+}
+
+/// A gate-first plane whose gate lets the unit by is admitted AFTER it (the door is asked once the
+/// screen passed) and served; the gate is not asked again at the route leg.
+#[tokio::test]
+async fn a_gate_first_planes_passing_screen_reaches_the_door_and_the_far_end_once() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let gate = Arc::new(Refuses {
+        abstains: true,
+        ..Refuses::default()
+    });
+    let binder = Arc::new(GateFirst {
+        gate: Arc::clone(&gate),
+        asked: Mutex::new(Vec::new()),
+    });
+    let driver = r.driver.with_hooks(binder);
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["ok"], &[]),
+        cases::Caller::default(),
+    );
+    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
+    let outcome = cases::drive(&units).await;
+    assert!(
+        !matches!(outcome, busbar_contract::caps::Outcome::Refused(..)),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        gate.calls.load(Ordering::SeqCst),
+        1,
+        "screened once, at the screen"
+    );
+    assert!(steps
+        .calls
+        .lock()
+        .unwrap()
+        .contains(&busbar_contract::caps::StepName::Admit));
+    assert!(!far.sent().is_empty(), "the far end was reached");
 }
 
 /// SEAM-L(o), (p): A KERNEL REFUSAL'S RECORD WRITES AND THE VETOING HOOK. A gate's veto hands the
