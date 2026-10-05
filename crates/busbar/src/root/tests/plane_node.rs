@@ -1381,7 +1381,7 @@ impl RouteAwait for Screening<'_> {
 
     fn screen<'a>(&'a self, _ctx: &'a UnitCtx) -> busbar_kernel::teller::Screen<'a> {
         let reason = self.reason;
-        Box::pin(async move { Err(reason) })
+        Box::pin(async move { Err(Refusal::new(reason)) })
     }
 }
 
