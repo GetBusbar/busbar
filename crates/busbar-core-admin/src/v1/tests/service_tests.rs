@@ -572,10 +572,7 @@ fn install_catalog_remove_roundtrip() {
 
     // Catalog: the memory head + our dynamic plugin.
     let cat = svc.store_plugin_catalog();
-    assert_eq!(
-        cat[0].name,
-        busbar_kernel::preflight::root_rows().default_store_module
-    );
+    assert_eq!(cat[0].name, "memory");
     let dyn_row = cat
         .iter()
         .find(|p| p.loader == "dynamic-library")
@@ -739,10 +736,7 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
         "the panic fallback must be exactly the one compiled-in `memory` row: {:?}",
         page.items
     );
-    assert_eq!(
-        page.items[0].name,
-        busbar_kernel::preflight::root_rows().default_store_module
-    );
+    assert_eq!(page.items[0].name, "memory");
     assert_eq!(page.items[0].loader, "compiled-in");
 }
 
