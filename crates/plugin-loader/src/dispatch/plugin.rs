@@ -499,10 +499,24 @@ impl Instance {
             if !from_settings(need) {
                 continue;
             }
-            let resolve = |path: &str| doc.as_ref().and_then(|d| resolve_setting(d, path));
-            let target = resolve(&need.target_from);
-            let trust = resolve(&need.trust_from);
             let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
+            // A PROGRAM the settings spell at the path (`{command, args, env}`) is declared as one:
+            // the table spawns it (ARCHITECT round 4 (e)). One the settings misspell is declared
+            // with no target, which the table refuses.
+            let at = doc.as_ref().and_then(|d| setting_at(d, &need.target_from));
+            if let Some(value) = at.filter(|v| v.is_object()) {
+                let _ = match busbar_contract::conn::Program::from_settings(value) {
+                    Ok(program) => table.declare_program(*instance, id, need, &program),
+                    Err(_) => table.declare(*instance, id, need, None, None),
+                };
+                continue;
+            }
+            let target = doc
+                .as_ref()
+                .and_then(|d| resolve_target(d, &need.target_from));
+            let trust = doc
+                .as_ref()
+                .and_then(|d| resolve_setting(d, &need.trust_from));
             let _ = table.declare(*instance, id, need, target.as_deref(), trust.as_deref());
         }
     }
@@ -1281,6 +1295,25 @@ pub(crate) fn resolve_setting(settings: &serde_json::Value, path: &str) -> Optio
     let rest = path.strip_prefix("settings.")?;
     rest.split('.')
         .try_fold(settings, |v, key| v.get(key))
+        .and_then(serde_json::Value::as_str)
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned)
+}
+
+/// The value a need's `target_from` path (`settings.<key>[.<key>...]`) names in an instance's
+/// settings, whatever it is.
+pub(crate) fn setting_at<'v>(
+    settings: &'v serde_json::Value,
+    path: &str,
+) -> Option<&'v serde_json::Value> {
+    let rest = path.strip_prefix("settings.")?;
+    rest.split('.').try_fold(settings, |v, key| v.get(key))
+}
+
+/// What a need's `target_from` names in an instance's settings: `settings.<key>[.<key>...]`, walked
+/// through the settings object to a non-empty string. Anything else resolves to nothing.
+pub(crate) fn resolve_target(settings: &serde_json::Value, path: &str) -> Option<String> {
+    setting_at(settings, path)
         .and_then(serde_json::Value::as_str)
         .filter(|t| !t.is_empty())
         .map(str::to_owned)

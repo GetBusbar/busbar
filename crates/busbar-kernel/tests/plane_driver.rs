@@ -1037,6 +1037,93 @@ async fn a_due_subject_shows_in_trust_due_after_a_tick() {
     assert_eq!(due(&services), b"peer".to_vec(), "due after the tick");
 }
 
+// ── the plane's own work bounds (its section's reserved `work:`) ────────────────────────────────
+
+/// A PLANE'S `work:` BOUNDS OVERRIDE THE HOST'S (spec POOLS-VERBS: the reserved `work: {max_live,
+/// retain_s}` sub-key): the instance's section binds its bounds at admission (a key it leaves out is
+/// the host's), `work.open` is refused at the plane's own `max_live`, an instance that states none
+/// keeps the host's, and `work:` is never read as a registration.
+#[test]
+fn a_planes_work_section_overrides_the_hosts_work_bounds() {
+    use busbar_kernel::host_units::UnitRecord;
+    use busbar_kernel::host_work::{refusal, WorkBounds};
+    let store = Arc::new(MemoryStore::new());
+    let host = WorkBounds {
+        max_live: 3,
+        retain_ms: 300_000,
+    };
+    let services = Arc::new(
+        KernelServices::new()
+            .with_records(Arc::new(Rows(store.clone())), store)
+            .with_pool(Arc::new(Inline))
+            .with_work_bounds(host),
+    );
+    let section: serde_yaml::Value =
+        serde_yaml::from_str("work: {max_live: 1}\npeer: {reverify: 1h}").unwrap();
+    let (_plane, _book, _driver) = driven_over(declaring(), 0, services.clone(), &section);
+    assert_eq!(
+        services.work_bounds_of("inst"),
+        WorkBounds {
+            max_live: 1,
+            retain_ms: 300_000
+        },
+        "the plane's max_live, the host's retention"
+    );
+    assert_eq!(
+        services.work_bounds_of("unbound"),
+        host,
+        "no work: is the host's"
+    );
+    services.units().admitted(1, UnitRecord::default());
+    let open = |record: &'static [u8]| {
+        let slot: Arc<std::sync::Mutex<Option<busbar_contract::services::Stored>>> = Arc::default();
+        let mine = Arc::clone(&slot);
+        let later: busbar_contract::services::Later =
+            Box::new(move |s| *mine.lock().unwrap() = Some(s));
+        match services.work_open(&instance(), Some(1), "approval", record, later) {
+            Ran::Now(s) => s,
+            Ran::Later => slot.lock().unwrap().take().expect("answered"),
+        }
+    };
+    assert_eq!(open(b"first").outcome, Outcome::Ready);
+    let second = open(b"second");
+    assert_eq!(
+        (second.outcome, second.error),
+        (Outcome::Refused, refusal::AT_BOUND),
+        "refused at the plane's own max_live of 1, under the host's 3"
+    );
+}
+
+/// A SECTION THAT MISSTATES ITS `work:` BOUNDS REFUSES THE INSTANCE, naming the key.
+#[test]
+fn a_misstated_work_section_refuses_the_instance() {
+    for bad in [
+        "work: 4",
+        "work: {max_live: 0}",
+        "work: {max_live: many}",
+        "work: {retain_s: -1}",
+        "work: {evict: true}",
+    ] {
+        let section: serde_yaml::Value = serde_yaml::from_str(bad).unwrap();
+        let refused = PlaneDriver::new(
+            Arc::new(declaring()),
+            DriverConfig {
+                caps: BufferCaps::default(),
+                op_classes: vec![OpClassId::new("call")],
+                status_of: refusal_status,
+                refusal_statuses: cases::statuses(),
+                caller_refs: None,
+            },
+            Arc::new(cases::Book::default()),
+            stored(),
+            ("tools", &section),
+        )
+        .err()
+        .unwrap_or_else(|| panic!("{bad}: refused"));
+        assert!(refused.starts_with("`tools.work`"), "{bad}: {refused}");
+    }
+}
+
 // ── write-behind (ruling H2 U10) ────────────────────────────────────────────────────────────────
 
 #[path = "support/plane_driver_write_behind.rs"]
