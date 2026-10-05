@@ -13,6 +13,16 @@
 //! * [`red_a_sensitive_field_flag_is_not_the_1_5_5_bytes`]
 //! * [`red_a_writer_that_ignores_the_host_capacity_faults`]
 
+// THE PUBLISHED CONFORMANCE SUITE (busbar-plugin-loader's `conformance` feature, TODO ABI-b4): the
+// auth kind's OUTBOUND script over this crate's linked door and its dropped-in cdylib (built with
+// `dropped-in`), driven by `conformance.json`; the hand-written both-ways proof below stays beside
+// it. `plugin-ci.yml` runs the suite under `--release` once the crate lives in its own repo.
+busbar_plugin_loader::conformance_suite! {
+    door: busbar_auth_oauth::door,
+    cdylib: "busbar_auth_oauth",
+    inputs: include_str!("conformance.json"),
+}
+
 use std::ffi::c_void;
 use std::mem::zeroed;
 use std::sync::{Arc, Mutex};

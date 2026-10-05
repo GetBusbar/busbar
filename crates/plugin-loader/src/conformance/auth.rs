@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AUTH KIND'S SCRIPT (`abi/auth/`, v3). Ported from the auth both-ways proofs (#439's
+//! THE AUTH KIND'S SCRIPTS (`abi/auth/`, v3): the INBOUND script, this file, and the OUTBOUND
+//! script ([`outbound`]). A door is driven by the script of every family its tail declares: one
+//! declaring `CAP_INBOUND` by this one, one declaring `CAP_OUTBOUND` by the outbound one, one
+//! declaring both by both (each then skips the other family's "undeclared" steps). A door declaring
+//! the login family is not driven by either yet and FAILS the suite, never passes it unseen.
+//!
+//! THE INBOUND SCRIPT. Ported from the auth both-ways proofs (#439's
 //! `auth_door_conformance_tests`, the predev `auth_verify_conformance_tests`, and the token cases of
 //! `busbar-auth-admin-tokens`' own conformance test), over the one loader and the one dispatcher.
 //!
@@ -12,8 +18,7 @@
 //! (`VerifyIn::credential`, a secret blob) and the carrier lines (`VerifyIn::carrier`), each a
 //! carrier the Statement states (its `MARK_WORD_CARRIER` word marks), unless the tail states
 //! `FACT_INBOUND_ALL_HEADERS`. The op families the tail does NOT declare (`CAP_LOGIN`,
-//! `CAP_OUTBOUND`) are each called once and must answer REFUSED. A tail declaring the login or the
-//! outbound family is not driven by this script yet and FAILS the suite, never passes it unseen.
+//! `CAP_OUTBOUND`) are each called once and must answer REFUSED.
 //!
 //! Inputs (`conformance.json`):
 //!
@@ -52,6 +57,10 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement, MARK_WORD_CARRIER};
 
+mod outbound;
+
+pub use outbound::{red_outbound_double_fetch, red_outbound_wrong_byte};
+
 use super::{
     bind, called, close, crossings, dispatcher, input, load, open_with, output, ready_step,
     refresh_with, tick, validate, Fold, Leg, Recorder, Subject,
@@ -77,6 +86,8 @@ struct Stated {
     facts: u32,
     login_kind: u32,
     carriers: Vec<String>,
+    /// The outbound styles the tail declares: name, flags, points.
+    styles: Vec<(String, u32, u32)>,
 }
 
 /// `s`'s door's auth tail and carrier word marks.
@@ -108,11 +119,27 @@ fn stated(s: &Subject) -> Stated {
                     .into_owned()
             })
             .collect();
+        let styles = if tail.styles.is_null() {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts(tail.styles, tail.styles_len)
+                .iter()
+                .map(|d| {
+                    (
+                        String::from_utf8_lossy(std::slice::from_raw_parts(d.name.ptr, d.name.len))
+                            .into_owned(),
+                        d.flags,
+                        d.points,
+                    )
+                })
+                .collect()
+        };
         Stated {
             caps: tail.caps,
             facts: tail.facts,
             login_kind: tail.login_kind,
             carriers,
+            styles,
         }
     }
 }
@@ -310,16 +337,28 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     assert!(k.is_object(), "conformance.json has no `auth` inputs");
     let st = stated(s);
     assert!(
-        st.caps & auth::CAP_INBOUND != 0,
-        "the auth script drives the inbound family (`verify`); this door states caps={}",
+        st.caps & auth::CAP_LOGIN == 0,
+        "the auth scripts do not drive the login family yet (caps={}): this suite fails rather \
+         than pass a family it did not run",
         st.caps
     );
     assert!(
-        st.caps & (auth::CAP_LOGIN | auth::CAP_OUTBOUND) == 0,
-        "the auth script does not drive the login or the outbound family yet (caps={}): this \
-         suite fails rather than pass a family it did not run",
+        st.caps & (auth::CAP_INBOUND | auth::CAP_OUTBOUND) != 0,
+        "an auth door declares the inbound or the outbound family; this one states caps={}",
         st.caps
     );
+    let mut fold = Fold::new();
+    if st.caps & auth::CAP_INBOUND != 0 {
+        fold.extend(inbound(s, leg, k, &st));
+    }
+    if st.caps & auth::CAP_OUTBOUND != 0 {
+        fold.extend(outbound::fold(s, leg, s.door, &st));
+    }
+    fold
+}
+
+/// THE INBOUND SCRIPT, over a door whose tail declares `CAP_INBOUND`.
+fn inbound(s: &Subject, leg: Leg, k: &serde_json::Value, st: &Stated) -> Fold {
     let settings = s.settings();
     let secrets = s.secrets();
     let bad: Vec<Vec<u8>> = k["bad_settings"]
@@ -411,15 +450,18 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("complete_login undeclared", 1, || {
         undeclared::<CompleteLoginIn, IdentifyOut>(&p, slot::COMPLETE_LOGIN)
     });
-    r.line("open_outbound undeclared", 1, || {
-        undeclared::<OpenOutboundIn, OpenOutboundOut>(&p, slot::OPEN_OUTBOUND)
-    });
-    r.line("outbound_ready undeclared", 1, || {
-        undeclared::<OutboundReadyIn, OutboundReadyOut>(&p, slot::OUTBOUND_READY)
-    });
-    r.line("fields undeclared", 1, || {
-        undeclared::<FieldsIn, FieldsOut>(&p, slot::FIELDS)
-    });
+    // The outbound family's steps are the outbound script's when the tail declares it.
+    if st.caps & auth::CAP_OUTBOUND == 0 {
+        r.line("open_outbound undeclared", 1, || {
+            undeclared::<OpenOutboundIn, OpenOutboundOut>(&p, slot::OPEN_OUTBOUND)
+        });
+        r.line("outbound_ready undeclared", 1, || {
+            undeclared::<OutboundReadyIn, OutboundReadyOut>(&p, slot::OUTBOUND_READY)
+        });
+        r.line("fields undeclared", 1, || {
+            undeclared::<FieldsIn, FieldsOut>(&p, slot::FIELDS)
+        });
+    }
     r.line("tick", 1, || {
         let (c, next) = tick(&p, 1);
         format!("{} next={next}", called(&c))

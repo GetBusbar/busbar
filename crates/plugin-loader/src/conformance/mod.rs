@@ -75,6 +75,8 @@ use crate::dispatch::{
 
 mod auth;
 mod export;
+
+pub use auth::{red_outbound_double_fetch, red_outbound_wrong_byte};
 mod hook;
 mod plane;
 mod secret;
@@ -917,6 +919,20 @@ macro_rules! conformance_suite {
         #[test]
         fn red_a_failing_ready_refuses_the_boot() {
             $crate::conformance::red_ready(&__busbar_conformance_subject());
+        }
+
+        /// RED: an outbound auth door writing one wrong field byte fails the outbound script
+        /// (nothing to plant for a door with no outbound family).
+        #[test]
+        fn red_an_outbound_field_byte_off_is_refused() {
+            $crate::conformance::red_outbound_wrong_byte(&__busbar_conformance_subject());
+        }
+
+        /// RED: an outbound auth door fetching its token twice fails the outbound script
+        /// (nothing to plant for a door whose styles mint no token).
+        #[test]
+        fn red_a_second_token_fetch_is_refused() {
+            $crate::conformance::red_outbound_double_fetch(&__busbar_conformance_subject());
         }
 
         /// The release binary, when asked for.
