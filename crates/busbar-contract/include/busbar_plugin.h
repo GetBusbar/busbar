@@ -387,6 +387,8 @@ extern "C" {
 #define BB_PLANE_PIECE_OUT_TEXT UINT32_C(4) /* [`OnPieceOut::flags`]: the bytes this answer emits are ONE text message (a carrier with text and */
 #define BB_PLANE_EMIT_WATCH_CATALOGUE UINT32_C(8) /* [`OnPieceOut::flags`]: WATCH. From now on, this piece's session is given a */
 #define BB_PLANE_EMIT_UNWATCH_CATALOGUE UINT32_C(16) /* [`OnPieceOut::flags`]: DROP the watch [`EMIT_WATCH_CATALOGUE`] set for this piece's session. The */
+#define BB_PLANE_EMIT_MESSAGE_END UINT32_C(32) /* [`OnPieceOut::flags`]: MESSAGE BOUNDARY. The bytes this answer emits toward the caller END one */
+#define BB_PLANE_EMIT_FINAL_STATUS UINT32_C(64) /* [`OnPieceOut::flags`]: FINAL STATUS. On the closing answer ([`EMIT_DONE`]): the reply ends with */
 #define BB_PLANE_VERDICT_NONE UINT32_C(0) /* [`OnPieceOut::verdict`]: no verdict; the walk's status table alone decides. */
 #define BB_PLANE_VERDICT_OK UINT32_C(1) /* [`OnPieceOut::verdict`]: the far end's answer is a success. */
 #define BB_PLANE_VERDICT_RETRY UINT32_C(2) /* [`OnPieceOut::verdict`]: the far end's answer is a failure another member may not share. The */
@@ -2644,6 +2646,10 @@ struct bb_plane_OnPieceOut {
     bb_mech_Span target;
     uint32_t need;
     uint32_t _need_reserved;
+    uint32_t final_status;
+    uint32_t _final_reserved;
+    bb_mech_Span final_message;
+    bb_mech_Span final_details;
 };
 
 /* `refusal`'s `in`. */
@@ -4836,7 +4842,7 @@ BB_ASSERT(offsetof(bb_plane_OnPieceIn, head_fields) == 288, "bb_plane_OnPieceIn.
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, head_fields_len) == 296, "bb_plane_OnPieceIn.head_fields_len: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, passthrough) == 304, "bb_plane_OnPieceIn.passthrough: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, _reserved_tail) == 308, "bb_plane_OnPieceIn._reserved_tail: offset");
-BB_ASSERT(sizeof(bb_plane_OnPieceOut) == 184, "bb_plane_OnPieceOut: size");
+BB_ASSERT(sizeof(bb_plane_OnPieceOut) == 208, "bb_plane_OnPieceOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_OnPieceOut) == 8, "bb_plane_OnPieceOut: alignment");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, head) == 0, "bb_plane_OnPieceOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, emitted) == 96, "bb_plane_OnPieceOut.emitted: offset");

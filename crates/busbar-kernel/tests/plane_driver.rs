@@ -28,9 +28,9 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, ProjectIn, ProjectOut, RecordWrite,
     RefusalIn, RefusalOut, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE,
-    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS,
-    PIECE_LAST, PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_PUT, REFUSAL_ARRIVE, ROUTE_LOCAL,
-    ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_PUT,
+    REFUSAL_ARRIVE, ROUTE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{ServeIn, ServeOut};
 use busbar_contract::caps::OpClassId;
@@ -444,6 +444,22 @@ impl Double {
         // A plane whose emitted messages are text (mode `text`): each whole message says so.
         if u.mode == b"text" && o.emitted > 0 && o.more == 0 {
             o.flags |= PIECE_OUT_TEXT;
+        }
+        // A plane that frames messages (mode `framed`): each far-end piece is ONE message, its end
+        // on the answer that empties it; its reply closes with a final status (5, its words and
+        // two details bytes) in the arena.
+        if u.mode == b"framed" {
+            if o.emitted > 0 && o.more == 0 {
+                o.flags |= EMIT_MESSAGE_END;
+            }
+            if o.flags & EMIT_DONE != 0 {
+                let mut at = o.arena_written as usize;
+                o.final_message = put(i, &mut at, b"not here");
+                o.final_details = put(i, &mut at, &[1, 2]);
+                o.final_status = 5;
+                o.arena_written = at as u64;
+                o.flags |= EMIT_FINAL_STATUS;
+            }
         }
         (ready(Outcome::Ready), hold)
     }
@@ -1599,4 +1615,48 @@ async fn a_gate_first_planes_passing_screen_reaches_the_door_and_the_far_end_onc
         .unwrap()
         .contains(&busbar_contract::caps::StepName::Admit));
     assert!(!far.sent().is_empty(), "the far end was reached");
+}
+
+/// RED (SEAM-4l additions): a plane that frames messages hands the caller's side each message's END
+/// (`EMIT_MESSAGE_END`), one per far-end piece however its bytes were written, and closes its reply
+/// with a FINAL status (`EMIT_FINAL_STATUS`): the status number, its message and its details
+/// bytes reach the caller's side whole; a plane that does neither hands neither.
+#[tokio::test]
+async fn a_planes_message_boundaries_and_final_status_reach_the_callers_side() {
+    for (member, framed) in [("framed", true), ("ok", false)] {
+        let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+        let (steps, far, caller) = (
+            common::TestUnits::passing(),
+            cases::Far::new(&[member], cases::CHUNKS),
+            cases::Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, cases::arrival("/call", b"p"), 0);
+        assert!(
+            matches!(
+                cases::drive(&units).await,
+                busbar_contract::caps::Outcome::Completed
+            ),
+            "{member}"
+        );
+        let boundaries = caller.boundaries.load(Ordering::SeqCst);
+        let finale = caller.finale.lock().unwrap().clone();
+        if framed {
+            assert_eq!(
+                boundaries,
+                cases::CHUNKS.len() as u64,
+                "one end per far-end piece"
+            );
+            assert_eq!(finale, Some((5, b"not here".to_vec(), vec![1, 2])));
+        } else {
+            assert_eq!(boundaries, 0);
+            assert_eq!(finale, None);
+        }
+        assert_eq!(
+            caller.text(),
+            "hello far end",
+            "{member}: the bytes are unchanged"
+        );
+    }
 }

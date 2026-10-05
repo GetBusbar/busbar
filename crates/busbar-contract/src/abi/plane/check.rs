@@ -27,13 +27,13 @@ use super::{
     PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut,
     RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL,
     CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
-    CLAIM_PATTERN, EMIT_DONE, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE,
-    INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    INGRESS_SUBSCRIPTION, MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT,
-    PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_DIRECT,
-    ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION, SHAPE_PIECEWISE,
-    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TRUST_PIN, TRUST_PRIVATE_REACH,
-    UNITS_ESTIMATED, VERDICT_HARD,
+    CLAIM_PATTERN, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
+    EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
+    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_REFUSAL_TEXT,
+    MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
+    RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL,
+    ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK,
+    TAIL_HOOKS_GATED, TAIL_PROBES, TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -278,10 +278,13 @@ pub fn check_on_piece(
                 | EMIT_DONE
                 | EMIT_WATCH_CATALOGUE
                 | EMIT_UNWATCH_CATALOGUE
-                | PIECE_OUT_TEXT,
+                | PIECE_OUT_TEXT
+                | EMIT_MESSAGE_END
+                | EMIT_FINAL_STATUS,
         ),
         "on_piece.flags",
     )?;
+    final_status(out)?;
     // A text message is a whole message of at least one byte.
     if out.flags & PIECE_OUT_TEXT != 0 && (out.emitted == 0 || out.more != 0) {
         return Err(fault(Rule::Contradiction, "on_piece.text"));
@@ -333,6 +336,45 @@ pub fn check_on_piece(
     units(bufs.0, u64::from(out.units_written), b)?;
     records(bufs.1, u64::from(out.records_written), out.arena_written, b)?;
     fields(bufs.2, u64::from(out.fields_written), out.arena_written)
+}
+
+/// `on_piece`'s message boundary and final status: a boundary ends a message toward the caller,
+/// never a request bound for the far end; a final status closes the reply ([`EMIT_DONE`]), its
+/// message and details inside the arena written; without it the three fields are zero.
+fn final_status(out: &OnPieceOut) -> Result<(), Fault> {
+    if out.flags & EMIT_MESSAGE_END != 0 && out.flags & EMIT_TO_FAR_END != 0 {
+        return Err(fault(
+            Rule::Contradiction,
+            "on_piece.message_end_to_far_end",
+        ));
+    }
+    if out.flags & EMIT_FINAL_STATUS == 0 {
+        if out.final_status != 0 || out.final_message.len != 0 || out.final_details.len != 0 {
+            return Err(fault(
+                Rule::Contradiction,
+                "on_piece.final_status_unflagged",
+            ));
+        }
+        return Ok(());
+    }
+    if out.flags & EMIT_DONE == 0 || out.flags & EMIT_TO_FAR_END != 0 {
+        return Err(fault(
+            Rule::Contradiction,
+            "on_piece.final_status_not_closing",
+        ));
+    }
+    span(
+        out.final_message.offset,
+        out.final_message.len,
+        out.arena_written,
+        "on_piece.final_message",
+    )?;
+    span(
+        out.final_details.offset,
+        out.final_details.len,
+        out.arena_written,
+        "on_piece.final_details",
+    )
 }
 
 /// `on_piece`'s verdict: a known `VERDICT_*`, and none on an answer that is not READY.
