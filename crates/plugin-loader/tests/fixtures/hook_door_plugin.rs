@@ -17,7 +17,9 @@
 //!   it and answers FAULT, which the hook axis answers as broken, never a verdict (PB-81).
 //!
 //! Both built doors state their tail ([`TAIL`]): a gate that asks for neither view.
-//! Every other hook op is REFUSED. The settings are `{"reject_over_messages": <n>}`.
+//! Every other hook op is REFUSED. The settings are `{"reject_over_messages": <n>}`, plus an
+//! optional `"sleep_ms"` the conforming `decide` sleeps before it answers (a slow gate, for the
+//! loader's own budget and `max_inflight` proofs).
 #![allow(dead_code)]
 
 use std::marker::PhantomData;
@@ -46,8 +48,12 @@ pub const PANICKING_NAME: &str = "both-ways-hook-panicking";
 /// The status a rejected request is answered with.
 pub const REJECT_STATUS: u16 = 429;
 
-/// The instance: the most messages a request may carry before it is rejected.
-pub struct Gate(u64);
+/// Every door's Statement `max_inflight`.
+pub const MAX_INFLIGHT: u32 = 8;
+
+/// The instance: the most messages a request may carry before it is rejected, and how long its
+/// `decide` sleeps first.
+pub struct Gate(u64, u64);
 
 impl Life for Gate {
     const CANCEL: u32 = cancel::ABORTED;
@@ -67,10 +73,15 @@ impl Life for Gate {
 
 impl Gate {
     fn parse(settings: &[u8]) -> Result<Self, Refusal> {
-        settings_object(settings)?
+        let settings = settings_object(settings)?;
+        let sleep_ms = settings
+            .get("sleep_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        settings
             .get("reject_over_messages")
             .and_then(serde_json::Value::as_u64)
-            .map(Gate)
+            .map(|over| Gate(over, sleep_ms))
             .ok_or_else(|| Refusal::failed("settings: `reject_over_messages` must be a number"))
     }
 }
@@ -91,6 +102,9 @@ impl SafeSlot for Decide {
         let Some(held) = instance.get() else {
             return Outcome::Refused;
         };
+        if held.life().1 > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(held.life().1));
+        }
         if input.request.message_count > held.life().0 {
             out.set(|o| &o.verbs, VERB_REJECT | VERB_HAS_REJECT_STATUS);
             out.set(|o| &o.reject_status, REJECT_STATUS);
@@ -185,7 +199,7 @@ macro_rules! hook_door {
     ($name:expr, $decide:ty) => {
         hook_door!(
             @statement busbar_contract::abi::sdk::hook::statement_with_tail(
-                busbar_contract::abi::sdk::door::statement($name, "1.6.0", 8),
+                busbar_contract::abi::sdk::door::statement($name, "1.6.0", super::MAX_INFLIGHT),
                 super::TAIL,
             ),
             $decide
@@ -206,7 +220,11 @@ pub mod broken {
 /// The conforming plugin with NO hook tail: refused at load.
 pub mod untailed {
     hook_door!(
-        @statement busbar_contract::abi::sdk::door::statement(super::UNTAILED_NAME, "1.6.0", 8),
+        @statement busbar_contract::abi::sdk::door::statement(
+            super::UNTAILED_NAME,
+            "1.6.0",
+            super::MAX_INFLIGHT,
+        ),
         super::Decide
     );
 }
