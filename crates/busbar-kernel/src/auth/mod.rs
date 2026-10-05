@@ -1112,14 +1112,10 @@ pub use busbar_kernel::proxy::auth_failure_status_and_kind;
 /// envelope. Using the shared builder means the auth path, the forward path, and the route/fallback
 /// path CANNOT diverge on error shape or headers — each protocol writer keeps its own error `kind`,
 /// status, and any header attach it needs consistent with each other, all outside this crate.
-/// THE DOOR ROUTE A REQUEST MATCHED, for its `401`: the route's plane rendering
-/// ([`busbar_kernel::plane_routes::PlaneRefuseFn`]) and the request target it renders for.
-type DoorRefusal = (busbar_kernel::plane_routes::PlaneRefuseFn, String);
-
 fn unauthorized_response(
     app: &crate::state::App,
     path: &str,
-    door: Option<&DoorRefusal>,
+    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
 ) -> Response {
     // A DOOR ROUTE'S 401 (spec Part 3 section 12, "Refusals"): the kernel decided it, exactly as on
     // any data-plane path; the route's plane renders it, unit-less, in the route's refusal dialect
@@ -1791,7 +1787,7 @@ fn rate_limited_response() -> Response {
 fn unauthorized_with_completion_taps(
     app: &std::sync::Arc<crate::state::App>,
     path: &str,
-    door: Option<&DoorRefusal>,
+    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
 ) -> Response {
     // The `ingress_protocol` label is the resolved ingress's own WIRE FORMAT, so a denial on a
     // mounted plane is tapped as that plane's dialect rather than as whichever residual-plane
@@ -1866,13 +1862,15 @@ pub(crate) async fn auth_middleware(
     // THE DOOR ROUTE THIS REQUEST MATCHES, resolved FIRST (spec Part 3 section 12: route, then
     // authenticate): a `401` this middleware decides on it is rendered by the route's plane. `None`
     // on every residual data-plane path, which keeps its envelope byte for byte.
-    let door: Option<DoorRefusal> = core_routes.door_refusal(&path, req.method()).map(|refuse| {
-        let target = req
-            .uri()
-            .path_and_query()
-            .map_or_else(|| path.clone(), |t| t.as_str().to_owned());
-        (refuse.clone(), target)
-    });
+    // `(the route's plane rendering, the request target it renders for)`.
+    let door: Option<(busbar_kernel::plane_routes::PlaneRefuseFn, String)> =
+        core_routes.door_refusal(&path, req.method()).map(|refuse| {
+            let target = req
+                .uri()
+                .path_and_query()
+                .map_or_else(|| path.clone(), |t| t.as_str().to_owned());
+            (refuse.clone(), target)
+        });
 
     // CORE HTTP ROUTES: every first-party route declared its admission bar at the moment it was
     // mounted (`core_routes`), so this middleware asserts nothing about any particular path. The

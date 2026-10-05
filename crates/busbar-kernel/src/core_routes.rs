@@ -218,18 +218,5 @@ fn route_matches(route: &str, path: &str) -> bool {
 }
 
 #[cfg(test)]
-mod door_refusal_tests {
-    use super::route_matches;
-
-    #[test]
-    fn a_door_route_pattern_matches_as_the_router_does() {
-        assert!(route_matches("/v1/systemone", "/v1/systemone"));
-        assert!(route_matches("/a2a/tasks/{id}", "/a2a/tasks/7"));
-        assert!(route_matches("/mcp/{*rest}", "/mcp/a/b"));
-        // RED ARMS: a sibling, a longer path, an empty segment for a variable.
-        assert!(!route_matches("/v1/systemone", "/v1/systemones"));
-        assert!(!route_matches("/v1/systemone", "/v1/systemone/x"));
-        assert!(!route_matches("/a2a/tasks/{id}", "/a2a/tasks/"));
-        assert!(!route_matches("/v1/systemone", "/v1"));
-    }
-}
+#[path = "tests/core_routes_door_refusal.rs"]
+mod door_refusal_tests;
