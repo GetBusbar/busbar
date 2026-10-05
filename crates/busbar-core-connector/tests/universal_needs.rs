@@ -257,6 +257,7 @@ fn open_door(
         facts: busbar_core_connector::framer::DoorFacts {
             name: plugin.name().to_owned(),
             claims: stated.claims,
+            role: stated.role,
             composes_over: stated.composes_over,
         },
         plugin,

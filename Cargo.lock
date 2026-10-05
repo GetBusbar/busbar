@@ -1060,7 +1060,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=9e0d6fee15e14d9a4b6af1f0e1b9f0e95655f03a#9e0d6fee15e14d9a4b6af1f0e1b9f0e95655f03a"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=e7125cf6f30a114c99289a4ab398561179a96b43#e7125cf6f30a114c99289a4ab398561179a96b43"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -1089,7 +1089,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-tcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=89d08ebcb91e5b2d4001b667fba151d9bc09d22d#89d08ebcb91e5b2d4001b667fba151d9bc09d22d"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=adb98a132c6777f70d9035aacc2e9e002454ecf5#adb98a132c6777f70d9035aacc2e9e002454ecf5"
 dependencies = [
  "busbar-contract",
 ]
@@ -1097,7 +1097,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-tcp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=89d08ebcb91e5b2d4001b667fba151d9bc09d22d#89d08ebcb91e5b2d4001b667fba151d9bc09d22d"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=adb98a132c6777f70d9035aacc2e9e002454ecf5#adb98a132c6777f70d9035aacc2e9e002454ecf5"
 dependencies = [
  "busbar-contract",
  "busbar-transport-tcp",
@@ -1106,14 +1106,11 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=1c6a67f010728c96fe9041e41817fb69c8e4fd05#1c6a67f010728c96fe9041e41817fb69c8e4fd05"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=f42f9e9e70e850efbc683123a82fbbcf95d98819#f42f9e9e70e850efbc683123a82fbbcf95d98819"
 dependencies = [
  "busbar-contract",
- "futures",
  "serde_json",
- "tokio",
  "tokio-tungstenite",
- "tokio-util",
 ]
 
 [[package]]

@@ -60,7 +60,13 @@ pub struct DoorFacts {
     pub name: String,
     /// Every scheme it answers for; the first is its own.
     pub claims: Vec<&'static str>,
-    /// The claims it composes over; empty = directly over the host's socket.
+    /// The tail's ROLE (`ROLE_CARRIER` | `ROLE_FRAMER`, ARCHITECT ruling Q128 U7): a CARRIER is a
+    /// byte stream the host's socket or pipe carries as itself (no opening message, nothing framed,
+    /// a stream it may secure mid-way); a FRAMER frames messages over the carrier the connector
+    /// chose from the target's scheme. The role is stated, never derived from `composes_over`.
+    pub role: u32,
+    /// The claims it composes over: always empty now (no transport names another); an entry that
+    /// states one is refused where it would be served.
     pub composes_over: Vec<&'static str>,
 }
 

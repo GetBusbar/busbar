@@ -70,6 +70,7 @@ use busbar_contract::abi::host::conn::connector::{
 };
 use busbar_contract::abi::host::service::DEST_PLAINTEXT;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
+use busbar_contract::abi::transport::{ROLE_CARRIER, ROLE_FRAMER};
 use busbar_contract::conn::{
     ConnCause, ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
     Piece, PieceKind, PollConns, Ticket, NO_TICKET,
@@ -588,8 +589,8 @@ impl Connector {
     /// THE MEMBER-PROGRAM NEED (`busbar_contract::section::MEMBER_PROGRAM`): `owner`'s outbound
     /// `need` reaches each member's own program (its pipes framed by the entry serving
     /// `transport`), ONE long-lived connection per member, carried as a program need is
-    /// ([`Connector::record_program`]: operator-infrastructure only, no auth style, an entry that
-    /// frames a byte stream directly). A member whose program is unchanged keeps its running
+    /// ([`Connector::record_program`]: operator-infrastructure only, no auth style, a CARRIER
+    /// entry). A member whose program is unchanged keeps its running
     /// program across the re-declaration; one that is gone or changed is retired.
     ///
     /// # Errors
@@ -606,7 +607,7 @@ impl Connector {
         let served = {
             let view = self.transports.read().expect("transports");
             view.serving(&spec.transport)
-                .filter(|served| served.entry.door.facts().composes_over.is_empty())
+                .filter(|served| served.entry.door.facts().role == ROLE_CARRIER)
                 .map(|served| (Arc::clone(&served.entry.door), served.entry.alpn.clone()))
         };
         let carried = spec.direction == DIRECTION_OUTBOUND
@@ -662,8 +663,7 @@ impl Connector {
     /// THE PROGRAM NEED: `owner`'s outbound `need` dials `program` (its pipes, framed by the entry
     /// serving `transport`). Carried only in the operator-infrastructure class (the operator wrote
     /// the program into config), with no auth style (no credential rides a pipe), over an entry
-    /// that frames a byte stream directly (it composes over nothing, as a framer over the host's
-    /// socket does).
+    /// that is a CARRIER (its tail's role: a byte stream carried as itself).
     ///
     /// # Errors
     ///
@@ -678,7 +678,7 @@ impl Connector {
         let served = {
             let view = self.transports.read().expect("transports");
             view.serving(&spec.transport)
-                .filter(|served| served.entry.door.facts().composes_over.is_empty())
+                .filter(|served| served.entry.door.facts().role == ROLE_CARRIER)
                 .map(|served| (Arc::clone(&served.entry.door), served.entry.alpn.clone()))
         };
         let carried = spec.direction == DIRECTION_OUTBOUND
@@ -1240,14 +1240,15 @@ impl DeclaredConns for Connector {
         }
     }
 
-    /// A need is framed when the entry serving its transport composes over another claim (a framer
-    /// above a carrier, http's kind); an entry directly over the host's socket is a raw stream.
+    /// A need is framed when the entry serving its transport is a FRAMER (its tail's role, ARCHITECT
+    /// ruling Q128 U7: http's kind, over the carrier the connector chose); a CARRIER entry is a raw
+    /// stream.
     fn framed(&self, owner: InstanceId, need: NeedId) -> bool {
         self.over
             .lock()
             .expect("needs")
             .get(&(owner, need))
-            .is_some_and(|d| !d.door.facts().composes_over.is_empty())
+            .is_some_and(|d| d.door.facts().role == ROLE_FRAMER)
     }
 
     fn serves_scheme(&self, transport: &str) -> bool {

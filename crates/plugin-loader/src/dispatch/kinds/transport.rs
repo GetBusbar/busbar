@@ -129,6 +129,21 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     })
 }
 
+/// WHAT A COMPILED-IN TRANSPORT DOOR STATES, read off its Statement through the same door and tail
+/// checks a load runs, without binding or opening it: the boot seal registers every scheme an entry
+/// claims under its own key (`BUSBAR-1.6.0.md` TRANSPORT-STACK: ONE ENTRY PER PLUGIN, the schemes
+/// are its claims).
+///
+/// # Errors
+///
+/// The door, its Statement or its transport tail is refused.
+pub fn linked_facts(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> Result<TransportFacts, String> {
+    let v = crate::dispatch::load::validate::<Transport>(door).map_err(|e| e.to_string())?;
+    tail_facts(&v.statement)
+}
+
 /// The transport kind.
 #[derive(Debug, Clone, Copy)]
 pub struct Transport;

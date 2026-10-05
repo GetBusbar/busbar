@@ -179,7 +179,13 @@ pub struct LinkedTransport {
     pub composes_over: &'static [&'static str],
     /// Build the wire over `lower`.
     pub build: BuildTransport,
+    /// Every scheme its entry claims, its own first: a door row's are read off the door's
+    /// Statement (ONE ENTRY PER PLUGIN, the schemes are its claims), and the seal registers each.
+    pub claims: ClaimsOf,
 }
+
+/// A row's claims, read when the seal runs.
+pub type ClaimsOf = fn() -> Vec<&'static str>;
 
 /// A wire's build: handed the layer built beneath it, where one is, and the deployment's settings.
 pub type BuildTransport = fn(

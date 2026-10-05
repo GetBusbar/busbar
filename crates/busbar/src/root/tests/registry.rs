@@ -28,8 +28,9 @@ fn linked_rows() -> Vec<Registered> {
 
 /// The registry the seal fills: the folded transports, then every linked plane and the core one.
 fn linked_registry() -> Registry {
-    let transports: Vec<Arc<dyn Transport>> = linked_fold().into_iter().map(|(_, t)| t).collect();
-    register_all(&transports, crate::LINKED.claims).expect("nothing collides on a key")
+    let (rows, transports): (Vec<Registered>, Vec<Arc<dyn Transport>>) =
+        linked_fold().into_iter().unzip();
+    register_all(&rows, &transports, crate::LINKED.claims).expect("nothing collides on a key")
 }
 
 /// The shipped transport fold (`<wire key> <composed over, or ->` rows, in build order), as data.
@@ -504,14 +505,17 @@ fn the_shipped_transport_stack_composes() {
             .expect("registered")
             .composed_over
     };
-    // The transport whose `new()` yields something that refuses every connection is the one that
-    // must be built through `over`, and the rows say it was. `grpc` is a door that frames the
-    // host's socket: it is built over nothing.
+    // NO TRANSPORT NAMES ANOTHER (ARCHITECT Q128 U7; TRANSPORT-STACK (2), :4721): every row is
+    // built over nothing, the carrier being the connector's choice from the target's scheme, and
+    // `sse` is a claim of the http entry, served by its wire, not a layer over it.
     if session_linked() {
-        assert_eq!(composed_over("ws"), Some("http"));
+        assert_eq!(composed_over("ws"), None);
     }
     assert_eq!(composed_over("grpc"), None);
-    assert_eq!(composed_over("sse"), Some("http"));
+    assert_eq!(composed_over("sse"), None);
+    for row in &rows {
+        assert!(row.composes_over.is_empty(), "`{}` names a layer", row.key);
+    }
 }
 
 /// The other direction of the composition rule: a transport built over a layer it does not
@@ -689,10 +693,11 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
 }
 
 /// THE FOLD IS BOTTOM-UP, AND `COMPOSES_OVER` IS THE COMPOSITION ORDER. The shipped rows build in
-/// the order they register — every wire after every layer it declares — and each composed wire is
-/// built over the first layer it declares: `sse` and `ws` over `http`, the four that open their
-/// own socket or frame the host's over nothing. The same rows handed over in the reverse order build
-/// the same stack, because the order is the declarations' and not the table's.
+/// the order they register — every wire after every layer it declares — and each entry's claims
+/// past its own register right after it (`sse`, the http entry's). No shipped wire declares a
+/// layer (no transport names another), so every row is built over nothing. The same rows handed
+/// over in the reverse order build the same stack, because the order is the declarations' and not
+/// the table's.
 // THE SHIPPED STACK NEEDS ITS FLOOR WIRE: the http rows compose over the linked transport door
 // (tcp); a build that links none (`--no-default-features`) has no stack to fold or seal, so this
 // cell gates on the transport-door axis, read off the linked table.
@@ -700,7 +705,11 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
 #[test]
 fn the_fold_builds_bottom_up_in_composes_over_order() {
     let rows = linked_rows();
-    let linked: Vec<&str> = crate::LINKED.transports.iter().map(|r| r.key).collect();
+    let linked: Vec<&str> = crate::LINKED
+        .transports
+        .iter()
+        .flat_map(|r| (r.claims)())
+        .collect();
     let shipped: Vec<(&str, Option<&str>)> = TRANSPORT_FOLD
         .lines()
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
@@ -846,6 +855,7 @@ fn dropped_doors() -> &'static [DroppedDoor] {
             .into_iter()
             .map(|(plugin, key)| DroppedDoor {
                 key,
+                claims: vec![key],
                 composes_over: Vec::new(),
                 wire: crate::root::doors::host_wire(
                     plugin,
@@ -870,6 +880,7 @@ fn the_wires_linked_row(wire: &DroppedDoor) -> LinkedTransport {
         key: wire.key,
         composes_over: &[],
         build: |_, _| dropped_doors()[0].wire.clone(),
+        claims: || vec![dropped_doors()[0].key],
     }
 }
 
