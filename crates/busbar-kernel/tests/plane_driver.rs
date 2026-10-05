@@ -1471,3 +1471,119 @@ async fn a_route_session_arrival_is_driven_as_a_session_whose_caller_leg_is_the_
         "a session its plane answers itself (ROUTE_LOCAL) tells the money seam nothing"
     );
 }
+
+// ── the gate-first hook order (`TAIL_HOOKS_GATED`; spec Part 3 section 12 "Hooks") ────────────
+
+/// A decision gate that refuses every request at 451 with its own words, counting its calls.
+#[derive(Default)]
+struct Refuses {
+    calls: AtomicU32,
+}
+
+#[async_trait::async_trait]
+impl busbar_contract::hooks::RoutingPolicy for Refuses {
+    async fn decide(
+        &self,
+        _req: &busbar_contract::hooks::RoutingRequest<'_>,
+        _candidates: &[busbar_contract::hooks::Candidate<'_>],
+        _ctx: &busbar_contract::hooks::RoutingContext<'_>,
+        _budget: Duration,
+    ) -> busbar_contract::hooks::PolicyResult {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(busbar_contract::hooks::RoutingDecision::Reject {
+            status: 451,
+            message: "refused at the entry".into(),
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "entry-gate"
+    }
+}
+
+/// A gate-first binder attaching `gate` to every entry, recording the entries it was asked for.
+struct GateFirst {
+    gate: Arc<Refuses>,
+    asked: Mutex<Vec<String>>,
+}
+
+impl busbar_kernel::plane_driver::HookBinder for GateFirst {
+    fn bind(
+        &self,
+        _bind: &busbar_kernel::plane_driver::Bind<'_>,
+    ) -> Option<busbar_kernel::plane_driver::UnitHooks> {
+        panic!("a gate-first plane binds no routed hooks")
+    }
+
+    fn order(&self) -> busbar_kernel::plane_driver::HookOrder {
+        busbar_kernel::plane_driver::HookOrder::Gated
+    }
+
+    fn bind_gated(
+        &self,
+        container: &str,
+        _principal: Option<&str>,
+    ) -> Option<busbar_kernel::plane_driver::GatedHooks> {
+        self.asked.lock().unwrap().push(container.to_string());
+        Some(busbar_kernel::plane_driver::GatedHooks {
+            request_id: 7,
+            gates: vec![(
+                0,
+                busbar_kernel::hooks::ResolvedPolicy::Policy {
+                    policy: Arc::clone(&self.gate)
+                        as Arc<dyn busbar_contract::hooks::RoutingPolicy>,
+                    on_error: busbar_kernel::config::PolicyOnError::Reject,
+                    on_error_chain: Vec::new(),
+                    timeout: Duration::from_secs(5),
+                    send_prompt: false,
+                    send_user: false,
+                    on_empty: busbar_kernel::config::PolicyOnError::Reject,
+                },
+            )],
+            rewrites: Vec::new(),
+            key: None,
+            scan: None,
+        })
+    }
+}
+
+/// THE GATE-FIRST ORDER: a plane whose binder states it has its entry's decision gate screen the
+/// unit before anything reaches the far end; a refusal stops the unit at the gate's own status
+/// and words (HookVeto), the binder is asked for the entry the plane's projection names, and
+/// nothing is sent.
+#[tokio::test]
+async fn a_gate_first_plane_screens_its_entry_before_the_far_end_and_stops_at_the_gates_status() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let gate = Arc::new(Refuses::default());
+    let binder = Arc::new(GateFirst {
+        gate: Arc::clone(&gate),
+        asked: Mutex::new(Vec::new()),
+    });
+    let driver = r.driver.with_hooks(binder.clone());
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["ok"], &[]),
+        cases::Caller::default(),
+    );
+    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
+    let outcome = cases::drive(&units).await;
+    assert!(
+        matches!(
+            outcome,
+            busbar_contract::caps::Outcome::Failed(
+                busbar_contract::caps::StepName::Route,
+                busbar_contract::caps::ReasonCode::HookVeto
+            )
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        gate.calls.load(Ordering::SeqCst),
+        1,
+        "the gate screened once"
+    );
+    assert_eq!(*binder.asked.lock().unwrap(), vec![String::new()]);
+    assert!(far.sent().is_empty(), "nothing reached the far end");
+    let rendered = units.take_rendered().expect("the veto is rendered");
+    assert_eq!(rendered.status, 451);
+}

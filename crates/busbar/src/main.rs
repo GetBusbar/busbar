@@ -875,6 +875,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             |l| l.upstream_request_timeout_secs,
         ),
     };
+    // The kernel's own App through its swap handle once it exists (a config apply replaces the
+    // generation a unit's hooks are read off), the boot App's until then.
+    let door_live_handle: std::sync::Arc<
+        std::sync::OnceLock<std::sync::Arc<busbar_kernel::state::AppHandle>>,
+    > = std::sync::Arc::default();
     let served = root::serve::compose_served(
         app.governance.clone(),
         root::boot::door_planes(),
@@ -883,6 +888,19 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         &root::serve::with_pools(deploy.door_sections(), &door_pools),
         deploy.public_url.as_deref(),
         &door_reach,
+        Some({
+            let (live, boot) = (
+                std::sync::Arc::clone(&door_live_handle),
+                std::sync::Arc::clone(&app),
+            );
+            std::sync::Arc::new(move || {
+                busbar_kernel::plane_host::engine_host(
+                    &live
+                        .get()
+                        .map_or_else(|| std::sync::Arc::clone(&boot), |h| h.load()),
+                )
+            })
+        }),
     )
     .unwrap_or_else(|e| die(e));
     served.spawn_ticks();
@@ -964,6 +982,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         response_headers_cfg.server_timing,
     );
     credential_handle.set(std::sync::Arc::clone(&app_handle));
+    let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
     app_handle.on_apply(Box::new(move |app| door_appliers.apply(app)));
     // A door unit's entitlement is judged against its principal AS IT STANDS (re-resolved over the
     // live snapshot per ask): a long-lived response re-asks per frame.

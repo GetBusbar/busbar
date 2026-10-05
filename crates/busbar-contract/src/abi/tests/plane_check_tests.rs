@@ -1542,6 +1542,17 @@ fn a_tail_may_declare_probes() {
     assert_eq!(CLAIM_PROBE, u32::MAX, "never a snapshot claim index");
 }
 
+/// A tail may state the gate-first hook order (`TAIL_HOOKS_GATED`); a flag past the known ones is
+/// still unknown.
+#[test]
+fn a_tail_may_declare_the_gate_first_hook_order() {
+    let mut t = tail();
+    t.flags = TAIL_HOOKS_GATED;
+    assert_eq!(check_tail(&t), Ok(()));
+    t.flags = TAIL_HOOKS_GATED << 1;
+    assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
+}
+
 #[test]
 fn a_tail_counting_record_chains_over_a_null_pointer_is_fault() {
     let mut t = tail();

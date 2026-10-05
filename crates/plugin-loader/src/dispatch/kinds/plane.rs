@@ -164,6 +164,8 @@ pub struct ServedFacts {
     pub billable_families: Vec<&'static str>,
     /// The tail's `caller_credential_refusal`; `""` = it states none.
     pub caller_credential_refusal: &'static str,
+    /// The tail's `TAIL_*` flags (the fallback catch-all, probes, the gate-first hook order).
+    pub tail_flags: u32,
 }
 
 /// ONE NEED'S RESPONSE-HEAD RULE, as its Statement declares it.
@@ -314,6 +316,7 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
                 .map(|c| kept(c.family))
                 .collect(),
             caller_credential_refusal: kept(tail.caller_credential_refusal),
+            tail_flags: tail.flags,
         },
     })
 }
