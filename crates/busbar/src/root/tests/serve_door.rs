@@ -654,11 +654,37 @@ mod tools_door {
             .sum()
     }
 
+    /// THE CALLS THAT TRIP A MEMBER'S CELL under the door's breaker ladder: the trip's minimum
+    /// outcome count, every one a failure. Below it a transient failure benches nothing: the plane
+    /// declares it (`declares.breaker`, ARCHITECT Q4), the 1.5.5 MCP client leg's posture — a cell
+    /// refuses on a TRIP (error rate at its threshold over at least this many outcomes) and nothing
+    /// less.
+    fn trip_calls() -> usize {
+        busbar_kernel::store::pool_breaker_cfg(None)
+            .trip
+            .min_requests
+    }
+
+    /// `tool` called on `rig` against a server failing every call, calls `from..trip_calls()`:
+    /// each one fails, and each one REACHES THE SERVER — below the trip threshold the member's cell
+    /// stays closed — the last of them being the one that trips it.
+    async fn fail_to_the_trip(rig: &Rig, tool: &str, heard: &mut Heard, from: usize) {
+        for n in from..trip_calls() {
+            let (status, answer) = call(rig, &rig.token, tool, serde_json::json!({})).await;
+            assert_ne!(status, StatusCode::OK, "call {n}: {answer}");
+            assert!(
+                drain(heard).contains(&"call"),
+                "call {n} reached the server: below the trip threshold the cell stays closed"
+            );
+        }
+    }
+
     /// BREAKER-TRIP: a registration whose server answers a call with a transient failure records
-    /// that answer into ITS breaker cell (the walk's, keyed by the member's lane) and the cell opens:
-    /// the failure is counted on `/metrics` under that lane, the next call to it is refused as the
-    /// open breaker without reaching the server — and a healthy registration on the same door, its
-    /// own cell, is untouched and still served.
+    /// that answer into ITS breaker cell (the walk's, keyed by the member's lane): the failure is
+    /// counted on `/metrics` under that lane. One failure benches nothing (1.5.5): the calls up to
+    /// the trip each reach the server, and the one that crosses the trip threshold opens the cell,
+    /// so the next call to it is refused as the open breaker without reaching the server — and a
+    /// healthy registration on the same door, its own cell, is untouched and still served.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failing_tool_server_trips_its_breaker_cell_through_the_composed_door() {
         busbar_kernel::metrics::init();
@@ -690,6 +716,7 @@ mod tools_door {
             failures() > before,
             "the failure is recorded under the member's lane {cell}"
         );
+        fail_to_the_trip(&rig, "tripper_read_file", &mut bad_heard, 1).await;
 
         let (status, answer) =
             call(&rig, &rig.token, "tripper_read_file", serde_json::json!({})).await;
@@ -717,7 +744,8 @@ mod tools_door {
         assert!(rig.all_ended(), "every unit ended");
     }
 
-    /// BREAKER-FASTFAIL: once a member's cell is open, a call is refused BEFORE dispatch, in
+    /// BREAKER-FASTFAIL: once a member's cell is open (tripped: the failures that cross the trip
+    /// threshold, each of which reached the server), a call is refused BEFORE dispatch, in
     /// milliseconds — no byte reaches the server and no attempt's timeout is waited out — and the
     /// refusal is the open breaker's, rendered in the plane's words.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -727,11 +755,8 @@ mod tools_door {
         let _published = Published(instance);
         let (port, mut heard) = answering_calls_with(503).await;
         let rig = rig_tools(instance, port, registration("flaky", port, ""), &|app| app);
-        let _ = call(&rig, &rig.token, "flaky_read_file", serde_json::json!({})).await;
-        assert!(
-            drain(&mut heard).contains(&"call"),
-            "the failure that opens the cell"
-        );
+        // The failures that open the cell: each reached the server.
+        fail_to_the_trip(&rig, "flaky_read_file", &mut heard, 0).await;
 
         let started = Instant::now();
         let (status, answer) =
@@ -760,7 +785,9 @@ mod tools_door {
 
     /// FAILOVER-REROUTE: a pool of two registrations walked by the kernel's ONE walk. The primary's
     /// transient failure fails the call over to its twin before the caller hears anything (the pool
-    /// names the tool repeatable), and the primary's cell, now open, keeps the NEXT call off it
+    /// names the tool repeatable). One failure benches nothing (1.5.5): the primary stays in the
+    /// pool's rotation, call after call, until its failures cross the trip threshold — every call
+    /// still answered by the twin — and its cell, then open, keeps every NEXT call off it
     /// entirely: the walk admits the twin first, and the primary is never touched again.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tripped_pool_member_reroutes_the_next_call_to_its_twin_through_the_walk() {
@@ -779,45 +806,122 @@ mod tools_door {
         ))
         .expect("a section");
         let rig = rig_tools(instance, bad, tools, &|app| app);
+        let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
 
+        // The first call: the primary is tried first, and the call fails over to its twin.
         let (status, answer) = call(&rig, &rig.token, "fs_read_file", serde_json::json!({})).await;
         assert_eq!(status, StatusCode::OK, "the twin answered: {answer}");
         assert_eq!(
             answer["result"]["content"][0]["text"], "from the server",
             "{answer}"
         );
+        assert_eq!(calls(&mut bad_heard), 1, "the primary was tried first");
         assert_eq!(
-            drain(&mut bad_heard)
-                .iter()
-                .filter(|w| **w == "call")
-                .count(),
-            1,
-            "the primary was tried first"
-        );
-        assert_eq!(
-            drain(&mut good_heard)
-                .iter()
-                .filter(|w| **w == "call")
-                .count(),
+            calls(&mut good_heard),
             1,
             "and the call failed over to its twin"
         );
 
-        let (status, answer) = call(&rig, &rig.token, "fs_read_file", serde_json::json!({})).await;
-        assert_eq!(status, StatusCode::OK, "{answer}");
+        // Below the trip the primary is not benched: the rotation offers it again, and each of its
+        // failures is still answered by the twin, until its failures trip its cell.
+        let mut failed = 1;
+        let mut sent = 1;
+        while failed < trip_calls() {
+            assert!(
+                sent < 4 * trip_calls(),
+                "the primary left the rotation after {failed} failure(s), below the trip"
+            );
+            let (status, answer) =
+                call(&rig, &rig.token, "fs_read_file", serde_json::json!({})).await;
+            sent += 1;
+            assert_eq!(status, StatusCode::OK, "call {sent}: {answer}");
+            assert_eq!(
+                answer["result"]["content"][0]["text"], "from the server",
+                "call {sent}: {answer}"
+            );
+            failed += calls(&mut bad_heard);
+            assert_eq!(calls(&mut good_heard), 1, "call {sent}: the twin served it");
+        }
+
+        // Tripped: the primary's open cell keeps every next call off it.
+        for n in 0..3 {
+            let (status, answer) =
+                call(&rig, &rig.token, "fs_read_file", serde_json::json!({})).await;
+            sent += 1;
+            assert_eq!(status, StatusCode::OK, "{answer}");
+            assert_eq!(
+                calls(&mut bad_heard),
+                0,
+                "after the trip, call {n}: the primary's open cell kept it off"
+            );
+            assert_eq!(
+                calls(&mut good_heard),
+                1,
+                "after the trip, call {n}: the walk sent it straight to the twin"
+            );
+        }
+        assert_eq!(
+            rig.admitted(),
+            u64::try_from(sent).expect("a count"),
+            "every call, one unit each"
+        );
+        assert!(rig.all_ended(), "every unit ended");
+    }
+
+    /// ONE BLIP BENCHES NOTHING (ARCHITECT Q4; the 1.5.5 MCP client leg): a sole member whose server
+    /// answers one call with a transient failure is NOT benched for a cooldown — the plane states
+    /// it (`declares.breaker`), the root applies it to the plane's cells — so the very next call
+    /// reaches the server and is served. Only a TRIP refuses a member.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn one_transient_failure_does_not_bench_a_sole_member() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-one-blip";
+        let _published = Published(instance);
+        let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (port, mut heard) = tool_server_replying(Arc::new(move |r: &str| {
+            if r.contains("\"tools/list\"") {
+                let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}});
+                (200, list.to_string())
+            } else if !failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                (503, r#"{"error":"no"}"#.to_string())
+            } else {
+                (
+                    200,
+                    r#"{"jsonrpc":"2.0","id":0,"result":{"content":[{"type":"text","text":"from the server"}]}}"#
+                        .to_string(),
+                )
+            }
+        }))
+        .await;
+        let rig = rig_tools(instance, port, registration("blip", port, ""), &|app| app);
+
+        let (status, answer) =
+            call(&rig, &rig.token, "blip_read_file", serde_json::json!({})).await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "the one transient failure: {answer}"
+        );
         assert!(
-            !drain(&mut bad_heard).contains(&"call"),
-            "the primary's open cell kept the next call off it"
+            drain(&mut heard).contains(&"call"),
+            "the failing call went out"
+        );
+
+        let (status, answer) =
+            call(&rig, &rig.token, "blip_read_file", serde_json::json!({})).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "one blip did not bench the sole member: {answer}"
         );
         assert_eq!(
-            drain(&mut good_heard)
-                .iter()
-                .filter(|w| **w == "call")
-                .count(),
-            1,
-            "the walk rerouted the next call straight to the twin"
+            answer["result"]["content"][0]["text"], "from the server",
+            "{answer}"
         );
-        assert_eq!(rig.admitted(), 2, "two calls, two units");
+        assert!(
+            drain(&mut heard).contains(&"call"),
+            "the next call reached the server"
+        );
         assert!(rig.all_ended(), "every unit ended");
     }
 
@@ -1147,7 +1251,8 @@ mod tools_door {
     /// DISPOSITION: the walk classifies the member's answer. A caller fault (a `4xx` the server
     /// answers the call with) is relayed to the plane as it came and NEVER recorded against the
     /// member — call after call reaches the server and no failure is counted on its lane — while a
-    /// transient failure (`503`) is recorded, counted under its disposition, and opens the cell.
+    /// transient failure (`503`) is recorded and counted under its disposition, and the failures
+    /// that cross the trip threshold open the cell (one alone benches nothing, 1.5.5).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_client_fault_answer_is_relayed_and_never_penalizes_the_member() {
         busbar_kernel::metrics::init();
@@ -1211,10 +1316,11 @@ mod tools_door {
             ) > before,
             "the transient failure is counted under its disposition"
         );
+        fail_to_the_trip(&rig, "failing_read_file", &mut failing_heard, 1).await;
         let (_, answer) = call(&rig, &rig.token, "failing_read_file", serde_json::json!({})).await;
         assert_eq!(
             answer["error"]["data"]["reason"], "upstream_unavailable",
-            "and it opened the cell: {answer}"
+            "and the trip opened the cell: {answer}"
         );
         assert!(rig.all_ended(), "every unit ended");
     }

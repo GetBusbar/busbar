@@ -371,11 +371,13 @@ pub(crate) fn linked_source(
         }
     }
     out.push_str("],\n");
-    // EACH LINKED PLANE DOOR'S DECLARED METADATA: `(crate, declares)`, the JSON its
+    // EACH LINKED PLANE DOOR'S DECLARED METADATA: `(crate, door, declares)`, the JSON its
     // `[package.metadata.busbar.linked-declares]` row names (the crate's `declares.json`), read as
-    // every default-linked plugin's `declares` section is. A door row with no such row declares none.
+    // every default-linked plugin's `declares` section is, beside the door it belongs to (so the
+    // root finds a bound door plane's declaration by its Statement). A door row with no such row
+    // declares none.
     out.push_str("    plane_door_declares: &[");
-    for (feature, krate) in &on {
+    for ((feature, krate), (entry, _)) in on.iter().zip(&linked) {
         let is_door = axes
             .iter()
             .any(|(f, a)| f == feature && a.split_whitespace().any(|x| x == PLANE_DOOR_AXIS));
@@ -383,7 +385,7 @@ pub(crate) fn linked_source(
             continue;
         }
         if let Some(path) = metadata_value(manifest, "package.metadata.busbar.linked-declares", feature) {
-            out.push_str(&format!("({krate:?}, {path}), "));
+            out.push_str(&format!("({krate:?}, {entry}::door, {path}), "));
         }
     }
     out.push_str("],\n");

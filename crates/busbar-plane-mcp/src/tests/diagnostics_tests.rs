@@ -115,7 +115,7 @@ fn every_live_entry_documents_meaning_and_action() {
 
 /// THE PLANE'S `declares.json` IS ITS CATALOG: the static declared metadata the root reads for this
 /// linked plugin (its `declares` section: every code this plane raises) states exactly the entries
-/// [`DIAGNOSTICS`] holds, field for field, so the two cannot drift.
+/// [`DIAGNOSTICS`] holds, field for field, so the two cannot drift — and the plane's breaker fact.
 #[test]
 fn the_declares_file_states_the_catalog() {
     let declared: serde_json::Value =
@@ -134,10 +134,16 @@ fn the_declares_file_states_the_catalog() {
             })
         })
         .collect();
+    // Beside the catalog, the plane's one breaker fact (ARCHITECT Q4): a transient failure below
+    // the trip threshold never benches a member (the 1.5.5 MCP client leg's posture).
+    let whole = serde_json::json!({
+        "breaker": { "bench_below_trip_threshold": false },
+        "diagnostics": want,
+    });
     assert_eq!(
         declared,
-        serde_json::json!({ "diagnostics": want }),
+        whole,
         "declares.json drifted from the catalog; expected:\n{}",
-        serde_json::to_string_pretty(&serde_json::json!({ "diagnostics": want })).unwrap()
+        serde_json::to_string_pretty(&whole).unwrap()
     );
 }
