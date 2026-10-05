@@ -222,3 +222,126 @@ fn a_claim_field_without_a_lowering_is_red() {
         "{err}"
     );
 }
+
+// ── the memory ABI's kind ops (`abi/transport`): the table the host drives every carrier through ──
+
+/// THE LOWERING of each trait method to its kind op in `abi/transport`'s `slot` module: the one
+/// place a method's slot is named. A method missing here, or a kind op of the role no method
+/// lowers to, is RED.
+const CARRIER_SLOTS: &[(&str, &str)] = &[
+    ("listen", "LISTEN"),
+    ("poll_accept", "ACCEPT"),
+    ("dial", "DIAL"),
+    ("poll_read", "READ"),
+    ("poll_write", "WRITE"),
+    ("poll_flush", "FLUSH"),
+    ("poll_close", "SHUT"),
+    ("arrival", "ARRIVAL"),
+];
+const FRAMER_SLOTS: &[(&str, &str)] = &[
+    ("locate", "LOCATE"),
+    ("open", "BEGIN"),
+    ("ingest", "INGEST"),
+    ("emit", "EMIT"),
+    ("encode_envelope", "ENCODE"),
+    ("refusal", "REFUSE"),
+    ("close", "FINISH"),
+    ("detach", "DETACH"),
+    ("adopt", "ADOPT"),
+    ("tick", "TIMER"),
+];
+
+/// The kind ops of `role` (`Carrier` | `Framer`) the `slot` module declares: each `pub const`
+/// whose doc line names the role.
+fn kind_ops(abi: &str, role: &str) -> Result<BTreeSet<String>, String> {
+    let slot = block(abi, "pub mod slot")?;
+    let mut ops = BTreeSet::new();
+    let mut doc = String::new();
+    for line in slot.lines().map(str::trim) {
+        if let Some(d) = line.strip_prefix("///") {
+            doc = d.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix("pub const ") {
+            let name = rest.split(':').next().unwrap_or_default().trim().to_string();
+            if doc.starts_with(&format!("{role}:")) {
+                ops.insert(name);
+            }
+            doc.clear();
+        }
+    }
+    Ok(ops)
+}
+
+/// Every method of `trait_name` lowers to exactly one kind op of `role`, and every kind op of the
+/// role is a method's.
+fn kind_covered(
+    traits: &str,
+    trait_name: &str,
+    abi: &str,
+    role: &str,
+    lowering: &[(&str, &str)],
+) -> Result<usize, String> {
+    let methods = methods(block(traits, &format!("pub trait {trait_name}: "))?);
+    let ops = kind_ops(abi, role)?;
+    let unlowered: Vec<_> = methods
+        .iter()
+        .filter(|m| !lowering.iter().any(|(l, op)| l == m && ops.contains(*op)))
+        .collect();
+    let unexplained: Vec<_> = ops
+        .iter()
+        .filter(|op| !lowering.iter().any(|(m, o)| o == op && methods.contains(*m)))
+        .collect();
+    if methods.is_empty() || ops.is_empty() {
+        return Err(format!("`{trait_name}` or its `{role}` kind ops read as empty"));
+    }
+    if !unlowered.is_empty() || !unexplained.is_empty() {
+        return Err(format!(
+            "`{trait_name}` -> `abi::transport::slot`: methods with no kind op {unlowered:?}, \
+             kind ops no method explains {unexplained:?}"
+        ));
+    }
+    Ok(methods.len())
+}
+
+/// THE CARRIER AND FRAMER TRAITS ARE LOWERED ONE KIND OP PER METHOD on the memory ABI the host
+/// drives (TRANSPORT-STACK (3)): the carrier's eight, the framer's ten.
+#[test]
+fn every_carrier_and_framer_method_has_exactly_one_kind_op() {
+    let (traits, abi) = (
+        read("src/transport/stack.rs"),
+        read("src/abi/transport/mod.rs"),
+    );
+    assert_eq!(
+        kind_covered(&traits, "Carrier", &abi, "Carrier", CARRIER_SLOTS),
+        Ok(8)
+    );
+    assert_eq!(
+        kind_covered(&traits, "Framer", &abi, "Framer", FRAMER_SLOTS),
+        Ok(10)
+    );
+}
+
+/// THE RED ARM, kept: a carrier method with no kind op is refused by name, and so is a carrier kind
+/// op no method explains.
+#[test]
+fn a_carrier_method_without_a_kind_op_is_red() {
+    let (traits, abi) = (
+        read("src/transport/stack.rs"),
+        read("src/abi/transport/mod.rs"),
+    );
+    let grown = traits.replacen(
+        "pub trait Carrier: Plugin + Send + Sync + 'static {",
+        "pub trait Carrier: Plugin + Send + Sync + 'static {\n    fn poll_shutdown(&self);",
+        1,
+    );
+    assert_ne!(grown, traits, "the plant landed");
+    let err = kind_covered(&grown, "Carrier", &abi, "Carrier", CARRIER_SLOTS).unwrap_err();
+    assert!(err.contains("methods with no kind op [\"poll_shutdown\"]"), "{err}");
+    let widened = abi.replacen(
+        "pub mod slot {",
+        "pub mod slot {\n    /// Carrier: peek.\n    pub const PEEK: u32 = 99;",
+        1,
+    );
+    assert_ne!(widened, abi, "the plant landed");
+    let err = kind_covered(&traits, "Carrier", &widened, "Carrier", CARRIER_SLOTS).unwrap_err();
+    assert!(err.contains("kind ops no method explains [\"PEEK\"]"), "{err}");
+}
