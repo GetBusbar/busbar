@@ -508,11 +508,8 @@ busbar-kernel = { path = "../busbar-kernel", features = ["test-support"] }
 # audit crate exposes to a dependent's tests only behind this feature.
 busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-support"] }
 # THE STORE ADAPTER'S MINTED-TOKEN SEAMS (`tests/store_adapter_verb_seam.rs`, ARCHITECT C4B-1): the
-# loader's fake-call store harness and oracle-cache locator are `test-support` only, and the store
-# proof the harness loads is the memory store's cold door, built here with the door on (a scoped
-# `cargo test -p busbar` would otherwise build the shipped store without it).
+# loader's fake-call store harness and oracle-cache locator are `test-support` only.
 busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }
-busbar-store-memory = { path = "../store-memory", features = ["cold-dropped-in"] }
 # THE EQUIVALENCE PROOF CALLS THE ADMIN READ RATHER THAN REPRODUCING IT.
 # `tests/money_one_function_equivalence.rs` runs every implementation of `money = f(ledger, card)`
 # side by side, and `GET /api/v1/admin/usage` is one of them. Its three derivations are crate-private
