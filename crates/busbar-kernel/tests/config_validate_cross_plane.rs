@@ -50,7 +50,7 @@ fn make_root_cfg(
         rate_card: None,
         per_request_fee: 0,
         plane_fees: Default::default(),
-        store: None,
+        store: Some(busbar_kernel::test_support::stand_in_store()),
         secrets: std::collections::BTreeMap::new(),
         global_hooks: Vec::new(),
         blocked_metadata_hosts: Vec::new(),

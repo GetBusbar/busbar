@@ -787,8 +787,10 @@ fn composed_card(yaml: &str) -> Option<Card> {
 /// The node's resolved config from `yaml`, exactly as boot builds it (see [`composed_card`]).
 fn resolved(yaml: &str) -> config::RootCfg {
     crate::testkit::install_test_seams();
-    let deploy = config::deploy_from_yaml_str(&format!("providers: {{}}\nmodels: {{}}\n{yaml}"))
-        .expect("the config parses");
+    let deploy = config::deploy_from_yaml_str(&format!(
+        "store: {{module: memory}}\nproviders: {{}}\nmodels: {{}}\n{yaml}"
+    ))
+    .expect("the config parses");
     config::resolve(&deploy, &Default::default()).expect("the config resolves")
 }
 
