@@ -228,8 +228,11 @@
 # only (wire.tls|client-hello|*). 99780d7: the precise single-header acceptance (no register entry uses
 # it yet). Feature branch head; re-pin to the merge commit when #158 lands.
 #
+# 2026-10-05: re-pinned 99780d72d1ae -> 5e82e8bc1e6d, the merge of #158 into busbar-release dev (the same
+# three commits; CI green incl. "baseline reproduces its golden (x2)").
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=99780d72d1ae003fb6ca3f1667fcf88dda442a58
+release_ref=5e82e8bc1e6ddf238f35f6150feb2280a7c3f4b3
 crate=busbar-release-oracle
 bin=busbar-oracle
