@@ -482,10 +482,21 @@ pub const ROUTES: &[Route] = &[
         carrier: CARRIER_HTTP,
         open: false,
     },
+    // THE LINE CARRIER (ARCHITECT Q1a, round 4 Q-L3B-STDIO-SHAPE (B)): the host holds the process's
+    // own stdin/stdout open as one carrier session and opens a unit per line.
+    Route {
+        verb: "POST",
+        target: DEFAULT_MOUNT,
+        carrier: CARRIER_STDIO,
+        open: false,
+    },
 ];
 
 /// The index of the task-run claim in [`ROUTES`].
 pub const TASK_RUN_ROUTE: usize = 5;
+
+/// The index of the line carrier's claim in [`ROUTES`].
+pub const LINE_ROUTE: usize = 6;
 
 /// The word each admin verb is audited under (`connect` reaches the operator's estate and can
 /// quarantine a server, so it is audited; the two reads are not), in [`ADMIN_VERBS`] order.

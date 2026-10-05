@@ -1892,3 +1892,59 @@ fn two_instances_never_share_a_chain_and_an_undeclared_kind_is_not_chained() {
         Err(crate::host_chains::SCOPE_NOT_TEXT)
     );
 }
+
+/// SEAM-S1, `session.emit`: an instance writes unsolicited output on ITS open carrier session; an
+/// emit on a session that is not open (never opened, closed, or gone from its carrier) or that is
+/// another instance's is REFUSED and writes nothing.
+#[test]
+fn an_emit_reaches_only_its_own_open_session() {
+    let services = KernelServices::new();
+    let written: Arc<std::sync::Mutex<Vec<Vec<u8>>>> = Arc::default();
+    let sink = {
+        let written = Arc::clone(&written);
+        Arc::new(move |b: &[u8]| {
+            written.lock().unwrap().push(b.to_vec());
+            true
+        }) as CarrierSink
+    };
+    let session = services.open_carrier_session("door", "key-1", sink);
+    assert_eq!(
+        services
+            .session_emit(&caller("door"), session, b"{\"ping\":1}\n")
+            .outcome,
+        Outcome::Ready
+    );
+    // RED: another instance's emit on it.
+    assert_eq!(
+        services
+            .session_emit(&caller("elsewhere"), session, b"x")
+            .outcome,
+        Outcome::Refused
+    );
+    // RED: a session never opened.
+    assert_eq!(
+        services
+            .session_emit(&caller("door"), session + 1000, b"x")
+            .outcome,
+        Outcome::Refused
+    );
+    // RED: a closed session.
+    services.close_carrier_session(session);
+    assert_eq!(
+        services
+            .session_emit(&caller("door"), session, b"x")
+            .outcome,
+        Outcome::Refused
+    );
+    assert_eq!(*written.lock().unwrap(), vec![b"{\"ping\":1}\n".to_vec()]);
+    // RED: a carrier that can take nothing more closes its session.
+    let gone = services.open_carrier_session("door", "key-1", Arc::new(|_: &[u8]| false));
+    assert_eq!(
+        services.session_emit(&caller("door"), gone, b"x").outcome,
+        Outcome::Refused
+    );
+    assert_eq!(
+        services.session_emit(&caller("door"), gone, b"x").outcome,
+        Outcome::Refused
+    );
+}

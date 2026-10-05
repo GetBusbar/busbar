@@ -558,7 +558,32 @@ pub struct KernelServices {
     /// over its live snapshot; unattached, the principal admitted is the one judged.
     standing: OnceLock<Standing>,
     nested: Arc<crate::pump::NestedPool>,
+    /// THE OPEN CARRIER SESSIONS (`session.emit`), by number: the instance each serves, its
+    /// verified principal and the writer its unsolicited output goes to.
+    sessions: Mutex<HashMap<u64, CarrierSession>>,
 }
+
+/// ONE OPEN CARRIER SESSION: a carrier the root holds open for one caller (a process's own
+/// stdin/stdout), whose arrivals are each their own unit, and on which the instance serving it may
+/// write unsolicited output (`session.emit`).
+struct CarrierSession {
+    /// The label of the instance whose claim the session is served on.
+    instance: Arc<str>,
+    /// The principal the session was bound to once, at its open.
+    principal: String,
+    /// The session's writer: `false` once the carrier can take nothing more.
+    sink: CarrierSink,
+}
+
+/// Where a carrier session's unsolicited output is written: one whole write; `false` once the
+/// carrier is gone.
+pub type CarrierSink = Arc<dyn Fn(&[u8]) -> bool + Send + Sync>;
+
+/// The action word a carrier session's unsolicited write is audited under (`session.emit`).
+pub const SESSION_EMIT_ACTION: &str = "session.emit";
+
+/// `session.emit`'s refusal of a session that is not open, or not the calling instance's.
+pub const SESSION_NOT_OPEN: &str = "no such carrier session is open for this instance";
 
 /// The durable demotion record, and the instance its unprefixed rows belong to.
 struct Demotions {
@@ -609,7 +634,37 @@ impl KernelServices {
                 NEST_CONCURRENCY,
                 NEST_DEPTH_MAX as usize + 1,
             )),
+            sessions: Mutex::default(),
         }
+    }
+
+    /// OPEN A CARRIER SESSION for `instance` (the label of the instance whose claim it is served
+    /// on), bound to `principal`, its unsolicited output written through `sink`: the session's
+    /// number, which its arrivals name (`abi::host::service::CARRIER_SESSION_FIELD`) and
+    /// `session.emit` takes. Numbers are never reused within a process.
+    pub fn open_carrier_session(&self, instance: &str, principal: &str, sink: CarrierSink) -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                number,
+                CarrierSession {
+                    instance: Arc::from(instance),
+                    principal: principal.to_string(),
+                    sink,
+                },
+            );
+        number
+    }
+
+    /// CLOSE carrier session `session`: an emit on it is refused from now on.
+    pub fn close_carrier_session(&self, session: u64) {
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session);
     }
 
     /// THE NESTED-DISPATCH SEAM, attached late by the root once its door routes exist (see
@@ -1477,6 +1532,32 @@ impl HostServices for KernelServices {
 
     fn records_secret(&self, _kind: &str, _id: &str, _later: Later) -> Ran {
         Ran::Now(Stored::refused(NO_CREDENTIAL_SOURCE))
+    }
+
+    fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
+        let open = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&session)
+            .filter(|s| *s.instance == *caller.instance)
+            .map(|s| (Arc::clone(&s.sink), s.principal.clone()));
+        let Some((sink, principal)) = open else {
+            return Stored::refused(SESSION_NOT_OPEN);
+        };
+        if !sink(bytes) {
+            self.close_carrier_session(session);
+            return Stored::refused(SESSION_NOT_OPEN);
+        }
+        // AUDITED AS A SESSION EVENT, under the session's verified principal: the write is the
+        // instance's, unsolicited, and nothing bills it.
+        crate::audit::auditlog::emit_admin_hostless_now(
+            SESSION_EMIT_ACTION,
+            &format!("session:{session}"),
+            busbar_contract::vocab::OUTCOME_APPLIED,
+            &principal,
+        );
+        Stored::ready(0)
     }
 
     fn random_fill(&self, len: u64) -> Stored {

@@ -21,12 +21,13 @@ use crate::abi::host::conn::connector::WITHIN_SEPARATOR;
 use crate::abi::host::service::{
     check_clock_now, check_dest_judge, check_entitlement_check, check_random_fill,
     check_random_fill_in, check_records_claim, check_records_claim_in, check_records_get,
-    check_records_list, check_sign, check_trust_due, check_trust_sight, check_trust_verify,
-    check_unit_nest, check_work_find, check_work_open, check_work_resume, check_work_settle, op,
-    ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn,
-    RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut,
-    SignIn, TrustDueIn, TrustSightIn, TrustVerifyIn, UnitNestIn, WorkFindIn, WorkOpenIn,
-    WorkResumeIn, WorkSettleIn, ABSENT, CLAIM_WON, DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND,
+    check_records_list, check_session_emit, check_session_emit_in, check_sign, check_trust_due,
+    check_trust_sight, check_trust_verify, check_unit_nest, check_work_find, check_work_open,
+    check_work_resume, check_work_settle, op, ClockNowIn, ClockReading, DestJudgeIn,
+    EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn, RecordsClaimIn, RecordsGetIn,
+    RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut, SessionEmitIn, SignIn,
+    TrustDueIn, TrustSightIn, TrustVerifyIn, UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn,
+    WorkSettleIn, ABSENT, CLAIM_WON, DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
@@ -300,6 +301,43 @@ impl Services {
                 |t| t.random_fill,
                 &input,
                 check_random_fill,
+            )?
+            .0
+        {
+            Outcome::Ready => Ok(()),
+            other => Err(ServiceError::Declined(other)),
+        }
+    }
+
+    /// `session.emit`: write `bytes`, unsolicited, on the open carrier session `session` (the number
+    /// its arrivals' [`CARRIER_SESSION_FIELD`](crate::abi::host::service::CARRIER_SESSION_FIELD)
+    /// named), outside any unit. Unbilled and audited by the host as a session event. An empty
+    /// write or session `0` is REFUSED here, before the host is called. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError`]: the host serves no `session.emit`, it refused the write (the session is not
+    /// open, or not this instance's), or the host broke its rules.
+    pub fn session_emit(
+        &self,
+        handle: CompletionHandle,
+        session: u64,
+        bytes: &[u8],
+    ) -> Result<(), ServiceError> {
+        let input = SessionEmitIn {
+            head: head::<SessionEmitIn>(op::SESSION_EMIT, handle),
+            session,
+            bytes: blob(bytes, BLOB_OCTETS),
+        };
+        if check_session_emit_in(&input).is_err() {
+            return Err(ServiceError::Declined(Outcome::Refused));
+        }
+        match self
+            .cross(
+                op::SESSION_EMIT,
+                |t| t.session_emit,
+                &input,
+                check_session_emit,
             )?
             .0
         {
