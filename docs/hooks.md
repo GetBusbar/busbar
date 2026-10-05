@@ -10,7 +10,7 @@ A hook instance is a **module ref** whose `module:` names a loaded `kind: hook` 
 
 | Posture | How it runs | Trust anchor |
 |---|---|---|
-| In-process `kind: hook` plugin | Loaded from a signed tarball at boot or on hot-reload. The hook is a `cdylib` exporting the frozen **hybrid ABI**: `busbar_abi`, `busbar_plugin_kind`, `busbar_open`, `busbar_call`, `busbar_free`, `busbar_close`. Operations ride `busbar_call` as op-discriminated JSON. | ed25519 signature over the signed manifest; kind cross-checked at load |
+| In-process `kind: hook` plugin | Loaded from a signed tarball at boot or on hot-reload. The hook is a `cdylib` exporting the hook kind's **memory ABI**: one symbol, `busbar_plugin_door`, answering a table of typed slots (`decide`, `transform`, `notify`, `configure`, `describe`, `status`). A plugin built for 1.5.5 (JSON through `busbar_call`) is refused at boot. | ed25519 signature over the signed manifest; kind and Statement cross-checked at load |
 | Out-of-process via `busbar-hook-webrequest` | The first-party forwarder plugin POSTs the projection to your HTTPS sidecar (any language) and returns its reply. The sidecar URL is `settings.url`, SSRF-guarded (loopback allowed; RFC-1918 / link-local / CGNAT / cloud-metadata rejected; remote must be `https://`). | The plugin is signed + auto-trusted; the sidecar runs in its own process |
 
 **In-process trust is signature-based, not process-based.** A `kind: hook` plugin loads inside Busbar's address space, verified by ed25519 against the signed manifest. For fault isolation of untrusted logic, forward it out-of-process with `busbar-hook-webrequest` (see [Webrequest](#first-party-hook-plugins-150) below); the choice is performance and integration in-process vs. process isolation via the forwarder.
@@ -264,7 +264,7 @@ A `tap`, being fire-and-forget, has no `on_error` to speak of: its reply is disc
 
 When a hook forwards out-of-process through `busbar-hook-webrequest`, Busbar exchanges the same
 op-discriminated JSON with your HTTPS sidecar: one POST body per message. (The in-process
-`kind: hook` plugin ABI carries the identical payload over `busbar_call`. See [`kind: hook`
+`kind: hook` plugin ABI carries the identical payload through the door's slots. See [`kind: hook`
 plugin ABI](#kind-hook-plugin-abi) below.) The projection is **byte-identical** whichever path
 carries it, so sidecar logic and plugin logic are the same. The rules a sidecar author must know:
 
@@ -291,20 +291,19 @@ carries it, so sidecar logic and plugin logic are the same. The rules a sidecar 
 
 ### `kind: hook` plugin ABI
 
-For in-process plugins, the transport is `busbar_call` over the frozen **hybrid ABI**, six
-kind-neutral C symbols: `busbar_abi`, `busbar_plugin_kind`, `busbar_open`, `busbar_call`,
-`busbar_free`, `busbar_close`. (`TRANSPORT_VERSION = 1` is the low-level C signature contract,
-frozen; `abi_version` in the manifest is the per-kind payload version: `HOOK_ABI_VERSION = 2` for
-the hook kind: v2 wraps each reply in the observability envelope `{"result": …}`, v1 answers bare,
-and both load.) Operations are the same op-discriminated JSON payload as socket/webhook: `decide`,
-`transform`, `notify`, `configure`, `describe`, `status`. The serialization is JSON over the C ABI
-rather than NDJSON over a socket, but the payload contract is identical. A hook's decision logic
+For in-process plugins, the transport is the **memory ABI**: the plugin exports one symbol,
+`busbar_plugin_door`, which answers a table of typed slots, one per operation: `decide`,
+`transform`, `notify`, `configure`, `describe`, `status`. `abi_version` in the manifest is the hook
+kind's version (`abi::hook::ABI_VERSION`, 2); the host accepts exactly that version and refuses an
+older or newer plugin at boot. A hook plugin built for 1.5.5 (the six-symbol JSON contract) no longer
+loads; see [Rebuilding a 1.5.5 plugin against the 1.6.0 SDK](plugin-sdk-migration-1.6.md). The
+payload contract of each operation is the one the sidecar path carries, so a hook's decision logic
 is transport-agnostic.
 
 ## Management messages: `configure`, `describe`, `status`
 
 Management messages apply across all transports. On socket and webhook they are NDJSON lines or
-HTTP POSTs; on `kind: hook` plugins they ride `busbar_call` with the same JSON payload.
+HTTP POSTs; on `kind: hook` plugins they are the `configure`, `describe` and `status` slots with the same payload.
 
 - **`configure`**: Busbar pushes the hook's opaque `settings` map, stamped with the hook's
   **instance name**, a `settings_version`, and Busbar's version. It is the **first message on every
