@@ -370,7 +370,11 @@ jobs:
             "https://github.com/EmbarkStudios/cargo-deny/releases/download/$v/cargo-deny-$v-x86_64-unknown-linux-musl.tar.gz"
           echo "$sum  $RUNNER_TEMP/deny.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/deny.tgz" -C "$RUNNER_TEMP"
-          "$RUNNER_TEMP/cargo-deny-$v-x86_64-unknown-linux-musl/cargo-deny" --locked check
+          deny="$RUNNER_TEMP/cargo-deny-$v-x86_64-unknown-linux-musl/cargo-deny"
+          # The advisory verdict as data for the parity gate (a declared extra line never exempts an
+          # advisory); this step's own blocking check is the line after it.
+          "$deny" --locked --format json check advisories 2> "$RUNNER_TEMP/advisories.jsonl" || true
+          "$deny" --locked check
       - name: the shipped closure (cargo metadata, linux target)
         id: meta
         if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
@@ -413,10 +417,15 @@ jobs:
         if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
         run: |
           "$PLUGIN_GATES" plugin-gates cdeps "$RUNNER_TEMP/meta.json" busbar/.github/fleet/deps.toml --tree "$RUNNER_TEMP/tree.txt"
-      - name: Cargo.lock parity with busbar's lock at the pin (RED)
+      - name: Cargo.lock parity with busbar's lock at the pin (RED; one version per compatible line, an extra line only as deps.toml [parity-lines] declares it)
         if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
+        env:
+          REPO: ${{ github.event.repository.name }}
         run: |
-          "$PLUGIN_GATES" plugin-gates parity plugin/Cargo.lock busbar/Cargo.lock
+          set -euo pipefail
+          adv=()
+          [ -f "$RUNNER_TEMP/advisories.jsonl" ] && adv=(--advisories "$RUNNER_TEMP/advisories.jsonl")
+          "$PLUGIN_GATES" plugin-gates parity plugin/Cargo.lock busbar/Cargo.lock busbar/.github/fleet/deps.toml "$REPO" "${adv[@]}"
       - name: declares.json states the kind's contract ABI at the pin
         if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
         env:
