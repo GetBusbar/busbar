@@ -137,10 +137,6 @@ metrics = { workspace = true }
 # The observation source (`metrics/source.rs`) is built on the facade's generational registry and
 # summary storage (`recency` = the registry's generations; it implies `registry` and `storage`).
 metrics-util = { workspace = true, features = ["recency"] }
-hyper-rustls = { workspace = true }
-# The compiled-in Mozilla trust anchors the owned egress client pins — the same roots reqwest's
-# rustls-tls used, kept explicit so the trust story is named, not implied.
-webpki-roots = { workspace = true }
 http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -156,9 +152,6 @@ arc-swap = { workspace = true }
 httpdate = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
-tokio-rustls = { workspace = true }
-rustls = { workspace = true }
-rustls-pki-types = { workspace = true }
 # The futures-io/tokio-io compat seam `tls::serve_one` bridges the accepted `TcpStream` and the
 # `ConnectionSecurity::wrap` result through (DECISIONS #40) — the same seam the core
 # connection-security `Tls` wrap crosses on the other side of that call.

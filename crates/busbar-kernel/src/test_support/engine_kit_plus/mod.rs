@@ -86,9 +86,6 @@ pub trait EngineTestKitPlus: EngineTestKit {
     /// The bytes an operator's scrape receives, from the built-in prometheus exporter's own dispatch
     /// (its status and body) — the exact function the mounted `/metrics` route runs.
     fn scrape_exposition(&self) -> (u16, String);
-    /// Install the process TLS crypto provider the engine's own listeners use (idempotent), for a
-    /// test that stands up a rustls server of its own.
-    fn install_crypto_provider(&self);
     /// The engine's secret resolver with only the built-in `env:` / `file:` modules — the resolver a
     /// deployment with no `kind: secret` plugin loaded runs.
     fn builtin_secret_resolver(&self) -> Box<dyn SecretResolve>;

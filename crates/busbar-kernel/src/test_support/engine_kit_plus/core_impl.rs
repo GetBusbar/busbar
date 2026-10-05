@@ -5,7 +5,7 @@
 //! (`busbar_kernel::test_support::engine_kit_plus`), on the SAME fixture types the base kit is
 //! implemented for ([`CoreEngineKit`], `TestApp`, `App`): every verb is a thin delegate to the fixture
 //! builder, the built App's own tables (`planes`, `plane_breakers`, the data route table view) or the
-//! process-wide service (`metrics::render`, the scrape route, `tls::install_crypto_provider`,
+//! process-wide service (`metrics::render`, the scrape route,
 //! the built-in secret resolver, the named-map chassis) a plane's tests used to name directly. A
 //! plane's test tree binds [`CORE_ENGINE_KIT`](crate::test_support::engine_kit::CORE_ENGINE_KIT) once as
 //! `&'static dyn EngineTestKitPlus` and reaches both kits through it.
@@ -42,10 +42,6 @@ impl EngineTestKitPlus for CoreEngineKit {
             resp.status,
             String::from_utf8(resp.body).expect("the exposition is UTF-8"),
         )
-    }
-
-    fn install_crypto_provider(&self) {
-        crate::tls::install_crypto_provider();
     }
 
     fn builtin_secret_resolver(&self) -> Box<dyn SecretResolve> {
