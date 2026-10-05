@@ -30,8 +30,8 @@ use busbar_contract::abi::plane::{
     RefusalIn, RefusalOut, UnitCount, AUDIT_APPLIED, CANCEL_ABORTED, CANCEL_FAILED,
     CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
     PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_AUDIT,
-    RECORD_PUT, REFUSAL_ARRIVE, ROUTE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED,
-    VERDICT_RETRY,
+    RECORD_PUT, REFUSAL_ARRIVE, REFUSAL_KERNEL, ROUTE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED,
+    UNITS_REPORTED, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{ServeIn, ServeOut};
 use busbar_contract::caps::OpClassId;
@@ -628,7 +628,8 @@ impl PlaneCalls for Double {
         // (the plane's own words for an arrival it refused are its text, not the kernel's).
         let named =
             busbar_contract::abi::plane::reason_of(input.reason).map(|r| r.as_str().as_bytes());
-        if input.cause != REFUSAL_ARRIVE && named != Some(unsafe { text(input.text) }) {
+        // A gate refusal's text is the vetoing hook's own words.
+        if input.cause == REFUSAL_KERNEL && named != Some(unsafe { text(input.text) }) {
             return Outcome::Fault;
         }
         let mut body = [
