@@ -145,7 +145,7 @@ pub trait HostServices: Send + Sync {
     /// handle recorded. READY `0`, span `0`'s key the state byte and its value the record.
     fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran;
 
-    /// `disk.append` (THE DESIGN §11.11 R4, the host's bounded disk lane): append `bytes` to the
+    /// `disk.append` (THE DESIGN, the host's bounded disk lane): append `bytes` to the
     /// file `dest` names, rotating it first when `dest` says it is due, OFF the caller's thread,
     /// and hand the [`DiskReport`] (as [`DiskReport::stored`]) to `later`. The loader has already
     /// mapped the caller's destination key to `dest`. A host with no disk lane refuses.
@@ -163,7 +163,7 @@ pub struct NestAsk {
     pub body: Vec<u8>,
 }
 
-/// A DESTINATION the host bound for an opened instance (THE DESIGN §11.12 `disk.append`): the
+/// A DESTINATION the host bound for an opened instance (THE DESIGN, host service `disk.append`): the
 /// file the operator's configuration gives a key the plugin's manifest declares, and the rotation
 /// the host applies to it. The plugin names the key; nothing here comes from the plugin.
 #[derive(Debug, Clone, PartialEq, Eq)]

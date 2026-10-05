@@ -455,7 +455,7 @@ impl Connector<'_> {
     }
 
     /// APPEND `bytes` to the local file the host maps this instance's destination `dest_key` to
-    /// (`disk.append`, the host's bounded disk lane, THE DESIGN §11.11 R4): the host owns the path
+    /// (`disk.append`, the host's bounded disk lane, THE DESIGN): the host owns the path
     /// and rotates the file by its own rules before the append when it is due. It may pend: a body
     /// re-issues it with the same `bytes` on resume (the replay rule) and reads the stored answer.
     /// READY with what the host wrote: the whole of `bytes` landed, and whether the file was rotated

@@ -683,9 +683,9 @@ pub struct NeedAdmitIn {
 // ── disk ──────────────────────────────────────────────────────────────────────────────────────
 
 /// [`op::DISK_APPEND`]'s `in`: append `bytes` to the local file the host maps the calling
-/// instance's `dest_key` to (THE DESIGN §11.11 R4, Q-DISK: the host-owned bounded disk lane, the ONE
-/// exception to "no blocking", scoped to the file export sink and the SQLite store; §11.12
-/// `disk.append`: `{dest_key, bytes} -> {written, rotated}`, may pend, write-behind class).
+/// instance's `dest_key` to (THE DESIGN, the host-owned bounded disk lane: the ONE exception to "no
+/// blocking", scoped to the file export sink and the SQLite store; host service `disk.append`:
+/// `{dest_key, bytes} -> {written, rotated}`, may pend, write-behind class).
 ///
 /// The plugin names a destination KEY, never a path: the host maps the key to the path the
 /// operator's configuration of the calling instance gives a destination its manifest declares, and

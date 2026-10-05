@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use busbar_contract::abi::host::service::{SECRET_LIVE, SECRET_NOT_LIVE};
 use busbar_contract::services::{
-    Caller, DiskDest, CredentialRead, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    Caller, CredentialRead, DiskDest, HostServices, Later, NestAsk, Ran, Reading, RecordsList,
+    Stored,
 };
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
 use busbar_kernel::test_support::TestApp;
