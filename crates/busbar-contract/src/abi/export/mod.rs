@@ -757,7 +757,8 @@ pub struct ServeIn {
     pub head: InHead,
     /// The HTTP method.
     pub method: AbiStr,
-    /// The path, confined to `/metrics` or `/exports/<name>/*`.
+    /// The path, confined to `/metrics`, `/metrics/hooks` (the scrape sink's alone) or
+    /// `/exports/<name>/*`.
     pub path: AbiStr,
     /// The raw query string; absent = none.
     pub query: AbiStr,
@@ -804,7 +805,8 @@ pub const ROUTE_AUTH_ADMIN: u32 = 2;
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Route {
-    /// The path, confined to `/metrics` or `/exports/<name>/*`.
+    /// The path, confined to `/metrics`, `/metrics/hooks` (the scrape sink's alone) or
+    /// `/exports/<name>/*`.
     pub path: AbiStr,
     /// The HTTP method.
     pub method: AbiStr,

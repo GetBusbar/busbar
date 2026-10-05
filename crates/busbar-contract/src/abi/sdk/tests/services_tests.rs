@@ -76,6 +76,7 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         need_admit: None,
         trust_verify: None,
         records_secret: None,
+        snapshot_read: None,
     }
 }
 

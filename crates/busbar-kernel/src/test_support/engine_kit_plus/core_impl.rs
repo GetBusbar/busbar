@@ -29,15 +29,16 @@ impl EngineTestKitPlus for CoreEngineKit {
     }
 
     fn scrape_exposition(&self) -> (u16, String) {
-        let resp = crate::test_support::export_axis::lines_scrape_route()
-            .dispatch
-            .handle_http(&busbar_contract::abi::cold::endpoint::EndpointRequest {
+        let routes = crate::test_support::export_axis::lines_scrape_routes();
+        let resp = routes[0].dispatch.handle_http(
+            &busbar_contract::abi::cold::endpoint::EndpointRequest {
                 method: "GET".into(),
                 path: "/metrics".into(),
                 query: String::new(),
                 headers: vec![],
                 body: vec![],
-            });
+            },
+        );
         (
             resp.status,
             String::from_utf8(resp.body).expect("the exposition is UTF-8"),

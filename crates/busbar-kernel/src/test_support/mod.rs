@@ -764,14 +764,14 @@ impl LaneSpec {
     }
 }
 
-/// The plugin route table a test `App` carries: the host's scrape route `GET /metrics` when the
-/// recorder is installed (`metrics::init()`), else empty. Mirrors production, where the route is the
-/// scrape sink's — here the recorder handle is the stand-in switch (the harness has no `export:`
-/// config surface) and the neutral [`export_axis::LinesSink`] renders.
+/// The plugin route table a test `App` carries: the scrape routes `GET /metrics` and
+/// `GET /metrics/hooks` when the recorder is installed (`metrics::init()`), else empty. Mirrors
+/// production, where the routes are the scrape sink's — here the recorder handle is the stand-in
+/// switch (the harness has no `export:` config surface) and the neutral
+/// [`export_axis::LinesSink`] answers them.
 fn test_plugin_route_table() -> crate::plugin_routes::PluginRouteTable {
     if crate::snapshot::recorder_installed() {
-        let decl = export_axis::lines_scrape_route();
-        crate::plugin_routes::build_route_table(vec![decl])
+        crate::plugin_routes::build_route_table(export_axis::lines_scrape_routes())
             .unwrap_or_else(|_| crate::plugin_routes::PluginRouteTable::empty())
     } else {
         crate::plugin_routes::PluginRouteTable::empty()

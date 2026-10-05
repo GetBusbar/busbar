@@ -75,8 +75,14 @@ pub static STAND_IN: StandIn = StandIn;
 fn rows() -> Option<ExportRows<'static>> {
     static DISPATCHER: std::sync::OnceLock<std::sync::Arc<Dispatcher>> = std::sync::OnceLock::new();
     let registry = REGISTRY.get()?;
-    let dispatcher =
-        DISPATCHER.get_or_init(|| std::sync::Arc::new(Dispatcher::new(DispatchConfig::default())));
+    // The kernel's own host services, so an opened sink's `serve` reads the host snapshot
+    // service as it does in a booted process.
+    let dispatcher = DISPATCHER.get_or_init(|| {
+        std::sync::Arc::new(Dispatcher::with_services(
+            DispatchConfig::default(),
+            std::sync::Arc::new(crate::host_services::KernelServices::new()),
+        ))
+    });
     Some(ExportRows::new(registry, dispatcher.clone()))
 }
 
@@ -202,17 +208,33 @@ pub fn lines(families: &[busbar_contract::export_calls::Family]) -> String {
     out
 }
 
-/// A NEUTRAL scrape sink for a test app's `/metrics` (a test app has no `export:` block): it
-/// renders the snapshot as [`lines`], carries nothing and serves nothing.
+/// A NEUTRAL scrape sink for a test app's `/metrics` and `/metrics/hooks` (a test app has no
+/// `export:` block): it declares both routes, as the scrape sink does, and answers them from the
+/// host snapshot service, rendered as [`lines`]; it carries nothing.
 #[derive(Debug)]
 pub struct LinesSink;
+
+/// The routes [`LinesSink`] declares: the scrape sink's two well-known paths, behind the key.
+fn lines_routes() -> &'static [busbar_contract::abi::mechanism::route::Route] {
+    use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
+    static ROUTES: std::sync::OnceLock<Vec<Route>> = std::sync::OnceLock::new();
+    ROUTES.get_or_init(|| {
+        ["/metrics", "/metrics/hooks"]
+            .map(|path| Route {
+                path: path.to_string(),
+                method: RouteMethod::Get,
+                auth: RouteAuth::Key,
+            })
+            .to_vec()
+    })
+}
 
 impl busbar_contract::export_calls::ExportCalls for LinesSink {
     fn streams(&self) -> &[u8] {
         &[]
     }
     fn routes(&self) -> &[busbar_contract::abi::mechanism::route::Route] {
-        &[]
+        lines_routes()
     }
     fn deliver(
         &self,
@@ -233,15 +255,54 @@ impl busbar_contract::export_calls::ExportCalls for LinesSink {
     }
     fn serve(
         &self,
-        _: &busbar_contract::export_calls::ServeRequest<'_>,
+        req: &busbar_contract::export_calls::ServeRequest<'_>,
     ) -> Result<busbar_contract::export_calls::Served, String> {
-        Err("the test scrape sink serves no route".into())
+        use busbar_contract::abi::host::service::{SNAPSHOT_SCOPE_HOOKS, SNAPSHOT_SCOPE_WHOLE};
+        use busbar_contract::services::Snapshot;
+        let scope = match req.path {
+            "/metrics" => SNAPSHOT_SCOPE_WHOLE,
+            "/metrics/hooks" => SNAPSHOT_SCOPE_HOOKS,
+            other => return Err(format!("the test scrape sink serves no {other}")),
+        };
+        let served = |status, headers: Vec<(&str, &str)>, body| {
+            Ok(busbar_contract::export_calls::Served {
+                status,
+                headers: headers
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                body,
+            })
+        };
+        match crate::export::scrape::read(scope) {
+            Snapshot::Families(f) => served(
+                200,
+                vec![("content-type", "text/plain; version=0.0.4")],
+                lines(&f).into_bytes(),
+            ),
+            Snapshot::NotReady => served(503, vec![("retry-after", "1")], Vec::new()),
+            Snapshot::Refused(why) => Err(why.to_string()),
+        }
     }
 }
 
-/// The scrape route of a test app, rendered by [`LinesSink`].
-pub(crate) fn lines_scrape_route() -> crate::plugin_routes::RouteDecl {
+/// The scrape routes of a test app, declared and answered by [`LinesSink`] through the snapshot
+/// grant, as a scrape sink's are.
+pub(crate) fn lines_scrape_routes() -> Vec<crate::plugin_routes::RouteDecl> {
     let sink: std::sync::Arc<dyn busbar_contract::export_calls::ExportCalls> =
         std::sync::Arc::new(LinesSink);
-    crate::export::scrape::decl("metrics", Box::new(move || Some(sink.clone())))
+    let dispatch: std::sync::Arc<dyn crate::plugin_routes::PluginHttpDispatch> =
+        std::sync::Arc::new(crate::export::scrape::Granted(
+            crate::export::plugin::served(sink.clone()),
+        ));
+    sink.routes()
+        .iter()
+        .map(|route| crate::plugin_routes::RouteDecl {
+            owner: "metrics".into(),
+            kind: crate::plugin_routes::RouteKind::Export,
+            route: route.clone(),
+            scrape: true,
+            dispatch: dispatch.clone(),
+        })
+        .collect()
 }

@@ -1582,6 +1582,10 @@ impl HostServices for KernelServices {
             },
         )
     }
+
+    fn snapshot_read(&self, _caller: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
+        crate::export::scrape::read(scope)
+    }
 }
 
 /// Where a dial's judgement goes when it pended: the pinned address, or the `DEST_*` verdict that

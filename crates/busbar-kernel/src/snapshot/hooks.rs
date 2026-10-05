@@ -9,11 +9,12 @@
 //! read. THIS module is the parallel projection for time-series consumers: the host validates,
 //! bounds and folds the same metrics into hook FAMILIES — the hook's metric NAMES verbatim (so an
 //! external dashboard built against a hook repoints at busbar and just works) plus one automatic
-//! `hook="<name>"` label for provenance and multi-hook disambiguation — and the prometheus export
-//! plugin renders them as `/metrics/hooks` (the export kind's `scrape` with
-//! `SCRAPE_FLAG_HOOK_FAMILIES`, `crate::export::scrape::hooks_handler`). Moved here from the kernel's
-//! `hooks::scrape` (P2 D4, ARCHITECT Q-D4-HOOKS 2026-10-04: `/metrics/hooks` leaves core; the fold
-//! is the snapshot service's, the rendering the plugin's). The kernel writes no exposition text.
+//! `hook="<name>"` label for provenance and multi-hook disambiguation — and the scrape sink reads
+//! them through the host snapshot service (`snapshot.read`, scope `SNAPSHOT_SCOPE_HOOKS`,
+//! `crate::export::scrape`) to answer its own `/metrics/hooks` route. Moved here from the kernel's
+//! `hooks::scrape` (P2 D4; owner law 2026-09-27, ARCHITECT Q-U2-4: `/metrics/hooks` leaves core;
+//! the fold is the snapshot service's, the route and the rendering the plugin's). The kernel writes
+//! no exposition text.
 //!
 //! Design invariants (why this can never break busbar's own `/metrics`):
 //! * SEPARATE exposition. Hook families are handed to their own render, never merged into busbar's
@@ -38,7 +39,7 @@
 use busbar_contract::export_calls::{Family, Sample};
 use busbar_contract::hook_wire::reply::HookMetric;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 
 /// Staleness bound for a hook's cached metrics. On a scrape, a cache older than this triggers an
 /// async refresh (stale-while-revalidate). Chosen ≤ a typical Prometheus `scrape_interval` (15s) so
@@ -172,7 +173,7 @@ async fn refresh(
 ///
 /// Stale-while-revalidate: for each configured hook whose cache is stale, spawn an async refresh
 /// (the NEXT scrape sees it) and fold the current cache now. Never awaits a hook.
-pub(crate) fn families(app: &Arc<crate::state::App>) -> Vec<Family> {
+pub(crate) fn families(app: &crate::state::App) -> Vec<Family> {
     let now = busbar_kernel::store::now();
     // Evict cache entries for hooks removed/renamed in a config reload so stale series stop
     // rendering and the process-global cache can't grow unbounded across reloads.

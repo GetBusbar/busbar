@@ -11,7 +11,7 @@ use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, export, failover, governance, handlers,
     hooks, ingress, ir, json, limits, net_guard, oauth_as, observability, operation, plane,
-    plugin_routes, profile, proto, proxy, snapshot, state, store, telemetry, tls, transport, trust,
+    plugin_routes, profile, proto, proxy, state, store, telemetry, tls, transport, trust,
 };
 
 /// Response header name for the W3C Server-Timing field.
@@ -361,27 +361,10 @@ pub(crate) fn base_data_router(
             RouteAuth::None,
             endpoints::healthz,
         );
-    // METRICS ARE OPT-IN (the built-in `prometheus` EXPORTER, `export.prometheus`). 1.5.3: busbar's
-    // OWN `/metrics` exposition is no longer a core route here — it is served by the built-in
-    // prometheus exporter through the plugin HTTP endpoint registration (`mount_plugin_routes` below,
-    // the well-known `/metrics` exception), resolved at scrape time so a hot-swap never leaves it
-    // stale. The HOOK-metrics scrape (`/metrics/hooks`) is mounted here only when the recorder is
-    // installed (`snapshot::enabled()`), reserved against plugin claims, and RENDERED BY THE SCRAPE SINK
-    // over the snapshot service's hook families (P2 D4: the kernel writes no exposition).
-    let router = if snapshot::enabled() {
-        // A SEPARATE exposition from busbar's own `/metrics` so a hook can never type-conflict or
-        // shadow a first-party series. Verbatim hook metric names + an auto `hook="<name>"` label, so
-        // an external dashboard built against a hook repoints here and just works.
-        // Stale-while-revalidate; never blocks on a hook socket.
-        router.route(
-            "/metrics/hooks",
-            RouteMethod::Get,
-            RouteAuth::Key,
-            crate::export::scrape::hooks_handler,
-        )
-    } else {
-        router
-    };
+    // `/metrics` and `/metrics/hooks` are not core routes (owner law 2026-09-27: "the kernel owns
+    // no route that exists for one plugin"): they are the scrape sink's own listener needs, mounted
+    // through the plugin route registration (`mount_plugin_routes` below) and answered by its
+    // `serve` over the host snapshot service (`crate::export::scrape`).
     let router = router
         // busbar's OWN API keeps explicit routes (it is not a protocol dialect): discovery,
         // health/metrics/stats above, and the named/adhoc conveniences below.

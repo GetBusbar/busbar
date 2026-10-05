@@ -65,6 +65,10 @@ impl HostServices for Judges {
     fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
         Ran::Now(Stored::ready(16))
     }
+
+    fn snapshot_read(&self, _: &Caller, _: u32) -> busbar_contract::services::Snapshot {
+        busbar_contract::services::Snapshot::NotReady
+    }
 }
 
 fn judged(s: &LateServices) -> Stored {

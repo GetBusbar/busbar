@@ -224,6 +224,10 @@ impl HostServices for CredentialServices {
     fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran {
         self.inner.work_resume(caller, unit, handle, later)
     }
+
+    fn snapshot_read(&self, caller: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
+        self.inner.snapshot_read(caller, scope)
+    }
 }
 
 #[cfg(test)]

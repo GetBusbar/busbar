@@ -33,8 +33,8 @@ use busbar_contract::abi::export::{ExportField, ExportStream};
 use serde_json::Value;
 use std::sync::Arc;
 
-/// The live plugin-route declarations the `export:` block contributes — the host's scrape route and
-/// every opened export-axis sink's own. Built at App construction from the resolved `export:` block
+/// The live plugin-route declarations the `export:` block contributes — every opened export-axis
+/// sink's own, the scrape sink's well-known `/metrics` and `/metrics/hooks` first. Built at App construction from the resolved `export:` block
 /// and folded into the [`crate::plugin_routes::PluginRouteTable`] on the App snapshot.
 ///
 /// **A config apply UNMOUNTS but cannot MOUNT.** The two directions are not symmetric, and an earlier
@@ -57,8 +57,7 @@ use std::sync::Arc;
 /// for the route itself — genuinely hot-mounting one is a router rebuild, not done here — but it is no
 /// longer a SILENT one.
 pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
-    let scraped = scrape::route_decl(cfg).into_iter();
-    scraped.chain(plugin::route_decls(cfg)).collect()
+    plugin::route_decls(cfg).collect()
 }
 
 /// The raw per-request facts the `logs` stream is built FROM — everything core knows at

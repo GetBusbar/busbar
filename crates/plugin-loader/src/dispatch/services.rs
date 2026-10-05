@@ -18,7 +18,8 @@
 //!   `sign`, `trust.sight`, `trust.due`, `trust.verify`, `records.secret` (to the credential
 //!   kinds the caller's Statement declares, [`UNDECLARED_KIND`] otherwise) and `work.open` /
 //!   `work.find` / `work.settle` / `work.resume` and `unit.nest` (for the unit the crossing
-//!   serves). Every other slot answers REFUSED ([`UNIMPLEMENTED`]).
+//!   serves), and `snapshot.read` (the host's metric families, laid out in the caller's buffer by
+//!   [`super::snapshot`], to the crossing the kernel granted them). Every other slot answers REFUSED ([`UNIMPLEMENTED`]).
 //! * **Who called.** The instance's [`Caller`], stated at bind, is handed to every service that is
 //!   scoped to its caller; an instance with none is REFUSED ([`NO_CALLER`]).
 //!
@@ -36,15 +37,15 @@ use busbar_contract::abi::host::service::{
     self as svc, check_bufs, check_head, check_random_fill_in, check_records_claim_in,
     check_work_record, may_pend, op, ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn,
     HostSlots, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn, RecordsSecretIn,
-    ServiceBufs, ServiceHead, ServiceOut, SignIn, TrustDueIn, TrustSightIn, TrustVerifyIn,
-    UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, SERVICES,
+    ServiceBufs, ServiceHead, ServiceOut, SignIn, SnapshotReadIn, TrustDueIn, TrustSightIn,
+    TrustVerifyIn, UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
 
 pub use busbar_contract::services::{
-    Caller, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    Caller, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Snapshot, Stored,
 };
 
 use super::ticket::{decode, InstanceWake, WakeRoute};
@@ -64,6 +65,9 @@ pub const FILL_OUT_OF_RANGE: &str = "a fill asks for 1 to MAX_RANDOM_FILL bytes"
 /// The refusal of a `records.secret` read of a credential kind the calling instance does not
 /// declare, before anything is read.
 pub const UNDECLARED_KIND: &str = "the caller does not declare that credential kind";
+/// The error text of a `snapshot.read` before the host's recorder is installed: the caller answers
+/// "not ready, retry".
+pub const SNAPSHOT_NOT_READY: &str = "the snapshot is not ready";
 /// The error text of the second short answer on one handle.
 pub const SECOND_SHORT: &str = "a second short answer on one handle";
 
@@ -336,6 +340,7 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     need_admit: Some(need_admit),
     trust_verify: Some(trust_verify),
     records_secret: Some(records_secret),
+    snapshot_read: Some(snapshot_read),
 };
 
 /// The dispatcher an instance's context routes to, and what it serves.
@@ -1115,3 +1120,48 @@ extern "C" fn need_admit(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
 #[cfg(test)]
 #[path = "../tests/host_services_tests.rs"]
 mod tests;
+
+extern "C" fn snapshot_read(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::SNAPSHOT_READ,
+        size_of::<SnapshotReadIn>(),
+        |served, _, _, caller| {
+            // SAFETY: the head covered a `SnapshotReadIn`.
+            let i = unsafe { input.cast::<SnapshotReadIn>().read_unaligned() };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            if svc::check_snapshot_read_in(&i).is_err() {
+                return Answered::fault();
+            }
+            match served.provider.snapshot_read(&caller, i.scope) {
+                Snapshot::Families(families) => {
+                    let needed = super::snapshot::size_of_layout(&families);
+                    if needed > i.into.cap {
+                        return Answered {
+                            needed_bytes: needed as u64,
+                            ..Answered::bare(Outcome::Failed, SHORT)
+                        };
+                    }
+                    // SAFETY: `into` was checked above (a capacity never behind NULL, the
+                    // alignment the layout needs), and the layout fits its capacity.
+                    let used = unsafe { super::snapshot::lay_out(&families, i.into.buf) };
+                    Answered {
+                        value: families.len() as u64,
+                        len: used as u64,
+                        ..Answered::bare(Outcome::Ready, "")
+                    }
+                }
+                Snapshot::NotReady => Answered::bare(Outcome::Failed, SNAPSHOT_NOT_READY),
+                Snapshot::Refused(why) => Answered::bare(Outcome::Refused, why),
+            }
+        },
+    )
+}

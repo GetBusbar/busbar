@@ -16,10 +16,12 @@
 //!
 //! - A `hook` plugin's routes are confined under `/hooks/<name>/*` (`<name>` = its config name), so two
 //!   hook instances can never collide and a hook can never shadow a core route.
-//! - An `export` plugin may claim the well-known `/metrics` (a Prometheus/OpenMetrics convention);
-//!   otherwise its routes are confined under `/exports/<name>/*`.
-//! - No plugin route may collide with `/api/v1/admin/*`, `/healthz`, `/stats`, `/metrics/hooks`,
-//!   `/v1/models`, `/v1beta/models`, or the auth-exchange path — and all plugin routes are reserved
+//! - An `export` plugin may claim the well-known `/metrics` (a Prometheus/OpenMetrics convention),
+//!   and the SCRAPE SINK alone ([`RouteDecl::scrape`]) the well-known `/metrics/hooks` too (owner
+//!   law 2026-09-27: both are the scrape sink's listener needs, not core routes); otherwise its
+//!   routes are confined under `/exports/<name>/*`.
+//! - No plugin route may collide with `/api/v1/admin/*`, `/healthz`, `/stats`, `/v1/models`,
+//!   `/v1beta/models`, or the auth-exchange path — and all plugin routes are reserved
 //!   BEFORE the data-plane catch-all fallback (mounted in [`crate::base_data_router`]).
 //!
 //! ## Auth
@@ -65,11 +67,10 @@ const PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER: &str = "x-busbar-headers-truncate
 /// The core paths a plugin route may NEVER claim (exact match), independent of kind. `/metrics` is
 /// deliberately ABSENT — it is the one well-known path a metrics `export` plugin MAY claim; a
 /// `hook` still cannot, because the hook branch of [`confine`] requires `/hooks/<name>/*`.
-fn reserved_exact_paths() -> [&'static str; 6] {
+fn reserved_exact_paths() -> [&'static str; 5] {
     [
         "/healthz",
         "/stats",
-        "/metrics/hooks",
         "/v1/models",
         "/v1beta/models",
         crate::auth::exchange::AUTH_TOKEN_PATH,
@@ -93,15 +94,15 @@ pub trait PluginHttpDispatch: Send + Sync {
     /// Serve one inbound request the engine already auth-gated + matched to this plugin's route.
     fn handle_http(&self, req: &EndpointRequest) -> EndpointResponse;
 
-    /// The app-aware serve arm: BUILT-IN export/hook dispatchers that need the LIVE `App` snapshot
-    /// (the built-in `prometheus` exporter's scrape-time gauge refresh) override this; a
-    /// loaded out-of-tree plugin (which cannot receive the app across the ABI) uses the default, which
-    /// ignores the app and calls [`PluginHttpDispatch::handle_http`]. Called on a blocking thread (see
+    /// The app-aware serve arm: a dispatcher that needs the LIVE `App` snapshot (the scrape sink's
+    /// grant, which lends the host snapshot service that `App`) overrides this; a plugin route
+    /// (which cannot receive the app across the ABI) uses the default, which ignores the app and
+    /// calls [`PluginHttpDispatch::handle_http`]. Called on a blocking thread (see
     /// [`plugin_route_dispatch`]), so a synchronous read (SQLite) inside an override cannot stall the
     /// async executor.
     fn handle_http_with_app(
         &self,
-        _app: &crate::state::App,
+        _app: &Arc<crate::state::App>,
         req: &EndpointRequest,
     ) -> EndpointResponse {
         self.handle_http(req)
@@ -116,6 +117,9 @@ pub struct RouteDecl {
     pub kind: RouteKind,
     /// The declared route.
     pub route: Route,
+    /// Whether the declaring instance is the SCRAPE SINK (the first-party export instance subscribed
+    /// to `metrics`, #65): the one that may claim the well-known `/metrics/hooks`.
+    pub scrape: bool,
     /// The live dispatcher for the owning plugin (resolved per request from the App snapshot).
     pub dispatch: Arc<dyn PluginHttpDispatch>,
 }
@@ -201,7 +205,7 @@ impl PluginRouteTable {
         &self,
         path: &str,
         method: RouteMethod,
-        app: &crate::state::App,
+        app: &Arc<crate::state::App>,
         req: &EndpointRequest,
     ) -> Option<(String, EndpointResponse)> {
         self.by_path
@@ -217,9 +221,13 @@ impl PluginRouteTable {
     }
 }
 
-/// Namespace-confine one declared `path` for a plugin of `kind` named `owner`. `Ok(())` iff the
-/// path is inside the plugin's allowed namespace and collides with no reserved core route.
-fn confine(kind: RouteKind, owner: &str, path: &str) -> Result<(), String> {
+/// The well-known path only the scrape sink may claim ([`RouteDecl::scrape`]).
+const SCRAPE_SINK_PATH: &str = "/metrics/hooks";
+
+/// Namespace-confine one declared `path` for a plugin of `kind` named `owner` (`scrape`: it is the
+/// scrape sink). `Ok(())` iff the path is inside the plugin's allowed namespace and collides with no
+/// reserved core route.
+fn confine(kind: RouteKind, owner: &str, path: &str, scrape: bool) -> Result<(), String> {
     // Never under the admin API surface — the whole `/api/*` root is reserved (the admin auth chain
     // keys on exactly this prefix; a plugin route here would shadow it or ride its auth).
     if path == "/api" || path.starts_with("/api/") {
@@ -227,8 +235,9 @@ fn confine(kind: RouteKind, owner: &str, path: &str) -> Result<(), String> {
             "plugin {owner:?} cannot register {path} — the /api/* admin surface is reserved"
         ));
     }
-    // Never a reserved core exposition/discovery/auth route.
-    if reserved_exact_paths().contains(&path) {
+    // Never a reserved core exposition/discovery/auth route, nor the scrape sink's well-known path
+    // for any plugin but the scrape sink.
+    if reserved_exact_paths().contains(&path) || (path == SCRAPE_SINK_PATH && !scrape) {
         return Err(format!(
             "plugin {owner:?} cannot register {path} — it is a reserved core route"
         ));
@@ -237,7 +246,7 @@ fn confine(kind: RouteKind, owner: &str, path: &str) -> Result<(), String> {
     // `/metrics` (the one exception, for a metrics-stream sink).
     let (noun, root, or_metrics) = match kind {
         RouteKind::Hook => ("hook", format!("/hooks/{owner}"), ""),
-        RouteKind::Export if path == "/metrics" => return Ok(()),
+        RouteKind::Export if path == "/metrics" || path == SCRAPE_SINK_PATH => return Ok(()),
         RouteKind::Export => ("export", format!("/exports/{owner}"), "/metrics or "),
     };
     if path == root || path.starts_with(&format!("{root}/")) {
@@ -256,7 +265,7 @@ fn confine(kind: RouteKind, owner: &str, path: &str) -> Result<(), String> {
 pub fn build_route_table(decls: Vec<RouteDecl>) -> Result<PluginRouteTable, String> {
     let mut by_path: HashMap<String, Vec<(RouteMethod, Registered)>> = HashMap::new();
     for decl in decls {
-        confine(decl.kind, &decl.owner, &decl.route.path)?;
+        confine(decl.kind, &decl.owner, &decl.route.path, decl.scrape)?;
         let entries = by_path.entry(decl.route.path.clone()).or_default();
         if let Some((_, existing)) = entries.iter().find(|(m, _)| *m == decl.route.method) {
             return Err(format!(

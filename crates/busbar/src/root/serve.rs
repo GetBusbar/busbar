@@ -359,6 +359,13 @@ impl HostServices for LateServices {
             Err(r) => Ran::Now(r),
         }
     }
+
+    fn snapshot_read(&self, caller: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
+        match self.served() {
+            Ok(s) => s.snapshot_read(caller, scope),
+            Err(r) => busbar_contract::services::Snapshot::Refused(r.error),
+        }
+    }
 }
 
 // ── the door planes, composed ─────────────────────────────────────────────────────────────────────

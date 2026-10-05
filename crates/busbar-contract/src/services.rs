@@ -144,6 +144,22 @@ pub trait HostServices: Send + Sync {
     /// `work.resume`: bind `caller`'s handle `handle` to `unit`, whose principal must be the one the
     /// handle recorded. READY `0`, span `0`'s key the state byte and its value the record.
     fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran;
+
+    /// `snapshot.read`: the host's metric families of `scope` (`abi::host::service`'s
+    /// `SNAPSHOT_SCOPE_*`, a kind-neutral argument), lent only to the crossing the host granted
+    /// them; the loader lays them out in the caller's buffer. Never pends.
+    fn snapshot_read(&self, caller: &Caller, scope: u32) -> Snapshot;
+}
+
+/// What `snapshot.read` answers, before the loader lays it out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Snapshot {
+    /// The families, in the host's order.
+    Families(Vec<crate::export_calls::Family>),
+    /// Not ready yet (the recorder is not installed): the caller answers "not ready, retry".
+    NotReady,
+    /// Refused, for this reason (the caller was not granted the snapshot, or the host has none).
+    Refused(&'static str),
 }
 
 /// A `unit.nest` request, as the host copied it out of the caller's `in`.
