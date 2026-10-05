@@ -24,7 +24,7 @@
 //!
 //! ```json
 //! { "settings": <the settings it opens over>,
-//!   "secrets": ["<each secret the Statement's secret_refs name, in order>", ...],   (optional)
+//!   "open_secrets": ["<each secret the Statement's secret_refs name, in order>", ...],   (optional)
 //!   "auth": {
 //!     "bad_settings": [<settings `open` must refuse, FAILED with a reason>, ...],
 //!     "rotated_settings": <settings for ANOTHER credential: no identity case identifies there>,
