@@ -417,6 +417,7 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     let demotions = Arc::new(DemotionRecord::default());
     attach(
         &late,
+        None,
         Some(Arc::new(Signs)),
         &demotions,
         &[&plane("owner", &[KIND_DEMOTION])],
@@ -434,5 +435,96 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     assert!(
         !k.attach_signer(Arc::new(Signs)),
         "a second attach is refused"
+    );
+}
+
+/// THE RECORD STORE (ARCHITECT Q-L3B-RECORDS): the late attach binds the configured governance
+/// store — opened through its door on the store axis, as boot opens it — as the kernel's record
+/// store, its typed records served over its store v3 slots ([`busbar_kernel::host_records::StoreRows`]).
+/// A governance store with no door binds nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
+    use busbar_contract::kinds::RecordBytes;
+    use busbar_contract::store_calls::{StoreAxis as _, StoreDoor};
+    use busbar_kernel::host_records::RecordRows as _;
+    let axis = crate::root::loader::store_v3::DoorStoreAxis {
+        dispatcher: Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+            crate::root::loader::dispatch::DispatchConfig::default(),
+        )),
+        logs: crate::root::boot::plugin_logs().clone(),
+        conns: None,
+        mint: busbar_kernel::door::op_id,
+    };
+    let opened = axis
+        .open(
+            StoreDoor::Linked(busbar_store_memory::linked::STORE.4),
+            "records-attach",
+            b"{}",
+        )
+        .expect("the default store opens through its door");
+    let calls = opened.calls.expect("a door-opened store has its v3 slots");
+
+    // The adapter reads back what it wrote, through the store's own record slots.
+    let rows = busbar_kernel::host_records::StoreRows(Arc::clone(&calls));
+    let schema = busbar_contract::ids::RecordSchemaId::new("attach-probe");
+    let value = RecordBytes::new(b"v".to_vec()).expect("a small record");
+    let written = tokio::task::spawn_blocking(move || {
+        rows.record_put(schema, b"k", &value).expect("put");
+        rows.record_get(schema, b"k").expect("get")
+    })
+    .await
+    .expect("the blocking call ran");
+    assert_eq!(written.map(|v| v.as_slice().to_vec()), Some(b"v".to_vec()));
+
+    // With the governance store's slots kept, the attach binds it; a second bind is refused.
+    let gov = busbar_kernel::governance::GovState::new(Arc::clone(&opened.records), None)
+        .expect("governance");
+    assert!(gov.attach_store_calls(calls));
+    let late = LateServices::new();
+    let k = Arc::new(KernelServices::new());
+    late.install_kernel(Arc::clone(&k), Arc::clone(&k) as Arc<dyn HostServices>)
+        .expect("installed once");
+    attach(
+        &late,
+        Some(&gov),
+        None,
+        &Arc::new(DemotionRecord::default()),
+        &[],
+    );
+    assert!(
+        !k.attach_records(
+            Arc::new(busbar_kernel::host_records::StoreRows(
+                gov.store_calls().expect("kept")
+            )),
+            gov.store()
+        ),
+        "the governance store is already the record store"
+    );
+
+    // No door, no slots: nothing is bound.
+    let bare = busbar_kernel::governance::GovState::new(
+        Arc::new(busbar_kernel::governance::MemoryStore::new()),
+        None,
+    )
+    .expect("governance");
+    let late = LateServices::new();
+    let k = Arc::new(KernelServices::new());
+    late.install_kernel(Arc::clone(&k), Arc::clone(&k) as Arc<dyn HostServices>)
+        .expect("installed once");
+    attach(
+        &late,
+        Some(&bare),
+        None,
+        &Arc::new(DemotionRecord::default()),
+        &[],
+    );
+    assert!(
+        k.attach_records(
+            Arc::new(busbar_kernel::host_records::StoreRows(Arc::clone(
+                &gov.store_calls().expect("kept")
+            ))),
+            bare.store()
+        ),
+        "a store with no slots bound nothing"
     );
 }

@@ -848,7 +848,13 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         .governance
         .clone()
         .map(|g| g as Arc<dyn busbar_kernel::host_services::SignKey>);
-    root::serve::attach(&late_services, signer, &app.demotion_record, &planes);
+    root::serve::attach(
+        &late_services,
+        app.governance.as_deref(),
+        signer,
+        &app.demotion_record,
+        &planes,
+    );
     // THE DOOR PLANES, COMPOSED (`root::serve::compose_served`): opened, driven and ticked here, once,
     // their money posted onto the process's one node, each member's egress sealed over the
     // deployment's providers, the auth plugins that serve its style (the build's own rows, then

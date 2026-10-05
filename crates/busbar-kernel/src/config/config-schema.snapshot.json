@@ -2678,6 +2678,10 @@
       "kind": "alias",
       "target": "Result<(ChainVerdict, Option<busbar_contract::authz::Scope>), AdminUnavailable>"
     },
+    "type Anchored": {
+      "kind": "alias",
+      "target": "Mutex<HashMap<(InstanceId, NeedId, String), Arc<tls::client::Sealed>>>"
+    },
     "type Answer": {
       "kind": "alias",
       "target": "Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>"
