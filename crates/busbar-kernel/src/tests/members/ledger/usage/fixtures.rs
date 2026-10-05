@@ -1,16 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The usage unit under test: the fold, the lane cross-check and the metering series — and the
-//! settlement table's absence from it.
+//! The usage unit under test: the metering series, over reports built directly.
 
 use busbar_contract::caps::step::MeterClassId;
 use busbar_contract::caps::{Consumption, Grant, KernelSeal, Usage, UsageLine};
 
-use busbar_kernel_ledger::usage::{
-    Direction, KernelCounts, KernelLine, LocatedValue, LocatorPtr, QuantitySource,
-    RetainedLocatorValues,
-};
+use busbar_kernel_ledger::usage::QuantitySource;
 
 /// The classes the older release priced, under the names it used.
 pub(crate) const INPUT: &str = "input";
@@ -24,48 +20,6 @@ pub(crate) const OUTPUT: &str = "output";
 pub(crate) fn token() -> Grant<Consumption> {
     let seal = KernelSeal::acquire_for_kernel();
     Grant::<Consumption>::mint(&seal)
-}
-
-/// A located value: the destination reported this figure at a declared place in its payload.
-pub(crate) fn located(class: &'static str, quantity: u64, direction: Direction) -> LocatedValue {
-    LocatedValue {
-        class: MeterClassId::new(class),
-        quantity,
-        source: QuantitySource::Locator {
-            direction,
-            ptr: LocatorPtr::new("/usage"),
-        },
-    }
-}
-
-/// A cardinality a plane surfaced as a declared content fact.
-pub(crate) fn plane_count(class: &'static str, quantity: u64, fact: &'static str) -> LocatedValue {
-    LocatedValue {
-        class: MeterClassId::new(class),
-        quantity,
-        source: QuantitySource::PlaneCount {
-            content_fact_key: fact.to_string(),
-        },
-    }
-}
-
-/// One of the kernel's own counts, as a plain count.
-pub(crate) fn kernel_count(class: &'static str, quantity: u64) -> KernelLine {
-    KernelLine {
-        class: MeterClassId::new(class),
-        quantity,
-        source: QuantitySource::Count,
-    }
-}
-
-/// The retained values, with no lane evidence at all.
-pub(crate) fn retained(values: Vec<LocatedValue>) -> RetainedLocatorValues {
-    RetainedLocatorValues::new(values)
-}
-
-/// The kernel's counts.
-pub(crate) fn counts(lines: Vec<KernelLine>) -> KernelCounts {
-    KernelCounts::new(lines)
 }
 
 /// A report built directly, for the settlement cases that are handed one.
@@ -86,10 +40,3 @@ pub(crate) fn plain(lines: &[(&'static str, u64)]) -> Vec<UsageLine> {
         .collect()
 }
 
-/// A report's lines as plain pairs, for comparing against an expectation.
-pub(crate) fn pairs(lines: &[UsageLine]) -> Vec<(&str, u64)> {
-    lines
-        .iter()
-        .map(|l| (l.class.as_str(), l.quantity))
-        .collect()
-}

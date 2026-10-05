@@ -312,9 +312,11 @@ pub struct StatementRow {
 
 /// A line a statement could not price, and why.
 ///
-/// It is listed rather than dropped and rather than counted as zero: a hole in the history and an
-/// unpriced lane are both refusals, and a statement that silently omitted them would read as a
-/// smaller bill rather than as an incomplete one.
+/// It is listed rather than dropped and rather than counted as zero: a hole in the history, a lane
+/// the card does not name and a class it names no price for are all refusals, and a statement that
+/// silently omitted them would read as a smaller bill rather than as an incomplete one. A line that
+/// hit several unpriced classes is listed once per class, so every class the card cannot price is
+/// named.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unpriced {
     /// Which node wrote the line.
@@ -338,7 +340,8 @@ pub struct Statement {
     pub window: WindowStart,
     /// The balances, in key order.
     pub rows: BTreeMap<TotalsKey, StatementRow>,
-    /// The lines that could not be priced at all.
+    /// The lines that could not be priced, one entry per reason: a line with three unpriced
+    /// classes is three entries. A line listed here moves no row.
     pub unpriceable: Vec<Unpriced>,
 }
 
@@ -383,6 +386,37 @@ pub fn totals_as_of<'a>(
             continue;
         }
         match price_line(line, view, line.tier_bp) {
+            // A lane the card in force does not name is a REFUSAL, not a line of fees: #42
+            // (`BUSBAR-1.6.0.md:2222`) — *"a hit class not priced ⇒ REFUSE … FAILS if billing-on &
+            // unpriced"* — and a lane the card is silent about prices none of the classes it hit.
+            // The read lookup reports it as a flag rather than an error, so the statement turns
+            // the flag into the refusal here, and the line moves no row.
+            Ok(priced) if priced.lane_unpriced => unpriceable.push(Unpriced {
+                node: line.node,
+                node_seq: line.node_seq,
+                why: Divergence::LaneUnpriced {
+                    card_seq: priced.card_seq,
+                    lane: line.lane.clone(),
+                },
+            }),
+            // A class the card names no price for is listed, EVERY one of them (#42 for a class as
+            // well as a lane, the fail-closed rule `price_fail_closed` applies at settlement). A
+            // line that hit one cannot be priced, so it moves no row either: a statement that
+            // summed the classes it could price and dropped the rest would read as a smaller bill
+            // rather than as an incomplete one.
+            Ok(priced) if priced.lines.iter().any(|l| l.unpriced) => {
+                for class in priced.unpriced_classes() {
+                    unpriceable.push(Unpriced {
+                        node: line.node,
+                        node_seq: line.node_seq,
+                        why: Divergence::ClassUnpriced {
+                            card_seq: priced.card_seq,
+                            lane: line.lane.clone(),
+                            class: class.to_string(),
+                        },
+                    });
+                }
+            }
             Ok(priced) => {
                 let row = rows.entry(line.key.clone()).or_default();
                 row.priced_nanos = row
