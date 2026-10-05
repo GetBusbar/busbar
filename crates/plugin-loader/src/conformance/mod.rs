@@ -1320,6 +1320,112 @@ pub fn red_no_table(s: &Subject) {
     });
 }
 
+/// The transport schemes a Statement's needs name (each need's `transport`, the empty ones left
+/// out), sorted and deduplicated.
+#[must_use]
+pub fn need_schemes(needs: &[rendering::ReadNeed]) -> Vec<String> {
+    let mut out: Vec<String> = needs
+        .iter()
+        .filter(|n| !n.transport.is_empty())
+        .map(|n| n.transport.clone())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// THE DECLARED NEEDS ARE THE STATEMENT'S (ARCHITECT, one truth): a declares file's `needs` (the
+/// transport schemes the fleet render reads to give a networked plugin its conformance host;
+/// absent = none) must name exactly the schemes `statement` (the Statement's needs) names.
+///
+/// # Errors
+/// The declares file is not a JSON object, its `needs` is not a list of strings, or it names a
+/// scheme the Statement does not or misses one it does.
+pub fn declared_needs_are(declares: &str, statement: &[String]) -> Result<(), String> {
+    let v: serde_json::Value =
+        serde_json::from_str(declares).map_err(|e| format!("declares.json is not JSON: {e}"))?;
+    let declared: Vec<String> = match v.get("needs") {
+        None => Vec::new(),
+        Some(serde_json::Value::Array(a)) => a
+            .iter()
+            .map(|x| {
+                x.as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("declares.json `needs`: {x} is not a transport scheme"))
+            })
+            .collect::<Result<_, _>>()?,
+        Some(other) => return Err(format!("declares.json `needs` is not a list: {other}")),
+    };
+    let mut declared = declared;
+    declared.sort();
+    declared.dedup();
+    let extra: Vec<&String> = declared.iter().filter(|d| !statement.contains(d)).collect();
+    let missing: Vec<&String> = statement.iter().filter(|d| !declared.contains(d)).collect();
+    if extra.is_empty() && missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "declares.json `needs` {declared:?} is not the Statement's {statement:?}: it names {extra:?} \
+         the Statement does not, and misses {missing:?} it does (the Statement is the one truth)"
+    ))
+}
+
+/// The repo's declares file, found from the plugin crate's manifest dir: `declares.json` at the
+/// workspace root (the crate dir's parent) or one directory below it; `None` when there is none
+/// (plugin-ci's declares step refuses a plugin repo without one; a crate inside busbar's own tree
+/// has none).
+///
+/// # Panics
+/// More than one is found.
+#[must_use]
+pub fn declares_file(manifest_dir: &str) -> Option<PathBuf> {
+    let root = Path::new(manifest_dir)
+        .parent()
+        .unwrap_or_else(|| Path::new(manifest_dir));
+    let mut found: Vec<PathBuf> = std::iter::once(root.to_path_buf())
+        .chain(
+            std::fs::read_dir(root)
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_dir()
+                        && !p
+                            .file_name()
+                            .is_some_and(|n| n == "target" || n.to_string_lossy().starts_with('.'))
+                }),
+        )
+        .map(|d| d.join("declares.json"))
+        .filter(|f| f.is_file())
+        .collect();
+    found.sort();
+    assert!(
+        found.len() <= 1,
+        "the repo holds one declares.json at its root or one directory below it: {found:?}"
+    );
+    found.pop()
+}
+
+/// **THE DECLARED NEEDS ARE THE STATEMENT'S**, on the subject: its declares file's `needs` names
+/// exactly the transport schemes its door's Statement does ([`declared_needs_are`]).
+///
+/// # Panics
+/// Its `needs` is not the Statement's.
+pub fn needs_declared(s: &Subject, manifest_dir: &str) {
+    let Some(file) = declares_file(manifest_dir) else {
+        eprintln!(
+            "no declares.json beside {manifest_dir}: plugin-ci's declares step owns its presence"
+        );
+        return;
+    };
+    let text = std::fs::read_to_string(&file)
+        .unwrap_or_else(|e| panic!("{} does not read: {e}", file.display()));
+    if let Err(e) = declared_needs_are(&text, &need_schemes(&s.needs())) {
+        panic!("{}: {e}", file.display());
+    }
+}
+
 /// THE PROFILE GUARD: asked for the release binary (M6/contract), the suite refuses a debug build.
 /// `debug` is the caller's `cfg!(debug_assertions)` (the plugin's test crate's, not this one's).
 ///
@@ -1383,6 +1489,15 @@ macro_rules! conformance_suite {
         #[test]
         fn red_a_networked_door_with_no_connection_table_is_refused() {
             $crate::conformance::red_no_table(&__busbar_conformance_subject());
+        }
+
+        /// The declares file's `needs` is the Statement's (the one truth).
+        #[test]
+        fn the_declared_needs_are_the_statements() {
+            $crate::conformance::needs_declared(
+                &__busbar_conformance_subject(),
+                env!("CARGO_MANIFEST_DIR"),
+            );
         }
 
         /// The release binary, when asked for.

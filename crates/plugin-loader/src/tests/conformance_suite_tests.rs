@@ -661,3 +661,46 @@ mod namespace_hooks {
         assert!(calls_for(&ns).is_empty());
     }
 }
+
+// ── THE DECLARED NEEDS ARE THE STATEMENT'S (ARCHITECT, one truth) ──
+
+/// RED: a declares file that names a scheme the Statement does not, or misses one it does, is
+/// refused; one that names exactly the Statement's schemes (in any order, repeated) passes, and so
+/// does a declares file with no `needs` for a Statement that declares none.
+#[test]
+fn red_declares_needs_that_are_not_the_statements_are_refused() {
+    use super::declared_needs_are;
+    let http = ["http".to_owned()];
+    let tcp_http = ["http".to_owned(), "tcp".to_owned()];
+    assert_eq!(declared_needs_are(r#"{"needs": ["http"]}"#, &http), Ok(()));
+    assert_eq!(
+        declared_needs_are(r#"{"needs": ["tcp", "http", "tcp"]}"#, &tcp_http),
+        Ok(())
+    );
+    assert_eq!(declared_needs_are(r#"{"contract_abi": {}}"#, &[]), Ok(()));
+    let e = declared_needs_are(r#"{"needs": ["http", "tcp"]}"#, &http).unwrap_err();
+    assert!(e.contains(r#"names ["tcp"] the Statement does not"#), "{e}");
+    let e = declared_needs_are(r#"{"needs": ["http"]}"#, &tcp_http).unwrap_err();
+    assert!(e.contains(r#"misses ["tcp"]"#), "{e}");
+    let e = declared_needs_are(r#"{}"#, &http).unwrap_err();
+    assert!(e.contains(r#"misses ["http"]"#), "{e}");
+    assert!(declared_needs_are(r#"{"needs": "http"}"#, &http).is_err());
+}
+
+/// The declares file is found at the workspace root or one directory below it.
+#[test]
+fn the_declares_file_is_found_beside_the_plugin_crate() {
+    let root = std::env::temp_dir().join(format!("declares-find-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("logic")).unwrap();
+    std::fs::create_dir_all(root.join("logic-plugin")).unwrap();
+    std::fs::write(root.join("logic/declares.json"), "{}").unwrap();
+    let found = super::declares_file(root.join("logic-plugin").to_str().unwrap());
+    assert_eq!(found, Some(root.join("logic/declares.json")));
+    std::fs::remove_file(root.join("logic/declares.json")).unwrap();
+    assert_eq!(
+        super::declares_file(root.join("logic-plugin").to_str().unwrap()),
+        None
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
