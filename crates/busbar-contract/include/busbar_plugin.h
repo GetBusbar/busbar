@@ -331,6 +331,7 @@ extern "C" {
 #define BB_PLANE_MAX_ROUTES UINT64_C(1024) /* The most claims or admin routes one snapshot may carry. */
 #define BB_PLANE_MAX_SESSIONS UINT64_C(1024) /* The most ready sessions one `drive` answer may name. */
 #define BB_PLANE_MAX_SIGNALS UINT64_C(64) /* The most signals one `project` answer may carry. */
+#define BB_PLANE_MAX_TURNS UINT64_C(0x10000) /* The most prompt turns one `project` answer may carry. */
 #define BB_PLANE_ABI_VERSION UINT32_C(1) /* The plane kind's ABI version: new in 1.6.0 (v1.5.5 had no plane ABI), so it ships `1`. */
 #define BB_PLANE_SLOT_ARRIVE UINT32_C(9) /* Classify an arrival. */
 #define BB_PLANE_SLOT_ON_PIECE UINT32_C(10) /* One piece of a unit's bytes. */
@@ -2700,6 +2701,10 @@ struct bb_plane_ProjectIn {
     size_t signals_cap;
     uint8_t *arena_buf;
     size_t arena_cap;
+    bb_mech_Blob rewrite;
+    bb_hook_MessageView *messages_buf;
+    size_t messages_cap;
+    uint64_t unit;
 };
 
 /* `project`'s `out`: the hook kind's own [`RequestView`], its plane-derived fields written by the */
@@ -2711,6 +2716,11 @@ struct bb_plane_ProjectOut {
     uint32_t _reserved;
     uint64_t arena_written;
     uint64_t arena_needed;
+    bb_hook_PromptView prompt;
+    bb_mech_AbiStr end_user;
+    bb_mech_Span rewritten;
+    uint32_t messages_needed;
+    uint32_t _reserved2;
 };
 
 /* The transport kind's ops table: the lifecycle, then the carrier's eight ops, then the framer's */
@@ -4856,7 +4866,7 @@ BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneDriveOut) == 8, "bb_plane_PlaneDriveOut: alig
 BB_ASSERT(offsetof(bb_plane_PlaneDriveOut, head) == 0, "bb_plane_PlaneDriveOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneDriveOut, sessions_written) == 96, "bb_plane_PlaneDriveOut.sessions_written: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneDriveOut, sessions_needed) == 100, "bb_plane_PlaneDriveOut.sessions_needed: offset");
-BB_ASSERT(sizeof(bb_plane_ProjectIn) == 184, "bb_plane_ProjectIn: size");
+BB_ASSERT(sizeof(bb_plane_ProjectIn) == 232, "bb_plane_ProjectIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ProjectIn) == 8, "bb_plane_ProjectIn: alignment");
 BB_ASSERT(offsetof(bb_plane_ProjectIn, head) == 0, "bb_plane_ProjectIn.head: offset");
 BB_ASSERT(offsetof(bb_plane_ProjectIn, claim) == 88, "bb_plane_ProjectIn.claim: offset");
@@ -4869,7 +4879,11 @@ BB_ASSERT(offsetof(bb_plane_ProjectIn, signals_buf) == 152, "bb_plane_ProjectIn.
 BB_ASSERT(offsetof(bb_plane_ProjectIn, signals_cap) == 160, "bb_plane_ProjectIn.signals_cap: offset");
 BB_ASSERT(offsetof(bb_plane_ProjectIn, arena_buf) == 168, "bb_plane_ProjectIn.arena_buf: offset");
 BB_ASSERT(offsetof(bb_plane_ProjectIn, arena_cap) == 176, "bb_plane_ProjectIn.arena_cap: offset");
-BB_ASSERT(sizeof(bb_plane_ProjectOut) == 208, "bb_plane_ProjectOut: size");
+BB_ASSERT(offsetof(bb_plane_ProjectIn, rewrite) == 184, "bb_plane_ProjectIn.rewrite: offset");
+BB_ASSERT(offsetof(bb_plane_ProjectIn, messages_buf) == 208, "bb_plane_ProjectIn.messages_buf: offset");
+BB_ASSERT(offsetof(bb_plane_ProjectIn, messages_cap) == 216, "bb_plane_ProjectIn.messages_cap: offset");
+BB_ASSERT(offsetof(bb_plane_ProjectIn, unit) == 224, "bb_plane_ProjectIn.unit: offset");
+BB_ASSERT(sizeof(bb_plane_ProjectOut) == 304, "bb_plane_ProjectOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ProjectOut) == 8, "bb_plane_ProjectOut: alignment");
 BB_ASSERT(offsetof(bb_plane_ProjectOut, head) == 0, "bb_plane_ProjectOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_ProjectOut, view) == 96, "bb_plane_ProjectOut.view: offset");
@@ -4878,6 +4892,11 @@ BB_ASSERT(offsetof(bb_plane_ProjectOut, signals_needed) == 184, "bb_plane_Projec
 BB_ASSERT(offsetof(bb_plane_ProjectOut, _reserved) == 188, "bb_plane_ProjectOut._reserved: offset");
 BB_ASSERT(offsetof(bb_plane_ProjectOut, arena_written) == 192, "bb_plane_ProjectOut.arena_written: offset");
 BB_ASSERT(offsetof(bb_plane_ProjectOut, arena_needed) == 200, "bb_plane_ProjectOut.arena_needed: offset");
+BB_ASSERT(offsetof(bb_plane_ProjectOut, prompt) == 208, "bb_plane_ProjectOut.prompt: offset");
+BB_ASSERT(offsetof(bb_plane_ProjectOut, end_user) == 272, "bb_plane_ProjectOut.end_user: offset");
+BB_ASSERT(offsetof(bb_plane_ProjectOut, rewritten) == 288, "bb_plane_ProjectOut.rewritten: offset");
+BB_ASSERT(offsetof(bb_plane_ProjectOut, messages_needed) == 296, "bb_plane_ProjectOut.messages_needed: offset");
+BB_ASSERT(offsetof(bb_plane_ProjectOut, _reserved2) == 300, "bb_plane_ProjectOut._reserved2: offset");
 BB_ASSERT(sizeof(bb_transport_Ops) == 224, "bb_transport_Ops: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_Ops) == 8, "bb_transport_Ops: alignment");
 BB_ASSERT(offsetof(bb_transport_Ops, head) == 0, "bb_transport_Ops.head: offset");

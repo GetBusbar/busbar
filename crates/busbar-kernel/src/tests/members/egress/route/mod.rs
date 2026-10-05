@@ -252,6 +252,13 @@ impl Node {
                             retry_after,
                         })
                     }
+                    // A hook restriction's refusal; no hook binds in these walk proofs.
+                    Pick::Vetoed { status, .. } => {
+                        return Routed::Refused(Refusal {
+                            status,
+                            retry_after: None,
+                        })
+                    }
                 };
                 let destination = self.destination_of(&pool, &member);
                 let bound = request(&member, &pool, attempt_no);

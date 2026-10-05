@@ -1806,6 +1806,32 @@ pub enum ResolvedPolicy {
     },
 }
 
+/// THE HOOK CONTENT CEILING, on a built prompt projection: measured on its bytes BEFORE any call,
+/// and over the ceiling the content is OMITTED WHOLE (the hook is shown an empty projection, its
+/// grant still honoured), never truncated mid-value; `busbar_hook_content_truncated_total` counts
+/// it. A `0` ceiling is the operator turning it off. The one rule every seat that hands a hook the
+/// prompt applies.
+#[must_use]
+pub fn content_capped(p: PromptProjection<'_>) -> PromptProjection<'_> {
+    let cap = crate::proxy::hook_content_max_bytes();
+    if cap == 0 {
+        return p;
+    }
+    let bytes = p.system.as_deref().map(str::len).unwrap_or(0)
+        + p.messages
+            .iter()
+            .map(|(role, text)| role.len() + text.len())
+            .sum::<usize>();
+    if bytes <= cap {
+        return p;
+    }
+    metrics::counter!(crate::metrics::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
+    PromptProjection {
+        system: None,
+        messages: Vec::new(),
+    }
+}
+
 /// THE disposition rule for a hook call that FAILED — one rule, one place, for every seat that
 /// calls a hook. `on_error: reject` was the operator declaring that hook LOAD-BEARING: without its
 /// answer the unit is refused. Every other disposition (`weighted`, `first`) lets the unit proceed;
