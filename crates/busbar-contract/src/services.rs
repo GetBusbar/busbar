@@ -105,6 +105,15 @@ pub trait HostServices: Send + Sync {
     /// `"<scope_kind>:<name>"`. READY `ENTITLED` or `NOT_ENTITLED`. Never pends.
     fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored;
 
+    /// `session.emit`: write `bytes`, unsolicited, on the open carrier session `session`, outside
+    /// any unit: READY with nothing written back. A session that is not open, or not `caller`'s,
+    /// is REFUSED. Unbilled; the host audits it as a session event under the session's verified
+    /// principal. Never pends. A host that holds no carrier session refuses every one.
+    fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
+        let _ = (caller, session, bytes);
+        Stored::refused(UNSERVED)
+    }
+
     /// `random.fill`: `len` bytes from the kernel's CSPRNG, READY with exactly those bytes; `len`
     /// outside `1..=MAX_RANDOM_FILL` is REFUSED, an OS randomness failure FAILED. Never pends.
     fn random_fill(&self, len: u64) -> Stored;

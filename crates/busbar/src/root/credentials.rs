@@ -175,6 +175,10 @@ impl HostServices for CredentialServices {
         self.inner.random_fill(len)
     }
 
+    fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
+        self.inner.session_emit(caller, session, bytes)
+    }
+
     fn records_secret(&self, kind: &str, id: &str, _later: Later) -> Ran {
         if !self.credentials.installed() {
             return Ran::Now(Stored::refused(NOT_READABLE));

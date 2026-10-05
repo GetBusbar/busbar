@@ -2126,10 +2126,12 @@ fn compute_layout() -> String {
             random_fill,
             need_admit,
             trust_verify,
-            records_secret
+            records_secret,
+            session_emit
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
+    record!(s, hsvc::SessionEmitIn, [head, session, bytes]);
     record!(
         s,
         hsvc::TrustVerifyIn,

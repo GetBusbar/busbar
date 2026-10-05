@@ -150,10 +150,12 @@ pub mod op {
     pub const TRUST_VERIFY: u32 = 20;
     /// `records.secret`.
     pub const RECORDS_SECRET: u32 = 21;
+    /// `session.emit`.
+    pub const SESSION_EMIT: u32 = 22;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 22;
+pub const SERVICES: u32 = 23;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
 /// an index past the table.
@@ -169,6 +171,7 @@ pub const fn may_pend(service: u32) -> bool {
             | op::RANDOM_FILL
             | op::NEED_ADMIT
             | op::TRUST_VERIFY
+            | op::SESSION_EMIT
     ) && service < SERVICES
 }
 
@@ -694,6 +697,45 @@ pub struct NeedAdmitIn {
     pub _reserved: u32,
 }
 
+// ── carrier sessions ──────────────────────────────────────────────────────────────────────────
+
+/// The head field a CARRIER SESSION's arrivals carry, naming the session they arrived over: the
+/// root states it on every unit it opens from a session that holds one carrier open (a process's
+/// own stdin/stdout), and never lets a caller state it. Its value is the session's number, in
+/// decimal; a plugin hands that number back to [`op::SESSION_EMIT`].
+pub const CARRIER_SESSION_FIELD: &str = "busbar-carrier-session";
+
+/// [`op::SESSION_EMIT`]'s `in`: write `bytes`, UNSOLICITED, on the open carrier session `session`
+/// (its number, as [`CARRIER_SESSION_FIELD`] named it), outside any unit: a notification, a request
+/// of the plugin's own, a keepalive. Unbilled; the host attributes it to the session's verified
+/// principal and audits it as a session event. A session that is not open, or not the calling
+/// instance's, is REFUSED. Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SessionEmitIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The session.
+    pub session: u64,
+    /// The bytes, written as they are.
+    pub bytes: Blob,
+}
+
+/// `session.emit`'s `in`: a session is named (never `0`) and something is written.
+///
+/// # Errors
+///
+/// [`Rule::Missing`] for no session or no bytes.
+pub const fn check_session_emit_in(i: &SessionEmitIn) -> Result<(), Fault> {
+    if i.session == 0 {
+        return Err(fault(Rule::Missing, "session_emit.session"));
+    }
+    if i.bytes.len == 0 {
+        return Err(fault(Rule::Missing, "session_emit.bytes"));
+    }
+    Ok(())
+}
+
 // ── the table ─────────────────────────────────────────────────────────────────────────────────
 
 /// THE HOST SERVICES TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is a service
@@ -749,6 +791,8 @@ pub struct HostSlots {
     pub trust_verify: Option<ServiceFn>,
     /// [`op::RECORDS_SECRET`], in [`RecordsSecretIn`].
     pub records_secret: Option<ServiceFn>,
+    /// [`op::SESSION_EMIT`], in [`SessionEmitIn`].
+    pub session_emit: Option<ServiceFn>,
 }
 
 // ── the host's checks of an `in` ──────────────────────────────────────────────────────────────
@@ -1226,6 +1270,19 @@ pub fn check_need_admit(
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
     answer(ret, &i.head, out, bare(op::NEED_ADMIT, (0, 0)))
+}
+
+/// `session.emit`'s answer: the common rules, nothing written back.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_session_emit(
+    i: &SessionEmitIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    answer(ret, &i.head, out, bare(op::SESSION_EMIT, (0, 0)))
 }
 
 /// `trust.verify`'s answer: the common rules, and on READY no span, and bytes only with the two

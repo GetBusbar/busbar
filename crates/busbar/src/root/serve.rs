@@ -324,6 +324,13 @@ impl HostServices for LateServices {
         }
     }
 
+    fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
+        match self.served() {
+            Ok(s) => s.session_emit(caller, session, bytes),
+            Err(r) => r,
+        }
+    }
+
     fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran {
         match self.served() {
             Ok(s) => s.records_secret(kind, id, later),
