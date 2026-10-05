@@ -621,6 +621,7 @@ impl Served {
 /// A configured plane that will not compose ([`compose_planes`]), or, in a build that links no
 /// node to post a unit's money on, any configured door plane at all, which the boot refuses rather
 /// than leaving its claims unserved.
+#[allow(clippy::too_many_arguments)]
 pub fn compose_served(
     gov: Option<Arc<busbar_kernel::governance::GovState>>,
     doors: &[(String, DoorPlane)],
@@ -629,6 +630,7 @@ pub fn compose_served(
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
     public_url: Option<&str>,
     reach: &crate::root::door_steps::DoorReach<'_>,
+    host: Option<busbar_kernel::plane_driver::GenerationHost>,
 ) -> Result<Served, String> {
     let Some(gov) = gov else {
         if !doors.is_empty() {
@@ -641,6 +643,10 @@ pub fn compose_served(
         let post = Arc::new(crate::root::plane_node::NodeEndPost::new(
             crate::root::plane_node::node(),
         ));
+        let stage = host.map(|host| HookStage {
+            host,
+            gov: Arc::clone(&gov),
+        });
         let site = Arc::clone(&post);
         let money = move || {
             Arc::new(PlaneMoney::new(
@@ -660,13 +666,14 @@ pub fn compose_served(
             public_url,
             &money,
             Some(&egress),
+            stage.as_ref(),
         )?;
         served.post = Some(post);
         Ok(served)
     }
     #[cfg(not(linked_axis_node))]
     {
-        let _ = (gov, dispatcher, late, reach, public_url);
+        let _ = (gov, dispatcher, late, reach, public_url, host);
         match doors
             .iter()
             .find(|(_, plugin)| sections.contains_key(plugin.served().section))
@@ -677,6 +684,30 @@ pub fn compose_served(
             )),
             None => Ok(Served::default()),
         }
+    }
+}
+
+/// THE KERNEL'S HOOK STAGE as a door plane's units bind it: the current generation's engine host
+/// (its hook registry), read per unit so a config apply reaches the next unit, and the governance
+/// state a verified principal's key is read from.
+pub struct HookStage {
+    /// The current generation's engine host.
+    pub host: busbar_kernel::plane_driver::GenerationHost,
+    /// The governance state.
+    pub gov: Arc<busbar_kernel::governance::GovState>,
+}
+
+impl HookStage {
+    /// The GATE-FIRST binder of the plane registered under `plane_key` (its tail states
+    /// `abi::plane::TAIL_HOOKS_GATED`): the gates and rewrites the deployment attached to the
+    /// entry the plane's projection names, filed under the plane's registry key.
+    fn gated(&self, plane_key: &str) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
+        let gov = Arc::clone(&self.gov);
+        Arc::new(busbar_kernel::plane_driver::HostGatedHooks {
+            host: Arc::clone(&self.host),
+            plane_key: plane_key.to_string(),
+            keys: Arc::new(move |principal: &str| gov.lookup_by_sub(principal)),
+        })
     }
 }
 
@@ -753,6 +784,7 @@ pub struct DoorEgress<'a> {
 ///
 /// A plane that will not open, publish a snapshot, be admitted, publish its admin routes or seal
 /// its members' routes, named: the boot refuses it, as it refuses a plane that will not bind.
+#[allow(clippy::too_many_arguments)]
 pub fn compose_planes(
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
@@ -761,6 +793,7 @@ pub fn compose_planes(
     public_url: Option<&str>,
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
+    hooks: Option<&HookStage>,
 ) -> Result<Served, String> {
     let mut served = Served::default();
     if doors.is_empty() {
@@ -824,6 +857,17 @@ pub fn compose_planes(
         )
         .map_err(|e| format!("{instance}: {e}"))?
         .with_records(Arc::clone(&kernel), caller);
+        // THE HOOK STAGE IN THE PLANE'S OWN ORDER (spec Part 3 section 12 "Hooks"): a plane whose
+        // tail states the gate-first order has its entries' gates and rewrites bound, filed under
+        // its registry key.
+        let driver = match hooks {
+            Some(stage)
+                if served_facts.tail_flags & busbar_contract::abi::plane::TAIL_HOOKS_GATED != 0 =>
+            {
+                driver.with_hooks(stage.gated(plugin.name()))
+            }
+            _ => driver,
+        };
         let routes = snapshot
             .admin_routes
             .iter()
