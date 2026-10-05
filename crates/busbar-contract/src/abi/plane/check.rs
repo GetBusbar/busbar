@@ -30,10 +30,10 @@ use super::{
     CLAIM_PATTERN, EMIT_DONE, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE,
     INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
     INGRESS_SUBSCRIPTION, MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT,
-    PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_DIRECT,
-    ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION, SHAPE_PIECEWISE,
-    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TRUST_PIN, TRUST_PRIVATE_REACH,
-    UNITS_ESTIMATED, VERDICT_HARD,
+    PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT,
+    ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION,
+    SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TRUST_PIN,
+    TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -143,13 +143,22 @@ fn fields(buf: &[OutField], n: u64, arena: u64) -> Result<(), Fault> {
 
 fn records(buf: &[RecordWrite], n: u64, arena: u64, b: &Bounds) -> Result<(), Fault> {
     for r in first(buf, n, "record")? {
-        index(r.kind, b.record_kinds, "record.kind")?;
-        code(
-            u64::from(r.op),
-            u64::from(RECORD_PUT),
-            u64::from(RECORD_PUT),
-            "record.op",
-        )?;
+        match r.op {
+            RECORD_PUT => index(r.kind, b.record_kinds, "record.kind")?,
+            // The unit's audit row: its outcome where a put names its kind, and an action.
+            RECORD_AUDIT => {
+                code(
+                    u64::from(r.kind),
+                    u64::from(super::AUDIT_APPLIED),
+                    u64::from(super::AUDIT_REJECTED),
+                    "record.audit_outcome",
+                )?;
+                if r.key.len == 0 {
+                    return Err(fault(Rule::Contradiction, "record.audit_without_action"));
+                }
+            }
+            _ => return Err(fault(Rule::UnknownCode, "record.op")),
+        }
         span(r.key.offset, r.key.len, arena, "record.key")?;
         span(r.value.offset, r.value.len, arena, "record.value")?;
     }
@@ -330,6 +339,13 @@ pub fn check_on_piece(
     }
     verdict(outcome, out.verdict)?;
     request(out)?;
+    // The unit's ledger lane, where the answer names one: inside the arena written.
+    span(
+        out.lane.offset,
+        out.lane.len,
+        out.arena_written,
+        "on_piece.lane",
+    )?;
     units(bufs.0, u64::from(out.units_written), b)?;
     records(bufs.1, u64::from(out.records_written), out.arena_written, b)?;
     fields(bufs.2, u64::from(out.fields_written), out.arena_written)

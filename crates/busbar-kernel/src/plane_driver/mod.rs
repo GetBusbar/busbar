@@ -220,6 +220,30 @@ pub struct PlaneDriver {
     sessions: Mutex<HashMap<u64, Arc<Notify>>>,
     /// Which hooks bind to a unit of this plane; `None` = none ever does.
     hooks: Option<Arc<dyn HookBinder>>,
+    /// Where a unit's audit row (a `RECORD_AUDIT` write) is written: the kernel's own audit chain.
+    audit: Arc<dyn AuditSink>,
+}
+
+/// WHERE A DOOR UNIT'S AUDIT ROW GOES (ARCHITECT SEAM-L(k)): a plane writes its unit's audit row
+/// as a `RECORD_AUDIT` record write on its `on_piece` answer (no host op of its own), and the
+/// driver folds it into the kernel's one audit chain, under the principal the kernel verified. The
+/// row's action, resource and outcome are the plane's words; the kernel names none.
+pub trait AuditSink: Send + Sync {
+    /// Write one row: `action` on `resource`, with `outcome` (`applied` or `rejected`), by
+    /// `principal`. Fire-and-forget: a store that refuses it never fails the unit.
+    fn record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str);
+}
+
+/// THE KERNEL'S OWN AUDIT CHAIN (`audit::journal`, read by `GET /audit`): the sink every driver
+/// writes a unit's audit row to unless built with another ([`PlaneDriver::with_audit`]). The same
+/// chokepoint a plane's admin-audit emit reached before it was served through its door.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CoreAudit;
+
+impl AuditSink for CoreAudit {
+    fn record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
+        crate::audit::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
+    }
 }
 
 impl Drop for PlaneDriver {
@@ -292,6 +316,7 @@ impl PlaneDriver {
             services,
             sessions: Mutex::default(),
             hooks: None,
+            audit: Arc::new(CoreAudit),
         })
     }
 
@@ -322,6 +347,14 @@ impl PlaneDriver {
     #[must_use]
     pub fn with_hooks(mut self, binder: Arc<dyn HookBinder>) -> Self {
         self.hooks = Some(binder);
+        self
+    }
+
+    /// Write a unit's audit row (a `RECORD_AUDIT` record write) to `sink` instead of the kernel's
+    /// own audit chain ([`CoreAudit`]).
+    #[must_use]
+    pub fn with_audit(mut self, sink: Arc<dyn AuditSink>) -> Self {
+        self.audit = sink;
         self
     }
 
@@ -456,7 +489,8 @@ pub(crate) struct UnitState {
     bill: Option<CancelBill>,
     /// The caller's opaque reference, derived at verify (never the principal itself).
     caller_ref: Vec<u8>,
-    /// The principal the kernel verified, for the hooks the unit binds (never a plane input).
+    /// The principal the kernel verified, for the hooks the unit binds and its audit row (never a
+    /// plane input).
     principal: Option<PrincipalId>,
     /// The body a request-stage rewrite left, kept for every attempt; `None` = the caller's own.
     body: Option<Arc<[u8]>>,
@@ -921,9 +955,9 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         if let Some(key) = &self.driver.config.caller_refs {
             self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
         }
-        if self.driver.hooks.is_some() {
-            self.lock().principal = Some(principal.clone());
-        }
+        // The verified principal: the hooks the unit binds read it, and the unit's audit row is
+        // written under it (never a plane input).
+        self.lock().principal = Some(principal.clone());
         self.steps.verify(token, trust, ctx, principal)
     }
 

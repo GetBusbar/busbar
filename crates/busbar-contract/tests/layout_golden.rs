@@ -1823,7 +1823,8 @@ fn compute_layout() -> String {
             verb,
             target,
             need,
-            _need_reserved
+            _need_reserved,
+            lane
         ]
     );
     record!(

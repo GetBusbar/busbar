@@ -1511,8 +1511,14 @@ pub fn door_mounts(
             };
             vec![target, line.route.path.clone()]
         };
+        // One mount per (path, method): a plane's claims on one verb and path that differ only by
+        // the carrier they arrive over (an endpoint answered as a document or as an event stream)
+        // are one route on the data listener, the first in the plane's claim order; which carrier
+        // answers is the plane's to decide from the request, as the data door never compared it.
         for path in paths {
-            mounts.push((path, method, auth, door));
+            if !mounts.iter().any(|(p, m, ..)| *p == path && *m == method) {
+                mounts.push((path, method, auth, door));
+            }
         }
         of_line.insert((instances[door.0].clone(), line.route.rung), (auth, door));
     }
@@ -1691,7 +1697,8 @@ fn resource_documents(
             scopes_supported: list("scopes_supported"),
         });
         for (i, claim) in snapshot.claims.iter().enumerate() {
-            if claim.flags & CLAIM_OPEN != 0 && claim.verb == "GET" && claim.target == path {
+            let open = claim.flags & busbar_contract::abi::plane::CLAIM_OPEN != 0;
+            if open && claim.verb == "GET" && claim.target == path {
                 if let Ok(rung) = u32::try_from(i) {
                     out.insert((p, rung), Arc::clone(&doc));
                 }

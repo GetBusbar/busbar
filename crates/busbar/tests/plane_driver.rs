@@ -747,6 +747,7 @@ fn zero_piece_out() -> OnPieceOut {
         target: span,
         need: 0,
         _need_reserved: 0,
+        lane: span,
     }
 }
 
