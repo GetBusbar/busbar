@@ -1585,7 +1585,7 @@ pub(crate) async fn rotate_key(
             body["state"] = json!(state);
             // Shown exactly once, exactly like mint. 1.5.0 has exactly one bearer-credential shape,
             // so rotation always re-issues a signed token.
-            body["token"] = json!(rotated.token);
+            body["token"] = json!(rotated.token.expose_secret());
             body["expires_at"] = json!(rotated.exp);
             // COMMIT the idempotency slot with the real response (replaces the reservation) and
             // disarm the drop-guard — a retry inside the window replays THIS body verbatim.

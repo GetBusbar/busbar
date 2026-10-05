@@ -28,8 +28,6 @@ const DEFAULT_TTL_SECS: u64 = 600;
 const MIN_TTL_SECS: u64 = 10;
 /// The provider's maximum accepted secret lifetime.
 const MAX_TTL_SECS: u64 = 7200;
-/// The prefix every ephemeral client secret the provider mints carries.
-const EK_PREFIX: &str = "ek_";
 /// The header binding a minted secret to the caller identity.
 const SAFETY_IDENTIFIER_HEADER: &str = "OpenAI-Safety-Identifier";
 /// The bound on the whole mint exchange up to the response head plus its small body read.
@@ -47,7 +45,8 @@ const CLIENT_SECRETS_PATH: &str = "/v1/realtime/client_secrets";
 pub struct HttpsTokenMinter {
     client: EngineClient,
     base_url: String,
-    api_key: String,
+    /// The real provider key, held `Redacted`; exposed only into the mint's `Authorization` header.
+    api_key: busbar_contract::Redacted<String>,
     safety_identifier: String,
     requested_ttl_secs: Option<u64>,
 }
@@ -67,7 +66,7 @@ impl HttpsTokenMinter {
         HttpsTokenMinter {
             client,
             base_url: base_url.into(),
-            api_key: api_key.into(),
+            api_key: busbar_contract::Redacted::new(api_key.into()),
             safety_identifier: safety_identifier.into(),
             requested_ttl_secs,
         }
@@ -79,14 +78,6 @@ impl HttpsTokenMinter {
             .unwrap_or(DEFAULT_TTL_SECS)
             .clamp(MIN_TTL_SECS, MAX_TTL_SECS)
     }
-}
-
-/// The provider's client-secret response: the `ek_` value and its absolute expiry in unix seconds.
-#[derive(serde::Deserialize)]
-struct ClientSecretResponse {
-    value: String,
-    #[serde(default)]
-    expires_at: u64,
 }
 
 #[async_trait]
@@ -112,7 +103,7 @@ impl TokenMinter for HttpsTokenMinter {
             .header(http::header::CONTENT_TYPE, "application/json")
             .header(
                 http::header::AUTHORIZATION,
-                format!("Bearer {}", self.api_key),
+                format!("Bearer {}", self.api_key.expose_secret()),
             )
             .header(SAFETY_IDENTIFIER_HEADER, &self.safety_identifier)
             .body(Full::new(Bytes::from(body_bytes)))
@@ -140,21 +131,16 @@ impl TokenMinter for HttpsTokenMinter {
             )));
         }
 
-        let parsed: ClientSecretResponse = serde_json::from_slice(&raw).map_err(|e| {
-            MintError::Provider(format!("client-secret response did not parse: {e}"))
-        })?;
-
-        // The browser-facing invariant: only an `ek_` secret ever leaves this boundary. A response
-        // whose value lacks the prefix is refused rather than handed on as if it were a client secret.
-        if !parsed.value.starts_with(EK_PREFIX) {
-            return Err(MintError::Provider(
-                "client-secret response value is not an ek_ ephemeral secret".into(),
-            ));
-        }
-
+        // The answer is read by the plane's ONE reader of it, `broker::read_minted` (this was a
+        // byte-for-byte copy of it). It upholds the browser-facing invariant — only an `ek_` secret
+        // ever leaves this boundary; any other value is refused rather than handed on as a client
+        // secret — and it describes a decode failure without the decoder's text, which can quote
+        // the minted secret (secret-hygiene #53, Check 3).
+        let minted =
+            busbar_plane_streaming::broker::read_minted(&raw).map_err(MintError::Provider)?;
         Ok(EphemeralToken {
-            value: parsed.value,
-            expires_at_unix: parsed.expires_at,
+            value: minted.value,
+            expires_at_unix: minted.expires_at_unix,
         })
     }
 }
