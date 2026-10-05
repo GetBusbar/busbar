@@ -90,18 +90,18 @@ fixture-secret-file = { package = "busbar-secret-file", git = "https://github.co
 # same rev, one resolved copy in Cargo.lock.
 busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
 # THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "3f2b715471e14b1062a6feded7af104aea342936" }
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "22c441f74fe57d4ec469ca4febadbcdd8c9338fc" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
-busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "bedfe35a99512f331779d1381c972b5bdf6d8d60" }
+busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "9c7bda86c06b0bdedc6952f07899c3455714fb98" }
 # THE WS TRANSPORT: the websocket framer door (kind: transport), pulled at a pinned rev; the logic
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
-busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "84842f6b94372af386768723c324dc561057db47" }
+busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "77289f64bfdde1c012611e05361dc429aee267af" }
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
-busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "500df68a81ac3435247430db57941140b7f6125b" }
-busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "500df68a81ac3435247430db57941140b7f6125b" }
+busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "cd3fdccfacfb074f5869434c7bcb5c0678f5b707" }
+busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "cd3fdccfacfb074f5869434c7bcb5c0678f5b707" }
 # ── A2A, from the a2aproject's OWN crates ──────────────────────────────────────────────────────
 # THE OBVIOUS NAME IS THE WRONG ONE. `a2a-rs` on crates.io is `emillindfors/a2a-rs` (MIT, v0.5.0) —
 # a different author entirely. The a2aproject family is the `a2a-*-lf` / `a2a-pb` set, all
