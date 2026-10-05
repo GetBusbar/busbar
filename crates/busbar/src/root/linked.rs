@@ -87,9 +87,6 @@ pub struct Linked {
     pub protocol_seams: &'static [fn()],
     /// Owned diagnostics, joining the rendered catalog.
     pub diagnostics: &'static [&'static [&'static busbar_contract::diagnostic::Diagnostic]],
-    /// Installers of a duplex plane's inbound WS-accept arrivals (the seam is set once: the first
-    /// duplex entry in table order is the one installed).
-    pub ws_arrivals: &'static [fn()],
     /// Background work re-anchored on every generation's engine host (boot, then each swap).
     pub on_host: &'static [fn(&Arc<dyn EngineHost>)],
     /// Providers composed off the resolved configuration (see [`Compose`]).
@@ -1251,14 +1248,6 @@ pub fn declared_diagnostics(
         }
     }
     Ok(declared)
-}
-
-/// THE WS-ACCEPT AXIS: each duplex entry installs its inbound arrivals — and none does when no entry
-/// is duplex, so the router mounts no WS-accept route.
-pub fn register_ws_arrivals(linked: &Linked) {
-    for install in linked.ws_arrivals {
-        install();
-    }
 }
 
 /// THE ROOT-BOUND SEAMS an enabled entry drives, each bound once and only when some entry drives it

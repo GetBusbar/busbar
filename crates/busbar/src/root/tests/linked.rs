@@ -51,7 +51,6 @@ pub(super) fn linked(
         body_ingress: &[],
         protocol_seams: &[],
         diagnostics: &[],
-        ws_arrivals: &[],
         on_host: &[],
         compose: &[],
         stdio_serve: &[],

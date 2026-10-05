@@ -38,7 +38,6 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("body-ingress", "body_ingress", "BODY_INGRESS"),
     ("protocol-seams", "protocol_seams", "install_protocol_seams"),
     ("diagnostics", "diagnostics", "DIAGNOSTICS"),
-    ("ws-arrivals", "ws_arrivals", "install_ws_arrivals"),
     ("on-host", "on_host", "on_host"),
     ("compose", "compose", "compose"),
     ("stdio-serve", "stdio_serve", "stdio_serve"),

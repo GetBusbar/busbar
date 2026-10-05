@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{glob_matches, lowered_floors, moved_out};
+use super::{deleted_plane_crates, glob_matches, lowered_floors, moved_out};
 
 const ROOT: &str = "[workspace.dependencies]\n\
     busbar-x-moved = { git = \"https://example.invalid/busbar-x-moved\", rev = \"0123abc\" }\n\
@@ -94,4 +94,42 @@ fn a_kind_glob_matches_one_directory_level() {
         "crates/busbar-transport-ws/src"
     ));
     assert!(!glob_matches("crates/store-*", "crates/busbar-store-x"));
+}
+
+/// The `plane_crates` floor's way down (ARCHITECT 2026-10-05): a legacy plane crate the base listed
+/// and this tree does not counts only when it was deleted under `[gate.census.deleted]`.
+#[test]
+fn a_plane_crate_deleted_under_the_ledger_excuses_its_floor_drop() {
+    let base: Vec<String> = ["busbar-llm", "busbar-voice"].map(String::from).to_vec();
+    let now: Vec<String> = vec!["busbar-llm".into()];
+    assert_eq!(
+        deleted_plane_crates(&base, &now, |d| d == "crates/busbar-voice"),
+        Some(1)
+    );
+    let mut moved = BTreeMap::new();
+    moved.insert("plane_crates".to_string(), 1);
+    assert!(lowered_floors(
+        &doc("[gate.census]\nplane_crates = 3\n"),
+        &doc("[gate.census]\nplane_crates = 4\n"),
+        "base",
+        &moved
+    )
+    .is_empty());
+}
+
+/// RED: a plane crate that left the list without a ledger row excuses nothing, and neither does a
+/// list that lost nothing.
+#[test]
+fn an_unlisted_plane_crate_drop_stays_red() {
+    let base: Vec<String> = ["busbar-llm", "busbar-voice"].map(String::from).to_vec();
+    let now: Vec<String> = vec!["busbar-llm".into()];
+    assert_eq!(deleted_plane_crates(&base, &now, |_| false), None);
+    assert_eq!(deleted_plane_crates(&base, &base, |_| true), None);
+    assert!(!lowered_floors(
+        &doc("[gate.census]\nplane_crates = 3\n"),
+        &doc("[gate.census]\nplane_crates = 4\n"),
+        "base",
+        &BTreeMap::new()
+    )
+    .is_empty());
 }

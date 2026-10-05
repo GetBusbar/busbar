@@ -1969,7 +1969,9 @@ because = "a type alias over the rows the loop posted, and a reader of it; the n
 # silent as deleting the table alone was.
 [gate.census]
 legacy_reach_prefixes = 4
-plane_crates = 4
+# 4 -> 3: crates/busbar-voice deleted by the P3 streaming flip, named in [gate.census.deleted] (the
+# plane_crates floor drops only by ledgered deletions, ARCHITECT 2026-10-05).
+plane_crates = 3
 
 # HOW MANY CRATE DIRECTORIES EACH KIND GLOB MATCHES.
 #
@@ -2124,3 +2126,4 @@ abi = 1
 # an unlisted vanished dir stays RED.
 [gate.census.deleted]
 "crates/hook-test-plugin" = "TODO P5: delete hook-test-plugin (ARCHITECT 2026-10-04)"
+"crates/busbar-voice" = "P3 streaming flip: legacy crate deleted (ARCHITECT 2026-10-04)"

@@ -1752,7 +1752,6 @@ const AXIS_ITEMS: &[(&str, &[&str])] = &[
     ("body-ingress", &["BODY_INGRESS"]),
     ("protocol-seams", &["install_protocol_seams"]),
     ("diagnostics", &["DIAGNOSTICS"]),
-    ("ws-arrivals", &["install_ws_arrivals"]),
     ("on-host", &["on_host"]),
     ("compose", &["compose"]),
     ("stdio-serve", &["stdio_serve"]),
