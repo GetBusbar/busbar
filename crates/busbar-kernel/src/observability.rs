@@ -332,7 +332,6 @@ fn log_levels() -> (
 pub fn init_logging(stdout_reserved: bool) -> bool {
     use tracing_subscriber::fmt::writer::BoxMakeWriter;
     use tracing_subscriber::layer::SubscriberExt as _;
-    use tracing_subscriber::util::SubscriberInitExt as _;
     use tracing_subscriber::Layer as _;
     let (stderr_filter, otlp_filter) = log_levels();
     let make_writer = if stdout_reserved {
@@ -349,21 +348,25 @@ pub fn init_logging(stdout_reserved: bool) -> bool {
     // exactly as a dropped-in plugin's do through the `LogTracer` its own image installs
     // (`BUSBAR-1.6.0.md` decision #85: every plugin logs to its own file, compiled in or dropped in).
     //
-    // A compiled-in plugin called before this (its settings validated while the configuration
-    // resolved) has ALREADY made `LogTracer` the `log` logger — its door's capture installs it on
-    // first use when nothing has. `try_init` sets the global subscriber first and only then fails on
-    // that already-installed logger, which forwards to the same dispatcher: that failure is not a
-    // failed install. Only a refused global subscriber is one (1.5.5 printed nothing here, and
-    // neither does a boot whose plugin ran first).
-    let initialized = match tracing_subscriber::registry()
-        .with(fmt_layer)
-        .with(crate::export::traces::layer(otlp_filter))
-        .try_init()
-    {
-        Ok(()) => true,
-        Err(e) => std::error::Error::source(&e)
-            .is_some_and(|inner| !inner.is::<tracing::subscriber::SetGlobalDefaultError>()),
-    };
+    // Installed in two steps, not `try_init`, because a compiled-in plugin called before this (its
+    // settings validated while the configuration resolved) has ALREADY made `LogTracer` the `log`
+    // logger: its door's capture installs it on first use when nothing has. `try_init` sets the
+    // global subscriber and then FAILS on that logger, which forwards to the same dispatcher, so
+    // the boot printed a false "already initialized" (1.5.5 printed nothing). The subscriber is
+    // what is installed; the logger is installed (at the subscriber's level) when nothing has.
+    let initialized = tracing::subscriber::set_global_default(
+        tracing_subscriber::registry()
+            .with(fmt_layer)
+            .with(crate::export::traces::layer(otlp_filter)),
+    )
+    .is_ok();
+    if initialized {
+        let _ = tracing_log::LogTracer::builder()
+            .with_max_level(tracing_log::AsLog::as_log(
+                &tracing_subscriber::filter::LevelFilter::current(),
+            ))
+            .init();
+    }
     if !initialized {
         eprintln!("busbar: tracing subscriber already initialized");
     }

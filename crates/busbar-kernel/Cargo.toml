@@ -140,6 +140,7 @@ metrics-util = { workspace = true, features = ["recency"] }
 http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-log = { workspace = true }
 hex = { workspace = true }
 getrandom = { workspace = true }
 ed25519-dalek = { workspace = true }
