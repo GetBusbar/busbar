@@ -267,7 +267,7 @@ impl PlaneCfg for DoorSection {
         else {
             return Ok(());
         };
-        (fold.reg.validate)(&settings_of(&self.value)?)
+        (fold.reg.validate)(&dealt(self.section, settings_of(&self.value)?)?)
     }
 
     fn is_present(&self) -> bool {
@@ -325,6 +325,20 @@ fn collect_refs(
 }
 
 /// The section as the door's `validate` reads it: JSON, in the order it was written.
+/// THE BLOB A DOOR'S `validate` IS HANDED, in the one shape stage 3g deals it
+/// (`config_validate::deal`, `Seat::Verbs`): `{<section>: <section as written>}` for the section the
+/// door declares. Every kernel-side judge (a section's parse, an admin write's one-entry section,
+/// the effective registry at `resolve`) hands the door that shape, so a door reads one blob shape
+/// whoever asks. An absent section stays the empty blob (nothing written).
+fn dealt(section: &str, settings: Vec<u8>) -> Result<Vec<u8>, String> {
+    if settings.is_empty() {
+        return Ok(settings);
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(&settings).map_err(|e| format!("the section is not JSON: {e}"))?;
+    serde_json::to_vec(&serde_json::json!({ section: value })).map_err(|e| e.to_string())
+}
+
 fn settings_of(value: &serde_yaml::Value) -> Result<Vec<u8>, String> {
     if value.is_null() {
         return Ok(Vec::new());
@@ -557,7 +571,7 @@ fn config_validate<const I: usize>(name: &str, def: &serde_json::Value) -> Resul
     let section = d.reg.section;
     let one = serde_json::json!({ name: def });
     let bytes = serde_json::to_vec(&one).map_err(|e| e.to_string())?;
-    (d.reg.validate)(&bytes).map_err(|e| {
+    (d.reg.validate)(&dealt(section, bytes)?).map_err(|e| {
         if e.starts_with(&format!("`{section}.{name}`")) {
             e
         } else {
@@ -631,7 +645,7 @@ fn parse_section<const I: usize>(value: &serde_yaml::Value) -> Result<Box<dyn Pl
     let Some(d) = door(I) else {
         return Err("a door plane's section was parsed before its door was folded".to_string());
     };
-    (d.reg.validate)(&settings_of(value)?)?;
+    (d.reg.validate)(&dealt(d.reg.section, settings_of(value)?)?)?;
     Ok(Box::new(DoorSection::new(d.reg.section, value.clone())))
 }
 

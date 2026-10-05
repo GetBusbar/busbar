@@ -558,6 +558,30 @@ pub struct ToolPool {
     pub repeatable: Vec<String>,
 }
 
+/// `validate`: the blob stage 3g deals a plane (`{<verb>: <section>}` for each stated verb the
+/// document writes; the kernel's own judges hand the same shape), read at the `tools:` section. An
+/// empty blob, or one that writes no `tools:`, is the empty section; the `mcp:` endpoint block it may
+/// carry is judged where it is lowered.
+///
+/// # Errors
+///
+/// A blob that is not a JSON object, or the `tools:` section's first broken rule.
+pub fn read_dealt_tools(settings: &[u8]) -> Result<ToolsCfg, String> {
+    if settings.is_empty() {
+        return Ok(ToolsCfg::default());
+    }
+    let value: serde_json::Value = serde_json::from_slice(settings).map_err(|e| e.to_string())?;
+    let serde_json::Value::Object(mut verbs) = value else {
+        return Err("the dealt settings are not a map of the plane's sections".to_string());
+    };
+    match verbs.remove(crate::tools_config::SECTION) {
+        None | Some(serde_json::Value::Null) => Ok(ToolsCfg::default()),
+        Some(section) => {
+            read_tools_section(&serde_json::to_vec(&section).map_err(|e| e.to_string())?)
+        }
+    }
+}
+
 /// THE SETTINGS `open` and `refresh` are handed: the section ([`read_tools_section`]) and the pools the
 /// kernel carries at its reserved `pools` key (ARCHITECT round 4 Q-L3B-SURFACES (h)). The operator's
 /// own document never reaches this reader (`validate` reads the section as written).

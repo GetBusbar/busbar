@@ -53,3 +53,15 @@ fn the_need_is_the_tails() {
     assert_eq!(STATEMENT.needs_len, NEEDS.len());
     assert_eq!(STATEMENT.sections_len, 1 + tail::SECTIONS_CONSUMED.len());
 }
+
+/// `validate` reads the blob stage 3g deals (`{decisions: <section>}`): the section inside it is
+/// judged (a typo refused), a blob that writes no `decisions:` is the empty section, and the bare
+/// section is not the dealt shape.
+#[test]
+fn validate_reads_the_dealt_blob_at_its_section() {
+    assert!(read_dealt(b"").is_ok());
+    assert!(read_dealt(br#"{}"#).is_ok());
+    assert!(read_dealt(br#"{"decisions":{"models":{"jev":{"provider":"typesafe"}}}}"#).is_ok());
+    assert!(read_dealt(br#"{"decisions":{"modles":{}}}"#).is_err());
+    assert!(read_dealt(br#"[]"#).is_err());
+}

@@ -279,3 +279,26 @@ fn the_admin_openapi_blob_states_every_body_its_verbs_name() {
         );
     }
 }
+
+/// `validate` reads the blob stage 3g deals a plane (`{tools: <section>, mcp: <endpoint>}`): the
+/// `tools:` section inside it is judged; a blob that writes no `tools:` is the empty section; the
+/// endpoint block beside it is not this reader's to judge.
+#[test]
+fn validate_reads_the_dealt_blob_at_its_tools_section() {
+    use crate::door::read_dealt_tools;
+    let empty = crate::tools_config::ToolsCfg::default();
+    assert_eq!(read_dealt_tools(b""), Ok(empty.clone()));
+    assert_eq!(read_dealt_tools(br#"{"mcp":{}}"#), Ok(empty));
+    let mut dealt = br#"{"tools":"#.to_vec();
+    dealt.extend_from_slice(GOOD);
+    dealt.push(b'}');
+    assert_eq!(
+        read_dealt_tools(&dealt).expect("the dealt section reads"),
+        read_tools_section(GOOD).expect("the bare section reads")
+    );
+    let mut bad = br#"{"tools":"#.to_vec();
+    bad.extend_from_slice(BAD);
+    bad.push(b'}');
+    assert!(read_dealt_tools(&bad).is_err());
+    assert!(read_dealt_tools(b"[]").is_err());
+}

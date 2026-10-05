@@ -204,9 +204,9 @@ impl McpDoor {
     }
 }
 
-/// The settings blob read as the `tools:` section, or the refusal in the grammar's words.
+/// The dealt settings blob read at its `tools:` section, or the refusal in the grammar's words.
 fn section(bytes: &[u8]) -> Result<ToolsCfg, Refusal> {
-    door::read_tools_section(bytes).map_err(Refusal::refused)
+    door::read_dealt_tools(bytes).map_err(Refusal::refused)
 }
 
 /// The settings `open`/`refresh` are handed: the section and its pools.
