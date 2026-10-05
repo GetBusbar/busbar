@@ -231,8 +231,12 @@
 # 2026-10-05: re-pinned 99780d72d1ae -> 5e82e8bc1e6d, the merge of #158 into busbar-release dev (the same
 # three commits; CI green incl. "baseline reproduces its golden (x2)").
 #
+# 2026-10-05: moved 5e82e8bc1e6d -> f288a2c13d94, the merge of busbar-release #159 into dev: the precise header
+# acceptance gains ORDER specs (a named header's exact position in a header_order list), which register
+# entry S-16b uses for the relayed upstream server/date.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=5e82e8bc1e6ddf238f35f6150feb2280a7c3f4b3
+release_ref=f288a2c13d94d47e6fa1b72c7a0bf3aa9d5f0810
 crate=busbar-release-oracle
 bin=busbar-oracle
