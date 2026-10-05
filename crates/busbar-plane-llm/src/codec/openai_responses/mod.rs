@@ -1140,6 +1140,16 @@ const STREAM_CODE: &[&str] = &[
 
 /// The answer paths INSIDE a subtree this dialect carries that its code does not carry, named by the
 /// drop walk (DF-MAP-IR-GAPS section E: its A, B and C paths that a coarse map row covers).
+/// THE REQUEST DEFAULTS A RESPONSES ANSWER ECHOES (the response object restates the request's
+/// `tools`, `tool_choice` and `parallel_tool_calls`, at their defaults when the request set none):
+/// an echoed default is no control the caller set, so a TRANSLATE answer that cannot carry it
+/// names no drop for it (ARCHITECT RULING 2026-10-04). Keyed by the member, its default as JSON.
+pub(super) const ANSWER_DEFAULTS: &[(&str, &str)] = &[
+    (keys::TOOLS, "[]"),
+    (keys::TOOL_CHOICE, "\"auto\""),
+    (keys::PARALLEL_TOOL_CALLS, "true"),
+];
+
 const RESPONSE_DROPS: &[&str] = &[
     "error.misalignment",
     "instructions[].type=additional_tools",

@@ -642,6 +642,12 @@ pub struct Carried {
     /// never scanned (Responses lists 763 stream paths; test
     /// `every_drop_list_is_sorted_for_the_walks_search`).
     pub drops: &'static [&'static str],
+    /// The request defaults the far end ECHOES in its answer, each a member's key and its default
+    /// as JSON text (`("tool_choice", "\"auto\"")`). A member equal to its default carries nothing
+    /// the caller set, so its drop is no unrepresentable control and the walk does not name it;
+    /// any other value of it is named like every drop (ARCHITECT RULING 2026-10-04: a dropped value
+    /// equal to the protocol default, or an echoed default, writes no audit row).
+    pub defaults: &'static [(&'static str, &'static str)],
 }
 
 /// Where a wire path stands against what a dialect carries.
@@ -708,6 +714,13 @@ impl Carried {
         } else {
             Cover::Unmapped
         }
+    }
+
+    /// `value`, under `key`, is the default the dialect declares the far end echoes for it.
+    fn echoes_default(&self, key: &str, value: &Value) -> bool {
+        self.defaults.iter().any(|(k, default)| {
+            *k == key && serde_json::from_str::<Value>(default).is_ok_and(|d| d == *value)
+        })
     }
 
     /// The objects at `path` are a union keyed by their `type` member (notation A `type=<arm>`).
@@ -782,7 +795,10 @@ impl Carried {
                     None => path.to_string(),
                 };
                 for (key, child) in obj {
-                    if child.is_null() || (arm.is_some() && key == crate::codec::keys::TYPE) {
+                    if child.is_null()
+                        || (arm.is_some() && key == crate::codec::keys::TYPE)
+                        || self.echoes_default(key, child)
+                    {
                         continue;
                     }
                     let p = join(&base, key);
