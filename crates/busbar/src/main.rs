@@ -972,9 +972,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // THE LINE CARRIER (SEAM-S1, `root::serve::lines`): with the stdio serve mode asked for and a
     // served plane claiming the stdio transport, the served planes are kept for the process's own
     // stdin/stdout, and the data router is built with none of them (it is never bound in this mode).
-    #[cfg(linked_axis_node)]
+    #[cfg(any(linked_axis_node, linked_axis_plane_door))]
     let mut served = served;
-    #[cfg(linked_axis_node)]
+    #[cfg(any(linked_axis_node, linked_axis_plane_door))]
     let line_served = (stdio_serve_requested(std::env::args())
         && root::serve::lines::line_claim(&served).is_some())
     .then(|| std::mem::take(&mut served));
@@ -1199,7 +1199,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // tail: the final budget/metering flush, then the tracer.
     // The mode exists only when a linked entry serves it. With none there is no dispatch to serve on
     // stdin/stdout, so the mode is not offered and the build falls through to its listener path.
-    #[cfg(linked_axis_node)]
+    #[cfg(any(linked_axis_node, linked_axis_plane_door))]
     if let Some(served) = line_served {
         let code = root::serve::lines::serve_lines(served, app_handle.clone(), || {
             root::kernel::ROOT_CARD.pin()

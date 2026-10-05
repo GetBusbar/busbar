@@ -96,9 +96,11 @@ pub mod observe;
 pub mod otlp;
 #[cfg(feature = "plane-decisions")]
 pub mod plane_decisions;
-// The node a plane's units run through: compiled when a linked plane rides the `node` axis, read
-// off the same manifest table the root folds (the generated `linked_axis_node` cfg).
-#[cfg(linked_axis_node)]
+// The node a plane's units run through: compiled when a linked plane rides the `node` axis or a
+// linked plane is served through its door (`plane-door`), read off the same manifest table the root
+// folds (the generated `linked_axis_node` / `linked_axis_plane_door` cfgs). A door plane's units are
+// driven and posted on this node, so a build linking any one door plane serves it (ARCHITECT Q1).
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 pub mod plane_node;
 pub mod policy;
 pub mod registry;

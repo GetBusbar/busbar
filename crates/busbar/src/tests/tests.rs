@@ -613,14 +613,16 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
     let root_mod = std::fs::read_to_string(src.join("root/mod.rs"))
         .expect("the composition root's own module file is where the gates are declared");
 
-    // (module name, the single gate — a feature or a linked-axis cfg — its declaration carries).
-    let mut gated: Vec<(String, String)> = Vec::new();
+    // (module name, the gate its declaration carries: a single feature or linked-axis cfg, or the
+    // alternatives of an `any(…)` of them — the module compiles when any one is set, so a line
+    // naming it is covered by a gate carrying any one of them).
+    let mut gated: Vec<(String, Vec<String>)> = Vec::new();
     let lines: Vec<&str> = root_mod.lines().collect();
     for (i, line) in lines.iter().enumerate() {
         let feats = cfg_gate_features(line.trim());
-        let [feature] = feats.as_slice() else {
+        if feats.is_empty() || (feats.len() > 1 && !line.trim().starts_with("#[cfg(any(")) {
             continue;
-        };
+        }
         let Some(decl) = lines.get(i + 1).map(|l| l.trim()) else {
             continue;
         };
@@ -631,7 +633,7 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
         else {
             continue;
         };
-        gated.push((name.to_string(), feature.clone()));
+        gated.push((name.to_string(), feats));
     }
     assert!(
         gated.len() >= 4,
@@ -664,19 +666,22 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
         let base: Vec<String> = gated
             .iter()
             .filter(|(name, _)| name == stem || name == parent)
-            .map(|(_, feature)| feature.clone())
+            .flat_map(|(_, gate)| gate.iter().cloned())
             .collect();
         let gate = gate_by_line(&text, &base);
         for (i, line) in text.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");
-            for (name, feature) in &gated {
-                if !code.contains(&format!("{name}::")) || gate[i].iter().any(|f| f == feature) {
+            for (name, alternatives) in &gated {
+                if !code.contains(&format!("{name}::"))
+                    || gate[i].iter().any(|f| alternatives.contains(f))
+                {
                     continue;
                 }
                 let at = file.strip_prefix(&src).unwrap_or(file).display();
                 escapes.push(format!(
-                    "{at}:{}: names `{name}::` with no `{feature}` gate over it",
-                    i + 1
+                    "{at}:{}: names `{name}::` with no `{}` gate over it",
+                    i + 1,
+                    alternatives.join("` or `")
                 ));
             }
         }

@@ -45,24 +45,24 @@ use crate::root::door_steps::{door_facts, DoorFacts, DoorPools};
 use crate::root::loader::dispatch::kinds::plane::OwnedSnapshot;
 use crate::root::loader::dispatch::plane_calls::PlaneInstance;
 // The data routes drive their units on the node: what only they name.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 use crate::root::door_steps::{egress_pool, DoorCaller, DoorSteps};
 use crate::root::loader::dispatch::{in_head, out_head, Dispatcher, Frame};
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN};
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 use busbar_contract::auth::AuthPrincipal;
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 use busbar_contract::caps::{Pass, PrincipalId, Route};
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 use busbar_kernel::plane_driver::{
     Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, UnitRoute,
 };
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
 
 /// The egress class `dest.judge` applies when a plugin names none: the deployment's own stance.
@@ -593,7 +593,7 @@ pub struct Served {
     pub planes: Vec<ServedPlane>,
     /// The posting site the planes' money steps post an abandoned end to, and the units' facts are
     /// opened on while they run: the process's one node's.
-    #[cfg(linked_axis_node)]
+    #[cfg(any(linked_axis_node, linked_axis_plane_door))]
     pub post: Option<Arc<crate::root::plane_node::NodeEndPost>>,
 }
 
@@ -628,8 +628,8 @@ impl Served {
 /// # Errors
 ///
 /// A configured plane that will not compose ([`compose_planes`]), or, in a build that links no
-/// node to post a unit's money on, any configured door plane at all, which the boot refuses rather
-/// than leaving its claims unserved.
+/// node to post a unit's money on (no linked plane rides the `node` axis or a plane door), any
+/// configured door plane at all, which the boot refuses rather than leaving its claims unserved.
 #[allow(clippy::too_many_arguments)]
 pub fn compose_served(
     gov: Option<Arc<busbar_kernel::governance::GovState>>,
@@ -647,7 +647,7 @@ pub fn compose_served(
         }
         return Ok(Served::default());
     };
-    #[cfg(linked_axis_node)]
+    #[cfg(any(linked_axis_node, linked_axis_plane_door))]
     {
         let post = Arc::new(crate::root::plane_node::NodeEndPost::new(
             crate::root::plane_node::node(),
@@ -680,7 +680,7 @@ pub fn compose_served(
         served.post = Some(post);
         Ok(served)
     }
-    #[cfg(not(linked_axis_node))]
+    #[cfg(not(any(linked_axis_node, linked_axis_plane_door)))]
     {
         let _ = (gov, dispatcher, late, reach, public_url, host);
         match doors
@@ -1101,7 +1101,7 @@ fn open(
 /// plane's [`PlaneDriver`] under its kernel steps ([`DoorSteps`]), its caller's side an
 /// [`IngressCaller`]. A plane is served exactly when it is composed, so its door row is its serve
 /// switch: a fold adds only its door row (spec K5).
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 pub struct DataRoutes {
     served: Served,
     post: Arc<crate::root::plane_node::NodeEndPost>,
@@ -1117,13 +1117,13 @@ pub struct DataRoutes {
 }
 
 /// A unit's generation, kept in [`DataRoutes::frames`] while the unit runs.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 struct UnitFrame<'r> {
     routes: &'r DataRoutes,
     unit: u64,
 }
 
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 impl Drop for UnitFrame<'_> {
     fn drop(&mut self) {
         self.routes.frames_lock().remove(&self.unit);
@@ -1132,7 +1132,7 @@ impl Drop for UnitFrame<'_> {
 
 /// The most bytes of a nested unit's reply the parent is handed (its whole reply, buffered: THE
 /// DESIGN D6): the services' byte bound.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 const NEST_REPLY_MAX: usize = 16 << 20;
 
 /// `unit.nest`'s refusal of a claim nothing on the data listener serves.
@@ -1147,13 +1147,13 @@ pub const NEST_UNREAD: &str = "the nested unit's reply could not be read";
 /// child driven on the process's one node as a door unit of the plane that claims it, under the
 /// parent's principal and generation, its hold cell accruing against the parent's, its whole reply
 /// buffered and handed back. The kernel never learns what the child is.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 pub struct DoorNests {
     routes: std::sync::Weak<DataRoutes>,
     runtime: tokio::runtime::Handle,
 }
 
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 impl busbar_kernel::host_services::NestRoute for DoorNests {
     fn nest(
         &self,
@@ -1173,7 +1173,7 @@ impl busbar_kernel::host_services::NestRoute for DoorNests {
     }
 }
 
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 impl std::fmt::Debug for DataRoutes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DataRoutes")
@@ -1201,7 +1201,7 @@ pub fn data_routes(
     if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
         return Ok(Vec::new());
     }
-    #[cfg(linked_axis_node)]
+    #[cfg(any(linked_axis_node, linked_axis_plane_door))]
     {
         door_routes(
             served,
@@ -1210,7 +1210,7 @@ pub fn data_routes(
             core,
         )
     }
-    #[cfg(not(linked_axis_node))]
+    #[cfg(not(any(linked_axis_node, linked_axis_plane_door)))]
     {
         let _ = (data_chain, core);
         Err(
@@ -1246,7 +1246,7 @@ pub fn data_mounts(
     if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
         return Ok((Vec::new(), Vec::new()));
     }
-    #[cfg(linked_axis_node)]
+    #[cfg(any(linked_axis_node, linked_axis_plane_door))]
     {
         door_mounts(
             served,
@@ -1257,7 +1257,7 @@ pub fn data_mounts(
         )
         .map(|m| (m.routes, m.sessions))
     }
-    #[cfg(not(linked_axis_node))]
+    #[cfg(not(any(linked_axis_node, linked_axis_plane_door)))]
     {
         let _ = (data_chain, core, upgrades);
         Err(
@@ -1270,7 +1270,7 @@ pub fn data_mounts(
 /// ONE DATA REQUEST on a door plane's claim, as its route handed it over: the credentials the auth
 /// gate consumed already struck, its verdict on the caller, and the generation serving it (its cost
 /// model, governance book and groups).
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 pub struct DoorRequest {
     /// The verb.
     pub method: axum::http::Method,
@@ -1292,7 +1292,7 @@ pub struct DoorRequest {
 /// operator's data chain (`auth.chain`) is the auth of every data-listener line; only where it gives
 /// the line none does the claim's own declared default inbound style apply. `CLAIM_OPEN` declares
 /// none; any other claim takes a credential, verified by the deployment's (empty) chain.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 fn line_auth(flags: u32, data_chain: &[String]) -> busbar_kernel::guest::LineAuth {
     use busbar_kernel::guest::LineAuth;
     if data_chain.is_empty() && flags & CLAIM_OPEN != 0 {
@@ -1303,7 +1303,7 @@ fn line_auth(flags: u32, data_chain: &[String]) -> busbar_kernel::guest::LineAut
 }
 
 /// The claimant the kernel's own data routes are lines of.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 const CORE_CLAIMANT: &str = "core";
 
 /// The data listener's own framer: a claim over a carrier that composes over it is an upgrade line.
@@ -1321,15 +1321,15 @@ pub fn upgrade_carriers(transports: &[crate::root::linked::LinkedTransport]) -> 
 }
 
 /// How many messages a session route's pipe queues each way before the sender waits.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 const SESSION_QUEUE: usize = 64;
 
 /// The name of a subtree claim's tail capture.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 const SUBTREE: &str = "rest";
 
 /// The methods the data listener mounts a door claim under.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 const METHODS: [RouteMethod; 5] = [
     RouteMethod::Get,
     RouteMethod::Post,
@@ -1340,7 +1340,7 @@ const METHODS: [RouteMethod; 5] = [
 
 /// The guest-list line a plane's claim writes on the data listener, and the method the data router
 /// mounts it under.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 fn claim_line(
     instance: &str,
     rung: u32,
@@ -1389,7 +1389,7 @@ fn claim_line(
 }
 
 /// One claim's route: the plane it is of and the claim's index in its snapshot.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 type DoorClaim = (usize, u32);
 
 /// THE DOOR PLANES' DATA ROUTES (ARCHITECT Q-SW1, 2026-10-02): every claim of every served plane is
@@ -1404,7 +1404,7 @@ type DoorClaim = (usize, u32);
 ///
 /// A claim the data listener cannot mount, or two claims at an equal precedence, named: the boot
 /// refuses it.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 pub fn door_routes(
     served: Served,
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
@@ -1417,7 +1417,7 @@ pub fn door_routes(
 /// WHAT THE DATA ROUTER MOUNTS FOR THE DOOR PLANES at its construction: their request routes, and
 /// their duplex SESSION routes (an upgrade line's claim; ARCHITECT Q-L5B-SESSION-SERVE, TRANSITIONAL:
 /// deleted when INBOUND-LISTEN's accepted::Caller serves).
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 pub struct DoorMounts {
     /// The request routes.
     pub routes: Vec<PlaneRouteSpec>,
@@ -1425,7 +1425,7 @@ pub struct DoorMounts {
     pub sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
 }
 
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 impl std::fmt::Debug for DoorMounts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DoorMounts")
@@ -1441,7 +1441,7 @@ impl std::fmt::Debug for DoorMounts {
 /// # Errors
 ///
 /// As [`door_routes`].
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 pub fn door_mounts(
     served: Served,
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
@@ -1688,7 +1688,7 @@ pub fn door_mounts(
 /// # Errors
 ///
 /// A claim the guest list cannot seal, as [`door_routes`] refuses it.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 pub(crate) fn line_routes(
     served: Served,
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
@@ -1741,7 +1741,7 @@ pub(crate) fn line_routes(
 /// own target and verb on the data listener's mount, behind no auth gate (`RouteAuth::None`; the
 /// listener's arrival gates still apply), answered by the plane's `serve` op through the kernel's
 /// public serve path. A verb the router does not mount is left out.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
     served
         .planes
@@ -1834,7 +1834,7 @@ fn resource_documents(
     out
 }
 
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 impl DoorRequest {
     /// The request a door claim's route was handed (`None` when its engine is not the kernel's).
     fn of(ctx: PlaneReqCtx) -> Option<Self> {
@@ -1859,7 +1859,7 @@ impl DoorRequest {
     }
 }
 
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 impl DataRoutes {
     /// ONE DUPLEX SESSION ARRIVAL (K6; ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03, TRANSITIONAL with
     /// the session routes): the caller's head delivered once at `arrive`, as a request's is; the
@@ -2247,7 +2247,7 @@ impl DataRoutes {
 }
 
 /// A nested unit's place: its parent, live on the node, and its depth.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 struct Nesting {
     parent: crate::root::plane_node::Parent,
     depth: u32,
@@ -2257,7 +2257,7 @@ struct Nesting {
 /// door): the plane's last far-end-reported counts by class name (an estimate never bills; a fee
 /// unit is no usage), whether it incurred its fee, and the key it was served under. `None` for a
 /// unit whose money was never opened (an anonymous or refused unit): its line is the exit's.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 fn report_of(
     money: &PlaneMoney,
     unit: busbar_contract::UnitKey,
@@ -2287,7 +2287,7 @@ fn report_of(
 /// A DOOR UNIT'S FAR END: the plane's egress walk over the connector (`EgressFarEnd`), started
 /// once the unit's route is resolved, over the egress pool that route names; with no egress
 /// composed, or no route, the walk is exhausted at once and nothing is dialled.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 struct DoorFar<'d, 's> {
     egress: Option<&'d Egress>,
     steps: &'d DoorSteps<'s>,
@@ -2297,7 +2297,7 @@ struct DoorFar<'d, 's> {
     far: OnceLock<Option<EgressFarEnd<'d>>>,
 }
 
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 impl<'d> DoorFar<'d, '_> {
     fn far(&self) -> Option<&EgressFarEnd<'d>> {
         self.far
@@ -2317,7 +2317,7 @@ impl<'d> DoorFar<'d, '_> {
 }
 
 /// The walk's exhaustion terminal when no egress is composed: every path is spent.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 fn spent() -> Pick {
     Pick::Exhausted {
         status: refusal_status(ReasonCode::NoDestination),
@@ -2325,7 +2325,7 @@ fn spent() -> Pick {
     }
 }
 
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 impl FarEnd for DoorFar<'_, '_> {
     async fn member(&self, token: &Pass<Route>, attempt_no: u32) -> Pick {
         match self.far() {
@@ -2359,11 +2359,11 @@ impl FarEnd for DoorFar<'_, '_> {
 // ── a session's caller side over today's upgrade (TRANSITIONAL) ──────────────────────────────────
 
 /// The status a session's caller was answered with: the upgrade (`101 Switching Protocols`).
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 const SWITCHED: u32 = 101;
 
 /// What a session arrival was admitted as: its plane, the generation serving it, and its caller.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 struct SessionDoor {
     plane: usize,
     app: Arc<busbar_kernel::state::App>,
@@ -2380,13 +2380,13 @@ struct SessionDoor {
 /// caller's messages as the core's bridge hands them over; every frame the plane writes toward the
 /// caller is one message, text when the plane said so. The caller's close ends its reads; a write after
 /// the socket went answers `false`.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 struct PipeCaller {
     from: tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>,
     to: mpsc::Sender<busbar_kernel::plane_routes::SessionOut>,
 }
 
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 impl CallerEnd for PipeCaller {
     /// The upgrade was the session's head: nothing more is stated.
     fn head(&self, _status: u32, _fields: HeadFields) {}
@@ -2408,7 +2408,7 @@ impl CallerEnd for PipeCaller {
     }
 }
 
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 impl busbar_kernel::plane_driver::SessionCaller for PipeCaller {
     /// Cancel-safe: a receive dropped before it resolved loses no message.
     async fn read(&self) -> Option<Vec<u8>> {
@@ -2578,7 +2578,7 @@ impl IngressReply {
 
 /// Who a door unit serves: the principal the auth gate verified, its governance key, and its
 /// verified credential (lent for a passthrough member's outbound auth call alone).
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 type UnitCaller = (
     PrincipalId,
     Option<Arc<busbar_contract::records::VirtualKey>>,
@@ -2682,7 +2682,7 @@ impl http_body::Body for ReplyBody {
 }
 
 /// THE LINE CARRIER: a process's own stdin/stdout, one carrier session, one unit per line (SEAM-S1).
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 #[path = "serve_lines.rs"]
 pub mod lines;
 
@@ -2691,7 +2691,7 @@ pub mod lines;
 mod tests;
 
 // `serve_planes.rs` uses `crate::root::plane_node`, compiled only when a linked plane rides the
-// `node` axis (the generated `linked_axis_node` cfg, root/mod.rs); its only consumers are the
+// `node` axis or a plane door (root/mod.rs); its only consumers are the
 // `linked_axis_node`-gated `money_tests`/`door_tests`, so gating it to the same cfg loses no
 // coverage under the default node-bearing build and lets the bin test build under
 // `--no-default-features`, where no plane rides the node axis.

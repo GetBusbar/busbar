@@ -152,7 +152,7 @@ mod audit;
 mod book;
 pub use book::{MoneyBook, PostingStamp, Settled, Settling};
 // The pass-through has one caller, the plane node, so it is built where the node is.
-#[cfg(linked_axis_node)]
+#[cfg(any(linked_axis_node, linked_axis_plane_door))]
 pub use book::SharedBook;
 
 /// How many sealed checkpoints a node holds in memory: the latest 1,024, oldest evicted first
