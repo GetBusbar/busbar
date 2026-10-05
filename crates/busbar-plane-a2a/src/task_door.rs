@@ -526,6 +526,12 @@ fn window(
             name: arena.span(b"content-type"),
             value: arena.span(JSON_MEDIA_TYPE.as_bytes()),
         });
+        // A whole answer states its length, so it is sent under it (never chunked), as the
+        // engine sent its buffered JSON answer.
+        fields.push(OutField {
+            name: arena.span(crate::plane_door::H_CONTENT_LENGTH.as_bytes()),
+            value: arena.span(body.len().to_string().as_bytes()),
+        });
     }
     for w in writes {
         records.push(RecordWrite {

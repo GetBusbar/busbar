@@ -244,6 +244,9 @@ enum Head {
     Events,
 }
 
+/// The head field a whole answer states its length in.
+pub(crate) const H_CONTENT_LENGTH: &str = "content-length";
+
 /// The head fields an answer in events starts with (the engine's event-stream response).
 const EVENTS_HEAD: [(&str, &str); 2] = [
     (relay::H_CONTENT_TYPE, crate::events::EVENTS_MEDIA_TYPE),
@@ -1187,7 +1190,12 @@ fn piece(
             target = Some(arena.span(a.target.as_bytes()));
         }
         Some(Head::Reply(s, content_type)) => {
-            head_fields(&[(relay::H_CONTENT_TYPE, (*content_type).to_string())]);
+            // A WHOLE answer states its length, so it is sent under it as the engine sent its
+            // buffered JSON answer (never chunked).
+            head_fields(&[
+                (relay::H_CONTENT_TYPE, (*content_type).to_string()),
+                (H_CONTENT_LENGTH, ob.bytes.len().to_string()),
+            ]);
             status = *s;
         }
         Some(Head::Events) => {
