@@ -2706,6 +2706,8 @@ impl<'d> DoorFar<'d, '_> {
                     pool,
                     caller_credential: self.credential.clone(),
                     once: self.steps.once(),
+                    wants_stream: self.steps.wants_stream(),
+                    affinity: self.steps.affinity(),
                     ..UnitRoute::default()
                 });
                 if let Some(described) = described {

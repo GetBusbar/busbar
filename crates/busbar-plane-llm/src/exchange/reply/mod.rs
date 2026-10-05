@@ -113,6 +113,10 @@ pub struct Units {
     pub cache_write: u64,
     /// Every open class the answer counted beside its tokens, verbatim.
     pub open: BTreeMap<String, u64>,
+    /// The token counts are a FLOOR over the bytes relayed so far, not the far end's report.
+    pub floor: bool,
+    /// The token counts are stated even at zero: they replace a floor the answer stated before.
+    pub stated: bool,
 }
 
 impl Units {
@@ -130,6 +134,8 @@ impl Units {
             cache_read: u.cache_read.unwrap_or(0),
             cache_write: u.cache_creation.unwrap_or(0),
             open,
+            floor: false,
+            stated: false,
         }
     }
 }
@@ -365,6 +371,11 @@ impl Reply {
                 if !last {
                     if let Some(u) = relay.streamed_usage() {
                         *units = Units::of(Some(&u), BTreeMap::new());
+                    } else if let Some(floor) = relay.relayed_floor() {
+                        *units = Units {
+                            floor: true,
+                            ..Units::of(Some(&floor), BTreeMap::new())
+                        };
                     }
                     return Piece {
                         verdict: if head.is_some() {
@@ -387,7 +398,11 @@ impl Reply {
                 let fault = end.stream_fault.map(Fault::Transient).or(end
                     .generation_failed
                     .then_some(Fault::Transient("upstream-generation-failed")));
-                let units = Units::of(end.usage.as_ref(), end.open_units);
+                // The end's report replaces a floor stated while relaying, even when it is zero.
+                let units = Units {
+                    stated: units.floor,
+                    ..Units::of(end.usage.as_ref(), end.open_units)
+                };
                 self.state = State::Done;
                 Piece {
                     head,

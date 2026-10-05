@@ -520,7 +520,9 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
 // (`super::hook_seat_tests::rig`), and reads the capability where the kernel keeps it.
 
 #[cfg(linked_fold_on_driver)]
-use super::hook_seat_tests::{far_end_answering, rig, RigOpts, REWRITTEN};
+use super::hook_seat_tests::{
+    chunk, far_end_answering, far_end_scripted, rig, RigOpts, Script, REWRITTEN,
+};
 #[cfg(linked_fold_on_driver)]
 use super::planes_tests::{Published as Withdrawn, PUBLISHING as ONE_PUBLISHER};
 
@@ -987,5 +989,420 @@ async fn the_pools_doors_hooks_see_each_candidates_standing() {
         second[0].contains("CandidateLatencyP95Ms=true")
             && second[0].contains("CandidateErrorRate=true"),
         "the p95 reservoir and the error rate, once fed: {second:?}"
+    );
+}
+
+// ── what only the plane reads, the kernel routes on (ARCHITECT Q1 ArriveOut, 2026-10-05) ────────
+
+/// A streamed far end's head: chunked, so a far end that closes before its last chunk CUT it.
+#[cfg(linked_fold_on_driver)]
+const STREAM_HEAD: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                           transfer-encoding: chunked\r\nconnection: close\r\n\r\n";
+
+/// The streamed answer's frames, in order: a delta, the stop, the usage, the end.
+#[cfg(linked_fold_on_driver)]
+const FRAMES: [&str; 4] = [
+    r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}"#,
+    r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m0","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+    r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m0","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}"#,
+    "[DONE]",
+];
+
+/// One event-stream frame, as a chunk.
+#[cfg(linked_fold_on_driver)]
+fn frame(data: &str) -> Vec<u8> {
+    chunk(format!("data: {data}\n\n").as_bytes())
+}
+
+/// A stream that pauses `pause_ms` after its first frame, then ends cleanly.
+#[cfg(linked_fold_on_driver)]
+fn stream_pausing(pause_ms: u64) -> Script {
+    Script {
+        head: STREAM_HEAD.to_string(),
+        pieces: vec![
+            (0, frame(FRAMES[0])),
+            (pause_ms, frame(FRAMES[1])),
+            (0, frame(FRAMES[2])),
+            (0, frame(FRAMES[3])),
+        ],
+        finish: Some(b"0\r\n\r\n".to_vec()),
+    }
+}
+
+/// A caller's chat on pool `p` asking for its answer streamed.
+#[cfg(linked_fold_on_driver)]
+fn streamed_chat() -> serde_json::Value {
+    serde_json::json!({"model": "p", "stream": true, "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}]})
+}
+
+/// THE STREAM CEILING, NOT THE POOL'S TIMEOUT, bounds a streamed answer (the plane states
+/// `ROUTE_STREAM`; v1.5.5 bounded a stream's whole send by the stream ceiling): a stream that
+/// outlives its pool's one-second failover timeout is delivered whole. Before the plane stated the
+/// stream, the door cut it at the pool's timeout.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_bounds_a_stream_by_the_stream_ceiling_not_the_pools_timeout() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-stream-outlives-timeout";
+    let _published = Withdrawn(instance);
+    let far = far_end_scripted(stream_pausing(2_000)).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            failover_timeout_secs: Some(1),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig
+        .send("POST", "/v1/chat/completions", Some(streamed_chat()))
+        .await;
+    let body = String::from_utf8_lossy(&body);
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body.contains("[DONE]") && body.contains("\"hi\""),
+        "the stream outlived the pool's timeout whole: {body}"
+    );
+}
+
+/// THE STREAM CEILING CUTS a streamed answer that outlives it, however long its pool's timeout
+/// (RED before the plane stated `ROUTE_STREAM`: the door read the stream as buffered and waited the
+/// pool's timeout out).
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_cuts_a_stream_at_the_stream_ceiling() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-stream-ceiling";
+    let _published = Withdrawn(instance);
+    let far = far_end_scripted(stream_pausing(4_000)).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            failover_timeout_secs: Some(60),
+            stream_ceiling_secs: Some(1),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let started = std::time::Instant::now();
+    let (status, _, body) = rig
+        .send("POST", "/v1/chat/completions", Some(streamed_chat()))
+        .await;
+    let body = String::from_utf8_lossy(&body);
+    assert_eq!(status, 200, "the stream had begun: {body}");
+    assert!(
+        body.contains("\"hi\""),
+        "the first frame reached the caller: {body}"
+    );
+    assert!(!body.contains("[DONE]"), "the ceiling cut it: {body}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(3_500),
+        "cut at the one-second ceiling, not when the far end ended: {:?}",
+        started.elapsed()
+    );
+}
+
+/// A MID-STREAM CUT IS NOT A REFUND (Part 2 #62): a streamed answer the far end cuts after its
+/// first byte reached the caller keeps the member's lifetime budget unit it spent (RED before the
+/// plane stated `ROUTE_STREAM`: the door refunded it as a buffered answer's).
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_keeps_the_budget_unit_of_a_stream_cut_after_its_first_byte() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-stream-cut";
+    let _published = Withdrawn(instance);
+    let far = far_end_scripted(Script {
+        head: STREAM_HEAD.to_string(),
+        pieces: vec![(0, frame(FRAMES[0])), (50, frame(FRAMES[1]))],
+        finish: None,
+    })
+    .await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            lane_budget: Some(5),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig
+        .send("POST", "/v1/chat/completions", Some(streamed_chat()))
+        .await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        rig.app.store.lane_budget_remaining(0),
+        Some(4),
+        "the streamed bytes were delivered: the unit is spent, not refunded"
+    );
+}
+
+/// THE CONTROL: a buffered answer the far end cuts reaches the caller whole or not at all, so its
+/// budget unit is given back (v1.5.5 `engine/mod.rs:329-353`).
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_refunds_the_budget_unit_of_a_buffered_answer_cut() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-buffered-cut";
+    let _published = Withdrawn(instance);
+    let far = far_end_scripted(Script {
+        head: format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+             connection: close\r\n\r\n",
+            WHOLE.len()
+        ),
+        pieces: vec![(0, WHOLE.as_bytes()[..40].to_vec())],
+        finish: None,
+    })
+    .await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            lane_budget: Some(5),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let _ = rig.chat().await;
+    assert_eq!(rig.app.store.lane_budget_remaining(0), Some(5));
+}
+
+/// A whole same-dialect answer that reports 1500 + 90 tokens.
+#[cfg(linked_fold_on_driver)]
+const WHOLE: &str = r#"{"id":"chatcmpl-9","object":"chat.completion","created":0,"model":"m0","choices":[{"index":0,"message":{"role":"assistant","content":"hello there"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1500,"completion_tokens":90,"total_tokens":1590}}"#;
+
+/// A far end that answers [`WHOLE`] under its full length but writes only `prefix` of it, then
+/// holds the connection `hold_ms` and closes (a cut).
+#[cfg(linked_fold_on_driver)]
+fn whole_cut_after(prefix: usize, hold_ms: u64) -> Script {
+    Script {
+        head: format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+             connection: close\r\n\r\n",
+            WHOLE.len()
+        ),
+        pieces: vec![
+            (0, WHOLE.as_bytes()[..prefix].to_vec()),
+            (hold_ms, Vec::new()),
+        ],
+        finish: None,
+    }
+}
+
+/// OWNER RULING Q31, oracle cell `route.failover|fo|primary-cut-body` (legacy
+/// `nonstream_drop_billing_tests`, rows 338/342): a same-dialect non-stream answer the far end cuts
+/// AFTER its `usage` bills exactly what the far end reported; one cut BEFORE its `usage` reported
+/// nothing and bills nothing, never a floor over the relayed bytes.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_bills_a_cut_non_stream_answer_only_what_its_far_end_reported() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-nonstream-cut";
+    let _published = Withdrawn(instance);
+    let far = far_end_scripted(whole_cut_after(WHOLE.len() - 1, 0)).await;
+    let late = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let _ = late.chat().await;
+    assert_eq!(late.tokens_after().await, 1590, "the far end's own report");
+    drop(late);
+    drop(_published);
+
+    let instance = "serve-door-nonstream-cut-early";
+    let _published = Withdrawn(instance);
+    let usage_at = WHOLE.find(r#","usage""#).expect("the usage member");
+    let far = far_end_scripted(whole_cut_after(usage_at, 0)).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let _ = rig.chat().await;
+    assert_eq!(rig.tokens_after().await, 0, "no report, no charge");
+}
+
+/// ITEM 367 (Q33 (a), told), legacy row 338: a same-dialect non-stream answer the CALLER drops
+/// mid-relay was generated whole before its first byte, so it bills what it relayed: never 0.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_bills_a_non_stream_answer_the_caller_dropped_mid_relay() {
+    use http_body_util::BodyExt as _;
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-nonstream-drop";
+    let _published = Withdrawn(instance);
+    let usage_at = WHOLE.find(r#","usage""#).expect("the usage member");
+    let far = far_end_scripted(whole_cut_after(usage_at, 5_000)).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let response = rig
+        .open(
+            "POST",
+            "/v1/chat/completions",
+            Some(serde_json::json!({"model": "p", "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}]})),
+            &[],
+        )
+        .await;
+    assert_eq!(response.status().as_u16(), 200);
+    let mut body = response.into_body();
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), body.frame())
+        .await
+        .expect("the first bytes arrive before the far end's hold")
+        .expect("a frame")
+        .expect("relayed");
+    assert!(first.data_ref().is_some_and(|b| !b.is_empty()));
+    // THE DISCONNECT: the caller goes before the answer's end.
+    drop(body);
+    assert_ne!(
+        rig.tokens_after().await,
+        0,
+        "a non-stream answer dropped mid-relay never bills 0"
+    );
+}
+
+/// SESSION AFFINITY (legacy rows 2-4; v1.5.5 `affinity_header_for` and the sticky position): the
+/// plane states the session key it reads (the pool's header, `x-session-id` by default, else chat's
+/// body `system`) and the kernel pins every unit with that key to one member; a unit without one
+/// is spread by the weighted floor.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_pins_a_session_to_one_member() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-affinity";
+    let _published = Withdrawn(instance);
+    let fars = [
+        far_end_answering(200, SERVED_BY_TWIN).await,
+        far_end_answering(200, SERVED_BY_TWIN).await,
+        far_end_answering(200, SERVED_BY_TWIN).await,
+    ];
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(fars[0].port, 1), (fars[1].port, 1), (fars[2].port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let served = || fars.iter().map(|f| f.served()).collect::<Vec<_>>();
+    let chat = serde_json::json!({"model": "p", "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}]});
+    for _ in 0..6 {
+        let r = rig
+            .open(
+                "POST",
+                "/v1/chat/completions",
+                Some(chat.clone()),
+                &[("x-session-id", "session-42")],
+            )
+            .await;
+        assert_eq!(r.status().as_u16(), 200);
+        let _ = axum::body::to_bytes(r.into_body(), 1 << 20).await;
+    }
+    let pinned = served();
+    assert_eq!(
+        pinned.iter().filter(|n| **n == 6).count(),
+        1,
+        "one member served the whole session: {pinned:?}"
+    );
+    // The body's `system` is the key when no header names one.
+    let system = serde_json::json!({"model": "p", "max_tokens": 16, "system": "be brief",
+        "messages": [{"role": "user", "content": "hi"}]});
+    let before = served();
+    for _ in 0..3 {
+        assert_eq!(
+            rig.send("POST", "/v1/chat/completions", Some(system.clone()))
+                .await
+                .0,
+            200
+        );
+    }
+    let after = served();
+    let moved: Vec<usize> = after.iter().zip(&before).map(|(a, b)| a - b).collect();
+    assert_eq!(
+        moved.iter().filter(|n| **n == 3).count(),
+        1,
+        "one member served the system-keyed session: {moved:?}"
+    );
+    // No key: the weighted floor spreads the units.
+    let before = served();
+    for _ in 0..3 {
+        assert_eq!(rig.chat().await.0, 200);
+    }
+    let after = served();
+    let moved = after.iter().zip(&before).filter(|(a, b)| a > b).count();
+    assert!(moved >= 2, "unkeyed units spread: {before:?} -> {after:?}");
+}
+
+/// A POOL'S OWN AFFINITY HEADER (`affinity.header_name`) is the one its sessions are read from; the
+/// default header is then no key.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_reads_a_session_from_the_pools_own_affinity_header() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-affinity-header";
+    let _published = Withdrawn(instance);
+    let fars = [
+        far_end_answering(200, SERVED_BY_TWIN).await,
+        far_end_answering(200, SERVED_BY_TWIN).await,
+        far_end_answering(200, SERVED_BY_TWIN).await,
+    ];
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(fars[0].port, 1), (fars[1].port, 1), (fars[2].port, 1)],
+            affinity_header: Some("x-user-id"),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let served = || fars.iter().map(|f| f.served()).collect::<Vec<_>>();
+    let chat = serde_json::json!({"model": "p", "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}]});
+    let send = |name: &'static str, value: &'static str| {
+        let (rig, chat) = (&rig, chat.clone());
+        async move {
+            let r = rig
+                .open("POST", "/v1/chat/completions", Some(chat), &[(name, value)])
+                .await;
+            assert_eq!(r.status().as_u16(), 200);
+            let _ = axum::body::to_bytes(r.into_body(), 1 << 20).await;
+        }
+    };
+    for _ in 0..4 {
+        send("x-user-id", "user-7").await;
+    }
+    assert_eq!(
+        served().iter().filter(|n| **n == 4).count(),
+        1,
+        "the pool's header pins: {:?}",
+        served()
+    );
+    let before = served();
+    for _ in 0..3 {
+        send("x-session-id", "session-42").await;
+    }
+    let after = served();
+    let moved = after.iter().zip(&before).filter(|(a, b)| a > b).count();
+    assert!(
+        moved >= 2,
+        "the default header is not this pool's key: {before:?} -> {after:?}"
     );
 }

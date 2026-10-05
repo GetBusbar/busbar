@@ -65,8 +65,8 @@ use busbar_contract::abi::plane::{
     CANCEL_ABORTED, CLAIM_EXACT, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER,
     FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_HAS_STATUS,
     PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, REFUSAL_GATE, ROUTE_DIRECT, ROUTE_POOL,
-    SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_REPORTED, VERDICT_HARD,
-    VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
+    SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR, UNITS_REPORTED,
+    VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, RECORD_AUDIT};
@@ -657,10 +657,15 @@ pub fn counts(units: &Units) -> Vec<UnitCount> {
         units.cache_write,
     ];
     let mut out = Vec::new();
-    if tokens.iter().any(|&n| n != 0) {
+    let source = if units.floor {
+        UNITS_FLOOR
+    } else {
+        UNITS_REPORTED
+    };
+    if units.stated || tokens.iter().any(|&n| n != 0) {
         out.extend(tokens.iter().zip(0u32..).map(|(&amount, class)| UnitCount {
             class,
-            source: UNITS_REPORTED,
+            source,
             amount,
         }));
     }
@@ -736,6 +741,32 @@ fn fee_unit(unit: &mut UnitState, answer: &mut Answer) {
             amount: 1,
         });
     }
+}
+
+/// THE UNIT'S STICKY-ROUTING KEY, as 1.5.5 derived it (v1.5.5 `crates/busbar/src/ingress/mod.rs`
+/// `affinity_header_for`, `crates/busbar/src/proxy/engine/mod.rs` the affinity hash): the value of
+/// the pool's affinity header (`header`, matched case-blind) where the caller sent one readable as
+/// text, else the operation's body key (chat's non-empty `system`); `None` = no affinity. The kernel
+/// hashes it and picks the member; the plane never does.
+#[must_use]
+pub fn affinity_key(
+    header: &str,
+    caller: &[(&[u8], &[u8])],
+    handler: Option<&dyn busbar_contract::codec::OperationHandler>,
+    body: Option<&Value>,
+) -> Option<String> {
+    let visible = |v: &[u8]| v.iter().all(|b| *b == b'\t' || (0x20..0x7f).contains(b));
+    caller
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(header.as_bytes()))
+        .map(|(_, v)| *v)
+        .filter(|v| visible(v))
+        .and_then(|v| std::str::from_utf8(v).ok())
+        .map(str::to_string)
+        .or_else(|| {
+            let (h, b) = (handler?, body?);
+            h.body_affinity_key(b).map(str::to_string)
+        })
 }
 
 /// A reply piece as the caller's answer.
@@ -1169,6 +1200,20 @@ slot!(
                 out.set(|o| &o.principal_need, PRINCIPAL_REQUIRED);
                 let (class, entry) = route_of(&unit.shaping, &arrived.model);
                 out.route(class, entry);
+                let handler = handler_of(&arrived);
+                if handler.is_some_and(|h| stream_intent(h, arrived.parsed.as_ref()).wants_stream) {
+                    out.stream();
+                }
+                if class == ROUTE_POOL {
+                    if let Some(key) = affinity_key(
+                        unit.shaping.affinity_header(entry),
+                        &unit.caller_fields(),
+                        handler,
+                        arrived.parsed.as_ref(),
+                    ) {
+                        out.affinity(&key);
+                    }
+                }
                 unit.arrived = Some(arrived);
                 guard(&door.units).insert(given.unit, unit);
                 Outcome::Ready

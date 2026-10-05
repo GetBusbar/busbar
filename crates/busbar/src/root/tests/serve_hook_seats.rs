@@ -243,6 +243,98 @@ impl FarEnd {
     }
 }
 
+/// What a scripted far end writes for each request it reads: its raw head, then each piece after
+/// its delay, then (when `finish` is set) the closing bytes; it then closes the connection, so a
+/// script whose head promises more than it writes is a far end that CUT its answer.
+#[derive(Clone)]
+pub(super) struct Script {
+    /// The status line and head fields, through the blank line.
+    pub head: String,
+    /// Each piece of the body, after its delay in milliseconds.
+    pub pieces: Vec<(u64, Vec<u8>)>,
+    /// The bytes that complete the body (a chunked body's last chunk); `None` cuts it.
+    pub finish: Option<Vec<u8>>,
+}
+
+/// One chunk of a chunked body.
+pub(super) fn chunk(bytes: &[u8]) -> Vec<u8> {
+    let mut out = format!("{:x}\r\n", bytes.len()).into_bytes();
+    out.extend_from_slice(bytes);
+    out.extend_from_slice(b"\r\n");
+    out
+}
+
+/// A far end on loopback answering every request by `script`.
+pub(super) async fn far_end_scripted(script: Script) -> FarEnd {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a loopback port");
+    let port = listener.local_addr().expect("its address").port();
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let authorizations = Arc::new(Mutex::new(Vec::new()));
+    let (served, seen) = (Arc::clone(&hits), Arc::clone(&authorizations));
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let (served, seen, script) = (Arc::clone(&served), Arc::clone(&seen), script.clone());
+            tokio::spawn(async move {
+                let Some(head) = read_request(&mut socket).await else {
+                    return;
+                };
+                served.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                seen.lock().unwrap().push(head);
+                if socket.write_all(script.head.as_bytes()).await.is_err() {
+                    return;
+                }
+                for (delay, piece) in &script.pieces {
+                    tokio::time::sleep(std::time::Duration::from_millis(*delay)).await;
+                    if socket.write_all(piece).await.is_err() {
+                        return;
+                    }
+                    let _ = socket.flush().await;
+                }
+                if let Some(finish) = &script.finish {
+                    let _ = socket.write_all(finish).await;
+                }
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    FarEnd {
+        port,
+        hits,
+        authorizations,
+    }
+}
+
+/// Read one request off `socket` through its body; its `authorization` field (empty when none),
+/// or `None` when the connection closed first.
+async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<String> {
+    let mut buf = vec![0u8; 16 * 1024];
+    let mut got = Vec::new();
+    loop {
+        let n = socket.read(&mut buf).await.ok()?;
+        if n == 0 {
+            return None;
+        }
+        got.extend_from_slice(&buf[..n]);
+        let text = String::from_utf8_lossy(&got).to_string();
+        if let Some(at) = text.find("\r\n\r\n") {
+            let field = |name: &str| {
+                text[..at].lines().find_map(|l| {
+                    let (n, v) = l.split_once(':')?;
+                    n.eq_ignore_ascii_case(name).then(|| v.trim().to_string())
+                })
+            };
+            let length = field("content-length")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            if got.len() >= at + 4 + length {
+                return Some(field("authorization").unwrap_or_default());
+            }
+        }
+    }
+}
+
 /// A far end on loopback answering every request with `status` and `body` (JSON).
 pub(super) async fn far_end_answering(status: u16, body: &'static str) -> FarEnd {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -340,6 +432,14 @@ pub(super) struct RigOpts<'a> {
     /// Each pool member states a tier `t<i>` and a tag `g<i>`, and the generation declares the
     /// three candidate catalog signals (breaker state, error rate, p95 latency).
     pub described: bool,
+    /// Pool `p`'s `failover.timeout_secs` (`None`: the default).
+    pub failover_timeout_secs: Option<u64>,
+    /// The node's stream ceiling, in seconds (`None`: 600).
+    pub stream_ceiling_secs: Option<u64>,
+    /// Pool `p`'s `affinity.header_name` (`None`: the pool states no affinity block).
+    pub affinity_header: Option<&'a str>,
+    /// Each member's lifetime request budget (`None`: unlimited).
+    pub lane_budget: Option<i64>,
 }
 
 /// THE LLM DOOR, SERVED END TO END, as production composes it: the data router built with the
@@ -360,6 +460,7 @@ pub(super) struct DoorRig {
     candidate_tap: Arc<SeatProbe>,
     gate_seat: Arc<SeatProbe>,
     read: Arc<dyn Fn() -> Ledger + Send + Sync>,
+    tokens: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
 
 impl DoorRig {
@@ -375,11 +476,33 @@ impl DoorRig {
         path: &str,
         body: Option<serde_json::Value>,
     ) -> (u16, axum::http::HeaderMap, Vec<u8>) {
+        let response = self.open(method, path, body, &[]).await;
+        let status = response.status().as_u16();
+        let head = response.headers().clone();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("the body")
+            .to_vec();
+        (status, head, bytes)
+    }
+
+    /// One request through the door as the keyed caller, with `fields` beside its own: the
+    /// response, its body unread.
+    pub async fn open(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+        fields: &[(&str, &str)],
+    ) -> axum::response::Response {
         use tower::ServiceExt as _;
         let mut req = axum::http::Request::builder()
             .method(method)
             .uri(path)
             .header("authorization", format!("Bearer {}", self.token));
+        for (name, value) in fields {
+            req = req.header(*name, *value);
+        }
         if body.is_some() {
             req = req.header("content-type", "application/json");
         }
@@ -389,19 +512,25 @@ impl DoorRig {
                 None => axum::body::Body::empty(),
             })
             .expect("a request");
-        let response = self
-            .router
+        self.router
             .clone()
             .oneshot(req)
             .await
-            .expect("the router answers");
-        let status = response.status().as_u16();
-        let head = response.headers().clone();
-        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
-            .await
-            .expect("the body")
-            .to_vec();
-        (status, head, bytes)
+            .expect("the router answers")
+    }
+
+    /// The tokens on the key's ledger once they are nonzero or the wait is spent (the accrual is
+    /// write-behind).
+    pub async fn tokens_after(&self) -> u64 {
+        let mut tokens = (self.tokens)();
+        for _ in 0..100 {
+            if tokens != 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokens = (self.tokens)();
+        }
+        tokens
     }
 
     /// One chat completion on pool `p`.
@@ -505,6 +634,14 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
             yaml.push_str(&format!("        tier: t{i}\n        tags: [g{i}]\n"));
         }
     }
+    if let Some(secs) = opts.failover_timeout_secs {
+        yaml.push_str(&format!("    failover:\n      timeout_secs: {secs}\n"));
+    }
+    if let Some(header) = opts.affinity_header {
+        yaml.push_str(&format!(
+            "    affinity:\n      mode: session\n      header_name: {header}\n"
+        ));
+    }
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("a deployment");
     let mut defs_yaml = String::new();
     for (i, (port, _)) in opts.members.iter().enumerate() {
@@ -591,14 +728,18 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         .governance(Arc::clone(&gov))
         .cost(cost);
     for (i, (port, _)) in opts.members.iter().enumerate() {
-        builder = builder.lane(busbar_kernel::test_support::LaneSpec::new(
+        let lane = busbar_kernel::test_support::LaneSpec::new(
             &format!("m{i}"),
             match opts.dialect {
                 Some("anthropic") => "anthropic",
                 _ => "openai",
             },
             &format!("http://127.0.0.1:{port}"),
-        ));
+        );
+        builder = builder.lane(match opts.lane_budget {
+            Some(n) => lane.budget(n),
+            None => lane,
+        });
     }
     let weights: Vec<(usize, u32)> = opts
         .members
@@ -625,6 +766,14 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
                 row.requests,
                 row.billable_requests,
             )
+        })
+    };
+    let tokens: Arc<dyn Fn() -> u64 + Send + Sync> = {
+        let (gov, cost, key_id) = (Arc::clone(&gov), app.cost.clone(), key.id.clone());
+        Arc::new(move || {
+            gov.usage_for(cost.as_ref(), &key_id, busbar_kernel::store::now())
+                .expect("usage read")
+                .map_or(0, |u| u.tokens)
         })
     };
     let mut rewrite = SeatProbe::new("rewrite", &log);
@@ -686,7 +835,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         secrets: &secrets,
         auths,
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
-        stream_ceiling_secs: 600,
+        stream_ceiling_secs: opts.stream_ceiling_secs.unwrap_or(600),
         models: Some(&models),
         upgrades: Vec::new(),
     };
@@ -734,6 +883,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         candidate_tap,
         gate_seat: ranker,
         read,
+        tokens,
     }
 }
 

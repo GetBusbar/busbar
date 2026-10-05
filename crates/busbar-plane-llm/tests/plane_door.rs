@@ -303,3 +303,44 @@ fn an_arrival_routes_over_its_model_a_pool_first_then_a_direct_entry() {
     assert_eq!(route_of(&shaping, "both"), (ROUTE_POOL, "both"));
     assert_eq!(route_of(&shaping, "nope"), (ROUTE_DIRECT, "nope"));
 }
+
+/// THE STICKY-ROUTING KEY (ARCHITECT Q1 ArriveOut, 2026-10-05), as 1.5.5 derived it: the pool's
+/// `affinity.header_name` (else `x-session-id`), matched case-blind, wins over chat's non-empty body
+/// `system`; a header value that is not text is no key; neither is no affinity.
+#[test]
+fn the_sticky_key_is_the_pools_header_else_the_chat_bodys_system() {
+    use busbar_plane_llm::plane_door::affinity_key;
+    let shaping = read_settings(
+        br#"{"providers":{"ant":{"protocol":"anthropic","base_url":"https://anthropic.example"}},
+        "models":{"claude":{"provider":"ant"}},
+        "pools":{"p":{"members":["claude"]},
+                 "u":{"members":["claude"],"affinity":{"mode":"session","header_name":"x-user-id"}}}}"#,
+    )
+    .expect("a well-formed generation reads");
+    assert_eq!(shaping.affinity_header("p"), "x-session-id");
+    assert_eq!(shaping.affinity_header("u"), "x-user-id");
+    let chat = busbar_plane_llm::codec::DECLS
+        .iter()
+        .find(|d| d.name == "anthropic")
+        .and_then(|d| d.handler)
+        .and_then(|h| h.operation_handler(busbar_contract::operation::OpVerb::CHAT));
+    let body = serde_json::json!({"model": "p", "system": "be brief", "messages": []});
+    let session: &[(&[u8], &[u8])] = &[(b"X-Session-Id", b"s-1")];
+    assert_eq!(
+        affinity_key("x-session-id", session, chat, Some(&body)),
+        Some("s-1".to_string())
+    );
+    assert_eq!(
+        affinity_key("x-user-id", session, chat, Some(&body)),
+        Some("be brief".to_string()),
+        "another pool's header is not this pool's"
+    );
+    let unreadable: &[(&[u8], &[u8])] = &[(b"x-session-id", b"s\x01")];
+    assert_eq!(
+        affinity_key("x-session-id", unreadable, chat, Some(&body)),
+        Some("be brief".to_string())
+    );
+    let plain = serde_json::json!({"model": "p", "system": "", "messages": []});
+    assert_eq!(affinity_key("x-session-id", &[], chat, Some(&plain)), None);
+    assert_eq!(affinity_key("x-session-id", &[], None, Some(&body)), None);
+}

@@ -512,8 +512,21 @@ pub struct Decoded {
     pub pool: Option<Vec<u8>>,
     /// What [`Decoded::pool`] names: `ROUTE_POOL` or `ROUTE_DIRECT` (ARCHITECT Q-FL3).
     pub route: u8,
-    /// The `ROUTE_*` flag bits its `arrive` stated (`ROUTE_ONCE`, `ROUTE_SESSION`).
+    /// The `ROUTE_*` flag bits its `arrive` stated (`ROUTE_ONCE`, `ROUTE_SESSION`,
+    /// `ROUTE_STREAM`).
     pub route_flags: u8,
+    /// The sticky-routing key its `arrive` stated, opaque; `None` = none.
+    pub affinity: Option<Vec<u8>>,
+}
+
+/// THE WALK'S AFFINITY POSITION for a plane's opaque sticky key: FNV-1a over its bytes, the hash
+/// 1.5.5 put on a session key (v1.5.5 `stable_hash`, `store::fnv1a_u64`), so one session lands on
+/// the member it landed on before.
+#[must_use]
+pub fn sticky_hash(key: &[u8]) -> u64 {
+    key.iter().fold(crate::store::FNV1A_OFFSET_BASIS, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(crate::store::FNV1A_PRIME)
+    })
 }
 
 /// THE KERNEL STEPS A PLANE'S UNIT IS SERVED UNDER ([`PlaneDriver::unit`]'s `steps`): the loop's
@@ -527,6 +540,11 @@ pub trait DriverSteps: Units {
     /// The `ROUTE_*` flag bits the unit's `arrive` stated (`ROUTE_ONCE`: an answered failure is
     /// not retried on another member), told with [`Self::decoded`].
     fn route_flags(&self, _ctx: &UnitCtx, _flags: u8) {}
+
+    /// The sticky-routing key the unit's `arrive` stated (ARCHITECT Q1 ArriveOut), as the walk's
+    /// affinity position: [`sticky_hash`] of the plane's opaque key. Told with [`Self::decoded`],
+    /// and only when the plane stated a key.
+    fn affinity(&self, _ctx: &UnitCtx, _hash: u64) {}
 
     /// The units the plane's `arrive` expects the unit to do (its admission estimate, THE DESIGN
     /// §7 `admission: estimate`), told with [`Self::decoded`]. An estimate never bills.
@@ -744,6 +762,10 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             pool,
             route: o.route,
             route_flags: o.route_flags,
+            affinity: (outcome == AbiOutcome::Ready)
+                .then(|| self.driver.calls.arrived_affinity(&o))
+                .flatten()
+                .filter(|k| !k.is_empty()),
         })
     }
 }
@@ -1116,6 +1138,9 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         if let (Some(op), Some(d)) = (op, decoded.as_ref()) {
             self.steps.decoded(ctx, op, d.route, d.pool.as_deref());
             self.steps.route_flags(ctx, d.route_flags);
+            if let Some(key) = &d.affinity {
+                self.steps.affinity(ctx, sticky_hash(key));
+            }
             self.steps.expected(ctx, &d.expected);
         }
         self.lock().decoded = decoded;

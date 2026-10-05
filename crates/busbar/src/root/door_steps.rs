@@ -405,6 +405,10 @@ struct DoorUnit {
     expected: Vec<UnitCount>,
     /// Its operation is performed at most once (`ROUTE_ONCE`).
     once: bool,
+    /// Its caller asked for the answer streamed (`ROUTE_STREAM`).
+    stream: bool,
+    /// The walk's affinity position its `arrive`'s sticky key names.
+    affinity: Option<u64>,
     routed: Option<Routed>,
     /// The governance book's grant: its in-flight holds, released when the unit's steps drop.
     grant: Option<AdmitGrant>,
@@ -531,6 +535,18 @@ impl<'s> DoorSteps<'s> {
     #[must_use]
     pub fn once(&self) -> bool {
         self.lock().once
+    }
+
+    /// Whether the unit's caller asked for its answer streamed (its `arrive`'s `ROUTE_STREAM`).
+    #[must_use]
+    pub fn wants_stream(&self) -> bool {
+        self.lock().stream
+    }
+
+    /// The walk's affinity position the unit's `arrive` named, where it stated a sticky key.
+    #[must_use]
+    pub fn affinity(&self) -> Option<u64> {
+        self.lock().affinity
     }
 
     /// The key of the plane the unit is of.
@@ -681,7 +697,13 @@ impl DriverSteps for DoorSteps<'_> {
     }
 
     fn route_flags(&self, _ctx: &UnitCtx, flags: u8) {
-        self.lock().once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
+        let mut u = self.lock();
+        u.once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
+        u.stream = flags & busbar_contract::abi::plane::ROUTE_STREAM != 0;
+    }
+
+    fn affinity(&self, _ctx: &UnitCtx, hash: u64) {
+        self.lock().affinity = Some(hash);
     }
 }
 
@@ -1295,6 +1317,11 @@ pub fn kernel_sections(
                 ON_EXHAUSTED_KEY.into(),
                 json!({ FALLBACK_POOL_KEY: fallback }),
             );
+        }
+        // The header a pool's session affinity reads (1.5.5's `affinity.header_name`): the plane
+        // reads the caller's key from it, and the kernel routes on that key (ARCHITECT Q1).
+        if let Some(header) = pool.affinity.as_ref().and_then(|a| a.header_name.as_ref()) {
+            p.insert("affinity".into(), json!({ "header_name": header }));
         }
         pools.insert(name.clone(), Value::Object(p));
     }

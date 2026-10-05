@@ -136,6 +136,9 @@ pub struct Shaping {
     pub lanes: BTreeMap<String, Lane>,
     /// Every pool's members, in the pool's order, by pool name.
     pub pools: BTreeMap<String, Vec<Member>>,
+    /// The session-affinity header a pool's `affinity.header_name` names, by pool name; a pool that
+    /// names none reads [`DEFAULT_AFFINITY_HEADER`].
+    pub affinity_headers: BTreeMap<String, String>,
     /// The global output-token default.
     pub default_max_tokens: u32,
     /// The effort → thinking-budget table.
@@ -338,7 +341,20 @@ pub mod sections {
     pub const LIMITS: &str = "limits";
 }
 
+/// The header a pool's session affinity reads when its `affinity` names none (1.5.5's).
+pub const DEFAULT_AFFINITY_HEADER: &str = "x-session-id";
+
 impl Shaping {
+    /// The header the session affinity of the unit routed over `pool` reads: the pool's own
+    /// `affinity.header_name`, else [`DEFAULT_AFFINITY_HEADER`] (v1.5.5
+    /// `crates/busbar/src/ingress/mod.rs` `affinity_header_for`).
+    #[must_use]
+    pub fn affinity_header(&self, pool: &str) -> &str {
+        self.affinity_headers
+            .get(pool)
+            .map_or(DEFAULT_AFFINITY_HEADER, String::as_str)
+    }
+
     /// READ THE TABLES from the settings object.
     ///
     /// # Errors
@@ -353,6 +369,7 @@ impl Shaping {
             section(settings, sections::MODELS)?.unwrap_or_default();
         let limits: Option<LimitsCfg> = section(settings, sections::LIMITS)?;
         let mut pools: BTreeMap<String, Vec<Member>> = BTreeMap::new();
+        let mut affinity_headers: BTreeMap<String, String> = BTreeMap::new();
         let mut context: HashMap<String, Option<usize>> = HashMap::new();
         if let Some(Value::Object(sec)) = settings.get(sections::POOLS) {
             for (name, pool) in sec {
@@ -382,6 +399,12 @@ impl Shaping {
                     members.push(m);
                 }
                 pools.insert(name.clone(), members);
+                if let Some(h) = pool
+                    .pointer("/affinity/header_name")
+                    .and_then(Value::as_str)
+                {
+                    affinity_headers.insert(name.clone(), h.to_string());
+                }
             }
         }
         let mut lanes = BTreeMap::new();
@@ -443,6 +466,7 @@ impl Shaping {
         Ok(Shaping {
             lanes,
             pools,
+            affinity_headers,
             default_max_tokens: limits
                 .as_ref()
                 .and_then(|l| l.default_max_tokens)
