@@ -8,7 +8,6 @@
 //! one and downcast by the other cannot match — these must run in the plugin's single-`busbar-core`
 //! binary. The pure-auth (401/verification) tests that never reach dispatch stay in core.
 
-use axum::http::header::AUTHORIZATION;
 use busbar_contract::records::ScopeRef;
 use busbar_kernel::auth::AuthMiddleware;
 
@@ -1021,7 +1020,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     store
         .put_key(&VirtualKey {
             id: "kold".to_string(),
-            generation_hash: sha256_hex(persisted_secret.as_bytes()),
+            generation_hash: busbar_contract::redacted::sha256_hex(persisted_secret.as_bytes()),
             name: "kold".to_string(),
             allowed_scopes: Some(vec![ScopeRef::pool("restricted")]),
             enabled: true,

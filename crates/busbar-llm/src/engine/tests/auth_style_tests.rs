@@ -80,8 +80,12 @@ fn test_keyless_lane_sends_no_auth_header() {
             "an empty credential must send NO auth header (auth style {auth:?})"
         );
         assert!(
-            busbar_kernel::bound_credential::prebuild_auth(&lane.credential, "", &lane.signing_host)
-                .is_none_or(|h| h.is_empty()),
+            busbar_kernel::bound_credential::prebuild_auth(
+                &lane.credential,
+                "",
+                &lane.signing_host
+            )
+            .is_none_or(|h| h.is_empty()),
             "and the boot-time prebuilt freeze must not hold one either (auth style {auth:?})"
         );
     }

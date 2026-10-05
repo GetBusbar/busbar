@@ -9,7 +9,7 @@
 //! refuses, so the property is on record rather than left to be inferred from a passing run.
 
 use super::{entry, Canned};
-use crate::chain::{AuthChain, ChainVerdict};
+use crate::chain::AuthChain;
 use crate::challenge::{Challenge, ChallengeBounds};
 use crate::module::AuthOutcome;
 

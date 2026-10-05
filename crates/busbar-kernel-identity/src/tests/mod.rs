@@ -13,7 +13,6 @@ mod unit_tests;
 
 use crate::chain::{ChainEntry, ResolvedKey};
 use crate::module::{AuthModule, AuthOutcome};
-use crate::principal::Principal;
 
 /// A stand-in module with a canned answer and a declared cacheability, so a test can state exactly
 /// the chain shape it means and nothing else.
