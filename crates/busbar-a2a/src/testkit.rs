@@ -26,17 +26,8 @@ pub(crate) use busbar_kernel::test_support::{
 };
 use std::sync::Arc;
 
-// The self-enveloping admin-verb backing (core-admin's `CorePlaneAdminEnvelope`, P2 D4) — bound
-// plane-side in THIS crate's own test binary (core-admin is a dev-dependency here, so only `cfg(test)`
-// can name it). A test-support CONSUMER binds it through `busbar_core_admin::install()`, which every
-// admin-mounting test path calls. The one core-implementation name lives in this `tests/`-path file
-// the neutral-purity lint excludes (the twin of core's `plane/tests/registry_tests.rs`).
-#[cfg(test)]
-#[path = "a2a/tests/envelope_boot.rs"]
-mod envelope_boot;
-
 // The engine test-kit binding (`engine()`): the ONE function the plane's tests reach the engine's
-// fixture through, in a `tests/`-path file for the same reason as `envelope_boot` above. Not gated
+// fixture through, in a `tests/`-path file the neutral-purity lint excludes. Not gated
 // on `cfg(test)`: the admin-verb battery compiles into the library under `test-support` (the shape
 // core's own test-support build takes) and binds through it there too, so every configuration that
 // compiles it has a caller.
@@ -47,7 +38,8 @@ pub(crate) mod engine_boot;
 const SCRATCH_KEY: &str = "a2a";
 
 /// INSTALL THE A2A CROSS-PLANE TEST SEAMS the composition root (`main`) installs in production — the
-/// parse-time section-list provider and the self-enveloping admin-verb backing. Idempotent set-once
+/// parse-time section-list provider (the self-enveloping admin-verb backing is core-admin's, bound by
+/// `busbar_core_admin::install()`). Idempotent set-once
 /// installs. The durable task set (`crate::taskstore::TASKS`) is owned by the plane and drives the
 /// generic `PlaneRecord` store directly, so there is no task codec/reader seam to install here any
 /// more (both were deleted with the relocation).
@@ -55,11 +47,8 @@ pub fn install_test_seams() {
     busbar_kernel::plane::config::install_plane_sections(
         busbar_kernel::plane::config::default_plane_sections,
     );
-    // The self-enveloping admin-verb backing (core's `CorePlaneAdminEnvelope`), bound plane-side from
-    // THIS crate's core copy through the `tests/`-path `envelope_boot` helper (the composition-root job
-    // `main` does in production) — so the plane's shipped source names no core implementation item.
-    #[cfg(test)]
-    envelope_boot::install();
+    // The self-enveloping admin-verb backing is core-admin's, bound by `busbar_core_admin::install()`
+    // with the admin mount it is served under (P2 D4).
     // Register the A2A plane in the process registry too (config sections / cross-plane refusal), the
     // same thing the finalizer does for plane-building tests.
     busbar_kernel::plane::registry::register_test_plane(&PLANE_ROW);
