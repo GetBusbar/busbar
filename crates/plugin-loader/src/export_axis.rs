@@ -173,7 +173,7 @@ impl<'r> ExportRows<'r> {
         self.registry
             .linked()
             .iter()
-            .filter(|p| p.manifest.kind == "export")
+            .filter(|p| p.manifest.kind == SECTION)
             .map(|p| p.manifest.alias.clone())
             .collect()
     }
@@ -189,6 +189,22 @@ impl<'r> ExportRows<'r> {
         match self.load(row, &label(module), false) {
             Ok(Door::Memory(p)) => p.context::<ExportFacts>().is_some_and(|f| f.one_instance),
             _ => false,
+        }
+    }
+
+    /// The routes `module`'s row declares, read off its Statement at bind (no instance opens). A
+    /// row that will not load here, or a cold row, declares none.
+    #[must_use]
+    pub fn routes(&self, module: &str) -> Vec<busbar_contract::abi::mechanism::route::Route> {
+        let Some(row) = self.row(module) else {
+            return Vec::new();
+        };
+        match self.load(row, &label(module), false) {
+            Ok(Door::Memory(p)) => p
+                .context::<ExportFacts>()
+                .map(|f| f.routes.clone())
+                .unwrap_or_default(),
+            _ => Vec::new(),
         }
     }
 

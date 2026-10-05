@@ -57,7 +57,7 @@ use std::sync::Arc;
 /// for the route itself — genuinely hot-mounting one is a router rebuild, not done here — but it is no
 /// longer a SILENT one.
 pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
-    plugin::route_decls(cfg).collect()
+    plugin::route_decls(cfg)
 }
 
 /// The raw per-request facts the `logs` stream is built FROM — everything core knows at

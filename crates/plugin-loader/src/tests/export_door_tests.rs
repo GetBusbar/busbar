@@ -32,7 +32,16 @@ fn the_tail_is_read_at_bind() {
     let (plugin, _) = linked();
     let facts = plugin.context::<ExportFacts>().expect("an export tail");
     assert_eq!(facts.streams, vec![ExportStream::Metrics as u8]);
-    assert!(facts.routes.is_empty());
+    let routes: Vec<String> = facts
+        .routes
+        .iter()
+        .map(|r| format!("{} {} {:?}", r.method.as_str(), r.path, r.auth))
+        .collect();
+    assert_eq!(
+        routes,
+        ["GET /metrics Key", "GET /metrics/hooks Key"],
+        "the scrape sink declares its own two well-known routes"
+    );
 }
 
 #[test]
@@ -108,7 +117,10 @@ fn the_ops_the_sink_does_not_serve_are_answered_as_such() {
         headers: &[],
         body: &[],
     };
-    assert!(sink.serve(&req).is_err(), "the scrape sink serves no route");
+    assert!(
+        sink.serve(&req).is_err(),
+        "with no host services bound the snapshot read is declined: an error, never bytes"
+    );
     assert!(check(sink.plugin(), 1, &[])
         .expect("check answers")
         .is_empty());

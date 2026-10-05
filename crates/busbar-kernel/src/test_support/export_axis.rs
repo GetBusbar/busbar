@@ -131,6 +131,10 @@ impl busbar_contract::export_calls::ExportAxis for StandIn {
     fn linked_modules(&self) -> Vec<String> {
         rows().map(|r| r.linked_modules()).unwrap_or_default()
     }
+
+    fn routes(&self, module: &str) -> Vec<busbar_contract::abi::mechanism::route::Route> {
+        rows().map(|r| r.routes(module)).unwrap_or_default()
+    }
 }
 
 /// The axis every test in this binary resolves `export:` against — installed once, as the

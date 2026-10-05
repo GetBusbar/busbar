@@ -80,4 +80,8 @@ impl ExportAxis for RootExports {
     fn linked_modules(&self) -> Vec<String> {
         rows().map(|r| r.linked_modules()).unwrap_or_default()
     }
+
+    fn routes(&self, module: &str) -> Vec<busbar_contract::abi::mechanism::route::Route> {
+        rows().map(|r| r.routes(module)).unwrap_or_default()
+    }
 }

@@ -221,8 +221,18 @@ impl PluginRouteTable {
     }
 }
 
+/// The well-known exposition path (a Prometheus/OpenMetrics convention): the one export route
+/// outside `/exports/<name>/*`.
+const METRICS_PATH: &str = "/metrics";
+
 /// The well-known path only the scrape sink may claim ([`RouteDecl::scrape`]).
 const SCRAPE_SINK_PATH: &str = "/metrics/hooks";
+
+/// Whether `path` is one of the scrape sink's well-known exposition paths — `/metrics` or
+/// `/metrics/hooks` — which only the scrape sink (first-party, #65) is granted.
+pub(crate) fn well_known(path: &str) -> bool {
+    path == METRICS_PATH || path == SCRAPE_SINK_PATH
+}
 
 /// Namespace-confine one declared `path` for a plugin of `kind` named `owner` (`scrape`: it is the
 /// scrape sink). `Ok(())` iff the path is inside the plugin's allowed namespace and collides with no
@@ -246,7 +256,7 @@ fn confine(kind: RouteKind, owner: &str, path: &str, scrape: bool) -> Result<(),
     // `/metrics` (the one exception, for a metrics-stream sink).
     let (noun, root, or_metrics) = match kind {
         RouteKind::Hook => ("hook", format!("/hooks/{owner}"), ""),
-        RouteKind::Export if path == "/metrics" || path == SCRAPE_SINK_PATH => return Ok(()),
+        RouteKind::Export if well_known(path) => return Ok(()),
         RouteKind::Export => ("export", format!("/exports/{owner}"), "/metrics or "),
     };
     if path == root || path.starts_with(&format!("{root}/")) {
@@ -308,10 +318,12 @@ pub fn paths_awaiting_restart(
     boot_mounted: &std::collections::HashSet<String>,
 ) -> Vec<String> {
     let previous = previous.paths();
+    // `/metrics/hooks` is reported as 1.5.5 reported it: never (it was a core route then, mounted
+    // with the recorder at boot, outside the plugin route table this signal reads).
     let mut out: Vec<String> = installed
         .paths()
         .into_iter()
-        .filter(|p| !boot_mounted.contains(p) && !previous.contains(p))
+        .filter(|p| !boot_mounted.contains(p) && !previous.contains(p) && p != SCRAPE_SINK_PATH)
         .collect();
     out.sort();
     out

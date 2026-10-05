@@ -344,6 +344,13 @@ pub trait ExportAxis: Send + Sync {
         false
     }
 
+    /// The routes `module`'s row declares (its Statement's `routes`), read without opening an
+    /// instance: what a configuration apply that adds an instance would mount. None by default.
+    fn routes(&self, module: &str) -> Vec<crate::abi::mechanism::route::Route> {
+        let _ = module;
+        Vec::new()
+    }
+
     /// The `module:` words of the export rows this build LINKS, in the order the composition root
     /// registered them: what an unknown-exporter refusal lists. None by default.
     fn linked_modules(&self) -> Vec<String> {
