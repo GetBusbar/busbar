@@ -4637,6 +4637,7 @@ dependencies = [
  "busbar-contract",
  "busbar-core-connector",
  "busbar-plugin-loader",
+ "busbar-transport-tcp",
  "busbar-transport-ws",
  "futures",
  "serde_json",
