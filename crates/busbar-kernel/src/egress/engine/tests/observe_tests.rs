@@ -9,9 +9,12 @@
 //! is refused), the URI's port beats any port a resolver answers, and the connect deadline
 //! bounds a black-holing TLS peer that hyper's TCP-only connect timeout never would.
 //!
-//! These tests hand-build the connector stack (fixture-rooted trust arrives with the TLS-posture
-//! step; the stack shape is `EngineConnector` exactly), except where noted client-level through
-//! `build_client`.
+//! These tests hand-build the connector stack (the stack shape is `EngineConnector` exactly) over
+//! the TLS test double (`egress::fixtures::TlsDouble`): the TLS itself is the connector's, which this
+//! crate cannot name, so what is proven here is the engine's side — the name it hands the wrap, the
+//! leaf it observes, the deadline over the whole connect. The real-TLS twins (the ClientHello's SNI
+//! on the wire, the wrong-name refusal, the observed pin of a real handshake) are the connector's
+//! `tls/engine_tests.rs`, which drives this engine over the connector's wrap.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,40 +25,43 @@ use http_body_util::BodyExt;
 
 use super::resolve::ResolveNames;
 use super::*;
-use crate::egress::fixtures::{
-    ca_and_leaf, certs_from_pem, spawn_tls, CannedResponse, ClientAuth, TlsServerSpec,
-};
+use crate::egress::fixtures::{ca_and_leaf, spawn_double, CannedResponse, DoublePeer, TlsDouble};
 
-/// Build the ENGINE'S connector shape over a fixture-rooted trust store: the same
-/// `SpkiObserve<ConnectDeadline<HttpsConnector<TunnelConnector>>>` stack `build_client` wires,
-/// with the trust source swapped for the fixture CA (the `WebpkiPlus` arm of the spec is the
-/// TLS-posture step; the connector layering under test here is identical either way).
+/// Build the ENGINE'S connector shape over the TLS double: the same
+/// `SpkiObserve<ConnectDeadline<HttpsConnector<TunnelConnector>>>` stack `build_client` wires, its
+/// https arm secured by `tls` (no ALPN offer — the h1 rows).
 fn fixture_connector(
-    root_pem: &str,
+    tls: &TlsDouble,
     resolver: EgressResolver,
     deadline: Duration,
     observe: bool,
 ) -> EngineConnector {
-    let mut roots = rustls::RootCertStore::empty();
-    for der in certs_from_pem(root_pem) {
-        roots.add(der).expect("fixture root");
-    }
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let tls = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .expect("ring provider supports the default TLS protocol versions")
-        .with_root_certificates(roots)
-        .with_no_client_auth();
     let mut http = hyper_util::client::legacy::connect::HttpConnector::new_with_resolver(resolver);
     http.enforce_http(false);
     http.set_nodelay(true);
     let http = tunnel::TunnelConnector::new(http, None, tunnel::connects_per_shard_for_tests());
-    let https = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_tls_config(tls)
-        .https_or_http()
-        .enable_http1()
-        .wrap_connector(http);
+    let client = tls
+        .layer()
+        .client(&crate::secure::ClientTlsSpec {
+            extra_roots: None,
+            identity: None,
+            alpn: &[],
+        })
+        .expect("the double builds");
+    let https = https::HttpsConnector::new(http, Some(client));
     KeyPinObserve::new(ConnectDeadline::new(https, deadline), observe)
+}
+
+/// A recording far end behind the double, presenting `leaf`.
+fn presenting(leaf: &[u8], body: &str) -> crate::egress::fixtures::DoubleFixture {
+    spawn_double(
+        DoublePeer {
+            leaf: Some(leaf.to_vec()),
+            ..DoublePeer::default()
+        },
+        CannedResponse::ok(body),
+        4,
+    )
 }
 
 fn pooled_client(connector: EngineConnector) -> EngineClient {
@@ -90,19 +96,13 @@ fn get(uri: String) -> http::Request<Full<Bytes>> {
 #[tokio::test]
 async fn extras_propagate_through_pooled_reuse_both_responses_carry_the_peer_pin() {
     let material = ca_and_leaf(&["pinned.test"]);
-    let fixture = spawn_tls(TlsServerSpec {
-        cert_chain_pem: material.leaf_pem.clone(),
-        key_pem: material.leaf_key_pem.clone(),
-        client_auth: ClientAuth::None,
-        response: CannedResponse::ok("observed"),
-        max_requests_per_connection: 4,
-    });
+    let fixture = presenting(&material.leaf_der, "observed");
     let resolver = EgressResolver::Pinned {
         host: Arc::from("pinned.test"),
         addr: fixture.addr.ip(),
     };
     let client = pooled_client(fixture_connector(
-        &material.ca_pem,
+        &TlsDouble::default(),
         resolver,
         Duration::from_secs(10),
         true,
@@ -135,22 +135,18 @@ async fn extras_propagate_through_pooled_reuse_both_responses_carry_the_peer_pin
     );
 }
 
-/// SNI preservation under the pin: the socket goes to the pinned loopback address, but the SNI —
-/// and therefore the certificate NAME check — stays on the hostname. The refusing twin: a cert
-/// for a DIFFERENT name served at the same pinned address fails the handshake (connect class),
-/// which is precisely the check an address-rewriting pin would have silently destroyed.
+/// SNI preservation under the pin: the socket goes to the pinned loopback address, but the server
+/// name the engine hands the TLS wrap — the SNI, and therefore the name the certificate is checked
+/// against — stays on the hostname. (The refusing twin, a wrong-name certificate at the pinned
+/// address refused at the handshake, is a check the connector's TLS makes on that name: the
+/// connector's `tls/engine_tests.rs` drives it over the real wrap.)
 #[tokio::test]
-async fn sni_stays_on_the_hostname_and_a_wrong_name_cert_is_refused() {
+async fn sni_stays_on_the_hostname_under_the_pin() {
     let right = ca_and_leaf(&["pinned.test"]);
-    let fixture = spawn_tls(TlsServerSpec {
-        cert_chain_pem: right.leaf_pem.clone(),
-        key_pem: right.leaf_key_pem.clone(),
-        client_auth: ClientAuth::None,
-        response: CannedResponse::ok("named"),
-        max_requests_per_connection: 4,
-    });
+    let fixture = presenting(&right.leaf_der, "named");
+    let tls = TlsDouble::default();
     let client = pooled_client(fixture_connector(
-        &right.ca_pem,
+        &tls,
         EgressResolver::Pinned {
             host: Arc::from("pinned.test"),
             addr: fixture.addr.ip(),
@@ -169,48 +165,11 @@ async fn sni_stays_on_the_hostname_and_a_wrong_name_cert_is_refused() {
     let records = fixture.records();
     assert_eq!(records[0].sni.as_deref(), Some("pinned.test"));
     assert!(records[0].handshake_ok);
-
-    // Same CA, but the leaf names `other.test` — served at the address `pinned.test` is pinned
-    // to. The name check runs against the hostname, so the handshake is REFUSED.
-    let wrong = {
-        let mut wrong = ca_and_leaf(&["other.test"]);
-        // Trust the WRONG server's CA too, so the refusal below can only be the NAME check.
-        wrong.ca_pem = format!("{}{}", wrong.ca_pem, right.ca_pem);
-        wrong
-    };
-    let wrong_fixture = spawn_tls(TlsServerSpec {
-        cert_chain_pem: wrong.leaf_pem.clone(),
-        key_pem: wrong.leaf_key_pem.clone(),
-        client_auth: ClientAuth::None,
-        response: CannedResponse::ok("misnamed"),
-        max_requests_per_connection: 4,
-    });
-    let client = pooled_client(fixture_connector(
-        &wrong.ca_pem,
-        EgressResolver::Pinned {
-            host: Arc::from("pinned.test"),
-            addr: wrong_fixture.addr.ip(),
-        },
-        Duration::from_secs(10),
-        true,
-    ));
-    let err = client
-        .request(get(format!(
-            "https://pinned.test:{}/v1/x",
-            wrong_fixture.addr.port()
-        )))
-        .await
-        .expect_err("a wrong-name certificate must refuse");
-    assert!(err.is_connect(), "refused at the handshake, connect class");
-    // The client learns of the refusal the moment it sends its alert; wait for the fixture
-    // thread to finish writing what the connection told it.
-    let records = wrong_fixture.records_when(|r| r.first().is_some_and(|c| c.sni.is_some()));
     assert_eq!(
-        records[0].sni.as_deref(),
-        Some("pinned.test"),
-        "the ClientHello carried the hostname even though the handshake was refused"
+        tls.hellos()[0].server_name,
+        "pinned.test",
+        "the name handed to the wrap is the hostname, never the pinned address"
     );
-    assert!(!records[0].handshake_ok);
 }
 
 /// R2 — the URI's port wins over any port a resolver answers. A scripted resolver answers the
@@ -238,19 +197,13 @@ async fn the_uri_port_wins_over_a_garbage_resolver_port() {
     }
 
     let material = ca_and_leaf(&["ported.test"]);
-    let fixture = spawn_tls(TlsServerSpec {
-        cert_chain_pem: material.leaf_pem.clone(),
-        key_pem: material.leaf_key_pem.clone(),
-        client_auth: ClientAuth::None,
-        response: CannedResponse::ok("right port"),
-        max_requests_per_connection: 4,
-    });
+    let fixture = presenting(&material.leaf_der, "right port");
     let scripted = Arc::new(GarbagePort {
         ip: fixture.addr.ip(),
         calls: AtomicUsize::new(0),
     });
     let client = pooled_client(fixture_connector(
-        &material.ca_pem,
+        &TlsDouble::default(),
         EgressResolver::Custom(Arc::clone(&scripted) as Arc<dyn ResolveNames>),
         Duration::from_secs(10),
         true,
@@ -271,7 +224,7 @@ async fn the_uri_port_wins_over_a_garbage_resolver_port() {
 /// catches and reqwest's `connect_timeout` always did.
 #[tokio::test]
 async fn a_black_holed_tls_handshake_fails_at_the_connect_deadline() {
-    // A listener that accepts and then says NOTHING: TCP succeeds, TLS never answers.
+    // A listener that accepts and then says NOTHING: TCP succeeds, the handshake never answers.
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bind");
     let addr = listener.local_addr().expect("addr");
     std::thread::spawn(move || {
@@ -282,9 +235,8 @@ async fn a_black_holed_tls_handshake_fails_at_the_connect_deadline() {
         }
     });
 
-    let material = ca_and_leaf(&["hole.test"]);
     let client = pooled_client(fixture_connector(
-        &material.ca_pem,
+        &TlsDouble::default(),
         EgressResolver::Pinned {
             host: Arc::from("hole.test"),
             addr: addr.ip(),

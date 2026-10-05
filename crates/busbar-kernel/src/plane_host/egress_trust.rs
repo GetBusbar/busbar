@@ -37,7 +37,7 @@ use crate::config::Destinations;
 use crate::egress::engine::ClientIdentity;
 use crate::host_services::{DestJudge, DestRefusal};
 use crate::plane_host::spki::SpkiError;
-use rustls_pki_types::CertificateDer;
+use crate::secure::SecureLayer;
 
 /// THE OUTBOUND EGRESS-TRUST HOST CAPABILITY, as a neutral trait a plane reaches through instead of
 /// calling [`identity`](super::identity) / [`trust_anchor`](super::trust_anchor) / [`spki`](super::spki)
@@ -59,14 +59,14 @@ pub trait EgressTrustHost: Send + Sync {
 
     /// Register a set of parsed extra-root `roots` at boot, returning the opaque `trust_anchor_ref` a
     /// hop carries. Pass-through to [`trust_anchor::register`](super::trust_anchor::register).
-    fn register_trust_anchor(&self, roots: Vec<CertificateDer<'static>>) -> u64 {
+    fn register_trust_anchor(&self, roots: Vec<Vec<u8>>) -> u64 {
         super::trust_anchor::register(roots)
     }
 
     /// Resolve a `trust_anchor_ref` to its extra roots (an EMPTY vec for the reserved `0` ref or an
     /// unknown one — fail-closed). Pass-through to
     /// [`trust_anchor::resolve`](super::trust_anchor::resolve).
-    fn resolve_trust_anchor(&self, trust_anchor_ref: u64) -> Vec<CertificateDer<'static>> {
+    fn resolve_trust_anchor(&self, trust_anchor_ref: u64) -> Vec<Vec<u8>> {
         super::trust_anchor::resolve(trust_anchor_ref)
     }
 
@@ -93,6 +93,14 @@ pub trait EgressTrustHost: Send + Sync {
     /// A config commit: the deployment's destinations are now `d`, raised to the guard behind the
     /// capability ([`DestJudge::destinations_applied`]); the pass-through has none and keeps nothing.
     fn destinations_applied(&self, _: &Destinations) {}
+
+    /// THE TLS AN OUTBOUND CONNECTION IS SECURED WITH: the connector's wrap (`crate::secure`), the
+    /// one TLS path (THE DESIGN: TLS stays in the connector; this crate names no TLS library). The
+    /// trust anchors, the pin and the client identity above are what it applies. `None` on the
+    /// pass-through, which has no TLS behind it: an https dial then fails, naming the missing wrap.
+    fn secure_layer(&self) -> Option<Arc<dyn SecureLayer>> {
+        None
+    }
 }
 
 /// The production egress-trust capability: a BYTE-FOR-BYTE pass-through to the host-side primitives.
@@ -102,11 +110,15 @@ pub struct PassThroughEgressTrust;
 
 impl EgressTrustHost for PassThroughEgressTrust {}
 
-/// The capability the composition root installs: the pass-through primitives, and every answer
-/// judged by the deployment's one destination guard (the connector's; this decides nothing).
-pub struct GuardedEgressTrust(pub Arc<dyn DestJudge>);
+/// The capability the composition root installs: the pass-through primitives, every answer judged by
+/// the deployment's one destination guard, and every outbound connection secured by the one TLS
+/// wrap (both the connector's; this decides nothing).
+pub struct GuardedEgressTrust(pub Arc<dyn DestJudge>, pub Arc<dyn SecureLayer>);
 
 impl EgressTrustHost for GuardedEgressTrust {
+    fn secure_layer(&self) -> Option<Arc<dyn SecureLayer>> {
+        Some(Arc::clone(&self.1))
+    }
     fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal> {
         self.0.judge_answer(host, addrs, class)
     }
