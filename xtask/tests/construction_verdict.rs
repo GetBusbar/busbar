@@ -210,11 +210,7 @@ secret-carrier-debug	FAIL	a type carrying secret bytes hand-rolls its Debug	1 se
 plane-no-money	FAIL	a plane names usage classes and quantities, never a price	5 money symbol(s) in the plane crates, plane codecs and plane unit modules (ceiling 0): `busbar_kernel_ledger::cost::` at crates/busbar-plane-x/src/lib.rs:2; `RateCard` at crates/busbar-plane-x/src/lib.rs:3; `wall_nanos` at crates/busbar-plane-x/src/lib.rs:5; `priced` at crates/busbar-plane-x/src/lib.rs:8; busbar-plane-x/Cargo.toml depends on `busbar-kernel-ledger`; scope glob(s) matching no file yet (not a finding): crates/busbar-llm/src/unit/*, crates/busbar-mcp/src/*, crates/busbar-a2a/src/*
 one-pricing-site	FAIL	only the root's meter/admission wiring and the kernel's settle sites price a unit	2 pricing-entry call site(s) outside the reviewed homes ['cost-unit', 'kernel-exit', 'kernel-recovery', 'kernel-sweep', 'root-wiring'] (ceiling 0): `cost_price_usage(` at crates/busbar-store-x/src/lib.rs:18; `busbar_kernel_ledger::cost::apply_tier` at crates/busbar-store-x/src/lib.rs:18; reviewed sites seen: `busbar_kernel_ledger::cost::list_price` at crates/busbar-kernel/src/teller.rs:2 (kernel-exit); entries under another name: none
 one-pricing-site:fee-fields	FAIL	the per-request fee is read only where the card lives	2 production read(s) of ['per_request_fee', 'per_request_fee_cents', 'fee_cents'] outside ['busbar-core-admin', 'busbar-kernel', 'busbar-kernel-ledger'] (ceiling 0) and the reviewed fee homes [amend-rate-history 0/4]: crates/busbar-store-x/src/lib.rs:21; [rules.one-pricing-site.fee_allowed.amend-rate-history] grants a reviewed fee home that reads no fee on this tree — a dead grant, to be deleted or repointed
-surface-ceiling:contract	FAIL	the contract crate's plugin-visible surface (caps folded in, #37/#38) stays under its ceiling	cargo xtask loc could not measure the tree: qa/loc.toml: toml_doc: <root>/qa/loc.toml: No such file or directory (os error 2)
-surface-ceiling:grammar	FAIL	the closed JSON span grammar's surface stays under its ceiling	cargo xtask loc could not measure the tree: qa/loc.toml: toml_doc: <root>/qa/loc.toml: No such file or directory (os error 2)
 ceiling-census	FAIL	every rule table, plane crate and kind glob is still counted	qa/construction.toml has no [gate.census] table. That table is the count of how many rule tables, plane crates and kind globs this gate is supposed to be reading, and without it a rule table can be deleted together with the ceiling it holds and nothing is short of anything. A census that is absent is not a census that passed.
-ceiling-rose	FAIL	no ceiling in a qa ceilings file is higher than it is at the base	<git>
-ceiling-slack	FAIL	every ratcheted ceiling is pinned to today's measurement	7 ceiling(s) or reservation(s) are not a measured, named room — point each at its row or strike it: loc-ceilings:kernel, loc-ceilings:caps-contract, loc-ceilings:unit-total, loc-ceilings:union, legacy-reach, ports-only:busbar-plane-x, ports-only-tests:busbar-plane-x
 "#;
 
 /// The gate's problems, in rule order: one per rule whose table the frozen ceilings file lacks.
@@ -231,7 +227,7 @@ const PINNED_PROBLEMS: &[&str] = &[
     "no-response-escapes-audit: qa/construction.toml has no [rules.no-response-escapes-audit] table",
     "terminal-doors-in-audit-step: qa/construction.toml has no [rules.terminal-doors-in-audit-step] table",
     "one-pick-site: qa/construction.toml has no [rules.one-pick-site] table",
-    "loc-ceilings: qa/construction.toml has no [rules.loc-ceilings] table",
+    "no-unit-crates: qa/construction.toml has no [rules.no-unit-crates] table",
     "manifest-allowlist: qa/construction.toml has no [rules.manifest-allowlist] table",
     "source-denylist: qa/construction.toml has no [rules.source-denylist] table",
     "lean-core: qa/construction.toml has no [rules.lean-core] table",
