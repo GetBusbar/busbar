@@ -1038,7 +1038,7 @@ fn a_tail_with_unknown_bits_or_no_ingress_is_fault() {
     t.ingress = INGRESS_REQUEST_RESPONSE | (1 << 5);
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.ingress"));
     let mut t = tail();
-    t.flags = 4;
+    t.flags = 1 << 3;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
     let mut t = tail();
     t.dispatch_shape = 2;
