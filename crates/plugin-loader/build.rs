@@ -29,6 +29,10 @@ const HOT_KINDS: &[&str] = &["plane", "transport", "secret"];
 /// not a cold entry.
 const DOOR_ROWS: &[&str] = &["auth", "auth-verify"];
 
+/// The rows whose fixture is reached only by its crate and its door example (`store_door.rs`): no
+/// cold entry, no `door::door` (the store kind's door is the crate's own `door`).
+const STORE_ROWS: &[&str] = &["store"];
+
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
@@ -75,6 +79,8 @@ fn main() {
             );
             if HOT_KINDS.contains(&kind) {
                 hot.push_str(&format!("    (\"{kind}\", \"{snake}\"),\n"));
+            } else if STORE_ROWS.contains(&kind) {
+                // Reached by its crate alias and its door example below; no table row.
             } else if DOOR_ROWS.contains(&kind) {
                 doors.push_str(&format!(
                     "    (\"{kind}\", \"{snake}\", ::{snake}::door::door),\n"
