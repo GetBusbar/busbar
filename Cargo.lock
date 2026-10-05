@@ -340,7 +340,6 @@ dependencies = [
  "busbar-plane-decisions",
  "busbar-plane-llm",
  "busbar-plane-streaming",
- "busbar-plugin-example-plane",
  "busbar-plugin-loader",
  "busbar-secret-env",
  "busbar-secret-file",
@@ -952,13 +951,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-plugin-example-plane"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
-]
-
-[[package]]
 name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
@@ -973,7 +965,6 @@ dependencies = [
  "busbar-export-webhook-plugin",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
- "busbar-plugin-example-plane",
  "busbar-secret-env",
  "busbar-store-memory",
  "busbar-transport-tcp",

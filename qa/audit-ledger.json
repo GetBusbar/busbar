@@ -792,41 +792,6 @@
    ]
   },
   {
-   "id": "crates/plane-example/src",
-   "kind": "production",
-   "paths": [
-    "crates/plane-example/src"
-   ],
-   "tree_hash": "4c07ebc296f8347e2be5318db93c596af1b1f8c55d0718333195db290afbadc2",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "HIGH": 2,
-    "LOW": 2
-   },
-   "report": "An in-repo fixture plane plugin linked only by tests, exercising the retiring HOT plane lane with C-unwind doors, where the repo is to hold no plugin source or fixture plugin and one memory ABI. It blocks the request worker with a caller-chosen sleep while declaring inline-safe dispatch, and as a copy-me template it branches on request headers. Read fully.",
-   "auditor": "opus-q128-architecture",
-   "fixed_at": null,
-   "exclude": [
-    "crates/plane-example/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "4c07ebc296f8347e2be5318db93c596af1b1f8c55d0718333195db290afbadc2",
-     "counts": {
-      "HIGH": 2,
-      "LOW": 2
-     },
-     "report": "An in-repo fixture plane plugin linked only by tests, exercising the retiring HOT plane lane with C-unwind doors, where the repo is to hold no plugin source or fixture plugin and one memory ABI. It blocks the request worker with a caller-chosen sleep while declaring inline-safe dispatch, and as a copy-me template it branches on request headers. Read fully."
-    }
-   ]
-  },
-  {
    "id": "crates/plugin-loader/src",
    "kind": "production",
    "paths": [

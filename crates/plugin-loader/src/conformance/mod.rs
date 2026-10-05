@@ -166,16 +166,16 @@ impl Subject {
         }
     }
 
-    /// The resolved secrets the instance opens with (`inputs.secrets`: one string per key the
+    /// The resolved secrets the instance opens with (`inputs.open_secrets`: one string per key the
     /// Statement's `secret_refs` names, in that order), as the kernel hands them to `open` and
     /// `refresh` once the secret kind resolved them. None when absent: a plugin that states no
     /// secret reference opens with none.
     ///
     /// # Panics
-    /// When `inputs.secrets` is not an array of strings.
+    /// When `inputs.open_secrets` is not an array of strings.
     #[must_use]
     pub fn secrets(&self) -> Vec<Vec<u8>> {
-        match self.inputs.get("secrets") {
+        match self.inputs.get("open_secrets") {
             None | Some(serde_json::Value::Null) => Vec::new(),
             Some(serde_json::Value::Array(a)) => a
                 .iter()
@@ -186,7 +186,7 @@ impl Subject {
                         .to_vec()
                 })
                 .collect(),
-            Some(_) => panic!("conformance.json: `secrets` is an array of strings"),
+            Some(_) => panic!("conformance.json: `open_secrets` is an array of strings"),
         }
     }
 
