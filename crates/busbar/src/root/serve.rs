@@ -531,24 +531,24 @@ pub struct DoorEgress<'a> {
     pub journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
 }
 
-/// THE DEPLOYMENT'S HOOK CONFIGURATION, AS THE DOOR PLANES BIND IT (ARCHITECT ruling on U22,
-/// 2026-10-05): the generation's engine host (its global and per-pool rewrites, gates, policies
-/// and taps, resolved from the operator's `hooks:` exactly as 1.5.5 resolved them), and what the
-/// hooks may know of a verified caller, read off the governance book and the cost model. Each door
-/// plane's driver binds a unit's hooks over it, so the request stage and the unit's in-session
-/// stage (`hook.call`, `content.scan`) run the configured hooks.
+/// THE DEPLOYMENT'S HOOK CONFIGURATION, AS THE DOOR PLANES BIND IT (ARCHITECT rulings on U22,
+/// 2026-10-05): the LIVE configuration generation's hooks (its global and per-pool rewrites, gates,
+/// policies and taps, resolved from the operator's `hooks:` exactly as 1.5.5 resolved them), and
+/// what the hooks may know of a verified caller, read off that generation's governance book and cost
+/// model. Each door plane's driver binds a unit's hooks through it when the unit binds, so a config
+/// apply reaches every unit that binds after it with no restart; a unit keeps the generation it
+/// bound (1.5.5 behaviour, frozen).
 pub struct DoorHooks {
-    /// The generation's engine host.
-    pub host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
-    /// The governance book, when the deployment governs.
-    pub gov: Option<Arc<busbar_kernel::governance::GovState>>,
-    /// The cost model a caller's headroom and budget chain are read through.
-    pub cost: Arc<busbar_kernel::cost::CostModel>,
+    /// The generation the boot built: what a unit binds until the live handle is bound.
+    pub boot: Arc<busbar_kernel::state::App>,
+    /// The live generation's handle, bound once the routers that own it are built.
+    pub live: Arc<OnceLock<Arc<busbar_kernel::state::AppHandle>>>,
 }
 
-/// What the hooks may know of a verified caller (the principal is its key's id), over the
-/// governance book: its key, its group (a tap's `groups:` scope), its rate headroom and its budget
-/// chain; a hook handed the prompt leaves its access amendment through the engine host.
+/// What the hooks may know of a verified caller (the principal is its key's id), over one
+/// generation's governance book: its key, its group (a tap's `groups:` scope), its rate headroom
+/// and its budget chain; a hook handed the prompt leaves its access amendment through the engine
+/// host.
 struct GovCaller {
     host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
     gov: Option<Arc<busbar_kernel::governance::GovState>>,
@@ -598,16 +598,60 @@ impl busbar_kernel::plane_driver::CallerFacts for GovCaller {
     }
 }
 
+/// ONE DOOR PLANE'S BINDER OVER THE LIVE GENERATION: each bind reads the generation current at that
+/// moment and binds its hooks, as [`busbar_kernel::plane_driver::HostHooks`] binds a fixed one.
+struct LiveHooks {
+    boot: Arc<busbar_kernel::state::App>,
+    live: Arc<OnceLock<Arc<busbar_kernel::state::AppHandle>>>,
+    dialects: Vec<String>,
+}
+
+impl LiveHooks {
+    /// The binder of the generation current now.
+    fn current(&self) -> busbar_kernel::plane_driver::HostHooks {
+        let app = self
+            .live
+            .get()
+            .map_or_else(|| Arc::clone(&self.boot), |h| h.load());
+        let host = busbar_kernel::plane_host::engine_host(&app);
+        busbar_kernel::plane_driver::HostHooks {
+            host: Arc::clone(&host),
+            caller: Arc::new(GovCaller {
+                host,
+                gov: app.governance.clone(),
+                cost: Arc::clone(&app.cost),
+            }),
+            dialects: self.dialects.clone(),
+        }
+    }
+}
+
+impl busbar_kernel::plane_driver::HookBinder for LiveHooks {
+    fn bind(
+        &self,
+        bind: &busbar_kernel::plane_driver::Bind<'_>,
+    ) -> Option<busbar_kernel::plane_driver::UnitHooks> {
+        self.current().bind(bind)
+    }
+
+    fn denied(&self, dialect: u32, status: u16) {
+        self.current().denied(dialect, status);
+    }
+
+    fn dialect(&self, dialect: u32) -> String {
+        self.dialects
+            .get(dialect as usize)
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
 impl DoorHooks {
     /// The binder of one door plane whose dialects are `dialects`, in its tail's order.
     fn binder(&self, dialects: &[&str]) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
-        Arc::new(busbar_kernel::plane_driver::HostHooks {
-            host: Arc::clone(&self.host),
-            caller: Arc::new(GovCaller {
-                host: Arc::clone(&self.host),
-                gov: self.gov.clone(),
-                cost: Arc::clone(&self.cost),
-            }),
+        Arc::new(LiveHooks {
+            boot: Arc::clone(&self.boot),
+            live: Arc::clone(&self.live),
             dialects: dialects.iter().map(|d| (*d).to_string()).collect(),
         })
     }
@@ -1546,6 +1590,13 @@ fn spent() -> Pick {
 
 #[cfg(linked_axis_node)]
 impl FarEnd for DoorFar<'_, '_> {
+    /// The pool the route the unit named resolved to (its label, or a direct route's lane), as the
+    /// walk is keyed: the scope of the unit's in-session hooks.
+    fn pool(&self, _token: &Pass<Route>) -> Option<String> {
+        let routed = self.steps.routed()?;
+        Some(egress_pool(self.steps.plane(), &routed))
+    }
+
     async fn member(&self, token: &Pass<Route>, attempt_no: u32) -> Pick {
         match self.far() {
             Some(far) => far.member(token, attempt_no).await,

@@ -856,6 +856,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             |l| l.upstream_request_timeout_secs,
         ),
     };
+    let door_hooks_live = Arc::new(std::sync::OnceLock::new());
     let served = root::serve::compose_served(
         app.governance.clone(),
         root::boot::door_planes(),
@@ -863,12 +864,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         &late_services,
         &deploy.door_sections(),
         &door_reach,
-        // THE DEPLOYMENT'S HOOKS REACH THE DOOR PLANES' UNITS (U22): the boot generation's engine
-        // host, as the health probers below re-anchor on it.
+        // THE DEPLOYMENT'S HOOKS REACH THE DOOR PLANES' UNITS (U22): the live generation's, read
+        // when a unit binds; the boot's until the routers below bind the live handle.
         Some(root::serve::DoorHooks {
-            host: busbar_kernel::plane_host::engine_host(&app),
-            gov: app.governance.clone(),
-            cost: Arc::clone(&app.cost),
+            boot: Arc::clone(&app),
+            live: Arc::clone(&door_hooks_live),
         }),
     )
     .unwrap_or_else(|e| die(e));
@@ -948,6 +948,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         response_headers_cfg.server_timing,
     );
     credential_handle.set(std::sync::Arc::clone(&app_handle));
+    // The door planes' units bind the hooks of the generation this handle holds, from now on.
+    let _bound = door_hooks_live.set(std::sync::Arc::clone(&app_handle));
     // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,

@@ -11,8 +11,9 @@
 //! on `/call/local` answers its caller itself (an echo of the body); a unit on `/call/nest:<target>`
 //! runs `POST <target>` as a NESTED unit through the host's `unit.nest` and answers its caller
 //! `nested:<status>:<the child's body>` (`nest-refused:<reason>` when the host refused it); a unit on
-//! `/call/services` passes its body through the host's `content.scan`, `hook.call` (a gate, then a
-//! rewrite) and `verify.lookup` (keyed by the body), and answers `<op>=<value>` (or
+//! `/call/services` (or `/call/services-pool:<pool>`, routed over that pool) passes its body
+//! through the host's `content.scan`, `hook.call` (a gate, then a rewrite) and `verify.lookup`
+//! (keyed by the body; a lead stores `fetched`), and answers `<op>=<value>` (or
 //! `<op>!<reason>`) for each, space-separated. Its far-end
 //! answer echoes the far end's bytes, in pieces of at most `reply_cap` (`more = 1` for the rest),
 //! with cumulative far-end-reported units = the bytes emitted so far.
@@ -48,8 +49,8 @@ use busbar_contract::abi::host::conn::connector::{
 };
 use busbar_contract::abi::host::service::{
     op as service_op, ClockNowIn, ClockReading, ContentScanIn, HookCallIn, HostSlots, ItemSpan,
-    ServiceBufs, ServiceFn, ServiceHead, ServiceOut, UnitNestIn, VerifyLookupIn, HOOK_GATE,
-    HOOK_REWRITE,
+    ServiceBufs, ServiceFn, ServiceHead, ServiceOut, UnitNestIn, VerifyLookupIn, VerifyStoreIn,
+    HOOK_GATE, HOOK_REWRITE,
 };
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, OutHead, Outcome, RawOutcome, Span, BLOB_ABSENT, FLAG_RESUME,
@@ -763,6 +764,16 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 me.tick_every_ms.store(ms, Ordering::SeqCst);
                 vec![estimate(0, ms)]
             }
+            t if t.starts_with(b"/call/services-pool:") => {
+                // The in-session services on a unit routed over the pool the target names.
+                let name: &'static [u8] = Box::leak(t[20..].to_vec().into_boxed_slice());
+                o.route = ROUTE_POOL;
+                o.pool = AbiStr {
+                    ptr: name.as_ptr(),
+                    len: name.len(),
+                };
+                vec![estimate(0, i.body.len as u64)]
+            }
             t if t == b"/call/local" || t == b"/call/services" || t.starts_with(b"/call/nest:") => {
                 // A local answer, or a nesting unit: each routes directly over the section's `m`.
                 o.route = ROUTE_DIRECT;
@@ -892,7 +903,7 @@ extern "C" fn on_piece(
                     o.flags = EMIT_DONE;
                     return say(out, Outcome::Ready);
                 }
-                if head.as_slice() == b"/call/services" {
+                if head.starts_with(b"/call/services") {
                     // The in-session services, each on the unit's own ticket under its own handle;
                     // one that pends pends this crossing, and the resumed crossing re-issues every
                     // handle and reads what each stored.
@@ -1213,6 +1224,33 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
                 };
                 said.push(format!("{name}!{}", String::from_utf8_lossy(why)));
             }
+        }
+    }
+    // A LEAD fetches and stores (here: the bytes `fetched`), so the next unit's lookup is a hit.
+    if said.last().map(String::as_str) == Some("verify=2") {
+        if let Some(store) = table.verify_store {
+            let entry = b"fetched";
+            let call = VerifyStoreIn {
+                head: head(
+                    service_op::VERIFY_STORE,
+                    std::mem::size_of::<VerifyStoreIn>(),
+                    4,
+                ),
+                key: AbiStr {
+                    ptr: body.as_ptr(),
+                    len: body.len(),
+                },
+                entry: Blob {
+                    ptr: entry.as_ptr(),
+                    len: entry.len(),
+                    fmt: 0,
+                    flags: 0,
+                },
+                ttl_ms: 0,
+            };
+            let mut answer = std::mem::zeroed::<ServiceOut>();
+            me.count(Stat::HostCalls);
+            let _ = store(me.ctx, (&call as *const VerifyStoreIn).cast(), &mut answer);
         }
     }
     (!pending).then(|| said.join(" ").into_bytes())

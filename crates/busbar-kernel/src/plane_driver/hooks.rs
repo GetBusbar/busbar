@@ -1153,9 +1153,10 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     }
 
     /// THE UNIT'S IN-SESSION HOOK STAGE, stated on the kernel's unit records as its route leg
-    /// starts ([`SessionStage`]): the instance, the pool the walk routes it over (never one the
-    /// plane names), its verified principal and dialect, and this generation's binder. A health
-    /// probe states none (the kernel's own unit; no hook screens it).
+    /// starts ([`SessionStage`]): the instance, the pool the kernel routes it over
+    /// ([`FarEnd::pool`], else the walk's; never one the plane names), its verified principal and
+    /// dialect, and the binder, which binds the hooks of the live generation when the stage is
+    /// first used. A health probe states none (the kernel's own unit; no hook screens it).
     pub(crate) fn state_stage(&self, token: &Pass<Route>) {
         if self.arrival.claim == CLAIM_PROBE {
             return;
@@ -1175,8 +1176,8 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         let (pool, dialect) = match &d.hooks {
             Some(binder) => (
                 self.far
-                    .candidates(token)
-                    .map(|c| c.pool)
+                    .pool(token)
+                    .or_else(|| self.far.candidates(token).map(|c| c.pool))
                     .unwrap_or_default(),
                 binder.dialect(dialect),
             ),

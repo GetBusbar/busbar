@@ -156,6 +156,14 @@ pub trait FarEnd: Sync {
         None
     }
 
+    /// The pool the KERNEL routes the unit over (its routed pool's label, or a direct route's lane):
+    /// the scope of the unit's in-session hook stage (`hook.call`, `content.scan`), so a pool's own
+    /// gates apply to its sub-operations as they did in 1.5.5. `None` when the far end names none.
+    fn pool(&self, token: &Pass<Route>) -> Option<String> {
+        let _ = token;
+        None
+    }
+
     /// The candidates of the pool the walk routes the unit over, as the hooks are shown them;
     /// `None` when the walk names none (the hooks then see no candidate).
     fn candidates(&self, token: &Pass<Route>) -> Option<super::hooks::Candidates> {
