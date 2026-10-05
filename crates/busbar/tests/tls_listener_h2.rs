@@ -134,7 +134,7 @@ async fn a_client_offering_h2_is_served_http2_over_tls() {
 
 #[tokio::test]
 async fn a_client_offering_only_http1_is_served_http1_as_in_1_5_5() {
-    let dir = scratch("h2");
+    let dir = scratch("h1");
     let (tls, cert_pem) = identity(&dir);
     let (addr, _stop) = tls_listener(&tls).await;
 
