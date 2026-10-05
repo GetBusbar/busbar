@@ -46,6 +46,7 @@ pub(super) fn linked(
         plane_doors: &[],
         secrets: &[],
         plane_door_slots: &[],
+        plane_door_declares: &[],
         protocols: &[],
         path_ingress: &[],
         body_ingress: &[],

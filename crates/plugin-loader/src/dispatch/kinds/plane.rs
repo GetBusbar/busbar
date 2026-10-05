@@ -451,6 +451,28 @@ pub fn linked_probe(
     })
 }
 
+/// THE COMMAND-LINE HELP A LINKED PLANE DOOR STATES: its tail's `cli_help`, read off its `'static`
+/// Statement without binding it (no `validate` or `open` runs), so `busbar --help` can render it
+/// before any configuration is read. `None` when the tail states none.
+///
+/// # Errors
+///
+/// The door, its Statement or its tail is not one this host reads.
+pub fn linked_cli_help(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> Result<Option<&'static str>, String> {
+    let (door, _) = crate::dispatch::load::read_door(door(), Some(KindCode::Plane))
+        .map_err(|e| format!("{e:?}"))?;
+    let st = crate::dispatch::load::statement(&door).map_err(|e| format!("{e:?}"))?;
+    // SAFETY: `PlaneTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid); a
+    // non-NULL kind tail is `'static` plugin data of its stated size.
+    let tail: PlaneTail =
+        unsafe { crate::dispatch::plugin::kind_tail(&st, "a plane", PLANE_TAIL_FROZEN) }?;
+    check_tail(&tail).map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    let help = kept(tail.cli_help);
+    Ok((!help.is_empty()).then_some(help))
+}
+
 /// THE REGISTRY FACTS A DOOR STATES (ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL): its Statement
 /// name, its declaring section and its tail's words, read off the facts kept at its bind, and its
 /// own `validate` (ticket-less; it never pends) over a whole section. `bind` binds a probe instance

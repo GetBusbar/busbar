@@ -372,6 +372,22 @@ pub(crate) fn linked_source(
         }
     }
     out.push_str("],\n");
+    // EACH LINKED PLANE DOOR'S DECLARED METADATA: `(crate, declares)`, the JSON its
+    // `[package.metadata.busbar.linked-declares]` row names (the crate's `declares.json`), read as
+    // every default-linked plugin's `declares` section is. A door row with no such row declares none.
+    out.push_str("    plane_door_declares: &[");
+    for (feature, krate) in &on {
+        let is_door = axes
+            .iter()
+            .any(|(f, a)| f == feature && a.split_whitespace().any(|x| x == PLANE_DOOR_AXIS));
+        if !is_door {
+            continue;
+        }
+        if let Some(path) = metadata_value(manifest, "package.metadata.busbar.linked-declares", feature) {
+            out.push_str(&format!("({krate:?}, {path}), "));
+        }
+    }
+    out.push_str("],\n");
     out.push_str("    transports: &[");
     let mut door_builds = String::new();
     for (n, (e, axes)) in linked
