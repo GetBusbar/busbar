@@ -486,6 +486,9 @@ struct Records {
     plane: Arc<dyn crate::plane::store::PlaneStore>,
 }
 
+/// Every admitted instance's chained record kinds, by `(label, kind)`.
+type Chains = HashMap<(Arc<str>, String), Arc<crate::host_chains::ChainedKind>>;
+
 /// The wall clock, in milliseconds since the Unix epoch.
 pub type WallMs = Arc<dyn Fn() -> u64 + Send + Sync>;
 
@@ -518,7 +521,7 @@ pub struct KernelServices {
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
     /// Every admitted instance's chained record kinds, by `(label, kind)`; kept across a
     /// re-admission so a chain's positions are never reset.
-    chains: Mutex<HashMap<(Arc<str>, String), Arc<crate::host_chains::ChainedKind>>>,
+    chains: Mutex<Chains>,
     records: Option<Records>,
     pool: OnceLock<Arc<dyn Offload>>,
     pending: Arc<PendingRecords>,
