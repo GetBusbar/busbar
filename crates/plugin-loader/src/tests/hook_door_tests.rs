@@ -32,7 +32,9 @@ use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher};
 
 use crate::hook_door_conformance_tests::hook_door_plugin;
 
-use hook_door_plugin::{BROKEN_NAME, NAME, PANICKING_NAME, REJECT_STATUS, UNTAILED_NAME};
+use hook_door_plugin::{
+    BROKEN_NAME, MAX_INFLIGHT, NAME, PANICKING_NAME, REJECT_STATUS, UNTAILED_NAME,
+};
 
 /// Every call's budget.
 const BUDGET: Duration = Duration::from_secs(5);
@@ -385,5 +387,102 @@ async fn a_hook_reads_the_request_session_through_both_doors() {
         linked,
         run(dropped_rows).await,
         "the same answers, whichever door"
+    );
+}
+
+/// R1 (Q-LEAK; THE DESIGN: every hook call runs on an off-worker lane carrying 1.5.5's
+/// `timeout_ms` guarantee), the LANE'S half: a gate whose `decide` sleeps past the call's budget is
+/// cut off at that budget through the axis — `TimedOut`, promptly, never the sleep waited out, and
+/// the caller's worker never parked. The kernel's half (the budget is the hook's `timeout_ms`, and a
+/// timed-out call is an error its `on_error` decides) is `dlopen_decide_deadline_cuts_off_a_slow_gate`
+/// / `dlopen_slow_gate_hits_the_deadline` in busbar-kernel's hook tests. Re-homed with the deletion of
+/// the test-hook plugin (OWNER 2026-10-03, no test plugins), whose `sleep_ms` drove both halves.
+#[tokio::test]
+async fn a_slow_hook_is_cut_off_at_its_budget_through_the_axis() {
+    let axis = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked).expect("linked");
+    let calls = axis
+        .open(
+            NAME,
+            "hooks.slow",
+            &json!({"reject_over_messages": 3, "sleep_ms": 2_000}),
+            BUDGET,
+        )
+        .expect("the slow gate opens");
+    let started = std::time::Instant::now();
+    let answered = calls.decide(frame(2), Duration::from_millis(100)).await;
+    assert!(
+        matches!(answered, Answered::TimedOut),
+        "a slow gate must exceed the deadline: {}",
+        decided(2, &answered)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the deadline must cut off promptly, not wait out the sleep"
+    );
+}
+
+/// PB-81 (`max_inflight` per loaded hook; 1.5.5 pinned `MAX_INFLIGHT_HOOK_CALLS = 64`, a 1.6.0 hook
+/// states its own in its Statement): one hook is saturated with `max_inflight` calls that never
+/// return inside the test's budget. A further call must fail CLOSED on the caller's own deadline —
+/// never wait out the wedge — and once the wedged calls drain, the freed slots let service resume.
+/// The cap is backpressure, not a latch. The cap is the dispatcher's, so its proof lives here, over
+/// the loader's own hook fixture; it moved from busbar-kernel's M4 suite
+/// (`the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_resolve_one`, which drove
+/// the deleted test-hook plugin) with every assertion kept.
+#[tokio::test]
+async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the_axis() {
+    let axis = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked).expect("linked");
+    let wedged: Arc<dyn busbar_contract::hook_calls::HookCalls> = axis
+        .open(
+            NAME,
+            "hooks.wedged",
+            &json!({"reject_over_messages": 3, "sleep_ms": 1_500}),
+            BUDGET,
+        )
+        .expect("the wedged gate opens");
+
+    let mut inflight = Vec::with_capacity(MAX_INFLIGHT as usize);
+    for _ in 0..MAX_INFLIGHT {
+        let wedged = Arc::clone(&wedged);
+        inflight.push(tokio::spawn(async move {
+            let _ = wedged.decide(frame(2), Duration::from_millis(50)).await;
+        }));
+    }
+    // Let every spawned call reach the plugin and take its slot.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let start = std::time::Instant::now();
+    let saturated = wedged.decide(frame(2), Duration::from_millis(150)).await;
+    assert!(
+        !matches!(
+            saturated,
+            Answered::Answer {
+                outcome: busbar_contract::abi::mechanism::call::Outcome::Ready,
+                ..
+            }
+        ),
+        "with every slot held, a further call must fail rather than wait for one: {}",
+        decided(2, &saturated)
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "the wait must be bounded by the caller's own deadline, not by the wedged plugin"
+    );
+
+    // The wedged calls returning frees the slots — the cap is backpressure, not a latch.
+    for h in inflight {
+        let _ = h.await;
+    }
+    let resumed = wedged.decide(frame(2), BUDGET).await;
+    assert!(
+        matches!(
+            resumed,
+            Answered::Answer {
+                outcome: busbar_contract::abi::mechanism::call::Outcome::Ready,
+                ..
+            }
+        ),
+        "a freed slot must let the next call through: {}",
+        decided(2, &resumed)
     );
 }
