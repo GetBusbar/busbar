@@ -4,27 +4,19 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
-# LEG: admit-refusal — a key whose budget is already spent is refused AT THE DOOR, before any provider
-# dial (BUSBAR-1.6.0.md THE DESIGN, §1's teller loop, step 4 ADMIT: a refused reserve costs zero bytes and zero charge).
+# LEG: admit-refusal — a refused unit opens nothing and dials nothing, and its refusal is rendered in
+# the dialect's error shape (BUSBAR-1.6.0.md THE DESIGN §1, step 4 ADMIT; Part 3 §12 "refused → refusal").
 #
-# `topology::begin_session` reserves the D2 lease strictly AFTER the destination gate and strictly
-# BEFORE any socket is touched (`topology::open_admitted_session`'s doc comment: "the session's own
-# charge... fires only AFTER the gate clears"). This leg drives that real function with a REFUSE-ALL
-# cap (`Some(0)`, the reserve-then-settle lease's own "already spent" shape) over the substrate's
-# `FixtureHost` and asserts: (a) `begin_session` returns `Err(StartError::BudgetRefused)` — the
-# plane's own refusal, not a generic one; (b) no cost lease was ever opened host-side
-# (`FixtureHost::leases_opened()` does not advance across the refusal); (c) no ledger posting landed
-# for the presenting principal (`FixtureHost::ledger_usage`) — voice posts no separate "kernel-floor"
-# line at Admit the way BUSBAR-1.6.0.md describes for an ALREADY-DIALED provider push (nothing is ever
-# dialed here, so nothing is owed and voice's design posts none); (d) a sanity/negative control — the SAME
-# destination with an uncapped budget opens cleanly — so a leg that always failed (or always passed)
-# could not hide behind this result.
+# THE DOOR'S HALF (judged, linked AND dropped door, `voice_conform composition admit-refusal`): the
+# kernel's refusal — budget 429, grant 403, credential 401 — is rendered by the door's `refusal` op in
+# the realtime dialects' error envelope (the kernel's status kept, `content-type: application/json`,
+# no record row); a refused unit's stream has no session (its far-end piece and its collection are
+# refused, `drive` names nothing), while an admitted control on the same door dials (its frame rides
+# the realtime socket need). RED arm: a door that renders the budget refusal as a server error fails.
 #
-# WAS RED (this leg's own history): before this leg existed, `governance.sh`'s D2 checkpoint probed
-# exhaustion AFTER a session had already opened and spent partway through its cap; nothing proved the
-# DOOR itself refuses a caller who arrives already spent, or that the refusal costs zero dial/zero
-# ledger. A caller with `Some(0)` remaining could only be judged by mid-session exhaustion, never by an
-# admission that never opens at all.
+# THE KERNEL'S HALF (not the door's, so not judged here): reading the caller's budget chain dry and
+# refusing before any hold or ledger posting — the admit step, proven on the served leg by
+# crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_an_over_budget_caller_before_it_dials.
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"

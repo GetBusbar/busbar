@@ -4,21 +4,17 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
-# LEG: provider-credential — a MOUNTED voice door can actually reach a realtime provider.
+# LEG: provider-credential — the plane never holds the realtime provider's credential.
 #
-# The plane's two one-shot HTTP passes (the browser `ek_` mint and the SDP broker) are governed and
-# audience-checked whether or not a provider is composed — so "governed" is not the same claim as
-# "serves". This leg judges the second: the composition root hands the plane the provider ORIGIN and
-# the secret REFERENCE the deployment's own provider catalog declares for it, the plane resolves that
-# reference through the deployment's ordinary secret resolver, and the mint / SDP passes serve under
-# the resulting credential instead of reporting that there is nothing to dial.
+# THE DOOR'S HALF (judged, linked AND dropped door): every far request the door answers — the mint,
+# the SDP offer, the sideband socket and the Gemini socket — names the declared OUTBOUND need it rides,
+# under the auth style the kernel binds the provider credential to (`bearer` for OpenAI Realtime,
+# `x-goog-api-key` for Gemini Live) and with the member's address, never a plane config path; no
+# request carries a credential field, and the caller is named only by the kernel's opaque reference.
+# RED arm: a mint that carries the caller's `Authorization` fails.
 #
-# It also judges the two ways this must fail: a reference that does not resolve composes NOTHING (an
-# unresolvable credential must never become an empty one), and the endpoint is set-once, so nothing
-# later in the process can silently swap a deployment's realtime credential.
-#
-# WAS RED: nothing composed a provider on any deployment, so both passes answered "governed, but no
-# provider credential composed" and the plane's real key had no way in.
+# THE COMPOSITION ROOT'S HALF (not the door's): resolving the catalog's secret reference through the
+# deployment's resolver, set-once, an unresolvable reference composing nothing.
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"
