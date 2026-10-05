@@ -439,10 +439,58 @@ fn octets(b: &[u8]) -> Blob {
     }
 }
 
-/// The llm door, linked, opened over `settings`.
+/// THE LINKED DOOR SERVING THE `pools` MAP, found by what its Statement declares
+/// (`LINKED_PLANE_DOORS`, the manifest's plane-door rows): the plane under proof.
+pub(crate) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
+    crate::LINKED_PLANE_DOORS
+        .iter()
+        .copied()
+        .find(|door| {
+            let dispatcher = Dispatcher::new(DispatchConfig::default());
+            let row = LinkedRow::of(*door).expect("a linked door states itself");
+            load_linked::<Plane>(
+                &row,
+                Bind {
+                    instance: Arc::from("pools-door-probe"),
+                    max_inflight_cap: 64,
+                    sink: Arc::new(NoSink),
+                    dispatcher: dispatcher.adopter(),
+                    conns: None,
+                },
+            )
+            .expect("a linked door binds")
+            .served()
+            .section
+                == busbar_contract::section::RESERVED_POOLS_KEY
+        })
+        .expect("the fold switch links the door serving the `pools` map")
+}
+
+/// The plane under proof's dialects, in its tail's order, as its door states them.
+pub(crate) fn dialects() -> Vec<String> {
+    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let row = LinkedRow::of(pools_door()).expect("the plane door states its Statement");
+    load_linked::<Plane>(
+        &row,
+        Bind {
+            instance: Arc::from("the-plane-facts"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: None,
+        },
+    )
+    .expect("the plane door loads")
+    .served()
+    .dialects
+    .iter()
+    .map(|d| (*d).to_string())
+    .collect()
+}
+
+/// The door serving the `pools` map, linked, opened over `settings`.
 fn door(dispatcher: &Dispatcher, settings: &[u8]) -> Plugin<Plane> {
-    let row =
-        LinkedRow::of(crate::plane::plane_door::door).expect("the plane door states its Statement");
+    let row = LinkedRow::of(pools_door()).expect("the plane door states its Statement");
     let plugin = load_linked::<Plane>(
         &row,
         Bind {
@@ -534,12 +582,13 @@ impl Rig {
         let plugin = door(&dispatcher, &settings(&pools));
         let calls = Arc::new(PlaneInstance::new(plugin.clone(), dispatcher, 1));
         let refusal_statuses = calls.refusal_statuses();
-        let dialects: Vec<String> = crate::plane::dialect::DIALECTS
+        let served = plugin.served();
+        let dialects: Vec<String> = served.dialects.iter().map(|d| (*d).to_string()).collect();
+        let op_classes: Vec<_> = served
+            .op_classes
             .iter()
-            .map(|d| d.name.to_string())
+            .map(|c| busbar_contract::caps::OpClassId::new(c))
             .collect();
-        let op_classes =
-            <crate::PlaneFacts as busbar_contract::plane::PlaneMeta>::OP_CLASSES.to_vec();
         let driver = PlaneDriver::new(
             calls,
             DriverConfig {

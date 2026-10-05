@@ -16,14 +16,14 @@
 //! in their own crates (`busbar-kernel` hooks tests, the plugin loader's hook tests, the ranking
 //! hook's tests).
 //!
-//! Development-only, like the switch it proves: built with the `llm-on-driver` switch.
+//! Development-only, like the switch it proves: built with the plane's development-only fold switch
+//! (`linked_fold_on_driver`).
 
-#![cfg(feature = "llm-on-driver")]
+#![cfg(linked_fold_on_driver)]
 
-/// The plane under proof, named once: the composition root's one edge to it.
-extern crate busbar_plane_llm as plane;
-/// Its plane-kind facts (the operation classes the driver is configured with).
-type PlaneFacts = plane::LlmPlane;
+// The linked plane doors (`LINKED_PLANE_DOORS`), generated from the manifest: the plane under proof
+// is the one whose Statement declares the `pools` map, found by what it states, never by name.
+include!(concat!(env!("OUT_DIR"), "/linked_plane_doors.rs"));
 
 #[path = "../../../busbar-kernel/tests/common/mod.rs"]
 mod common;

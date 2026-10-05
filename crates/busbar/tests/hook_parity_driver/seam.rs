@@ -854,20 +854,31 @@ async fn reject_rides_the_full_forward_path() {
     );
 }
 
-#[test]
-fn reject_kind_mapping_matches_status_semantics() {
-    use crate::plane::exchange::refuse::gate_kind;
-    use busbar_contract::protocol::{
-        KIND_AUTHENTICATION, KIND_INVALID_REQUEST, KIND_NOT_FOUND, KIND_PERMISSION,
-        KIND_RATE_LIMIT, KIND_TIMEOUT,
-    };
-    assert_eq!(gate_kind(401), KIND_AUTHENTICATION);
-    assert_eq!(gate_kind(403), KIND_PERMISSION);
-    assert_eq!(gate_kind(404), KIND_NOT_FOUND);
-    assert_eq!(gate_kind(408), KIND_TIMEOUT);
-    assert_eq!(gate_kind(429), KIND_RATE_LIMIT);
-    for other in [400, 422, 451, 499] {
-        assert_eq!(gate_kind(other), KIND_INVALID_REQUEST);
+/// The gate's status picks the refusal's kind, rendered in the caller's dialect (here Anthropic's
+/// `error.type`): 401, 403, 404, 408 and 429 their own kinds, every other 4xx an invalid request.
+#[tokio::test]
+async fn reject_kind_mapping_matches_status_semantics() {
+    for (status, kind) in [
+        (401, "authentication_error"),
+        (403, "permission_error"),
+        (404, "not_found_error"),
+        (408, "timeout_error"),
+        (429, "rate_limit_error"),
+        (400, "invalid_request_error"),
+        (422, "invalid_request_error"),
+        (451, "invalid_request_error"),
+        (499, "invalid_request_error"),
+    ] {
+        let answer = gate_refusal(
+            status,
+            "guardrail",
+            "/v1/messages",
+            ANTHROPIC,
+            &serde_json::to_vec(&chat_body()).unwrap(),
+        )
+        .await;
+        assert_eq!(answer.status, u32::from(status), "{status}");
+        assert_eq!(answer.json()["error"]["type"], kind, "{status}");
     }
 }
 

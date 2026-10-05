@@ -2159,13 +2159,10 @@ pub fn hook_axis_stand_in(
     registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
 ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String> {
     use busbar_plugin_loader::dispatch::{DispatchConfig, Dispatcher};
-    static DISPATCHER: std::sync::OnceLock<std::sync::Arc<Dispatcher>> = std::sync::OnceLock::new();
-    let dispatcher =
-        DISPATCHER.get_or_init(|| std::sync::Arc::new(Dispatcher::new(DispatchConfig::default())));
     let rows = busbar_plugin_loader::hook_door::HookRows::new(
         crate::preflight::STAND_IN_HOOK_DOORS,
         Some(registry.as_ref()),
-        dispatcher.clone(),
+        std::sync::Arc::new(Dispatcher::new(DispatchConfig::default())),
     )?;
     Ok(std::sync::Arc::new(rows))
 }

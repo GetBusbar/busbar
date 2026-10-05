@@ -42,6 +42,39 @@ use crate::root::loader::dispatch::{
 };
 use crate::root::plane_node::{Node, NodeEndPost};
 
+// The plane the node is handed, as the manifest's linked table names it (the `node` axis): the
+// legacy row's test seams the registry rows that own the `pools:`/`models:` sections come from.
+include!(concat!(env!("OUT_DIR"), "/node_plane.rs"));
+
+/// THE LINKED DOOR THAT SERVES THE `pools` MAP, found by what its Statement declares (the composition
+/// root names no plane): every linked plane door bound on a probe dispatcher of its own, the one
+/// whose declaring section is `pools` kept.
+fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
+    crate::LINKED
+        .plane_doors
+        .iter()
+        .copied()
+        .find(|door| {
+            let probe = Dispatcher::new(DispatchConfig::default());
+            let row = LinkedRow::of(*door).expect("a linked door states itself");
+            load_linked::<Plane>(
+                &row,
+                Bind {
+                    instance: Arc::from("pools-door-probe"),
+                    max_inflight_cap: 64,
+                    sink: Arc::new(NoSink),
+                    dispatcher: probe.adopter(),
+                    conns: None,
+                },
+            )
+            .expect("a linked door binds")
+            .served()
+            .section
+                == busbar_contract::section::RESERVED_POOLS_KEY
+        })
+        .expect("the fold switch links the door serving the `pools` map")
+}
+
 /// The card history the served unit is pinned to at its door: one entry, no price.
 static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
     std::sync::LazyLock::new(|| {
@@ -223,7 +256,7 @@ struct Ran {
 /// when `reject_at_gate`.
 async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
     // The registry rows that own the `pools:`/`models:` sections the deployment writes.
-    busbar_llm::testkit::install_test_seams();
+    node_plane::testkit::install_test_seams();
     let port = far_end().await;
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: false,
@@ -241,7 +274,7 @@ async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
     // THE LLM DOOR, linked, bound through the loader's one load, its needs declared on the
     // connector.
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let row = LinkedRow::of(busbar_plane_llm::plane_door::door).expect("the door states itself");
+    let row = LinkedRow::of(pools_door()).expect("the door states itself");
     let plane = load_linked::<Plane>(
         &row,
         Bind {
@@ -398,7 +431,7 @@ async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
         }),
         Some(&stage),
     )
-    .expect("the llm door composes");
+    .expect("the door serving the pools map composes");
     let _ = std::fs::remove_file(&key_file);
     served.post = Some(Arc::clone(&post));
     let doors = door_routes(

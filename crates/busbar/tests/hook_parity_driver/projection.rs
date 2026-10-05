@@ -692,10 +692,8 @@ async fn every_known_protocol_has_a_declared_reasoning_wire_shape() {
         ("openai", None, None),
         ("cohere", None, None),
     ];
-    let dialects: Vec<&str> = crate::plane::dialect::DIALECTS
-        .iter()
-        .map(|d| d.name)
-        .collect();
+    let dialects = crate::rig::dialects();
+    let dialects: Vec<&str> = dialects.iter().map(String::as_str).collect();
     for d in &dialects {
         assert!(
             rows.iter().any(|(p, _, _)| p == d),

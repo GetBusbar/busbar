@@ -946,10 +946,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // first config swap, retiring these boot probers (their `Weak` fails to upgrade) exactly as the old
     // `Weak<App>` did when the boot snapshot drained.
     // Built only when some linked entry re-anchors work on it: a build with none holds no host.
-    // Under the llm fold's switch the llm plane's health probes run through its door as the K7
-    // probe unit (`root::serve`'s probe target over the plane's sealed egress), so the legacy row's
-    // probers are not spawned beside them: one prober per lane, as 1.5.5 ran.
-    let on_host = if cfg!(feature = "llm-on-driver") {
+    // While a plane's fold switch is on, the plane serving the `pools` map runs its health probes
+    // through its door as the K7 probe unit (`root::serve`'s probe target over the plane's sealed
+    // egress), so the legacy row's probers are not spawned beside them: one prober per lane, as
+    // 1.5.5 ran.
+    let on_host = if cfg!(linked_fold_on_driver) {
         &[][..]
     } else {
         LINKED.on_host
@@ -1005,7 +1006,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
     // A CONFIG APPLY REFRESHES THE DOOR PLANES onto the new generation (`Served::refresh`): the
-    // swapped-in App's projected configuration, its lane table and its secret seam.
+    // swapped-in App's projected configuration, its lane table and its secret seam. A build with no
+    // node composes no door plane's money, so it has none to refresh.
+    #[cfg(linked_axis_node)]
     if let Some(post) = served.post.clone() {
         let (served, auths, live) = (
             std::sync::Arc::clone(&served),

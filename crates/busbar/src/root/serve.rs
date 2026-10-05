@@ -1884,6 +1884,6 @@ mod door_tests;
 #[path = "tests/serve_money.rs"]
 mod money_tests;
 
-#[cfg(all(test, feature = "llm-on-driver", linked_axis_node))]
+#[cfg(all(test, linked_fold_on_driver, linked_axis_node))]
 #[path = "tests/serve_hook_seats.rs"]
 mod hook_seat_tests;
