@@ -452,6 +452,7 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
         None,
         &money,
         None,
+        None,
     )
     .expect("the door plane composes");
     // The same verb and path again, over a second carrier.
