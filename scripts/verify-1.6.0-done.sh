@@ -1246,7 +1246,6 @@ end_group
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "TEST — full workspace + voice runtime"
 step "cargo test --workspace"                    cargo test --workspace --quiet
-step "cargo test -p busbar-voice --features runtime" cargo test -p busbar-voice --features runtime --quiet
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────

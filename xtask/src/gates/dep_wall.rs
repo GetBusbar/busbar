@@ -58,7 +58,6 @@ const LEGACY: &[&str] = &[
     "crates/busbar-llm",
     "crates/busbar-mcp",
     "crates/busbar-a2a",
-    "crates/busbar-voice",
 ];
 
 /// The external source a plugin repository resolves from.

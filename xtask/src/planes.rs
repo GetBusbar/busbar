@@ -20,8 +20,10 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// The canonical order is the doctrine order: the three original protocols, then voice (Plane 4).
-pub const PLANE_KEYS: [&str; 4] = ["llm", "mcp", "a2a", "voice"];
+/// The canonical order is the doctrine order: the three original protocols. `voice` (Plane 4's
+/// legacy crate, `crates/busbar-voice`) is struck: FLIP-STREAMING deleted it, and the streaming plane
+/// is `busbar-plane-streaming`, scanned by the PLANE-KIND regime like every `busbar-plane-*` crate.
+pub const PLANE_KEYS: [&str; 3] = ["llm", "mcp", "a2a"];
 
 /// The default ownership grammar. Overridable for a fixture tree, the way
 /// `PLANE_ROOTS_GRAMMAR` is in the shell.

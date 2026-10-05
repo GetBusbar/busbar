@@ -362,7 +362,7 @@ static KINDS: &[KindDef] = &[
     KindDef {
         kind: "legacy",
         family: Family::Plane,
-        matchers: &["=busbar-llm", "=busbar-mcp", "=busbar-a2a", "=busbar-voice"],
+        matchers: &["=busbar-llm", "=busbar-mcp", "=busbar-a2a"],
     },
 ];
 
@@ -439,8 +439,9 @@ const PENDING_EDGES: &[(&str, &str)] = &[
     // class the design grants ahead of the tree lands here.
 ];
 
-/// The retiring 1.5.x crates, named so the ratchet can check they still exist.
-const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"];
+/// The retiring 1.5.x crates, named so the ratchet can check they still exist. `busbar-voice` is
+/// struck: FLIP-STREAMING deleted it once the streaming plane's door served every route.
+const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a"];
 
 /// THE MANIFESTS IN THIS REPOSITORY THAT ARE NOT CRATES OF THE TREE, each with the sentence that
 /// says why, and each on the expiry ratchet every allowance in this file lives under: an entry that
@@ -9236,7 +9237,7 @@ impl Gate for KindIsolationGate {
         //
         // THE SHIPPED GATE, NOT THE DEBT-FREE SUBJECT: this case already brings its own green base
         // (the empty table), and the subject's debt — measured over the REAL table, whose
-        // `busbar-voice` row is exactly this plant's row — would take the planted finding out of
+        // `busbar-a2a` row is exactly this plant's row — would take the planted finding out of
         // view as if it were the tree's. The pair below is the same transition read the other way.
         report.push(prove_rows_red(
             &cx.with_overlay(registry_plant("")),
@@ -9812,13 +9813,13 @@ fn announced_reaching_drain_target(cx: &Ctx) -> Overlay {
 
 /// THE LEGACY CRATE THE DRAIN PAIR IS ABOUT. It must be a `legacy` crate that is really on disk,
 /// or the red case plants a row for nothing and the green case removes a manifest that is not there.
-const DRAIN_PLANT_FROM: &str = "busbar-voice";
+const DRAIN_PLANT_FROM: &str = "busbar-a2a";
 
 /// ONE `[[transitional]]` row for [`DRAIN_PLANT_FROM`], and no other row — the red case's plant
 /// and, with the crate removed, the green case's.
 fn drain_row_plant() -> Overlay {
     registry_plant(&format!(
-        "[[transitional]]\nfrom = \"{DRAIN_PLANT_FROM}\"\nto = \"busbar-plane-streaming\"\nreason = \
+        "[[transitional]]\nfrom = \"{DRAIN_PLANT_FROM}\"\nto = \"busbar-plane-a2a\"\nreason = \
          \"legacy drain\"\n"
     ))
 }

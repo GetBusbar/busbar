@@ -109,7 +109,9 @@ DIALECTS="openai gemini anthropic bedrock cohere responses"
 # the set by ONE named deletion there. The env override exists for the self-test's blind-scan cases
 # below and nothing else; CI never sets it.
 NEUTRAL_ROOTS="${PLANE_GREP_NEUTRAL_ROOTS:-$(neutral_src_roots)}"
-NEUTRAL_NEEDLES="$DIALECTS $PLANE_KEYS_PROTOCOL"
+# `voice` stays a NEUTRAL needle by name: FLIP-STREAMING took it off PLANE_KEYS with crates/busbar-voice,
+# and the streaming plane's dialect word must still never reach the neutral side.
+NEUTRAL_NEEDLES="$DIALECTS $PLANE_KEYS_PROTOCOL voice"
 # TWO ROOTS PER PLANE since the codec split: each protocol plugin kept its I/O half under the
 # historical crate name and shed its pure half into a `-codec` crate a PURE kind may name. The gate
 # scans sources, not manifests, so both halves are named or the moved files stop being scanned —
@@ -126,10 +128,9 @@ MCP_NEEDLES="$DIALECTS $(plane_keys_other mcp)"
 # which this needle gate does not read — a plane-kind crate is held to the plugin-kind rules instead.
 A2A_ROOT="crates/busbar-a2a/src"
 A2A_NEEDLES="$DIALECTS $(plane_keys_other a2a)"
-# VOICE IS ONE ROOT NOW TOO, same reason (owner ruling R7, 2026-09-27, `BUSBAR-1.6.0.md` THE DESIGN, §9/#39):
-# `busbar-voice-codec` dissolved into `busbar-plane-streaming`'s own `codec` module, a plane-kind
-# crate this needle gate does not read.
-VOICE_ROOT="crates/busbar-voice/src"
+# VOICE HAS NO ROOT: FLIP-STREAMING deleted crates/busbar-voice, and the streaming plane is
+# `busbar-plane-streaming`, a plane-kind crate this needle gate does not read. VOICE_NEEDLES remains
+# for the self-test's symmetric case, which plants its own file.
 VOICE_NEEDLES="$DIALECTS $(plane_keys_other voice)"
 
 # The neutral Operation enum — generic op vocabulary, explicitly in-scope-neutral. Excluded whole.
@@ -523,24 +524,21 @@ run_report() {
   require_roots mcp     $MCP_ROOT
   # shellcheck disable=SC2086
   require_roots a2a     $A2A_ROOT
-  # shellcheck disable=SC2086
-  require_roots voice   $VOICE_ROOT
 
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   : >"$tmp/hits"
 
   # Prepass: compute the test-support module subtrees to drop (across every scanned root).
-  compute_mod_excludes $NEUTRAL_ROOTS $MCP_ROOT $A2A_ROOT $VOICE_ROOT
+  compute_mod_excludes $NEUTRAL_ROOTS $MCP_ROOT $A2A_ROOT
 
-  local nf mf af vf
-  nf="$(prod_files $NEUTRAL_ROOTS)"; mf="$(prod_files $MCP_ROOT)"; af="$(prod_files $A2A_ROOT)"; vf="$(prod_files $VOICE_ROOT)"
-  local n_nf n_mf n_af n_vf
+  local nf mf af
+  nf="$(prod_files $NEUTRAL_ROOTS)"; mf="$(prod_files $MCP_ROOT)"; af="$(prod_files $A2A_ROOT)"
+  local n_nf n_mf n_af
   n_nf="$(count_files "$nf")"; n_mf="$(count_files "$mf")"
-  n_af="$(count_files "$af")"; n_vf="$(count_files "$vf")"
+  n_af="$(count_files "$af")"
   require_files neutral "$n_nf"
   require_files mcp     "$n_mf"
   require_files a2a     "$n_af"
-  require_files voice   "$n_vf"
 
   : >"$tmp/allowused"
   # shellcheck disable=SC2086
@@ -549,8 +547,6 @@ run_report() {
   scan "$MCP_NEEDLES"     "$tmp/allowused" $mf >>"$tmp/hits"
   # shellcheck disable=SC2086
   scan "$A2A_NEEDLES"     "$tmp/allowused" $af >>"$tmp/hits"
-  # shellcheck disable=SC2086
-  scan "$VOICE_NEEDLES"   "$tmp/allowused" $vf >>"$tmp/hits"
 
   # ── THE DEAD-ROW CHECK — an allowlist entry that suppresses nothing is reported, never carried ────
   # Every row above exists to say "this specific hit is frozen contract, not dialect leakage". A row
@@ -588,7 +584,6 @@ EOF
   note "neutral roots: $NEUTRAL_ROOTS   ($n_nf file(s); bans: $NEUTRAL_NEEDLES)"
   note "mcp root:      $MCP_ROOT   ($n_mf file(s); bans: $MCP_NEEDLES)"
   note "a2a root:      $A2A_ROOT   ($n_af file(s); bans: $A2A_NEEDLES)"
-  note "voice root:    $VOICE_ROOT   ($n_vf file(s); bans: $VOICE_NEEDLES)"
   note "excluded:      $OPERATION_EXCLUDE (neutral Operation enum), */tests/*, *_test(s).rs, #[cfg(test)]"
 
   hdr "by needle (a clean tree reports zero)"
