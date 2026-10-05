@@ -87,7 +87,8 @@ use tokio::sync::{watch, Notify};
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
 pub use far_end::{
-    AuthBinding, Egress, EgressFarEnd, MemberRoute, ResponseKeep, UnitRoute, DEFAULT_ERROR_BODY_MAX,
+    AuthBinding, Egress, EgressFarEnd, MemberRoute, ResponseKeep, Ride, UnitRoute,
+    DEFAULT_ERROR_BODY_MAX,
 };
 pub use hooks::{
     Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, GroupScope,

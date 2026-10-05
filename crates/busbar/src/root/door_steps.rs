@@ -1300,6 +1300,9 @@ pub struct DoorReach<'a> {
     pub conns: Arc<dyn busbar_contract::conn::PollConns>,
     /// Whole seconds.
     pub stream_ceiling_secs: u64,
+    /// The linked wires composed over the data carrier (`crate::root::serve::upgrade_carriers`):
+    /// a need over one dials its member's base URL in its own scheme ([`spelled_for`]).
+    pub upgrades: Vec<&'static str>,
 }
 
 impl std::fmt::Debug for DoorReach<'_> {
@@ -1644,6 +1647,7 @@ pub fn member_routes(
                 provider: entry,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
                 anchors,
+                spelled: Vec::new(),
             },
         );
     }
@@ -1660,6 +1664,7 @@ pub fn member_routes(
                 provider: entry,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
                 anchors: busbar_contract::transport::trust::Anchors::default(),
+                spelled: Vec::new(),
             },
         );
     }
@@ -1693,6 +1698,16 @@ pub fn member_routes(
             .iter()
             .map(|n| (*n, busbar_kernel::plane_driver::ResponseKeep::default()))
             .collect();
+        // A bound need over a framer composed over the base URL's carrier dials the base URL in
+        // that framer's own scheme.
+        let spelled = bound
+            .iter()
+            .filter_map(|n| {
+                let transport = served.need_transports.get(n.0 as usize)?;
+                let url = spelled_for(&r.provider.base_url, transport, &reach.upgrades)?;
+                Some((*n, url))
+            })
+            .collect();
         routes.insert(
             r.entry,
             MemberRoute {
@@ -1709,10 +1724,31 @@ pub fn member_routes(
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
                 rides,
                 anchors: busbar_contract::transport::trust::Anchors::default(),
+                spelled,
             },
         );
     }
     Ok(routes)
+}
+
+/// THE BASE URL A NEED'S FRAMER READS: a need over `transport`, a framer composed over the
+/// carrier the operator's `base_url` names (`upgrades`: the linked wires composing over the data
+/// carrier, `crate::root::serve::upgrade_carriers`), dials the same authority and path under the
+/// framer's own scheme, its secured form for a secured base (`http://h` -> `<key>://h`,
+/// `https://h` -> `<key>s://h`, the pairing every upgrade-over-HTTP scheme keeps, RFC 6455 section
+/// 3). `None` when the need dials the base URL as written.
+#[must_use]
+pub fn spelled_for(base_url: &str, transport: &str, upgrades: &[&str]) -> Option<String> {
+    if !upgrades.contains(&transport) {
+        return None;
+    }
+    if let Some(rest) = base_url.strip_prefix("https://") {
+        Some(format!("{transport}s://{rest}"))
+    } else {
+        base_url
+            .strip_prefix("http://")
+            .map(|rest| format!("{transport}://{rest}"))
+    }
 }
 
 /// THE TRUST ANCHORS OF ONE REGISTRATION MEMBER (ARCHITECT 2026-10-03, THE TRANSPORT PIN: "the connector enforces pins itself"): its pin's key, where the plane declares the pin's

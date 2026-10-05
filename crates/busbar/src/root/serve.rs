@@ -423,6 +423,7 @@ pub struct ApplyReach {
     conns: Arc<dyn busbar_contract::conn::PollConns>,
     journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
     stream_ceiling_secs: u64,
+    upgrades: Vec<&'static str>,
 }
 
 /// A CONFIG APPLY ON ONE SERVED DOOR PLANE (ARCHITECT Q-DEL-A2A-APPLY; THE DESIGN §11, plugin
@@ -507,6 +508,7 @@ impl DoorApply {
                     auths: Arc::clone(&r.auths),
                     conns: Arc::clone(&r.conns),
                     stream_ceiling_secs: r.stream_ceiling_secs,
+                    upgrades: r.upgrades.clone(),
                 };
                 let routes = crate::root::door_steps::member_routes(
                     section,
@@ -968,6 +970,7 @@ pub fn compose_planes(
             conns: Arc::clone(&e.reach.conns),
             journal: Arc::clone(&e.journal),
             stream_ceiling_secs: e.reach.stream_ceiling_secs,
+            upgrades: e.reach.upgrades.clone(),
         });
         let live = Arc::new(DoorApply {
             plugin: plugin.clone(),
