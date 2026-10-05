@@ -1544,7 +1544,8 @@ fn resource_documents(
             scopes_supported: list("scopes_supported"),
         });
         for (i, claim) in snapshot.claims.iter().enumerate() {
-            if claim.flags & CLAIM_OPEN != 0 && claim.verb == "GET" && claim.target == path {
+            let open = claim.flags & busbar_contract::abi::plane::CLAIM_OPEN != 0;
+            if open && claim.verb == "GET" && claim.target == path {
                 if let Ok(rung) = u32::try_from(i) {
                     out.insert((p, rung), Arc::clone(&doc));
                 }

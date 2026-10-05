@@ -385,6 +385,7 @@ impl Book {
     }
 
     /// Every ledger lane the driver named, in order.
+    #[allow(dead_code)] // read by the kernel's driver suite only
     pub(crate) fn laned(&self) -> Vec<String> {
         self.laned.lock().unwrap().clone()
     }
