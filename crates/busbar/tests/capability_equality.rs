@@ -832,16 +832,12 @@ fn the_root_leg_matrix_runs_once_per_leg() {
         .expect("`root_legs` is an object");
     for leg in &compiled {
         let file = legs_obj[*leg]["file"].as_str().expect("a leg names a file");
-        let module = Path::new(file)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_else(|| panic!("leg `{leg}`'s file {file} has no module name"));
-        assert!(
-            mod_rs.contains(&format!("pub mod {module};")),
-            "leg `{leg}` is COMPILED INTO this build, but crates/busbar/src/root/mod.rs declares no \
-             `pub mod {module};`. A leg whose feature is on and whose module the root does not carry \
-             proves cells this binary cannot run."
-        );
+        leg_module_declared(&root, &mod_rs, file).unwrap_or_else(|e| {
+            panic!(
+                "leg `{leg}` is COMPILED INTO this build, but {e}. A leg whose feature is on and \
+                 whose module the root does not carry proves cells this binary cannot run."
+            )
+        });
         assert!(
             s.per_leg[*leg].0 > 0
                 || legs_obj[*leg]["columns"]
@@ -857,6 +853,73 @@ fn the_root_leg_matrix_runs_once_per_leg() {
         root_legs().len(),
         compiled
     );
+}
+
+/// WHETHER THE COMPOSITION ROOT CARRIES A LEG'S FILE: `crates/busbar/src/root/tests/<m>.rs` is
+/// carried when the root declares `pub mod <m>;` (the leg's file is that module's test body), OR
+/// when a module the root declares (`pub mod <owner>;`, `crates/busbar/src/root/<owner>.rs`) declares
+/// the file as one of its own test modules through `#[path = "tests/<m>.rs"]` (ARCHITECT 2026-10-05
+/// Q1: a door plane's leg lives in the serving module's test file, e.g. `serve.rs`'s
+/// `tests/serve_door.rs`). Anything else is refused, naming the file.
+fn leg_module_declared(root: &Path, mod_rs: &str, file: &str) -> Result<(), String> {
+    let path = Path::new(file);
+    let module = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| format!("its file {file} has no module name"))?;
+    if mod_rs.contains(&format!("pub mod {module};")) {
+        return Ok(());
+    }
+    let base = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| format!("its file {file} has no file name"))?;
+    let attr = format!("#[path = \"tests/{base}\"]");
+    let owners: Vec<&str> = mod_rs
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("pub mod "))
+        .filter_map(|l| l.strip_suffix(';'))
+        .collect();
+    let carried = owners.iter().any(|owner| {
+        std::fs::read_to_string(root.join(format!("crates/busbar/src/root/{owner}.rs")))
+            .is_ok_and(|src| src.contains(&attr))
+    });
+    if carried && file.starts_with(ROOT_DIR) && file.contains("/tests/") {
+        return Ok(());
+    }
+    Err(format!(
+        "crates/busbar/src/root/mod.rs declares no `pub mod {module};` and no module it declares \
+         carries `{attr}`, so {file} is no module of the composition root"
+    ))
+}
+
+/// THE LEG-FILE RULE, BOTH WAYS: a test file a declared root module carries through `#[path]` is a
+/// leg file (the streaming door's `serve.rs` -> `tests/serve_door.rs`); a file no declared module
+/// carries is refused. RED: the rule read `pub mod <stem>;` alone and refused the first.
+#[test]
+fn selftest_a_leg_file_is_a_module_or_a_declared_modules_path_test_file() {
+    let root = repo_root();
+    let mod_rs = std::fs::read_to_string(root.join("crates/busbar/src/root/mod.rs"))
+        .expect("the composition root's mod.rs");
+    assert_eq!(
+        leg_module_declared(&root, &mod_rs, "crates/busbar/src/root/tests/serve_door.rs"),
+        Ok(())
+    );
+    assert_eq!(
+        leg_module_declared(
+            &root,
+            &mod_rs,
+            "crates/busbar/src/root/tests/gauntlet_kernel.rs"
+        ),
+        Ok(())
+    );
+    let refused = leg_module_declared(
+        &root,
+        &mod_rs,
+        "crates/busbar/src/root/tests/no_such_leg_file.rs",
+    )
+    .expect_err("an undeclared file is no leg file");
+    assert!(refused.contains("no_such_leg_file.rs"), "{refused}");
 }
 
 /// The constants above ARE the doctrine; a refactor that widened `verify`'s parameters must not be
