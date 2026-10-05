@@ -813,13 +813,21 @@ pub fn compose_planes(
         .ok_or("the kernel's host services are not composed")?;
     for (instance, plugin) in doors {
         let served_facts = plugin.served();
-        let Some(section) = sections.get(served_facts.section) else {
-            tracing::debug!(
-                instance,
-                section = served_facts.section,
-                "door plane not configured"
-            );
-            continue;
+        // A door plane is configured when the document writes ANY section it owns: its own, or
+        // another its Statement owns (an `mcp:`-class block alone makes the deployment that plane's
+        // server, its own section then read as written empty).
+        let empty = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let section = match sections.get(served_facts.section) {
+            Some(section) => section,
+            None if served_facts.owns.iter().any(|n| sections.contains_key(n)) => &empty,
+            None => {
+                tracing::debug!(
+                    instance,
+                    section = served_facts.section,
+                    "door plane not configured"
+                );
+                continue;
+            }
         };
         // The plane's other owned sections this document writes, as written, by section name: it
         // reads them beside its settings (ARCHITECT Q-L3B-AUD). Names come from its Statement.
@@ -1458,6 +1466,11 @@ pub fn door_mounts(
     let mut doors: Vec<(busbar_kernel::guest::Line, RouteMethod, DoorClaim)> = Vec::new();
     for (p, plane) in served.planes.iter().enumerate() {
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
+            // A claim over the line carrier is served on the process's own stdin/stdout
+            // ([`lines`]), never on the data listener.
+            if claim.carrier == lines::LINE_CARRIER {
+                continue;
+            }
             let rung =
                 u32::try_from(i).map_err(|_| format!("{}: too many claims", plane.instance))?;
             let (line, method) = claim_line(&plane.instance, rung, claim, data_chain, upgrades)?;
@@ -1667,6 +1680,63 @@ pub fn door_mounts(
     })
 }
 
+/// THE ROUTES THE LINE CARRIER'S UNITS ARE DRIVEN ON ([`lines`]): every served plane's claims but
+/// the line carrier's, sealed as the data listener's guest list is (what a nested unit's claim is
+/// matched against; no listener is bound in this mode), the units posted through the process's one
+/// node and pinned to the card `pin` answers.
+///
+/// # Errors
+///
+/// A claim the guest list cannot seal, as [`door_routes`] refuses it.
+#[cfg(linked_axis_node)]
+pub(crate) fn line_routes(
+    served: Served,
+    pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
+) -> Result<Arc<DataRoutes>, String> {
+    use busbar_kernel::guest::{GuestList, GuestRefusal};
+    let mut lines_of = Vec::new();
+    let mut of_line = std::collections::HashMap::new();
+    for (p, plane) in served.planes.iter().enumerate() {
+        for (i, claim) in plane.snapshot.claims.iter().enumerate() {
+            if claim.carrier == lines::LINE_CARRIER {
+                continue;
+            }
+            let rung =
+                u32::try_from(i).map_err(|_| format!("{}: too many claims", plane.instance))?;
+            let (line, _) = claim_line(&plane.instance, rung, claim, &[], &[])?;
+            of_line.insert((plane.instance.clone(), rung), (p, rung));
+            lines_of.push(line);
+        }
+    }
+    let guests = GuestList::seal(lines_of).map_err(|refusal| match refusal {
+        GuestRefusal::EqualPrecedence(pair) => format!(
+            "the claims {:?} {} and {:?} {} meet at an equal precedence",
+            pair.0.claimant, pair.0.route.path, pair.1.claimant, pair.1.route.path
+        ),
+    })?;
+    let post = served.post.clone().unwrap_or_else(|| {
+        Arc::new(crate::root::plane_node::NodeEndPost::new(
+            crate::root::plane_node::node(),
+        ))
+    });
+    let kernel = served.planes.first().map(|p| Arc::clone(&p.kernel));
+    let routes = Arc::new(DataRoutes {
+        served,
+        post,
+        pin,
+        guests,
+        of_line,
+        frames: Mutex::default(),
+    });
+    if let (Some(kernel), Ok(runtime)) = (kernel, tokio::runtime::Handle::try_current()) {
+        let _attached = kernel.attach_nest(Arc::new(DoorNests {
+            routes: Arc::downgrade(&routes),
+            runtime,
+        }));
+    }
+    Ok(routes)
+}
+
 /// THE PUBLIC ROUTES the served door planes state (`abi::plane::ROUTE_PUBLIC`, SEAM-4o): each at its
 /// own target and verb on the data listener's mount, behind no auth gate (`RouteAuth::None`; the
 /// listener's arrival gates still apply), answered by the plane's `serve` op through the kernel's
@@ -1773,10 +1843,14 @@ impl DoorRequest {
             .downcast::<busbar_kernel::state::AppHandle>()
             .ok()?
             .load();
+        // A caller never states the carrier session its arrival came over: only the line carrier
+        // does, for the session it holds open ([`lines`]).
+        let mut headers = ctx.headers;
+        headers.remove(busbar_contract::abi::host::service::CARRIER_SESSION_FIELD);
         Some(DoorRequest {
             method: axum::http::Method::from_bytes(ctx.method.as_str().as_bytes()).ok()?,
             uri: ctx.uri,
-            headers: ctx.headers,
+            headers,
             body: ctx.body,
             gov: ctx.gov.unwrap_or_default(),
             credential: ctx.caller_credential,
@@ -2606,6 +2680,11 @@ impl http_body::Body for ReplyBody {
             .map(|piece| piece.map(|bytes| Ok(http_body::Frame::data(bytes))))
     }
 }
+
+/// THE LINE CARRIER: a process's own stdin/stdout, one carrier session, one unit per line (SEAM-S1).
+#[cfg(linked_axis_node)]
+#[path = "serve_lines.rs"]
+pub mod lines;
 
 #[cfg(test)]
 #[path = "tests/serve.rs"]

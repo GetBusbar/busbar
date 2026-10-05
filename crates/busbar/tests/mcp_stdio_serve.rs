@@ -32,9 +32,9 @@
 // never exits on stdin EOF. These end-to-end tests drive that stdio channel, so they belong to the
 // same feature as the mode they exercise — matching the binary's own `#[cfg(feature = "plane-mcp")]`
 // on the serve block.
-// The plane under test is the linked row carrying the `stdio-serve` axis (build.rs emits
-// `linked_axis_stdio_serve` from `[package.metadata.busbar.linked-axes]`).
-#![cfg(linked_axis_stdio_serve)]
+// The plane under test is the door `plane-mcp` carries, served on the root's line carrier (SEAM-S1)
+// through the stdio claim its door states.
+#![cfg(feature = "plane-mcp")]
 
 mod common;
 

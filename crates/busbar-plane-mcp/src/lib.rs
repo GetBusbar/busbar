@@ -59,6 +59,8 @@ pub mod endpoint;
 pub mod framing;
 pub mod identity;
 pub mod jsonrpc;
+/// The line carrier's meanings: one JSON-RPC message per line, each its own unit.
+pub mod line;
 pub mod outputschema;
 pub mod tool_arrival;
 pub mod tool_claims;
