@@ -1209,10 +1209,11 @@ pub fn build_app_from_config(
         p.governance.clone()
     } else {
         // Governance is ALWAYS available (it is inert until an admin token is set and virtual keys are
-        // minted). Only the STORE backend is a choice: ephemeral RAM by default, or a store PLUGIN
-        // (resolved by alias or canonical name from the validated registry — the engine sees only the
-        // returned `dyn Store`, exactly like a compiled-in backend).
-        let g = cfg.store.clone().unwrap_or_default();
+        // minted). Only the STORE backend is a choice, and config makes it (Q-STORE = (B)): a linked
+        // row, or a store PLUGIN (resolved by alias or canonical name from the validated registry —
+        // the engine sees only the returned `dyn Store`, exactly like a compiled-in backend). The
+        // validation above refused an absent block.
+        let g = cfg.store.clone().ok_or_else(config::store_required)?;
         // Is a STATEFUL container plane actually configured? Those planes carry per-task state that
         // the RAM store drops on restart. "Configured" = any `tools:` server / `agents:` agent OR any
         // tool-pool / agent-pool; the pool maps are always typed (present regardless of which planes
@@ -1266,10 +1267,11 @@ pub fn build_app_from_config(
         let axis = crate::preflight::root_rows()
             .store_axis
             .ok_or_else(|| load_failed("no store axis is installed".to_string()))?;
-        let store: Arc<dyn governance::RecordStore> = axis()
+        let opened = axis()
             .open(door, &g.module, cfg_json.as_bytes())
-            .map_err(load_failed)?
-            .records;
+            .map_err(load_failed)?;
+        let store: Arc<dyn governance::RecordStore> = opened.records;
+        let store_calls = opened.calls;
         // The operator ADMIN credential: the operator-credential entry's `token:` secret ref.
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
@@ -1287,6 +1289,11 @@ pub fn build_app_from_config(
         ) {
             Ok(gs) => {
                 let gs = Arc::new(gs);
+                // The store's typed records, kept for the kernel's host services (plane records
+                // persist in the configured store: ARCHITECT Q-L3B-RECORDS).
+                if let Some(calls) = store_calls {
+                    gs.attach_store_calls(calls);
+                }
                 // BOOT-ONLY crash-recovery: hydrate the in-memory token-ledger cells (key buckets +
                 // budget-group buckets) from the durable store so a restart resumes enforcement from
                 // the persisted ledger. A no-op for the empty RAM store.
@@ -1557,6 +1564,7 @@ pub fn build_app_from_config(
                     // `BuildCtx` names no plane-owned config type; the `agents:` container plane's
                     // `build` closure downcasts it back to its own typed config.
                     agent_defs: cfg.agent_defs.as_any(),
+                    tool_defs: cfg.tool_defs.as_any(),
                     public_url: cfg.public_url.as_deref(),
                     // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated
                     // coordination off its own prior runtime object across this apply — the same

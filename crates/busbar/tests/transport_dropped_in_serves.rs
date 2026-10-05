@@ -52,10 +52,12 @@ const THROUGH_THE_CONNECTOR: &str = "data door listening through the connector";
 const REQUEST: &str = "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
 const EXCHANGE: &str = include_str!("fixtures/transport_dropped_in_exchange.txt");
 
-/// The in-tree transport `cdylib` and the key it declares, found by KIND beside the binary and
-/// pinned to the wire this build's linked layers compose over (`common::plugins::
-/// transport_cdylib_under`): the one wire that can sit under them, never merely the newest door in
-/// the target directory. Under CI a missing artifact is a hard failure, never a silent skip.
+/// The in-tree transport `cdylib` and the key it declares, found by KIND beside the binary
+/// (`common::plugins::transport_cdylib_under`). No linked layer composes over another (ARCHITECT
+/// ruling Q128 U7: no transport names another), so no key is needed under them and any transport
+/// door beside the binary is the proof's subject: a linked key's tarball is refused as a second
+/// plugin with that key, an unlinked key's registers through the one fold. Under CI a missing
+/// artifact is a hard failure, never a silent skip.
 fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
     let under: Vec<&str> = LINKED_TRANSPORTS
         .iter()
@@ -89,8 +91,13 @@ fn free_port() -> u16 {
 /// The transport `cdylib` packed as an UNSIGNED `kind: transport` tarball (the config opts into
 /// unsigned plugins, as the CLI fixtures do).
 fn drop_in(dir: &Path, lib: &[u8]) {
-    let bytes = common::plugins::pack_stated("transport", "dropped-wire", lib, "acme");
-    std::fs::write(dir.join("plugins").join("dropped-wire.tar.gz"), bytes).unwrap();
+    drop_in_as(dir, lib, "dropped-wire");
+}
+
+/// The wire dropped in under the plugin name `name`.
+fn drop_in_as(dir: &Path, lib: &[u8], name: &str) {
+    let bytes = common::plugins::pack_stated("transport", name, lib, "acme");
+    std::fs::write(dir.join("plugins").join(format!("{name}.tar.gz")), bytes).unwrap();
 }
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
@@ -104,6 +111,7 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
+store: {{module: memory}}
 advanced:
   allow_destinations: ["127.0.0.1"]
   worker_threads: {WORKERS}
@@ -299,17 +307,13 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
             "stderr:\n{stderr}"
         );
     } else {
-        // RED: with no wire dropped in, the layers composed over the unlinked key have nothing
-        // under them, and the node refuses to boot — so whatever serves below crossed the plugin.
-        let out = refused(&dir);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(2), "stderr:\n{stderr}");
-        assert!(
-            stderr.contains(&format!("composes over `{key}`")),
-            "stderr:\n{stderr}"
-        );
-        // THE BUILD OVER THE DROPPED-IN WIRE SERVES: the one request answers the exchange the
-        // linked build answers, byte for byte but the clock.
+        // NO TRANSPORT NAMES ANOTHER (ARCHITECT ruling Q128 U7): nothing composes over the unlinked
+        // key, so the build boots and serves without it — the carrier under the data door is the
+        // connector's choice, not a registered row.
+        let (served, _, _) = serve_once(&dir, data_port, WORKERS);
+        assert_eq!(served, pinned(), "no layer waits on the unlinked key");
+        // THE DROPPED-IN WIRE REGISTERS THROUGH THE ONE FOLD: the build over it serves the
+        // exchange the linked build answers, byte for byte but the clock.
         drop_in(&dir, &lib);
         let (served, _, through) = serve_once(&dir, data_port, WORKERS);
         assert_eq!(
@@ -323,6 +327,13 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
             through, WORKERS,
             "each of the {WORKERS} data workers listens through the connector"
         );
+        // RED: and it DID register — a second copy of the same wire is a second transport plugin
+        // declaring one key, refused at boot exactly as the linked build refuses the first.
+        drop_in_as(&dir, &lib, "dropped-wire-again");
+        let out = refused(&dir);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "stderr:\n{stderr}");
+        assert!(stderr.contains(&format!("{key:?}")), "stderr:\n{stderr}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

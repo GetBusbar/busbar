@@ -49,7 +49,8 @@ const AGENTS_YAML: &str =
 fn resolved(sections: &str) -> RootCfg {
     linked::install();
     let yaml = format!(
-        "providers:\n  acme: {{ api_key: none }}\n\
+        "store: {{module: memory}}\n\
+         providers:\n  acme: {{ api_key: none }}\n\
          models:\n  m: {{ provider: acme }}\n{sections}"
     );
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("the document parses");
@@ -86,6 +87,7 @@ fn built_planes(cfg: &RootCfg) -> Vec<(&'static PlaneDecl, Arc<dyn std::any::Any
             let ctx = BuildCtx {
                 endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),
                 agent_defs: cfg.agent_defs.as_any(),
+                tool_defs: cfg.tool_defs.as_any(),
                 public_url: cfg.public_url.as_deref(),
                 prior: None,
             };

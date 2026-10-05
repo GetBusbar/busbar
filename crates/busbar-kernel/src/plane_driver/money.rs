@@ -19,7 +19,11 @@
 //!   force, reach what its tightest applicable budget has left; a count the card cannot price cuts
 //!   (fail closed);
 //! * an abandoned unit's sealed end goes to the composition root's one posting site
-//!   ([`EndPost`]); this file seals nothing.
+//!   ([`EndPost`]); this file seals nothing;
+//! * a duplex session is ONE unit with ONE line (THE DESIGN §7, "A session is one unit with one
+//!   line"): its turns' cumulative counts are checkpoints, a cancel on either side bills nothing of
+//!   its own, and the session's one cleanup ([`MoneySeam::session_ended`]) ledgers the last
+//!   far-end-reported (or floor) cumulative counts once, however the session ended.
 //!
 //! The kernel names no plane here: a unit's class names, model, pool and key are handed in by the
 //! composition root when it opens the unit ([`PlaneMoney::open`]).
@@ -28,6 +32,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::plane::{units_bill, UnitCount};
+use busbar_contract::caps::ReasonCode;
 use busbar_contract::records::VirtualKey;
 use busbar_contract::UnitKey;
 
@@ -119,10 +124,16 @@ struct Open {
     abandoned: bool,
     /// The route step ended without a cancel: no bill will come.
     finished: bool,
+    /// A duplex session opened on the unit ([`MoneySeam::session_opened`]): its line is the
+    /// session end's, never a side's cancel bill.
+    session: bool,
     /// The provider of the member that served the unit, once its answering attempt committed
     /// ([`MoneySeam::served`]); `None` while no member has answered. The served model replaces
-    /// [`UnitMoney::model`] in `money` at the same moment.
+    /// [`UnitMoney::model`] in `money` at the same moment, unless the plane named the unit's lane.
     provider: Option<String>,
+    /// The plane named the unit's ledger lane ([`MoneySeam::laned`]): it is [`UnitMoney::model`]
+    /// in `money` from then on, and a serving member no longer replaces it.
+    laned: bool,
 }
 
 /// THE KERNEL'S MONEY STEPS for one plane instance's units.
@@ -143,6 +154,13 @@ impl PlaneMoney {
         }
     }
 
+    /// The key its book lends a unit's caller reference under ([`GovState::caller_ref_key`]);
+    /// `None` when the book signs nothing.
+    #[must_use]
+    pub fn caller_refs(&self) -> Option<Arc<crate::auth::CallerRefKey>> {
+        self.gov.caller_ref_key().map(Arc::new)
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<UnitKey, Open>> {
         self.units
             .lock()
@@ -159,7 +177,9 @@ impl PlaneMoney {
                 ledgered: false,
                 abandoned: false,
                 finished: false,
+                session: false,
                 provider: None,
+                laned: false,
             },
         );
     }
@@ -188,7 +208,24 @@ impl PlaneMoney {
             }
         }
         if m.fee.refunds(caller_status, &open.last) {
-            self.gov.refund_charge(&m.charge);
+            match &m.fee {
+                FeeRefund::CallerStatus => self.gov.refund_charge(&m.charge),
+                // A PLANE'S REFUND RETURNS ITS OWN FEE UNIT (TODO row 17, Q17-6): a session's
+                // `per_session` comes back from the plane's fee lane by its class name.
+                // The admission's charge (its request fee) comes back as it was charged; any other
+                // fee unit the plane declares by its own name.
+                FeeRefund::PlaneFeeUnits(fees) => {
+                    self.gov.refund_charge(&m.charge);
+                    for unit in fees
+                        .iter()
+                        .filter_map(|c| m.classes.get(*c as usize))
+                        .filter(|u| u.as_str() != busbar_contract::plane::PER_REQUEST)
+                    {
+                        self.gov
+                            .refund_fee_unit(&m.cost, &m.key, &m.pool, m.arrived, unit);
+                    }
+                }
+            }
         }
     }
 
@@ -201,9 +238,10 @@ impl PlaneMoney {
             .unwrap_or_default()
     }
 
-    /// The key unit `key` is ledgered, metered and priced under: its serving member's once its
-    /// answer committed ([`MoneySeam::served`]), else the member it was opened with; `None` when no
-    /// money facts are open for it.
+    /// The key unit `key` is ledgered, metered and priced under: the ledger lane its plane named
+    /// ([`MoneySeam::laned`]), else its serving member's once its answer committed
+    /// ([`MoneySeam::served`]), else the member it was opened with; `None` when no money facts are
+    /// open for it.
     #[must_use]
     pub fn serving(&self, key: UnitKey) -> Option<String> {
         self.lock().get(&key).map(|o| o.money.model.clone())
@@ -356,7 +394,9 @@ impl MoneySeam for PlaneMoney {
             let Some(open) = all.get_mut(&ctx.key) else {
                 return;
             };
-            if open.ledgered {
+            // A session's side bills nothing of its own: the session's one line is written at
+            // its end from its last cumulative counts ([`MoneySeam::session_ended`]).
+            if open.ledgered || open.session {
                 return;
             }
             open.ledgered = true;
@@ -423,14 +463,82 @@ impl MoneySeam for PlaneMoney {
         }
     }
 
+    /// The session opens under the unit's one admission: its money facts must be open (a unit
+    /// the root admitted with no facts runs no session unbilled), and from here its line is the
+    /// session end's.
+    fn session_opened(&self, ctx: &UnitCtx) -> Result<(), ReasonCode> {
+        match self.lock().get_mut(&ctx.key) {
+            Some(open) if !open.ledgered => {
+                open.session = true;
+                Ok(())
+            }
+            _ => Err(ReasonCode::Unpriced),
+        }
+    }
+
+    /// THE SESSION'S ONE LINE: its last billing cumulative counts (far-end-reported or floor,
+    /// never an estimate), ledgered once and metered when they bill, in the window of the unit's
+    /// arrival, however the session ended (its own end, a cut, a cancel on either side, its caller
+    /// gone). The unit's own end then ledgers nothing twice and still decides the fee refund. A unit
+    /// whose caller already went away closes here. Runs inside the session's cleanup `Drop`: the
+    /// accrual is in memory and neither awaits nor crosses a plugin.
+    fn session_ended(&self, ctx: &UnitCtx) {
+        let owed = {
+            let mut all = self.lock();
+            let Some(open) = all.get_mut(&ctx.key) else {
+                return;
+            };
+            if open.ledgered || !open.session {
+                return;
+            }
+            open.ledgered = true;
+            let owed = (
+                open.money.clone(),
+                open.provider.clone(),
+                reported(&open.last),
+            );
+            if open.abandoned {
+                all.remove(&ctx.key);
+            }
+            owed
+        };
+        let (money, provider, counts) = owed;
+        self.ledger(&money, &counts);
+        if bills(&money, &counts) {
+            self.meter(&money, provider.as_deref(), &counts);
+        }
+    }
+
     /// The member that served the unit: from here every ledgering, metering and cut-stream pricing
     /// of the unit is under ITS config model and provider, as 1.5.5 attributed a delivered response
     /// to the serving lane after failover (`proxy/usage.rs` `ledger_and_meter`: "THE ONE PLACE a
     /// delivered response is attributed to a model ... `lane` is the SERVING lane").
     fn served(&self, ctx: &UnitCtx, model: &str, provider: &str) {
         if let Some(open) = self.lock().get_mut(&ctx.key) {
-            open.money.model = model.to_string();
+            if !open.laned {
+                open.money.model = model.to_string();
+            }
             open.provider = Some(provider.to_string());
+        }
+    }
+
+    /// THE LEDGER LANE THE PLANE NAMED (ARCHITECT SEAM-L(j): the ledger lane is not the route
+    /// entry): from here every ledgering, metering and cut-stream pricing of the unit is under it,
+    /// qualified by the same plane key the unit was opened under (`"<plane>\u{1f}<lane>"`), so a
+    /// plane names lanes of its own card alone. A lane that is empty, or carries a control
+    /// character (the qualifier's separator among them), names nothing.
+    fn laned(&self, ctx: &UnitCtx, lane: &str) {
+        if lane.is_empty() || lane.chars().any(char::is_control) {
+            return;
+        }
+        if let Some(open) = self.lock().get_mut(&ctx.key) {
+            let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(&open.money.model);
+            open.money.model = if plane.is_empty() {
+                lane.to_string()
+            } else {
+                format!("{plane}{}{lane}", crate::governance::PLANE_LANE_SEP)
+            };
+            open.laned = true;
         }
     }
 }

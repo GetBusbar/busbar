@@ -60,7 +60,13 @@ pub struct DoorFacts {
     pub name: String,
     /// Every scheme it answers for; the first is its own.
     pub claims: Vec<&'static str>,
-    /// The claims it composes over; empty = directly over the host's socket.
+    /// The tail's ROLE (`ROLE_CARRIER` | `ROLE_FRAMER`, ARCHITECT ruling Q128 U7): a CARRIER is a
+    /// byte stream the host's socket or pipe carries as itself (no opening message, nothing framed,
+    /// a stream it may secure mid-way); a FRAMER frames messages over the carrier the connector
+    /// chose from the target's scheme. The role is stated, never derived from `composes_over`.
+    pub role: u32,
+    /// The claims it composes over: always empty now (no transport names another); an entry that
+    /// states one is refused where it would be served.
     pub composes_over: Vec<&'static str>,
 }
 
@@ -537,6 +543,11 @@ pub struct Established {
     pub agreed_protocol: Option<Vec<u8>>,
     /// The claim the connection resolved to.
     pub claim: Option<String>,
+    /// The far end's key pin, read off its verified leaf certificate on a secured dial; `None` =
+    /// no certificate (the transport pin, ARCHITECT 2026-10-03).
+    pub peer_key_pin: Option<String>,
+    /// Whether the handshake presented busbar's client identity.
+    pub client_identity: bool,
 }
 
 impl Established {
@@ -718,12 +729,40 @@ impl Framing {
         target: &str,
         established: &Established,
     ) -> Result<(Self, Yielded), Refused> {
+        Self::begin_with(door, side, target, established, &[])
+    }
+
+    /// [`Framing::begin`], handing a dialled framing its OPENING head fields (`BeginIn::fields`:
+    /// the bound auth's fields and the request's own), for a wire that carries them on the
+    /// connection's opening rather than on a message (ARCHITECT Q-L5B-WS-DIAL).
+    ///
+    /// # Errors
+    ///
+    /// The entry refused to frame the connection.
+    pub fn begin_with(
+        door: Arc<dyn FramerDoor>,
+        side: u32,
+        target: &str,
+        established: &Established,
+        opening: &[(String, Vec<u8>)],
+    ) -> Result<(Self, Yielded), Refused> {
         let mut bufs = Buffers::for_side(side);
         let facts = established.facts();
+        let fields: Vec<Field> = opening
+            .iter()
+            .map(|(n, v)| Field {
+                name: abi(n.as_bytes()),
+                value: abi(v),
+            })
+            .collect();
         let mut i: BeginIn = blank_in();
         i.side = side;
         i.target = abi(target.as_bytes());
         i.facts = &facts;
+        if !fields.is_empty() {
+            i.fields = fields.as_ptr();
+            i.fields_len = fields.len();
+        }
         i.sink = bufs.sink();
         let mut o: FramerOut = blank_out();
         ready(door.cross(Call::Begin(&mut i, &mut o)))?;

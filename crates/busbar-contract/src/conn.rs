@@ -63,6 +63,11 @@ pub struct OpenDesc<'a> {
     /// pins is held against them at the connect, before any byte is written, and one outside
     /// them refuses the open. Empty = no pin beyond the judgement's own.
     pub within: &'a [IpAddr],
+    /// The REGISTRATION this open reaches, by its name in its plane's declaring section, where the
+    /// opener names one (a member route's walk; a plane's own stream that names it,
+    /// `EstablishIn::member`); empty = none. What the host sealed for that registration alone (its
+    /// private reach, [`PollConns::seal_reach`]) applies to this open and to no other.
+    pub member: &'a str,
 }
 
 /// What a piece a connection delivered carries.
@@ -240,6 +245,17 @@ pub trait Conns: Send + Sync {
     fn close(&self, caller: InstanceId, conn: ConnId) -> Result<(), ConnError>;
 }
 
+/// WHY A CONNECTION FAILED, as the host's table names it: the stage (`CAUSE_CONNECT`,
+/// `CAUSE_SECURITY`, `CAUSE_EXCHANGE`, `CAUSE_DEADLINE`, `CAUSE_FRAMER`) and the underlying
+/// error's own text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnCause {
+    /// The `CAUSE_*` stage.
+    pub stage: u64,
+    /// The underlying error's own text (empty for a deadline).
+    pub text: String,
+}
+
 /// THE HOST'S CONNECTION TABLE, as the host declares an instance's needs on it (host-side: never
 /// lowered to a plugin). The loader declares every need an instance's signed Statement states: a
 /// need whose target the plugin names at bind, a need whose `target_from` or `trust_from` names a
@@ -333,7 +349,113 @@ pub trait DeclaredConns: Conns {
         let _ = (owner, need, spec, program);
         Err(ConnError::Refused)
     }
+
+    /// Why `owner`'s connection `conn` failed, once it has: where (a `CAUSE_*` stage) and the
+    /// underlying error's own text (the socket's, or connection security's), never secret
+    /// material. `None` while it has not failed, or when the table names no cause. The host reads
+    /// it to answer a plugin's failed connector service with its cause.
+    fn cause(&self, owner: InstanceId, conn: ConnId) -> Option<ConnCause> {
+        let _ = (owner, conn);
+        None
+    }
+    /// Hold `binding` as the auth binding of `owner`'s requests on `need` to `origin`
+    /// (`scheme://authority`, [`origin_of`]): a MEMBER's binding, which the plugin's own requests to
+    /// that member are authenticated with (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE: the connector holds
+    /// it per (instance, need, target origin), and the open calls its fields). Binding the same
+    /// triple again replaces it. A table that carries no binding drops it.
+    fn bind_auth(&self, owner: InstanceId, need: NeedId, origin: &str, binding: ConnAuth) {
+        let _ = (owner, need, origin, binding);
+    }
+
+    /// The binding [`DeclaredConns::bind_auth`] holds for `owner`'s requests on `need` to `target`'s
+    /// origin; `None` = the request carries no auth fields.
+    fn auth_of(&self, owner: InstanceId, need: NeedId, target: &str) -> Option<ConnAuth> {
+        let _ = (owner, need, target);
+        None
+    }
+
+    /// Record that `owner` declared `need` (as [`DeclaredConns::declare`]), its `target_from` the
+    /// member-program path ([`crate::section::MEMBER_PROGRAM`]): `programs` is every member's own
+    /// program, by member name, as the instance's settings spell them. The host keeps ONE
+    /// long-lived connection per member, spawned on its first open and shared by every open that
+    /// names the member (an open's target names the member: its text up to the first `/`), each
+    /// open reading every frame the program writes after it; a program that ends is spawned anew
+    /// on the next open, a new GENERATION. Declaring the need again replaces the set: a member that
+    /// is gone, or whose program changed, is retired (no open reaches it again; its program is
+    /// killed once the last open on it closes). A table that carries no program refuses it.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Refused`] when the host will not carry the need as declared.
+    fn declare_member_programs(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        programs: &[(String, Program)],
+    ) -> Result<(), ConnError> {
+        let _ = (owner, need, spec, programs);
+        Err(ConnError::Refused)
+    }
 }
+
+/// THE ORIGIN of a URL, `scheme://authority`: what a member's route is sealed at and its binding
+/// held under (a target is a path joined onto it). A string with no scheme is its own origin up to
+/// its first `/`.
+#[must_use]
+pub fn origin_of(url: &str) -> &str {
+    let after = url.find("://").map_or(0, |at| at + 3);
+    url[after..].find('/').map_or(url, |at| &url[..after + at])
+}
+
+/// THE CREDENTIAL A UNIT LENDS its passthrough member (the kernel's caller-credential lending): the
+/// caller's verified credential, by the unit it was verified for.
+pub trait LendCredential: Send + Sync {
+    /// The credential `unit`'s caller presented, while the unit runs; `None` when it presented
+    /// none, or the unit is not in flight.
+    fn lent(&self, unit: u64) -> Option<crate::redacted::Redacted<Vec<u8>>>;
+}
+
+/// ONE MEMBER'S AUTH BINDING, as the connector holds it for a plugin's own requests to that member
+/// ([`DeclaredConns::bind_auth`]): the auth instance serving the member's style and the handle its
+/// `open_outbound` answered, the style's flags and points, whether the member relays its caller's
+/// credential (passthrough), and where that credential is lent from.
+#[derive(Clone)]
+pub struct ConnAuth {
+    /// The auth instance serving the member's style.
+    pub auth: Arc<dyn crate::auth_calls::OutboundAuth>,
+    /// The handle `open_outbound` answered.
+    pub handle: u64,
+    /// `abi::auth::STYLE_NEEDS_HEADERS`.
+    pub style_flags: u32,
+    /// The style's `StyleDecl::points`.
+    pub points: crate::abi::auth::AuthPoints,
+    /// The member relays its caller's own verified credential: a request made inside a unit is
+    /// lent that unit's ([`ConnAuth::lender`]); one made inside no unit has no caller, and opens
+    /// nothing.
+    pub passthrough: bool,
+    /// Where a passthrough member's credential is lent from, by unit.
+    pub lender: Option<Arc<dyn LendCredential>>,
+}
+
+impl std::fmt::Debug for ConnAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnAuth")
+            .field("handle", &self.handle)
+            .field("style_flags", &self.style_flags)
+            .field("passthrough", &self.passthrough)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The field a member-program connection's HEAD carries (the first piece every open on it reads,
+/// a fields piece whose status is a success): the GENERATION of the program it reaches, a decimal
+/// counting the spawns of that member's program from `1`. Two opens that read the same generation
+/// reach the same running program.
+pub const PROGRAM_GENERATION_FIELD: &str = "generation";
+
+/// The registration keys a member's program is read from ([`Program::of_member`]).
+pub const PROGRAM_KEYS: [&str; 3] = ["command", "args", "env"];
 
 /// A PROGRAM a need dials (its `transport` a byte-stream framer the program's pipes carry): the
 /// three things a spawn needs that one target string cannot spell — the absolute path
@@ -384,6 +506,25 @@ pub enum ProgramRefused {
 }
 
 impl Program {
+    /// A REGISTRATION's program ([`crate::section::MEMBER_PROGRAM`]): its `command`, `args` and
+    /// `env` keys read as [`Program::from_settings`] reads them; every other key of the
+    /// registration is its own, not the program's. `None` for a registration that names no
+    /// `command` (or is not a map): it is not a member of a program need.
+    ///
+    /// # Errors
+    ///
+    /// The [`ProgramRefused`] naming what the three keys break.
+    pub fn of_member(registration: &serde_json::Value) -> Option<Result<Self, ProgramRefused>> {
+        let map = registration.as_object()?;
+        map.get("command")?;
+        let picked: serde_json::Map<String, serde_json::Value> = map
+            .iter()
+            .filter(|(k, _)| PROGRAM_KEYS.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        Some(Self::from_settings(&serde_json::Value::Object(picked)))
+    }
+
     /// The settings' spelling of a program: `{command, args?, env?}` — `command` an absolute path,
     /// `args` a list of strings, `env` a map of string to string; any other key, type or a NUL byte
     /// is refused.
@@ -466,6 +607,63 @@ pub trait PollConns: Conns {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<Piece, ConnError>>;
+
+    /// SEAL THE TRUST ANCHORS of one destination `owner`'s declared `need` reaches at `target` (a
+    /// member route's sealed target, the transport pin, ARCHITECT 2026-10-03): every connection the need opens to that
+    /// target's authority, by the plugin or by the host's own walk, is held to `anchors` by the
+    /// connector itself — the far end's key pin enforced, busbar's client identity presented — and
+    /// its facts say what was observed ([`ConnFacts::peer_key_pin`],
+    /// [`ConnFacts::client_identity`]). Empty anchors drop any earlier seal for that target.
+    /// Host-side only, never lowered: the root seals what its configuration states.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Refused`]: the need is not `owner`'s, the target is not one it reaches, the
+    /// identity does not parse, or (the default) the table cannot enforce anchors at all — a pin
+    /// nobody enforces is refused, never dropped.
+    fn anchor(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        target: &str,
+        anchors: &crate::transport::trust::Anchors,
+    ) -> Result<(), ConnError> {
+        let _ = (owner, need, target);
+        if anchors.is_empty() {
+            Ok(())
+        } else {
+            Err(ConnError::Refused)
+        }
+    }
+
+    /// SEAL ONE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, SEAM-4k: keyed
+    /// per REGISTRATION, never per destination): `owner`'s `need` may dial a private address at
+    /// `target`'s authority on an open that names `member` ([`OpenDesc::member`]) and on no other,
+    /// as an allowlist entry naming that host would (cloud metadata stays refused; the need's class
+    /// is unchanged). `reach` false drops any earlier seal for the registration. Two registrations
+    /// at one `host:port` hold their own answers. Host-side only: the root seals what its
+    /// configuration states.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Refused`]: the need is not `owner`'s, the target is not one it reaches, or (the
+    /// default) the table cannot honour a reach at all — a reach nobody honours is refused, never
+    /// dropped.
+    fn seal_reach(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        member: &str,
+        target: &str,
+        reach: bool,
+    ) -> Result<(), ConnError> {
+        let _ = (owner, need, member, target);
+        if reach {
+            Err(ConnError::Refused)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 // ── the bookkeeping every host shares ────────────────────────────────────────────────────────────

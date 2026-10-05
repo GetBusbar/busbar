@@ -122,6 +122,7 @@ fn request() -> RoutingRequest<'static> {
         prompt: None,
         identity: None,
         signals: SignalBag::new(),
+        session: None,
     }
 }
 

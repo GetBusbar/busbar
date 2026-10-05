@@ -39,7 +39,7 @@ use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn, ConnOut, DialIn,
     EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
     ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, ShutIn, TransportTail,
-    WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM, PIECE_END_OF_FRAME, ROLE_FRAMER,
+    WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM, PIECE_END_OF_FRAME, ROLE_CARRIER,
     UNIT0_FIRST_LINE, YIELD_ENDED, YIELD_MORE,
 };
 
@@ -74,13 +74,15 @@ const CLAIMS: &[Claim] = &[Claim {
     _reserved: 0,
 }];
 
-/// The transport kind's tail: a framer over a byte stream the host carries, composing over nothing.
+/// The transport kind's tail: the CARRIER of a program's pipes (its role stated, ARCHITECT ruling
+/// Q128 U7: the connector carries a stdio need as a raw stream and frames no opening message for
+/// it), composing over nothing.
 const TAIL: TransportTail = TransportTail {
     head: KindTailHead {
         size: std::mem::size_of::<TransportTail>() as u32,
         _reserved: 0,
     },
-    role: ROLE_FRAMER,
+    role: ROLE_CARRIER,
     framing: FRAMING_STREAM,
     facts: 0,
     handshake_max_steps: 0,

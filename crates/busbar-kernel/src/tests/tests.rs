@@ -717,7 +717,7 @@ fn plugins_cfg(dir: &std::path::Path, enabled: bool) -> crate::config::PluginsCf
 fn gov_with_store(store: &str) -> crate::config::StoreCfg {
     crate::config::StoreCfg {
         module: store.to_string(),
-        ..Default::default()
+        settings: serde_json::Map::new(),
     }
 }
 
@@ -895,33 +895,30 @@ fn the_preflight_warns_about_a_malformed_floor() {
     );
 }
 
-/// K5 (DECISIONS #2 rule (1)) — THE BUILT-IN STORE IS A ROW OF THE STORE AXIS. The default store is
+/// K5 (DECISIONS #2 rule (1)) — THE BUILT-IN STORE IS A ROW OF THE STORE AXIS. The linked store is
 /// registered through `PluginRegistry::link`, the admission a dropped-in store's row takes, and the
 /// configured name resolves to it there — not a name the kernel matches. With the plugins directory
 /// off the registry holds exactly that row, which states itself ephemeral and opens through
 /// `open_store`; with the directory on, the linked row still holds its name (first registration
 /// wins) and a dropped-in plugin spelling the same name stays the directory's own row.
 ///
-/// RED by planting the door bypass: `linked_rows()` registering nothing leaves the default boot's
-/// `store.module: memory` unresolved (the preflight then refuses it as a plugin with plugins off).
+/// RED by planting the door bypass: `linked_rows()` registering nothing leaves the configured
+/// `store.module` (the stand-in row) unresolved (the preflight then refuses it as a plugin with
+/// plugins off).
 #[test]
 fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
-    let name = crate::preflight::root_rows()
-        .stores
-        .iter()
-        .find(|s| s.2)
-        .map(|s| s.0);
-    let name = name.expect("the stand-in store row claims the default");
+    let store = crate::test_support::stand_in_store();
+    let name = store.module.as_str();
     let reg = crate::plugins_preflight(
-        None,
+        Some(&store),
         None,
         &Default::default(),
         &Default::default(),
         &crate::config::PluginsCfg::default(),
         &Default::default(),
     )
-    .expect("the default boot resolves its store on the axis");
-    let row = reg.resolve(name).expect("the default store is a row");
+    .expect("the configured store resolves on the axis");
+    let row = reg.resolve(name).expect("the configured store is a row");
     assert_eq!((row.manifest.kind.as_str(), row.ephemeral), ("store", true));
     let stores = reg.linked().iter().filter(|p| p.manifest.kind == "store");
     assert_eq!((stores.count(), reg.loadable().len()), (1, 0));
@@ -934,7 +931,7 @@ fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
     let mut cfg = plugins_cfg(&dir, true);
     cfg.trust.allow_unsigned = true;
     let reg = crate::plugins_preflight(
-        None,
+        Some(&store),
         None,
         &Default::default(),
         &Default::default(),
@@ -1092,6 +1089,7 @@ async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reache
         prompt: None,
         identity: None,
         signals: Default::default(),
+        session: None,
     };
     let ctx = RoutingContext {
         pool: "p",

@@ -358,6 +358,20 @@ pub(crate) fn linked_source(
         out.push_str(&format!("{e}::door, "));
     }
     out.push_str("],\n");
+    // Each door row's place among the plane rows (how many `plane` rows precede it in manifest
+    // order): a door plane's registry row folds in at its row's place, so the layering order is the
+    // manifest's whichever axis a plane registers on.
+    out.push_str("    plane_door_slots: &[");
+    let mut planes_before = 0usize;
+    for (_, axes) in &linked {
+        if axes.iter().any(|a| a == PLANE_DOOR_AXIS) {
+            out.push_str(&format!("{planes_before}, "));
+        }
+        if axes.iter().any(|a| a == "plane") {
+            planes_before += 1;
+        }
+    }
+    out.push_str("],\n");
     out.push_str("    transports: &[");
     let mut door_builds = String::new();
     for (n, (e, axes)) in linked
@@ -365,20 +379,36 @@ pub(crate) fn linked_source(
         .filter(|(_, a)| a.iter().any(|x| x == TRANSPORT_AXIS))
         .enumerate()
     {
-        let build = if axes.iter().any(|x| x == DOOR_AXIS) {
+        let (build, claims, upgrades) = if axes.iter().any(|x| x == DOOR_AXIS) {
             door_builds.push_str(&format!(
                 "fn __door_build_{n}(\n    lower: Option<std::sync::Arc<dyn busbar_contract::Transport>>,\n    \
                  settings: &busbar_contract::transport::TransportSettings,\n\
                  ) -> std::sync::Arc<dyn busbar_contract::Transport> {{\n    \
-                 crate::root::doors::build({e}::KEY, {e}::door, lower, settings)\n}}\n"
+                 crate::root::doors::build({e}::KEY, {e}::door, lower, settings)\n}}\n\
+                 fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
+                 crate::root::doors::claims_of({e}::door)\n}}\n\
+                 fn __door_upgrades_{n}() -> Vec<&'static str> {{\n    \
+                 crate::root::doors::upgrades_of({e}::door)\n}}\n"
             ));
-            format!("__door_build_{n}")
+            (
+                format!("__door_build_{n}"),
+                format!("__door_claims_{n}"),
+                format!("__door_upgrades_{n}"),
+            )
         } else {
-            format!("{e}::build")
+            door_builds.push_str(&format!(
+                "fn __row_claims_{n}() -> Vec<&'static str> {{\n    vec![{e}::KEY]\n}}\n\
+                 fn __row_upgrades_{n}() -> Vec<&'static str> {{\n    Vec::new()\n}}\n"
+            ));
+            (
+                format!("{e}::build"),
+                format!("__row_claims_{n}"),
+                format!("__row_upgrades_{n}"),
+            )
         };
         out.push_str(&format!(
             "crate::root::linked::LinkedTransport {{ key: {e}::KEY, composes_over: \
-             {e}::COMPOSES_OVER, build: {build} }}, "
+             {e}::COMPOSES_OVER, build: {build}, claims: {claims}, upgrades: {upgrades} }}, "
         ));
     }
     out.push_str("],\n");

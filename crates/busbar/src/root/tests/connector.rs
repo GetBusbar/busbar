@@ -76,7 +76,7 @@ const IMDS: &str = "169.254.169.254";
 /// the catalog, and `security` (YAML, or empty for none).
 fn deployment(providers: &[(&str, &str, &[&str])], security: &str) -> RootCfg {
     let mut defs = std::collections::HashMap::new();
-    let mut yaml = String::from("models: {}\nproviders:");
+    let mut yaml = String::from("store: {module: memory}\nmodels: {}\nproviders:");
     yaml.push_str(if providers.is_empty() { " {}\n" } else { "\n" });
     for (name, url, carve) in providers {
         let def: busbar_kernel::config::ProviderDef =
@@ -122,7 +122,7 @@ fn a_provider_carve_out_does_not_admit_metadata_for_a_default_or_open_web_dial()
             );
         }
         assert_eq!(
-            judge.judge_name(&format!("https://{IMDS}/"), class),
+            judge.judge_name(&format!("https://{IMDS}/"), class, false),
             Err(DEST_METADATA),
             "the literal under class {class}"
         );
@@ -174,7 +174,7 @@ fn operator_infrastructure_refuses_metadata_even_when_carved_out() {
             );
         }
         assert_eq!(
-            judge.judge_name("http://metadata.google.internal/", class),
+            judge.judge_name("http://metadata.google.internal/", class, false),
             Err(DEST_METADATA),
             "the metadata name under class {class}"
         );

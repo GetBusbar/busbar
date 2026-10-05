@@ -475,8 +475,8 @@ pub struct RootCfg {
     pub per_request_fee: i64,
     /// Every other plane's own fees, by plane registry key. See `DeployCfg::plane_fees`.
     pub plane_fees: PlaneFeesMap,
-    /// The `store:` block as configured; `None` = the block was ABSENT (ephemeral RAM store,
-    /// presence-driven governance stays off unless another governance signal is present).
+    /// The `store:` block as configured; `None` = the block was ABSENT, which `--validate` and boot
+    /// refuse ([`store_required`], Q-STORE = (B)).
     pub store: Option<StoreCfg>,
     /// Module-level `open()` config for `kind: secret` plugins, keyed by module name (the top-level
     /// `secrets:` block). Empty = every secret plugin opens with `{}` (the prior behavior). The
@@ -1277,7 +1277,8 @@ pub struct DeployCfg {
     /// its door, beside the parse its grammar made. See [`DeployCfg::door_sections`].
     #[serde(skip)]
     pub declared_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
-    /// The durable store as `{ module, settings }`. Absent = the ephemeral RAM store.
+    /// The durable store as `{ module, settings }`. Required: absent is refused at validation
+    /// ([`store_required`], Q-STORE = (B)).
     #[serde(default)]
     pub store: Option<StoreCfg>,
     /// Module-level `open()` config for `kind: secret` plugins, keyed by module name — the delivery
@@ -1351,11 +1352,18 @@ impl DeployCfg {
     /// through its door opens with its own (LAW 7: a section absent here opens nothing).
     #[must_use]
     pub fn door_sections(&self) -> std::collections::BTreeMap<&'static str, serde_yaml::Value> {
+        // A named-definition carrier (`tools:`/`agents:`) holds a door plane's section as the door
+        // judged it ([`busbar_kernel::plane::door::DoorSection`], DECL-FOLD): handed as written.
+        let named = [&*self.tools.0, &*self.agents.0]
+            .into_iter()
+            .filter_map(|c| c.as_any().downcast_ref::<crate::plane::door::DoorSection>())
+            .map(|d| (d.section, d.value.clone()));
         self.plane_raw
             .iter()
             .chain(&self.declared_raw)
-            .filter(|(_, v)| !v.is_null())
             .map(|(k, v)| (*k, v.clone()))
+            .chain(named)
+            .filter(|(_, v)| !v.is_null())
             .collect()
     }
 
@@ -1717,7 +1725,9 @@ impl PluginsCfg {
 // The `store:` block and the `secrets:` per-module init block are plain serde data (`{ module,
 // settings }` shapes). Moved to `busbar_kernel::config::sections`; re-exported at their
 // historical `config::` path.
-pub use busbar_kernel::config::sections::{default_governance_store, SecretModuleCfg, StoreCfg};
+pub use busbar_kernel::config::sections::{
+    store_required, SecretModuleCfg, StoreCfg, MIGRATED_STORE_MODULE,
+};
 
 // The `advanced:` block (INTERNAL tuning knobs) and its nested `response_headers:` block are plain
 // serde data with `Default` impls that route through the same shared consts as their `#[serde(default

@@ -510,7 +510,7 @@ impl busbar_contract::services::HostServices for ClockOnly {
         &self,
         _: &str,
         _: u32,
-        _: bool,
+        _: u32,
         _: Option<busbar_contract::services::Later>,
     ) -> busbar_contract::services::Ran {
         busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))

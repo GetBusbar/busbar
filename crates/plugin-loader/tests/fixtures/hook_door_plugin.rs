@@ -8,7 +8,8 @@
 //! as two example `cdylib`s behind one `export_door!` line each (the DROPPED doors):
 //!
 //! * [`conforming`] (`hook_door`) — `decide` answers exactly one verb: REJECT with a status when
-//!   the request carries more messages than its settings allow, ABSTAIN otherwise.
+//!   the request carries more messages than its settings allow, or names the session its settings
+//!   refuse, ABSTAIN otherwise.
 //! * [`broken`] (`hook_broken_door`) — the same plugin whose `decide` answers two verbs at once
 //!   (PREFER and REJECT), which `check_decide` refuses: the host must answer FAULT.
 //! * [`untailed`] (linked only) — the conforming plugin whose Statement states no hook tail, which
@@ -19,7 +20,8 @@
 //! Both built doors state their tail ([`TAIL`]): a gate that asks for neither view.
 //! Every other hook op is REFUSED. The settings are `{"reject_over_messages": <n>}`, plus an
 //! optional `"sleep_ms"` the conforming `decide` sleeps before it answers (a slow gate, for the
-//! loader's own budget and `max_inflight` proofs).
+//! loader's own budget and `max_inflight` proofs), and an optional `"reject_session": "<octets>"`
+//! (the request view's opaque session, ARCHITECT RULING 2026-10-03).
 #![allow(dead_code)]
 
 use std::marker::PhantomData;
@@ -51,9 +53,9 @@ pub const REJECT_STATUS: u16 = 429;
 /// Every door's Statement `max_inflight`.
 pub const MAX_INFLIGHT: u32 = 8;
 
-/// The instance: the most messages a request may carry before it is rejected, and how long its
-/// `decide` sleeps first.
-pub struct Gate(u64, u64);
+/// The instance: the most messages a request may carry before it is rejected, how long its
+/// `decide` sleeps first, and the session whose requests it rejects, if any.
+pub struct Gate(u64, u64, Option<Vec<u8>>);
 
 impl Life for Gate {
     const CANCEL: u32 = cancel::ABORTED;
@@ -78,11 +80,15 @@ impl Gate {
             .get("sleep_ms")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
-        settings
+        let over = settings
             .get("reject_over_messages")
             .and_then(serde_json::Value::as_u64)
-            .map(|over| Gate(over, sleep_ms))
-            .ok_or_else(|| Refusal::failed("settings: `reject_over_messages` must be a number"))
+            .ok_or_else(|| Refusal::failed("settings: `reject_over_messages` must be a number"))?;
+        let session = settings
+            .get("reject_session")
+            .and_then(serde_json::Value::as_str)
+            .map(|s| s.as_bytes().to_vec());
+        Ok(Gate(over, sleep_ms, session))
     }
 }
 
@@ -102,10 +108,12 @@ impl SafeSlot for Decide {
         let Some(held) = instance.get() else {
             return Outcome::Refused;
         };
-        if held.life().1 > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(held.life().1));
+        let gate = held.life();
+        if gate.1 > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(gate.1));
         }
-        if input.request.message_count > held.life().0 {
+        let session = input.field(|i| &i.request).field(|r| &r.session).bytes();
+        if input.request.message_count > gate.0 || gate.2.as_deref() == Some(session) {
             out.set(|o| &o.verbs, VERB_REJECT | VERB_HAS_REJECT_STATUS);
             out.set(|o| &o.reject_status, REJECT_STATUS);
         } else {

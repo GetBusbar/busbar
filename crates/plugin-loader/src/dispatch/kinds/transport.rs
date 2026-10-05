@@ -55,6 +55,14 @@ pub struct TransportFacts {
     /// Every scheme the entry answers for, in order (interned: one allocation per distinct name for
     /// the process).
     pub claims: Vec<&'static str>,
+    /// The claims whose unit 0 opens at an UPGRADE (their row's `unit0_trigger` is
+    /// `UNIT0_UPGRADE`): the host's upgrade lines, read off the claim rows and never off a layer
+    /// list (ARCHITECT ruling Q128 U7). The handoff target on an upgrade is the claim that owns the
+    /// requested scheme.
+    pub upgrades: Vec<&'static str>,
+    /// The claims whose row carries a session (`session = 1`): a duplex line, never one request
+    /// and its response.
+    pub sessions: Vec<&'static str>,
     /// The claims it composes over; empty = directly over the host's socket (a framer) or the
     /// bottom of its stack (a carrier).
     pub composes_over: Vec<&'static str>,
@@ -130,12 +138,28 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     check_status_rows(status, tail.claim_rows_len as u64).map_err(broke)?;
     check_fault_rows(faults, tail.claim_rows_len as u64).map_err(broke)?;
     check_fault_cover(status, faults).map_err(broke)?;
+    let claims: Vec<&'static str> = names
+        .iter()
+        .map(|c| owned(*c, "claim"))
+        .collect::<Result<_, _>>()?;
+    // Row `i` describes `claims[i]` (`check_claim_rows` held the counts equal).
+    let upgrades = claims
+        .iter()
+        .zip(rows)
+        .filter(|(_, row)| row.unit0_trigger == busbar_contract::abi::transport::UNIT0_UPGRADE)
+        .map(|(name, _)| *name)
+        .collect();
+    let sessions = claims
+        .iter()
+        .zip(rows)
+        .filter(|(_, row)| row.session == 1)
+        .map(|(name, _)| *name)
+        .collect();
     Ok(TransportFacts {
         role: tail.role,
-        claims: names
-            .iter()
-            .map(|c| owned(*c, "claim"))
-            .collect::<Result<_, _>>()?,
+        claims,
+        upgrades,
+        sessions,
         composes_over: under
             .iter()
             .map(|s| owned(*s, "composes_over"))
@@ -145,6 +169,21 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
             .map(|s| owned(s.path, "settings"))
             .collect::<Result<_, _>>()?,
     })
+}
+
+/// WHAT A COMPILED-IN TRANSPORT DOOR STATES, read off its Statement through the same door and tail
+/// checks a load runs, without binding or opening it: the boot seal registers every scheme an entry
+/// claims under its own key (`BUSBAR-1.6.0.md` TRANSPORT-STACK: ONE ENTRY PER PLUGIN, the schemes
+/// are its claims).
+///
+/// # Errors
+///
+/// The door, its Statement or its transport tail is refused.
+pub fn linked_facts(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> Result<TransportFacts, String> {
+    let v = crate::dispatch::load::validate::<Transport>(door).map_err(|e| e.to_string())?;
+    tail_facts(&v.statement)
 }
 
 /// The transport kind.

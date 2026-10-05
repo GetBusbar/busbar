@@ -426,6 +426,8 @@ extern "C-unwind" fn host_open(
                     head_target: bytes(d.head_target.ptr, d.head_target.len)?,
                     // A pin is stated through the connector's ESTABLISH (`EstablishIn::within`).
                     within: &[],
+                    // So is a registration (`EstablishIn::member`).
+                    member: "",
                 },
             )?;
             set(out_conn, conn.0)
@@ -787,6 +789,9 @@ impl HostConns {
                 alpn: owned(w.alpn)?,
                 peer_cert,
                 claim: owned(w.claim)?,
+                // The far end's key pin and whether busbar presented its client identity reach a
+                // plugin on the host connector's FACTS service (`connector::StreamFacts`), not here.
+                ..ConnFacts::default()
             })
         }
     }

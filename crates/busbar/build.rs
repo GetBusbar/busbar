@@ -334,21 +334,27 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
         let door = axes
             .iter()
             .any(|(f, a)| *f == key && a.split_whitespace().any(|x| x == DOOR_AXIS));
-        let build = if door {
+        let n = rows.matches("LinkedWire {").count();
+        let (build, claims) = if door {
             // A door row's entry exports its memory-ABI `door`; the root's doors module (mounted
-            // here under its own name, the tests including this file have no root) builds it.
-            let n = rows.matches("LinkedWire {").count();
+            // here under its own name, the tests including this file have no root) builds it, and
+            // reads every scheme it claims off its Statement.
             door_builds.push_str(&format!(
                 "fn __door_build_{n}(lower: Option<Wire>, settings: &::busbar_contract::transport::TransportSettings) -> Wire {{\n    \
-                 self::__busbar_doors::build(::{entry}::KEY, ::{entry}::door, lower, settings)\n}}\n"
+                 self::__busbar_doors::build(::{entry}::KEY, ::{entry}::door, lower, settings)\n}}\n\
+                 fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
+                 self::__busbar_doors::claims_of(::{entry}::door)\n}}\n"
             ));
-            format!("__door_build_{n}")
+            (format!("__door_build_{n}"), format!("__door_claims_{n}"))
         } else {
-            format!("::{entry}::build")
+            door_builds.push_str(&format!(
+                "fn __row_claims_{n}() -> Vec<&'static str> {{\n    vec![::{entry}::KEY]\n}}\n"
+            ));
+            (format!("::{entry}::build"), format!("__row_claims_{n}"))
         };
         rows.push_str(&format!(
             "    LinkedWire {{ key: ::{entry}::KEY, composes_over: ::{entry}::COMPOSES_OVER, \
-             session: ::{entry}::SESSION, build: {build} }},\n"
+             session: ::{entry}::SESSION, build: {build}, claims: {claims} }},\n"
         ));
     }
     let source = format!(
@@ -358,13 +364,14 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
          /// A wire's build: handed the layer built beneath it, where one is, and the settings.\n\
          pub(crate) type BuildWire = fn(Option<Wire>, &::busbar_contract::transport::TransportSettings) -> Wire;\n\
          /// One linked wire: its registry key, the layers it declares, whether it carries a session,\n\
-         /// and its build.\n\
+         /// its build, and every scheme its entry claims (its own first).\n\
          #[allow(dead_code)]\n\
          pub(crate) struct LinkedWire {{\n    \
              pub(crate) key: &'static str,\n    \
              pub(crate) composes_over: &'static [&'static str],\n    \
              pub(crate) session: bool,\n    \
-             pub(crate) build: BuildWire,\n\
+             pub(crate) build: BuildWire,\n    \
+             pub(crate) claims: fn() -> Vec<&'static str>,\n\
          }}\n\
          /// Every wire this build links, in manifest order.\n\
          #[allow(dead_code)]\n\

@@ -152,6 +152,7 @@ impl Dispatched {
         let facts = DoorFacts {
             name: plugin.name().to_owned(),
             claims: stated.claims,
+            role: stated.role,
             composes_over: stated.composes_over,
         };
         Ok(Self { plugin, facts })
@@ -196,12 +197,33 @@ impl FramerDoor for Dispatched {
 /// The connector is core and presents no plugin face; the kernel's listeners, accept loop and
 /// upgrades still speak `busbar_contract::Transport`, so the root wraps a [`HostWire`] in this and
 /// every method ONLY delegates. Transitional: `RootWire` deletes with the legacy stack at TODO step 36.
-#[derive(Debug)]
-pub struct RootWire(pub HostWire);
+///
+/// No entry composes over another (ARCHITECT Q128 U7; `BUSBAR-1.6.0.md` :4721): every inbound
+/// socket is the connector's listener's, and a stream an entry hands up is adopted by the entry the
+/// connector picks, so this adapter binds, accepts and adopts nothing itself.
+pub struct RootWire {
+    wire: HostWire,
+}
+
+impl std::fmt::Debug for RootWire {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RootWire")
+            .field("wire", &self.wire)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RootWire {
+    /// `wire`, presented at the legacy seam.
+    #[must_use]
+    pub fn new(wire: HostWire) -> Self {
+        Self { wire }
+    }
+}
 
 impl busbar_contract::Plugin for RootWire {
     fn key(&self) -> &'static str {
-        self.0.key()
+        self.wire.key()
     }
     fn kind(&self) -> busbar_contract::Kind {
         busbar_contract::Kind::Transport
@@ -216,24 +238,25 @@ impl busbar_contract::Transport for RootWire {
         &self,
         conn: &busbar_contract::transport::wire::Conn,
     ) -> busbar_contract::transport::wire::ArrivalRecord {
-        self.0.arrival(conn)
+        self.wire.arrival(conn)
     }
 
-    /// Nothing listens through this seam: every inbound socket is the connector's listener's (the
-    /// one listener source, ARCHITECT ruling 2026-09-30).
+    /// An entry listens through nothing here: every inbound socket is the connector's listener's
+    /// (the one listener source, ARCHITECT ruling 2026-09-30).
     fn listen<'a>(
         &'a self,
         _cfg: &'a dyn busbar_contract::TransportConfigView,
         _keys: &'a busbar_contract::TransportKeyHandle,
     ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Listener> {
-        Box::pin(async { Err(busbar_contract::transport::wire::TransportError::Refused) })
+        Box::pin(async move { Err(busbar_contract::transport::wire::TransportError::Refused) })
     }
 
+    /// Nothing is accepted here: the connector's listener accepts.
     fn accept<'a>(
         &'a self,
         _l: &'a busbar_contract::transport::wire::Listener,
     ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
-        Box::pin(async { Err(busbar_contract::transport::wire::TransportError::Closed) })
+        Box::pin(async move { Err(busbar_contract::transport::wire::TransportError::Closed) })
     }
 
     fn dial<'a>(
@@ -241,14 +264,14 @@ impl busbar_contract::Transport for RootWire {
         dest: &'a busbar_contract::VerifiedDestination,
         keys: &'a busbar_contract::TransportKeyHandle,
     ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
-        self.0.dial(dest, keys)
+        self.wire.dial(dest, keys)
     }
 
     fn frames(
         &self,
         conn: busbar_contract::transport::wire::Conn,
     ) -> busbar_contract::transport::FrameStream {
-        self.0.frames(conn)
+        self.wire.frames(conn)
     }
 
     fn write<'a>(
@@ -259,7 +282,7 @@ impl busbar_contract::Transport for RootWire {
     ) -> busbar_contract::Fut<'a, usize> {
         // The kernel's write carries no text bit yet: it takes FrameMeta::text from the plane's
         // PIECE_OUT_TEXT after SERVE-WIRE's P1; until then every write here is binary.
-        self.0.write(conn, stream, bytes, false)
+        self.wire.write(conn, stream, bytes, false)
     }
 
     fn encode_envelope<'a>(
@@ -268,27 +291,30 @@ impl busbar_contract::Transport for RootWire {
         body: &[u8],
         arena: &'a dyn busbar_contract::PlaneAlloc,
     ) -> Result<busbar_contract::ScratchBytes<'a>, busbar_contract::transport::wire::Encode> {
-        self.0.encode_envelope(fields, body, arena)
+        self.wire.encode_envelope(fields, body, arena)
     }
 
+    /// Nothing is adopted at this seam: which entry adopts a handed-up stream is the connector's
+    /// choice (ARCHITECT Q128 U7).
     fn adopt<'a>(
         &'a self,
         _from: &'a dyn busbar_contract::Transport,
         conn: busbar_contract::transport::wire::Conn,
         keys: &'a busbar_contract::TransportKeyHandle,
     ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
-        self.0.adopt(conn, keys)
+        self.wire.adopt(conn, keys)
     }
 
     fn detach(
         &self,
         conn: &busbar_contract::transport::wire::Conn,
     ) -> Option<busbar_contract::transport::wire::RawStream> {
-        self.0.detach(conn)
+        self.wire.detach(conn)
     }
 
+    /// No entry is composed over another.
     fn composed_over(&self) -> Option<&'static str> {
-        self.0.composed_over()
+        None
     }
 
     fn close(
@@ -296,7 +322,7 @@ impl busbar_contract::Transport for RootWire {
         conn: busbar_contract::transport::wire::Conn,
         reason: busbar_contract::transport::wire::CloseReason,
     ) {
-        self.0.close(conn, reason);
+        self.wire.close(conn, reason);
     }
 
     fn unit0_refusal<'a>(
@@ -306,7 +332,7 @@ impl busbar_contract::Transport for RootWire {
         refusal: &'a busbar_contract::Refusal,
         bytes: busbar_contract::ScratchBytes<'a>,
     ) -> busbar_contract::Fut<'a, ()> {
-        self.0.unit0_refusal(conn, stream, refusal, bytes)
+        self.wire.unit0_refusal(conn, stream, refusal, bytes)
     }
 }
 
@@ -321,12 +347,13 @@ pub fn host_wire(
     settings: &busbar_contract::transport::TransportSettings,
 ) -> Result<Arc<dyn busbar_contract::Transport>, String> {
     let door = Dispatched::open(plugin, settings)?;
-    Ok(Arc::new(RootWire(HostWire::new(Arc::new(door))?)))
+    Ok(Arc::new(RootWire::new(HostWire::new(Arc::new(door))?)))
 }
 
 /// A linked row's build: its door admitted through the one validation, bound under the row's name
-/// `row` ([`row_bind`]), opened with the deployment's `settings`, served over the host's sockets. A
-/// door row frames the host's socket, so it takes no lower layer.
+/// `row` ([`row_bind`]), opened with the deployment's `settings`, served over the host's sockets. No
+/// entry composes over another (ARCHITECT Q128 U7), so the layer the registry hands a build is not
+/// read: the carrier is the connector's choice from the target's scheme.
 ///
 /// # Panics
 ///
@@ -341,6 +368,34 @@ pub fn build(
     LinkedRow::of(door)
         .and_then(|linked| load_linked::<TransportKind>(&linked, row_bind(row)))
         .map_err(|e| e.to_string())
-        .and_then(|plugin| host_wire(plugin, settings))
+        .and_then(|plugin| Dispatched::open(plugin, settings))
+        .and_then(|door| HostWire::new(Arc::new(door)))
+        .map(|wire| Arc::new(RootWire::new(wire)) as Arc<dyn busbar_contract::Transport>)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+}
+
+/// Every scheme a linked row's door claims, its own first, read off the door's Statement (ONE ENTRY
+/// PER PLUGIN: the schemes are its claims). The seal registers each under its own key.
+///
+/// # Panics
+///
+/// The build's own door is refused, as [`build`] panics for it.
+#[must_use]
+pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
+    super::loader::dispatch::kinds::transport::linked_facts(door)
+        .map(|facts| facts.claims)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+}
+
+/// The claims a linked row's door opens at an UPGRADE (their row's `unit0_trigger`), read off the
+/// door's Statement: the data door's upgrade lines (ARCHITECT ruling Q128 U7).
+///
+/// # Panics
+///
+/// The build's own door is refused, as [`build`] panics for it.
+#[must_use]
+pub fn upgrades_of(door: DoorFn) -> Vec<&'static str> {
+    super::loader::dispatch::kinds::transport::linked_facts(door)
+        .map(|facts| facts.upgrades)
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
