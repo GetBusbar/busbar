@@ -210,18 +210,92 @@ def root_cells(doc):
     return out
 
 
+def _module_of(file):
+    """`crates/busbar/src/root/serve.rs` -> ["root", "serve"]; a `mod.rs` is its directory."""
+    m = re.search(r"src/(.+)\.rs$", file)
+    if not m:
+        return None
+    parts = m.group(1).split("/")
+    return parts[:-1] if parts[-1] == "mod" else parts
+
+
+def _declaration(file):
+    """The `#[path]` declaration of a test file: (the declaring file, the `mod` name it is declared
+    under), read off the `.rs` files of the directory its `tests/` sits in. A `#[path]` attribute is
+    followed, past any further attributes, by the `mod <name>;` it names. None when no file there
+    declares it."""
+    tests_dir = os.path.dirname(file)
+    if os.path.basename(tests_dir) != "tests":
+        return None
+    home = os.path.dirname(tests_dir)
+    try:
+        names = sorted(os.listdir(home))
+    except OSError:
+        return None
+    for name in names:
+        declarer = os.path.join(home, name)
+        if not name.endswith(".rs") or not os.path.isfile(declarer):
+            continue
+        with open(declarer, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        for at, line in enumerate(lines):
+            m = re.match(r'\s*#\[path = "([^"]+)"\]\s*$', line)
+            if not m or os.path.normpath(os.path.join(home, m.group(1))) != os.path.normpath(file):
+                continue
+            for follow in lines[at + 1 :]:
+                if follow.strip().startswith("#["):
+                    continue
+                d = re.match(r"\s*(?:pub(?:\([a-z]+\))?\s+)?mod\s+(\w+)\s*;", follow)
+                if d:
+                    return declarer, d.group(1)
+                break
+    return None
+
+
+def _enclosing_mods(file, fn):
+    """The inline `mod <name> {` blocks enclosing `fn <fn>(` in `file`, outermost first (rustfmt's
+    indentation is the scope: a module opened at a shallower indent and not yet closed)."""
+    try:
+        with open(file, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    stack = []
+    for line in lines:
+        indent = len(line) - len(line.lstrip())
+        while stack and line.strip() == "}" and indent == stack[-1][1]:
+            stack.pop()
+        m = re.match(r"\s*(?:pub(?:\([a-z]+\))?\s+)?mod\s+(\w+)\s*\{\s*$", line)
+        if m:
+            stack.append((m.group(1), indent))
+            continue
+        if re.match(rf"\s*(?:pub(?:\([a-z]+\))?\s+)?(?:async\s+)?fn\s+{re.escape(fn)}\s*\(", line):
+            return [name for name, depth in stack if depth < indent]
+    return []
+
+
 def libtest_path(file, fn):
     """`crates/busbar/src/root/plane_node.rs::the_x` -> `root::plane_node::tests::the_x`, the name the
     binary's own test harness knows it by. Derived rather than pinned, then CHECKED against the
     harness's own --list below, so a module that moved is a refusal and not a silent miss.
 
     A test body may live in a `tests/` child directory rather than inline (structure-lint's
-    <dir>/tests/<stem>.rs convention). Two shapes exist: a SIBLING file's tests
-    (`root/tests/gauntlet_kernel.rs`, alongside the still-present `root/gauntlet_kernel.rs`) belong
-    to `root::gauntlet_kernel::tests`; a DIRECTORY module's own tests (`root/units_admin/tests/units_admin.rs`,
-    the stem repeating the directory's own name) belong to `root::units_admin::tests`. Stripping the
-    `tests` path segment and, only in the repeating-name case, its following stem too, derives either
-    from the path alone."""
+    <dir>/tests/<stem>.rs convention), declared back by `#[path = "tests/<file>"] mod <name>;`. The
+    declaration is READ: the declaring file's module, then the `mod` name it declares the file under
+    (`root/tests/gauntlet_kernel.rs` is `root::gauntlet_kernel::tests`; `root/tests/serve_door.rs`,
+    declared by `serve.rs` as `mod door_tests`, is `root::serve::door_tests`), then any inline module
+    the fn sits in. Where no declaration is found the path shape alone decides, as before: a SIBLING
+    file's tests belong to `root::<stem>::tests`; a DIRECTORY module's own
+    (`root/units_admin/tests/units_admin.rs`, the stem repeating the directory's name) to
+    `root::units_admin::tests`."""
+    nested = _enclosing_mods(file, fn)
+    declared = _declaration(file)
+    if declared is not None:
+        declarer, name = declared
+        module = _module_of(declarer)
+        if module is None:
+            return None
+        return "::".join(module + [name] + nested + [fn])
     m = re.search(r"src/(.+)\.rs$", file)
     if not m:
         return None
@@ -232,7 +306,7 @@ def libtest_path(file, fn):
             return None
         prefix, stem = parts[:i], parts[i + 1]
         parts = prefix if prefix and prefix[-1] == stem else prefix + [stem]
-    return "::".join(parts) + "::tests::" + fn
+    return "::".join(parts + ["tests"] + nested + [fn])
 
 
 def run_named_root_cells(cells, label):
@@ -463,7 +537,8 @@ def selftest():
             leg_cells
             and all(
                 (libtest_path(f, fn) or "").startswith("root::")
-                and (libtest_path(f, fn) or "").endswith(f"::tests::{fn}")
+                and (libtest_path(f, fn) or "").endswith(f"::{fn}")
+                and "::" in (libtest_path(f, fn) or "")[len("root::") : -len(f"::{fn}")]
                 for _, f, fn in leg_cells
             ),
             "a root cell derives no module path",

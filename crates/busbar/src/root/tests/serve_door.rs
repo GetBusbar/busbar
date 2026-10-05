@@ -13,6 +13,10 @@
 //! loader's one load, its need declared on the connector, as its door row binds it. The dropped-in
 //! fold of the same door is the plane crate's own conformance suite (`tests/conformance.rs`, one
 //! transcript through both loads); this harness builds no cdylib of it.
+//!
+//! The `mcp` module below is the `root-mcp` leg's loop cells (`qa/capability-equality.json`, U14):
+//! the MCP plane's door, composed here the same way, each core capability driven through the data
+//! router and asserted where it lands.
 
 #[cfg(feature = "plane-decisions")]
 use std::collections::BTreeMap;
