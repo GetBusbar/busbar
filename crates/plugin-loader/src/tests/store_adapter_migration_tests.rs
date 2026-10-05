@@ -32,7 +32,7 @@ use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, Totals, 
 use std::sync::{Arc, Mutex};
 
 /// The published payload schema — the one every 1.5.x store plugin is built against.
-const PUBLISHED_SCHEMA: u32 = crate::registry::STORE_ABI_FLOOR;
+const PUBLISHED_SCHEMA: u32 = PUBLISHED_STORE_SCHEMA;
 
 /// A store at the published schema holding the previous release's rows, recording every request it
 /// is given and refusing — loudly — to be written to.

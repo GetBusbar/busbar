@@ -1664,6 +1664,12 @@ fn every_store_trait_method_has_an_abi_variant_and_a_dynstore_override() {
 // sibling checkout is absent. A compatibility promise that only gets checked where somebody happens
 // to have cloned a second repo is not a checked promise.
 
+/// The 1.5.5 store payload schema (v2) the legacy store wire speaks. No loaded plugin states it
+/// since THE DESIGN §11.8 (the registry refuses it at boot, ruling C21/ABI-o1); these suites hold
+/// the wire as a const — tested through the direct `..._at_abi` constructor, not the gated scan —
+/// until the wire itself is deleted. Replaces the deleted `registry::STORE_ABI_FLOOR`.
+const PUBLISHED_STORE_SCHEMA: u32 = 2;
+
 /// A `DynStore` over the in-tree store proof with the `call`/`free` seam faked, so a test
 /// chooses the exact `(status, body)` an old plugin would have returned. Mirrors
 /// [`dyn_store_with_fake_call`], which is pinned to the sibling sqlite fixture.

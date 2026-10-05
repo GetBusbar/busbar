@@ -600,9 +600,9 @@
   {
    "id": "PB-11",
    "surface": "plugin trust and ABI windows",
-   "binding": "`plugins.trust` verbatim: publishers allow-list, embedded first-party key, `allow_unsigned` / `allow_third_party` (default false; unsigned or unknown-publisher plugin LOGGED and SKIPPED with the literal messages, never dlopened), `UntrustedFloored` never relaxed, catalog verdict strings; the operator-key digest set is an ADDITIVE 1.6.0 layer; every plugin within its kind's 1.6.0 window (store [2,4] — OWNER DECISION: widened past the published-1.5.5 floor of [2,2] because ABI-4 stores are a later release and must load on this binary too, not a 1.5.5-parity constraint; auth [1,2], hook [1,1], export [2,2], secret [1,1] unchanged) loads through its ABI adapter (no \"floor 5\" precondition anywhere); `supported_abi(kind)` REPORTS the current window — boot, `--validate` and `POST /plugins/inspect` print `v2..=v4` for a store, never `v2..=v2` and never `v2..=v5`; a published-1.5.5 store (ABI 2) and an ABI-4 store both load; ABI 3 remains inside the window; `plugin-pack --abi-version` defaults to the 1.5.5 max; `TRANSPORT_VERSION = 1` is checked FIRST in `wire_up_raw` and stays 1 with the six kind-neutral symbols; `plugins.fetch` runs before preflight at boot (`fatal_on_miss`) and on reload (warn-and-keep), verify-before-write, never under `--validate`; a manifest OUTSIDE that window is refused with 1.5.5's literal `manifest abi_version {n} is not supported for kind '{kind}' by this binary (supported range v{floor}..=v{max})` printing the CURRENT range, never `PluginAbiTooOld`",
+   "binding": "`plugins.trust` verbatim: publishers allow-list, embedded first-party key, `allow_unsigned` / `allow_third_party` (default false; unsigned or unknown-publisher plugin LOGGED and SKIPPED with the literal messages, never dlopened), `UntrustedFloored` never relaxed, catalog verdict strings; the operator-key digest set is an ADDITIVE 1.6.0 layer; every plugin at its kind's ONE current version (THE DESIGN §11.8 \"No legacy loading\", ruling C21/ABI-o1, superseding the 1.5.5 floors: store [4], auth [3], hook [2], export [3], secret [1]); `supported_abi(kind)` REPORTS that version — boot, `--validate` and `POST /plugins/inspect` print `v4..=v4` for a store; a published 1.5.5 JSON-contract plugin (store 2, auth 2, hook 1, export 2) and a newer-than-host one are refused at boot (accepted difference ABI-o1, `breaking`); `plugin-pack --abi-version` defaults to the current version; `TRANSPORT_VERSION = 1` is checked FIRST in `wire_up_raw` and stays 1 with the six kind-neutral symbols; `plugins.fetch` runs before preflight at boot (`fatal_on_miss`) and on reload (warn-and-keep), verify-before-write, never under `--validate`; a manifest at any other version is refused with `manifest abi_version {n} is not supported for kind '{kind}' by this binary (supported range v{floor}..=v{max}): rebuild the plugin against the 1.6.0 SDK` printing the CURRENT version, never `PluginAbiTooOld`",
    "inventory": "config, plugins-stores :195, :224, :2000 (`plugin-sign/src/lib.rs:611-615`)",
-   "note": "CONTRADICTED in part by green tests: crates/plugin-loader/src/tests/registry_tests.rs store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4 and supported_abi_store_floor_admits_v2 pin a store window of v2..=v4, where the binding requires v2..=v2 and refuses ABI 3/4. The plugins.load cells prove the trust/skip half only.",
+   "note": "Resolved 2026-10-02 by THE DESIGN 11.8 (ruling C21/ABI-o1): the loader accepts one version per kind; registry_tests.rs supported_abi_is_one_version_per_kind pins the windows and a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild the refusal; the oracle cell plugins.abi|json-contract|store-sqlite records 1.5.5 serving the published plugin (accepted difference ABI-o1).",
    "status": "mapped",
    "checks": [
     {
@@ -615,15 +615,15 @@
     },
     {
      "kind": "test",
-     "ref": "supported_abi_auth_floor_admits_v1",
-     "proves": "the auth window [1,2]",
+     "ref": "supported_abi_is_one_version_per_kind",
+     "proves": "one current version per kind (THE DESIGN 11.8)",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "a_v2_store_artifact_is_accepted_at_load",
-     "proves": "a v2 store artifact loads through the adapter",
+     "ref": "crates/plugin-loader/src/tests/registry_tests.rs::a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild",
+     "proves": "a published 1.5.5 plugin is refused at boot naming the rebuild (C21)",
      "source": "curated",
      "status": "mapped"
     },
@@ -643,7 +643,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-family:plugins, test:supported_abi_auth_floor_admits_v1, test:a_v2_store_artifact_is_accepted_at_load, test:untrusted_is_skipped_not_fatal_but_reference_fails_loud, gate:scripts/signing-gate.sh"
+   "verdict_detail": "oracle-family:plugins, test:supported_abi_is_one_version_per_kind, test:crates/plugin-loader/src/tests/registry_tests.rs::a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild, test:untrusted_is_skipped_not_fatal_but_reference_fails_loud, gate:scripts/signing-gate.sh"
   },
   {
    "id": "PB-12",

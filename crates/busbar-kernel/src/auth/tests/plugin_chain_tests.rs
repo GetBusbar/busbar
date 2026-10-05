@@ -116,12 +116,11 @@ fn auth_manifest(name: &str, alias: &str, publisher: &str) -> busbar_plugin_load
     m
 }
 
-/// 1.5.2 CAPABILITY GATE: a `browser_login` login method backed by a PRE-v2 auth plugin must
-/// be a HARD `LoginMethods::build` error (config/boot-time), NOT a 500 at request time. We stamp a
-/// v1 auth manifest (still admitted by the scan — the auth ABI floor is 1) and attach `browser_login`
-/// to it; the build refuses, naming the abi_version.
+/// THE DESIGN §11.8 (C21): a v1 auth plugin (the pre-login 1.5.x wire) no longer reaches the
+/// login-capability gate: the scan refuses it at boot, naming the rebuild. The current version of
+/// the SAME plugin with `browser_login` builds.
 #[test]
-fn browser_login_on_v1_plugin_is_a_build_error() {
+fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login() {
     let dir = tmp_plugin_dir("auth-login-v1-gate");
     let Some(path) = auth_cdylib() else {
         eprintln!("skip: auth-oidc plugin cdylib not built (run under --workspace)");
@@ -129,14 +128,19 @@ fn browser_login_on_v1_plugin_is_a_build_error() {
     };
     let lib = std::fs::read(&path).expect("read the auth-oidc cdylib");
     let mut manifest = auth_manifest("acme-idp", "cap-idp", "acme");
-    manifest.abi_version = 1; // PRE-v2 — no login capability
+    manifest.abi_version = 1;
     std::fs::write(dir.join("idp.tar.gz"), unsigned_tarball(manifest, &lib)).unwrap();
     let plugins = plugins_cfg_allow_unsigned(&dir);
-    let registry = busbar_plugin_loader::scan_and_validate(
+    let errs = busbar_plugin_loader::scan_and_validate(
         Path::new(&plugins.dir),
         &crate::test_support::trust_policy(&plugins).unwrap(),
     )
-    .expect("scan admits a v1 auth plugin (floor is 1)");
+    .expect_err("a v1 auth plugin is refused at boot");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("rebuild the plugin against the 1.6.0 SDK")),
+        "the refusal names the rebuild: {errs:?}"
+    );
 
     let mut cfg = AuthCfg::default_none();
     let method = crate::config::AuthMethodCfg {
@@ -147,29 +151,15 @@ fn browser_login_on_v1_plugin_is_a_build_error() {
             client_secret: Some(crate::config::SecretRef::env("BUSBAR_TEST_CLIENT_SECRET")),
             client_id: Some("client-abc".into()),
         }),
-        // Valid module settings so `open()` SUCCEEDS — the build must then fail on the ABI
-        // CAPABILITY GATE (abi_version < 2), not on a missing-config open error.
         settings: settings(),
     };
     cfg.methods.insert("cap-idp".into(), method);
-    // The v2 build below resolves the client_secret (the v1 gate fires BEFORE resolution); set the
-    // env so the v2 case fails ONLY on capability, never on an unresolvable secret.
     std::env::set_var("BUSBAR_TEST_CLIENT_SECRET", "the-confidential-secret");
     let resolver = crate::config::secret::SecretResolver::builtins_only();
 
-    let err = crate::auth::token::LoginMethods::build(&cfg, &registry, &resolver)
-        .expect_err("a browser_login method on a v1 plugin must fail the build");
-    assert!(
-        err.contains("abi_version") && err.contains("cap-idp"),
-        "the capability-gate error names the offending method + abi_version: {err}"
-    );
-
-    // A v2 build of the SAME plugin (login-capable) with browser_login succeeds — the gate is
-    // specifically the version, not the presence of browser_login.
-    let dir2 = tmp_plugin_dir("auth-login-v2-ok");
-    let mut m2 = auth_manifest("acme-idp", "cap-idp", "acme");
-    m2.abi_version = 2;
-    std::fs::write(dir2.join("idp.tar.gz"), unsigned_tarball(m2, &lib)).unwrap();
+    let dir2 = tmp_plugin_dir("auth-login-current-ok");
+    let current = auth_manifest("acme-idp", "cap-idp", "acme");
+    std::fs::write(dir2.join("idp.tar.gz"), unsigned_tarball(current, &lib)).unwrap();
     let plugins2 = plugins_cfg_allow_unsigned(&dir2);
     let registry2 = busbar_plugin_loader::scan_and_validate(
         Path::new(&plugins2.dir),
@@ -177,7 +167,7 @@ fn browser_login_on_v1_plugin_is_a_build_error() {
     )
     .expect("scan");
     crate::auth::token::LoginMethods::build(&cfg, &registry2, &resolver)
-        .expect("a v2 login-capable plugin with browser_login builds");
+        .expect("the current login-capable plugin with browser_login builds");
 
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&dir2);

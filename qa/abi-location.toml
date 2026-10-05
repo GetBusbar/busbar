@@ -54,10 +54,6 @@ file = "crates/plugin-loader/src/legacy_usage.rs"
 shape = "version-const"
 item = "PRICED_FROM_ABI"
 [[offender]]
-file = "crates/plugin-loader/src/registry.rs"
-shape = "version-const"
-item = "STORE_ABI_FLOOR"
-[[offender]]
 file = "crates/plugin-loader/src/store_adapter.rs"
 shape = "version-const"
 item = "STORE_ABI_WITH_NEW_OPS"

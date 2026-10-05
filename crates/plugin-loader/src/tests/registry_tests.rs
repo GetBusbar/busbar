@@ -10,123 +10,87 @@ fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
-/// After the auth ABI v1→2 bump (and v2→3, the enveloped wire) the loader floor MUST still admit
-/// v1 — a pre-built v1 auth plugin (a verify-only module built against 1.5.x) keeps loading. The
-/// supported range is the inclusive `[1, 3]`.
+/// ONE VERSION PER KIND (THE DESIGN §11.8): each JSON-contract kind's window is exactly its current
+/// version — the 1.5.5 floors are gone (ruling C21/ABI-o1).
 #[test]
-fn supported_abi_auth_floor_admits_v1() {
-    let range = supported_abi("auth");
-    assert_eq!(range, &[1, busbar_contract::abi::cold::AUTH_ABI_VERSION]);
-    let (floor, max) = (range[0], range[1]);
-    assert_eq!(floor, 1, "v1 auth plugins must still load");
-    assert_eq!(max, 3, "v3 is the current auth payload schema");
-    assert!(floor <= 1 && 1 <= max, "abi_version 1 is in range");
-    assert!(floor <= 2 && 2 <= max, "abi_version 2 is in range");
-    assert!(floor <= 3 && 3 <= max, "abi_version 3 is in range");
+fn supported_abi_is_one_version_per_kind() {
+    use busbar_contract::abi::cold;
+    assert_eq!(supported_abi("store"), &[cold::ABI_VERSION]);
+    assert_eq!(supported_abi("secret"), &[cold::SECRET_ABI_VERSION]);
+    assert_eq!(supported_abi("auth"), &[cold::AUTH_ABI_VERSION]);
+    assert_eq!(
+        supported_abi("hook"),
+        &[busbar_contract::abi::hook::ABI_VERSION]
+    );
+    assert_eq!(
+        supported_abi("export"),
+        &[busbar_contract::abi::export::ABI_VERSION]
+    );
 }
 
-/// THE STORE FLOOR IS 2 AND MUST STAY THERE. Every published first-party store plugin
-/// (beta/alpha/mysql/gamma) carries `abi_version: 2`, the 1.5.x wire. The 2→3 and 3→4 bumps
-/// changed what a plugin is COMPILED against, not a byte the engine exchanges with a built artifact:
-/// every variant the 1.5.x engine sent still exists unchanged, and the eight neutral plane-record
-/// verbs added since are ones a v2 plugin answers with `STATUS_UNSUPPORTED`, which `DynStore`
-/// already treats as inert. So the range is `[2, ABI_VERSION]` = `[2, 4]`; v1 (whose AWS-only
-/// credential variants no longer exist) is the only store schema this binary cannot speak.
+/// C21 (ABI-o1, THE DESIGN §11.8): a signed, otherwise-valid artifact stating its kind's 1.5.5
+/// payload version — what every published 1.5.5 JSON-contract plugin ships (store 2, auth 2, hook 1,
+/// export 2) — is a HARD structural refusal at boot that names the file, the kind, the version and
+/// the rebuild against the 1.6.0 SDK. The signatures are valid on purpose: the refusal is the
+/// version, not trust.
 #[test]
-fn supported_abi_store_floor_admits_v2() {
-    let range = supported_abi("store");
-    assert_eq!(
-        range,
-        &[STORE_ABI_FLOOR, busbar_contract::abi::cold::ABI_VERSION]
-    );
-    assert_eq!(
-        busbar_contract::abi::cold::ABI_VERSION,
-        4,
-        "store payload schema is v4"
-    );
-    let (floor, max) = (range[0], range[1]);
-    assert_eq!(
-        floor, 2,
-        "the floor MUST be 2 — every published 1.5.x store plugin declares abi_version 2"
-    );
-    assert!(!(floor <= 1 && 1 <= max), "abi_version 1 is NOT in range");
-    assert!(floor <= 2 && 2 <= max, "abi_version 2 is in range");
-    assert!(floor <= 3 && 3 <= max, "abi_version 3 is in range");
-    assert!(floor <= 4 && 4 <= max, "abi_version 4 is in range");
-}
-
-/// PARITY WITH 1.5.5: a signed, otherwise-valid store artifact whose manifest declares
-/// `abi_version: 2` (what every published store plugin ships) LOADS — it enters the registry and
-/// resolves by name and alias, exactly as it did under the 1.5.5 binary. Refusing it here was the
-/// bug that made 1.6.0 reject the entire published store catalogue at boot.
-#[test]
-fn a_v2_store_artifact_is_accepted_at_load() {
+fn a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild() {
     let release = key(1);
-    let dir = tmpdir("v2-accepted");
-    let mut m = manifest("busbar-store-legacy", "legacy", "busbar");
-    m.abi_version = 2; // the 1.5.x store wire every published plugin was built against
-    let m = sign(&release, m, b"legacy lib");
-    write_tarball(&dir, "legacy.tar.gz", &m, b"legacy lib");
+    for (kind, v155) in [("store", 2u32), ("auth", 2), ("hook", 1), ("export", 2)] {
+        let dir = tmpdir(&format!("v155-{kind}"));
+        let mut m = manifest(&format!("busbar-{kind}-published"), "published", "busbar");
+        m.kind = kind.into();
+        m.abi_version = v155;
+        let m = sign(&release, m, b"published lib");
+        write_tarball(&dir, "published.tar.gz", &m, b"published lib");
 
-    let reg = scan_and_validate(&dir, &policy(&release))
-        .unwrap_or_else(|e| panic!("a v2 store artifact must load: {e:?}"));
-    assert_eq!(reg.loadable().len(), 1);
-    assert!(reg.skipped().is_empty(), "nothing skipped: {reg:?}");
-    let p = reg
-        .resolve("legacy")
-        .expect("resolves by alias, like any current-schema store");
-    assert_eq!(p.manifest.name, "busbar-store-legacy");
-    assert_eq!(p.manifest.abi_version, 2);
-    assert!(
-        reg.resolve("busbar-store-legacy").is_some(),
-        "resolves by name"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// THE RANGE EDGES, both ways. The store range is `v2..=v4`: a v2 manifest is accepted (above),
-/// while v1 (below the floor) and v5 (above what this binary speaks) are each a HARD structural
-/// INVALID that names the file, the kind, the offending version AND the range — so an operator
-/// reading the line knows exactly what this binary will take. The signatures are valid on purpose:
-/// both rejections are the ABI range, not trust.
-#[test]
-fn store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4() {
-    let release = key(1);
-    for (tag, version) in [("v1", 1u32), ("v5", 5u32)] {
-        let dir = tmpdir(&format!("range-{tag}"));
-        let mut m = manifest("busbar-store-edge", "edge", "busbar");
-        m.abi_version = version;
-        let m = sign(&release, m, b"edge lib");
-        write_tarball(&dir, "edge.tar.gz", &m, b"edge lib");
-
-        let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
-        assert_eq!(
-            errs.len(),
-            1,
-            "{tag}: one artifact, one hard rejection: {errs:?}"
+        let errs = scan_and_validate(&dir, &policy(&release))
+            .expect_err("a 1.5.5 JSON-contract plugin must not load");
+        assert_eq!(errs.len(), 1, "{kind}: one artifact, one refusal: {errs:?}");
+        let e = &errs[0];
+        assert!(
+            e.contains("published.tar.gz"),
+            "{kind}: names the file: {e}"
         );
         assert!(
-            errs[0].contains("edge.tar.gz"),
-            "{tag}: names the file: {}",
-            errs[0]
+            e.contains(&format!("'{kind}'")),
+            "{kind}: names the kind: {e}"
         );
         assert!(
-            errs[0].contains(&format!("abi_version {version} is not supported")),
-            "{tag}: rejected by the ABI range, not trust: {}",
-            errs[0]
+            e.contains(&format!("abi_version {v155} is not supported")),
+            "{kind}: refused by the version, not trust: {e}"
         );
         assert!(
-            errs[0].contains("'store'"),
-            "{tag}: names the kind: {}",
-            errs[0]
-        );
-        assert!(
-            errs[0].contains("supported range v2..=v4"),
-            "{tag}: names the range this binary speaks: {}",
-            errs[0]
+            e.contains("rebuild the plugin against the 1.6.0 SDK"),
+            "{kind}: names the rebuild: {e}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// A store artifact built for a NEWER schema than the host speaks is refused the same way.
+#[test]
+fn a_store_newer_than_the_host_is_refused() {
+    let release = key(1);
+    let dir = tmpdir("newer");
+    let mut m = manifest("busbar-store-edge", "edge", "busbar");
+    m.abi_version = busbar_contract::abi::cold::ABI_VERSION + 1;
+    let m = sign(&release, m, b"edge lib");
+    write_tarball(&dir, "edge.tar.gz", &m, b"edge lib");
+
+    let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
+    assert_eq!(errs.len(), 1, "one artifact, one refusal: {errs:?}");
+    assert!(
+        errs[0].contains("edge.tar.gz"),
+        "names the file: {}",
+        errs[0]
+    );
+    assert!(
+        errs[0].contains("rebuild the plugin against the 1.6.0 SDK"),
+        "names the rebuild: {}",
+        errs[0]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
@@ -837,54 +801,6 @@ fn crafted_publisher_cannot_forge_signature_label() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// The auth range's MAX reads `busbar_contract::abi::cold::AUTH_ABI_VERSION` (matching `"secret"`/`"hook"`
-/// on the max axis). Post-1.5.2 the FLOOR is pinned at 1 (v1 plugins still load — see
-/// `supported_abi_auth_floor_admits_v1`), so the range is `[1, AUTH_ABI_VERSION]`, not
-/// `[AUTH_ABI_VERSION, AUTH_ABI_VERSION]`.
-#[test]
-fn auth_supported_abi_reads_the_shared_const() {
-    assert_eq!(
-        supported_abi("auth"),
-        &[1, busbar_contract::abi::cold::AUTH_ABI_VERSION]
-    );
-}
-
-/// The export range is the export kind's MEMORY ABI version on both endpoints (THE DESIGN §11.8,
-/// ABI-b6): a bump propagates instead of drifting, and `kind: export` is a recognized kind with a
-/// non-empty supported range.
-#[test]
-fn export_supported_abi_reads_the_shared_const() {
-    let v = busbar_contract::abi::export::ABI_VERSION;
-    assert_eq!(supported_abi("export"), &[v, v]);
-    assert!(!supported_abi("export").is_empty());
-}
-
-/// OLD-ABI RED (ABI-b6, the export half): a 1.5.5 export plugin — its manifest stating the 1.5.5
-/// JSON contract's `abi_version` 2 — is refused at scan, and the refusal names the rebuild.
-#[test]
-fn a_1_5_5_export_plugin_is_refused_naming_the_rebuild() {
-    let release = key(1);
-    let dir = tmpdir("export-1-5-5");
-    let mut m = manifest("busbar-export-old", "old-sink", "busbar");
-    m.kind = "export".into();
-    m.abi_version = 2; // the 1.5.5 JSON contract every published export plugin was built against
-    let m = sign(&release, m, b"a 1.5.5 sink");
-    write_tarball(&dir, "old-sink.tar.gz", &m, b"a 1.5.5 sink");
-    let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
-    let _ = std::fs::remove_dir_all(&dir);
-    assert_eq!(errs.len(), 1, "{errs:?}");
-    assert!(
-        errs[0].contains("abi_version 2 is not supported for kind 'export'"),
-        "{}",
-        errs[0]
-    );
-    assert!(
-        errs[0].contains(crate::dispatch::load::REBUILD),
-        "the refusal names the rebuild: {}",
-        errs[0]
-    );
 }
 
 // ── The FIRST-PARTY replay, end to end over the real scan ──────────────────────────────────────

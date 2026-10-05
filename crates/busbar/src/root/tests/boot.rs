@@ -90,7 +90,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
             kind: "store".into(),
             version: "0.9.0".into(), // below any real CARGO_PKG_VERSION (1.x)
             publisher: crate::root::loader::sign::FIRST_PARTY_PUBLISHER.into(),
-            abi_version: 2,
+            abi_version: crate::root::loader::supported_abi("store")[0],
             sha256: String::new(),
             signature: String::new(),
             description: String::new(),
@@ -155,7 +155,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
             kind: "store".into(),
             version: "0.8.0".into(),
             publisher: crate::root::loader::sign::FIRST_PARTY_PUBLISHER.into(),
-            abi_version: 2,
+            abi_version: crate::root::loader::supported_abi("store")[0],
             sha256: String::new(),
             signature: String::new(),
             description: String::new(),
