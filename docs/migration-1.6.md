@@ -1,10 +1,12 @@
 # Migrating from 1.5.x to 1.6.0
 
-There is nothing to migrate. 1.5.3 was the last config-breaking release, the config grammar is
-frozen and grows only by optional keys, and 1.6.0 holds to that: a config written for 1.5.5 boots,
-validates and serves on 1.6.0 with no edits, every minted key and every durable store carries
-over, and the published 1.5.5 store plugins load unchanged. This was measured rather than
-promised — the same configs, requests and plugins were run through the published 1.5.5 binary
+There are two things to do, and both are owner-signed changes from 1.5.5: **a config must now
+carry a `store:` block** (`busbar --migrate-config` inserts it), and **a plugin built for 1.5.5
+must be replaced by one built for 1.6.0**. Everything else is identical to 1.5.5. 1.5.3 was the last
+config-breaking release, the config grammar is frozen and grows only by optional keys, and 1.6.0
+holds to that: a config written for 1.5.5 that has a `store:` block boots, validates and serves on
+1.6.0 with no other edits, and every minted key and every durable store carries over. This was
+measured rather than promised — the same configs, requests and plugins were run through the published 1.5.5 binary
 and through 1.6.0, and the differences are the ones named in [the changelog](../CHANGELOG.md)
 under "Improvements", every one additive.
 
@@ -14,13 +16,38 @@ and what is new to write if you want it.
 
 ---
 
-## 1. No config changes required
+## The `store:` block is required
+
+A 1.6.0 config must carry a `store:` block, even for the in-memory store. `busbar --validate`
+refuses a config without one, and boot refuses it too, telling you to add one. This is an
+owner-signed, customer-visible change from 1.5.5 (1.5.5 defaulted to `memory` when the block was
+absent); the reason is that config now says what loads.
+
+```sh
+busbar --migrate-config config.yaml > config-1.6.yaml   # inserts `store: {module: memory}`
+busbar --validate
+```
+
+`--migrate-config` inserts exactly `store: {module: memory}`, which is what an absent block meant in
+1.5.5, so behaviour does not change. A config that already names a store is left as written.
+
+## A plugin built for 1.5.5 does not load
+
+The published 1.5.5 plugins spoke a JSON contract. 1.6.0 plugins speak the memory ABI only, so boot
+refuses a 1.5.5 plugin with a message naming the rebuild against the 1.6.0 SDK. That includes the
+four published store plugins (sqlite, postgres, mysql, valkey). Install the 1.6.0 releases of the
+first-party plugins before upgrading; rebuild a third-party plugin with
+[the SDK migration note](plugin-sdk-migration-1.6.md). Your data carries over: a rebuilt store
+plugin opens its own database and upgrades it with its own `migrate()`. See
+[Plugins](plugins.md#plugins-and-160).
+
+## 1. No other config changes required
 
 - **Every 1.5.5 key means what it meant.** Pool members stay as you wrote them — `- model: x`
   with an optional `weight:` and per-member capabilities is the canonical form (a bare-name list
   plus a pool-level `weights:` map is accepted as an equivalent shorthand; see
   [Pools](pools.md#config-reference)). `busbar --migrate-config` on a 1.5.5 config prints the
-  same output the 1.5.5 migrator printed, byte for byte; it does not rewrite members, add
+  same output the 1.5.5 migrator printed, plus the `store:` block when the config has none; it does not rewrite members, add
   `TODO` comments, or touch anything a 1.5.5 config can contain.
 - **Keys carry over.** `auth.signing_key` is read as before, so every outstanding minted key
   keeps verifying; nothing is re-minted.
@@ -29,10 +56,9 @@ and what is new to write if you want it.
   usage ledger's on-disk shape is re-folded into 1.6.0's representation on first read through a
   versioned, idempotent migration (a partial run followed by a rerun yields the same totals as a
   clean one); nothing is dropped and recreated.
-- **Store plugins carry over.** The four published 1.5.5 store plugins (`abi_version: 2`) load on
-  1.6.0: the durable wire is additive, and the new plane-record verbs (MCP call records, A2A
-  tasks) are simply inert on an old plugin, kept in process as under `store: memory`. See
-  [Plugins](plugins.md#the-artifact).
+- **Store plugins are replaced, not carried.** The four published 1.5.5 store plugins
+  (`abi_version: 2`) are refused at boot; install their 1.6.0 releases, which open the same
+  database. See [Plugins](plugins.md#plugins-and-160).
 - **Validation is the same gate.** `--validate` resolves the same `env:` / `file:` references
   boot reads, and no others, exactly as 1.5.5 did. A CI job that passed on 1.5.5 passes on 1.6.0.
 - **The reserved name `admin`** is still refused for a model, pool or provider, with the 1.5.5
@@ -336,7 +362,9 @@ prices only what happens after the edit; it cannot repair a window that is alrea
 
 ## Quick checklist
 
-- [ ] Install 1.6.0, `busbar --validate`, start. That is the whole upgrade.
+- [ ] Add a `store:` block: `busbar --migrate-config config.yaml` inserts `store: {module: memory}`. `busbar --validate` refuses a config without one ([the `store:` block is required](#the-store-block-is-required)).
+- [ ] Replace every plugin built for 1.5.5 (including the sqlite, postgres, mysql and valkey stores) with its 1.6.0 release; boot refuses the old ones ([a plugin built for 1.5.5 does not load](#a-plugin-built-for-155-does-not-load)).
+- [ ] Install 1.6.0, `busbar --validate`, start.
 - [ ] If you have a `rate_card:`: add the `units:` map (every open unit at `0`) to every entry (or
       a real rate for the units you bill). `--validate` names each unit a card leaves out
       ([§7](#a-card-must-configure-every-billable-unit-its-plane-counts)).
