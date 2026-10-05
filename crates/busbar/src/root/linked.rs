@@ -479,10 +479,48 @@ pub fn plane_rows(
     }
     rows.extend(hot_rows);
     rows.extend(dropped_doors.iter().copied());
+    // PER-AXIS (SEAM-L(s)): a door row owns the plane axis for its key; a legacy row of the same
+    // key yields that axis alone and keeps every other axis it registers (its tables are its own).
+    let rows = doors_own_their_plane_keys(rows, &doors);
     let declared: Vec<&PlaneDeclaration> = rows.iter().map(|d| &d.declaration).collect();
     busbar_contract::plane::check_metric_families(&declared, PLANE_CARRIED_SERIES)?;
     busbar_contract::plane::check_served_op_classes(&declared)?;
     Ok(rows)
+}
+
+/// THE PLANE AXIS, PER AXIS (SEAM-L(s)): every row of `rows` that is one of `doors` stays, and a
+/// row that is not (a linked legacy or HOT-lane row) stays unless a door registers its key, in which
+/// case the door serves the plane and the legacy row keeps only the axes the door does not register
+/// (its other tables: the stdio serve, the CLI help, the one-shot runner, the protocols, the
+/// diagnostics), which this fold never touches. Order is kept.
+#[must_use]
+pub fn doors_own_their_plane_keys(
+    rows: Vec<&'static PlaneDecl>,
+    doors: &[&'static PlaneDecl],
+) -> Vec<&'static PlaneDecl> {
+    rows.into_iter()
+        .filter(|row| {
+            doors.iter().any(|d| std::ptr::eq(*d, *row)) || !doors.iter().any(|d| d.key == row.key)
+        })
+        .collect()
+}
+
+/// TWO DOORS ON ONE AXIS: a plane key registered by two door rows (each `(row name, key)`) is a
+/// boot refusal naming both; the per-axis fold cannot pick between two owners of the same axis.
+///
+/// # Errors
+///
+/// The first key two rows both register, with both rows' names.
+pub fn refuse_a_key_two_doors_register(named: &[(String, &str)]) -> Result<(), String> {
+    for (i, (name, key)) in named.iter().enumerate() {
+        if let Some((first, _)) = named[..i].iter().find(|(_, k)| k == key) {
+            return Err(format!(
+                "the plane door rows `{first}` and `{name}` both register the plane `{key}` on \
+                 the same axis; one row owns an axis's key"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// THE DOOR PLANES' REGISTRY ROWS (DECL-FOLD; ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL; spec #49
@@ -490,8 +528,9 @@ pub fn plane_rows(
 /// once through the loader's one load on a dispatcher of its own (the process's is built after the
 /// configuration is read, and the rows must be in before the config prepass), and its Statement
 /// folded into a registry row by the kernel (`busbar_kernel::plane::door::fold`). The row's every
-/// word is the door's; a plane a linked row already registers keeps that row (the boot fold keeps
-/// the first row of a key). A door that will not bind refuses the boot, as its load would.
+/// word is the door's; a door owns the plane axis for its key, a linked legacy row of the same key
+/// keeping only its other axes ([`doors_own_their_plane_keys`]), and two doors registering one key
+/// refuse the boot naming both. A door that will not bind refuses the boot, as its load would.
 fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
     let doors = crate::root::boot::DOOR_CANDIDATES
         .get()
@@ -508,9 +547,10 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
             crate::root::loader::dispatch::DispatchConfig::default(),
         )
     });
-    doors
+    let registrations = doors
         .iter()
         .map(|candidate| {
+            let name = candidate.name.clone();
             let candidate = candidate.clone();
             let bind: crate::root::loader::dispatch::kinds::plane::ProbeBind =
                 Arc::new(move || {
@@ -527,10 +567,19 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
                     .map(|(_, plane)| plane)
                     .ok_or_else(|| format!("{}: the door bound nothing", candidate.name))
                 });
-            busbar_kernel::plane::door::fold(
+            Ok((
+                name,
                 crate::root::loader::dispatch::kinds::plane::registration(bind)?,
-            )
+            ))
         })
+        .collect::<Result<Vec<_>, String>>()?;
+    let named: Vec<(String, &str)> = (registrations.iter())
+        .map(|(name, reg)| (name.clone(), reg.key))
+        .collect();
+    refuse_a_key_two_doors_register(&named)?;
+    registrations
+        .into_iter()
+        .map(|(_, reg)| busbar_kernel::plane::door::fold(reg))
         .collect()
 }
 
