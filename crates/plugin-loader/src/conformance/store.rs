@@ -176,12 +176,17 @@ fn audit(seq: u64, action: &str) -> AuditRecord {
     }
 }
 
-fn secret(id: &str, key_id: &str, public_id: &str) -> CredentialSecret {
+/// The credential kind the script writes and looks up (Q-P4-7): `sigv4`, the ONLY kind the shipped
+/// store schemas hold (1.5.5's, unchanged; `abi::cold`'s `PutCredential`: "today only
+/// `kind: \"sigv4\"`"). A store whose schema constrains the kind refuses any other.
+pub(super) const CREDENTIAL_KIND: &str = "sigv4";
+
+pub(super) fn secret(id: &str, key_id: &str, public_id: &str) -> CredentialSecret {
     CredentialSecret {
         meta: CredentialMeta {
             id: id.into(),
             key_id: key_id.into(),
-            kind: "generic".into(),
+            kind: CREDENTIAL_KIND.into(),
             slot: 0,
             public_id: public_id.into(),
             secret_form: SecretForm::Recoverable,
@@ -415,12 +420,12 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     r.line("lookup pub2", LEASED, || {
         ans(b
-            .lookup_credential_secret("generic", "pub2")
+            .lookup_credential_secret(CREDENTIAL_KIND, "pub2")
             .map(|c| c.map(|c| (c.meta.id, c.secret))))
     });
     r.line("lookup absent", 1, || {
         ans(b
-            .lookup_credential_secret("generic", "pub-absent")
+            .lookup_credential_secret(CREDENTIAL_KIND, "pub-absent")
             .map(|c| c.map(|c| c.meta.id)))
     });
     r.line("revoke c1", 1, || ans(b.revoke_credential("c1", "rotated")));

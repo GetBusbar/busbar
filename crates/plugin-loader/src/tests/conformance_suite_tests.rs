@@ -411,3 +411,12 @@ mod resumed_open {
         assert_eq!((first_after - first, resumes_after - resumes), (1, 1));
     }
 }
+
+/// RED (Q-P4-7): the store script writes, and looks up, the one credential kind the shipped store
+/// schemas hold (`sigv4`, 1.5.5's), never a kind a schema-constrained store refuses.
+#[test]
+fn the_store_script_writes_the_only_credential_kind_the_shipped_schemas_hold() {
+    use super::store::{secret, CREDENTIAL_KIND};
+    assert_eq!(CREDENTIAL_KIND, "sigv4");
+    assert_eq!(secret("c1", "k1", "pub1").meta.kind, "sigv4");
+}
