@@ -88,7 +88,7 @@ fixture-secret-file = { package = "busbar-secret-file", git = "https://github.co
 # THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.
-busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "78f8beb65ea58c6c68b1b6054313cfb878d0e531" }
+busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
 # THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
 busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "fc91230af97997994e9206124ee7414f3aec6eee" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
@@ -97,7 +97,7 @@ busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-g
 # THE WS TRANSPORT: the websocket framer door (kind: transport), pulled at a pinned rev; the logic
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
 busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "1c6a67f010728c96fe9041e41817fb69c8e4fd05" }
-busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "78f8beb65ea58c6c68b1b6054313cfb878d0e531" }
+busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
 busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "89d08ebcb91e5b2d4001b667fba151d9bc09d22d" }
