@@ -409,14 +409,14 @@ impl Planned {
         };
         let sock = Sock::Tcp(socket::connect(addr).map_err(failed)?);
         let offered_name = tls.as_ref().and(located.name.clone());
-        // No handshake to agree a protocol in the clear: an entry that offers exactly one
-        // protocol speaks it by prior knowledge, and it is recorded as agreed
-        // (`LocateOut::alpn_written`).
-        let prior = match located.offer.as_slice() {
-            [one] if tls.is_none() => Some(one.clone()),
-            _ => None,
-        };
-        Connection::over_socket(door, sock, dial, (tls, presented), offered_name, prior)
+        Connection::open_dialled(
+            door,
+            sock,
+            dial,
+            (tls, presented),
+            offered_name,
+            &located.offer,
+        )
     }
 }
 
@@ -439,19 +439,19 @@ impl Connection {
             }
             _ => failed(e),
         })?;
-        Self::over_socket(
+        Self::open_dialled(
             door,
             Sock::Unix(stream),
             dial,
             (None, Arc::new(std::sync::atomic::AtomicBool::new(false))),
             None,
-            None,
+            &[],
         )
     }
 
-    /// A dialled connection over `sock`, its connect in flight; `prior` is the protocol it speaks
-    /// by prior knowledge, recorded as agreed.
-    fn over_socket(
+    /// A dialled connection over `sock`, its connect in flight. `offer` is the protocols the
+    /// entry's `locate` offered (none for a unix-domain dial, which asks no `locate`).
+    fn open_dialled(
         door: Arc<dyn FramerDoor>,
         sock: Sock,
         dial: Dial,
@@ -460,9 +460,16 @@ impl Connection {
             Arc<std::sync::atomic::AtomicBool>,
         ),
         offered_name: Option<String>,
-        prior: Option<Vec<u8>>,
+        offer: &[Vec<u8>],
     ) -> Result<Self, Failure> {
         let sock = reactor::register(sock).map_err(failed)?;
+        // No handshake to agree a protocol in the clear: an entry that offers exactly one
+        // protocol speaks it by prior knowledge, and it is recorded as agreed
+        // (`LocateOut::alpn_written`).
+        let prior = match offer {
+            [one] if tls.is_none() => Some(one.clone()),
+            _ => None,
+        };
         let established = Established {
             offered_name,
             agreed_protocol: prior,

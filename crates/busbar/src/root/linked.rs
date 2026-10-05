@@ -523,6 +523,11 @@ pub fn refuse_a_key_two_doors_register(named: &[(String, &str)]) -> Result<(), S
     Ok(())
 }
 
+/// The dispatcher a door row's probe binds on: the process's one ([`crate::root::dispatch`]).
+pub(crate) fn door_probe_dispatcher() -> Arc<crate::root::loader::dispatch::Dispatcher> {
+    crate::root::dispatch::dispatcher()
+}
+
 /// THE DOOR PLANES' REGISTRY ROWS (DECL-FOLD; ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL; spec #49
 /// and R2-C): every plane [`dropped_planes_of`] discovered through a door, linked or dropped, bound
 /// once through the loader's one load on the process's one dispatcher (booted as main's first act,
@@ -538,21 +543,23 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
     if doors.is_empty() {
         return Ok(Vec::new());
     }
-    // The probe binds go on the process's one dispatcher, booted as main's first act before any
-    // plane registers (so the fold adds no worker of its own to the process's thread count), and a
-    // probe plugin it adopted is refreshed through it at every generation.
+    // The probe binds on the PROCESS'S ONE DISPATCHER (booted first, in `main`), never one of
+    // their own: a second dispatcher is a second set of `busbar-dispatch` threads. A probe plugin
+    // it adopted is refreshed through it at every generation.
+    let probe = door_probe_dispatcher();
     let registrations = doors
         .iter()
         .map(|candidate| {
             let name = candidate.name.clone();
             let candidate = candidate.clone();
+            let probe = Arc::clone(&probe);
             let bind: crate::root::loader::dispatch::kinds::plane::ProbeBind =
                 Arc::new(move || {
                     crate::root::loader::boot::load_planes(
                         std::slice::from_ref(&candidate),
                         crate::root::boot::plugin_logs(),
                         Arc::new(crate::root::loader::dispatch::NoSink),
-                        crate::root::dispatch::dispatcher().adopter(),
+                        probe.adopter(),
                         u32::MAX,
                         None,
                     )?

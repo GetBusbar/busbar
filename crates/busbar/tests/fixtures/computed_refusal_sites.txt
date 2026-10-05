@@ -15,3 +15,8 @@ busbar-kernel/src/plane_driver/mod.rs	cause
 # overdraft ceiling or a stale slice.
 busbar-kernel/src/plane_driver/mod.rs	reason
 busbar/src/root/door_steps.rs	refusal.reason()
+# teller.rs `screened` (SEAM-4j, Mode B): a gate-first plane's screen stops the unit at the
+# Approve seat BEFORE the door, so nothing was admitted and no money ends; both sites carry the
+# screen's own reason (the hook veto).
+busbar-kernel/src/teller.rs	reason
+busbar-kernel/src/teller.rs	reason

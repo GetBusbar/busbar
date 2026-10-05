@@ -263,6 +263,9 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
 /// (operator-infrastructure class; no shell, only its stated environment), its first line is one
 /// frame with the newline stripped, a message written is one line to its stdin, and it is killed
 /// on close.
+// Every linked wire is composed: a build that leaves one unlinked is a different composition
+// (`linked_every_transport`, emitted by build.rs).
+#[cfg(linked_every_transport)]
 #[test]
 fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
     use busbar_contract::abi::host::conn::connector::{

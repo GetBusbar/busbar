@@ -1429,6 +1429,8 @@ impl Conns for Connector {
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
             let conn = Connection::dial_unix(door, dial, path).map_err(|f| map(&f))?;
+            // A unix-domain dial is a dialled, single-use line (no pool, no judgement), as a
+            // program's is: its one exchange rides EXCHANGE_STREAM.
             let line = Line::new(conn);
             return self.slab.insert(
                 caller,
