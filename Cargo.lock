@@ -379,7 +379,6 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
- "url",
 ]
 
 [[package]]
@@ -625,7 +624,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-file"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-file?rev=16a8ee331b8cebf17b41e5d7aac7dcb2f45f9da8#16a8ee331b8cebf17b41e5d7aac7dcb2f45f9da8"
+source = "git+https://github.com/GetBusbar/busbar-export-file?rev=9efe8d431d0b8b9b34936fc650fdb386e57bdd88#9efe8d431d0b8b9b34936fc650fdb386e57bdd88"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -636,7 +635,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-file-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-file?rev=16a8ee331b8cebf17b41e5d7aac7dcb2f45f9da8#16a8ee331b8cebf17b41e5d7aac7dcb2f45f9da8"
+source = "git+https://github.com/GetBusbar/busbar-export-file?rev=9efe8d431d0b8b9b34936fc650fdb386e57bdd88#9efe8d431d0b8b9b34936fc650fdb386e57bdd88"
 dependencies = [
  "busbar-contract",
  "busbar-export-file",
@@ -685,7 +684,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-webhook"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=c080d93dce17e4819b01aa1c5d068eeda3f4cfb2#c080d93dce17e4819b01aa1c5d068eeda3f4cfb2"
+source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=28c4dddf16a9dcbf0a0f0f3be9a9d89d8ead5469#28c4dddf16a9dcbf0a0f0f3be9a9d89d8ead5469"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -697,7 +696,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-webhook-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=c080d93dce17e4819b01aa1c5d068eeda3f4cfb2#c080d93dce17e4819b01aa1c5d068eeda3f4cfb2"
+source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=28c4dddf16a9dcbf0a0f0f3be9a9d89d8ead5469#28c4dddf16a9dcbf0a0f0f3be9a9d89d8ead5469"
 dependencies = [
  "busbar-contract",
  "busbar-export-webhook",
@@ -1524,7 +1523,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3360,7 +3359,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3798,7 +3797,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4484,7 +4483,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

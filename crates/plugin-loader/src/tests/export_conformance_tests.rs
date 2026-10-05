@@ -29,8 +29,8 @@
 //!   connection table (the need its Statement declares), the sink never dials.
 //!
 //! The host services and the connection table are the host's side of the boundary, so this binary
-//! supplies them as the composition root does: [`DiskHost`] serves `disk.append` with this crate's
-//! own destination acts (`crate::host`: append, rotating by rename first when due), and [`Far`] is
+//! supplies them as the composition root does: [`DiskHost`] serves `disk.append` by the kernel's
+//! lane rules (append, rotating by rename first when due, `crate::host::rotate`), and [`Far`] is
 //! the connection table the webhook's need is declared on, recording what it is asked to carry.
 //!
 //! ## What this test compares, and why that is the right thing
@@ -63,7 +63,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::cold::export::{HostOp, HostResult};
 use busbar_contract::abi::export::{ExportStream, Ops, CHECK_PHASE_INSTANCES, CHECK_PHASE_LIMITS};
 use busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB;
 use busbar_contract::abi::host::service::{
@@ -241,57 +240,44 @@ const NO_SERVICE: &str = "this test host serves disk.append only";
 
 /// THE HOST'S DISK LANE, as this binary serves it: `disk.append` appends to the file the loader
 /// bound for the caller's destination key, rotating by rename first when the file already holds
-/// `rotate_at` bytes and keeping `keep` archives — performed by this crate's own destination acts
-/// ([`crate::host::Destinations`]), the same rules the kernel's lane follows.
+/// `rotate_at` bytes and keeping `keep` archives ([`crate::host::rotate`]), then opening it for
+/// append (created if absent) and writing the bytes whole — the same rules the kernel's lane follows.
 struct DiskHost;
 
 impl DiskHost {
     fn append(dest: &DiskDest, bytes: &[u8]) -> DiskReport {
-        let settings = serde_json::json!({ dest.key.as_str(): dest.path }).to_string();
-        let bound = crate::host::Destinations::bind(std::slice::from_ref(&dest.key), &settings)
-            .expect("a bound destination is a path");
-        let done = bound.perform(&HostOp::Write {
-            destination: dest.key.clone(),
-            data: String::from_utf8_lossy(bytes).into_owned(),
-            rotate_at: dest.rotate_at,
-            keep: dest.keep,
+        use std::io::Write as _;
+        let due = dest
+            .rotate_at
+            .is_some_and(|limit| std::fs::metadata(&dest.path).is_ok_and(|m| m.len() >= limit));
+        let (rotated, failed) = if due {
+            crate::host::rotate(&dest.path, dest.keep)
+        } else {
+            (false, Vec::new())
+        };
+        let faults = failed.iter().fold(0u8, |f, step| {
+            f | match *step {
+                "retention" => DISK_RETENTION_FAILED,
+                "shift" => DISK_SHIFT_FAILED,
+                _ => DISK_RENAME_FAILED,
+            }
         });
-        let faults = |r: &Option<busbar_contract::abi::cold::export::Rotation>| {
-            r.iter()
-                .flat_map(|r| r.faults.iter())
-                .fold(0u8, |f, fault| {
-                    f | match fault.step.as_str() {
-                        "retention" => DISK_RETENTION_FAILED,
-                        "shift" => DISK_SHIFT_FAILED,
-                        _ => DISK_RENAME_FAILED,
-                    }
-                })
+        let report = |step, error: String| DiskReport {
+            step,
+            rotated,
+            faults,
+            error: Box::leak(error.into_boxed_str()),
         };
-        let rotated = |r: &Option<busbar_contract::abi::cold::export::Rotation>| {
-            r.as_ref().is_some_and(|r| r.renamed)
-        };
-        match done {
-            HostResult::Done { rotation } => DiskReport {
-                step: 0,
-                rotated: rotated(&rotation),
-                faults: faults(&rotation),
-                error: "",
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&dest.path)
+        {
+            Ok(mut file) => match file.write_all(bytes) {
+                Ok(()) => report(0, String::new()),
+                Err(e) => report(DISK_APPEND_FAILED, e.to_string()),
             },
-            HostResult::Failed {
-                step,
-                error,
-                rotation,
-            } => DiskReport {
-                step: if step == "append" {
-                    DISK_APPEND_FAILED
-                } else {
-                    DISK_OPEN_FAILED
-                },
-                rotated: rotated(&rotation),
-                faults: faults(&rotation),
-                error: Box::leak(error.into_boxed_str()),
-            },
-            other => panic!("a write answers Done or Failed: {other:?}"),
+            Err(e) => report(DISK_OPEN_FAILED, e.to_string()),
         }
     }
 }
@@ -1602,133 +1588,6 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
             "ops slot {} is NULL",
             busbar_contract::abi::export::slot::CHECK
         )
-    );
-}
-
-// ── THE COLD HOST'S CARRIER (the host side, no sink) ─────────────────────────────────────────────
-
-/// The egress this test binary installs for the host's carrier arms: it records every request it is
-/// asked to carry and answers `204`, and its POLICY refuses any URL on `refused.example` before
-/// anything is sent — the shape of the host's own carrier (URL policy first, then the hop).
-struct RecordingCarrier(Mutex<Vec<busbar_contract::abi::cold::export::HttpRequest>>);
-
-impl crate::EgressCarrier for RecordingCarrier {
-    fn carry(
-        &self,
-        request: &busbar_contract::abi::cold::export::HttpRequest,
-    ) -> busbar_contract::abi::cold::export::HostResult {
-        use busbar_contract::abi::cold::export::HttpResponse;
-        if request.url.contains(REFUSED_TARGET) {
-            return HostResult::Failed {
-                step: "refused".into(),
-                error: "the host's egress policy refuses this target".into(),
-                rotation: None,
-            };
-        }
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(request.clone());
-        HostResult::Http(HttpResponse {
-            status: 204,
-            body: String::new(),
-        })
-    }
-
-    fn admit(&self, url: &str) -> Result<(), String> {
-        match url.contains(REFUSED_TARGET) {
-            true => Err("the host's egress policy refuses this target".into()),
-            false => Ok(()),
-        }
-    }
-}
-
-static CARRIER: RecordingCarrier = RecordingCarrier(Mutex::new(Vec::new()));
-
-/// **K9e-2 — A CARRIER CARRIES ONLY THE POLICIES IT IMPLEMENTS.** The loader routes an outbound
-/// request with its octets and the sink's granted policy; a carrier that implements only the open
-/// web (this binary's recording one, every carrier written before the seam) carries a TEXT body
-/// under it exactly as `carry` always did, and REFUSES — carrying nothing — a binary body or any
-/// other policy, in words that name what it lacks.
-#[test]
-fn a_carrier_that_implements_no_policy_but_the_open_web_refuses_the_rest() {
-    use crate::EgressPolicy;
-    use busbar_contract::abi::cold::export::HttpRequest;
-    crate::install_egress_carrier(&CARRIER);
-    let request = HttpRequest {
-        method: "POST".into(),
-        url: "https://k9e2-open-web.example/in".into(),
-        headers: Vec::new(),
-        body: "ignored: the octets travel beside the head".into(),
-        timeout_ms: 1000,
-    };
-    let ours = || {
-        CARRIER
-            .0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .filter(|r| r.url.contains("k9e2-open-web.example"))
-            .map(|r| r.body.clone())
-            .collect::<Vec<_>>()
-    };
-    let text = crate::host::carry_under(EgressPolicy::OpenWeb, &request, b"{\"a\":1}");
-    assert!(
-        matches!(text, HostResult::Http(ref r) if r.status == 204),
-        "{text:?}"
-    );
-    assert_eq!(ours(), vec![r#"{"a":1}"#.to_string()], "carried as text");
-
-    let refused = |answer: HostResult, words: &str| match answer {
-        HostResult::Failed { step, error, .. } => {
-            assert_eq!((step.as_str(), error.as_str()), ("refused", words))
-        }
-        other => panic!("expected a refusal, got {other:?}"),
-    };
-    refused(
-        crate::host::carry_under(EgressPolicy::OpenWeb, &request, &[0x0a, 0xff]),
-        "this host carries no binary request body",
-    );
-    refused(
-        crate::host::carry_under(EgressPolicy::Collector, &request, b"{}"),
-        "this host carries no `collector` plugin egress",
-    );
-    refused(
-        crate::host::admit_under(EgressPolicy::Collector, "http://127.0.0.1:4318/v1/traces"),
-        "this host carries no `collector` plugin egress",
-    );
-    // A binary body that is not hex never reaches any carrier.
-    let not_hex = HostOp::HttpBinary(HttpRequest {
-        body: "zz".into(),
-        ..request.clone()
-    });
-    match crate::host::Destinations::default().perform(&not_hex) {
-        HostResult::Failed { step, error, .. } => {
-            assert_eq!(step, "request");
-            assert!(
-                error.starts_with("the binary request body is not hex ("),
-                "{error}"
-            );
-        }
-        other => panic!("{other:?}"),
-    }
-    // The admit op: the policy's verdict, nothing carried.
-    let none = crate::host::Destinations::default();
-    let ok = none.perform(&HostOp::Admit {
-        url: "https://k9e2-open-web.example/in".into(),
-    });
-    assert_eq!(ok, HostResult::Done { rotation: None });
-    let refused_admit = none.perform(&HostOp::Admit {
-        url: format!("https://{REFUSED_TARGET}/in"),
-    });
-    assert!(
-        matches!(&refused_admit, HostResult::Failed { step, .. } if step == "refused"),
-        "{refused_admit:?}"
-    );
-    assert_eq!(
-        ours().len(),
-        1,
-        "a refused request never reaches the carrier's wire"
     );
 }
 

@@ -31,9 +31,9 @@
 //!   module.
 //!
 //! B.5, transcribed:
-//! - **Tail:** `streams[]`, pinned to the OLD `ExportStream::ALL` order
-//!   (`abi/cold/export.rs`: metrics, logs, traces, costs, decisions, events, identity, prompts,
-//!   completions — `decisions` is a FROZEN wire word, unchanged by this move).
+//! - **Tail:** `streams[]`, pinned to the 1.5.5 `ExportStream::ALL` order (metrics, logs, traces,
+//!   costs, decisions, events, identity, prompts, completions — `decisions` is a FROZEN wire word,
+//!   unchanged by this move).
 //! - `deliver{stream u8, batch jsonl}` — built at batch time with the `fields:` projection applied
 //!   KERNEL-side (never in this kind's shapes: the batch a plugin receives is already projected).
 //! - `scrape(families)` over the host snapshot service.
@@ -564,7 +564,7 @@ impl ExportField {
     }
 }
 
-/// The point of the configuration's VALIDATION a [`ExportRequest::Check`] is asked at — so a
+/// The point of the configuration's VALIDATION a sink's `check` is asked at — so a
 /// sink's lines land where the operator has always read them among the configuration's errors.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

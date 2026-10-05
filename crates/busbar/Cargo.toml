@@ -157,7 +157,7 @@ busbar-export-webhook = { workspace = true, optional = true }
 # own repo (GetBusbar/busbar-export-prometheus) and is pulled at a PINNED rev; the workspace `[patch]` points
 # the busbar crates it names back at this tree.
 busbar-export-prometheus = { workspace = true, optional = true }
-# THE OTLP TRACE SINK (`module: otlp`), a first-party EXPORT plugin linked through the `exports` axis
+# THE OTLP TRACE SINK (`module: otlp`), a first-party EXPORT plugin linked through the `export-doors` axis
 # (K9e-2; owner answer Q75: OTLP export never delivered in 1.5.5, and 1.6.0 fixes it) — the same row a
 # signed tarball of it registers when dropped in. It encodes each `traces` record as an OTLP/HTTP
 # protobuf request the host posts under the collector egress policy it declares. It lives in its own
@@ -193,9 +193,6 @@ axum = { workspace = true }
 # the same version axum is built on — this is the trait axum's own `Body` implements, not a second one.
 http-body = { workspace = true }
 tracing = { workspace = true }
-# THE COLLECTOR EGRESS POLICY (`root::otlp`, K9e-2): the OTLP endpoint guard, which the host's egress
-# carrier holds a sink that declares `collector` to, parses the target as a URL.
-url = { workspace = true }
 # Selects `idna`'s unicode-rs backend for every `url` in the binary (see the workspace row).
 idna_adapter = { workspace = true }
 metrics = { workspace = true }

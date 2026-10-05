@@ -6,10 +6,9 @@
 //! (`plugin_door!`) and exports its ONE door symbol through `export_door!`; compiled in or dropped
 //! in, the host calls the same table.
 //!
-//! M6-COLD-DELETE residue: two JSON-lane exports remain, over [`boundary`] — a `kind: auth` plugin's
-//! (`export_login_plugin!`: its verify and its hosted login), until that plugin's door re-pin, and
-//! the request-log file and webhook sinks' (`export_export_plugin!`), until their door re-pins land.
-//! No store, secret or hook plugin has one.
+//! M6-COLD-DELETE residue: one JSON-lane export remains, over [`boundary`] — a `kind: auth`
+//! plugin's (`export_login_plugin!`: its verify and its hosted login), until that plugin's door
+//! re-pin. No store, secret, hook or export plugin has one.
 
 // The SDK's `unsafe fn` bodies were written under the crate default (edition 2021: an `unsafe fn`
 // body is itself an unsafe context). The shared ABI root denies `unsafe_op_in_unsafe_fn` for the two
@@ -66,8 +65,8 @@ pub mod life;
 
 // The `#[macro_export]` export macros, named at this module's path too.
 pub use crate::{
-    export_carrier, export_export_plugin, export_framer, export_login_plugin, export_plane,
-    export_plugin, export_transport,
+    export_carrier, export_framer, export_login_plugin, export_plane, export_plugin,
+    export_transport,
 };
 
 /// The "decision observability" signal catalog: a plugin author references
@@ -102,7 +101,7 @@ pub type AuthHandle = Box<dyn crate::auth::AuthPlugin>;
 pub use crate::abi::cold::auth::{AuthRequest, AuthResponse};
 /// Re-export the auth wire and the two auth faces so an auth author (and the `dispatch_compiled_in`
 /// twin `export_login_plugin!` emits) names `busbar_contract::abi::sdk::AuthRequest` (etc.) without a direct
-/// `busbar-plugin` dependency, mirroring the hook/export re-export path.
+/// `busbar-plugin` dependency, mirroring the hook re-export path.
 pub use crate::auth::{AuthModule, AuthPlugin};
 
 /// The auth handle behind the opaque `*mut c_void`: a boxed [`crate::auth::AuthPlugin`].
@@ -148,8 +147,7 @@ pub fn dispatch_auth(
 }
 
 /// Run one auth request and wrap the answer in the observability envelope (DECISIONS #85) — what
-/// actually goes on the wire. The auth twin of [`dispatch_export_enveloped`] (#2's auth witness,
-/// step (1)).
+/// actually goes on the wire (#2's auth witness, step (1)).
 ///
 /// An auth module's verify and login faces report nothing on the back-channel, so the envelope is
 /// BARE (`{"result": …}`): what makes it load-bearing is not what it carries today but that the
@@ -387,48 +385,11 @@ pub trait HookHandler: Send + Sync {
     }
 }
 
-// ── EXPORT-plugin glue (`kind: export`) ────────────────────────────────────────────────────────────
-// M6-COLD-DELETE RESIDUE (with the hosted login's): the JSON-lane export the request-log file and
-// webhook sinks still ship on, until their door re-pins land with the host's disk lane and the export
-// in-flight fixes. Every other export sink is on the export kind's door.
-// An export plugin is a telemetry SINK behind the frozen six-symbol ABI. Its author implements the tiny
-// SYNC [`ExportHandler`] trait (`streams`/`deliver` over JSON); the op-dispatch match
-// ([`dispatch_export`]) routes the [`ExportRequest`] envelope to it. Mirrors the hook glue one-to-one:
-// same `export_plugin!` shape, its own handle type (`Box<dyn ExportHandler>`), its own request enum.
+// ── THE EXPORT KIND'S WIRE TYPES, re-exported for plugin authors ──────────────────────────────────
 
-/// Re-export the export wire types so a plugin author names `busbar_contract::abi::sdk::ExportStream` (etc.)
-/// without a direct `busbar-plugin` dependency, mirroring the hook/auth re-export path.
-pub use crate::abi::cold::export::{
-    ExportRequest, ExportResponse, HostOp, HostResult, HttpRequest, HttpResponse, MetricFamily,
-    MetricSample, Rotation, RotationFault,
-};
+/// Re-export the export kind's stream and field vocabulary so a plugin author names
+/// `busbar_contract::abi::sdk::ExportStream` (etc.) at this module's path.
 pub use crate::abi::export::{CheckPhase, ExportField, ExportStream};
-
-/// What a sink answers a delivery (or a resume) with when it has the host act for it (export ABI
-/// minor 4): finished, or these [`HostOp`]s first — the host performs them and calls
-/// [`ExportHandler::resume`] with their results under the same `token`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HostStep {
-    /// Nothing (more) for the host to do: the delivery is done.
-    Done,
-    /// Perform these, in order, then resume me with `token`.
-    Host {
-        /// The sink's correlation token, echoed on the resume.
-        token: u64,
-        /// The acts.
-        ops: Vec<HostOp>,
-    },
-    /// Answering [`ExportHandler::start`] (export ABI minor 8): started — whether this sink takes
-    /// deliveries this run, and its in-flight admission (`0` / empty: the host's defaults).
-    Started {
-        /// `false`: take nothing this run.
-        live: bool,
-        /// Deliveries it may have in flight at once.
-        inflight: u64,
-        /// The name its admission gate is counted under.
-        gate: String,
-    },
-}
 
 /// Re-export the observability envelope (#85) so a plugin author names
 /// `busbar_contract::abi::sdk::PluginMetric` (etc.) without a direct `busbar-plugin` dependency, mirroring
@@ -448,230 +409,6 @@ pub use crate::abi::mechanism::observe::{
 /// `busbar-plugin` dependency.
 pub use crate::abi::mechanism::endpoint::{EndpointRequest, EndpointResponse};
 pub use crate::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
-
-/// The sync contract a `kind: export` plugin author implements. [`streams`](ExportHandler::streams)
-/// declares which observability streams THIS instance carries (asked once at load); `deliver` hands
-/// one already-serialized batch for a declared stream to the sink and has a DEFAULT no-op, so a trivial
-/// sink implements only `streams`.
-pub trait ExportHandler: Send + Sync {
-    /// The [`ExportStream`]s this instance carries. Asked once at load; the engine only routes
-    /// deliveries for streams named here.
-    fn streams(&self) -> Vec<ExportStream>;
-    /// Accept one batch for `stream`. `payload` is the engine-built batch as an opaque JSON value.
-    /// Default: no-op (a sink that reports streams but drops batches).
-    fn deliver(&self, _stream: ExportStream, _payload: &serde_json::Value) {}
-    /// The HTTP [`Route`]s this instance serves — its OWN compiled-in declarations, collected once at
-    /// load (a metrics sink declares `GET /metrics`). Default: none (a push-only sink has no HTTP
-    /// surface). The engine collision-checks + namespace-confines these before mounting.
-    fn routes(&self) -> Vec<Route> {
-        Vec::new()
-    }
-    /// Serve one inbound HTTP request matched to a declared route. Fires only for a matched route (the
-    /// engine already enforced the route's auth). Default: `404` — the fallback for a sink that
-    /// declared no routes / a partial impl.
-    fn handle_http(&self, _req: &EndpointRequest) -> EndpointResponse {
-        EndpointResponse {
-            status: 404,
-            headers: Vec::new(),
-            body: Vec::new(),
-        }
-    }
-
-    /// TAKE what this sink observed since the last call — the author side of the observability
-    /// envelope (DECISIONS #85).
-    ///
-    /// A sink that rotates a file, sheds a line, or fails to open a path has produced an
-    /// operator-visible FACT, and before the envelope there was nowhere on the wire to put it:
-    /// `ExportResponse::Delivered` is a unit variant and the cold tier has no host-callback vtable.
-    /// The only way a compiled-in sink could keep its counters was to reach the process-global
-    /// recorder directly — which the same crate built as a dropped-in `cdylib` cannot do, because it
-    /// links its own. That is the live #11 hole this closes.
-    ///
-    /// **DRAINING, not reading.** The name is the contract: the SDK calls this ONCE per `busbar_call`
-    /// and puts whatever it returns on that call's envelope, so an implementation must hand over its
-    /// accumulated observations and reset. Returning the same samples twice reports them twice; a
-    /// counter the host folds is a DELTA, not a running total.
-    ///
-    /// Default: nothing to report. That is what makes the envelope additive for every sink that
-    /// already exists — a handler written before #85 compiles unchanged and answers bare envelopes.
-    fn drain_observations(&self) -> Observations {
-        Observations::none()
-    }
-
-    /// Validate the `settings` the operator wrote for the `instance` named, while the host
-    /// validates its configuration (export ABI minor 2): every problem as one complete
-    /// operator-facing line (the host reports each verbatim), or none. Default: none — a sink with
-    /// nothing to check accepts what it is given, as every sink did before the op.
-    fn validate(&self, _instance: &str, _settings: &serde_json::Value) -> Vec<String> {
-        Vec::new()
-    }
-
-    /// Accept one batch, with the host acting for the sink where it needs to (export ABI minor 4):
-    /// answer [`HostStep::Host`] to have the host perform [`HostOp`]s — append to a declared
-    /// destination, rotate it, flush it, carry an HTTP request (minor 5) — and receive their results on [`resume`](Self::resume).
-    /// Default: [`deliver`](Self::deliver), then done — every sink written before the op.
-    fn deliver_via_host(&self, stream: ExportStream, payload: &serde_json::Value) -> HostStep {
-        self.deliver(stream, payload);
-        HostStep::Done
-    }
-
-    /// Render the host recorder's snapshot (export ABI minor 6) into the exposition the host
-    /// serves: `(content_type, body)`. Default: the Prometheus text content type with an empty
-    /// body. A metrics-serving sink overrides `render` (the prometheus sink does) and renders the
-    /// snapshot itself.
-    fn render(&self, _families: &[MetricFamily]) -> (String, String) {
-        ("text/plain; version=0.0.4".to_string(), String::new())
-    }
-
-    /// The results of the [`HostOp`]s a [`HostStep::Host`] asked for, in order, under its `token`.
-    /// Answer [`HostStep::Done`], or more ops. Default: done.
-    fn resume(&self, _token: u64, _results: Vec<HostResult>) -> HostStep {
-        HostStep::Done
-    }
-
-    /// The host starts feeding this sink (export ABI minor 8): answer [`HostStep::Started`], or
-    /// [`HostStep::Host`] first (the results come back on [`resume`](Self::resume), which then
-    /// answers `Started`). Default: live, at the host's default admission.
-    fn start(&self) -> HostStep {
-        HostStep::Started {
-            live: true,
-            inflight: 0,
-            gate: String::new(),
-        }
-    }
-
-    /// The checks across every instance of this sink's module, `(name, settings)` in configuration
-    /// order, run while the host validates its configuration — at `phase`: among its operational
-    /// limits' checks, or after them (export ABI minors 8, 9): every problem as one complete line,
-    /// reported verbatim. Default: none.
-    fn check(&self, _phase: CheckPhase, _instances: &[(String, serde_json::Value)]) -> Vec<String> {
-        Vec::new()
-    }
-}
-
-/// A [`HostStep`] as the wire answers it.
-fn host_step(step: HostStep) -> ExportResponse {
-    match step {
-        HostStep::Done => ExportResponse::Delivered,
-        HostStep::Host { token, ops } => ExportResponse::Host { token, ops },
-        HostStep::Started {
-            live,
-            inflight,
-            gate,
-        } => ExportResponse::Started {
-            live,
-            inflight,
-            gate,
-        },
-    }
-}
-
-/// The export handle behind the opaque `*mut c_void`: a boxed [`ExportHandler`]. Named at the module
-/// level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
-pub type ExportHandle = Box<dyn ExportHandler>;
-
-/// The export handle behind the opaque `*mut c_void`: a boxed [`ExportHandler`].
-type BoxedExport = ExportHandle;
-
-/// Return the EXPORT PAYLOAD schema version this SDK builds against (`busbar_plugin_kind() ==
-/// "export"`). Reads the shared const rather than a bare literal, so `plugin-loader::registry`'s floor
-/// and this SDK's declared version cannot drift apart — mirroring `secret_abi_version()`.
-pub fn export_abi_version() -> u32 {
-    crate::abi::cold::export::EXPORT_ABI_VERSION
-}
-
-/// Run one [`ExportRequest`] against an [`ExportHandler`] — the single op-dispatch match that maps the
-/// wire envelope to the trait, unit-testable without FFI. `Streams` returns the handler's declared
-/// streams; `Deliver` runs the handler's sink and acks with [`ExportResponse::Delivered`].
-pub fn dispatch_export(handler: &dyn ExportHandler, req: ExportRequest) -> ExportResponse {
-    match req {
-        ExportRequest::Streams => ExportResponse::Streams(handler.streams()),
-        ExportRequest::Deliver { stream, payload } => {
-            host_step(handler.deliver_via_host(stream, &payload))
-        }
-        ExportRequest::Resume { token, results } => host_step(handler.resume(token, results)),
-        ExportRequest::Scrape { families } => {
-            let (content_type, body) = handler.render(&families);
-            ExportResponse::Exposition { content_type, body }
-        }
-        ExportRequest::Routes => ExportResponse::Routes(handler.routes()),
-        ExportRequest::Endpoint { request } => {
-            ExportResponse::Endpoint(handler.handle_http(&request))
-        }
-        // `status` is the host asking, at the moment it renders its own exposition, what this sink
-        // has to report. The answer is exactly what a delivery's envelope would have carried — the
-        // handler's DRAIN, moved into the result — so the host folds it down the one envelope path
-        // and a sink needs no second method to take part. The trailing drain in
-        // `dispatch_export_enveloped` then finds nothing left, so nothing is reported twice.
-        ExportRequest::Status => {
-            let drained = handler.drain_observations().into_envelope(());
-            ExportResponse::Status {
-                metrics: drained.metrics,
-                diagnostics: drained.diagnostics,
-            }
-        }
-        ExportRequest::Validate { instance, settings } => {
-            ExportResponse::Validated(handler.validate(&instance, &settings))
-        }
-        ExportRequest::Start => host_step(handler.start()),
-        ExportRequest::Check { instances, phase } => {
-            ExportResponse::Validated(handler.check(phase, &instances))
-        }
-    }
-}
-
-/// Run one [`ExportRequest`] and wrap the answer in the observability envelope (#85) — what actually
-/// goes on the wire.
-///
-/// Split from [`dispatch_export`] so the op-dispatch match and the envelope fold are separately
-/// testable, and so a caller that only wants the kind-specific answer (every existing test) keeps
-/// the type it had.
-///
-/// **ORDER IS LOAD-BEARING.** The handler runs FIRST and is drained AFTER, so observations the call
-/// itself produced ride the SAME response. Draining first would report the previous call's samples
-/// on this call's envelope and lose this call's entirely on the last call before shutdown.
-pub fn dispatch_export_enveloped(
-    handler: &dyn ExportHandler,
-    req: ExportRequest,
-) -> Envelope<ExportResponse> {
-    let result = dispatch_export(handler, req);
-    handler.drain_observations().into_envelope(result)
-}
-
-/// The per-kind `dispatch` closure `export_export_plugin!` hands to [`boundary::call_boundary`]: decode
-/// an [`ExportRequest`], run it via [`dispatch_export`], and encode the [`ExportResponse`] into a
-/// [`BoundaryOutcome`]. An undecodable request is the only [`BoundaryOutcome::Unsupported`] case; a
-/// response-encode failure is a real fault → [`BoundaryOutcome::Error`].
-///
-/// # Safety
-/// `handle` is a live export handle from `open` (guaranteed non-null by the boundary wrapper).
-pub unsafe fn export_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcome {
-    let handler: &BoxedExport = &*(handle as *const BoxedExport);
-    let request: ExportRequest = match serde_json::from_slice(bytes) {
-        Ok(r) => r,
-        Err(e) => return BoundaryOutcome::Unsupported(format!("malformed request JSON: {e}")),
-    };
-    let resp = dispatch_export_enveloped(handler.as_ref(), request);
-    match serde_json::to_vec(&resp) {
-        Ok(payload) => BoundaryOutcome::Ok(payload),
-        Err(e) => BoundaryOutcome::Error(format!("response encode failed: {e}")),
-    }
-}
-
-/// Emit an `export`-kind cdylib plugin from `$ctor` (a
-/// `fn(&str) -> Result<Box<dyn busbar_contract::abi::sdk::ExportHandler>, String>`). Expands through
-/// [`export_plugin!`], stamping `busbar_plugin_kind() == "export"` + the six neutral symbols.
-#[macro_export]
-macro_rules! export_export_plugin {
-    ($ctor:path) => {
-        $crate::export_plugin!(
-            kind = "export",
-            dispatch = $crate::abi::sdk::export_dispatch,
-            ctor = $ctor,
-            handle = $crate::abi::sdk::ExportHandle,
-        );
-    };
-}
 
 // ── THE DROPPED-IN DOOR'S FROZEN SYMBOLS, DEFINED ONCE ─────────────────────────────────────────────
 // Every frozen name the loader looks up in a plugin `cdylib` (`busbar_abi`, `busbar_plugin_kind`,

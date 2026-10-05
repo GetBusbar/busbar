@@ -78,12 +78,6 @@ impl LoadablePlugin {
         matches!(self.entry, Some(LinkedEntry::Store { .. }))
     }
 
-    /// M6-COLD-DELETE residue: whether this row is a LINKED JSON-lane export sink
-    /// (`BUSBAR_COLD_ENTRY`), the request-log file and webhook sinks until their door re-pins.
-    pub fn image_is_cold_linked(&self) -> bool {
-        matches!(self.entry, Some(LinkedEntry::Boundary(_)))
-    }
-
     /// A compiled-in memory-ABI row's door; `None` for any other row.
     pub fn door(&self) -> Option<busbar_contract::abi::mechanism::door::DoorFn> {
         match self.entry {
@@ -97,8 +91,8 @@ impl LoadablePlugin {
         self.entry.is_some()
     }
 
-    /// What a JSON-lane load runs over (M6-COLD-DELETE residue: the hosted login and the two
-    /// request-log sinks): the linked boundary, or the verified bytes.
+    /// What a JSON-lane load runs over (M6-COLD-DELETE residue: the auth plugin's verify and hosted
+    /// login): the linked boundary, or the verified bytes.
     pub fn image(&self) -> crate::Image<'_> {
         match self.entry {
             Some(LinkedEntry::Boundary(entry)) => crate::Image::Linked(entry),
@@ -160,13 +154,13 @@ pub enum LinkedEntry {
     /// the same door a dropped-in build exports as `busbar_plugin_door` (THE DESIGN: compiled-in =
     /// dropped-in). Loaded through [`crate::dispatch::load_linked`].
     Door(busbar_contract::abi::mechanism::door::DoorFn),
-    /// M6-COLD-DELETE residue: a linked JSON-lane export sink's SDK boundary (`BUSBAR_COLD_ENTRY`),
-    /// the request-log file and webhook sinks until their door re-pins land.
+    /// M6-COLD-DELETE residue: a linked JSON-lane auth plugin's SDK boundary (`BUSBAR_COLD_ENTRY`),
+    /// until the auth plugin's door re-pin.
     Boundary(&'static ColdEntry),
 }
 
 impl LinkedPlugin {
-    /// M6-COLD-DELETE residue: a linked JSON-lane export sink, `manifest` and its boundary.
+    /// M6-COLD-DELETE residue: a linked JSON-lane auth plugin, `manifest` and its boundary.
     pub fn boundary(manifest: Manifest, entry: &'static ColdEntry) -> Self {
         LinkedPlugin {
             manifest,

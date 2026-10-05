@@ -679,11 +679,26 @@ impl ExportCalls for ExportInstance {
 
     /// The host SHED one line for this instance (past its bound): count it on each counter the
     /// instance was GRANTED as its shed counter at open (a first-party manifest declaration marked
-    /// `shed`), folded under its name through the one observability path, as the cold lane's sinks
-    /// were counted (ARCHITECT ruling 2026-09-30, Q2).
+    /// `shed`), folded under its name through the one observability path (ARCHITECT ruling
+    /// 2026-09-30, Q2).
     fn shed(&self) {
-        crate::export::fold_shed(self.plugin().name());
+        fold_shed(self.plugin().name());
     }
+}
+
+/// Count one SHED line for the export instance `name` on each counter it was GRANTED as its shed
+/// counter at open, folded under its name through the ONE observability path every envelope takes.
+fn fold_shed(name: &str) {
+    let metrics = crate::observe::shed_series(name)
+        .into_iter()
+        .map(|n| serde_json::json!({"name": n, "type": "counter", "value": 1}))
+        .collect();
+    let report = busbar_contract::abi::mechanism::observe::Envelope {
+        result: (),
+        metrics,
+        diagnostics: Vec::new(),
+    };
+    crate::observe::fold(name, busbar_contract::abi::mechanism::kind::EXPORT, &report);
 }
 
 #[cfg(test)]
