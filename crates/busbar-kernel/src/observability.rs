@@ -352,16 +352,18 @@ pub fn init_logging(stdout_reserved: bool) -> bool {
     // A compiled-in plugin called before this (its settings validated while the configuration
     // resolved) has ALREADY made `LogTracer` the `log` logger — its door's capture installs it on
     // first use when nothing has. `try_init` sets the global subscriber first and only then fails on
-    // that already-installed logger; the forwarder in place is the same one, so that failure is not
-    // a failed install. Installed means: no subscriber was set before, and one is now (1.5.5 printed
-    // nothing here, and neither does a boot whose plugin ran first).
-    let preset = tracing::dispatcher::has_been_set();
-    let installed = tracing_subscriber::registry()
+    // that already-installed logger, which forwards to the same dispatcher: that failure is not a
+    // failed install. Only a refused global subscriber is one (1.5.5 printed nothing here, and
+    // neither does a boot whose plugin ran first).
+    let initialized = match tracing_subscriber::registry()
         .with(fmt_layer)
         .with(crate::export::traces::layer(otlp_filter))
         .try_init()
-        .is_ok();
-    let initialized = installed || (!preset && tracing::dispatcher::has_been_set());
+    {
+        Ok(()) => true,
+        Err(e) => std::error::Error::source(&e)
+            .is_some_and(|inner| !inner.is::<tracing::subscriber::SetGlobalDefaultError>()),
+    };
     if !initialized {
         eprintln!("busbar: tracing subscriber already initialized");
     }
