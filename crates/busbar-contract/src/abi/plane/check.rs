@@ -32,9 +32,9 @@ use super::{
     INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_REFUSAL_TEXT,
     MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
     RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE,
-    ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION, SHAPE_PIECEWISE, SHAPE_WHOLE,
-    TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED,
-    VERDICT_HARD,
+    ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE,
+    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TRUST_PIN, TRUST_PRIVATE_REACH,
+    UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -223,8 +223,12 @@ pub fn check_arrive(
         if ![ROUTE_POOL, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_SCOPE].contains(&out.route) {
             return Err(fault(Rule::UnknownCode, "arrive.route"));
         }
-        if out.route_flags & !(ROUTE_ONCE | ROUTE_SESSION) != 0 {
+        if out.route_flags & !(ROUTE_ONCE | ROUTE_SESSION | ROUTE_STREAM) != 0 {
             return Err(fault(Rule::UnknownCode, "arrive.route_flags"));
+        }
+        text(out.affinity, "arrive.affinity")?;
+        if out.affinity.len > MAX_TEXT {
+            return Err(fault(Rule::OverMax, "arrive.affinity"));
         }
         // A unit the plane answers itself names no entry (one routed by scope may name its
         // candidates).
@@ -251,6 +255,10 @@ pub fn check_arrive(
     {
         // The pool names where an admitted unit routes: an answer that admits nothing names none.
         return Err(fault(Rule::Contradiction, "arrive.pool"));
+    }
+    // The sticky key names how an admitted unit routes: an answer that admits nothing states none.
+    if outcome != Outcome::Ready && (out.affinity.len != 0 || !out.affinity.ptr.is_null()) {
+        return Err(fault(Rule::Contradiction, "arrive.affinity"));
     }
     if outcome == Outcome::Refused {
         text(out.head.error, "arrive.refusal_text")?;
