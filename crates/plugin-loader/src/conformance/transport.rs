@@ -8,6 +8,8 @@
 //! `YIELD_MORE`, equal transcripts, exact crossings) with every byte and every expected framing
 //! moved into the plugin's inputs. Inputs (`conformance.json`):
 //!
+//! A byte input is a JSON string (its UTF-8 bytes) or `{ "hex": "<bytes>" }`.
+//!
 //! ```json
 //! { "settings": <the settings it opens over>,
 //!   "transport": {
@@ -15,16 +17,30 @@
 //!         "reads":   [{ "target": "<a target it reads>", "authority": "<what it dials>", "secure": false }, ...],
 //!         "refuses": ["<a target it refuses: FAILED>", ...] },
 //!     "dial": {
+//!         "target":  "<what begin dials>",          /* optional, default "": a wire whose
+//!                                                       dial reads a target (ws) names it */
+//!         "opening": "<what begin writes>",         /* optional, default "": a wire that opens
+//!                                                       with bytes of its own (ws's upgrade
+//!                                                       request) states them */
+//!         "answer":  "<far bytes before the emit>", /* optional: the far side's opening answer
+//!                                                       (ws's 101), read before the first frame */
 //!         "emit":   "<one frame the host emits>",   "wire":   "<the wire bytes it becomes>",
-//!         "ingest": "<bytes from the far side>",    "frames": ["<the frames they are>", ...] },
+//!         "ingest": "<bytes from the far side>",    "frames": ["<the frames they are>", ...],
+//!         "finish": "<what finish writes>" },       /* optional, default "" (ws's close) */
 //!     "encode": [{ "body": "<body>", "fields": [["<name>", "<value>"], ...],
 //!                  "wire": "<the rendering>" | null /* FAILED */ }, ...],
-//!     "refuse": { "bytes": "<a refusal>", "wire": "<the wire bytes it becomes>" },
+//!     "refuse": { "bytes": "<a refusal>", "wire": "<the wire bytes it becomes>",
+//!                 "opening": "<far bytes the accepted framing reads first>",  /* optional */
+//!                 "answer":  "<what reading them writes>" },                 /* optional */
 //!     "handoff": "refused" | {
 //!         "ingest":   "<bytes ingested once through the tight sink, then the upgrade>",
 //!         "detached": "<what detach hands back: ingested and not yet answered>",
 //!         "adopt":    "<the leftover another stack gave up>",
-//!         "frames":   ["<the frames the adopted leftover is>", ...] } } }
+//!         "frames":   ["<the frames the adopted leftover is>", ...] }
+//!     /* or, the two halves of a handoff as separate capabilities (a wire may take an upgrade it
+//!        never gives one up for, as ws does): */
+//!     "detach": "refused" | { "ingest": "...", "detached": "..." },
+//!     "adopt":  "refused" | { "leftover": "...", "frames": [...], "wire": "<what it writes>" } } }
 //! ```
 //!
 //! THE PINS (M6/contract). Every step is one ticket-less crossing but:
@@ -33,7 +49,8 @@
 //!   is not open (REFUSED) or closed (FAULT) without a crossing;
 //! * `locate short`: 2, the authority buffer of one byte answers SHORT and the ONE re-call
 //!   ([`Plugin::recall`]) with the size it named is +1;
-//! * a re-driven framer op (`emit`, `ingest`, `refuse`, `detach`, `adopt`): one crossing per
+//! * a re-driven framer op (`begin`, `emit`, `ingest`, `refuse`, `detach`, `adopt`, `finish`): one
+//!   crossing per
 //!   sink-full, the host calling again with no new bytes while the framer answers `YIELD_MORE`
 //!   (the ABI's backpressure, never a short buffer): `ceil(bytes / cap)` of what the sink must
 //!   carry, at least 1, over a sink of [`TIGHT_WIRE`] wire bytes, [`TIGHT_FRAME`] frame bytes and
@@ -96,11 +113,38 @@ const MAX_REDRIVE: usize = 4096;
 
 // ---- the inputs ----
 
+/// One byte-string input: a JSON string's UTF-8 bytes, or `{ "hex": "<bytes>" }` for bytes a JSON
+/// string cannot hold (a binary frame's header, say).
 fn text(v: &serde_json::Value, what: &str) -> Vec<u8> {
     match v {
         serde_json::Value::String(s) => s.as_bytes().to_vec(),
         serde_json::Value::Null => panic!("conformance.json: transport.{what} is missing"),
+        serde_json::Value::Object(o) if o.len() == 1 && o.contains_key("hex") => o["hex"]
+            .as_str()
+            .and_then(unhex)
+            .unwrap_or_else(|| panic!("conformance.json: transport.{what}.hex is not hex")),
         other => other.to_string().into_bytes(),
+    }
+}
+
+/// `hex`'s bytes (two digits a byte, either case); `None` for anything else.
+fn unhex(hex: &str) -> Option<Vec<u8>> {
+    let digits = hex.as_bytes();
+    if !digits.len().is_multiple_of(2) {
+        return None;
+    }
+    digits
+        .chunks(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
+        .collect()
+}
+
+/// An optional input: absent is empty.
+fn opt_text(v: &serde_json::Value, what: &str) -> Vec<u8> {
+    if v.is_null() {
+        Vec::new()
+    } else {
+        text(v, what)
     }
 }
 
@@ -261,7 +305,7 @@ impl Yielded {
 /// One framer op, by what it carries.
 #[derive(Clone, Copy)]
 enum Op<'a> {
-    Begin(u32),
+    Begin(u32, &'a [u8]),
     Ingest(&'a [u8], bool),
     Emit(&'a [u8]),
     Refuse(&'a [u8]),
@@ -280,7 +324,7 @@ impl Op<'_> {
             Op::Ingest(_, end) => Op::Ingest(&[], end),
             Op::Emit(_) => Op::Emit(&[]),
             Op::Refuse(_) => Op::Refuse(&[]),
-            Op::Adopt(_) => Op::Timer,
+            Op::Adopt(_) | Op::Begin(..) => Op::Timer,
             other => other,
         }
     }
@@ -296,9 +340,13 @@ fn go<I: InFrame, O: OutFrame>(p: &Plugin<Transport>, s: u32, i: I) -> (Called, 
 fn cross(p: &Plugin<Transport>, framing: u64, op: Op<'_>, sink: &mut Sink) -> (Called, FramerOut) {
     let raw = sink.raw();
     match op {
-        Op::Begin(side) => {
+        Op::Begin(side, target) => {
             let mut i: BeginIn = input();
             (i.side, i.sink) = (side, raw);
+            i.target = AbiStr {
+                ptr: target.as_ptr(),
+                len: target.len(),
+            };
             go(p, slot::BEGIN, i)
         }
         Op::Ingest(bytes, end) => {
@@ -536,7 +584,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     // 0: the dispatcher refuses an op on an instance that is not open, without a crossing.
     r.line("begin unopened", 0, || {
-        once(&p, 0, Op::Begin(SIDE_DIAL), &mut Sink::ample()).line()
+        once(&p, 0, Op::Begin(SIDE_DIAL, b""), &mut Sink::ample()).line()
     });
     want.push(("begin unopened".into(), Want::Starts("Refused ")));
 
@@ -619,15 +667,29 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         text(&dial["ingest"], "dial.ingest"),
         texts(&dial["frames"], "dial.frames"),
     );
+    let target = opt_text(&dial["target"], "dial.target");
+    let opening = opt_text(&dial["opening"], "dial.opening");
     let mut tight = Sink::tight();
-    let token = r.step("begin dial", 1, || {
-        let y = once(&p, 0, Op::Begin(SIDE_DIAL), &mut tight);
+    // A wire that opens with bytes of its own writes them at begin, re-driven by `timer`.
+    let token = r.step("begin dial", sinkfuls(opening.len(), TIGHT_WIRE), || {
+        let y = pump(&p, 0, Op::Begin(SIDE_DIAL, &target), &mut tight);
         (y.line(), y.framing)
     });
     want.push((
         "begin dial".into(),
-        Want::Is(yielded_line(&[], &[], &[], 0, true)),
+        Want::Is(yielded_line(&opening, &[], &[], 0, true)),
     ));
+    // The far side's opening answer, read before the first frame: it writes and yields nothing.
+    if !dial["answer"].is_null() {
+        let answer = text(&dial["answer"], "dial.answer");
+        r.line("dial answer", 1, || {
+            pump(&p, token, Op::Ingest(&answer, false), &mut tight).line()
+        });
+        want.push((
+            "dial answer".into(),
+            Want::Is(yielded_line(&[], &[], &[], 0, false)),
+        ));
+    }
     r.line("emit", sinkfuls(wire.len(), TIGHT_WIRE), || {
         pump(&p, token, Op::Emit(&emit), &mut tight).line()
     });
@@ -649,12 +711,13 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         "ingest end".into(),
         Want::Is(yielded_line(&[], &[], &[], YIELD_ENDED, false)),
     ));
-    r.line("finish", 1, || {
-        once(&p, token, Op::Finish, &mut tight).line()
+    let finish = opt_text(&dial["finish"], "dial.finish");
+    r.line("finish", sinkfuls(finish.len(), TIGHT_WIRE), || {
+        pump(&p, token, Op::Finish, &mut tight).line()
     });
     want.push((
         "finish".into(),
-        Want::Is(yielded_line(&[], &[], &[], YIELD_ENDED, false)),
+        Want::Is(yielded_line(&finish, &[], &[], YIELD_ENDED, false)),
     ));
     r.line("finish again", 1, || {
         once(&p, token, Op::Finish, &mut tight).line()
@@ -711,13 +774,26 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         text(&refuse["wire"], "refuse.wire"),
     );
     let token = r.step("begin accept", 1, || {
-        let y = once(&p, 0, Op::Begin(SIDE_ACCEPT), &mut tight);
+        let y = once(&p, 0, Op::Begin(SIDE_ACCEPT, b""), &mut tight);
         (y.line(), y.framing)
     });
     want.push((
         "begin accept".into(),
         Want::Is(yielded_line(&[], &[], &[], 0, true)),
     ));
+    // A wire whose accepted framing must be opened before it can carry a refusal (ws: the upgrade
+    // request, answered with the switch) reads its opening first.
+    if !refuse["opening"].is_null() {
+        let opening = text(&refuse["opening"], "refuse.opening");
+        let answer = opt_text(&refuse["answer"], "refuse.answer");
+        r.line("accept opening", sinkfuls(answer.len(), TIGHT_WIRE), || {
+            pump(&p, token, Op::Ingest(&opening, false), &mut tight).line()
+        });
+        want.push((
+            "accept opening".into(),
+            Want::Is(yielded_line(&answer, &[], &[], 0, false)),
+        ));
+    }
     r.line("refuse", sinkfuls(wire.len(), TIGHT_WIRE), || {
         pump(&p, token, Op::Refuse(&bytes), &mut tight).line()
     });
@@ -737,56 +813,14 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 
     // ── the upgrade: what was ingested and not answered is handed back, and adopted ──
     let token = r.step("begin upgrade", 1, || {
-        let y = once(&p, 0, Op::Begin(SIDE_ACCEPT), &mut tight);
+        let y = once(&p, 0, Op::Begin(SIDE_ACCEPT, b""), &mut tight);
         (y.line(), y.framing)
     });
     want.push(("begin upgrade".into(), Want::Starts("Ready ")));
-    match &k["handoff"] {
-        serde_json::Value::String(v) if v == "refused" => {
-            r.line("detach", 1, || {
-                once(&p, token, Op::Detach, &mut tight).line()
-            });
-            r.line("adopt", 1, || {
-                once(&p, 0, Op::Adopt(b"conformance"), &mut tight).line()
-            });
-            for l in ["detach", "adopt"] {
-                want.push((l.into(), Want::Starts("Refused ")));
-            }
-            r.line("finish upgrade", 1, || {
-                once(&p, token, Op::Finish, &mut tight).line()
-            });
-            want.push(("finish upgrade".into(), Want::Starts("Ready ")));
-        }
-        h => {
-            let ingest = text(&h["ingest"], "handoff.ingest");
-            let detached = text(&h["detached"], "handoff.detached");
-            let leftover = text(&h["adopt"], "handoff.adopt");
-            let frames = texts(&h["frames"], "handoff.frames");
-            // 1: ingested once; the host stops re-driving it, it is upgrading.
-            r.line("ingest before upgrade", 1, || {
-                once(&p, token, Op::Ingest(&ingest, false), &mut tight).line()
-            });
-            want.push(("ingest before upgrade".into(), Want::Starts("Ready ")));
-            r.line("detach", sinkfuls(detached.len(), TIGHT_FRAME), || {
-                pump(&p, token, Op::Detach, &mut tight).line()
-            });
-            want.push((
-                "detach".into(),
-                Want::Is(yielded_line(&[], &[], &detached, YIELD_ENDED, false)),
-            ));
-            let adopted = r.step("adopt", frame_sinkfuls(&frames), || {
-                let y = pump(&p, 0, Op::Adopt(&leftover), &mut tight);
-                (y.line(), y.framing)
-            });
-            want.push((
-                "adopt".into(),
-                Want::Is(yielded_line(&[], &frames, &[], 0, true)),
-            ));
-            r.line("finish adopted", 1, || {
-                once(&p, adopted, Op::Finish, &mut tight).line()
-            });
-            want.push(("finish adopted".into(), Want::Starts("Ready ")));
-        }
+    if k["handoff"].is_null() {
+        halves(&mut r, &mut want, &p, k, token);
+    } else {
+        whole_handoff(&mut r, &mut want, &p, k, token);
     }
     r.line("ingest on no framing", 1, || {
         once(&p, u64::MAX, Op::Ingest(b"x", false), &mut tight).line()
@@ -805,13 +839,137 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     }
     // 0: a closed instance answers FAULT without a crossing.
     r.line("begin after close", 0, || {
-        once(&p, 0, Op::Begin(SIDE_DIAL), &mut Sink::ample()).line()
+        once(&p, 0, Op::Begin(SIDE_DIAL, b""), &mut Sink::ample()).line()
     });
     want.push(("begin after close".into(), Want::Starts("Fault ")));
 
     let fold = r.fold();
     contract(&fold, &want);
     fold
+}
+
+/// THE UPGRADE AS ONE CAPABILITY (`handoff`): what was ingested and not answered is handed back,
+/// and adopted; or both refused.
+fn whole_handoff(
+    r: &mut Recorder,
+    want: &mut Vec<(String, Want)>,
+    p: &Plugin<Transport>,
+    k: &serde_json::Value,
+    token: u64,
+) {
+    let mut tight = Sink::tight();
+    match &k["handoff"] {
+        serde_json::Value::String(v) if v == "refused" => {
+            r.line("detach", 1, || {
+                once(p, token, Op::Detach, &mut tight).line()
+            });
+            r.line("adopt", 1, || {
+                once(p, 0, Op::Adopt(b"conformance"), &mut tight).line()
+            });
+            for l in ["detach", "adopt"] {
+                want.push((l.into(), Want::Starts("Refused ")));
+            }
+            r.line("finish upgrade", 1, || {
+                once(p, token, Op::Finish, &mut tight).line()
+            });
+            want.push(("finish upgrade".into(), Want::Starts("Ready ")));
+        }
+        h => {
+            let ingest = text(&h["ingest"], "handoff.ingest");
+            let detached = text(&h["detached"], "handoff.detached");
+            let leftover = text(&h["adopt"], "handoff.adopt");
+            let frames = texts(&h["frames"], "handoff.frames");
+            // 1: ingested once; the host stops re-driving it, it is upgrading.
+            r.line("ingest before upgrade", 1, || {
+                once(p, token, Op::Ingest(&ingest, false), &mut tight).line()
+            });
+            want.push(("ingest before upgrade".into(), Want::Starts("Ready ")));
+            r.line("detach", sinkfuls(detached.len(), TIGHT_FRAME), || {
+                pump(p, token, Op::Detach, &mut tight).line()
+            });
+            want.push((
+                "detach".into(),
+                Want::Is(yielded_line(&[], &[], &detached, YIELD_ENDED, false)),
+            ));
+            let adopted = r.step("adopt", frame_sinkfuls(&frames), || {
+                let y = pump(p, 0, Op::Adopt(&leftover), &mut tight);
+                (y.line(), y.framing)
+            });
+            want.push((
+                "adopt".into(),
+                Want::Is(yielded_line(&[], &frames, &[], 0, true)),
+            ));
+            r.line("finish adopted", 1, || {
+                once(p, adopted, Op::Finish, &mut tight).line()
+            });
+            want.push(("finish adopted".into(), Want::Starts("Ready ")));
+        }
+    }
+}
+
+/// THE UPGRADE AS TWO CAPABILITIES (`detach`, `adopt`): a wire may give up a stream it framed, take
+/// one another stack gave up, both, or neither (ws takes an upgrade and never gives one up).
+fn halves(
+    r: &mut Recorder,
+    want: &mut Vec<(String, Want)>,
+    p: &Plugin<Transport>,
+    k: &serde_json::Value,
+    token: u64,
+) {
+    let mut tight = Sink::tight();
+    match &k["detach"] {
+        serde_json::Value::String(v) if v == "refused" => {
+            r.line("detach", 1, || {
+                once(p, token, Op::Detach, &mut tight).line()
+            });
+            want.push(("detach".into(), Want::Starts("Refused ")));
+        }
+        d => {
+            let ingest = text(&d["ingest"], "detach.ingest");
+            let detached = text(&d["detached"], "detach.detached");
+            r.line("ingest before upgrade", 1, || {
+                once(p, token, Op::Ingest(&ingest, false), &mut tight).line()
+            });
+            want.push(("ingest before upgrade".into(), Want::Starts("Ready ")));
+            r.line("detach", sinkfuls(detached.len(), TIGHT_FRAME), || {
+                pump(p, token, Op::Detach, &mut tight).line()
+            });
+            want.push((
+                "detach".into(),
+                Want::Is(yielded_line(&[], &[], &detached, YIELD_ENDED, false)),
+            ));
+        }
+    }
+    r.line("finish upgrade", 1, || {
+        once(p, token, Op::Finish, &mut tight).line()
+    });
+    want.push(("finish upgrade".into(), Want::Starts("Ready ")));
+    match &k["adopt"] {
+        serde_json::Value::String(v) if v == "refused" => {
+            r.line("adopt", 1, || {
+                once(p, 0, Op::Adopt(b"conformance"), &mut tight).line()
+            });
+            want.push(("adopt".into(), Want::Starts("Refused ")));
+        }
+        a => {
+            let leftover = text(&a["leftover"], "adopt.leftover");
+            let frames = texts(&a["frames"], "adopt.frames");
+            let wire = opt_text(&a["wire"], "adopt.wire");
+            let crossings = sinkfuls(wire.len(), TIGHT_WIRE).max(frame_sinkfuls(&frames));
+            let adopted = r.step("adopt", crossings, || {
+                let y = pump(p, 0, Op::Adopt(&leftover), &mut tight);
+                (y.line(), y.framing)
+            });
+            want.push((
+                "adopt".into(),
+                Want::Is(yielded_line(&wire, &frames, &[], 0, true)),
+            ));
+            r.line("finish adopted", 1, || {
+                once(p, adopted, Op::Finish, &mut tight).line()
+            });
+            want.push(("finish adopted".into(), Want::Starts("Ready ")));
+        }
+    }
 }
 
 /// THE KIND'S CONTRACT over the fold, so two equal folds of failures prove nothing: every step's
