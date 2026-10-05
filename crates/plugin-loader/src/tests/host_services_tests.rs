@@ -170,6 +170,71 @@ impl HostServices for Provider {
         later(stored);
         Ran::Later
     }
+
+    /// Records `<unit> <verb> <target> <body>`; answers status 201, the body `child`, no field.
+    fn unit_nest(&self, c: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran {
+        let arg = [
+            format!("{unit:?} {} {} ", ask.verb, ask.target).as_bytes(),
+            &ask.body,
+        ]
+        .concat();
+        self.saw(c, "unit.nest", &arg);
+        let mut stored = Stored::ready(201);
+        stored.bytes = b"child".to_vec();
+        stored.spans = vec![ItemSpan {
+            key: Span {
+                offset: busbar_contract::abi::mechanism::check::SPAN_ABSENT,
+                len: 0,
+            },
+            value: Span { offset: 0, len: 5 },
+        }];
+        later(stored);
+        Ran::Later
+    }
+
+    /// Records `<unit> <kind> <record>`; answers handle 5 and the reference `ref` in span 0.
+    fn work_open(
+        &self,
+        c: &Caller,
+        unit: Option<u64>,
+        kind: &str,
+        rec: &[u8],
+        later: Later,
+    ) -> Ran {
+        let arg = [format!("{unit:?} {kind} ").as_bytes(), rec].concat();
+        self.saw(c, "work.open", &arg);
+        let mut stored = Stored::ready(5);
+        stored.bytes = b"ref".to_vec();
+        stored.spans = vec![ItemSpan {
+            key: Span { offset: 0, len: 3 },
+            value: Span {
+                offset: busbar_contract::abi::mechanism::check::SPAN_ABSENT,
+                len: 0,
+            },
+        }];
+        later(stored);
+        Ran::Later
+    }
+
+    /// Records `<unit> <reference>`; answers absent.
+    fn work_find(&self, c: &Caller, unit: Option<u64>, reference: &[u8], _: Later) -> Ran {
+        let arg = [format!("{unit:?} ").as_bytes(), reference].concat();
+        self.saw(c, "work.find", &arg);
+        Ran::Now(Stored::ready(svc::ABSENT))
+    }
+
+    /// Records `<handle> <record>`.
+    fn work_settle(&self, c: &Caller, handle: u64, rec: &[u8], _: Later) -> Ran {
+        let arg = [format!("{handle} ").as_bytes(), rec].concat();
+        self.saw(c, "work.settle", &arg);
+        Ran::Now(Stored::ready(0))
+    }
+
+    /// Records `<unit> <handle>`.
+    fn work_resume(&self, c: &Caller, unit: Option<u64>, handle: u64, _: Later) -> Ran {
+        self.saw(c, "work.resume", format!("{unit:?} {handle}").as_bytes());
+        Ran::Now(Stored::ready(0))
+    }
 }
 
 /// The records the double's `records.list` holds, in key order.
@@ -1115,5 +1180,135 @@ fn records_secret_serves_only_a_declared_kind() {
     assert_eq!(
         d.route.provider.secrets.lock().unwrap().as_slice(),
         &["sigv4:AKID".to_string()]
+    );
+}
+
+/// The work family reaches the kernel as its caller, with the unit its crossing serves, and a
+/// record past its cap is refused before the kernel sees it.
+#[test]
+fn the_work_family_reaches_the_kernel_with_the_unit_its_crossing_serves() {
+    let d = double();
+    let mut buf = [0u8; 32];
+    let mut spans = [ItemSpan {
+        key: Span { offset: 0, len: 0 },
+        value: Span { offset: 0, len: 0 },
+    }; 1];
+    let record = b"rec";
+    let open = svc::WorkOpenIn {
+        head: head(op::WORK_OPEN, TICKET, 0, size_of::<svc::WorkOpenIn>()),
+        kind: text("job"),
+        record: blob(record),
+        into: bufs(&mut buf, &mut spans),
+    };
+    let mut o = blank();
+    let ret = {
+        let _unit = serving(Some(7));
+        HOST_SLOTS.work_open.unwrap()(d.ctx, std::ptr::from_ref(&open).cast(), &mut o)
+    };
+    assert_eq!((ret.outcome(), o.value), (Outcome::Ready, 5));
+    assert_eq!(&buf[..3], b"ref");
+    assert!(svc::check_work_open(&open, ret, &o).is_ok());
+
+    let long = vec![0u8; svc::MAX_WORK_RECORD + 1];
+    let too_long = svc::WorkOpenIn {
+        head: head(op::WORK_OPEN, TICKET, 1, size_of::<svc::WorkOpenIn>()),
+        record: blob(&long),
+        ..open
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.work_open.unwrap()(d.ctx, std::ptr::from_ref(&too_long).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), WORK_RECORD_TOO_LONG);
+
+    let find = svc::WorkFindIn {
+        head: head(op::WORK_FIND, TICKET, 2, size_of::<svc::WorkFindIn>()),
+        reference: text("ref"),
+        into: bufs(&mut [], &mut []),
+    };
+    let mut o = blank();
+    let ret = {
+        let _unit = serving(Some(8));
+        HOST_SLOTS.work_find.unwrap()(d.ctx, std::ptr::from_ref(&find).cast(), &mut o)
+    };
+    assert_eq!((ret.outcome(), o.value), (Outcome::Ready, svc::ABSENT));
+    assert!(svc::check_work_find(&find, ret, &o).is_ok());
+
+    let settle = svc::WorkSettleIn {
+        head: head(op::WORK_SETTLE, TICKET, 3, size_of::<svc::WorkSettleIn>()),
+        handle: 5,
+        record: blob(b"done"),
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.work_settle.unwrap()(d.ctx, std::ptr::from_ref(&settle).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+
+    let resume = svc::WorkResumeIn {
+        head: head(op::WORK_RESUME, TICKET, 4, size_of::<svc::WorkResumeIn>()),
+        handle: 5,
+        into: bufs(&mut [], &mut []),
+    };
+    let mut o = blank();
+    let ret = {
+        let _unit = serving(Some(9));
+        HOST_SLOTS.work_resume.unwrap()(d.ctx, std::ptr::from_ref(&resume).cast(), &mut o)
+    };
+    assert_eq!(ret.outcome(), Outcome::Ready);
+
+    let seen: Vec<(&str, String)> = d
+        .route
+        .provider
+        .scoped
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(who, what, arg)| {
+            assert_eq!(who, "double");
+            (*what, String::from_utf8(arg.clone()).unwrap())
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("work.open", "Some(7) job rec".to_string()),
+            ("work.find", "Some(8) ref".to_string()),
+            ("work.settle", "5 done".to_string()),
+            ("work.resume", "Some(9) 5".to_string()),
+        ]
+    );
+}
+
+/// `unit.nest` reaches the kernel as its caller with the unit its crossing serves, and delivers the
+/// child's whole reply into the caller's buffers.
+#[test]
+fn unit_nest_reaches_the_kernel_with_the_unit_its_crossing_serves() {
+    let d = double();
+    let mut buf = [0u8; 8];
+    let mut spans = [ItemSpan {
+        key: Span { offset: 0, len: 0 },
+        value: Span { offset: 0, len: 0 },
+    }; 2];
+    let body = b"ask";
+    let i = svc::UnitNestIn {
+        head: head(op::UNIT_NEST, TICKET, 0, size_of::<svc::UnitNestIn>()),
+        verb: text("POST"),
+        target: text("/child"),
+        body: blob(body),
+        into: bufs(&mut buf, &mut spans),
+    };
+    let mut o = blank();
+    let ret = {
+        let _unit = serving(Some(11));
+        HOST_SLOTS.unit_nest.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o)
+    };
+    assert_eq!((ret.outcome(), o.value, o.items), (Outcome::Ready, 201, 1));
+    assert_eq!(&buf[..5], b"child");
+    assert!(svc::check_unit_nest(&i, ret, &o).is_ok());
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().as_slice(),
+        &[(
+            "double".to_string(),
+            "unit.nest",
+            b"Some(11) POST /child ask".to_vec()
+        )]
     );
 }

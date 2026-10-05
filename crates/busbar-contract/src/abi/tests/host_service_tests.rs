@@ -304,10 +304,18 @@ fn a_ready_value_outside_the_service_range_is_fault() {
         rule(check_entitlement_check(&ent, ready(&o), &o)),
         Rule::UnknownCode
     );
+    let (mut b, mut sp) = (
+        [0u8; 0],
+        [ItemSpan {
+            key: Span { offset: 0, len: 0 },
+            value: Span { offset: 0, len: 0 },
+        }; 0],
+    );
     let open = WorkOpenIn {
         head: head(op::WORK_OPEN, TICKET, 0),
         kind: none(),
         record: empty_blob(),
+        into: bufs(&mut b, &mut sp),
     };
     o.value = 0;
     assert_eq!(
@@ -669,4 +677,50 @@ fn records_secret_answers_live_or_not_live() {
         Rule::UnknownCode
     );
     assert!(may_pend(op::RECORDS_SECRET));
+}
+
+#[test]
+fn a_work_open_answers_its_reference_in_one_span() {
+    let mut b = [0u8; WORK_REFERENCE_LEN];
+    let mut sp = [ItemSpan {
+        key: Span {
+            offset: 0,
+            len: WORK_REFERENCE_LEN as u32,
+        },
+        value: Span {
+            offset: SPAN_ABSENT,
+            len: 0,
+        },
+    }; 1];
+    let open = WorkOpenIn {
+        head: head(op::WORK_OPEN, TICKET, core::mem::size_of::<WorkOpenIn>()),
+        kind: none(),
+        record: empty_blob(),
+        into: bufs(&mut b, &mut sp),
+    };
+    let mut o = out(Outcome::Ready);
+    o.value = 1;
+    o.len = WORK_REFERENCE_LEN as u64;
+    // No span: the reference is missing.
+    assert_eq!(
+        check_work_open(&open, RawOutcome::of(Outcome::Ready), &o).unwrap_err(),
+        fault(Rule::Contradiction, "work_open.out.items")
+    );
+    o.items = 1;
+    assert!(check_work_open(&open, RawOutcome::of(Outcome::Ready), &o).is_ok());
+}
+
+#[test]
+fn a_work_record_past_its_cap_is_refused() {
+    let at = |len: usize| Blob {
+        ptr: core::ptr::NonNull::<u8>::dangling().as_ptr(),
+        len,
+        fmt: 0,
+        flags: 0,
+    };
+    assert!(check_work_record(&at(MAX_WORK_RECORD)).is_ok());
+    assert_eq!(
+        check_work_record(&at(MAX_WORK_RECORD + 1)).unwrap_err(),
+        fault(Rule::OverMax, "work.record")
+    );
 }

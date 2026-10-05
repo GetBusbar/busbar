@@ -136,6 +136,10 @@ serde_json = { workspace = true }
 # real JSON Schema validator. Test-only, so neither reaches a plugin's closure.
 serde_yaml = { workspace = true }
 jsonschema = { workspace = true }
+# THE `hyper_io!` SDK MACRO's own test (tests/sdk_hyper.rs) expands it as a framer does; the
+# expansion names `::hyper`, and the test names hyper's own buffer type. Dev-only: the shipped graph
+# does not name it.
+hyper = { workspace = true }
 
 # The two NEUTRAL capability features that gate the `transport::transport` module's
 # `Transport`/`UpstreamWireKind` wire-selection axis (folded in from `busbar-contract-transport`,

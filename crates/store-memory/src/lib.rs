@@ -949,19 +949,14 @@ pub mod door_export {
 }
 
 /// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a build that links this store registers onto the
-/// store axis — the same door a dropped-in store exports. `STORE` is `(name, ephemeral, default,
-/// door)`: the name `governance.store` selects it by, its statement that what it holds is lost on
-/// restart, its claim to be the governance store a deployment that configures none runs on, and its
-/// store v3 door, which boot opens it through (the store axis).
-/// The composition root resolves the default from the linked rows' claims; two claims refuse boot.
+/// store axis — the same door a dropped-in store exports. `STORE` is `(name, ephemeral, door)`:
+/// the name `store.module` selects it by, its statement that what it holds is lost on restart, and
+/// its store v3 door, which boot opens it through (the store axis). It claims no default: a config
+/// names its store (Q-STORE = (B)).
 pub mod linked {
-    /// `(name, ephemeral, default, door)`.
-    pub const STORE: (
-        &str,
-        bool,
-        bool,
-        busbar_contract::abi::mechanism::door::DoorFn,
-    ) = ("memory", true, true, super::door);
+    /// `(name, ephemeral, door)`.
+    pub const STORE: (&str, bool, busbar_contract::abi::mechanism::door::DoorFn) =
+        ("memory", true, super::door);
 }
 
 mod v3;
