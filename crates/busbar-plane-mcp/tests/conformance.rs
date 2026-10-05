@@ -1843,13 +1843,13 @@ mod both_ways {
 
         // The ops the driver does not call on this door yet, and the rest of the lifecycle.
         // Nothing to restore and no background work; no admin route is served yet, and a body that
-        // carries no invocation has no projection.
+        // carries no invocation projects an empty view (no entry, no body: no hook fires on it).
         for what in ["hydrate", "start"] {
             assert_eq!(step(&t, what).outcome, Outcome::Ready, "{what}");
         }
         let serve = step(&t, "serve");
         assert_eq!((serve.outcome, serve.status), (Outcome::Ready, 404));
-        assert_eq!(step(&t, "project").outcome, Outcome::Refused, "project");
+        assert_eq!(step(&t, "project").outcome, Outcome::Ready, "project");
         // The tick is the clock of the subscriptions held as sessions (ARCHITECT round 5
         // Q-L3B-K6-HTTP (a)): it asks to run again a poll interval on (250 ms).
         assert_eq!(
@@ -2169,9 +2169,15 @@ mod both_ways {
         if c.outcome == Outcome::Ready {
             let base = arena.as_ptr() as usize;
             let view = j.out.view;
-            let span_of = |a: AbiStr| Span {
-                offset: u32::try_from(a.ptr as usize - base).expect("in the arena"),
-                len: u32::try_from(a.len).expect("small"),
+            // A string the view leaves unset (NULL) reads as empty, as a span absent from the arena.
+            let span_of = |a: AbiStr| {
+                if a.ptr.is_null() {
+                    return Span { offset: 0, len: 0 };
+                }
+                Span {
+                    offset: u32::try_from(a.ptr as usize - base).expect("in the arena"),
+                    len: u32::try_from(a.len).expect("small"),
+                }
             };
             s.detail = format!(
                 "messages={} chars={} flags={} pool={:?} dialect={}",
@@ -2181,7 +2187,9 @@ mod both_ways {
                 at(&arena, span_of(view.pool)),
                 at(&arena, span_of(view.ingress_dialect)),
             );
-            s.reply = at(&arena, j.out.body).into_bytes();
+            if j.out.body.offset != busbar_contract::abi::plane::SPAN_ABSENT {
+                s.reply = at(&arena, j.out.body).into_bytes();
+            }
             for turn in turns.iter().take(j.out.prompt.messages_len) {
                 s.fields.push((
                     format!("turn:{}", at(&arena, span_of(turn.role))),
@@ -2197,7 +2205,9 @@ mod both_ways {
     }
 
     /// `project`: a call is one turn of tool arguments named by the plane, with its
-    /// `{tool, arguments}` body; a listing carries no invocation.
+    /// `{tool, arguments}` body, its view's entry the registered server the tool is served by (the
+    /// entry a gate-first plane's hooks are attached to); a listing carries no invocation and
+    /// projects an empty view.
     #[test]
     fn a_call_projects_its_invocation_for_the_hooks() {
         let t = relay_script(&linked(&served(ALL)));
@@ -2209,7 +2219,7 @@ mod both_ways {
         assert_eq!(
             call.detail,
             format!(
-                "messages=1 chars={} flags={} pool=\"\" dialect=mcp",
+                "messages=1 chars={} flags={} pool=\"fs\" dialect=mcp",
                 shape.text_chars,
                 busbar_contract::abi::hook::REQUEST_HAS_TOOLS
             )
@@ -2218,7 +2228,12 @@ mod both_ways {
             document(&call.reply),
             json!({ "tool": "fs_read_file", "arguments": { "path": "/a" } })
         );
-        assert_eq!(step(&t, "project list").outcome, Outcome::Refused);
+        let list = step(&t, "project list");
+        assert_eq!(list.outcome, Outcome::Ready);
+        assert!(
+            list.reply.is_empty() && list.fields.is_empty(),
+            "a listing projects no invocation and no turn: {list:?}"
+        );
     }
 
     /// `project`'s PROMPT VIEW is the served engine's projection of an invocation: one `user` turn,

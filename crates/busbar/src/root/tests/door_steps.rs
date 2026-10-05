@@ -1113,7 +1113,7 @@ mod tool_door {
         }
 
         /// [`Self::new`], its kernel `App` configured further by `configure` before it is built.
-        fn with(
+        pub(super) fn with(
             instance: &'static str,
             port: u16,
             allowed_pools: Option<Vec<String>>,
@@ -1261,6 +1261,22 @@ mod tool_door {
                 journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
             };
             let doors = [(instance.to_string(), plane)];
+            // THE KERNEL'S HOOK STAGE over this rig's generation (the App built below): the plane's
+            // tail states its hook order, and the stage binds the deployment's per-entry hooks.
+            let live_app: Arc<std::sync::OnceLock<Arc<busbar_kernel::state::App>>> = Arc::default();
+            let stage = crate::root::serve::HookStage {
+                host: {
+                    let live_app = Arc::clone(&live_app);
+                    Arc::new(move || {
+                        busbar_kernel::plane_host::engine_host(
+                            live_app
+                                .get()
+                                .expect("the rig's App is built before any unit"),
+                        )
+                    })
+                },
+                gov: Arc::clone(&gov),
+            };
             let mut served = compose_planes(
                 &doors,
                 &dispatcher,
@@ -1269,6 +1285,7 @@ mod tool_door {
                 Some(PUBLIC_URL),
                 &plane_money,
                 Some(&egress),
+                Some(&stage),
             )
             .expect("the door plane composes");
             let _ = caller;
@@ -1287,6 +1304,7 @@ mod tool_door {
                     .cost(CostModel::flat(1)),
             )
             .build();
+            let _ = live_app.set(Arc::clone(&app));
             // The kernel re-resolves each unit's principal over this generation, as the root
             // attaches it over its live snapshot.
             if let Some(kernel) = late.kernel() {
@@ -2285,6 +2303,7 @@ mod tool_door {
                 public_url,
                 &money,
                 None,
+                None,
             )
             .expect("the door plane composes")
         };
@@ -2326,6 +2345,7 @@ mod tool_door {
                 &sections,
                 None,
                 &money,
+                None,
                 None,
             )
             .expect("the door plane composes");
@@ -2433,7 +2453,7 @@ mod door_boundary {
     use crate::root::serve::planes_tests::{Published, PUBLISHING};
 
     /// The mcp door's registry row, folded from its Statement as the composition root folds it.
-    fn row() -> &'static PlaneDecl {
+    pub(super) fn row() -> &'static PlaneDecl {
         use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
         busbar_kernel::plane::door::fold(
             registration(linked_probe(
@@ -2448,7 +2468,7 @@ mod door_boundary {
     /// The door's row in the process's plane registry, as the composition root installs it beside
     /// the linked rows (a registration, not an isolation: the served request reads the registry on
     /// another worker while the test awaits it).
-    fn registry(row: &'static PlaneDecl) {
+    pub(super) fn registry(row: &'static PlaneDecl) {
         busbar_kernel::plane::registry::register_test_plane(row);
     }
 
@@ -3912,5 +3932,363 @@ mod task_continuation {
             done["result"]["result"]["content"][0]["text"], "from the server",
             "{done}"
         );
+    }
+}
+
+/// THE HOOK PARITY BATTERY ON THE DRIVER (BUSBAR-1.6.0.md Part 3 section 12 "Hooks": the hook stages
+/// run in the order the previous release used for that plane; the plane's tail states the gate-first
+/// order, SEAM-4c). The served engine's mcp hook battery (busbar-mcp `hook_gate_tests`,
+/// `hook_tap_tests`), each scenario driven through the door's composition: the same hook documents
+/// (`kind: gate` on the hermetic test cdylib), the same attaches (`tools.hooks`, the section-level
+/// list every server takes), the same verdicts, read off the far end the door dials.
+#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+mod hook_parity {
+    use super::tool_door::{send_as, surface, tool_server, Footing, Rig};
+    use crate::root::serve::planes_tests::{Published, PUBLISHING};
+
+    /// A `kind: gate` on the hermetic test cdylib, `prompt` the grant it holds (the served
+    /// battery's `gate()` / `rewrite()` documents, as an operator writes them).
+    fn gate(prompt: &str, settings: serde_json::Value) -> busbar_kernel::config::HookCfg {
+        serde_json::from_value(serde_json::json!({
+            "kind": "gate",
+            "module": "test-hook",
+            "timeout_ms": 10_000,
+            "on_error": "weighted",
+            "prompt": prompt,
+            "user": "ro",
+            "priority": 0,
+            "settings": settings,
+            "global": false,
+            "default": false,
+            "signals": [],
+            "groups": [],
+            "phase": [],
+        }))
+        .expect("a hook document")
+    }
+
+    /// The env that loads the test cdylib as `test-hook` (`prompt: rw`, `user: ro`). Its absence is
+    /// a hard failure: with no gate to load every assertion here is vacuous.
+    fn hook_env() -> busbar_kernel::hooks::HookEnv {
+        busbar_kernel::test_support::test_hook_env(
+            &["test-hook"],
+            busbar_plugin_loader::sign::HookNeeds {
+                prompt: busbar_plugin_loader::sign::NeedLevel::Rw,
+                user: busbar_plugin_loader::sign::NeedLevel::Ro,
+            },
+        )
+        .expect(
+            "the busbar-hook-test-plugin cdylib is not built; this battery cannot be skipped. \
+             Build it: `cargo build -p busbar-hook-test-plugin`.",
+        )
+    }
+
+    /// The door composed as `instance` against the server on `port`, `hooks` (name, document) all
+    /// attached section-level (`tools.hooks`).
+    fn rig(
+        instance: &'static str,
+        port: u16,
+        hooks: Vec<(&'static str, busbar_kernel::config::HookCfg)>,
+    ) -> Rig {
+        let env = hook_env();
+        // The door's folded row in the process's plane registry, as the composition root installs
+        // it: the deployment's per-entry hooks are resolved under the plane it names.
+        super::door_boundary::registry(super::door_boundary::row());
+        Rig::with(
+            instance,
+            port,
+            None,
+            None,
+            None,
+            Footing::own(),
+            &move |mut app| {
+                if hooks.is_empty() {
+                    return app;
+                }
+                // The section-level list is combined onto every registered server's own (the rig's
+                // one server, `fs`, attaches none of its own).
+                app.set_container_hooks(
+                    surface("plane_key"),
+                    vec![("fs".to_string(), Vec::new())],
+                    hooks.iter().map(|(n, _)| (*n).to_string()).collect(),
+                );
+                let mut app = app.hook_env(env.clone());
+                for (name, cfg) in &hooks {
+                    app = app.hook(name, cfg.clone());
+                }
+                app
+            },
+        )
+    }
+
+    /// A `tools/call` of the one approved tool with `arguments`.
+    fn call(arguments: serde_json::Value) -> String {
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 30, "method": "tools/call",
+            "params": {
+                "name": "fs_read_file", "arguments": arguments,
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": surface("protocol_version"),
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                },
+            },
+        })
+        .to_string()
+    }
+
+    /// The `tools/call` requests the server heard, as their raw bytes.
+    fn calls_heard(heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -> Vec<String> {
+        std::iter::from_fn(|| heard.try_recv().ok())
+            .filter(|r| r.contains("\"tools/call\""))
+            .collect()
+    }
+
+    /// `tools.hooks: [reject-all]` refuses a tools/call with the hook's own status and words, the
+    /// server never reached; the identical deployment with no hook serves it (the control).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tools_hooks_reject_all_rejects_a_tools_call() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-hook-reject-all";
+        let _published = Published(instance);
+        let body = call(serde_json::json!({ "path": "/etc/hosts" }));
+
+        let (port, mut heard) = tool_server().await;
+        let control = rig(instance, port, Vec::new());
+        let (status, answer) = send_as(
+            &control.router,
+            Some(&control.token),
+            &body,
+            "tools/call",
+            Some("fs_read_file"),
+        )
+        .await;
+        assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&answer));
+        assert_eq!(
+            calls_heard(&mut heard).len(),
+            1,
+            "the control reached the server"
+        );
+        drop(control);
+
+        let gated = rig(
+            instance,
+            port,
+            vec![(
+                "reject-all",
+                gate(
+                    "ro",
+                    serde_json::json!({
+                        "raw_decide_reply": {"reject": {"status": 403, "message": "no tool calls today"}}
+                    }),
+                ),
+            )],
+        );
+        let (status, answer) = send_as(
+            &gated.router,
+            Some(&gated.token),
+            &body,
+            "tools/call",
+            Some("fs_read_file"),
+        )
+        .await;
+        assert_eq!(status.as_u16(), 403, "{}", String::from_utf8_lossy(&answer));
+        let answer: serde_json::Value = serde_json::from_slice(&answer).expect("JSON-RPC");
+        assert_eq!(
+            answer["error"]["message"], "no tool calls today",
+            "{answer}"
+        );
+        assert!(
+            calls_heard(&mut heard).is_empty(),
+            "a gate that rejects after the call went out stopped nothing"
+        );
+    }
+
+    /// What the gate sees is the call's ARGUMENTS: a screen keyed on a token found only inside
+    /// them rejects, and a clean call is served.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mcp_content_reaches_the_gate() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-hook-content";
+        let _published = Published(instance);
+        let (port, mut heard) = tool_server().await;
+        let rig = rig(
+            instance,
+            port,
+            vec![(
+                "screen",
+                gate(
+                    "ro",
+                    serde_json::json!({ "reject_if_contains": "/etc/shadow" }),
+                ),
+            )],
+        );
+        let (status, answer) = send_as(
+            &rig.router,
+            Some(&rig.token),
+            &call(serde_json::json!({ "path": "/etc/hosts" })),
+            "tools/call",
+            Some("fs_read_file"),
+        )
+        .await;
+        assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&answer));
+        let (status, answer) = send_as(
+            &rig.router,
+            Some(&rig.token),
+            &call(serde_json::json!({ "path": "/etc/shadow" })),
+            "tools/call",
+            Some("fs_read_file"),
+        )
+        .await;
+        assert_eq!(
+            status.as_u16(),
+            403,
+            "the gate's verdict was driven by the arguments: {}",
+            String::from_utf8_lossy(&answer)
+        );
+        assert_eq!(
+            calls_heard(&mut heard).len(),
+            1,
+            "only the clean call went out"
+        );
+    }
+
+    /// A `prompt: rw` rewrite replaces the call's arguments before the server sees them: the
+    /// caller's original value appears nowhere on the wire.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_rewrite_hook_edits_the_tool_call_arguments_before_they_go_upstream() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-hook-rewrite";
+        let _published = Published(instance);
+        let (port, mut heard) = tool_server().await;
+        let rig = rig(
+            instance,
+            port,
+            vec![(
+                "rewrite",
+                gate(
+                    "rw",
+                    serde_json::json!({ "raw_transform_reply": {
+                        "rewrite": { "messages": [
+                            { "role": "user", "content": { "path": "/srv/rewritten-by-hook" } }
+                        ] }
+                    } }),
+                ),
+            )],
+        );
+        let (status, answer) = send_as(
+            &rig.router,
+            Some(&rig.token),
+            &call(serde_json::json!({ "path": "/etc/hosts" })),
+            "tools/call",
+            Some("fs_read_file"),
+        )
+        .await;
+        assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&answer));
+        let wire = calls_heard(&mut heard);
+        assert_eq!(wire.len(), 1, "one call went out");
+        assert!(
+            wire[0].contains("/srv/rewritten-by-hook") && !wire[0].contains("/etc/hosts"),
+            "the server received the arguments the hook rewrote them to: {}",
+            wire[0]
+        );
+    }
+
+    /// A `prompt: rw` gate that screens may also reject (reject > rewrite), on the arguments, at
+    /// its own status, before the server is reached.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_rewrite_gate_can_reject_on_the_arguments_it_screens() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-hook-rw-screen";
+        let _published = Published(instance);
+        let (port, mut heard) = tool_server().await;
+        let rig = rig(
+            instance,
+            port,
+            vec![(
+                "screen",
+                gate(
+                    "rw",
+                    serde_json::json!({ "reject_if_contains": "/etc/shadow", "reject_status": 451 }),
+                ),
+            )],
+        );
+        let (status, _) = send_as(
+            &rig.router,
+            Some(&rig.token),
+            &call(serde_json::json!({ "path": "/etc/hosts" })),
+            "tools/call",
+            Some("fs_read_file"),
+        )
+        .await;
+        assert_eq!(status.as_u16(), 200, "clean arguments are served");
+        let (status, answer) = send_as(
+            &rig.router,
+            Some(&rig.token),
+            &call(serde_json::json!({ "path": "/etc/shadow" })),
+            "tools/call",
+            Some("fs_read_file"),
+        )
+        .await;
+        assert_eq!(status.as_u16(), 451, "{}", String::from_utf8_lossy(&answer));
+        assert_eq!(
+            calls_heard(&mut heard).len(),
+            1,
+            "the rejected call never went out"
+        );
+    }
+
+    /// A rewrite hook that panics is the seam's own failed verdict: `on_error: weighted` serves the
+    /// call with the caller's original arguments; `on_error: reject` refuses it at the seam's
+    /// required-hook status, nothing dispatched.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hook_that_panics_is_the_seams_own_failed_verdict() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-hook-panic";
+        let _published = Published(instance);
+        let body = call(serde_json::json!({ "path": "/etc/hosts" }));
+        let (port, mut heard) = tool_server().await;
+        let weighted = rig(
+            instance,
+            port,
+            vec![(
+                "panicky",
+                gate("rw", serde_json::json!({ "panic_transform": true })),
+            )],
+        );
+        let (status, answer) = send_as(
+            &weighted.router,
+            Some(&weighted.token),
+            &body,
+            "tools/call",
+            Some("fs_read_file"),
+        )
+        .await;
+        assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&answer));
+        let wire = calls_heard(&mut heard);
+        assert!(
+            wire.len() == 1 && wire[0].contains("/etc/hosts"),
+            "served with the caller's original arguments: {wire:?}"
+        );
+        drop(weighted);
+
+        let mut required = gate("rw", serde_json::json!({ "panic_transform": true }));
+        required.on_error =
+            serde_json::from_value(serde_json::json!("reject")).expect("an on_error disposition");
+        let required = rig(instance, port, vec![("panicky-required", required)]);
+        let (status, body) = send_as(
+            &required.router,
+            Some(&required.token),
+            &body,
+            "tools/call",
+            Some("fs_read_file"),
+        )
+        .await;
+        assert_eq!(
+            status.as_u16(),
+            busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+            "a load-bearing hook that panicked refuses the call: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert!(calls_heard(&mut heard).is_empty(), "nothing was dispatched");
     }
 }

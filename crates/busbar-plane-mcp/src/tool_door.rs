@@ -48,7 +48,8 @@ use busbar_contract::abi::plane::{
     PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, ProjectIn, ProjectOut, RecordWrite, RefusalIn,
     RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_REQUIRED,
-    RECORD_PUT, REFUSAL_ARRIVE, ROUTE_DIRECT, ROUTE_POOL, UNITS_REPORTED, VERDICT_RETRY,
+    RECORD_PUT, REFUSAL_ARRIVE, REFUSAL_GATE, ROUTE_DIRECT, ROUTE_POOL, UNITS_REPORTED,
+    VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::life::Refusal;
@@ -663,6 +664,9 @@ const FORBIDDEN_ORIGIN_TEXT: &str = r#"{"origin":"forbidden"}"#;
 
 /// The head field a browser names its origin in.
 const ORIGIN: &str = "origin";
+
+/// The head field a caller names its session in, for an incremental gate scan.
+const SESSION_FIELD: &str = "x-session-id";
 
 /// What a refused arrival said.
 enum Words {
@@ -2143,7 +2147,10 @@ slot!(
                     id: unit_id.clone(),
                     code: crate::codec::CODE_REFUSED,
                     message: message.to_string(),
-                    data: None,
+                    // A HOOK'S VETO carries the served engine's reason (`hook_rejected`).
+                    data: (given.cause == REFUSAL_GATE).then(|| {
+                        serde_json::json!({ "reason": busbar_contract::vocab::REASON_HOOK_REJECTED })
+                    }),
                 }
             };
             (0, refusal.body(), false)
@@ -2594,16 +2601,58 @@ slot!(
     /// ([`crate::call::rewritten`]) is applied first: the rewritten request is answered in
     /// `rewritten` (the body the kernel keeps and re-pushes from then on) and is the body projected.
     /// Any other request carries no invocation for a hook to read: REFUSED.
-    Project, ProjectIn, ProjectOut, |_, input, mut out| {
+    Project, ProjectIn, ProjectOut, |instance, input, mut out| {
         let body = input.field(|i| &i.body).bytes();
         let rewrite = input.field(|i| &i.rewrite).bytes();
         let rewritten = (!rewrite.is_empty())
             .then(|| crate::call::rewritten(body, rewrite))
             .flatten();
         let Some(invocation) = crate::call::invocation(rewritten.as_deref().unwrap_or(body)) else {
-            return Outcome::Refused;
+            // ANY OTHER REQUEST carries no invocation for a hook to read, and names no entry its
+            // hooks are attached to: an empty view (the served engine fired no hook on it), never a
+            // refusal (a bound hook stage asks every routed unit).
+            out.set(
+                |o| &o.body,
+                busbar_contract::abi::mechanism::call::Span {
+                    offset: busbar_contract::abi::plane::SPAN_ABSENT,
+                    len: 0,
+                },
+            );
+            return Outcome::Ready;
         };
+        // AN APPLIED REWRITE IS THE UNIT'S REQUEST FROM NOW ON (`ProjectIn::unit`): the call the
+        // door admits and relays is decided from the rewritten params, never the caller's.
+        if let (Some(rewritten), Some(plane)) = (rewritten.as_deref(), instance.get()) {
+            let params = serde_json::from_slice::<Value>(rewritten)
+                .ok()
+                .and_then(|v| v.get("params").cloned());
+            plane.units.with(&input.get().unit, |unit| {
+                if let Some(unit) = unit {
+                    unit.params = params;
+                }
+            });
+        }
         let shape = busbar_contract::ir::facts::IrFacts::shape(&invocation);
+        // THE ENTRY the call's hooks are attached to: the registered server its published tool is
+        // served by (the served engine fired `tools.hooks` and `tools.<server>.hooks` by server).
+        let entry = instance
+            .get()
+            .and_then(McpDoor::current)
+            .and_then(|held| held.catalogue.tool(&invocation.tool).map(|t| t.server.clone()))
+            .unwrap_or_default();
+        // THE SESSION an incremental gate scan is keyed on: the caller's `x-session-id`, as the
+        // served engine read it; none when the caller sent none.
+        let session = input
+            .fields()
+            .iter()
+            .find(|f| {
+                f.field(|f| &f.name)
+                    .as_str()
+                    .is_ok_and(|n| n.eq_ignore_ascii_case(SESSION_FIELD))
+            })
+            .and_then(|f| f.field(|f| &f.value).as_str().ok())
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
         let projected = serde_json::to_vec(&serde_json::json!({
             "tool": invocation.tool,
             "arguments": invocation.arguments,
@@ -2615,7 +2664,8 @@ slot!(
             .collect();
         let (mut arena, signals, mut messages) =
             (input.arena_buf(), input.signals_buf(), input.messages_buf());
-        let pool = arena.span(b"");
+        let pool = arena.span(entry.as_bytes());
+        let session = session.as_deref().map(|s| arena.span(s.as_bytes()));
         let dialect = arena.span(crate::PLANE_KEY.as_bytes());
         let body = arena.span(&projected);
         let rewritten = rewritten.as_deref().map(|r| arena.span(r));
@@ -2636,6 +2686,9 @@ slot!(
             return Outcome::Failed;
         }
         out.host_str(|o| &o.view.pool, &arena, pool);
+        if let Some(session) = session {
+            out.host_octets(|o| &o.view.session, &arena, session);
+        }
         out.host_str(|o| &o.view.ingress_dialect, &arena, dialect);
         out.host_list(|o| &o.view.signals, |o| &o.view.signals_len, &signals);
         out.set(|o| &o.view.message_count, shape.turn_count as u64);

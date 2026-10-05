@@ -31,3 +31,5 @@ scope_server = mcp_server
 scope_tool = mcp_tool
 # The endpoint block the door owns beside its declaring section (door.rs ENDPOINT_SECTION).
 endpoint_section = mcp
+# The registry key the plane files its per-entry hooks under (lib.rs PLANE_KEY).
+plane_key = mcp

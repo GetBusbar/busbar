@@ -332,7 +332,10 @@ pub const TAIL: &PlaneTail = &PlaneTail {
         size: std::mem::size_of::<PlaneTail>() as u32,
         _reserved: 0,
     },
-    flags: 0,
+    // THE GATE-FIRST HOOK ORDER (spec Part 3 section 12 "Hooks"; ARCHITECT ruling on the mcp
+    // fold): the served engine ran an entry's decision gates over the invocation BEFORE its
+    // rewrite chain (`tools.hooks` / `tools.<server>.hooks`), and the door's units keep that order.
+    flags: busbar_contract::abi::plane::TAIL_HOOKS_GATED,
     ingress: INGRESS_REQUEST_RESPONSE | INGRESS_RESPONSE_STREAM,
     dispatch_shape: SHAPE_PIECEWISE,
     _reserved: 0,
