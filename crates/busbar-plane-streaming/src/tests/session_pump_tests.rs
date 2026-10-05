@@ -5,6 +5,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use bytes::Bytes;
+
 use super::*;
 use crate::codec::ir::codec::OpenAiRealtimeCodec;
 use crate::governed::{GovernedCalls, ReplyRefusal};

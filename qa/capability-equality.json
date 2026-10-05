@@ -832,8 +832,7 @@
     {
       "capability": "breaker-trip",
       "plane": "voice-client",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/breaker_tests.rs::a_hard_down_provider_records_into_the_core_cell_and_opens_it",
+      "state": "missing",
       "root": {
         "state": "none",
         "leg": "root-voice",
@@ -853,8 +852,7 @@
     {
       "capability": "breaker-fastfail",
       "plane": "voice-client",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/breaker_tests.rs::a_tripped_provider_cell_refuses_before_the_dial",
+      "state": "missing",
       "root": {
         "state": "proven",
         "leg": "root-voice",
@@ -895,7 +893,7 @@
       "capability": "hooks-tap",
       "plane": "voice-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_session_open_params_before_the_provider_dial",
+      "test": "crates/busbar-plane-streaming/tests/conformance.rs::a_session_open_is_projected_for_the_hooks_and_a_rewrite_patches_it",
       "root": {
         "state": "none",
         "leg": "root-voice",
@@ -906,7 +904,7 @@
       "capability": "hooks-tap",
       "plane": "voice-server",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_session_open_params_before_the_provider_dial",
+      "test": "crates/busbar-plane-streaming/tests/conformance.rs::a_session_open_is_projected_for_the_hooks_and_a_rewrite_patches_it",
       "root": {
         "state": "none",
         "leg": "root-voice",
@@ -916,8 +914,7 @@
     {
       "capability": "hooks-gate",
       "plane": "voice-client",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_gate_tests.rs::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade",
+      "state": "missing",
       "root": {
         "state": "none",
         "leg": "root-voice",
@@ -927,8 +924,7 @@
     {
       "capability": "hooks-gate",
       "plane": "voice-server",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_gate_tests.rs::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade",
+      "state": "missing",
       "root": {
         "state": "none",
         "leg": "root-voice",
@@ -938,8 +934,7 @@
     {
       "capability": "audit-chain",
       "plane": "voice-client",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/audit_chain_tests.rs::an_opened_voice_session_seals_a_genesis_event_and_survives_reattach_on_the_durable_chain",
+      "state": "missing",
       "root": {
         "state": "proven",
         "leg": "root-voice",
@@ -949,8 +944,7 @@
     {
       "capability": "audit-chain",
       "plane": "voice-server",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/audit_chain_tests.rs::an_inbound_session_open_lands_a_sealed_genesis_event_the_front_door_wrote",
+      "state": "missing",
       "root": {
         "state": "proven",
         "leg": "root-voice",
@@ -960,8 +954,7 @@
     {
       "capability": "governance-budget",
       "plane": "voice-client",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/governance_budget_tests.rs::a_session_lease_settled_past_its_cap_hard_closes_and_refuses_further_spend",
+      "state": "missing",
       "root": {
         "state": "proven",
         "leg": "root-voice",
@@ -971,8 +964,7 @@
     {
       "capability": "governance-budget",
       "plane": "voice-server",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/governance_budget_tests.rs::the_session_lease_bills_the_presenting_key_and_refuses_past_the_cap_with_a_hard_close",
+      "state": "missing",
       "root": {
         "state": "proven",
         "leg": "root-voice",
@@ -1002,8 +994,7 @@
     {
       "capability": "metrics",
       "plane": "voice-client",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/metrics_tests.rs::a_voice_session_open_increments_the_plane_labelled_counter",
+      "state": "missing",
       "root": {
         "state": "proven",
         "leg": "root-voice",
@@ -1013,8 +1004,7 @@
     {
       "capability": "metrics",
       "plane": "voice-server",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/metrics_tests.rs::a_voice_session_open_increments_the_plane_labelled_counter",
+      "state": "missing",
       "root": {
         "state": "proven",
         "leg": "root-voice",
@@ -1064,8 +1054,7 @@
     {
       "capability": "egress-auth",
       "plane": "voice-client",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/egress_tests.rs::the_provider_dial_carries_the_planned_credential_and_never_a_caller_token",
+      "state": "missing",
       "root": {
         "state": "none",
         "leg": "root-voice",

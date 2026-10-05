@@ -21,8 +21,6 @@
 
 use std::collections::HashMap;
 
-use bytes::Bytes;
-
 use crate::codec::ir::codec::{DecodeState, DuplexReader, DuplexWriter, WireEvent};
 use crate::codec::ir::config::SessionConfig;
 use crate::codec::ir::control::IrDuplexControl;
