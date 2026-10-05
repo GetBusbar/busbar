@@ -977,6 +977,17 @@ pub fn compose_egress(
         conns
             .anchor(caller, route.need, &route.base_url, &route.anchors)
             .map_err(|e| format!("member '{entry}': its trust anchors could not be sealed: {e}"))?;
+        // THE REGISTRATION'S PRIVATE REACH, sealed for this registration alone (SEAM-4k): the
+        // member route's dials name it, and no other registration at the same authority holds it.
+        conns
+            .seal_reach(
+                caller,
+                route.need,
+                &route.provider,
+                &route.base_url,
+                route.anchors.private_reach,
+            )
+            .map_err(|e| format!("member '{entry}': its private reach could not be sealed: {e}"))?;
         let destination = busbar_contract::dest::DestinationId::new(id);
         let name = plane_lane(&facts.plane, entry);
         members.insert(entry.clone(), Member::new(destination, name.clone(), 1));

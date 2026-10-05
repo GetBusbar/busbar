@@ -854,6 +854,9 @@ impl EgressFarEnd<'_> {
                 method: &request.verb,
                 head_target: path.as_bytes(),
                 within: &[],
+                // The registration the member route reaches: what the host sealed for it alone
+                // (its private reach) applies to this dial.
+                member: &route.provider,
             },
         );
         let now_ms = e.clock.now_millis();
