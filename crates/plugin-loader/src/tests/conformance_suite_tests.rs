@@ -128,7 +128,7 @@ mod suite_conns {
     use busbar_contract::conn::{NeedId, OpenDesc};
 
     use super::super::{bind, dispatcher, Subject};
-    use crate::dispatch::{load_linked, Bind, LinkedRow, NO_BLOB};
+    use crate::dispatch::{load_linked, Bind, ConnTable, LinkedRow, NO_BLOB};
     use crate::dispatch_test_plugin as plug;
     use crate::dispatch_tests::TestKind;
 
@@ -210,7 +210,7 @@ mod suite_conns {
         let s = subject(plug::busbar_plugin_door);
         assert!(s.needs().is_empty());
         assert!(s.conns(&d).is_none());
-        assert!(s.bind(&d, "plain").conns.is_none());
+        assert!(matches!(s.bind(&d, "plain").conns, ConnTable::NoNeeds));
     }
 
     #[test]
@@ -230,12 +230,12 @@ mod suite_conns {
         let d = dispatcher();
         let s = subject(tcp_door);
         assert_eq!(s.needs().len(), 1);
-        assert!(s.bind(&d, "a").conns.is_some());
+        assert!(matches!(s.bind(&d, "a").conns, ConnTable::Host(_)));
         let table = s.conns(&d).expect("a tcp need is handed a table");
         let p = load_linked::<TestKind>(
             &LinkedRow::of(tcp_door).expect("the restated door states its Statement"),
             Bind {
-                conns: Some(Arc::clone(&table)),
+                conns: crate::dispatch::ConnTable::Host(Arc::clone(&table)),
                 ..bind(&d, "networked")
             },
         )

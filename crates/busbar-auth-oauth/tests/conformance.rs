@@ -91,7 +91,8 @@ fn bind(folds: &Arc<Folds>, dispatcher: &Dispatcher) -> Bind {
         max_inflight_cap: 64,
         sink: folds.clone(),
         dispatcher: dispatcher.adopter(),
-        conns: None,
+        // These rows never dial: the door's needs are not declared, bound as a probe.
+        conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
     }
 }
 
@@ -691,7 +692,9 @@ mod mint_door {
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
-                conns: Some(Arc::clone(&table) as Arc<dyn DeclaredConns>),
+                conns: busbar_plugin_loader::dispatch::ConnTable::Host(
+                    Arc::clone(&table) as Arc<dyn DeclaredConns>
+                ),
             },
         )
         .expect("the linked door binds on the connection table");

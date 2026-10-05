@@ -361,7 +361,7 @@ fn store_axis() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis> {
     std::sync::Arc::new(crate::root::loader::store_v3::DoorStoreAxis {
         dispatcher: crate::root::dispatch::dispatcher(),
         logs: crate::root::boot::plugin_logs().clone(),
-        conns: Some(conns),
+        conns: crate::root::loader::dispatch::ConnTable::Host(conns),
         mint: busbar_kernel::door::op_id,
     })
 }

@@ -81,7 +81,7 @@ pub(super) fn bound(
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: None,
+            conns: crate::root::loader::dispatch::ConnTable::NoNeeds,
         },
     )
     .expect("the dropped-in door binds");

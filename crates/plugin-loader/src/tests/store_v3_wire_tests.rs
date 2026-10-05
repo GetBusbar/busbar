@@ -285,7 +285,7 @@ fn open_over(
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: Some(conns),
+            conns: crate::dispatch::ConnTable::Host(conns),
         },
     )
     .expect("the door loads");
@@ -702,7 +702,7 @@ fn a_bound_covers_the_handshake_after_the_dial() {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: Some(conns),
+            conns: crate::dispatch::ConnTable::Host(conns),
         },
     )
     .expect("the door loads");

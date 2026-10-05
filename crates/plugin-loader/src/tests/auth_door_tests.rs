@@ -311,7 +311,7 @@ fn two_instances_of_one_plugin_are_two_callers() {
             max_inflight_cap: 8,
             sink: sink.bind(),
             dispatcher: d.adopter(),
-            conns: None,
+            conns: crate::dispatch::ConnTable::NoNeeds,
         };
         let row = LinkedRow::of(judge::door).unwrap();
         let p = load_linked::<crate::dispatch::kinds::auth::Auth>(&row, bind).unwrap();
@@ -384,7 +384,7 @@ async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
         max_inflight_cap: 1,
         sink: sink.bind(),
         dispatcher: d.adopter(),
-        conns: None,
+        conns: crate::dispatch::ConnTable::NoNeeds,
     };
     let row = LinkedRow::of(judge::door).unwrap();
     let p = load_linked::<crate::dispatch::kinds::auth::Auth>(&row, bind).unwrap();

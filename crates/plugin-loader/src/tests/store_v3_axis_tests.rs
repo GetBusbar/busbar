@@ -37,7 +37,7 @@ fn axis() -> DoorStoreAxis {
         dispatcher: Arc::new(Dispatcher::new(DispatchConfig::default())),
         logs: PluginLogConfig::from_words(None, None, &none, None, None)
             .expect("the plugins.logs defaults resolve"),
-        conns: None,
+        conns: crate::dispatch::ConnTable::NoNeeds,
         mint,
     }
 }

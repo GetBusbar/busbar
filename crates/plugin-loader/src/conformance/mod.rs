@@ -79,8 +79,8 @@ use busbar_contract::conn::DeclaredConns;
 
 use crate::dispatch::{
     in_head, load_dropped, load_linked, out_head, rendering_of, rendering_of_library, Bind, Called,
-    DispatchConfig, Dispatcher, Frame, InFrame, Kind, LinkedRow, LoadError, NoSink, OutFrame,
-    Plugin,
+    ConnTable, DispatchConfig, Dispatcher, Frame, InFrame, Kind, LinkedRow, LoadError, NoSink,
+    OutFrame, Plugin,
 };
 use crate::tcp_conns::TcpConns;
 
@@ -212,12 +212,18 @@ impl Subject {
         (!needs.is_empty() && served).then(|| Arc::new(table) as Arc<dyn DeclaredConns>)
     }
 
-    /// The bind the kernel makes for this plugin on `d` ([`bind`]), with the leg's connection
-    /// table ([`Subject::conns`]).
+    /// The bind the kernel makes for this plugin on `d` ([`bind`]), SERVING over the leg's
+    /// connection table ([`Subject::conns`]); a door that declares no need serves with none. (A
+    /// need over a scheme the test table does not serve binds as a probe: no table, not refused.)
     #[must_use]
     pub fn bind(&self, d: &Dispatcher, instance: &str) -> Bind {
+        let conns = match self.conns(d) {
+            Some(table) => ConnTable::Host(table),
+            None if self.needs().is_empty() => ConnTable::NoNeeds,
+            None => ConnTable::Probe,
+        };
         Bind {
-            conns: self.conns(d),
+            conns,
             ..bind(d, instance)
         }
     }
@@ -297,7 +303,8 @@ pub fn dispatcher() -> Arc<Dispatcher> {
 }
 
 /// The bind the kernel makes: a label, the inflight clamp, no envelope sink, the adopting
-/// dispatcher, no connection table ([`Subject::bind`] adds the plugin's).
+/// dispatcher, SERVING with no connection table (a door that declares a need is refused;
+/// [`Subject::bind`] adds the plugin's table).
 #[must_use]
 pub fn bind(d: &Dispatcher, instance: &str) -> Bind {
     Bind {
@@ -305,7 +312,7 @@ pub fn bind(d: &Dispatcher, instance: &str) -> Bind {
         max_inflight_cap: 1024,
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
-        conns: None,
+        conns: ConnTable::NoNeeds,
     }
 }
 
