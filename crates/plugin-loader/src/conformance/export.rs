@@ -54,8 +54,8 @@ use busbar_contract::abi::mechanism::call::{
 };
 
 use super::{
-    bind, called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh,
-    release, tick, validate, Fold, Leg, Recorder, Subject,
+    called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh, release,
+    tick, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::export::Export;
 use crate::dispatch::{Bind, Diagnostic, Dropped, EnvelopeSink, Frame, Metric, Plugin, NO_BLOB};
@@ -415,7 +415,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let tape = Arc::new(Tape::default());
     let b = Bind {
         sink: tape.clone(),
-        ..bind(&d, ROOT)
+        ..s.bind(&d, ROOT)
     };
     let p = load::<Export>(s, leg, b).expect("the export door loads");
     let mut r = Recorder::new(crossings(&p));

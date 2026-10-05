@@ -57,7 +57,7 @@ use busbar_contract::records::{
 };
 use busbar_contract::store_calls::{StoreCalls, StoreFailure};
 
-use super::{bind, crossings, dispatcher, load, ready_step, Fold, Leg, Recorder, Subject};
+use super::{crossings, dispatcher, load, ready_step, Fold, Leg, Recorder, Subject};
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::kinds::store::{Store, StoreFacts};
 use crate::dispatch::LoadError;
@@ -309,7 +309,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         .expect("a runtime");
 
     let d = dispatcher();
-    let p = load::<Store>(s, leg, bind(&d, ROOT)).expect("the store door loads");
+    let p = load::<Store>(s, leg, s.bind(&d, ROOT)).expect("the store door loads");
     // The instance's crossing gate, held across `open` (which takes the plugin by value).
     let held = p.clone();
     let mut r = Recorder::new(crossings(&held));
@@ -323,7 +323,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         )
     });
     r.line("refused as another kind", 0, || {
-        let refused = load::<Hook>(s, leg, bind(&d, "wrong-kind")).err();
+        let refused = load::<Hook>(s, leg, s.bind(&d, "wrong-kind")).err();
         let right = match leg {
             Leg::Linked => matches!(refused, Some(LoadError::WrongKind { .. })),
             Leg::Dropped => matches!(refused, Some(LoadError::ManifestKind { .. })),

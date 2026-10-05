@@ -109,3 +109,162 @@ fn the_profile_guard_refuses_a_debug_build_only_when_release_was_asked_for() {
         std::env::var_os(EXPECT_RELEASE_ENV).is_some()
     );
 }
+
+// ── THE SUITE'S CONNECTION TABLE (ARCHITECT, "SUITE CONNECTIONS") ──
+//
+// The subject here is the loader's own dispatcher test door (no plugin), restated with the needs
+// each case names: the table `Subject::conns` builds is the decision under test.
+
+mod suite_conns {
+    use std::io::Read as _;
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicPtr, Ordering};
+    use std::sync::Arc;
+
+    use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_NAMED};
+    use busbar_contract::abi::mechanism::call::AbiStr;
+    use busbar_contract::abi::mechanism::door::{Door, DoorFn, Statement};
+    use busbar_contract::abi::sdk::door::abi_str;
+    use busbar_contract::conn::{NeedId, OpenDesc};
+
+    use super::super::{bind, dispatcher, Subject};
+    use crate::dispatch::{load_linked, Bind, LinkedRow, NO_BLOB};
+    use crate::dispatch_test_plugin as plug;
+    use crate::dispatch_tests::TestKind;
+
+    const NONE: AbiStr = AbiStr {
+        ptr: std::ptr::null(),
+        len: 0,
+    };
+
+    const fn need(transport: AbiStr) -> Need {
+        Need {
+            direction: DIRECTION_OUTBOUND,
+            egress_class: 0,
+            transport,
+            auth: NONE,
+            target_from: NONE,
+            trust_from: NONE,
+            details: NO_BLOB,
+            keep_response_headers: std::ptr::null(),
+            keep_response_headers_len: 0,
+            timeout_ms: 0,
+            keep_mode: KEEP_NAMED,
+            _reserved: 0,
+            deny_response_headers: std::ptr::null(),
+            deny_response_headers_len: 0,
+        }
+    }
+
+    const TCP: [Need; 1] = [need(abi_str("tcp"))];
+    const HTTP: [Need; 1] = [need(abi_str("http"))];
+    const TCP_AND_HTTP: [Need; 2] = [need(abi_str("tcp")), need(abi_str("http"))];
+
+    static TCP_DOOR: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+    static HTTP_DOOR: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+    static MIXED_DOOR: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+
+    /// The test door, its Statement declaring `needs`, stored in `slot`.
+    fn restate(slot: &AtomicPtr<Door>, needs: &'static [Need]) {
+        // SAFETY: the test door and its Statement are `'static`.
+        let real: Door = unsafe { *plug::busbar_plugin_door() };
+        let st: Statement = unsafe { *real.statement };
+        let st: &'static Statement = Box::leak(Box::new(Statement {
+            needs: needs.as_ptr(),
+            needs_len: needs.len(),
+            ..st
+        }));
+        let door = Box::into_raw(Box::new(Door {
+            statement: st,
+            ..real
+        }));
+        slot.store(door, Ordering::SeqCst);
+    }
+
+    extern "C" fn tcp_door() -> *const Door {
+        if TCP_DOOR.load(Ordering::SeqCst).is_null() {
+            restate(&TCP_DOOR, Box::leak(Box::new(TCP)));
+        }
+        TCP_DOOR.load(Ordering::SeqCst)
+    }
+    extern "C" fn http_door() -> *const Door {
+        if HTTP_DOOR.load(Ordering::SeqCst).is_null() {
+            restate(&HTTP_DOOR, Box::leak(Box::new(HTTP)));
+        }
+        HTTP_DOOR.load(Ordering::SeqCst)
+    }
+    extern "C" fn mixed_door() -> *const Door {
+        if MIXED_DOOR.load(Ordering::SeqCst).is_null() {
+            restate(&MIXED_DOOR, Box::leak(Box::new(TCP_AND_HTTP)));
+        }
+        MIXED_DOOR.load(Ordering::SeqCst)
+    }
+
+    fn subject(door: DoorFn) -> Subject {
+        Subject::new(door, "unused", "{}")
+    }
+
+    #[test]
+    fn a_door_with_no_need_is_bound_with_no_table_as_before() {
+        let d = dispatcher();
+        let s = subject(plug::busbar_plugin_door);
+        assert!(s.needs().is_empty());
+        assert!(s.conns(&d).is_none());
+        assert!(s.bind(&d, "plain").conns.is_none());
+    }
+
+    #[test]
+    fn a_need_the_table_does_not_serve_keeps_the_bind_with_no_table() {
+        let d = dispatcher();
+        for door in [http_door as DoorFn, mixed_door] {
+            let s = subject(door);
+            assert!(!s.needs().is_empty());
+            assert!(s.conns(&d).is_none(), "{:?}", s.needs());
+        }
+    }
+
+    /// A `tcp` need: each leg's bind carries a table of its own, and the instance bound over it
+    /// dials a REAL local endpoint through it under its declared need.
+    #[test]
+    fn a_tcp_need_is_bound_to_a_table_that_dials_a_real_endpoint() {
+        let d = dispatcher();
+        let s = subject(tcp_door);
+        assert_eq!(s.needs().len(), 1);
+        assert!(s.bind(&d, "a").conns.is_some());
+        let table = s.conns(&d).expect("a tcp need is handed a table");
+        let p = load_linked::<TestKind>(
+            &LinkedRow::of(tcp_door).expect("the restated door states its Statement"),
+            Bind {
+                conns: Some(Arc::clone(&table)),
+                ..bind(&d, "networked")
+            },
+        )
+        .expect("the networked door binds over the table");
+        assert!(
+            !p.inner.conns_table().is_null(),
+            "the instance holds the table's slots"
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a local endpoint");
+        let target = listener.local_addr().expect("its address").to_string();
+        let conn = table
+            .open(
+                p.instance(),
+                NeedId(0),
+                &OpenDesc {
+                    target: &target,
+                    timeout_ms: 2_000,
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("the declared need dials the endpoint");
+        table
+            .write(p.instance(), conn, b"ping", false, false)
+            .expect("the bytes go out");
+        let (mut peer, _) = listener.accept().expect("the endpoint is reached");
+        let mut got = [0_u8; 4];
+        peer.read_exact(&mut got).expect("the endpoint reads them");
+        assert_eq!(&got, b"ping");
+        table.close(p.instance(), conn).expect("closed");
+    }
+}

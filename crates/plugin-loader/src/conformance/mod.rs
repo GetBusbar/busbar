@@ -33,6 +33,14 @@
 //! * the mechanism's optional `ready` (discovery at boot) is a step of every kind's script: a door
 //!   that states none is not called (0 crossings); one that states it is awaited on a real ticket.
 //!
+//! THE CONNECTION TABLE (ARCHITECT, "SUITE CONNECTIONS"): a plugin whose Statement declares a
+//! need the table serves (`tcp`: `host:port`, `unix:/path`) is bound, on each leg, to a connection
+//! table of its own built the same way ([`Subject::conns`], the loader's test table
+//! [`TcpConns`](crate::tcp_conns::TcpConns) over the leg dispatcher's conn waker), so a networked
+//! plugin dials the REAL local endpoint its `conformance.json` settings name, through the host
+//! connector's slots, reads PENDING and is woken. A plugin that declares no need is bound with no
+//! table, as before (the loader hands a table only to a Statement with a need).
+//!
 //! THE RED ARMS, run in the plugin's own run: a perturbed pinned count is refused by the same
 //! comparator; the door restated at its kind ABI ± 1 is refused, linked (`KindAbi`) and dropped in
 //! (`ManifestKindAbi`, before `dlopen`); the door with a `ready` that fails refuses the boot with the
@@ -59,7 +67,7 @@ use busbar_contract::abi::mechanism::door::{Door, DoorFn};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
-use busbar_contract::abi::mechanism::rendering::RENDERING_MAGIC;
+use busbar_contract::abi::mechanism::rendering::{self as rendering, RENDERING_MAGIC};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut};
 
@@ -67,11 +75,14 @@ use crate::dispatch::kinds::{
     auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store::Store,
     transport::Transport,
 };
+use busbar_contract::conn::DeclaredConns;
+
 use crate::dispatch::{
     in_head, load_dropped, load_linked, out_head, rendering_of, rendering_of_library, Bind, Called,
     DispatchConfig, Dispatcher, Frame, InFrame, Kind, LinkedRow, LoadError, NoSink, OutFrame,
     Plugin,
 };
+use crate::tcp_conns::TcpConns;
 
 mod auth;
 mod export;
@@ -170,6 +181,47 @@ impl Subject {
         self.inputs.get(kind).unwrap_or(&serde_json::Value::Null)
     }
 
+    /// The needs the linked door's Statement declares (the dropped-in library states the same
+    /// Statement: [`both_ways`] proves it), in Statement order.
+    ///
+    /// # Panics
+    /// When the door's Statement does not render or read back.
+    #[must_use]
+    pub fn needs(&self) -> Vec<rendering::ReadNeed> {
+        let row =
+            LinkedRow::of(self.door).unwrap_or_else(|e| panic!("the linked door is refused: {e}"));
+        rendering::read(&row.statement)
+            .unwrap_or_else(|e| panic!("the door's Statement does not read back: {e:?}"))
+            .needs
+    }
+
+    /// THE LEG'S CONNECTION TABLE, built the same way for the linked and the dropped-in leg: the
+    /// loader's test table ([`TcpConns`]) waking a parked read's ticket through `d`'s conn waker,
+    /// when the Statement declares a need and the table serves every one it declares (`tcp`; a need
+    /// naming no transport asks for none). `None` when it declares no need (bound as before), or a
+    /// need over a scheme the table does not serve (`http`, `https`, ...: the host connector's
+    /// framing, which the test table has not; bound with no table, as before). `upgrade_secure` is
+    /// refused: the table secures no stream (it names no TLS library).
+    #[must_use]
+    pub fn conns(&self, d: &Dispatcher) -> Option<Arc<dyn DeclaredConns>> {
+        let needs = self.needs();
+        let table = TcpConns::new(d.conn_waker());
+        let served = needs
+            .iter()
+            .all(|n| n.transport.is_empty() || table.serves_scheme(&n.transport));
+        (!needs.is_empty() && served).then(|| Arc::new(table) as Arc<dyn DeclaredConns>)
+    }
+
+    /// The bind the kernel makes for this plugin on `d` ([`bind`]), with the leg's connection
+    /// table ([`Subject::conns`]).
+    #[must_use]
+    pub fn bind(&self, d: &Dispatcher, instance: &str) -> Bind {
+        Bind {
+            conns: self.conns(d),
+            ..bind(d, instance)
+        }
+    }
+
     /// Set the environment the plugin's inputs name (`inputs.env`: name → value; `null` unsets).
     pub fn apply_env(&self) {
         let Some(env) = self.inputs.get("env").and_then(|e| e.as_object()) else {
@@ -245,7 +297,7 @@ pub fn dispatcher() -> Arc<Dispatcher> {
 }
 
 /// The bind the kernel makes: a label, the inflight clamp, no envelope sink, the adopting
-/// dispatcher, no connection table.
+/// dispatcher, no connection table ([`Subject::bind`] adds the plugin's).
 #[must_use]
 pub fn bind(d: &Dispatcher, instance: &str) -> Bind {
     Bind {
@@ -757,18 +809,18 @@ pub fn red_kind_abi(s: &Subject) {
     let stated = s.stated();
     by_kind!(kind, K => {
         let d = dispatcher();
-        load::<K>(s, Leg::Linked, bind(&d, "honest-linked")).expect("the honest door loads linked");
-        load::<K>(s, Leg::Dropped, bind(&d, "honest-dropped"))
+        load::<K>(s, Leg::Linked, s.bind(&d, "honest-linked")).expect("the honest door loads linked");
+        load::<K>(s, Leg::Dropped, s.bind(&d, "honest-dropped"))
             .expect("the honest library loads dropped in");
         for (door, abi) in [(abi_up_door as DoorFn, host + 1), (abi_down_door, host.wrapping_sub(1))] {
             let want = LoadError::KindAbi { kind, door: abi, host };
             assert_eq!(rendering_of(door).err(), Some(want.clone()), "the pack tool signs no ABI {abi} door");
             let refused = LinkedRow::of(door)
-                .and_then(|row| load_linked::<K>(&row, bind(&d, "red-linked")).map(|_| ()))
+                .and_then(|row| load_linked::<K>(&row, s.bind(&d, "red-linked")).map(|_| ()))
                 .expect_err("a linked door at another kind ABI is refused");
             assert_eq!(refused, want);
             assert!(refused.to_string().contains("rebuild"), "{refused}");
-            let refused = load_dropped::<K>(&s.cdylib(), &stating_abi(&stated, abi), bind(&d, "red-dropped"))
+            let refused = load_dropped::<K>(&s.cdylib(), &stating_abi(&stated, abi), s.bind(&d, "red-dropped"))
                 .map(|_| ())
                 .expect_err("a manifest stating another kind ABI is refused");
             assert_eq!(refused, LoadError::ManifestKindAbi { stated: abi, host });
@@ -795,7 +847,7 @@ pub fn red_ready(s: &Subject) {
     by_kind!(s.kind(), K => {
         let d = dispatcher();
         let row = LinkedRow::of(ready_fails_door).expect("the restated door states its Statement");
-        let p = load_linked::<K>(&row, bind(&d, "red-ready")).expect("the restated door loads");
+        let p = load_linked::<K>(&row, s.bind(&d, "red-ready")).expect("the restated door loads");
         assert!(p.has_ready());
         let o = open(&p, &settings);
         assert_eq!(o.outcome, Outcome::Ready, "open: {}", called(&o));

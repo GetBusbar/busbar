@@ -58,8 +58,8 @@ use busbar_contract::abi::sdk::door::abi_str;
 use serde_json::Value;
 
 use super::{
-    bind, called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh,
-    tick, validate, Fold, Leg, Recorder, Subject,
+    called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh, tick,
+    validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{Called, Frame, Plugin, Recall};
@@ -470,7 +470,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let after = Request::of(&k["refresh"]["request"], order_cap);
 
     let d = dispatcher();
-    let p = load::<Hook>(s, leg, bind(&d, "hook")).expect("the hook door loads");
+    let p = load::<Hook>(s, leg, s.bind(&d, "hook")).expect("the hook door loads");
     let mut r = Recorder::new(crossings(&p));
     r.line("facts", 0, || {
         format!(

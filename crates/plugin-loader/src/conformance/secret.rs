@@ -20,8 +20,8 @@ use busbar_contract::abi::mechanism::call::{Outcome, BLOB_SECRET};
 use busbar_contract::abi::secret::{self, ResolveIn, ResolveOut};
 
 use super::{
-    bind, called, close, crossings, dispatcher, input, json, load, open, output, ready_step,
-    refresh, release, tick, validate, Fold, Leg, Recorder, Subject,
+    called, close, crossings, dispatcher, input, json, load, open, output, ready_step, refresh,
+    release, tick, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::{Frame, Plugin};
@@ -86,7 +86,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let malformed = text(&k["malformed"]);
 
     let d = dispatcher();
-    let p = load::<Secret>(s, leg, bind(&d, "secret")).expect("the secret door loads");
+    let p = load::<Secret>(s, leg, s.bind(&d, "secret")).expect("the secret door loads");
     let mut r = Recorder::new(crossings(&p));
     r.line("facts", 0, || {
         format!(

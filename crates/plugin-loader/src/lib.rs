@@ -74,7 +74,9 @@ mod stage;
 pub mod store_adapter;
 pub mod store_v3;
 pub mod tarball;
-#[cfg(any(test, feature = "test-support"))]
+/// TEST ONLY: the test connection table. Also the published conformance suite's (`conformance`):
+/// a plugin repo names this crate only as a dev-dependency, so it reaches no shipped closure.
+#[cfg(any(test, feature = "test-support", feature = "conformance"))]
 pub mod tcp_conns;
 /// TEST ONLY: the fake-call store harness the kernel's minting tests share with this crate's own.
 /// Compiled for this crate's tests and under the `test-support` feature, which only
