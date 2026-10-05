@@ -31,11 +31,7 @@ fn hook(kind: HookKind, global: bool) -> HookCfg {
 /// Lanes/store are shared (unchanged), proving the store-constraint-free subset.
 #[test]
 fn build_with_hook_registers_and_wires_global_tap() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
-    else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     assert_eq!(app.tap_hooks.len(), 0, "fixture starts with no taps");
     let next = build_with_hook(&app, "logger", hook(HookKind::Tap, true))
@@ -64,11 +60,7 @@ fn build_with_hook_registers_and_wires_global_tap() {
 /// reported `global: true`.
 #[test]
 fn build_with_hook_demotes_global_false_removes_wiring() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
-    else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     // Register a GLOBAL tap, then PUT the same name with global: false.
     let promoted =
@@ -105,11 +97,7 @@ fn build_with_hook_demotes_global_false_removes_wiring() {
 /// fail-open for a plane-owned attach, using MCP as the concrete plane under test.
 #[test]
 fn build_with_hook_makes_a_plane_attach_live() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
-    else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
     // The ONLY thing this test reads of the `tools.fs` registration is its hook ATTACH
     // (`hooks: [screen]`), whose resolution lands in the plane's gate map. Drive that through core's
     // NEUTRAL container-hook seam, keyed by the plane the registry says owns the `tools:` section, so
@@ -1973,13 +1961,10 @@ fn max_inspect_schema_json_bytes_is_exactly_256_kibibytes() {
 /// return `Some(false)` and pass a loose "it's false" check, but the detail text would be wrong.
 #[tokio::test]
 async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env_with_wrong_kind_plugin(
+    let env = busbar_kernel::test_support::test_hook_env_with_wrong_kind_plugin(
         "test-hook",
         "test-wrong-kind",
-    ) else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    );
     let hook_cfg = hook(HookKind::Tap, false);
 
     // Resolves and IS a hook: (Some(true), None).
@@ -2022,11 +2007,7 @@ async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
 /// would defeat the guard and double-push on every re-register.
 #[test]
 fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
-    else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     let once = build_with_hook(&app, "logger", hook(HookKind::Tap, true))
         .expect("first global registration");
@@ -2050,13 +2031,10 @@ fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
 /// needs at least two).
 #[test]
 fn build_with_hook_demote_only_removes_the_target_hook() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(
+    let env = busbar_kernel::test_support::test_hook_env(
         &["test-hook", "test-hook-2"],
         Default::default(),
-    ) else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    );
     let app = crate::new_test_app().hook_env(env).build();
     let mut other = hook(HookKind::Tap, true);
     other.plugin = "test-hook-2".to_string();
@@ -2081,13 +2059,10 @@ fn build_with_hook_demote_only_removes_the_target_hook() {
 /// wiring untouched — same `!=`/`==` retain distinction as the demote case above.
 #[test]
 fn build_without_hook_only_removes_the_target_from_global_wiring() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(
+    let env = busbar_kernel::test_support::test_hook_env(
         &["test-hook", "test-hook-2"],
         Default::default(),
-    ) else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    );
     let app = crate::new_test_app().hook_env(env).build();
     let mut other = hook(HookKind::Tap, true);
     other.plugin = "test-hook-2".to_string();
@@ -2132,11 +2107,7 @@ fn build_with_group_name_length_boundary_is_exact() {
 /// one is fine — a mutated `> 1` boundary needs both sides tested to catch `==`/`>=` variants.
 #[test]
 fn build_with_registry_rejects_more_than_one_default_but_allows_exactly_one() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
-    else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     let mut one_default = hook(HookKind::Tap, false);
     one_default.default = true;
@@ -2161,11 +2132,7 @@ fn build_with_registry_rejects_more_than_one_default_but_allows_exactly_one() {
 /// every VALID global reference instead.
 #[test]
 fn build_with_registry_rejects_a_dangling_global_hook_reference() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
-    else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     let mut registry = HashMap::new();
     registry.insert("logger".to_string(), hook(HookKind::Tap, true));
@@ -2217,11 +2184,7 @@ async fn healthz_returns_a_real_response_not_the_default() {
 /// whose gate disagrees with its own hook registry.
 #[test]
 fn hook_snapshot_builders_recompute_the_content_gate() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
-    else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     assert!(
         !app.any_content_hook,
@@ -2266,13 +2229,8 @@ fn hook_snapshot_builders_recompute_the_content_gate() {
 /// one production site to touch and this test is what fails if it is missed.
 #[test]
 fn hook_derived_fields_follow_the_registry() {
-    // PANIC, never skip: a rig that skips when the cdylib is absent reports green over the code it
-    // was written to cover. Build it (`cargo build -p busbar-hook-test-plugin`) or fail loudly.
-    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
-        .expect(
-            "the hook-test plugin cdylib must be built for this test (cargo build -p \
-         busbar-hook-test-plugin); refusing to skip the derived-field invariant",
-        );
+    // Never a skip: the hook double behind the kernel's hook port is always there.
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
 
     /// Every `App` field that is a PURE FUNCTION of `hook_registry`, re-derived from the snapshot's
     /// own registry and compared against what the builder installed.
