@@ -52,7 +52,9 @@ use busbar_contract::caps::{
 use busbar_contract::{LaneId, Registration, UnitKey};
 use busbar_kernel::plane_host::PlaneAnswer;
 use busbar_kernel::slice::GroupLeaseSlip;
-use busbar_kernel::teller::{AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
+use busbar_kernel::teller::{
+    AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units,
+};
 use busbar_kernel_audit::{
     AuditInputs, Controls, FinishClass as RecordFinish, OpClassId as RecordOpClass, OutcomeFacts,
     Subject, Usage as RecordUsage, UsageLine as RecordLine, What,
@@ -1804,6 +1806,12 @@ impl RouteAwait for Driven<'_> {
         )
     }
 
+    /// The plane's own screen before the door (SEAM-4j: a gate-first plane's hooks), forwarded:
+    /// a wrapper that answered the default would let the gate run after admission.
+    fn screen<'a>(&'a self, ctx: &'a UnitCtx) -> Screen<'a> {
+        self.route.screen(ctx)
+    }
+
     /// THE CALLER WENT AWAY MID-DISPATCH, and the end the loop reached for it is POSTED here (item
     /// 99). The loop's guard has already sealed this end at the charged audit door, emptied the cell
     /// and given the leases back; what it hands over is the posting, which has moved no balance and
@@ -1946,6 +1954,11 @@ impl<U: RouteAwait> RouteAwait for Borrowed<'_, U> {
 
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
         self.units.abandoned(ctx, ended);
+    }
+
+    /// The borrowed units' own screen before the door, forwarded (SEAM-4j).
+    fn screen<'a>(&'a self, ctx: &'a UnitCtx) -> Screen<'a> {
+        self.units.screen(ctx)
     }
 }
 
