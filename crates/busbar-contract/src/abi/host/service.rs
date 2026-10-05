@@ -639,7 +639,7 @@ pub const CONTENT_BLOCK: u64 = 1;
 
 // ── hook ──────────────────────────────────────────────────────────────────────────────────────
 
-/// [`op::HOOK_CALL`]'s `in` (THE DESIGN §11.12, ARCHITECT H2 ruling: op 17): run the calling
+/// [`op::HOOK_CALL`]'s `in` (THE DESIGN, host services; ARCHITECT H2 ruling: op 17): run the calling
 /// unit's hook stage for an in-session sub-operation, over the hook kind's own
 /// [`PromptView`](crate::abi::hook::PromptView). The hooks that run are the ones the CALLING UNIT
 /// binds (its kernel-recorded plane and pool, never a field of the view), at the configuration
