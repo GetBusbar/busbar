@@ -17,7 +17,7 @@
 //! 3. **The published operations still pass through.** The adapter hands the store out untouched,
 //!    so a key written through it is the store's row.
 //!
-//! The store at the published schema is the in-tree RAM store bound to payload schema 2: the shim's
+//! The store at the published schema is the build's store fixture bound to payload schema 2: the shim's
 //! rule is a property of the schema number, not of the store behind it.
 //!
 //! The tests that drive the verb seam (it takes a minted `Grant<AdminVerb>`) live in busbar's
@@ -33,15 +33,15 @@ use busbar_contract::verb_store::Store as VerbStore;
 use busbar_kernel_wal::Record;
 use std::sync::Arc;
 
-/// The in-tree RAM store, as the published operations' backing.
-fn memory_store() -> Arc<dyn busbar_contract::records::RecordStore> {
-    Arc::from(busbar_store_memory::open("{}").expect("the memory store opens"))
+/// The build's store fixture (reached by kind), as the published operations' backing.
+fn backing() -> Arc<dyn busbar_contract::records::RecordStore> {
+    Arc::from(crate::both_ways::store_fixture::open("{}").expect("the store fixture opens"))
 }
 
 /// An adapter over a store bound to the PUBLISHED payload schema (2), built through the same
 /// constructor the composition root calls.
 fn adapter_over_published_schema() -> Option<StoreAdapter> {
-    Some(StoreAdapter::new(memory_store(), PUBLISHED_STORE_SCHEMA))
+    Some(StoreAdapter::new(backing(), PUBLISHED_STORE_SCHEMA))
 }
 
 /// A slice draw for one bucket's request axis.
@@ -277,7 +277,7 @@ impl TestClock {
 /// [`adapter_over_published_schema`] whose sealed replay cache ages against `clock`.
 fn adapter_at(clock: &TestClock) -> Option<StoreAdapter> {
     Some(StoreAdapter::with_clock(
-        memory_store(),
+        backing(),
         PUBLISHED_STORE_SCHEMA,
         clock.shim_clock(),
     ))

@@ -6,9 +6,8 @@
 //! states the three things that file and this one prove together). The verb seam takes a
 //! `Grant<AdminVerb>`; this suite takes it from the kernel's test token helper.
 //!
-//! It lives in the composition root's integration suite, not in busbar-kernel (ARCHITECT C4B-1,
-//! 2026-10-03): the store it binds is `busbar-store-memory`, and the root is the crate that links
-//! that store as the shipped plugin; the kernel names no store crate.
+//! It lives in the composition root's integration suite (ARCHITECT C4B-1, 2026-10-03), beside the
+//! root that binds the adapter.
 
 use busbar_contract::caps::{AdminVerb, Grant};
 use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceRequest, SliceStore};
@@ -76,12 +75,13 @@ fn admin() -> Grant<AdminVerb> {
 /// An adapter over a store bound to the PUBLISHED payload schema (2), built through the same
 /// constructor the composition root calls.
 fn adapter_over_published_schema() -> Option<StoreAdapter> {
-    Some(StoreAdapter::new(memory_store(), PUBLISHED_STORE_SCHEMA))
+    Some(StoreAdapter::new(backing(), PUBLISHED_STORE_SCHEMA))
 }
 
-/// The in-tree RAM store, as the published operations' backing.
-fn memory_store() -> Arc<dyn busbar_contract::records::RecordStore> {
-    Arc::from(busbar_store_memory::open("{}").expect("the memory store opens"))
+/// The kernel's universal test double (the build's default store), as the published operations'
+/// backing.
+fn backing() -> Arc<dyn busbar_contract::records::RecordStore> {
+    Arc::new(busbar_kernel::governance::MemoryStore::new())
 }
 
 /// A slice draw for one bucket's request axis.
@@ -112,7 +112,7 @@ impl TestClock {
 /// [`adapter_over_published_schema`] whose sealed replay cache ages against `clock`.
 fn adapter_at(clock: &TestClock) -> Option<StoreAdapter> {
     Some(StoreAdapter::with_clock(
-        memory_store(),
+        backing(),
         PUBLISHED_STORE_SCHEMA,
         clock.shim_clock(),
     ))
