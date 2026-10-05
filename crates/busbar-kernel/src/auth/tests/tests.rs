@@ -1978,7 +1978,7 @@ impl busbar_contract::auth_calls::AuthCalls for AnswersOnly {
 /// The chain `[answers-only door, test-groups stand-in]`: the second position identifies
 /// `grp:<role>`, so a first position that PASSED would admit.
 fn door_then_identifier(verified: busbar_contract::auth_calls::Verified) -> AuthMiddleware {
-    let identifier = busbar_plugin_loader::auth_axis::ColdAuth::new(Box::new(TestGroupsModule));
+    let identifier = crate::auth::stand_in::InProcessAuth::new(Box::new(TestGroupsModule));
     AuthMiddleware::from_doors_for_test(vec![
         (
             "door".to_string(),

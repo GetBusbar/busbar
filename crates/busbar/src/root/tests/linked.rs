@@ -363,7 +363,10 @@ async fn the_collector_policy_carries_octets_to_a_loopback_collector_and_nothing
 fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
     let stores: Vec<_> = crate::LINKED.stores.iter().map(|s| s.1).collect();
     assert_eq!(stores, [true], "one linked store: ephemeral");
-    (crate::LINKED.stores[0].2)("{}").expect("the linked store opens");
+    assert!(
+        !(crate::LINKED.stores[0].2)().is_null(),
+        "the linked store states its door"
+    );
     let strategies = [
         busbar_kernel::config::STRATEGY_CHEAPEST,
         busbar_kernel::config::STRATEGY_FASTEST,

@@ -71,9 +71,10 @@ fn oversize_plane_vocab_length_is_refused_not_over_read() {
 // A plane rides the same discovery/trust/conflict pipeline as every kind (`scan_and_validate` →
 // `PluginRegistry::open_plane`); these prove its plane-side gates, which need no real plane.
 
-/// A `kind: plane` manifest, with `abi_version` on the airlock-minor axis
-/// `supported_abi("plane")` gates against (`[1, ABI_MINOR]`). `sha256`/`signature` are filled by the
-/// caller (via `sign`, or by hand for the unsigned case).
+/// A `kind: plane` manifest, at the plane kind's one version
+/// (`supported_abi("plane")`, `abi::plane::ABI_VERSION`); the HOT decl's airlock is checked at load,
+/// apart. `sha256`/`signature` are filled by the caller (via `sign`, or by hand for the unsigned
+/// case).
 fn plane_manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
     Manifest {
         name: name.into(),
@@ -81,7 +82,7 @@ fn plane_manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
         kind: "plane".into(),
         version: "1.6.0".into(),
         publisher: publisher.into(),
-        abi_version: busbar_contract::abi::ABI_MINOR,
+        abi_version: busbar_contract::abi::plane::ABI_VERSION,
         sha256: String::new(),
         signature: String::new(),
         description: String::new(),
@@ -134,7 +135,7 @@ fn open_plane_refuses_non_plane_kind() {
     let dir = plane_tmpdir("kind-gate");
     let mut m = plane_manifest("busbar-store-gamma-plugin", "gamma", "busbar");
     m.kind = "store".into();
-    m.abi_version = busbar_contract::abi::cold::ABI_VERSION; // store-admissible so the KIND gate is what fires
+    m.abi_version = busbar_contract::abi::store::ABI_VERSION; // store-admissible so the KIND gate is what fires
     let m = sign(&release, m, b"store lib");
     write_plane_tarball(&dir, "store.tar.gz", &m, b"store lib");
 
@@ -148,12 +149,13 @@ fn open_plane_refuses_non_plane_kind() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `supported_abi("plane")` gates a plane's manifest `abi_version` against the airlock-minor axis.
+/// `supported_abi("plane")` gates a plane's manifest `abi_version` at the plane kind's one version
+/// (THE DESIGN §11.2, A.9: no range).
 #[test]
-fn plane_supported_abi_covers_the_airlock_minor() {
+fn plane_supported_abi_is_the_plane_kinds_one_version() {
     let range = crate::registry::supported_abi("plane");
-    assert_eq!(range, &[1, busbar_contract::abi::ABI_MINOR]);
-    // The five cold kinds still resolve; an unknown kind is still empty.
+    assert_eq!(range, &[busbar_contract::abi::plane::ABI_VERSION]);
+    // The other kinds still resolve; an unknown kind is still empty.
     assert!(!crate::registry::supported_abi("store").is_empty());
     assert!(crate::registry::supported_abi("nonsense").is_empty());
 }

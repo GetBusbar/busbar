@@ -170,16 +170,17 @@ struct ChainEntry {
     provider: String,
     /// The opened instance.
     calls: std::sync::Arc<dyn AuthCalls>,
-    /// The instance's name as its Statement (or its cold module) states it, for the plugin
+    /// The instance's name as its Statement (or its in-process module) states it, for the plugin
     /// catalogue ([`AuthMiddleware::chain_names`]).
     name: String,
-    /// M6-COLD-DELETE: a 1.5.5-shaped module behind the cold adapter (`ColdAuth`) — a plugin still
-    /// on the COLD auth lane, or an in-process test stand-in. The kernel keeps no verdict of any
-    /// position (THE DESIGN 11.11 R3): a plugin that caches does so inside itself.
+    /// M6-COLD-DELETE residue: a 1.5.5-shaped module — the one auth plugin still on the JSON lane
+    /// (the auth-oidc plugin at its pinned rev, until its door re-pin), or an in-process test
+    /// stand-in. The kernel keeps no verdict of any position (THE DESIGN 11.11 R3): a plugin that
+    /// caches does so inside itself.
     #[allow(dead_code)]
     cold: bool,
-    /// M6-COLD-DELETE: a cold-lane PLUGIN, whose `verify` is a synchronous call that may do blocking
-    /// I/O (the shipped OIDC module's JWKS fetch): the request path OFFLOADS it, bounded
+    /// M6-COLD-DELETE residue: a JSON-lane PLUGIN, whose `verify` is a synchronous call that may do
+    /// blocking I/O (the OIDC module's JWKS fetch): the request path OFFLOADS it, bounded
     /// ([`AUTH_OFFLOAD_MAX_INFLIGHT`]). A memory-ABI door is awaited on the dispatcher (no thread
     /// parked); an in-process stand-in cannot block.
     offload: bool,
@@ -330,7 +331,7 @@ static ADMIN_OFFLOAD_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
 pub struct AdminAuthChain {
     /// The resolved EXTERNAL admin modules, keyed by provider name: each a `kind: auth` instance the
     /// auth axis opened on the one dispatcher (L2-AUTH-4, ARCHITECT 2026-10-03): a door is awaited,
-    /// a cold-lane plugin (M6-COLD-DELETE) is offloaded off the reactor ([`AdminModule::cold`]).
+    /// a JSON-lane plugin (M6-COLD-DELETE residue) is offloaded off the reactor ([`AdminModule::cold`]).
     pub modules: std::collections::HashMap<String, AdminModule>,
     /// The operator credential, as the auth axis answers it, and the providers it answers for: a
     /// provider is the operator credential by its module, never by its name ([`Operator`]).
@@ -341,20 +342,21 @@ pub struct AdminAuthChain {
 pub struct AdminModule {
     /// The opened instance.
     pub calls: std::sync::Arc<dyn AuthCalls>,
-    /// M6-COLD-DELETE: a 1.5.5-shaped module behind the cold adapter (a cold-lane plugin, or an
-    /// in-process test stand-in). Its `verify` is a synchronous call that may block, so an awaited
-    /// admin walk offloads it, bounded ([`ADMIN_OFFLOAD_MAX_INFLIGHT`]), and the admin chain caches
-    /// its verdicts as 1.5.5 did. A memory-ABI door is awaited on the dispatcher and caches inside
-    /// itself (THE DESIGN 11.11 R3): the kernel keeps no verdict of it.
+    /// M6-COLD-DELETE residue: a 1.5.5-shaped module (the JSON-lane auth plugin until its door
+    /// re-pin, or an in-process test stand-in). Its `verify` is a synchronous call that may block, so
+    /// an awaited admin walk offloads it, bounded ([`ADMIN_OFFLOAD_MAX_INFLIGHT`]), and the admin
+    /// chain caches its verdicts as 1.5.5 did. A memory-ABI door is awaited on the dispatcher and
+    /// caches inside itself (THE DESIGN 11.11 R3): the kernel keeps no verdict of it.
     pub cold: bool,
 }
 
 impl AdminModule {
-    /// An in-process 1.5.5-shaped module (a test stand-in) as an external admin module: behind the
-    /// cold adapter, offloaded and cached as a cold plugin is.
+    /// An in-process 1.5.5-shaped module (a test stand-in) as an external admin module, offloaded
+    /// and cached as 1.5.5 offloaded and cached it.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn cold(module: Box<dyn AuthModule>) -> Self {
         Self {
-            calls: std::sync::Arc::new(busbar_plugin_loader::auth_axis::ColdAuth::new(module)),
+            calls: std::sync::Arc::new(stand_in::InProcessAuth::new(module)),
             cold: true,
         }
     }
@@ -494,8 +496,8 @@ impl AuthMiddleware {
     /// authenticate on the governance path, not through a chain position, so its entry sets a flag
     /// rather than a position. Any OTHER name is a `kind: auth` PLUGIN, opened on this build's AUTH
     /// AXIS ([`crate::preflight::auth_axis`]: the composition root's rows over the process's one
-    /// dispatcher, AUTH-CHAIN-SWITCH) — a memory-ABI door, linked or dropped in, and, until M6, a
-    /// plugin still on the cold lane (`ColdAuth`). FAIL-CLOSED: a configured auth module that cannot
+    /// dispatcher, AUTH-CHAIN-SWITCH) — a memory-ABI door, linked or dropped in, and, until its door
+    /// re-pin, the one auth plugin still on the JSON lane (`ColdAuth`). FAIL-CLOSED: a configured auth module that cannot
     /// be loaded (missing tarball, wrong kind, untrusted under the running policy, a load or ABI
     /// failure, an `open` that refused) is a HARD boot error — never a silently-dropped module that
     /// would leave the front door open. `--validate`/`plugins_preflight` catches most of these
@@ -513,11 +515,11 @@ impl AuthMiddleware {
     ) -> Result<Self, String> {
         let mut keys_in_chain = false;
         let mut chain: Vec<ChainEntry> = Vec::new();
-        // An in-process TEST stand-in, as a chain position: the cold adapter over the module,
-        // answered on the caller's thread (it cannot block), never cached.
+        // An in-process TEST stand-in, as a chain position: the in-process adapter over the module,
+        // answered on the caller's thread (it cannot block).
         #[cfg(any(test, feature = "test-support"))]
         let stand_in = |provider: &str, module: Box<dyn AuthModule>| {
-            let calls = busbar_plugin_loader::auth_axis::ColdAuth::new(module);
+            let calls = stand_in::InProcessAuth::new(module);
             ChainEntry {
                 provider: provider.to_string(),
                 name: calls.name().to_string(),
@@ -2324,7 +2326,7 @@ impl AuthMiddleware {
         let chain = chain
             .into_iter()
             .map(|(provider, module)| {
-                let calls = busbar_plugin_loader::auth_axis::ColdAuth::new(module);
+                let calls = stand_in::InProcessAuth::new(module);
                 ChainEntry {
                     provider,
                     name: calls.name().to_string(),
@@ -2375,6 +2377,10 @@ pub mod exchange;
 /// the CORE only), and the render of the key-issued page — all issuing through the SAME [`self_keys`]
 /// seam as the headless `POST`.
 pub mod token;
+
+/// TEST STAND-INS ONLY: an in-process module as a chain position.
+#[cfg(any(test, feature = "test-support"))]
+pub mod stand_in;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]
