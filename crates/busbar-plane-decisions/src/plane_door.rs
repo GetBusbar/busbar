@@ -215,6 +215,11 @@ pub const STATEMENT: Statement = Statement {
 
 /// The settings blob read as the `decisions:` section; an empty blob is the empty section.
 ///
+/// The blob is ONE JSON object `{decisions: <section>}` (`BUSBAR-1.6.0.md` section 4: "a plane's
+/// settings reach it as ONE validated JSON object `{section: value}`"), the shape the boot's deal
+/// hands every door; the bare section is read too, since a section never carries a member named
+/// after its own verb (its grammar refuses unknown members), so the two cannot be confused.
+///
 /// # Errors
 ///
 /// The section's first broken rule, in the grammar's words.
@@ -222,7 +227,18 @@ pub fn read_settings(settings: &[u8]) -> Result<DecisionsSection, String> {
     if settings.is_empty() {
         return Ok(DecisionsSection::default());
     }
-    serde_json::from_slice(settings).map_err(|e| e.to_string())
+    let mut value: serde_json::Value =
+        serde_json::from_slice(settings).map_err(|e| e.to_string())?;
+    let section = match value.as_object_mut() {
+        Some(blob) if blob.len() == 1 && blob.contains_key(tail::SECTION_DECLARING) => blob
+            .remove(tail::SECTION_DECLARING)
+            .unwrap_or(serde_json::Value::Null),
+        _ => value,
+    };
+    if section.is_null() {
+        return Ok(DecisionsSection::default());
+    }
+    serde_json::from_value(section).map_err(|e| e.to_string())
 }
 
 /// ONE GENERATION'S SNAPSHOT for a section with `models` configured models, opened under the
