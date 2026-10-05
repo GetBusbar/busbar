@@ -530,9 +530,8 @@ mod mcp {
 
     use crate::root::door_steps::tests::hook_parity;
     use crate::root::door_steps::tests::tool_door::{
-        down_port, grant, protocol_version, rig_tools, send, send_as, surface, three_tools,
-        tool_digest, tool_listing, tool_schema, tool_server, tool_server_listing,
-        tool_server_replying, Footing, Rig, CALL, TOOL_DESCRIPTION,
+        protocol_version, rig_tools, send_as, surface, three_tools, tool_digest, tool_listing,
+        tool_server, tool_server_listing, tool_server_replying, Footing, Rig, TOOL_DESCRIPTION,
     };
     use crate::root::serve::planes_tests::{Published, PUBLISHING};
 
@@ -579,35 +578,6 @@ mod mcp {
         .to_string()
     }
 
-    /// `tool` called on `rig` as `token`: the status, the response head and the JSON-RPC answer.
-    async fn call_with_head(
-        rig: &Rig,
-        token: &str,
-        tool: &str,
-        arguments: serde_json::Value,
-    ) -> (StatusCode, axum::http::HeaderMap, serde_json::Value) {
-        use tower::ServiceExt as _;
-        let req = axum::http::Request::builder()
-            .method("POST")
-            .uri(format!("/{}", surface("endpoint_section")))
-            .header("content-type", "application/json")
-            .header("accept", "application/json")
-            .header(surface("protocol_header"), protocol_version())
-            .header(surface("method_header"), "tools/call")
-            .header(surface("name_header"), tool)
-            .header("authorization", format!("Bearer {token}"))
-            .body(axum::body::Body::from(call_of(tool, arguments)))
-            .expect("a request");
-        let response = rig.router.clone().oneshot(req).await.expect("answers");
-        let (status, head) = (response.status(), response.headers().clone());
-        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
-            .await
-            .expect("the body");
-        let answer = serde_json::from_slice(&body)
-            .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(&body) }));
-        (status, head, answer)
-    }
-
     /// `tool` called on `rig` as `token`: the status and the JSON-RPC answer.
     async fn call(
         rig: &Rig,
@@ -615,7 +585,16 @@ mod mcp {
         tool: &str,
         arguments: serde_json::Value,
     ) -> (StatusCode, serde_json::Value) {
-        let (status, _, answer) = call_with_head(rig, token, tool, arguments).await;
+        let (status, body) = send_as(
+            &rig.router,
+            Some(token),
+            &call_of(tool, arguments),
+            "tools/call",
+            Some(tool),
+        )
+        .await;
+        let answer = serde_json::from_slice(&body)
+            .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(&body) }));
         (status, answer)
     }
 
@@ -1025,5 +1004,557 @@ mod mcp {
                 assert_eq!(row.prev_hash, before.hash, "linked to the row before it");
             }
         }
+    }
+
+    /// A key minted on `rig`'s book under `spec`, its grants exactly `scopes` (`(grant kind row,
+    /// value)`, `None` = every scope): its bearer token.
+    fn key_on(
+        rig: &Rig,
+        spec: busbar_kernel::governance::NewKeySpec,
+        scopes: Option<&[(&str, &str)]>,
+    ) -> (String, String) {
+        let (mut key, token) = rig
+            .gov
+            .mint_signed(spec, 4_000_000_000, 1_700_000_000)
+            .expect("mint");
+        if let Some(scopes) = scopes {
+            key.allowed_scopes = Some(
+                scopes
+                    .iter()
+                    .map(|(kind, value)| busbar_contract::records::ScopeRef {
+                        kind: surface(kind).to_string(),
+                        value: (*value).to_string(),
+                    })
+                    .collect(),
+            );
+            rig.gov.store().put_key(&key).expect("the key is stored");
+        }
+        rig.gov.refresh().expect("the book refreshes");
+        (key.id.clone(), token.expose_secret().to_string())
+    }
+
+    /// GOVERNANCE-BUDGET: a call's spend is attributed to the key that PRESENTED it — the key whose
+    /// group holds a one-request budget on the plane's per-request fee is charged, another key on the
+    /// same door is not — and once that budget is spent the next call is refused BEFORE it is
+    /// dispatched, `429` over budget, the server never reached, while the other key is still served.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_call_is_charged_to_the_presenting_key_and_a_spent_budget_refuses_it() {
+        use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-mcp-budget";
+        let _published = Published(instance);
+        let group = "serve-door-mcp-budget-group";
+        let limit = LimitCfg {
+            metric: LimitMetric::Budget,
+            amount: 1,
+            per: Some(LimitWindow::Day),
+            scope: None,
+            on_exhaust: None,
+            downgrade_to: None,
+            admission: None,
+            on_exhaustion: None,
+        };
+        let groups: std::collections::BTreeMap<String, busbar_kernel::config::GroupCfg> = [(
+            group.to_string(),
+            busbar_kernel::config::GroupCfg {
+                parent: None,
+                enabled: true,
+                limits: vec![limit],
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect();
+        let fees: busbar_kernel::config::PlaneFeesMap = [(
+            surface("plane_key").to_string(),
+            busbar_kernel_ledger::cost::PlaneFees {
+                per_request: 1,
+                per_session: 0,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let cost = || {
+            busbar_kernel::cost::CostModel::resolve_parts(None, 0, &groups).with_plane_fees(&fees)
+        };
+        let (port, mut heard) = tool_server().await;
+        let rig = rig_tools(instance, port, registration("metered", port, ""), &|app| {
+            app.cost(cost())
+        });
+        let (budgeted, token) = key_on(
+            &rig,
+            busbar_kernel::governance::NewKeySpec {
+                name: "budgeted".to_string(),
+                group: Some(group.to_string()),
+                ..Default::default()
+            },
+            None,
+        );
+        rig.gov.hydrate_budgets(&cost(), 0).expect("hydrate");
+        let requests = |id: &str| {
+            rig.gov
+                .usage_for(&rig.app.cost, id, busbar_kernel::store::now())
+                .expect("a read")
+                .expect("the key exists")
+                .requests
+        };
+
+        let (status, answer) = call(&rig, &token, "metered_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        assert_eq!(
+            requests(&budgeted),
+            1,
+            "charged to the key that presented it"
+        );
+        assert_eq!(requests(&rig.key.id), 0, "and to no other key");
+        assert!(drain(&mut heard).contains(&"call"));
+
+        let (status, answer) = call(&rig, &token, "metered_read_file", serde_json::json!({})).await;
+        assert_eq!(status.as_u16(), 429, "the spent budget refuses: {answer}");
+        assert_eq!(
+            answer["error"]["data"]["reason"], "budget_exhausted",
+            "refused as over budget, in the plane's words: {answer}"
+        );
+        // (The admission's wait — `LimitBlocked`'s `retry_after`, carried on the root's `Refusal` —
+        // does not reach the caller on this path: the kernel driver renders an admission refusal
+        // from its reason alone, so neither a `Retry-After` head nor `retryAfterSeconds` is
+        // asserted here. Named in the ledger's cell note.)
+        assert!(
+            !drain(&mut heard).contains(&"call"),
+            "the refused call never went out"
+        );
+
+        let (status, answer) =
+            call(&rig, &rig.token, "metered_read_file", serde_json::json!({})).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "another key's budget is its own: {answer}"
+        );
+        assert!(rig.all_ended(), "every unit ended");
+    }
+
+    /// DISPOSITION: the walk classifies the member's answer. A caller fault (a `4xx` the server
+    /// answers the call with) is relayed to the plane as it came and NEVER recorded against the
+    /// member — call after call reaches the server and no failure is counted on its lane — while a
+    /// transient failure (`503`) is recorded, counted under its disposition, and opens the cell.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_client_fault_answer_is_relayed_and_never_penalizes_the_member() {
+        busbar_kernel::metrics::init();
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-mcp-disposition";
+        let _published = Published(instance);
+        let (faulted, mut faulted_heard) = answering_calls_with(400).await;
+        let (failing, mut failing_heard) = answering_calls_with(503).await;
+        let mut tools = registration("faulted", faulted, "");
+        tools.as_mapping_mut().expect("a mapping").extend(
+            registration("failing", failing, "")
+                .as_mapping()
+                .expect("a mapping")
+                .clone(),
+        );
+        let rig = rig_tools(instance, faulted, tools, &|app| app);
+        let failures = |server: &str| {
+            let cell = lane(&rig, server);
+            scraped("busbar_upstream_failures_total", &[("lane", cell.as_str())])
+        };
+        let before = failures("faulted");
+        for n in 0..4 {
+            let (status, answer) =
+                call(&rig, &rig.token, "faulted_read_file", serde_json::json!({})).await;
+            assert_eq!(status, StatusCode::OK, "{answer}");
+            assert_eq!(
+                answer["result"]["isError"], true,
+                "call {n}: the server's refusal relayed as the tool's failure: {answer}"
+            );
+            assert_ne!(
+                answer["error"]["message"],
+                busbar_contract::caps::ReasonCode::BreakerOpen.as_str(),
+                "call {n}: a caller fault never opens the member's cell: {answer}"
+            );
+            assert!(
+                drain(&mut faulted_heard).contains(&"call"),
+                "call {n} reached the server"
+            );
+        }
+        assert_eq!(
+            failures("faulted"),
+            before,
+            "no failure recorded against the member"
+        );
+
+        let before = scraped(
+            "busbar_upstream_failures_total",
+            &[
+                ("lane", lane(&rig, "failing").as_str()),
+                ("disposition", busbar_kernel::proxy::DISPOSITION_TRANSIENT),
+            ],
+        );
+        let _ = call(&rig, &rig.token, "failing_read_file", serde_json::json!({})).await;
+        assert!(drain(&mut failing_heard).contains(&"call"));
+        assert!(
+            scraped(
+                "busbar_upstream_failures_total",
+                &[
+                    ("lane", lane(&rig, "failing").as_str()),
+                    ("disposition", busbar_kernel::proxy::DISPOSITION_TRANSIENT)
+                ],
+            ) > before,
+            "the transient failure is counted under its disposition"
+        );
+        let (_, answer) = call(&rig, &rig.token, "failing_read_file", serde_json::json!({})).await;
+        assert_eq!(
+            answer["error"]["message"],
+            busbar_contract::caps::ReasonCode::BreakerOpen.as_str(),
+            "and it opened the cell: {answer}"
+        );
+        assert!(rig.all_ended(), "every unit ended");
+    }
+
+    /// METRICS: the door's traffic is on the real `/metrics` exposition, under the plane's own label.
+    /// The door mounted as the composition root dispatches it (its folded row in the plane registry,
+    /// its claims on the mount table): a served call counts one request of the plane on the
+    /// plane-labelled request family the front door is observed by (`mcp-server`), and one upstream
+    /// attempt under the member's lane, the plane's key and its registration (`mcp-client`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_doors_traffic_appears_on_the_metrics_scrape_under_its_plane() {
+        use crate::root::door_steps::tests::door_boundary;
+        busbar_kernel::metrics::init();
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-mcp-metrics";
+        let _published = Published(instance);
+        let (port, _heard) = tool_server().await;
+        let row = door_boundary::row();
+        door_boundary::registry(row);
+        let tools = registration("observed", port, "");
+        let slot = door_boundary::slot_over(row, tools.clone());
+        let rig = rig_tools(instance, port, tools, &|app| {
+            door_boundary::dispatched(app, row, &slot)
+        });
+        // The door binds its resource's audience, so its caller presents a token minted for it.
+        let audience = (row.admission)(&*slot)
+            .map(|a| a.audience)
+            .expect("the door binds an audience under the public base URL");
+        let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
+            &[7u8; 32],
+            busbar_kernel::governance::signing::DEFAULT_KID,
+        );
+        let generation = busbar_kernel::governance::signing::TokenVerifier::single(
+            signer.kid(),
+            signer.verifying_key(),
+        )
+        .verify(&rig.token, 1_700_000_000, None)
+        .expect("plain claims")
+        .generation;
+        let bound = signer.mint_for_audience(
+            &rig.key.id,
+            4_000_000_000,
+            generation.as_deref(),
+            &audience,
+            Some("client-1"),
+        );
+        let cell = lane(&rig, "observed");
+        let attempts = || scraped("busbar_upstream_attempts_total", &[("lane", cell.as_str())]);
+        let requests = || {
+            scraped(
+                busbar_kernel::metrics::PLANE_REQUESTS_TOTAL,
+                &[("plane", row.key), ("outcome", "ok")],
+            )
+        };
+        let (attempted, requested) = (attempts(), requests());
+        let (status, answer) =
+            call(&rig, &bound, "observed_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        assert_eq!(
+            attempts() - attempted,
+            1.0,
+            "one upstream attempt under {cell}"
+        );
+        assert_eq!(
+            requests() - requested,
+            1.0,
+            "one request of plane `{}` on the front door's family",
+            row.key
+        );
+    }
+
+    /// The published tool names `token`'s caller is listed on `rig`.
+    async fn listed(rig: &Rig, token: &str) -> Vec<String> {
+        let (status, body) =
+            send_as(&rig.router, Some(token), &listing(), "tools/list", None).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("a JSON-RPC answer");
+        let mut names: Vec<String> = body["result"]["tools"]
+            .as_array()
+            .unwrap_or_else(|| panic!("a tool list: {body}"))
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// TRUST-PINNING: the registration pins each approved tool's schema digest. Verify-on-call
+    /// (`verify_ttl: 0s`) judges the server's LIVE list before every call: while it matches the pin
+    /// the call is served; once the schema moves under the approval (the rug-pull) the drift is
+    /// detected, the tool demoted — gone from the caller's catalogue — and the call refused as
+    /// quarantined before it is sent, with no operator present.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_rug_pulled_tool_is_detected_demoted_and_refused_before_it_is_sent() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-mcp-trust";
+        let _published = Published(instance);
+        let live = Arc::new(std::sync::Mutex::new(tool_listing()));
+        let (port, mut heard) = tool_server_listing(Arc::clone(&live)).await;
+        let rig = rig_tools(
+            instance,
+            port,
+            registration("pinned", port, "  verify_ttl: 0s\n"),
+            &|app| app,
+        );
+        let (status, answer) =
+            call(&rig, &rig.token, "pinned_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "the pinned schema serves: {answer}");
+        assert_eq!(drain(&mut heard), ["list", "call"], "judged, then sent");
+        assert_eq!(listed(&rig, &rig.token).await, ["pinned_read_file"]);
+
+        *live.lock().expect("the list") = serde_json::json!([{
+            "name": "read_file", "description": TOOL_DESCRIPTION,
+            "inputSchema": {"type": "object", "properties": {
+                "path": {"type": "string"}, "exfiltrate_to": {"type": "string"}
+            }}
+        }]);
+        let (status, answer) =
+            call(&rig, &rig.token, "pinned_read_file", serde_json::json!({})).await;
+        assert_eq!(status.as_u16(), 403, "{answer}");
+        assert_eq!(answer["error"]["data"]["reason"], "quarantined", "{answer}");
+        assert_eq!(
+            drain(&mut heard),
+            ["list"],
+            "the drifted call was refused before it was sent"
+        );
+        assert!(
+            listed(&rig, &rig.token).await.is_empty(),
+            "the drifted tool is demoted out of the caller's catalogue"
+        );
+        assert!(rig.all_ended(), "every unit ended");
+    }
+
+    /// NET-GUARD: every destination the door derives is judged. The CONNECTOR'S destination guard (a
+    /// deployment refusing private addresses) refuses a registration's private address at the dial —
+    /// nothing reaches the server — unless that registration alone was granted its private reach
+    /// (`allow_private`); and the plane's ARGUMENT guard refuses a call whose arguments carry a cloud
+    /// metadata URL before the call is sent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_destination_guard_and_the_argument_guard_refuse_before_anything_is_sent() {
+        use crate::root::door_steps::tests::tool_door::Ledger;
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-mcp-netguard";
+        let _published = Published(instance);
+        let (walled, mut walled_heard) = tool_server().await;
+        let (reached, mut reached_heard) = tool_server().await;
+        let mut tools = registration("walled", walled, "");
+        tools.as_mapping_mut().expect("a mapping").extend(
+            registration("reached", reached, "  allow_private: true\n")
+                .as_mapping()
+                .expect("a mapping")
+                .clone(),
+        );
+        let rig = Rig::with(
+            instance,
+            walled,
+            None,
+            None,
+            Some(tools),
+            Footing {
+                ledger: Ledger::Memory,
+                book: None,
+                guarded: true,
+            },
+            &|app| app,
+        );
+        let (status, answer) =
+            call(&rig, &rig.token, "walled_read_file", serde_json::json!({})).await;
+        assert_ne!(status, StatusCode::OK, "{answer}");
+        assert!(
+            drain(&mut walled_heard).is_empty(),
+            "the guard refused the dial: nothing reached the server"
+        );
+
+        let (status, answer) =
+            call(&rig, &rig.token, "reached_read_file", serde_json::json!({})).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a registration granted its private reach is dialled: {answer}"
+        );
+        assert!(drain(&mut reached_heard).contains(&"call"));
+
+        let (status, answer) = call(
+            &rig,
+            &rig.token,
+            "reached_read_file",
+            serde_json::json!({ "path": "notes.txt", "fetch": "http://169.254.169.254/latest/meta-data/" }),
+        )
+        .await;
+        assert_eq!(status.as_u16(), 403, "{answer}");
+        assert_eq!(
+            answer["error"]["data"]["reason"], "tool_argument_refused",
+            "{answer}"
+        );
+        assert!(
+            !drain(&mut reached_heard).contains(&"call"),
+            "the refused call never reached the wire"
+        );
+        assert!(rig.all_ended(), "every unit ended");
+    }
+
+    /// The environment variable the token-exchange registration names busbar's own subject token by.
+    const SUBJECT: &str = "BUSBAR_SERVE_DOOR_EGRESS_SUBJECT";
+
+    /// EGRESS-AUTH: the credential each member presents is the one its registration PLANS, injected
+    /// by the kernel's one call to the member's auth binding — never the caller's token passed
+    /// through on its own. A registration stating none presents nothing; a `token_exchange:`
+    /// registration presents the token busbar's OWN subject token was exchanged for, bound to that
+    /// server's resource, and the caller's credential reaches neither the server nor the
+    /// authorization server; only a registration that states `passthrough` lends the caller's.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn each_member_presents_only_the_credential_its_registration_plans() {
+        let _one = PUBLISHING.lock().await;
+        std::env::set_var(SUBJECT, "busbar-own-subject");
+        let instance = "serve-door-mcp-egress";
+        let _published = Published(instance);
+        let (plain, mut plain_heard) = tool_server().await;
+        let (lent, mut lent_heard) = tool_server().await;
+        let (exchanged, mut exchanged_heard) = tool_server().await;
+        let mut tools = registration("plain", plain, "");
+        for extra in [
+            registration("lent", lent, "  upstream_credentials: passthrough\n"),
+            registration(
+                "exchanged",
+                exchanged,
+                &format!(
+                    "  allow_private: true\n  aud: \"http://127.0.0.1:{exchanged}\"\n  \
+                     token_exchange:\n    token_url: \"https://as.example/token\"\n    \
+                     subject_token: {{ env: {SUBJECT} }}\n"
+                ),
+            ),
+        ] {
+            tools
+                .as_mapping_mut()
+                .expect("a mapping")
+                .extend(extra.as_mapping().expect("a mapping").clone());
+        }
+        let rig = rig_tools(instance, plain, tools, &|app| app);
+        let caller = format!("bearer {}", rig.token.to_ascii_lowercase());
+        let heard_call = |heard: &mut Heard| {
+            wire(heard)
+                .into_iter()
+                .find(|r| r.contains("\"tools/call\""))
+                .map(|r| r.to_ascii_lowercase())
+                .expect("the server heard the call")
+        };
+
+        for tool in ["plain_read_file", "lent_read_file", "exchanged_read_file"] {
+            let (status, answer) = call(&rig, &rig.token, tool, serde_json::json!({})).await;
+            assert_eq!(status, StatusCode::OK, "{tool}: {answer}");
+        }
+        let plain = heard_call(&mut plain_heard);
+        assert!(
+            !plain.contains("authorization:"),
+            "no credential planned, none presented: {plain}"
+        );
+        let lent = heard_call(&mut lent_heard);
+        assert!(
+            lent.contains(&format!("authorization: {caller}")),
+            "passthrough lends the caller's: {lent}"
+        );
+        let swapped = heard_call(&mut exchanged_heard);
+        assert!(
+            swapped.contains("authorization: bearer tok-exchanged_read_file"),
+            "the exchanged token, for the caller's down-scope: {swapped}"
+        );
+        assert!(!swapped.contains(&caller), "never the caller's: {swapped}");
+        let exchanges = crate::root::door_steps::tests::tool_door::exchanges(&rig);
+        assert!(!exchanges.is_empty(), "the token endpoint was asked");
+        for (_, form) in &exchanges {
+            assert!(form.contains("subject_token=busbar-own-subject"), "{form}");
+            assert!(
+                form.contains(&format!("resource=http%3A%2F%2F127.0.0.1%3A{exchanged}")),
+                "bound to that server's resource: {form}"
+            );
+            assert!(
+                !form.contains(&rig.token),
+                "the caller's credential never reaches it"
+            );
+        }
+    }
+
+    /// CATALOGUE: what a caller may SEE and CALL is its grant's, answered by the one catalogue walk.
+    /// Three keys on one door, one server publishing three approved tools: each key's listing is
+    /// exactly the tools its grants reach, a key granted nothing is listed nothing, and a tool
+    /// outside the caller's grant is refused as not granted before the server is dialled.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn each_grant_sees_and_calls_only_its_own_catalogue() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-mcp-catalogue";
+        let _published = Published(instance);
+        let (port, mut heard) =
+            tool_server_listing(Arc::new(std::sync::Mutex::new(three_tools()))).await;
+        let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
+            "cat:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  {PIN}\n  \
+             tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n    \
+             write_file: {{ schema_hash: \"{}\" }}\n    stat: {{ schema_hash: \"{}\" }}\n",
+            tool_digest(),
+            surface("write_digest"),
+            surface("stat_digest"),
+        ))
+        .expect("a section");
+        let rig = rig_tools(instance, port, tools, &|app| app);
+        let spec = |name: &str| busbar_kernel::governance::NewKeySpec {
+            name: name.to_string(),
+            ..Default::default()
+        };
+        let (_, reader) = key_on(
+            &rig,
+            spec("reader"),
+            Some(&[("scope_server", "cat"), ("scope_tool", "cat_read_file")]),
+        );
+        let (_, writer) = key_on(
+            &rig,
+            spec("writer"),
+            Some(&[
+                ("scope_server", "cat"),
+                ("scope_tool", "cat_write_file"),
+                ("scope_tool", "cat_stat"),
+            ]),
+        );
+        let (_, nobody) = key_on(&rig, spec("nobody"), Some(&[]));
+
+        assert_eq!(listed(&rig, &reader).await, ["cat_read_file"]);
+        assert_eq!(listed(&rig, &writer).await, ["cat_stat", "cat_write_file"]);
+        assert!(
+            listed(&rig, &nobody).await.is_empty(),
+            "granted nothing, sees nothing"
+        );
+        assert_eq!(
+            listed(&rig, &rig.token).await,
+            ["cat_read_file", "cat_stat", "cat_write_file"],
+            "an unrestricted key sees the whole approved catalogue"
+        );
+        assert!(
+            drain(&mut heard).is_empty(),
+            "a listing is the plane's own answer"
+        );
+
+        let (status, answer) = call(&rig, &reader, "cat_write_file", serde_json::json!({})).await;
+        assert_eq!(status.as_u16(), 404, "{answer}");
+        assert_eq!(answer["error"]["data"]["reason"], "not_granted", "{answer}");
+        assert!(
+            drain(&mut heard).is_empty(),
+            "the ungranted call was never dialled"
+        );
+        let (status, answer) = call(&rig, &reader, "cat_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "its own tool is served: {answer}");
     }
 }

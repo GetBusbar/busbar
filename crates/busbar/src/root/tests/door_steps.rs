@@ -1128,7 +1128,7 @@ pub(crate) mod tool_door {
     }
 
     /// A loopback port nothing listens on (bound, then released): a server that is down.
-    pub(crate) async fn down_port() -> u16 {
+    async fn down_port() -> u16 {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("a loopback port");
@@ -1867,7 +1867,7 @@ pub(crate) mod tool_door {
 
     /// The caller key's grants become exactly `scopes` (`(grant kind row, value)`, the kinds read
     /// from the wire fixture), on the governance book the gate resolves it from.
-    pub(crate) fn grant(rig: &Rig, scopes: &[(&str, &str)]) {
+    fn grant(rig: &Rig, scopes: &[(&str, &str)]) {
         let mut key = (*rig.key).clone();
         key.allowed_scopes = Some(
             scopes
@@ -2514,7 +2514,7 @@ pub(crate) mod tool_door {
 /// claims are mounted by the composition root at the data router's construction, Q-SW1, so these
 /// assertions live where the mount does; the kernel keeps no HOT-route assumption).
 #[cfg(all(linked_axis_plane_door, linked_axis_node))]
-mod door_boundary {
+pub(crate) mod door_boundary {
     use std::sync::Arc;
 
     use busbar_contract::abi::mechanism::route::RouteAuth;
@@ -2528,7 +2528,7 @@ mod door_boundary {
     use crate::root::serve::planes_tests::{Published, PUBLISHING};
 
     /// The mcp door's registry row, folded from its Statement as the composition root folds it.
-    pub(super) fn row() -> &'static PlaneDecl {
+    pub(crate) fn row() -> &'static PlaneDecl {
         use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
         busbar_kernel::plane::door::fold(
             registration(linked_probe(
@@ -2543,14 +2543,14 @@ mod door_boundary {
     /// The door's row in the process's plane registry, as the composition root installs it beside
     /// the linked rows (a registration, not an isolation: the served request reads the registry on
     /// another worker while the test awaits it).
-    pub(super) fn registry(row: &'static PlaneDecl) {
+    pub(crate) fn registry(row: &'static PlaneDecl) {
         busbar_kernel::plane::registry::register_test_plane(row);
     }
 
     /// The kernel's plane dispatch for the door, as `build_dispatch` configures it from the folded
     /// row: its slot built over `section` and the public base URL, every path it claims mounted,
     /// the admission it declares bound.
-    fn dispatched(
+    pub(crate) fn dispatched(
         mut app: TestApp,
         row: &'static PlaneDecl,
         slot: &Arc<dyn std::any::Any + Send + Sync>,
@@ -2571,7 +2571,7 @@ mod door_boundary {
     }
 
     /// The door's slot over the `tools:` section `value`, under [`PUBLIC_URL`].
-    fn slot_over(
+    pub(crate) fn slot_over(
         row: &'static PlaneDecl,
         value: serde_yaml::Value,
     ) -> Arc<dyn std::any::Any + Send + Sync> {
