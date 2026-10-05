@@ -1639,7 +1639,12 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 !(entry && busbar_contract::records::RESERVED_UNITS.contains(c)
                     || on.iter().any(|(_, r)| r.units.contains_key(*c)))
             };
-            let declared = d.billable_classes.iter().map(|c| c.class);
+            // A FEE UNIT is a billable class the plane reports as 0 or 1 and the kernel never
+            // ledgers (Q17-5 (c)): it is priced by the section's `fees:`, never by its card, so a
+            // card neither owes it nor may price it (ARCHITECT Q-L5-FEE (A)).
+            let declared = (d.billable_classes.iter())
+                .map(|c| c.class)
+                .filter(|c| !d.fee_units.contains(c));
             let missing: Vec<&str> = declared.clone().filter(unset).collect();
             let present = if d.fallback {
                 flat_card
