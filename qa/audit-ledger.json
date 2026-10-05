@@ -1876,14 +1876,25 @@
    "paths": [
     "crates/busbar-plane-decisions/examples"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "4a24919ead7d3914245a7c6bc3e8406747b6a1344ab3b23854b7ceb45298f081",
+   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+   "round": 1,
+   "result": "zero",
    "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "report": "The example is the decisions plane's dropped-in door image, one exported symbol over the same door function the linked row holds, built as a cdylib and driven by the plane's conformance suite beside the linked door through the one loader. Read fully.",
+   "auditor": "opus-q128-architecture",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-q128-architecture",
+     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
+     "tree_hash": "4a24919ead7d3914245a7c6bc3e8406747b6a1344ab3b23854b7ceb45298f081",
+     "counts": {},
+     "report": "The example is the decisions plane's dropped-in door image, one exported symbol over the same door function the linked row holds, built as a cdylib and driven by the plane's conformance suite beside the linked door through the one loader. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-llm/tests",
