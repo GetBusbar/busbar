@@ -76,14 +76,14 @@ impl Life for Gate {
 impl Gate {
     fn parse(settings: &[u8]) -> Result<Self, Refusal> {
         let settings = settings_object(settings)?;
-        let over = settings
-            .get("reject_over_messages")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| Refusal::failed("settings: `reject_over_messages` must be a number"))?;
         let sleep_ms = settings
             .get("sleep_ms")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
+        let over = settings
+            .get("reject_over_messages")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| Refusal::failed("settings: `reject_over_messages` must be a number"))?;
         let session = settings
             .get("reject_session")
             .and_then(serde_json::Value::as_str)
@@ -108,11 +108,11 @@ impl SafeSlot for Decide {
         let Some(held) = instance.get() else {
             return Outcome::Refused;
         };
-        if held.life().1 > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(held.life().1));
+        let gate = held.life();
+        if gate.1 > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(gate.1));
         }
         let session = input.field(|i| &i.request).field(|r| &r.session).bytes();
-        let gate = held.life();
         if input.request.message_count > gate.0 || gate.2.as_deref() == Some(session) {
             out.set(|o| &o.verbs, VERB_REJECT | VERB_HAS_REJECT_STATUS);
             out.set(|o| &o.reject_status, REJECT_STATUS);

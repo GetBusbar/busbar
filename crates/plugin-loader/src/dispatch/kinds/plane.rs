@@ -38,29 +38,28 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome};
 use busbar_contract::abi::mechanism::call::{InHead, OutHead};
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
 use busbar_contract::abi::mechanism::door::{Statement, SECTION_CONSUMED, SECTION_DECLARING};
-use busbar_contract::abi::mechanism::lifecycle::{
-    slot as life, CancelOut, DriveIn, OpenIn, RefreshIn,
-};
+use busbar_contract::abi::mechanism::lifecycle::{slot as life, DriveIn, OpenIn, RefreshIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
-    check_arrive, check_billable_classes, check_cancel, check_drive, check_fee_units,
-    check_on_piece, check_pin_mechanisms, check_project, check_refusal, check_refusal_records,
-    check_refusal_statuses, check_sections, check_serve, check_serve_records, check_snapshot,
-    check_tail, check_trust_keys, Bounds, Caps, ProjectHost, MAX_SESSIONS,
+    check_arrive, check_billable_classes, check_cancel, check_cancel_records, check_drive,
+    check_fee_units, check_on_piece, check_pin_mechanisms, check_project, check_refusal,
+    check_refusal_records, check_refusal_statuses, check_sections, check_serve,
+    check_serve_records, check_snapshot, check_tail, check_trust_keys, Bounds, Caps, ProjectHost,
+    MAX_SESSIONS,
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, PinMechanism,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
-    PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut,
-    TrustKey,
+    PlaneTail, ProjectIn, ProjectOut, RecordWrite, RefusalIn, RefusalOut, RefusalStatus, ServeIn,
+    ServeOut, TrustKey,
 };
 use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::InstanceDecl;
 
 use crate::dispatch::{
-    in_head, lifecycle_name, out_head, stamp_drive, Answer, Context, DriveFrame, Frame, InFrame,
-    Kind, OutFrame,
+    in_head, lifecycle_name, out_head, stamp_drive, Answer, CancelFrame, Context, DriveFrame,
+    Frame, InFrame, Kind, OutFrame,
 };
 
 /// The plane tail's last frozen size: it has not grown, so it is this host's (THE KIND TAIL
@@ -77,6 +76,7 @@ pub struct Plane;
 // `retire` of its generation.
 unsafe impl InFrame for PlaneOpenIn {}
 unsafe impl InFrame for PlaneDriveIn {}
+unsafe impl InFrame for plane::PlaneCancelIn {}
 unsafe impl InFrame for ArriveIn {}
 unsafe impl InFrame for OnPieceIn {}
 unsafe impl InFrame for RefusalIn {}
@@ -85,6 +85,7 @@ unsafe impl InFrame for ProjectIn {}
 unsafe impl OutFrame for PlaneOpenOut {}
 unsafe impl OutFrame for PlaneRefreshOut {}
 unsafe impl OutFrame for PlaneDriveOut {}
+unsafe impl OutFrame for plane::PlaneCancelOut {}
 unsafe impl OutFrame for ArriveOut {}
 unsafe impl OutFrame for OnPieceOut {}
 unsafe impl OutFrame for RefusalOut {}
@@ -1050,7 +1051,28 @@ impl Kind for Plane {
                     "refresh.snapshot",
                 )
             }
-            life::CANCEL => check_cancel(a.outcome, a.out::<CancelOut>()?.disposition),
+            life::CANCEL => {
+                let i = a.input::<plane::PlaneCancelIn>()?;
+                let o = a.out::<plane::PlaneCancelOut>()?;
+                check_cancel(a.outcome, o.cancel.disposition)?;
+                // SAFETY: `records_buf` is the host's own buffer of `records_cap` `RecordWrite`s,
+                // named by this op's `in` (NULL with `0` from a host that lends none).
+                let records = unsafe {
+                    reported(
+                        i.records_buf.cast_const(),
+                        u64::from(o.records_written),
+                        i.records_cap as u64,
+                        "cancel.records",
+                    )
+                }?;
+                let b = if o.records_written == 0 {
+                    Bounds::default()
+                } else {
+                    *bounds(a)?
+                };
+                let caps = (i.records_cap as u64, i.arena_cap as u64);
+                check_cancel_records(a.outcome, o, records, caps, &b)
+            }
             life::DRIVE => {
                 let cap = a.input::<PlaneDriveIn>()?.sessions_cap as u64;
                 check_drive(a.outcome, a.out::<PlaneDriveOut>()?, cap)
@@ -1065,6 +1087,12 @@ impl Kind for Plane {
     /// sessions at the kind's maximum, so a `drive` never answers short.
     fn drive_frame() -> Box<dyn DriveFrame> {
         Box::new(PlaneDrive::new())
+    }
+
+    /// The plane's `cancel` frame: `PlaneCancelIn`/`PlaneCancelOut`, lending record buffers so the
+    /// cancelled unit writes its row (SEAM-L(r)).
+    fn cancel_frame() -> Box<dyn CancelFrame> {
+        Box::new(PlaneCancel::new())
     }
 
     /// THE REQUEST LOOKUP: the unit an `arrive`, an `on_piece` or a `refusal` serves, the kernel-
@@ -1123,6 +1151,97 @@ impl Kind for Plane {
                 .is_ok_and(|o| o.sessions_needed != 0),
             _ => false,
         }
+    }
+}
+
+/// The record writes a plane's `cancel` may carry, and the arena their bytes go in: `cancel` is
+/// never re-called, so a plane writes within these.
+pub const CANCEL_RECORDS: usize = 16;
+/// The arena bytes a plane's `cancel` is lent.
+pub const CANCEL_ARENA: usize = 4096;
+
+/// A plane's `cancel` frame and the host buffers its `in` names (SEAM-L(r)).
+pub struct PlaneCancel {
+    frame: Frame<plane::PlaneCancelIn, plane::PlaneCancelOut>,
+    records: Vec<RecordWrite>,
+    arena: Vec<u8>,
+}
+
+impl Default for PlaneCancel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PlaneCancel {
+    /// A frame with [`CANCEL_RECORDS`] record slots and a [`CANCEL_ARENA`]-byte arena.
+    #[must_use]
+    pub fn new() -> Self {
+        let none = RecordWrite {
+            kind: 0,
+            op: 0,
+            key: busbar_contract::abi::mechanism::call::Span { offset: 0, len: 0 },
+            value: busbar_contract::abi::mechanism::call::Span { offset: 0, len: 0 },
+        };
+        let base = crate::dispatch::cancel_frame(Ticket::NONE);
+        PlaneCancel {
+            frame: Frame::new(
+                plane::PlaneCancelIn {
+                    cancel: base.input,
+                    records_buf: std::ptr::null_mut(),
+                    records_cap: 0,
+                    arena_buf: std::ptr::null_mut(),
+                    arena_cap: 0,
+                },
+                plane::PlaneCancelOut {
+                    cancel: base.out,
+                    records_written: 0,
+                    _reserved: 0,
+                    arena_written: 0,
+                },
+            ),
+            records: vec![none; CANCEL_RECORDS],
+            arena: vec![0; CANCEL_ARENA],
+        }
+    }
+
+    /// The frame, for a ticketless `cancel` crossing through [`Plugin::call`].
+    pub fn frame(&mut self) -> &mut Frame<plane::PlaneCancelIn, plane::PlaneCancelOut> {
+        &mut self.frame
+    }
+}
+
+impl CancelFrame for PlaneCancel {
+    fn prepare(&mut self, ticket: Ticket, class: u8) -> (*mut InHead, *mut OutHead, u32) {
+        let base = crate::dispatch::cancel_frame(ticket);
+        let input = &mut self.frame.input;
+        input.cancel = base.input;
+        input.cancel.head.size = std::mem::size_of::<plane::PlaneCancelIn>() as u32;
+        input.cancel.head.deadline_class = class;
+        input.records_buf = self.records.as_mut_ptr();
+        input.records_cap = self.records.len();
+        input.arena_buf = self.arena.as_mut_ptr();
+        input.arena_cap = self.arena.len();
+        self.frame.out = plane::PlaneCancelOut {
+            cancel: base.out,
+            records_written: 0,
+            _reserved: 0,
+            arena_written: 0,
+        };
+        self.frame.heads()
+    }
+
+    fn disposition(&self) -> u32 {
+        self.frame.out.cancel.disposition
+    }
+
+    fn writes(&self) -> Vec<busbar_contract::plane_calls::CancelWrite> {
+        let arena = (self.frame.out.arena_written as usize).min(self.arena.len());
+        busbar_contract::plane_calls::CancelWrite::owned(
+            &self.records,
+            (self.frame.out.records_written as usize).min(self.records.len()),
+            &self.arena[..arena],
+        )
     }
 }
 

@@ -147,6 +147,8 @@ struct Unit {
 struct Slot {
     answer: Option<(Answered, OnPieceOut)>,
     waker: Option<Waker>,
+    /// The record writes the `cancel` that ended the op carried (SEAM-L(r)).
+    writes: Vec<busbar_contract::plane_calls::CancelWrite>,
 }
 struct Shared(Mutex<Slot>);
 // SAFETY: the `out` inside is plain data the double wrote; its pointers are never dereferenced.
@@ -191,6 +193,9 @@ impl PieceInFlight for Flight {
     }
     fn out(&self) -> Option<OnPieceOut> {
         self.0 .0.lock().unwrap().answer.map(|(_, o)| o)
+    }
+    fn cancel_writes(&self) -> Vec<busbar_contract::plane_calls::CancelWrite> {
+        self.0 .0.lock().unwrap().writes.clone()
     }
 }
 
@@ -284,6 +289,20 @@ impl Double {
     }
 
     /// The disposition `cancel` answers for `u`; `None` = FAULT.
+    /// What a `cancel` of `u` writes: a `hang-row` unit writes its audit row, `thing.cancel` on
+    /// `thing:x` applied (SEAM-L(r)); any other writes nothing.
+    fn cancel_row(&self, u: &Unit) -> Vec<busbar_contract::plane_calls::CancelWrite> {
+        if u.mode != b"hang-row" {
+            return Vec::new();
+        }
+        vec![busbar_contract::plane_calls::CancelWrite {
+            kind: AUDIT_APPLIED,
+            op: RECORD_AUDIT,
+            key: b"thing.cancel".to_vec(),
+            value: b"thing:x".to_vec(),
+        }]
+    }
+
     fn disposition(&self, u: &Unit) -> Option<u32> {
         let d = if u.mode == b"cancel-fault" {
             None
@@ -417,7 +436,9 @@ impl Double {
                 b"fault" => return (ready(Outcome::Fault), Hold::No),
                 // The watchdog's FAULT for a crossing that has not returned: see `Hold::Wedge`.
                 b"wedge" => return (ready(Outcome::Fault), Hold::Wedge),
-                b"hang" | b"cancel-fault" => return (ready(Outcome::Pending), Hold::Forever),
+                b"hang" | b"hang-row" | b"cancel-fault" => {
+                    return (ready(Outcome::Pending), Hold::Forever)
+                }
                 b"pend" if !u.pended => {
                     u.pended = true;
                     self.count(stat::HOST_CALLS);
@@ -901,10 +922,14 @@ impl PlaneCalls for Double {
         Outcome::Fault
     }
 
-    fn cancel(&self, ticket: Ticket) -> Option<u32> {
+    fn cancel(&self, ticket: Ticket) -> Option<busbar_contract::plane_calls::Cancelled> {
         self.count(stat::CANCELS);
         let u = self.unit_of(ticket);
         self.disposition(&u)
+            .map(|disposition| busbar_contract::plane_calls::Cancelled {
+                disposition,
+                writes: self.cancel_row(&u),
+            })
     }
 
     fn mint(&self) -> Option<Ticket> {
@@ -977,6 +1002,9 @@ impl PlaneCalls for Double {
             },
             None => ready(Outcome::Fault),
         };
+        if answer.disposition.is_some() {
+            slot.0.lock().unwrap().writes = self.cancel_row(&u);
+        }
         slot.put(answer, out);
     }
 
@@ -990,6 +1018,7 @@ impl PlaneCalls for Double {
         let slot = Arc::new(Shared(Mutex::new(Slot {
             answer: None,
             waker: None,
+            writes: Vec::new(),
         })));
         // SAFETY: the driver's `in`, whose buffers outlive the answer.
         let (answer, hold) = unsafe { self.piece(ticket, &input, &mut out) };
@@ -1296,6 +1325,55 @@ async fn a_served_requests_record_writes_reach_the_records_and_the_audit_chain()
         write_served_records(None, &rows, &served, "acct:caller").await,
         Err(Unserved::Fault),
         "a put with no record path is never dropped"
+    );
+}
+
+/// SEAM-L(r), THE CANCEL CROSSING'S RECORD WRITES: a unit cut by a reload while its op hangs is
+/// cancelled on the client-drop path, and the row its plane's `cancel` wrote reaches the kernel's
+/// audit chain under the verified principal; its bill is still the drain's. RED: the cancel had no
+/// record slot, so a reload-cut unit's row disappeared.
+#[tokio::test]
+async fn a_reload_cut_units_cancel_writes_its_row() {
+    let mut r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let rows = Arc::new(AuditRows::default());
+    r.driver = r.driver.with_audit(rows.clone());
+    let r = Arc::new(r);
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["hang-row"], cases::CHUNKS),
+        cases::Caller::default(),
+    );
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, cases::arrival("/call", b"x"), 0);
+    let reloader = {
+        let r = r.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            r.driver.reload();
+        })
+    };
+    let outcome = cases::drive(&units).await;
+    reloader.await.unwrap();
+    assert!(
+        matches!(
+            outcome,
+            busbar_contract::caps::Outcome::Failed(
+                busbar_contract::caps::StepName::Route,
+                busbar_contract::caps::ReasonCode::Drain
+            )
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        *rows.0.lock().unwrap(),
+        vec![(
+            "thing.cancel".to_string(),
+            "thing:x".to_string(),
+            busbar_contract::vocab::OUTCOME_APPLIED,
+            common::principal().as_str().to_string(),
+        )],
+        "the cancel's row, under the kernel's principal"
     );
 }
 

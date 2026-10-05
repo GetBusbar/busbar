@@ -393,32 +393,26 @@ impl PlaneDriver {
         audit_row_to(&*self.audit, outcome, key, value, principal)
     }
 
-    /// THE RECORD WRITES OF AN ANSWER THAT ENDS NOTHING FURTHER (a refusal's, SEAM-L(o)): each
-    /// audit row folded as [`Self::audit_row`], each put handed to the record write path, its
-    /// acknowledgement not awaited (the refusal has nothing left to fail). A write the plane got
-    /// wrong, or a put with no record path, is logged and dropped: the caller's answer stands.
-    fn fold_records(
+    /// THE RECORD WRITES OF AN ANSWER THAT ENDS NOTHING FURTHER (a refusal's, SEAM-L(o); a
+    /// `cancel`'s, SEAM-L(r)): each audit row folded as [`Self::audit_row`], each put handed to the
+    /// record write path, its acknowledgement not awaited (the unit has nothing left to fail). A
+    /// write the plane got wrong, or a put with no record path, is logged and dropped: the unit's
+    /// end stands.
+    pub(crate) fn fold_writes(
         &self,
-        writes: &[busbar_contract::abi::plane::RecordWrite],
-        arena: &[u8],
+        writes: &[busbar_contract::plane_calls::CancelWrite],
         principal: Option<&PrincipalId>,
     ) {
         use busbar_contract::abi::plane::{RECORD_AUDIT, RECORD_PUT};
-        let bytes = |s: Span| {
-            let start = s.offset as usize;
-            arena
-                .get(start..start.saturating_add(s.len as usize))
-                .unwrap_or_default()
-        };
         for w in writes {
             let written = match w.op {
-                RECORD_AUDIT => self.audit_row(w.kind, bytes(w.key), bytes(w.value), principal),
+                RECORD_AUDIT => self.audit_row(w.kind, &w.key, &w.value, principal),
                 RECORD_PUT => self.records.as_ref().map_or(Err(()), |(services, caller)| {
                     let kind = services.record_kind(caller, w.kind).ok_or(())?;
-                    let value = busbar_contract::kinds::RecordBytes::new(bytes(w.value).to_vec())
+                    let value = busbar_contract::kinds::RecordBytes::new(w.value.clone())
                         .map_err(|_| ())?;
                     services
-                        .record_write(caller, kind.as_str(), bytes(w.key), value, Box::new(|_| {}))
+                        .record_write(caller, kind.as_str(), &w.key, value, Box::new(|_| {}))
                         .map_err(|_| ())
                 }),
                 _ => Err(()),
@@ -426,7 +420,7 @@ impl PlaneDriver {
             if written.is_err() {
                 tracing::warn!(
                     op = w.op,
-                    "a plane's record write on a refusal could not be applied; the refusal stands"
+                    "a plane's record write at a unit's end could not be applied; the end stands"
                 );
             }
         }
@@ -476,9 +470,9 @@ impl PlaneDriver {
         }
     }
 
-    /// The driver's own ticketless `cancel` of `ticket`, on the calling task: its disposition, or
-    /// `None` when it did not answer READY.
-    fn cancel_now(&self, ticket: Ticket) -> Option<u32> {
+    /// The driver's own ticketless `cancel` of `ticket`, on the calling task: its disposition and
+    /// its record writes, or `None` when it did not answer READY.
+    fn cancel_now(&self, ticket: Ticket) -> Option<busbar_contract::plane_calls::Cancelled> {
         self.calls.cancel(ticket)
     }
 }
@@ -864,11 +858,12 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
         if written != 0 {
             let principal = self.lock().principal.clone();
             let arena_written = (o.arena_written as usize).min(arena.len());
-            self.driver.fold_records(
-                &records[..written],
+            let writes = busbar_contract::plane_calls::CancelWrite::owned(
+                &records,
+                written,
                 &arena[..arena_written],
-                principal.as_ref(),
             );
+            self.driver.fold_writes(&writes, principal.as_ref());
         }
         let span = |s: Span| {
             let start = s.offset as usize;

@@ -1381,6 +1381,21 @@ mod plane_plugin {
         }
     }
 
+    /// `cancel`: the plane's own `in`/`out` (the lifecycle's embedded first).
+    pub struct Cancel;
+    impl Slot for Cancel {
+        type In = crate::abi::plane::PlaneCancelIn;
+        type Out = crate::abi::plane::PlaneCancelOut;
+        fn call(
+            _: *mut c_void,
+            input: &crate::abi::plane::PlaneCancelIn,
+            out: &mut crate::abi::plane::PlaneCancelOut,
+        ) -> Outcome {
+            out.cancel.disposition = input.cancel.ticket.slot + 6;
+            Outcome::Failed
+        }
+    }
+
     /// `drive`: names the session `41` ready in the host's buffer.
     pub struct Drive;
     impl Slot for Drive {

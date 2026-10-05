@@ -1203,7 +1203,8 @@ extern "C" fn serve(_: *mut c_void, input: *const c_void, out: *mut c_void) -> R
     unsafe {
         let i = &*input.cast::<ServeIn>();
         let o = &mut *out.cast::<ServeOut>();
-        if i.route != 0 {
+        // Route 0, the admin route; route 1, the public one (answered under its own word).
+        if i.route > 1 {
             return say(out, Outcome::Refused);
         }
         let body = bytes(i.body);
@@ -1219,8 +1220,9 @@ extern "C" fn serve(_: *mut c_void, input: *const c_void, out: *mut c_void) -> R
             std::slice::from_raw_parts(i.fields, i.fields_len)
         };
         let names: Vec<&[u8]> = fields.iter().map(|f| text(f.name)).collect();
+        let word: &[u8] = if i.route == 1 { b"public " } else { b"served " };
         let mut reply = [
-            b"served ".as_slice(),
+            word,
             text(i.target),
             b" fields=",
             names.join(&b","[..]).as_slice(),
