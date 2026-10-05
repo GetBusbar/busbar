@@ -239,6 +239,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         auths: Arc::new(auths),
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
         stream_ceiling_secs: 600,
+        upgrades: Vec::new(),
     };
 
     // THE COMPOSITION, AS PRODUCTION SEALS IT: the door opened with its section (one model),
