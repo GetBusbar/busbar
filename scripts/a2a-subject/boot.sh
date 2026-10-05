@@ -121,7 +121,8 @@
 #     its own listener over h2c, the card publishes that binding's authority, and the shim in front
 #     carries the credential on that connection as well as on the HTTP one.
 #   * PUSH DELIVERY. `PUSH-DELIVER-001/002/003` are RED and are WAIVED with the reason recorded in
-#     `testing/a2a-tck/WAIVERS.md`. Read that before "fixing the rig's topology": the suite's
+#     `testing/a2a-tck/WAIVERS.md`, and only while every one of their errors is busbar's plaintext
+#     callback refusal (the premise `subject-waivers.json` states and `assert_tck_number` evaluates). Read that before "fixing the rig's topology": the suite's
 #     receiver URL is `http://` by literal and busbar refuses a plaintext webhook before it looks at
 #     the address at all, so a non-loopback receiver does not reach the refusal that fires. Two of
 #     the three are implementation gaps behind it. Nothing here is silenced — all three still run,
@@ -949,11 +950,14 @@ leg_tck() {
 # which every MUST degraded to `NOT TESTED` (a TCK pin bump, an undialable transport, a subject that
 # never served) exited 0 reading "0 FAIL" -- the skipped-while-green failure this file exists to
 # refuse, reached by a different door. A run that executed no MUST at all is RED outright.
-# `FAIL` requirements are gated on the PINNED SET in `testing/a2a-tck/subject-waivers.json` --
-# anything failing OUTSIDE that pin is RED. `WAIVERS.md` documents more than that pin
-# (`CARD-EXT-001` is also marked waived there); this gate deliberately pins only the LOCKED
-# `PUSH-DELIVER` trio, so `CARD-EXT-001` and `GRPC-ERR-001` stay RED here -- named, dated, and
-# understood in `WAIVERS.md`, not silenced by this gate.
+# `FAIL` and `SKIPPED` requirements are gated on the LEDGER in `testing/a2a-tck/subject-waivers.json`
+# -- anything failing outside its `waived` list, or skipped outside its `skipped` list, is RED. And
+# no entry is trusted by its id: each carries a PREMISE (conditions over this run's own report: the
+# requirement's errors, the agent card the suite read, a sibling requirement's status) that the gate
+# EVALUATES, and an entry whose premise is false, or whose requirement is no longer in the state it
+# forgives, is RED until it is retired (BUSBAR-1.6.0.md Law 10). A SKIP is no evidence about busbar,
+# so it is never excused as a class: each one is named and justified (Law 8). The partition of MUST
+# statuses is printed and an unknown status is RED.
 assert_tck_number() {
   local out="$1" report_json="$2"
   local waivers="${3:-testing/a2a-tck/subject-waivers.json}"
