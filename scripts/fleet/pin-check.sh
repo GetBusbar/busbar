@@ -88,7 +88,9 @@ check() {
   fi
 
   if [ -f "$root/Cargo.lock" ]; then
-    if grep -E "^source = \"git\+${SRC}" "$root/Cargo.lock" | grep -vqF "?rev=${pin}#${pin}\""; then
+    # busbar's own source exactly (`<SRC>?`): another GetBusbar repo (a transport framer a networked
+    # plugin's conformance host takes as a dev-dependency) is its own source at its own rev.
+    if grep -E "^source = \"git\+${SRC}\?" "$root/Cargo.lock" | grep -vqF "?rev=${pin}#${pin}\""; then
       err "Cargo.lock resolves a busbar source other than rev=${pin}"
     fi
   else
@@ -135,12 +137,13 @@ selftest() {
   mk; printf 'x = { path = "../../busbar/crates/x" }\n' >> "$tmp/r/adapter/Cargo.toml"; expect "a sibling-checkout path dependency is refused" red "outside the repo"
   mk; printf 'busbar-plugin-sdk = { git = "%s", rev = "%s" }\n' "$SRC" "$pin" >> "$tmp/r/adapter/Cargo.toml"; expect "a retired busbar crate is refused" red "retired busbar crate"
   mk; sed -i.bak "s/rev=$pin#/rev=$other#/" "$tmp/r/Cargo.lock"; expect "a lock resolving another busbar rev is refused" red "Cargo.lock resolves"
+  mk; printf '[[package]]\nname = "busbar-transport-http"\nsource = "git+%s-transport-http?rev=%s#%s"\n' "$SRC" "$other" "$other" >> "$tmp/r/Cargo.lock"; expect "another GetBusbar repo in the lock at its own rev passes (not busbar's source)" ok
   mk; sed -i.bak "s/@$pin/@dev/" "$tmp/r/.github/workflows/ci.yml"; expect "a reusable workflow taken at a branch, not the pin, is refused" red "not the pin"
   mkc; PIN_CHECK_LANG=c expect "a C plugin with no Cargo passes (control)" ok
   mkc; printf '[workspace]\n' > "$tmp/r/Cargo.toml"; PIN_CHECK_LANG=c expect "a C plugin carrying a Cargo.toml is refused" red "carries Cargo.toml"
   mkc; sed -i.bak "s/@$pin/@$other/" "$tmp/r/.github/workflows/ci.yml"; PIN_CHECK_LANG=c expect "a C plugin's workflow off the pin is refused" red "not the pin"
   mkc; expect "a C plugin checked as Rust is refused (no Cargo.toml)" red "no Cargo.toml"
-  [ "$ran" = 12 ] || { echo "pin-check selftest: only $ran of 12 cases ran"; return 1; }
+  [ "$ran" = 13 ] || { echo "pin-check selftest: only $ran of 13 cases ran"; return 1; }
   [ "$rc" = 0 ] && echo "pin-check selftest: every refusal fires on its planted defect" || echo "pin-check selftest: FAILED"
   return "$rc"
 }
