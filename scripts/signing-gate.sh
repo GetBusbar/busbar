@@ -29,8 +29,13 @@ LIB=$(cd "$(dirname "${5:?cdylib path}")" && pwd)/$(basename "$5")
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-PACK="$BUSBAR_DIR/target/release/busbar-plugin-pack"
-BUSBAR="$BUSBAR_DIR/target/release/busbar"
+# Where cargo puts what it builds below: CARGO_TARGET_DIR when the caller set one (relative to the
+# checkout, where the builds run), else the checkout's own target/. Reading target/ unconditionally
+# ran the PREVIOUS build's binaries, or none, under a runner that sets a target dir.
+TARGET_DIR=${CARGO_TARGET_DIR:-target}
+case "$TARGET_DIR" in /*) ;; *) TARGET_DIR="$BUSBAR_DIR/$TARGET_DIR" ;; esac
+PACK="$TARGET_DIR/release/busbar-plugin-pack"
+BUSBAR="$TARGET_DIR/release/busbar"
 
 # ── 0. Ephemeral keypair ─────────────────────────────────────────────────────────────────────────
 # CI may pre-generate the pair (BUSBAR_GATE_SIGN_KEY/BUSBAR_GATE_PUBKEY) so the busbar binary built
