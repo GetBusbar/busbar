@@ -28,6 +28,17 @@ pub const RESERVED_SECTION_KEYS: &[&str] = &["hooks", "upstream_credentials"];
 /// of the section's own entries under `members`. Core-owned: the kernel reads it, the plane never.
 pub const RESERVED_POOLS_KEY: &str = "pools";
 
+/// THE RESERVED `work` SUB-KEY of a plane's section (POOLS-VERBS, lifted as `pools` is): the bounds
+/// of the plane instance's durable work handles, `{max_live, retain_s}`. Core-owned: the kernel reads
+/// it and the plane never sees it.
+pub const RESERVED_WORK_KEY: &str = "work";
+
+/// The most live work handles one instance holds, inside [`RESERVED_WORK_KEY`].
+pub const WORK_MAX_LIVE_KEY: &str = "max_live";
+
+/// How long a settled work handle is retained, in seconds, inside [`RESERVED_WORK_KEY`].
+pub const WORK_RETAIN_S_KEY: &str = "retain_s";
+
 /// THE RESERVED `models` MAP of a model-serving plane's section (the uniform model-serving map,
 /// owner config-model ruling 2026-09-19): where present, its keys are the section's entries.
 pub const RESERVED_MODELS_KEY: &str = "models";

@@ -255,6 +255,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
                 open: false,
                 arrived: 0,
                 records: Some(std::sync::Arc::clone(&records)),
+                depth: 0,
             },
         )
     };
@@ -300,9 +301,7 @@ fn provider(protocol: &str, style: Option<&str>) -> super::ProviderRoute {
         protocol: protocol.to_string(),
         credential: busbar_contract::secret_ref::SecretRef::none(),
         style: style.map(str::to_string),
-        token_url: None,
-        scope: None,
-        subject: None,
+        params: super::StyleParams::default(),
     }
 }
 
@@ -576,9 +575,11 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
                 key_file.display().to_string(),
             ),
             style: Some("oauth-client-credentials".to_string()),
-            token_url: Some(TOKEN_URL.to_string()),
-            scope: Some("https://cognitiveservices.azure.com/.default".to_string()),
-            subject: None,
+            params: super::StyleParams {
+                token_url: Some(TOKEN_URL.to_string()),
+                scope: Some("https://cognitiveservices.azure.com/.default".to_string()),
+                subject: None,
+            },
         },
     )]
     .into();
