@@ -39,8 +39,11 @@
 //!   carry, at least 1, over a sink of [`TIGHT_WIRE`] wire bytes, [`TIGHT_FRAME`] frame bytes and
 //!   ONE piece (so every frame's pieces are counted alone).
 //!
-//! A carrier (`ROLE_CARRIER`) has no script here: no carrier is on the roster, and a carrier's
-//! suite fails rather than skip.
+//! THE SCRIPT IS CHOSEN BY THE DECLARED ROLE ([`script_for`]): a FRAMER runs the framer script above.
+//! A CARRIER is REFUSED with a named error for now: this is an INTERIM GUARD ONLY, until branch
+//! `p2-transport-carrier` (stage B of p2-transport-stack, ARCHITECT ruling: TRANSPORT-STACK (2)'s
+//! carrier surface, listen/accept/dial/read/write/close/arrival over host io) lands the carrier
+//! script and the carriers' real slots. An unknown role fails the suite.
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, OutHead, Outcome};
 use busbar_contract::abi::transport::{
@@ -54,6 +57,31 @@ use super::{
     bind, close, crossings, dispatcher, input, load, open, output, ready_step, refresh, tick,
     validate, Fold, Leg, Recorder, Subject,
 };
+use busbar_contract::abi::transport::ROLE_CARRIER;
+
+/// Which script a transport's declared `role` runs, or why none does. A FRAMER runs the framer
+/// script. A CARRIER is refused by name: INTERIM GUARD ONLY, until branch `p2-transport-carrier`
+/// (stage B of p2-transport-stack) lands the carrier script (TRANSPORT-STACK (2): listen/accept,
+/// dial, read, write, close, arrival facts, poll-shaped with the host waker). Any other role is not a
+/// transport this suite knows, and fails.
+///
+/// # Errors
+///
+/// The role is a carrier (no carrier script yet) or no known role.
+pub(super) fn script_for(role: u32) -> Result<(), String> {
+    match role {
+        ROLE_FRAMER => Ok(()),
+        ROLE_CARRIER => Err(
+            "CarrierScriptPending: the transport declares ROLE_CARRIER and the carrier script \
+             lands with branch p2-transport-carrier (stage B of p2-transport-stack); the suite \
+             refuses rather than run the framer script over a carrier"
+                .to_owned(),
+        ),
+        other => Err(format!(
+            "UnknownRole: the transport declares role {other}, neither ROLE_CARRIER nor ROLE_FRAMER"
+        )),
+    }
+}
 use crate::dispatch::kinds::transport::{Transport, TransportFacts};
 use crate::dispatch::{Called, Frame, InFrame, OutFrame, Plugin};
 
@@ -488,10 +516,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         .context::<TransportFacts>()
         .cloned()
         .expect("a transport states its tail");
-    assert_eq!(
-        facts.role, ROLE_FRAMER,
-        "no carrier is on the roster: the carrier role's script is not written"
-    );
+    if let Err(why) = script_for(facts.role) {
+        panic!("{why}");
+    }
     let mut want: Vec<(String, Want)> = Vec::new();
     let mut r = Recorder::new(crossings(&p));
 
@@ -800,6 +827,26 @@ fn contract(fold: &Fold, want: &[(String, Want)]) {
         match w {
             Want::Is(line) => assert_eq!(got, line.as_str(), "{label}"),
             Want::Starts(prefix) => assert!(got.starts_with(prefix), "{label}: {got}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod role_tests {
+    use super::script_for;
+    use busbar_contract::abi::transport::{ROLE_CARRIER, ROLE_FRAMER};
+
+    /// A framer runs the framer script; a carrier is refused BY NAME (the interim guard until
+    /// `p2-transport-carrier`); an unknown role fails. RED arms: the carrier and the unknown role.
+    #[test]
+    fn the_script_is_chosen_by_the_declared_role() {
+        assert_eq!(script_for(ROLE_FRAMER), Ok(()));
+        let carrier = script_for(ROLE_CARRIER).expect_err("RED: a carrier is refused");
+        assert!(carrier.starts_with("CarrierScriptPending"), "{carrier}");
+        assert!(carrier.contains("p2-transport-carrier"), "{carrier}");
+        for role in [0, ROLE_CARRIER | ROLE_FRAMER, 7] {
+            let e = script_for(role).expect_err("RED: an unknown role fails");
+            assert!(e.starts_with("UnknownRole"), "{e}");
         }
     }
 }
