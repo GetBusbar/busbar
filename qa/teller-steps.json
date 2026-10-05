@@ -444,7 +444,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::a_streaming_mint_is_served_through_the_door_under_the_providers_credential",
+          "test": "crates/busbar/src/root/tests/serve_door.rs::a_session_door_mint_is_served_under_the_providers_credential",
           "note": "on the streaming door's served leg: the browser's mint is one unit the door carries end to end, from the data router's claim to the provider's answer relayed to the caller"
         }
       },
@@ -465,7 +465,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::a_streaming_mint_is_served_through_the_door_under_the_providers_credential",
+          "test": "crates/busbar/src/root/tests/serve_door.rs::a_session_door_mint_is_served_under_the_providers_credential",
           "note": "on the streaming door's served leg: the mint is admitted for the key its token resolves, and the same request with no credential is refused before any dial or charge"
         }
       },
@@ -476,7 +476,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::a_streaming_mint_is_served_through_the_door_under_the_providers_credential",
+          "test": "crates/busbar/src/root/tests/serve_door.rs::a_session_door_mint_is_served_under_the_providers_credential",
           "note": "on the streaming door's served leg: the mint reaches the provider through the connector at the destination its guard judged, the catalog model's provider on loopback"
         }
       },
@@ -497,7 +497,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::a_spent_key_is_refused_at_the_streaming_door_before_any_dial",
+          "test": "crates/busbar/src/root/tests/serve_door.rs::a_spent_key_is_refused_at_the_session_door_before_any_dial",
           "note": "on the streaming door's served leg: a key whose group budget is spent is refused 429 at admission, the provider never dialled and nothing charged"
         }
       },
@@ -508,7 +508,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::a_streaming_mint_is_served_through_the_door_under_the_providers_credential",
+          "test": "crates/busbar/src/root/tests/serve_door.rs::a_session_door_mint_is_served_under_the_providers_credential",
           "note": "on the streaming door's served leg: the mint is routed DIRECT to the catalog model streams.session.model names, its locked session carrying that model to the provider"
         }
       },
@@ -519,7 +519,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::a_streaming_mint_is_served_through_the_door_under_the_providers_credential",
+          "test": "crates/busbar/src/root/tests/serve_door.rs::a_session_door_mint_is_served_under_the_providers_credential",
           "note": "on the streaming door's served leg: the served mint is one request on the governance ledger of the key that presented it"
         }
       },
@@ -530,7 +530,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::a_streaming_mint_is_served_through_the_door_under_the_providers_credential",
+          "test": "crates/busbar/src/root/tests/serve_door.rs::a_session_door_mint_is_served_under_the_providers_credential",
           "note": "on the streaming door's served leg: the served mint writes exactly one line on the node's book, the unit's one record"
         }
       },
@@ -541,7 +541,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/serve_door.rs::a_streaming_mint_is_served_through_the_door_under_the_providers_credential",
+          "test": "crates/busbar/src/root/tests/serve_door.rs::a_session_door_mint_is_served_under_the_providers_credential",
           "note": "on the streaming door's served leg: the mint's money facts and node facts close once at its end, nothing left open on either"
         }
       }

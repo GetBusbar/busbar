@@ -2681,7 +2681,7 @@ mod planes_tests;
 
 #[cfg(all(
     test,
-    any(feature = "plane-decisions", feature = "plane-streaming"),
+    any(feature = "plane-decisions", linked_axis_plane_door),
     linked_axis_node
 ))]
 #[path = "tests/serve_door.rs"]

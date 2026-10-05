@@ -522,20 +522,20 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
 }
 
 /// The streaming door's mint claim.
-#[cfg(feature = "plane-streaming")]
+#[cfg(linked_axis_plane_door)]
 const MINT: &str = "/v1/realtime/client_secrets";
 
 /// The provider's answer to the mint: an ephemeral secret and its expiry.
-#[cfg(feature = "plane-streaming")]
+#[cfg(linked_axis_plane_door)]
 const MINTED: &str = r#"{"value":"ek_door_0001","expires_at":1767225600}"#;
 
 /// The deployment's public base URL the streaming door fronts.
-#[cfg(feature = "plane-streaming")]
+#[cfg(linked_axis_plane_door)]
 const PUBLIC: &str = "http://gw.test";
 
 /// The streaming door, served as production composes it, and what each `root-voice` cell reads.
-#[cfg(feature = "plane-streaming")]
-struct Streaming {
+#[cfg(linked_axis_plane_door)]
+struct SessionDoor {
     _published: Published,
     router: axum::Router,
     heard: tokio::sync::mpsc::UnboundedReceiver<String>,
@@ -549,16 +549,49 @@ struct Streaming {
     book: crate::root::durability::NodeBook,
 }
 
-/// [`Streaming`]: the linked streaming door bound through the loader's one load, its needs declared
+/// The billable class the session door meters a caller's audio under: how the harness finds that
+/// door among the linked plane doors without spelling the plane.
+#[cfg(linked_axis_plane_door)]
+const AUDIO_CLASS: &str = "audio_seconds_in";
+
+/// The linked plane door that meters audio (the session door), bound under `instance`; `None` in a
+/// build that links none.
+#[cfg(linked_axis_plane_door)]
+fn session_door(
+    instance: &'static str,
+    dispatcher: &Arc<Dispatcher>,
+    conns: Arc<dyn DeclaredConns>,
+) -> Option<Plane> {
+    crate::LINKED.plane_doors.iter().find_map(|door| {
+        let row = LinkedRow::of(*door).expect("the door states its Statement");
+        let plane = load_linked::<Plane>(
+            &row,
+            Bind {
+                instance: Arc::from(instance),
+                max_inflight_cap: 64,
+                sink: Arc::new(NoSink),
+                dispatcher: dispatcher.adopter(),
+                conns: Some(Arc::clone(&conns)),
+            },
+        )
+        .expect("the linked door binds");
+        plane
+            .served()
+            .billable_classes
+            .contains(&AUDIO_CLASS)
+            .then_some(plane)
+    })
+}
+
+/// [`SessionDoor`]: the linked session door (the plane door that meters audio) bound through the
+/// loader's one load, its needs declared
 /// on the connector over every linked transport door; a signing governance book with one key (in a
 /// group whose all-time budget is `budget`, the door's per-request fee one, or no group and no fee);
 /// an OpenAI-protocol provider on a loopback far end answering the mint, reached through the catalog
 /// model `streams.session.model` names; the door composed under [`PUBLIC`] with its egress sealed by
 /// the composition itself, and its claims mounted on the data router.
-#[cfg(feature = "plane-streaming")]
-async fn streaming(instance: &'static str, budget: Option<u64>) -> Streaming {
-    use busbar_plane_streaming::door::{door as streaming_door, NAME as PLANE};
-
+#[cfg(linked_axis_plane_door)]
+async fn session_served(instance: &'static str, budget: Option<u64>) -> Option<SessionDoor> {
     let published = Published(instance);
     let (port, heard) = far_end_answering(MINTED).await;
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
@@ -580,18 +613,12 @@ async fn streaming(instance: &'static str, budget: Option<u64>) -> Streaming {
     )
     .expect("the connector builds");
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let row = LinkedRow::of(streaming_door).expect("the door states its Statement");
-    let plane = load_linked::<Plane>(
-        &row,
-        Bind {
-            instance: Arc::from(instance),
-            max_inflight_cap: 64,
-            sink: Arc::new(NoSink),
-            dispatcher: dispatcher.adopter(),
-            conns: Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
-        },
-    )
-    .expect("the linked door binds");
+    let plane = session_door(
+        instance,
+        &dispatcher,
+        Arc::clone(&connector) as Arc<dyn DeclaredConns>,
+    )?;
+    let plane_name = plane.name().to_owned();
     let section_key = plane.served().section;
 
     let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = budget
@@ -620,7 +647,7 @@ async fn streaming(instance: &'static str, budget: Option<u64>) -> Streaming {
         None => CostModel::flat(1),
         Some(_) => {
             let fees: busbar_kernel::config::PlaneFeesMap = [(
-                PLANE.to_string(),
+                plane_name.clone(),
                 busbar_kernel_ledger::cost::PlaneFees {
                     per_request: 1,
                     per_session: 0,
@@ -708,7 +735,7 @@ async fn streaming(instance: &'static str, budget: Option<u64>) -> Streaming {
         }),
         None,
     )
-    .expect("the streaming door composes, its egress sealed");
+    .expect("the session door composes, its egress sealed");
     let _ = std::fs::remove_file(&key_file);
     assert!(
         served.planes[0].live.current().egress.is_some(),
@@ -723,7 +750,7 @@ async fn streaming(instance: &'static str, budget: Option<u64>) -> Streaming {
     let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
-    Streaming {
+    Some(SessionDoor {
         _published: published,
         router,
         heard,
@@ -734,11 +761,11 @@ async fn streaming(instance: &'static str, budget: Option<u64>) -> Streaming {
         money,
         post,
         book,
-    }
+    })
 }
 
-#[cfg(feature = "plane-streaming")]
-impl Streaming {
+#[cfg(linked_axis_plane_door)]
+impl SessionDoor {
     /// The requests the governance book admitted for the key, this window.
     fn requests(&self) -> u64 {
         self.gov
@@ -767,17 +794,20 @@ impl Streaming {
 /// by the `streams|mint|wrong-audience` oracle cell.)
 ///
 /// RED ARM: the same request with no credential is refused before anything is dialled or charged.
-#[cfg(feature = "plane-streaming")]
+#[cfg(linked_axis_plane_door)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_streaming_mint_is_served_through_the_door_under_the_providers_credential() {
+async fn a_session_door_mint_is_served_under_the_providers_credential() {
     let _one = PUBLISHING.lock().await;
-    let mut s = streaming("serve-door-streaming", None).await;
+    let Some(mut s) = session_served("serve-door-session", None).await else {
+        eprintln!("skip: this build links no session door");
+        return;
+    };
 
     let refused = send_body(&s.router, MINT, None, "{}").await;
     assert_eq!(
         refused.status().as_u16(),
         u16::try_from(refusal_status(ReasonCode::Unauthenticated)).expect("a status"),
-        "an unkeyed caller is refused at the streaming door"
+        "an unkeyed caller is refused at the session door"
     );
     assert!(s.heard.try_recv().is_err(), "nothing was dialled for it");
     assert_eq!(s.requests(), 0, "nor charged");
@@ -824,11 +854,14 @@ async fn a_streaming_mint_is_served_through_the_door_under_the_providers_credent
 /// at admission — over budget, before the provider is dialled, charged nothing, no line written —
 /// while a key with room is served (the mint cell above). RED: a door that dialled before admission
 /// would have reached the far end.
-#[cfg(feature = "plane-streaming")]
+#[cfg(linked_axis_plane_door)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_spent_key_is_refused_at_the_streaming_door_before_any_dial() {
+async fn a_spent_key_is_refused_at_the_session_door_before_any_dial() {
     let _one = PUBLISHING.lock().await;
-    let mut s = streaming("serve-door-streaming-spent", Some(0)).await;
+    let Some(mut s) = session_served("serve-door-session-spent", Some(0)).await else {
+        eprintln!("skip: this build links no session door");
+        return;
+    };
     let response = send_body(&s.router, MINT, Some(&s.plain), "{}").await;
     assert_eq!(
         response.status().as_u16(),

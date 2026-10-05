@@ -67,6 +67,9 @@ fn spec() -> WalkSpec {
 #[derive(Clone, Default)]
 struct Facts {
     consts: Vec<(String, String)>,
+    /// String constants written as another constant's path (`const A: &str = config::SECTION;`),
+    /// resolved through the same reader once every file's literals are known.
+    aliases: Vec<(String, String)>,
     decls: Vec<Result<(String, Vec<String>), String>>,
     core_owned: Option<Vec<String>>,
 }
@@ -98,6 +101,11 @@ fn facts(path: &str, raw: &str) -> Facts {
         } else if ty.contains("str") && !ty.contains('[') && value.len() >= 2 {
             if let Some(lit) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
                 out.consts.push((name, lit.to_string()));
+            } else if value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+            {
+                out.aliases.push((name, value.to_string()));
             }
         }
     }
@@ -179,7 +187,9 @@ fn base(cx: &Ctx) -> Result<BTreeMap<String, Facts>, String> {
     for f in files {
         let rel = f.rel_str();
         let facts = facts(&rel, &f.text);
-        if facts.consts.len() + facts.decls.len() > 0 || facts.core_owned.is_some() {
+        if facts.consts.len() + facts.aliases.len() + facts.decls.len() > 0
+            || facts.core_owned.is_some()
+        {
             out.insert(rel, facts);
         }
     }
@@ -240,6 +250,24 @@ fn resolve(
     };
     if let Some(v) = found {
         return Ok(v);
+    }
+    // A path through a module of the declaring file's own crate (`config::SECTION`): the crate's
+    // own definitions, when they agree.
+    if segs.len() > 1 {
+        if let Some(krate) = file
+            .strip_prefix(&format!("{ROOT}/"))
+            .and_then(|r| r.split_once('/'))
+            .map(|(k, _)| format!("{ROOT}/{k}/"))
+        {
+            let own: BTreeSet<&String> = defs
+                .iter()
+                .filter(|(p, _)| p.starts_with(&krate))
+                .map(|(_, v)| v)
+                .collect();
+            if own.len() == 1 {
+                return Ok(own.into_iter().next().cloned().unwrap_or_default());
+            }
+        }
     }
     let values: BTreeSet<&String> = defs.iter().map(|(_, v)| v).collect();
     match values.len() {
@@ -306,6 +334,19 @@ pub fn read(cx: &Ctx) -> Result<Declarations, String> {
                 .or_default()
                 .push((path.clone(), lit.clone()));
         }
+    }
+    // An alias resolves to the literal its path names; one pass, an alias of a literal (an alias of
+    // an alias the reader cannot follow is left out, and a declaration naming it is then refused).
+    let mut resolved: Vec<(String, String, String)> = Vec::new();
+    for (path, f) in &files {
+        for (name, target) in &f.aliases {
+            if let Ok(lit) = resolve(target, path, &consts) {
+                resolved.push((name.clone(), path.clone(), lit));
+            }
+        }
+    }
+    for (name, path, lit) in resolved {
+        consts.entry(name).or_default().push((path, lit));
     }
     let core_owned: BTreeSet<String> = files
         .values()

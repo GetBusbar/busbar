@@ -1110,7 +1110,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::a_streaming_mint_is_served_through_the_door_under_the_providers_credential"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::a_session_door_mint_is_served_under_the_providers_credential"
       }
     },
     {
@@ -1120,7 +1120,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::a_spent_key_is_refused_at_the_streaming_door_before_any_dial"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::a_spent_key_is_refused_at_the_session_door_before_any_dial"
       }
     },
     {
@@ -1210,7 +1210,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/serve_door.rs::a_streaming_mint_is_served_through_the_door_under_the_providers_credential"
+        "test": "crates/busbar/src/root/tests/serve_door.rs::a_session_door_mint_is_served_under_the_providers_credential"
       }
     },
     {
