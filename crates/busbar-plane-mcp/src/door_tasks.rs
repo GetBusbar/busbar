@@ -935,6 +935,7 @@ fn call(
         arguments,
         id: json!(0),
         progress_token: None,
+        capabilities: Value::Null,
         relay: None,
     };
     let Some(outbound) = crate::call::outbound(&admitted, &member, def, 0, None) else {

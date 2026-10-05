@@ -76,14 +76,16 @@ const NONE: AbiStr = AbiStr {
 
 /// THE SECTIONS THE PLANE'S STATEMENT DECLARES: `tools:`, which it owns and judges, and its endpoint
 /// block beside it.
+/// The names are literals (the config-schema census reads a door-only plane's sections off this
+/// table); a test holds them equal to [`SECTION`] and [`ENDPOINT_SECTION`].
 pub const SECTIONS: &[Section] = &[
     Section {
-        name: abi_str(SECTION),
+        name: abi_str("tools"),
         flags: SECTION_DECLARING,
         _reserved: 0,
     },
     Section {
-        name: abi_str(ENDPOINT_SECTION),
+        name: abi_str("mcp"),
         flags: 0,
         _reserved: 0,
     },

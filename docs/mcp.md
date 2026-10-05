@@ -118,9 +118,7 @@ Naming a server `hooks` or `upstream_credentials` is refused at parse with a mes
 | `resources_allow` | map of URI → object | no | `{}` | |
 | `resource_templates_allow` | map of URI template → object | no | `{}` | RFC 6570 **level 1 only**. |
 | `aud` | absolute http(s) URI | required when `token_exchange:` is set; **refused** on `stdio` | — | The RFC 8707 resource indicator for the OUTBOUND token. Not Busbar's own audience — that is `mcp.canonical_uri`. |
-| `grants` | object of three booleans | no | all `false` | `sampling`, `elicitation`, `roots` — what this upstream may ask Busbar for. |
-| `roots` | list of `{uri, name?}` | no | `[]` | `file://` only. The satisfier behind `grants.roots`. |
-| `sampling` | object | no | absent | The satisfier behind `grants.sampling`. All three fields required. |
+| `grants` | object of three booleans | no | all `false` | `sampling`, `elicitation`, `roots` — which asks this upstream may put to your callers. A granted ask is relayed to the caller; Busbar answers none itself. |
 | `allow_private` | bool | no; **refused** on `stdio` | `false` | Permits a private / loopback / CGNAT address for this one server. Never permits cloud-metadata addresses. |
 | `token_exchange` | object | no; **refused** on `stdio` | absent | RFC 8693 exchange. Absent ⇒ no credential is sent at all. |
 | `max_input_required_rounds` | u32 | no | `3` (`mcp/config.rs:623`) | Cap on rounds Busbar will satisfy an UPSTREAM's `input_required` for, per dispatch. `0` means never. |
@@ -148,8 +146,6 @@ One round of `ask_caller` is a map from a server-assigned key to `{method, param
 **`resources_allow.<uri>`**: `name`, `description`, `mime_type`, `text`, `blob` (base64). `text:` and `blob:` are alternatives — declaring both is refused, and a `blob` that does not decode is refused at boot.
 
 **`resource_templates_allow.<template>`**: `name`, `description`, `mime_type`, `text`. There is deliberately no `blob:`.
-
-**`sampling`** (all three REQUIRED, all three refused at zero): `model` (a pool or model on Busbar's own catalogue, dispatched under the inbound caller's grant — never the upstream's `modelPreferences`), `max_tokens` (a ceiling; an ask above it is clamped, not refused), `max_requests_per_minute` (per-upstream, deployment-wide, spent before any model leg is entered).
 
 **`token_exchange`**: `token_url` (must be `https`, or `http` only on a registration that also sets `allow_private: true`), `subject_token` (a `SecretRef` — Busbar's OWN token, never the caller's), `subject_token_type` (default `urn:ietf:params:oauth:token-type:access_token`). There is deliberately **no `scope:`** — the requested scope is derived from the inbound caller's own grant at dispatch time, because a configured scope list would be a second statement of what a caller may reach and the wider one would win (`crates/busbar-mcp/src/mcp/config.rs:812-822`; the derivation is `mcp/client/egress.rs:361-375`).
 
@@ -196,11 +192,6 @@ All of these are checked by `validate_server` / `validate_endpoint`, which is ca
 | `pin.mechanism: unpinned` carrying `pin.key` | key material never verified against reads as protection that does not exist | `1226-1232` |
 | `verify_ttl:` unparseable | parsed at boot so it lands on the operator, not on a silent fallback later | `mcp/config.rs` |
 | `timeout:` unparseable, or `0` | zero would refuse every call before it was sent. There is deliberately no spelling for "unlimited" | `1246-1256` |
-| `roots[n].uri` not a non-empty `file://` URI | MCP roots are filesystem roots | `1263-1272` |
-| `roots:` declared with `grants.roots: false` | the gate runs before the satisfier, so the list would never be disclosed | `1273-1279` |
-| `sampling:` with `grants.sampling: false` | unreachable policy | `1287-1294` |
-| `sampling.model:` empty | | `1295-1301` |
-| `sampling.max_tokens: 0` / `max_requests_per_minute: 0` | the grant withheld wearing a budget's clothes. An operator who means "off" deletes the grant | `1302-1315` |
 | `task_ask_caller:` with `task_support` absent or `none` | the ask could never be emitted | `1324-1331` |
 | `publish_as:` empty, or with leading/trailing whitespace | it is compared byte-for-byte against a `tools/call` name and against an `mcp_tool:` grant | `1337-1354` |
 | empty `tools_allow` / `prompts_allow` name key, empty `resources_allow` URI key | | `1550-1555`, `1361-1363` |
@@ -513,8 +504,6 @@ Everything a model-plane request already got applies to a tool call unchanged.
 
 **Budgets and metering.** Every dispatch round is charged against the caller's key through the same admission the LLM path uses, on the same clock, so a tool call and a model call land in the same budget window rather than in two windows that happen to be close (`crates/busbar-mcp/src/mcp/method.rs:1940-1976`). One metered, attributed event per round: `model` carries the published tool name and `provider` carries `mcp`, so an existing cost dashboard groups MCP traffic without knowing what MCP is. Governance disabled ⇒ no key, no budget, nothing charged — the same posture the LLM path takes.
 
-The per-upstream sampling budget is separate and additional: `sampling.max_requests_per_minute` caps how often *this upstream* may induce a completion, across every caller, spent before any model leg is entered (`crates/busbar-mcp/src/mcp/config.rs:598-615`).
-
 **Hooks.** `tools.hooks:` ∪ `tools.<server>.hooks:` is resolved once per config generation into a per-server gate list and fired on the **dispatch** path — never the catalogue (`crates/busbar-core/src/state.rs:303-313`, `crates/busbar-mcp/src/mcp/method.rs:1324-1340`). What a caller may *see* is decided by grants and nothing else; a hook decides what a caller may *do*. The gate fires **before** the task path, the egress gate and the dispatch loop, so a refusal costs no durable task row, no token exchange and no socket. A `kind: gate` hook sees the `invoke` IR — the published tool name and the call's arguments — and can reject the call. A server with no attached hook has no entry in the map, so the firing site costs one hash lookup that misses.
 
 **Audit.** Refusals and outcomes are audited through the one core chain; the plane's audit resource kind is `mcp_server` and its action words are prefixed with it (`crates/busbar-core/src/plane/mod.rs:186-192`).
@@ -529,9 +518,7 @@ The claim is **tamper-evidence, not tamper-prevention.** A chain detects an alte
 
 **Upstream credentials are bound to the inbound caller.** `upstream::authorise` selects the credential Busbar spends under the *inbound* caller's grant — that binding is the confused-deputy defence for the client direction, and it is what the whole plane's authorization model rests on (`crates/busbar-mcp/src/mcp/mod.rs:80-88`). The RFC 8693 exchange asks for a scope **derived from the caller's own `mcp_tool` grants on that server**, intersected with the server, sorted and deduped (`crates/busbar-mcp/src/mcp/client/egress.rs:361-375`) — never a configured static list, which would be a second place the authority is written down.
 
-**What an upstream may ask for, it must be granted AND satisfied.** A server-initiated ask arrives as an `input_required` result of a call Busbar made; `grants.{sampling,elicitation,roots}` admits it and the matching `sampling:` / `roots:` block answers it. Neither implies the other: a grant with no satisfier is refused as unsatisfiable naming the missing key, and a satisfier behind a closed grant refuses boot as unreachable. Grants are consulted on **every** retry, because there is no handshake to consult them once and a revocation has to bite on the next retry (`crates/busbar-mcp/src/mcp/config.rs:521-528`).
-
-**An upstream's ask never reaches Busbar's caller.** It terminates at Busbar: either satisfied under the grant the operator gave that server, or the call fails. Proxying one would ask the caller to grant, on the upstream's behalf, authority Busbar has just declined to spend. The asks Busbar *does* make of its own caller are the operator-authored `ask_caller:` rounds and nothing else — there is no `From` between the two types, none constructible, and the module that composes a caller-facing ask is scanned at test time for so much as the *name* of the modules an upstream's values live in (`crates/busbar-mcp/src/mcp/mod.rs:90-115`).
+**An upstream's ask is relayed to the caller; Busbar answers nothing on the caller's behalf.** A server-initiated ask arrives as an `input_required` result of a call Busbar made. `grants.{sampling,elicitation,roots}` decides whether that server may put the ask to your callers at all — every kind the ask names must be granted, or the call is refused (`ask_ungranted`). A granted ask reaches the caller with the upstream's `inputRequests` exactly as sent, under Busbar's own sealed `requestState`, which nests the upstream's state and binds it to that caller, that call (tool and arguments) and the server that asked. The caller's retry is a new request with its own admission: the state is checked and spent once, the call goes back to that same server and no other, and the caller's `inputResponses` and the upstream's own state are handed to it verbatim. Busbar only declares a capability upstream that both the grant and the caller declare. A result that still carries an ask after the relay decision is refused (`ask_not_proxied`). Busbar's own `ask_caller:` rounds are resolved first, as before (`crates/busbar-plane-mcp/src/call.rs`, `crates/busbar-plane-mcp/src/ask.rs`).
 
 ---
 

@@ -10,11 +10,6 @@
 
 use super::{McpCfg, McpCfgError, McpResource};
 use crate::tool_claims::DEFAULT_MOUNT;
-use crate::tools_config::{
-    SamplingCfg, DEFAULT_MAX_SAMPLING_MESSAGES, DEFAULT_MAX_SAMPLING_PROMPT_BYTES,
-    DEFAULT_MAX_STOP_SEQUENCES, DEFAULT_MAX_STOP_SEQUENCE_BYTES, DEFAULT_TEMPERATURE_MAX_MILLI,
-    DEFAULT_TEMPERATURE_MIN_MILLI,
-};
 
 fn cfg(uri: &str) -> McpCfg {
     McpCfg {
@@ -228,62 +223,5 @@ fn the_config_block_parses_and_refuses_an_unknown_key() {
         typo.is_err(),
         "an unknown key must be refused: silently ignoring `allowed_origin` leaves a config that \
          reads as permissive and behaves as closed"
-    );
-}
-
-/// `tools.<server>.sampling:` ROUND-TRIPS — owner ruling Q22c / Q35's input-side bounds included.
-/// An operator who declares only the three original fields gets the shipped defaults on the new
-/// ones; one who spells all of them gets back exactly what they wrote; an unknown key is refused.
-#[test]
-fn the_sampling_block_round_trips_and_the_new_bounds_default_when_omitted() {
-    let minimal: SamplingCfg = serde_json::from_str(
-        r#"{"model": "sampler-model", "max_tokens": 512, "max_requests_per_minute": 30}"#,
-    )
-    .expect("the pre-existing three-field shape must still parse");
-    assert_eq!(minimal.model, "sampler-model");
-    assert_eq!(minimal.max_tokens, 512);
-    assert_eq!(minimal.max_requests_per_minute, 30);
-    assert_eq!(minimal.max_messages, DEFAULT_MAX_SAMPLING_MESSAGES);
-    assert_eq!(minimal.max_prompt_bytes, DEFAULT_MAX_SAMPLING_PROMPT_BYTES);
-    assert_eq!(minimal.max_stop_sequences, DEFAULT_MAX_STOP_SEQUENCES);
-    assert_eq!(
-        minimal.max_stop_sequence_bytes,
-        DEFAULT_MAX_STOP_SEQUENCE_BYTES
-    );
-    assert_eq!(minimal.temperature_min_milli, DEFAULT_TEMPERATURE_MIN_MILLI);
-    assert_eq!(minimal.temperature_max_milli, DEFAULT_TEMPERATURE_MAX_MILLI);
-
-    let expected = SamplingCfg {
-        model: "sampler-model".to_string(),
-        max_tokens: 512,
-        max_requests_per_minute: 30,
-        max_messages: 16,
-        max_prompt_bytes: 4096,
-        max_stop_sequences: 2,
-        max_stop_sequence_bytes: 16,
-        temperature_min_milli: 100,
-        temperature_max_milli: 1200,
-    };
-    let full: SamplingCfg = serde_json::from_str(
-        r#"{"model": "sampler-model", "max_tokens": 512, "max_requests_per_minute": 30,
-            "max_messages": 16, "max_prompt_bytes": 4096, "max_stop_sequences": 2,
-            "max_stop_sequence_bytes": 16, "temperature_min_milli": 100,
-            "temperature_max_milli": 1200}"#,
-    )
-    .expect("the full shape must parse");
-    assert_eq!(full, expected);
-    let written = serde_json::to_string(&full).expect("a fully-populated policy must serialise");
-    let reparsed: SamplingCfg =
-        serde_json::from_str(&written).expect("what busbar serialises, busbar must parse back");
-    assert_eq!(reparsed, expected);
-
-    let typo = serde_json::from_str::<SamplingCfg>(
-        r#"{"model": "sampler-model", "max_tokens": 512, "max_requests_per_minute": 30,
-            "max_mesages": 16}"#,
-    );
-    assert!(
-        typo.is_err(),
-        "an unknown key must be refused: silently ignoring `max_mesages` would leave the real \
-         `max_messages` at its default"
     );
 }

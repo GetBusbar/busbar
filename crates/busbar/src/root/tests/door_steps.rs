@@ -2444,21 +2444,17 @@ mod tool_door {
         );
     }
 
-    /// THE FURTHER ROUNDS (MRTR), through the door: the server answers the call with an
-    /// input-required result asking for roots, which the registration grants and declares; the
-    /// door sends the retry carrying the declared roots to the same server on its own need, and the
-    /// caller is answered with the second round's result. One unit, one charge.
+    /// A GRANTED ROOTS ASK, through the door (Law 11, U16): the server answers the call with an
+    /// input-required result asking for roots; busbar answers nothing itself and sends no retry —
+    /// the caller is handed the ask, `inputRequests` verbatim, under busbar's sealed state. One unit.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_granted_roots_ask_is_answered_by_a_further_round_to_the_same_server() {
+    async fn a_granted_roots_ask_is_relayed_to_the_caller_and_no_retry_is_sent() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-mrtr-roots";
         let _published = Published(instance);
         let (port, mut heard) = tool_server_answering(Arc::new(|request: &str| {
             if request.contains("\"tools/list\"") {
                 serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}})
-                    .to_string()
-            } else if request.contains("\"inputResponses\"") {
-                r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"rooted"}]}}"#
                     .to_string()
             } else {
                 r#"{"jsonrpc":"2.0","id":0,"result":{"resultType":"input_required","inputRequests":{"r":{"method":"roots/list"}},"requestState":"s"}}"#
@@ -2469,7 +2465,7 @@ mod tool_door {
         let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
             "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  \
              pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
-             grants: {{ roots: true }}\n  roots: [{{ uri: \"file:///work\", name: work }}]\n  \
+             grants: {{ roots: true }}\n  \
              tools_allow:\n    read_file: {{ schema_hash: \"{}\" }}\n",
             tool_digest()
         ))
@@ -2486,7 +2482,11 @@ mod tool_door {
         let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
         let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["result"]["content"][0]["text"], "rooted", "{body}");
+        assert_eq!(
+            body["result"]["inputRequests"]["r"]["method"], "roots/list",
+            "the ask reaches the caller verbatim: {body}"
+        );
+        assert_ne!(body["result"]["requestState"], "s", "{body}");
         let verify = heard
             .try_recv()
             .expect("verify-on-call fetched the tool list");
@@ -2494,11 +2494,10 @@ mod tool_door {
         let first = heard
             .try_recv()
             .expect("the first round reached the server");
-        let retry = heard.try_recv().expect("the retry reached the server");
         assert!(!first.contains("inputResponses"), "{first}");
         assert!(
-            retry.contains("file:///work") && retry.contains("\"requestState\":\"s\""),
-            "the retry carries the declared roots and the server's state: {retry}"
+            heard.try_recv().is_err(),
+            "busbar sent no retry of its own: it answers nothing on the caller's behalf"
         );
         assert_eq!(rig.admitted(), 1, "one unit, one charge");
     }

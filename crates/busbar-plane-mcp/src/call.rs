@@ -195,6 +195,9 @@ pub struct AdmittedCall {
     pub id: Value,
     /// The caller's own `progressToken`, when it asked for progress.
     pub progress_token: Option<Value>,
+    /// The client capabilities the caller declared (`_meta`): what an upstream's ask may be relayed
+    /// to it for.
+    pub capabilities: Value,
     /// The digest of the arguments AS THE CALLER SENT THEM (before any answer of busbar's own asks
     /// was merged): what a relayed ask's state is bound to.
     pub sent_digest: String,
@@ -648,9 +651,22 @@ pub fn admit_trusted(
             .and_then(|m| m.get("progressToken"))
             .filter(|v| !v.is_null())
             .cloned(),
+        capabilities: capabilities.cloned().unwrap_or(Value::Null),
         sent_digest,
         relay,
     })
+}
+
+/// What busbar declares to `def`'s server for `admitted`'s call: each ask kind the operator lets the
+/// server put to callers AND the caller declared it can answer (the ask is relayed, Law 11).
+fn advertised(admitted: &AdmittedCall, def: &McpServerDefCfg) -> AdvertisedCaps {
+    let declares = |k: &str| admitted.capabilities.get(k).is_some_and(|v| !v.is_null());
+    AdvertisedCaps {
+        roots: def.grants.roots && declares("roots"),
+        sampling: def.grants.sampling && declares("sampling"),
+        elicitation: def.grants.elicitation && declares("elicitation"),
+        progress: admitted.progress_token.is_some(),
+    }
 }
 
 /// THE `{tool, arguments}` PROJECTION of a `tools/call` body, as the hook kind reads an invocation:
@@ -760,11 +776,7 @@ pub fn outbound(
         &admitted.arguments,
         wire::dispatch_request_id(round),
         None,
-        AdvertisedCaps {
-            roots: def.grants.roots && !def.roots.is_empty(),
-            sampling: def.grants.sampling && def.sampling.is_some(),
-            progress: admitted.progress_token.is_some(),
-        },
+        advertised(admitted, def),
         continuation,
     );
     Some(OutboundCall {
@@ -800,11 +812,7 @@ pub fn outbound_program(
         &admitted.arguments,
         id,
         None,
-        AdvertisedCaps {
-            roots: def.grants.roots && !def.roots.is_empty(),
-            sampling: def.grants.sampling && def.sampling.is_some(),
-            progress: admitted.progress_token.is_some(),
-        },
+        advertised(admitted, def),
         continuation,
     );
     Some(OutboundCall {
