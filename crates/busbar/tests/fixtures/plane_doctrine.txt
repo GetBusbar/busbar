@@ -37,13 +37,14 @@ owed plane-decisions
 #
 # installed <plane key> <ledger column>...: the doctrine's installed-plane axis (plane_isomorphism.rs)
 # — each plane the composition root installs from its own linked entry, and the directional ledger
-# column(s) it answers to.
+# column(s) it answers to. The streaming plane is not on it since FLIP-STREAMING: it is served only
+# through its memory-ABI door (`plane-door` axis), which has no linked PlaneDecl to compare.
 installed llm llm
 installed mcp mcp-client mcp-server
 installed a2a a2a-client a2a-server
-installed streaming voice-client voice-server
 #
 # owned-section <plane key> <declaring section> <owned section>...: the linked planes that own the
-# grammar of a top-level section, and those sections (plane_owned_sections_boot.rs).
+# grammar of a top-level section, and those sections (plane_owned_sections_boot.rs). `streams:` is
+# the streaming door's, folded from its Statement into the kernel registry (DECL-FOLD, ARCHITECT
+# Q-DEL-A2A-DECL; spec #49), not a linked plane's.
 owned-section mcp tools mcp
-owned-section streaming streams streams

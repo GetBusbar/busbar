@@ -350,7 +350,6 @@ dependencies = [
  "busbar-transport-tcp",
  "busbar-transport-tcp-plugin",
  "busbar-transport-ws",
- "busbar-voice",
  "bytes",
  "core_affinity",
  "criterion",

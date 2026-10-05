@@ -107,7 +107,12 @@ fn main() {
     };
     // A fold's development-only switch SWAPS its plane's legacy row out (`linked-swaps`): the row is
     // not linked while the switch is on, so the folded door is the plane's one claimant.
-    let swaps = metadata_map(&manifest, LINKED_SWAPS);
+    // A build with no switch left has no table: nothing is swapped.
+    let swaps = if manifest.contains(&format!("[{LINKED_SWAPS}]")) {
+        metadata_map(&manifest, LINKED_SWAPS)
+    } else {
+        Vec::new()
+    };
     let enabled = |feature: &str| swapped_in(&swaps, &on, feature);
     let (source, cfgs) = linked_source(&manifest, &enabled);
     let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("linked.rs");

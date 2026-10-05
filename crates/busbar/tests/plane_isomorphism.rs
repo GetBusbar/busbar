@@ -517,11 +517,12 @@ fn the_reflected_hook_set_and_constants_are_the_doctrine() {
     const {
         assert!(MIN_HOOK_FIELDS >= 15 && MIN_ASYMMETRIES >= 10);
     }
-    // The doctrine's installed-plane axis, verbatim (the same four the composition root installs).
+    // The doctrine's installed-plane axis, verbatim (the same three the composition root installs
+    // from a linked PlaneDecl; the streaming plane left it with FLIP-STREAMING: door-only).
     let keys: Vec<&str> = plane_ledger_columns().iter().map(|(k, _)| *k).collect();
     assert_eq!(
         keys.len(),
-        4,
+        3,
         "the installed-plane axis is the owner's ruling; changing it is a doctrine change: {keys:?}"
     );
     // With every plane compiled in, the pinned axis is exactly the planes the root installs from

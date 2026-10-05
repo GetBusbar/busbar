@@ -35,7 +35,7 @@ fn linked_registry() -> Registry {
 /// The shipped transport fold (`<wire key> <composed over, or ->` rows, in build order), as data.
 const TRANSPORT_FOLD: &str = include_str!("fixtures/transport_fold.txt");
 
-/// The sealed walk over the fifty-one declared claims, most specific first. The decisions plane's two
+/// The sealed walk over the forty-six declared claims, most specific first. The decisions plane's two
 /// exact paths (item 251) sit among the other exact paths, ahead of every pattern that could also
 /// describe them.
 ///
@@ -50,33 +50,14 @@ const SEALED_ORDER: &str = include_str!("fixtures/sealed_order.txt");
 #[cfg(linked_every_plane)]
 const CLAIMS_PER_PLANE: &str = include_str!("fixtures/claims_per_plane.txt");
 
-/// Whether this build links a plane on the kernel's SESSION loop (the `gauntlet-session` axis of the
-/// linked table) — and with it its WS transport, its registry row and its five claims. Every pinned
-/// number below is a statement about ONE composition, and the shipped one (the session plane linked,
-/// since its row's feature is in `default`) is the one they are pinned against; a build that
-/// compiled it out is a different composition, not a smaller one. Read off `LINKED`, so this source
-/// names no plane.
-fn session_linked() -> bool {
-    !crate::LINKED.gauntlet_session.is_empty() || a_swapped_row_is_served_by_its_door()
-}
-
-/// A fold's development-only switch is on and has swapped its plane's legacy row out
-/// (`[package.metadata.busbar.linked-swaps]`): the plane is served by its folded door, and the
-/// wire its sessions ride stays linked. Read off the manifest, so this names no plane.
-fn a_swapped_row_is_served_by_its_door() -> bool {
-    let on: Vec<&str> = env!("BUSBAR_ENABLED_FEATURES").split_whitespace().collect();
-    let mut in_table = false;
-    include_str!("../../../Cargo.toml").lines().any(|line| {
-        let line = line.split('#').next().unwrap_or("").trim();
-        if line.starts_with('[') {
-            in_table = line == "[package.metadata.busbar.linked-swaps]";
-            return false;
-        }
-        in_table
-            && line
-                .split_once('=')
-                .is_some_and(|(_, switch)| on.contains(&switch.trim().trim_matches('"')))
-    })
+/// Whether this build links the WS framer (its transport row, on the `transport` and
+/// `connector-door` axes): the sixth wire, composed over http. Since FLIP-STREAMING no plane rides
+/// the kernel's SESSION loop: the streaming plane is a door plane (`plane-door` axis) whose claims
+/// are its snapshot's and are mounted by the serve fold, not declared in the linked claims table,
+/// so the ws wire is the transport row's alone. Every pinned number below is a statement about ONE
+/// composition, the shipped one.
+fn ws_linked() -> bool {
+    crate::LINKED.transports.iter().any(|t| t.key == "ws")
 }
 
 /// The non-comment rows of a fixture file, in order. Read only by the shipped-composition pins,
@@ -104,7 +85,7 @@ fn six_transports_and_five_planes_register() {
     let registry = linked_registry();
     assert_eq!(
         registry.count(PluginKind::Transport),
-        if session_linked() { 6 } else { 5 }
+        if ws_linked() { 6 } else { 5 }
     );
     // Every linked plane and the core one: a plane this build does not link registers nothing.
     assert_eq!(
@@ -147,25 +128,22 @@ fn six_transports_and_five_planes_register() {
             .is_some(),
         "the decision plane is linked and not registered"
     );
-    // The voice plane and its transport are present exactly together: neither is a thing this
-    // root registers without the other.
+    // The ws wire is registered exactly when its transport row is linked.
     assert_eq!(
         registry.resolve(PluginKind::Transport, "ws").is_some(),
-        session_linked()
+        ws_linked()
     );
-    // And its plane: the claimed-set check above resolves every claimed key and ties the claimed
-    // count to the registered count, and the plane count moves by exactly one with the session
-    // plane — so its row is registered exactly when it is linked.
 }
 
 /// The measured claim total, one row per plane. It is pinned as a number because the number is
 /// what a reader checks the design's own table against; a plane that gains or loses a claim
 /// should have to say so here.
-// Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
-// because the numbers below are that composition's, not a subset of it.
+// Pinned against the SHIPPED composition (every linked plane on). Compiled out with any of them
+// because the numbers below are that composition's, not a subset of it. The streaming plane's claims
+// are its door snapshot's (FLIP-STREAMING), mounted by the serve fold, so they are not counted here.
 #[cfg(linked_every_plane)]
 #[test]
-fn the_planes_declare_fifty_one_claims() {
+fn the_planes_declare_forty_six_claims() {
     let claims = linked_claims();
     let count = |plane: &str| claims.iter().filter(|c| c.plane == plane).count();
     // One `<plane key> <claims>` row per plane, pinned as fixture DATA so this source names none.
@@ -176,7 +154,7 @@ fn the_planes_declare_fifty_one_claims() {
             (key.to_string(), n.parse().expect("a claim count"))
         })
         .collect();
-    assert_eq!(pinned.len(), 6, "six planes are pinned: {pinned:?}");
+    assert_eq!(pinned.len(), 5, "five planes are pinned: {pinned:?}");
     for (key, n) in &pinned {
         assert_eq!(
             count(key),
@@ -195,7 +173,7 @@ fn the_planes_declare_fifty_one_claims() {
         claims.len(),
         "every claim belongs to a pinned plane"
     );
-    assert_eq!(claims.len(), 51);
+    assert_eq!(claims.len(), 46);
 }
 
 /// The measured overlap, split the way the rule splits it. Both counts are pinned because both
@@ -209,11 +187,15 @@ fn the_planes_declare_fifty_one_claims() {
 /// 65 without ever answering "disjoint" for a pair one arrival satisfies, and naming the audio
 /// surface one path at a time rather than as a prefix took it from 65 to 63. Joining the decision
 /// plane (item 251) added one more — its `/v1/models` against the llm plane's tail pattern — for 64.
-// Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
-// because the numbers below are that composition's, not a subset of it.
+/// FLIP-STREAMING took the streaming plane's five claims out of the linked table (its door's
+/// snapshot claims them, mounted by the serve fold): 100 cross-family and 64 same-family became
+/// 90 and 42.
+// Pinned against the SHIPPED composition (every linked plane on). Compiled out with any of them
+// because the numbers below are that composition's, not a subset of it. The streaming plane's claims
+// are its door snapshot's (FLIP-STREAMING), mounted by the serve fold, so they are not counted here.
 #[cfg(linked_every_plane)]
 #[test]
-fn one_hundred_and_sixty_four_cross_plane_pairs_overlap() {
+fn one_hundred_and_thirty_two_cross_plane_pairs_overlap() {
     use busbar_kernel::grammar::family;
 
     let claims = linked_claims();
@@ -234,11 +216,11 @@ fn one_hundred_and_sixty_four_cross_plane_pairs_overlap() {
     // The decisions plane's two exact paths add ten cross-family pairs (a header claim can be true
     // of the same arrival) and one path-family pair: `/v1/models` inside the llm plane's
     // `v1/models/<tail>` pattern.
-    assert_eq!(cross_family, 100);
-    assert_eq!(same_family, 64);
+    assert_eq!(cross_family, 90);
+    assert_eq!(same_family, 42);
 }
 
-/// What the 64 path-family overlaps that remain actually ARE, one class at a time.
+/// What the 42 path-family overlaps that remain actually ARE, one class at a time.
 ///
 /// A count alone cannot say whether an overlap is a real shape or a gap in the reasoning, and
 /// that distinction is the whole reason to tighten a grammar rather than to relax a check. So
@@ -253,8 +235,9 @@ fn one_hundred_and_sixty_four_cross_plane_pairs_overlap() {
 ///
 /// A pair that fits none of these would be the interesting one: a conservative answer with no
 /// account of itself. There is none, and the assertion is that there is none.
-// Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
-// because the numbers below are that composition's, not a subset of it.
+// Pinned against the SHIPPED composition (every linked plane on). Compiled out with any of them
+// because the numbers below are that composition's, not a subset of it. The streaming plane's claims
+// are its door snapshot's (FLIP-STREAMING), mounted by the serve fold, so they are not counted here.
 #[cfg(linked_every_plane)]
 #[test]
 fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
@@ -288,27 +271,30 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
             }
         }
     }
-    assert_eq!(tail, 24);
+    assert_eq!(tail, 18);
     assert_eq!(variable, 24);
-    assert_eq!(fragments, 16);
+    // The fragment pairs were the streaming plane's audio suffixes against the llm plane's; its
+    // claims left this table with FLIP-STREAMING.
+    assert_eq!(fragments, 0);
 }
 
-/// **The finding, answered.** Every one of those 164 overlaps is settled by the sealed order,
+/// **The finding, answered.** Every one of those 132 overlaps is settled by the sealed order,
 /// and none of them is a refusal.
 ///
 /// The resolved count is pinned against the overlap count above, so the two cannot drift apart
 /// silently: a pair that stops being resolved has either stopped overlapping or become a tie,
 /// and each of those is a different thing to have to explain. The refusal list is pinned empty,
 /// which is the whole claim of this file — the declared set of planes seals.
-// Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
-// because the numbers below are that composition's, not a subset of it.
+// Pinned against the SHIPPED composition (every linked plane on). Compiled out with any of them
+// because the numbers below are that composition's, not a subset of it. The streaming plane's claims
+// are its door snapshot's (FLIP-STREAMING), mounted by the serve fold, so they are not counted here.
 #[cfg(linked_every_plane)]
 #[test]
 fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     let claims = linked_claims();
     let sealed = seal_claims(&claims);
 
-    assert_eq!(sealed.resolved.len(), 164);
+    assert_eq!(sealed.resolved.len(), 132);
     assert!(
         sealed.refused.is_empty(),
         "the declared claims do not seal: {:?}",
@@ -334,18 +320,19 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     }
 }
 
-/// The sealed order of the fifty-one, written out.
+/// The sealed order of the forty-six, written out.
 ///
 /// A snapshot, and deliberately a verbose one: the walk every arriving connection is matched
 /// against is the thing this file produces, and a change to it is a change to which plane
 /// answers which request. Each row is the plane and the selector, so a diff of this array reads
 /// as a routing change rather than as a permutation of opaque indices. A claim added, removed or
 /// respelled has to update it, on purpose, with the new order visible in the same diff.
-// Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
-// because the numbers below are that composition's, not a subset of it.
+// Pinned against the SHIPPED composition (every linked plane on). Compiled out with any of them
+// because the numbers below are that composition's, not a subset of it. The streaming plane's claims
+// are its door snapshot's (FLIP-STREAMING), mounted by the serve fold, so they are not counted here.
 #[cfg(linked_every_plane)]
 #[test]
-fn the_sealed_order_of_the_fifty_one_claims_is_pinned() {
+fn the_sealed_order_of_the_forty_six_claims_is_pinned() {
     let claims = linked_claims();
     let sealed = seal_claims(&claims);
     let walk: Vec<String> = sealed
@@ -526,7 +513,7 @@ fn the_shipped_transport_stack_composes() {
     // The transport whose `new()` yields something that refuses every connection is the one that
     // must be built through `over`, and the rows say it was. `grpc` is a door that frames the
     // host's socket: it is built over nothing.
-    if session_linked() {
+    if ws_linked() {
         assert_eq!(composed_over("ws"), Some("http"));
     }
     assert_eq!(composed_over("grpc"), None);
@@ -636,15 +623,16 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
 /// seal answers. This is the assertion the previous shape of the test above could not make —
 /// the claims sealed, and the one transport gap was all that stood between the declared
 /// composition and a node that boots.
-// Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
-// because the numbers below are that composition's, not a subset of it.
+// Pinned against the SHIPPED composition (every linked plane on). Compiled out with any of them
+// because the numbers below are that composition's, not a subset of it. The streaming plane's claims
+// are its door snapshot's (FLIP-STREAMING), mounted by the serve fold, so they are not counted here.
 #[cfg(linked_every_plane)]
 #[test]
 fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
     let sealed = seal(&crate::LINKED, Dropped::NONE, TransportSettings::default())
         .expect("every claim names a live transport");
-    assert_eq!(sealed.claims.len(), 51);
-    assert_eq!(sealed.precedence.len(), 51);
+    assert_eq!(sealed.claims.len(), 46);
+    assert_eq!(sealed.precedence.len(), 46);
 }
 
 /// The operator's request-body cap reaches every linked transport.
