@@ -564,6 +564,42 @@ impl ExportField {
     }
 }
 
+/// One metric FAMILY of the host recorder's snapshot (K9a S6): its name, its type, its help text,
+/// and its samples in order — the unit a text exposition is made of.
+///
+/// STABLE AND LOSSLESS. `kind` is the exposition's own type token (`counter` | `gauge` |
+/// `histogram` | `summary` | `untyped`); a histogram's `_bucket` / `_sum` / `_count` series and a
+/// summary's `quantile` series are SAMPLES of their family, carried as the recorder wrote them. A
+/// sample's value is the recorder's own spelling of the number, so rendering the snapshot back in
+/// the text format reproduces the host's exposition byte for byte.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetricFamily {
+    /// The family name, as its `# TYPE` line spells it.
+    pub name: String,
+    /// `counter` | `gauge` | `histogram` | `summary` | `untyped`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The `# HELP` text, when the recorder has one (as written: escaped, one line).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help: Option<String>,
+    /// The samples, in order.
+    #[serde(default)]
+    pub samples: Vec<MetricSample>,
+}
+
+/// One SAMPLE line of a [`MetricFamily`] (K9a S6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetricSample {
+    /// The series name — the family name, or it with `_bucket` / `_sum` / `_count`.
+    pub name: String,
+    /// The labels in order, each value as the exposition writes it (escaped), `le` / `quantile`
+    /// included where the recorder wrote them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<(String, String)>,
+    /// The value, in the recorder's own spelling.
+    pub value: String,
+}
+
 /// The point of the configuration's VALIDATION a sink's `check` is asked at — so a
 /// sink's lines land where the operator has always read them among the configuration's errors.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -387,9 +387,10 @@ pub trait HookHandler: Send + Sync {
 
 // ── THE EXPORT KIND'S WIRE TYPES, re-exported for plugin authors ──────────────────────────────────
 
-/// Re-export the export kind's stream and field vocabulary so a plugin author names
-/// `busbar_contract::abi::sdk::ExportStream` (etc.) at this module's path.
-pub use crate::abi::export::{CheckPhase, ExportField, ExportStream};
+/// Re-export the export kind's stream and field vocabulary, and the scraped snapshot's family and
+/// sample, so a plugin author names `busbar_contract::abi::sdk::ExportStream` (etc.) at this
+/// module's path.
+pub use crate::abi::export::{CheckPhase, ExportField, ExportStream, MetricFamily, MetricSample};
 
 /// Re-export the observability envelope (#85) so a plugin author names
 /// `busbar_contract::abi::sdk::PluginMetric` (etc.) without a direct `busbar-plugin` dependency, mirroring

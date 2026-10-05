@@ -78,6 +78,12 @@ impl LoadablePlugin {
         matches!(self.entry, Some(LinkedEntry::Store { .. }))
     }
 
+    /// M6-COLD-DELETE residue: whether this row is a LINKED JSON-lane auth plugin
+    /// (`BUSBAR_COLD_ENTRY`), until the auth plugin's door re-pin.
+    pub fn image_is_cold_linked(&self) -> bool {
+        matches!(self.entry, Some(LinkedEntry::Boundary(_)))
+    }
+
     /// A compiled-in memory-ABI row's door; `None` for any other row.
     pub fn door(&self) -> Option<busbar_contract::abi::mechanism::door::DoorFn> {
         match self.entry {
