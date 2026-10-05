@@ -839,7 +839,7 @@ fn open_plane_refuses_non_plane_kind() {
     let dir = plane_tmpdir("kind-gate");
     let mut m = plane_manifest("busbar-store-gamma-plugin", "gamma", "busbar");
     m.kind = "store".into();
-    m.abi_version = busbar_contract::abi::cold::ABI_VERSION; // store-admissible so the KIND gate is what fires
+    m.abi_version = busbar_contract::abi::store::ABI_VERSION; // store-admissible so the KIND gate is what fires
     let m = sign(&release, m, b"store lib");
     write_plane_tarball(&dir, "store.tar.gz", &m, b"store lib");
 

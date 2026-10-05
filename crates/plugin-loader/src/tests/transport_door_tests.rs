@@ -84,7 +84,7 @@ fn manifest() -> crate::sign::Manifest {
     crate::sign::Manifest {
         statement: rendering.map(hex::encode),
         ..statement(
-            busbar_contract::abi::cold::kind::TRANSPORT,
+            busbar_contract::abi::mechanism::kind::TRANSPORT,
             "door-fixture",
             "door-fixture",
             busbar_contract::abi::ABI_MINOR,

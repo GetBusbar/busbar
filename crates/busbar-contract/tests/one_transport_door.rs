@@ -33,11 +33,11 @@ fn the_frozen_symbols_answer_through_the_registered_transport() {
     let kind = unsafe { std::ffi::CStr::from_ptr(kind.cast()) };
     assert_eq!(
         kind.to_str().unwrap(),
-        busbar_contract::abi::cold::kind::TRANSPORT
+        busbar_contract::abi::mechanism::kind::TRANSPORT
     );
     assert_eq!(
         __door::busbar_abi(),
-        busbar_contract::abi::cold::TRANSPORT_VERSION
+        busbar_contract::abi::handshake::VERSION
     );
 
     // SAFETY: the door symbols never dereference anything for a transport image.

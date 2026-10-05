@@ -1,25 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **ONE busbar plugin interface, TWO lanes** — over a single shared root.
+//! **THE busbar plugin interface** — the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN §11: plugins
+//! speak the memory ABI only) over the shared mechanism, one folder per kind, and the HOT lane the
+//! planes and transports still ride until each moves to its door.
 //!
-//! busbar has exactly one plugin boundary, but two disciplines ride it, because two classes of
-//! plugin have opposite performance shapes. Rather than cram both into one call convention, this
-//! crate exposes them as two lane modules over a shared contract:
+//! * [`mechanism`] and `abi/<kind>/` — the ONE memory ABI: one door, one call shape, one
+//!   lifecycle, and each kind's own operations, shapes and version.
+//! * [`hot`] — the HOT lane (was `busbar-plane-abi`). A `#[repr(C)]` fn-pointer vtable the planes
+//!   and transports that have not yet moved to their door still speak; deleted with the last of them
+//!   (M6-HOT-PLANE). Its images answer the [`handshake`] below.
 //!
-//! * [`cold`] — the COLD lane (was `busbar-plugin-abi`). A frozen, versioned wire: JSON over a tiny
-//!   six-symbol `extern "C"` surface, for backends OFF the request hot path (`store` | `secret` |
-//!   `auth` | `hook` | `export`), where a serialize per call never touches request latency. Its
-//!   `extern "C"` symbols, JSON shapes, and [`cold::TRANSPORT_VERSION`] are a SIGNED wire contract
-//!   that MUST NOT change; an external plugin's compiled artifact keeps working across this move —
-//!   only the SOURCE import path changes (`busbar_plugin_abi::X` → `busbar_contract::abi::cold::X`).
-//! * [`hot`] — the HOT lane (was `busbar-plane-abi`). A `#[repr(C)]` fn-pointer vtable, POD args by
-//!   pointer, small results by value, large results into a caller `&mut MaybeUninit<Out>`, zero
-//!   alloc / zero serde on the call. ADDITIVE and not yet wired into the engine.
+//! The COLD/JSON lane (the six-symbol JSON `call` wire) is gone: no kind is cold, and
+//! a 1.5.5 JSON-contract plugin is refused at boot naming the rebuild against the 1.6.0 SDK
+//! (THE DESIGN §11.1, §11.8).
 //!
 //! # The shared root (this module)
 //!
-//! Both lanes obey the SAME cross-boundary discipline, hoisted here so there is one definition:
+//! The HOT lane obeys this cross-boundary discipline, hoisted here so there is one definition:
 //!
 //! 1. **The airlock preamble** ([`AbiPreamble`], [`check_preamble`]) — a `#[repr(C)]` header FROZEN
 //!    FOR ALL TIME. Its three fields (`magic`, `abi_major`, `abi_minor`) may NEVER be reordered,
@@ -32,17 +30,12 @@
 //! 3. **The out-param write discipline** ([`write_out`]) — the init-only-on-Ok rule a callee uses to
 //!    publish a large POD result into a caller slot without a `Vec` return.
 //!
-//! The airlock and these helpers are what the two lanes SHARE. Their call conventions (JSON bytes
-//! over six C symbols vs. a repr(C) fn-pointer vtable) stay deliberately opposite, in [`cold`] and
-//! [`hot`] respectively.
-//!
 //! # Neutrality
 //!
 //! The HOT lane's capability surface was DERIVED from a primitive taxonomy, not ENUMERATED from any
 //! one protocol plane: no type, function, variant, or carrier name under [`hot`] may contain a
 //! protocol/role noun. A CI witness (`scripts/plane-abi-neutrality.sh`) greps the [`hot`] tree for
-//! the banned set and asserts zero. The COLD lane's existing names (its `store`/`auth`/`hook`
-//! vocabulary) predate that rule and are exempt — the witness covers `::hot` only.
+//! the banned set and asserts zero.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -97,10 +90,37 @@ macro_rules! slot_table {
     };
 }
 
+/// M6-COLD-DELETE RESIDUE: the hosted login's JSON lane, and nothing else (see its module doc).
 pub mod cold;
 pub mod host;
 pub mod hot;
 pub mod sdk;
+
+/// THE HOT LANE'S HANDSHAKE (M6-HOT-PLANE: deleted with [`hot`]): the two symbols a HOT-lane plane
+/// or transport image answers before the loader reads its `#[repr(C)]` decl — the version it was
+/// built against and the ONE kind it speaks. A memory-ABI plugin exports neither: its one symbol is
+/// [`mechanism::DOOR_SYMBOL`].
+pub mod handshake {
+    /// The handshake version a HOT-lane image answers from `busbar_abi()`.
+    pub const VERSION: u32 = 1;
+
+    /// The handshake's symbol names, NUL-terminated for `dlsym`.
+    pub mod symbol {
+        /// `busbar_abi() -> u32` — [`super::VERSION`].
+        pub const ABI: &[u8] = b"busbar_abi\0";
+        /// `busbar_plugin_kind() -> *const u8` — a NUL-terminated string, the ONE kind the image
+        /// speaks.
+        pub const PLUGIN_KIND: &[u8] = b"busbar_plugin_kind\0";
+    }
+
+    /// `busbar_abi` — returns [`VERSION`].
+    pub type AbiFn = unsafe extern "C-unwind" fn() -> u32;
+
+    /// `busbar_plugin_kind` — a pointer to a NUL-terminated `'static` string naming the ONE kind
+    /// the image speaks. It carries no length: the loader reads it with `CStr::from_ptr`, so it must
+    /// come from a NUL-terminated static.
+    pub type PluginKindFn = unsafe extern "C-unwind" fn() -> *const u8;
+}
 
 // THE ONE MEMORY ABI (the design's locked plugin ABI: one place for every shape): the shared
 // mechanism and one folder per kind.

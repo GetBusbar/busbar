@@ -26,56 +26,36 @@
 use crate::sign::{evaluate, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY};
 use crate::tarball;
 use busbar_contract::abi::cold::ColdEntry;
+use busbar_contract::abi::mechanism::kind;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// The per-kind PAYLOAD schema versions this binary supports: the manifest `abi_version` values the
-/// engine can speak for `kind` (empty = unknown/unsupported kind, rejected at scan). This is the
-/// PAYLOAD axis (the manifest `abi_version`), NOT the transport axis.
+/// The ONE version of each kind this binary accepts — the manifest `abi_version` a plugin of `kind`
+/// must state (empty = unknown kind, refused at scan): exactly `abi::<kind>::ABI_VERSION`, the
+/// shipped numbers (store 3, secret 2, auth 3, hook 2, export 3, plane 1, transport 1;
+/// `BUSBAR-1.6.0.md` §11.2, A.9).
 ///
-/// ONE VERSION PER KIND (THE DESIGN §11.8, "No legacy loading"; ruling C21/ABI-o1): the loader
-/// accepts only the current version of each kind. A published 1.5.5 JSON-contract plugin states
-/// its kind's 1.5.5 version (store 2, auth 2, hook 1, export 2) and is refused at boot, naming the
-/// rebuild against the 1.6.0 SDK; a plugin built for a newer version than the host is refused too.
+/// NO LEGACY LOADING (THE DESIGN §11.8): no ranges, no floors. A published 1.5.5 JSON-contract
+/// plugin states its kind's 1.5.5 version and is refused at boot naming the rebuild against the
+/// 1.6.0 SDK; a plugin built for a newer version than the host is refused too.
 pub fn supported_abi(kind: &str) -> &'static [u32] {
     match kind {
-        // ONE VERSION PER KIND (C21/ABI-o1, THE DESIGN §11.8): the 1.5.5 floors are deleted — each
-        // JSON-contract kind admits EXACTLY its current version (store 4, auth 3, secret 1), and the
-        // hook/export kinds their current memory-ABI version (hook 2, export 3). A published 1.5.5
-        // plugin (store 2, auth 2, hook 1, export 2) or a newer-than-host one is a hard refusal at
-        // boot naming the rebuild against the 1.6.0 SDK.
-        "store" => &[busbar_contract::abi::cold::ABI_VERSION],
-        "secret" => &[busbar_contract::abi::cold::SECRET_ABI_VERSION],
-        "auth" => &[busbar_contract::abi::cold::AUTH_ABI_VERSION],
-        "hook" => &[busbar_contract::abi::hook::ABI_VERSION],
-        "export" => &[busbar_contract::abi::export::ABI_VERSION],
-        // A `kind: plane` plugin is a protocol plane delivered as a `cdylib` and driven over the
-        // HOT-tier `#[repr(C)]` `PlaneDecl` vtable (`busbar_contract::abi::hot`) — NOT the six-symbol JSON
-        // `call` wire the five cold kinds share. Its per-kind PAYLOAD axis is the AIRLOCK MINOR
-        // (`busbar_contract::abi::ABI_MINOR`): a plane cdylib stamps that minor into its `PlaneDecl`'s frozen
-        // `AbiPreamble`, and `open_plane` fail-closes on a MAJOR mismatch while accepting an older
-        // minor (append-only). The manifest `abi_version` a plane declares is that same minor, floored
-        // at 1 (the first minor a plane ABI could target) so an older-minor plane still validates and
-        // its real forward-compat gate is the airlock `check_preamble` at load. `[1, ABI_MINOR]`.
-        "plane" => &[1, busbar_contract::abi::ABI_MINOR],
-        // A `kind: transport` plugin is a wire delivered as a `cdylib` and driven over the HOT-tier
-        // `#[repr(C)]` `TransportDecl` (`busbar_contract::abi::hot::transport`) — #3 (OWNER-LOCKED) makes
-        // every kind swappable, compiled in OR dropped in, and #30 puts transport on the HOT lane
-        // beside plane. Its payload axis is the AIRLOCK MINOR, as a plane's is, floored at the first
-        // minor that has a transport decl: an older minor has no transport surface to speak.
-        "transport" => &[
-            busbar_contract::abi::hot::TRANSPORT_DECL_MINOR,
-            busbar_contract::abi::ABI_MINOR,
-        ],
+        kind::STORE => &[busbar_contract::abi::store::ABI_VERSION],
+        kind::SECRET => &[busbar_contract::abi::secret::ABI_VERSION],
+        kind::AUTH => &[busbar_contract::abi::auth::ABI_VERSION],
+        kind::HOOK => &[busbar_contract::abi::hook::ABI_VERSION],
+        kind::EXPORT => &[busbar_contract::abi::export::ABI_VERSION],
+        kind::PLANE => &[busbar_contract::abi::plane::ABI_VERSION],
+        kind::TRANSPORT => &[busbar_contract::abi::transport::ABI_VERSION],
         _ => &[],
     }
 }
 
-/// ONE ROW of the cold-kind axis: a plugin the registry resolves by name or alias and loads over its
-/// [`crate::Image`]. A DROPPED-IN row passed phases 1 + 2 — its signed manifest, the trust verdict,
-/// and the exact verified library bytes (what the loader will map, never re-read from disk). A
-/// LINKED row ([`LinkedPlugin`], [`PluginRegistry::link`]) states the same manifest and carries its
-/// boundary instead of bytes. Both are registered by the one [`PluginRegistry`] admission and loaded
+/// ONE ROW of the registry: a plugin it resolves by name or alias, loaded through the one loading
+/// path (`load_linked` / `load_dropped`). A DROPPED-IN row passed phases 1 + 2 — its signed
+/// manifest, the trust verdict, and the exact verified library bytes (what the loader will map,
+/// never re-read from disk). A LINKED row ([`LinkedPlugin`], [`PluginRegistry::link`]) states the
+/// same manifest and carries its door instead of bytes. Both are registered by the one [`PluginRegistry`] admission and loaded
 /// by the one load; nothing downstream reads which door a row came in by.
 pub struct LoadablePlugin {
     /// The tarball filename (diagnostics only - identity is the manifest). A linked row's is
@@ -87,18 +67,19 @@ pub struct LoadablePlugin {
     /// Whether what this plugin holds is lost on restart — a store's own statement ([`LinkedPlugin`]).
     /// A dropped-in row never states it: the plugins directory is where a durable store comes from.
     pub ephemeral: bool,
-    /// A linked row's boundary; `None` for a dropped-in row, whose boundary is `lib_bytes`.
+    /// A linked row's door; `None` for a dropped-in row, whose image is `lib_bytes`.
     entry: Option<LinkedEntry>,
 }
 
 impl LoadablePlugin {
-    /// Whether this row opens IN PROCESS ([`LinkedEntry::Store`]) rather than over the C ABI —
-    /// such a row is handed no configuration across a boundary, so there is none to resolve for it.
+    /// Whether this row is the build's in-process STORE ([`LinkedEntry::Store`]) — such a row is
+    /// handed no configuration, so there is none to resolve for it.
     pub fn in_process(&self) -> bool {
         matches!(self.entry, Some(LinkedEntry::Store { .. }))
     }
 
-    /// M6-COLD-DELETE: whether this row is a LINKED cold boundary (`BUSBAR_COLD_ENTRY`).
+    /// M6-COLD-DELETE residue: whether this row is a LINKED JSON-lane export sink
+    /// (`BUSBAR_COLD_ENTRY`), the request-log file and webhook sinks until their door re-pins.
     pub fn image_is_cold_linked(&self) -> bool {
         matches!(self.entry, Some(LinkedEntry::Boundary(_)))
     }
@@ -106,7 +87,7 @@ impl LoadablePlugin {
     /// A compiled-in memory-ABI row's door; `None` for any other row.
     pub fn door(&self) -> Option<busbar_contract::abi::mechanism::door::DoorFn> {
         match self.entry {
-            Some(LinkedEntry::Door(door)) => Some(door),
+            Some(LinkedEntry::Door(door)) | Some(LinkedEntry::Store { door }) => Some(door),
             _ => None,
         }
     }
@@ -116,7 +97,8 @@ impl LoadablePlugin {
         self.entry.is_some()
     }
 
-    /// What the one load runs over: the linked boundary, or the verified bytes.
+    /// What a JSON-lane load runs over (M6-COLD-DELETE residue: the hosted login and the two
+    /// request-log sinks): the linked boundary, or the verified bytes.
     pub fn image(&self) -> crate::Image<'_> {
         match self.entry {
             Some(LinkedEntry::Boundary(entry)) => crate::Image::Linked(entry),
@@ -138,23 +120,25 @@ impl LoadablePlugin {
     }
 }
 
+/// The refusal of a `kind: secret` plugin that states no door.
+pub const JSON_SECRET_REFUSED: &str = "it speaks the 1.5.5 JSON secret contract, which this host does not load — rebuild the plugin against the 1.6.0 SDK";
+
 /// The `file` a linked row reports: it has no tarball.
 pub const LINKED_FILE: &str = "(linked)";
 
-/// The kinds the LINKED door serves: the cold kinds whose load is the one [`crate::Image`] load —
-/// an export sink's included (item 141). A plane is linked through [`crate::link_plane`] (its
-/// HOT-lane airlock).
+/// The kinds the LINKED door serves through the registry: every kind whose compiled-in row is a
+/// memory-ABI door registered here. A plane is linked through its own door axis (`crate::boot`).
 const LINKED_KINDS: &[&str] = &[
-    busbar_contract::abi::cold::kind::STORE,
-    busbar_contract::abi::cold::kind::SECRET,
-    busbar_contract::abi::cold::kind::AUTH,
-    busbar_contract::abi::cold::kind::HOOK,
-    busbar_contract::abi::cold::kind::EXPORT,
+    kind::STORE,
+    kind::SECRET,
+    kind::AUTH,
+    kind::HOOK,
+    kind::EXPORT,
 ];
 
-/// A cold-lane plugin LINKED into this build (DECISIONS #2 rule (1)): the manifest its signed
-/// tarball would carry — every statement about the plugin, none about an artifact (`sha256` and
-/// `signature` describe a file it does not have) — and its boundary.
+/// A plugin LINKED into this build (DECISIONS #2 rule (1)): the manifest its signed tarball would
+/// carry — every statement about the plugin, none about an artifact (`sha256` and `signature`
+/// describe a file it does not have) — and its door.
 pub struct LinkedPlugin {
     pub manifest: Manifest,
     pub entry: LinkedEntry,
@@ -162,31 +146,27 @@ pub struct LinkedPlugin {
     pub ephemeral: bool,
 }
 
-/// A linked plugin's boundary.
+/// A linked plugin's door.
 #[derive(Clone, Copy)]
 pub enum LinkedEntry {
-    /// The SDK boundary it exports (`BUSBAR_COLD_ENTRY`), run through the one [`crate::Image`] load.
-    Boundary(&'static ColdEntry),
-    /// A store written against the store trait itself rather than the SDK boundary — the in-process
-    /// default a build ships. `open_store` calls it with the row's configuration, where it would
-    /// otherwise run the image load; everything before that (the row, its registration, name and
-    /// alias resolution, the kind check) is the axis every other row takes.
+    /// The build's in-process STORE: its store v3 door, which boot opens it through
+    /// ([`PluginRegistry::store_door`]); the row is handed no configuration across a boundary
+    /// ([`LoadablePlugin::in_process`]).
     Store {
-        /// The row's in-process open (the cold lane; DEL-COLD-LOADER deletes it).
-        open: fn(&str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String>,
-        /// The row's store v3 door, which boot opens it through ([`PluginRegistry::store_door`]);
-        /// `None` for a row that states none.
-        door: Option<busbar_contract::abi::mechanism::door::DoorFn>,
+        /// The row's store v3 door.
+        door: busbar_contract::abi::mechanism::door::DoorFn,
     },
     /// A compiled-in plugin on its kind's memory ABI: the logic crate's `plugin_door!` door function,
     /// the same door a dropped-in build exports as `busbar_plugin_door` (THE DESIGN: compiled-in =
-    /// dropped-in). Loaded
-    /// through [`crate::dispatch::load_linked`].
+    /// dropped-in). Loaded through [`crate::dispatch::load_linked`].
     Door(busbar_contract::abi::mechanism::door::DoorFn),
+    /// M6-COLD-DELETE residue: a linked JSON-lane export sink's SDK boundary (`BUSBAR_COLD_ENTRY`),
+    /// the request-log file and webhook sinks until their door re-pins land.
+    Boundary(&'static ColdEntry),
 }
 
 impl LinkedPlugin {
-    /// A linked SDK plugin: `manifest` and its boundary.
+    /// M6-COLD-DELETE residue: a linked JSON-lane export sink, `manifest` and its boundary.
     pub fn boundary(manifest: Manifest, entry: &'static ColdEntry) -> Self {
         LinkedPlugin {
             manifest,
@@ -205,53 +185,36 @@ impl LinkedPlugin {
         }
     }
 
-    /// A built-in STORE named `name` (its own alias), at this binary's store payload schema.
+    /// The build's in-process STORE named `name` (its own alias), at the store kind's one version:
+    /// its store v3 `door`, and whether what it holds is lost on restart.
     pub fn store(
         name: &str,
-        open: fn(&str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String>,
+        door: busbar_contract::abi::mechanism::door::DoorFn,
         ephemeral: bool,
     ) -> Self {
-        let (kind, abi) = (
-            busbar_contract::abi::cold::kind::STORE,
-            busbar_contract::abi::cold::ABI_VERSION,
-        );
+        let abi = busbar_contract::abi::store::ABI_VERSION;
         Self::built_in(
             name,
-            kind,
+            kind::STORE,
             abi,
-            LinkedEntry::Store { open, door: None },
+            LinkedEntry::Store { door },
             ephemeral,
         )
-    }
-
-    /// This STORE row with its store v3 `door` (the door boot opens it through); any other row is
-    /// returned as it was.
-    #[must_use]
-    pub fn with_store_door(mut self, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
-        if let LinkedEntry::Store { door: d, .. } = &mut self.entry {
-            *d = Some(door);
-        }
-        self
-    }
-
-    /// A linked AUTH plugin named `name` (its own alias), at this binary's auth payload schema: the
-    /// SDK boundary its crate exports, opened by `open_auth` through the one image load a dropped-in
-    /// `kind: auth` plugin takes.
-    pub fn auth(name: &str, entry: &'static ColdEntry) -> Self {
-        let (kind, abi) = (
-            busbar_contract::abi::cold::kind::AUTH,
-            busbar_contract::abi::cold::AUTH_ABI_VERSION,
-        );
-        Self::built_in(name, kind, abi, LinkedEntry::Boundary(entry), false)
     }
 
     /// A linked AUTH plugin named `name` (its own alias) on the auth kind's MEMORY ABI: the logic
     /// crate's `plugin_door!` door, the same door its dropped-in build exports.
     pub fn auth_door(name: &str, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
-        let (kind, abi) = (
-            busbar_contract::abi::cold::kind::AUTH,
-            busbar_contract::abi::auth::ABI_VERSION,
-        );
+        Self::door_of_kind(kind::AUTH, name, door)
+    }
+
+    /// A linked memory-ABI plugin of `kind` named `name` (its own alias), at the kind's one version.
+    pub fn door_of_kind(
+        kind: &str,
+        name: &str,
+        door: busbar_contract::abi::mechanism::door::DoorFn,
+    ) -> Self {
+        let abi = supported_abi(kind).first().copied().unwrap_or_default();
         Self::built_in(name, kind, abi, LinkedEntry::Door(door), false)
     }
 
@@ -452,13 +415,13 @@ impl PluginRegistry {
     pub fn dropped_hooks(&self) -> impl Iterator<Item = &LoadablePlugin> {
         self.loadable()
             .iter()
-            .filter(|p| p.manifest.kind == busbar_contract::abi::cold::kind::HOOK && !p.linked())
+            .filter(|p| p.manifest.kind == kind::HOOK && !p.linked())
     }
 
     /// Resolve `name_or_alias` to a row of `kind`, or say why not — the one explanation every
     /// `open_*` below gives: a skipped match names the skip, a miss names the loadable set, a row of
     /// another kind says it cannot `role`.
-    fn resolve_kind(
+    pub(crate) fn resolve_kind(
         &self,
         name_or_alias: &str,
         kind: &str,
@@ -491,34 +454,9 @@ impl PluginRegistry {
     }
 
     /// The STORE `name_or_alias` resolves to, refused unless its manifest says `store`. The one
-    /// place the loader spells the store kind's root key; [`Self::open_store`] and
-    /// [`Self::store_door`] both resolve through it.
+    /// place the loader spells the store kind's root key; [`Self::store_door`] resolves through it.
     fn resolve_store(&self, name_or_alias: &str) -> Result<&LoadablePlugin, String> {
         self.resolve_kind(name_or_alias, "store", "back the governance store")
-    }
-
-    /// Open a STORE plugin resolved by name or alias: verifies the resolved plugin's `kind` is
-    /// `store`, then loads it over the store C ABI (its verified bytes staged — memfd on Linux,
-    /// private temp elsewhere — or its linked boundary) and `open`s it with `cfg_json`. The one
-    /// engine-facing load entrypoint.
-    pub fn open_store(
-        &self,
-        name_or_alias: &str,
-        cfg_json: &str,
-    ) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
-        let p = self.resolve_store(name_or_alias)?;
-        if let Some(LinkedEntry::Store { open, .. }) = p.entry {
-            return open(cfg_json);
-        }
-        // Hand the manifest's payload schema to the loader: a store built against an older schema
-        // is spoken to in the shape it can decode (the usage-ledger ops changed shape in 1.6.0).
-        crate::load_store_image(
-            p.image(),
-            cfg_json,
-            &p.manifest.name,
-            &p.manifest.kind,
-            p.manifest.abi_version,
-        )
     }
 
     /// THE DOOR a STORE resolved by name or alias opens through (the store axis,
@@ -542,10 +480,8 @@ impl PluginRegistry {
         };
         if let Some(entry) = p.entry {
             return match entry {
-                LinkedEntry::Store {
-                    door: Some(door), ..
-                } => Ok(StoreDoor::Linked(door)),
-                _ => Err(no_door()),
+                LinkedEntry::Store { door } => Ok(StoreDoor::Linked(door)),
+                LinkedEntry::Door(_) | LinkedEntry::Boundary(_) => Err(no_door()),
             };
         }
         let named = |e: String| format!("plugin '{}': {e}", p.manifest.name);
@@ -559,43 +495,9 @@ impl PluginRegistry {
         }
     }
 
-    /// M6-COLD-DELETE: whether the `kind: auth` row `name_or_alias` resolves to opens on the COLD
-    /// auth lane — a linked `BUSBAR_COLD_ENTRY`, or a dropped-in library with no door and no
-    /// Statement (`crate::auth_axis::AuthRows` opens such a row through its `ColdAuth`) — rather
-    /// than on the auth kind's memory ABI. A cold row's `verify` is a synchronous call that may
-    /// block: its caller keeps it off an async worker.
-    ///
-    /// # Errors
-    /// No row resolves to `name_or_alias`, or it is not `kind: auth`, in [`Self::open_auth`]'s words.
-    /// A name only a door's Statement alias answers resolves to no row here: the auth axis answers it.
-    pub fn auth_row_is_cold(&self, name_or_alias: &str) -> Result<bool, String> {
-        let p = self.resolve_kind(name_or_alias, "auth", "serve as an auth module")?;
-        Ok(p.door().is_none()
-            && (p.image_is_cold_linked() || matches!(p.manifest.stated_rendering(), Ok(None))))
-    }
-
-    /// Open an AUTH plugin resolved by name or alias: verifies the resolved plugin's `kind` is `auth`,
-    /// then loads it over the kind-neutral C ABI and `open`s it with `cfg_json`, returning
-    /// `Box<dyn AuthModule>` — the seam the engine's auth chain consumes. Same trust and load
-    /// pipeline as store/secret; only the kind (and the consuming seam) differs. FAIL-CLOSED.
-    pub fn open_auth(
-        &self,
-        name_or_alias: &str,
-        cfg_json: &str,
-    ) -> Result<Box<dyn busbar_contract::auth::AuthModule>, String> {
-        let p = self.resolve_kind(name_or_alias, "auth", "serve as an auth module")?;
-        if p.door().is_some() {
-            return Err(format!(
-                "auth plugin '{name_or_alias}' is on the memory ABI: it opens through the auth \
-                 axis, not the cold lane"
-            ));
-        }
-        crate::auth::load_auth_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)
-    }
-
-    /// Open an AUTH plugin as the unified [`busbar_contract::auth::AuthPlugin`] handle (verify + LOGIN) —
-    /// identical trust/load pipeline as [`Self::open_auth`], but the returned box KEEPS the
-    /// `LoginModule` capability the hosted browser-login flow (`auth.methods`, 1.5.2) drives. Also
+    /// M6-COLD-DELETE RESIDUE (deleted when the hosted login moves onto the auth door): open an AUTH
+    /// plugin as the unified [`busbar_contract::auth::AuthPlugin`] handle, KEEPING the `LoginModule`
+    /// capability the hosted browser-login flow (`auth.methods`, 1.5.2) drives. Also
     /// returns the resolved plugin's manifest `abi_version` so the caller can gate v2-only login
     /// methods (a `browser_login` method needs an ABI v2 login-capable plugin). FAIL-CLOSED.
     pub fn open_login(
@@ -610,41 +512,15 @@ impl PluginRegistry {
         Ok((module, abi_version))
     }
 
-    /// Open a SECRET plugin resolved by name or alias: verifies the resolved plugin's `kind` is
-    /// `secret`, then loads it over the secret C ABI and `open`s it with `cfg_json`. Same trust and
-    /// load pipeline as a store plugin - only the kind (and the seam consuming it) differs.
-    /// FAIL-CLOSED: any resolution/kind/load failure is an error the caller surfaces as an
-    /// unresolvable secret.
-    ///
-    /// TRANSITIONAL (THE COLD SECRET LANE, 1.6.0-TODO "TRANSITIONAL ROWS", deleted at M6): it serves
-    /// only a dropped-in secret plugin that states no door (a 1.5.x vault). A linked secret plugin and
-    /// a dropped-in one with a door are loaded through the one loader (`crate::secret_calls`).
-    pub fn open_secret(
-        &self,
-        name_or_alias: &str,
-        cfg_json: &str,
-    ) -> Result<Box<dyn busbar_contract::secret::SecretModule>, String> {
-        let p = self.resolve_kind(name_or_alias, "secret", "resolve config secrets")?;
-        crate::load_secret_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)
-    }
-
-    /// Open an EXPORT sink resolved by name or alias: verifies the resolved plugin's `kind` is
-    /// `export`, then loads it over the kind-neutral C ABI (its verified bytes, or its linked
-    /// boundary) and `open`s it with
-    /// `cfg_json`, returning a [`crate::export::DynExport`] whose declared streams were queried once at
-    /// load. Same trust and load pipeline as store/secret/auth/hook; only the kind (and the consuming
-    /// seam) differs. FAIL-CLOSED on any resolution/kind/load failure.
-    pub fn open_export(
-        &self,
-        name_or_alias: &str,
-        cfg_json: &str,
-    ) -> Result<crate::export::DynExport, String> {
-        let p = self.resolve_kind(name_or_alias, "export", "serve as a telemetry sink")?;
-        let (name, declares) = (&p.manifest.name, &p.manifest.declares);
-        crate::observe::grant_series(name, p.first_party(), &declares.metrics)?;
-        crate::export::load_export_image(p.image(), cfg_json, name, &p.manifest.kind)?
-            .with_destinations(&declares.destinations, cfg_json)?
-            .with_egress(p.first_party(), declares.egress)
+    /// Why no secret plugin answers `name_or_alias` on the secret axis: no `kind: secret` row
+    /// resolves to it (in [`Self::resolve_kind`]'s words), or the row states no door — a 1.5.5
+    /// JSON-contract secret plugin, refused naming the rebuild (THE DESIGN §11.8).
+    #[must_use]
+    pub fn secret_refusal(&self, name_or_alias: &str) -> String {
+        match self.resolve_kind(name_or_alias, kind::SECRET, "resolve config secrets") {
+            Err(e) => e,
+            Ok(p) => format!("plugin '{}': {JSON_SECRET_REFUSED}", p.manifest.name),
+        }
     }
 
     /// Open a PLANE resolved by name or alias: verifies the resolved plugin's `kind` is `plane`, then
@@ -691,7 +567,7 @@ impl PluginRegistry {
         for p in self
             .loadable()
             .iter()
-            .filter(|p| p.manifest.kind == busbar_contract::abi::cold::kind::TRANSPORT)
+            .filter(|p| p.manifest.kind == kind::TRANSPORT)
         {
             let name = &p.manifest.name;
             let stated = p.manifest.stated_rendering()?;
@@ -745,7 +621,7 @@ impl PluginRegistry {
             set.doors.push(crate::boot::Candidate::linked(*door)?);
         }
         let planes = self.loadable().iter();
-        for p in planes.filter(|p| p.manifest.kind == busbar_contract::abi::cold::kind::PLANE) {
+        for p in planes.filter(|p| p.manifest.kind == kind::PLANE) {
             let named = |e: String| format!("plugin '{}': {e}", p.manifest.name);
             match p.manifest.stated_rendering().map_err(named)? {
                 Some(stated) => set.doors.push(

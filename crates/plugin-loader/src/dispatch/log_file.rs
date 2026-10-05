@@ -318,7 +318,7 @@ impl PluginLogSink {
         };
         if due {
             *file = None;
-            crate::host::rotate(&self.path.to_string_lossy(), self.keep);
+            rotate(&self.path.to_string_lossy(), self.keep);
         }
         if file.is_none() {
             *file = Some(self.open()?);
@@ -330,6 +330,27 @@ impl PluginLogSink {
         *held += bytes.len() as u64;
         Ok(())
     }
+}
+
+/// The most archives a rotation keeps.
+const MAX_KEEP: u32 = 64;
+
+/// Rotate `path` by rename, keeping `keep` archives: drop the oldest, shift the rest up, rename the
+/// live file to `<path>.1`. A failed step is skipped and the rest still run; a failed final rename
+/// leaves the live file in place to keep being appended to, never truncated.
+fn rotate(path: &str, keep: u32) {
+    let keep = keep.clamp(1, MAX_KEEP);
+    let oldest = format!("{path}.{keep}");
+    if std::path::Path::new(&oldest).exists() {
+        let _ = std::fs::remove_file(&oldest);
+    }
+    for i in (1..keep).rev() {
+        let (from, to) = (format!("{path}.{i}"), format!("{path}.{}", i + 1));
+        if std::path::Path::new(&from).exists() {
+            let _ = std::fs::rename(&from, &to);
+        }
+    }
+    let _ = std::fs::rename(path, format!("{path}.1"));
 }
 
 impl EnvelopeSink for PluginLogSink {

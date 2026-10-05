@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+//! M6-COLD-DELETE RESIDUE: the JSON-lane EXPORT seam the request-log file and webhook sinks still
+//! ship on, until their door re-pins land with the host's disk lane and the export in-flight fixes.
+//! Every other export sink opens on the export kind's door (`crate::export_axis`).
+//!
 //! The EXPORT seam of the kind-neutral loader: [`DynExport`], a telemetry sink backed by a
 //! dynamically-loaded plugin whose kind was bound to `export` at load. It queries the plugin's
 //! declared streams ONCE at load (retaining them alongside the handle) and translates each delivery
@@ -13,12 +17,10 @@
 
 use crate::sign::EgressPolicy;
 use crate::RawPlugin;
-use busbar_contract::abi::cold::{
-    endpoint::{EndpointRequest, EndpointResponse},
-    export::{ExportRequest, ExportResponse},
-    kind as abi_kind,
-};
+use busbar_contract::abi::cold::export::{ExportRequest, ExportResponse};
 use busbar_contract::abi::export::ExportStream;
+use busbar_contract::abi::mechanism::endpoint::{EndpointRequest, EndpointResponse};
+use busbar_contract::abi::mechanism::kind as abi_kind;
 use busbar_contract::abi::mechanism::route::Route;
 use busbar_contract::export_calls::{Delivered, ExportCalls, Family, ServeRequest, Served};
 use std::sync::{Arc, OnceLock};
@@ -258,7 +260,7 @@ pub(crate) fn fold_shed(name: &str) {
         .into_iter()
         .map(|n| serde_json::json!({"name": n, "type": "counter", "value": 1}))
         .collect();
-    let report = busbar_contract::abi::cold::observe::Envelope {
+    let report = busbar_contract::abi::mechanism::observe::Envelope {
         result: (),
         metrics,
         diagnostics: Vec::new(),
@@ -292,7 +294,7 @@ impl DynExport {
                 metrics,
                 diagnostics,
             }) => {
-                let report = busbar_contract::abi::cold::observe::Envelope {
+                let report = busbar_contract::abi::mechanism::observe::Envelope {
                     result: (),
                     metrics,
                     diagnostics,
@@ -345,6 +347,25 @@ impl DynExport {
 }
 
 impl crate::PluginRegistry {
+    /// Open an EXPORT sink resolved by name or alias: verifies the resolved plugin's `kind` is
+    /// `export`, then loads it over the kind-neutral C ABI (its verified bytes, or its linked
+    /// boundary) and `open`s it with
+    /// `cfg_json`, returning a [`crate::export::DynExport`] whose declared streams were queried once at
+    /// load. Same trust and load pipeline as store/secret/auth/hook; only the kind (and the consuming
+    /// seam) differs. FAIL-CLOSED on any resolution/kind/load failure.
+    pub fn open_export(
+        &self,
+        name_or_alias: &str,
+        cfg_json: &str,
+    ) -> Result<crate::export::DynExport, String> {
+        let p = self.resolve_kind(name_or_alias, "export", "serve as a telemetry sink")?;
+        let (name, declares) = (&p.manifest.name, &p.manifest.declares);
+        crate::observe::grant_series(name, p.first_party(), &declares.metrics)?;
+        crate::export::load_export_image(p.image(), cfg_json, name, &p.manifest.kind)?
+            .with_destinations(&declares.destinations, cfg_json)?
+            .with_egress(p.first_party(), declares.egress)
+    }
+
     /// The loadable row `module` names (canonical name first, then alias) when it is a
     /// `kind: export` row, else `None`: the one home of that question for every export caller.
     pub(crate) fn resolve_export(&self, module: &str) -> Option<&crate::registry::LoadablePlugin> {

@@ -5,8 +5,8 @@
 //!
 //! ## The defect this closes
 //!
-//! Before this module the export ABI was an effect-free ONE-WAY WIRE: [`crate::abi::cold::export::ExportResponse::Delivered`]
-//! is a UNIT variant, and the COLD tier has no host-callback vtable (that is HOT/plane only), so a
+//! Before this module the export ABI was an effect-free ONE-WAY WIRE: the JSON lane's `Delivered`
+//! was a UNIT variant, and that lane had no host-callback vtable (that is HOT/plane only), so a
 //! sink could not report the metrics it produced or the diagnostics it raised. Every real sink
 //! produces host-side effects the wire could not carry — a file sink increments rotate/drop counters
 //! and raises five registered diagnostics; a webhook sink's POST must ride the host's SSRF-guarded
@@ -68,12 +68,11 @@
 //! response. None of those questions is settled, and inventing an answer inside a one-way wire would
 //! produce exactly the kind of half-shape #85 exists to remove.
 //!
-//! ## Where this will live
+//! ## Where this lives
 //!
-//! Here, beside the other cold-lane shapes (`export.rs`, `hook.rs`, `endpoint.rs`), because that is
-//! where its siblings are. Under #83 (*contract = shapes*) and #84 (contract and the SDK MERGE into
-//! one zero-dependency plugin-contract crate) this module's destination is that crate. Moving it is
-//! a rename, not a redesign — nothing here names the kernel, the ledger, or any kind.
+//! In the shared mechanism, because every kind's reply carries it (THE DESIGN §11.2: "every reply
+//! carries the metrics and diagnostics envelope"). Nothing here names the kernel, the ledger, or any
+//! kind.
 
 use serde::{Deserialize, Serialize};
 
@@ -97,13 +96,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// # Versioning
 ///
-/// Wrapping a kind's response is a PAYLOAD-schema change for that kind, not a TRANSPORT one: the six
-/// `extern "C"` signatures, the ptr+len rule and the status codes are all untouched, so
-/// [`crate::abi::cold::TRANSPORT_VERSION`] does NOT move (see its doc for the axis split, and
-/// `SetLogSinkFn` for the same argument applied to a seventh symbol). Each kind that adopts the
-/// envelope bumps ITS OWN payload constant, and the loader keeps the kind's FLOOR where it was —
-/// a plugin built before the envelope declares the older version in its signed manifest and the
-/// loader reads its bare response exactly as it always did. No published artifact is refused.
+/// The envelope is part of each kind's own ABI version (THE DESIGN §11.2): a kind that grows it
+/// bumps its own version, never the mechanism's.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Envelope<R> {
     /// The kind-specific answer.
@@ -254,8 +248,8 @@ impl PluginMetric {
 }
 
 /// How loud a [`PluginDiagnostic`] is. A plain enum with pinned snake_case wire tokens; an
-/// unrecognized level is clamped by the host rather than rejected, on exactly the reasoning
-/// [`crate::abi::cold::log_level`] gives — a newer plugin inventing a level must not lose the message.
+/// unrecognized level is clamped by the host rather than rejected — a newer plugin inventing a level
+/// must not lose the message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagLevel {
@@ -521,5 +515,5 @@ pub struct DiagnosticDecl {
 }
 
 #[cfg(test)]
-#[path = "tests/observe_tests.rs"]
+#[path = "../tests/observe_tests.rs"]
 mod tests;

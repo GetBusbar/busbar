@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The **export** payload schema (kind = [`crate::abi::cold::kind::EXPORT`]) that rides the kind-neutral `call`.
+//! The **export** payload schema (kind = `export`) that rides the kind-neutral `call`.
 //!
 //! ## One transport, every export op
 //!
@@ -19,11 +19,11 @@
 //! - `deliver` — hand one already-serialized batch for a declared stream to the sink. The payload is
 //!   carried as an opaque [`serde_json::Value`] the engine built; the export ABI adds the envelope,
 //!   never a second copy of the batch semantics.
-//! - `routes` / `http_endpoint` — the sink's HTTP surface (see [`crate::abi::cold::endpoint`]).
+//! - `routes` / `http_endpoint` — the sink's HTTP surface (see [`crate::abi::mechanism::endpoint`]).
 //! - `status` — what the sink has to report when the host renders its exposition (additive).
 
-use crate::abi::cold::endpoint::{EndpointRequest, EndpointResponse};
 use crate::abi::export::{CheckPhase, ExportStream};
+use crate::abi::mechanism::endpoint::{EndpointRequest, EndpointResponse};
 use crate::abi::mechanism::route::Route;
 use serde::{Deserialize, Serialize};
 
@@ -34,11 +34,11 @@ use serde::{Deserialize, Serialize};
 /// A REMOVED wire token is a breaking payload change, so the floor moves rather than accepting a
 /// token the engine can no longer route. This is the per-kind PAYLOAD axis, NOT the transport axis
 /// — an export plugin exports the SAME six neutral symbols ([`crate::abi::cold::symbol`]) as every other kind, at
-/// `busbar_abi() == TRANSPORT_VERSION`. Named the same way [`crate::abi::cold::SECRET_ABI_VERSION`] is, so the loader floor and the SDK's declared version share one
+/// `busbar_abi() == TRANSPORT_VERSION`. Named the same way the other kinds' versions are, so the loader floor and the SDK's declared version share one
 /// const and cannot silently drift apart.
 ///
 /// v2 -> v3 (1.6.0, DECISIONS #85 — THE OBSERVABILITY ENVELOPE): an export response is now
-/// [`crate::abi::cold::observe::Envelope`]`<ExportResponse>` — `{ result, metrics[], diagnostics[] }` —
+/// [`crate::abi::mechanism::observe::Envelope`]`<ExportResponse>` — `{ result, metrics[], diagnostics[] }` —
 /// instead of a bare `ExportResponse`. **This is the bump #85 called for and the only one it
 /// required.**
 ///
@@ -83,10 +83,10 @@ pub const EXPORT_ABI_VERSION: u32 = 3;
 ///
 /// 0: `streams` / `deliver` / `routes` / `http_endpoint` / `status` (the v3 surface).
 /// 1 (K9a S1): the FIRST-PARTY METRIC NAMESPACE — a manifest's `declares.metrics`
-///   ([`crate::abi::cold::observe::SeriesDecl`]).
+///   ([`crate::abi::mechanism::observe::SeriesDecl`]).
 /// 2 (K9a S2): the `validate` op ([`ExportRequest::Validate`] / [`ExportResponse::Validated`]).
 /// 3 (K9a S3): PLUGIN DIAGNOSTICS — a manifest's `declares.diagnostics`
-///   ([`crate::abi::cold::observe::DiagnosticDecl`]).
+///   ([`crate::abi::mechanism::observe::DiagnosticDecl`]).
 /// 4 (K9a S4): the DESTINATION HANDLE — a manifest's `declares.destinations`, the host-executed
 ///   [`HostOp`]s a delivery may answer with ([`ExportResponse::Host`]), and the op that resumes it
 ///   with their [`HostResult`]s ([`ExportRequest::Resume`]).
@@ -96,7 +96,7 @@ pub const EXPORT_ABI_VERSION: u32 = 3;
 ///   samples as [`MetricFamily`]s; the sink answers the exposition it renders
 ///   ([`ExportResponse::Exposition`]).
 /// 7 (K9b): the SHED COUNTER — a declared series may be marked `shed`
-///   ([`crate::abi::cold::observe::SeriesDecl::shed`]): the host counts on it each delivery it sheds for
+///   ([`crate::abi::mechanism::observe::SeriesDecl::shed`]): the host counts on it each delivery it sheds for
 ///   the sink, which the sink is never called for and so cannot count.
 /// 8 (K9c): the START op ([`ExportRequest::Start`] / [`ExportResponse::Started`]) — the host
 ///   starts feeding the sink and it states its in-flight admission; the CHECK op
@@ -427,7 +427,7 @@ pub enum ExportResponse {
     #[serde(rename = "Http")]
     Endpoint(EndpointResponse),
     /// `status` — what the sink observed since it last reported, in the observability envelope's
-    /// own entry shapes (`crate::abi::cold::observe::PluginMetric` /
+    /// own entry shapes (`crate::abi::mechanism::observe::PluginMetric` /
     /// `PluginDiagnostic` as JSON values), so the host runs them through the SAME validator and fold
     /// it runs the envelope's arrays through. Either list may be empty or absent on the wire.
     Status {

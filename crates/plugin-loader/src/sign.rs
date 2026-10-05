@@ -248,7 +248,7 @@ impl Manifest {
 
 /// The declaration shapes a manifest's `declares` section carries, named here so a packer or a
 /// host reaches them beside [`Manifest`].
-pub use busbar_contract::abi::cold::observe::{DiagnosticDecl, SeriesDecl};
+pub use busbar_contract::abi::mechanism::observe::{DiagnosticDecl, SeriesDecl};
 
 /// A manifest's `declares` section — the statements a plugin makes ABOUT ITSELF that the host
 /// grants or refuses at open, never trusts as-is (the export ABI's minor, `EXPORT_ABI_MINOR`).
@@ -256,13 +256,13 @@ pub use busbar_contract::abi::cold::observe::{DiagnosticDecl, SeriesDecl};
 #[serde(deny_unknown_fields, default)]
 pub struct Declares {
     /// The metric series the plugin emits (S1, the first-party metric namespace): granted to a
-    /// first-party plugin only — see [`busbar_contract::abi::cold::observe::SeriesDecl`].
+    /// first-party plugin only — see [`busbar_contract::abi::mechanism::observe::SeriesDecl`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub metrics: Vec<busbar_contract::abi::cold::observe::SeriesDecl>,
+    pub metrics: Vec<busbar_contract::abi::mechanism::observe::SeriesDecl>,
     /// The `BUSBAR-NNNN` diagnostics the plugin raises: registered into the host's catalogue
-    /// for a first-party plugin — see [`busbar_contract::abi::cold::observe::DiagnosticDecl`].
+    /// for a first-party plugin — see [`busbar_contract::abi::mechanism::observe::DiagnosticDecl`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub diagnostics: Vec<busbar_contract::abi::cold::observe::DiagnosticDecl>,
+    pub diagnostics: Vec<busbar_contract::abi::mechanism::observe::DiagnosticDecl>,
     /// The SETTINGS KEYS that name a destination the host opens for the plugin (S4, the
     /// destination handle): the host resolves each against the operator's settings at open, and
     /// the plugin's host ops name the key, never a path.

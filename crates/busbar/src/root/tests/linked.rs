@@ -1222,7 +1222,10 @@ fn the_default_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
         [(default, true, true)],
         "one linked store: the ephemeral default"
     );
-    (crate::LINKED.stores[0].3)("{}").expect("the default store opens");
+    assert!(
+        !(crate::LINKED.stores[0].3)().is_null(),
+        "the default store states its door"
+    );
     let strategies = [
         busbar_kernel::config::STRATEGY_CHEAPEST,
         busbar_kernel::config::STRATEGY_FASTEST,
@@ -1265,14 +1268,11 @@ fn the_default_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
 #[test]
 fn the_default_store_is_the_row_that_declares_it() {
     use busbar_kernel::preflight::LinkedStore;
-    fn open(_: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
-        Err("never opened".into())
-    }
     extern "C" fn door() -> *const busbar_contract::abi::mechanism::door::Door {
         std::ptr::null()
     }
-    const PLAIN: LinkedStore = ("acme-plain", false, false, open, door);
-    const CLAIMS: LinkedStore = ("acme-default", true, true, open, door);
+    const PLAIN: LinkedStore = ("acme-plain", false, false, door);
+    const CLAIMS: LinkedStore = ("acme-default", true, true, door);
     assert_eq!(
         super::default_store(&[PLAIN, CLAIMS]),
         Ok(Some("acme-default"))
@@ -1299,15 +1299,12 @@ fn the_default_store_is_the_row_that_declares_it() {
 #[test]
 fn two_rows_declaring_the_default_refuse_boot() {
     use busbar_kernel::preflight::LinkedStore;
-    fn open(_: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
-        Err("never opened".into())
-    }
     extern "C" fn door() -> *const busbar_contract::abi::mechanism::door::Door {
         std::ptr::null()
     }
-    const A: LinkedStore = ("acme-a", true, true, open, door);
-    const B: LinkedStore = ("acme-b", false, true, open, door);
-    const C: LinkedStore = ("acme-c", false, false, open, door);
+    const A: LinkedStore = ("acme-a", true, true, door);
+    const B: LinkedStore = ("acme-b", false, true, door);
+    const C: LinkedStore = ("acme-c", false, false, door);
     assert_eq!(
         super::default_store(&[A, C, B]),
         Err(
