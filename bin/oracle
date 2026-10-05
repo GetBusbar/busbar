@@ -217,6 +217,71 @@ mkdir -p "$root"
 #   1. BUSBAR_ORACLE_RUST_BIN=<path>   a prebuilt binary (CI builds it once, passes it here).
 #   2. BUSBAR_RELEASE_CHECKOUT=<dir>   a busbar-release checkout to `cargo build --release` from.
 #   3. else                            git clone busbar-release at the pinned ref, then build.
+# ── the engine clone: a token is USED, never STORED (Q128 WARN, ARCHITECT 2026-10-05) ──────────────
+# The token (the first of BUSBAR_RELEASE_TOKEN / GH_TOKEN / GITHUB_TOKEN that is set) reaches git as a
+# one-shot `http.<github>.extraheader` through git's environment config (GIT_CONFIG_COUNT/KEY/VALUE):
+# not in the clone URL, not on any argv, and never in the checkout's .git/config. It used to be folded
+# into the URL as `x-access-token:<token>@`, which `git clone` wrote into `remote.origin.url` on disk,
+# where it outlived the run. An existing checkout's origin is reset to the plain URL (scrubbing a URL a
+# previous version stored), and after every clone/fetch `assert_no_token` refuses the run if the token
+# or an `x-access-token` credential is anywhere in that config.
+git_with_token() {  # git_with_token <git args...> — git, authenticated for github.com if a token is set
+  local tok="${BUSBAR_RELEASE_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+  if [ -n "$tok" ]; then
+    local b64; b64="$(printf 'x-access-token:%s' "$tok" | base64 | tr -d '\n')"
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
+      GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $b64" git "$@"
+  else
+    git "$@"
+  fi
+}
+assert_no_token() {  # assert_no_token <checkout> — refuse if a credential persisted in its git config
+  local cfg="$1/.git/config" tok="${BUSBAR_RELEASE_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+  [ -f "$cfg" ] || return 0
+  if grep -qiE 'x-access-token|extraheader|://[^/@[:space:]]+@' "$cfg" || { [ -n "$tok" ] && grep -qF -- "$tok" "$cfg"; }; then
+    echo "oracle: a credential persisted in $cfg; refusing (the engine clone must never store a token)" >&2
+    return 1
+  fi
+}
+clone_engine() {  # clone_engine <checkout> — the pinned busbar-release ref, checked out, no token stored
+  local checkout="$1"
+  if [ ! -d "$checkout/.git" ]; then
+    git_with_token clone --no-checkout "$RELEASE_REPO" "$checkout" >&2
+  else
+    git -C "$checkout" remote set-url origin "$RELEASE_REPO" >&2 2>/dev/null || true
+  fi
+  git_with_token -C "$checkout" fetch --depth 1 origin "$RELEASE_REF" >&2 2>/dev/null \
+    || git_with_token -C "$checkout" fetch origin >&2
+  assert_no_token "$checkout" || exit 1
+  git -C "$checkout" checkout --force "$RELEASE_REF" >&2
+}
+if [ "${1:-}" = "token-selftest" ]; then
+  # The engine clone stores no credential: a fresh clone under a planted token, and an existing
+  # checkout whose origin a previous version stored as `https://x-access-token:<token>@github.com/…`,
+  # each end with no trace of either in .git/config; and the guard refuses a config that has one.
+  st="$(mktemp -d)"; trap 'rm -rf "$st"' EXIT
+  # A throwaway fixture repo: no host hook or signing applies to it.
+  git init -q "$st/src" && git -C "$st/src" -c user.name=t -c user.email=t@t.invalid -c commit.gpgsign=false \
+    -c core.hooksPath=/dev/null commit -q --allow-empty -m pin && ref="$(git -C "$st/src" rev-parse HEAD)" \
+    || { echo "oracle token-selftest: could not build the fixture repo"; exit 1; }
+  fail=0
+  ( export BUSBAR_RELEASE_TOKEN=plant-token-0123456789 RELEASE_REPO="file://$st/src" RELEASE_REF="$ref"
+    clone_engine "$st/fresh" ) >/dev/null 2>&1 || { echo "  [FAILED] the fresh clone failed"; fail=1; }
+  if [ ! -f "$st/fresh/.git/config" ] || grep -qE 'plant-token|x-access-token|extraheader' "$st/fresh/.git/config"; then
+    echo "  [FAILED] a fresh clone stored the token"; fail=1
+  else echo "  [ok]     a fresh clone under a token stores none"; fi
+  git -C "$st/fresh" remote set-url origin "https://x-access-token:plant-token-0123456789@github.com/GetBusbar/busbar-release.git"
+  if ( export BUSBAR_RELEASE_TOKEN=plant-token-0123456789; assert_no_token "$st/fresh" ) 2>/dev/null; then
+    echo "  [FAILED] the guard passed a config holding the token"; fail=1
+  else echo "  [ok]     the guard refuses a config holding a token"; fi
+  ( export BUSBAR_RELEASE_TOKEN=plant-token-0123456789 RELEASE_REPO="file://$st/src" RELEASE_REF="$ref"
+    clone_engine "$st/fresh" ) >/dev/null 2>&1 || { echo "  [FAILED] re-using the stale checkout failed"; fail=1; }
+  if grep -qE 'plant-token|x-access-token' "$st/fresh/.git/config"; then
+    echo "  [FAILED] a stale tokenized origin survived a run"; fail=1
+  else echo "  [ok]     a stale tokenized origin is scrubbed"; fi
+  [ "$fail" = 0 ] && { echo "oracle token-selftest: the engine clone stores no credential"; exit 0; }
+  echo "oracle token-selftest: FAILED"; exit 1
+fi
 resolve_bin() {
   if [ -n "${BUSBAR_ORACLE_RUST_BIN:-}" ]; then
     [ -x "$BUSBAR_ORACLE_RUST_BIN" ] || { echo "oracle: BUSBAR_ORACLE_RUST_BIN is not executable: $BUSBAR_ORACLE_RUST_BIN" >&2; exit 1; }
@@ -230,29 +295,12 @@ resolve_bin() {
   else
     # busbar-release is a PRIVATE first-party repo, so a plain `git clone https://…` of it fails
     # unauthenticated on CI (the default GITHUB_TOKEN is scoped to THIS repo, not the sibling).
-    # Fold a token — the first of BUSBAR_RELEASE_TOKEN / GH_TOKEN / GITHUB_TOKEN that is set — into
-    # the github.com https URL as `x-access-token`, exactly as the removed ci.yml already does for this repo's
-    # own authenticated remote. No token set (local dev over ssh / a cached credential helper) →
-    # the URL is used verbatim, so nothing regresses off CI.
     # A Latchkey runner (`latchkey run`) has no token and no credential helper, so this clone fails
     # there. Stage the engine instead: `git clone` busbar-release into an untracked `.release/`
     # beside the packed tree, check out $release_ref, and in the job
     # `export BUSBAR_RELEASE_CHECKOUT=$PWD/.release` (precedence 2 above; no token leaves the machine).
-    local clone_url="$RELEASE_REPO"
-    local _tok="${BUSBAR_RELEASE_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
-    if [ -n "$_tok" ]; then
-      case "$RELEASE_REPO" in
-        https://github.com/*) clone_url="https://x-access-token:${_tok}@github.com/${RELEASE_REPO#https://github.com/}" ;;
-      esac
-    fi
     checkout="$root/checkout"
-    if [ ! -d "$checkout/.git" ]; then
-      git clone --no-checkout "$clone_url" "$checkout" >&2
-    else
-      git -C "$checkout" remote set-url origin "$clone_url" >&2 2>/dev/null || true
-    fi
-    git -C "$checkout" fetch --depth 1 origin "$RELEASE_REF" >&2 2>/dev/null || git -C "$checkout" fetch origin >&2
-    git -C "$checkout" checkout --force "$RELEASE_REF" >&2
+    clone_engine "$checkout"
   fi
   # ASK CARGO WHERE IT PUT THE BINARY; never assume `<checkout>/target/release`. That assumption is
   # wrong whenever the caller has a target directory of its own — `CARGO_TARGET_DIR` in the
@@ -269,7 +317,7 @@ resolve_bin() {
   # and so cannot match). Cargo emits the artifact line on a FRESH build too, so the path is
   # available whether or not anything recompiled.
   local artifacts
-  artifacts="$( cd "$checkout" && cargo build --release -p "$CRATE" --bin "$BINNAME" --message-format=json-render-diagnostics )"
+  artifacts="$( cd "$checkout" && cargo build --locked --release -p "$CRATE" --bin "$BINNAME" --message-format=json-render-diagnostics )"
   built="$(printf '%s\n' "$artifacts" | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -1)"
   # Fallback for an engine/cargo that emitted no artifact line at all: the historical path.
   [ -n "$built" ] || built="$checkout/target/release/$BINNAME"
