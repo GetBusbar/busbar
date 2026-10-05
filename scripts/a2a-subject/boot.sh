@@ -238,6 +238,9 @@ YAML
 listen: "127.0.0.1:$data_port"
 admin_listen: "127.0.0.1:$admin_port"
 public_url: "http://127.0.0.1:$public_port"
+# A config names its store (Q-STORE = (B), THE DESIGN §4): the compiled-in RAM store, which is what
+# this rig's 1.5.x-shaped config without one ran on.
+store: { module: memory }
 providers: {}
 models: {}
 pools: {}
