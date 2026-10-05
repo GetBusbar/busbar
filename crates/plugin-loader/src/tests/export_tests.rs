@@ -162,11 +162,13 @@ unsafe extern "C-unwind" fn shaped_call(
         // A v3 sink that also REPORTS — the whole point of the envelope, and the half a v2 sink
         // structurally cannot express.
         serde_json::to_vec(
-            &busbar_contract::abi::cold::observe::Observations::none()
-                .metric(busbar_contract::abi::cold::observe::PluginMetric::counter(
-                    "adapter_witness_total",
-                    1.0,
-                ))
+            &busbar_contract::abi::mechanism::observe::Observations::none()
+                .metric(
+                    busbar_contract::abi::mechanism::observe::PluginMetric::counter(
+                        "adapter_witness_total",
+                        1.0,
+                    ),
+                )
                 .into_envelope(result),
         )
         .expect("encode envelope")
@@ -231,18 +233,16 @@ fn a_pre_envelope_v2_sink_and_an_enveloped_v3_sink_both_load_and_serve() {
 fn a_bare_response_and_an_enveloped_one_cannot_be_confused() {
     let bare = serde_json::to_vec(&ExportResponse::Streams(vec![ExportStream::Metrics]))
         .expect("encode bare");
-    let enveloped = serde_json::to_vec(&busbar_contract::abi::cold::observe::Envelope::bare(
+    let enveloped = serde_json::to_vec(&busbar_contract::abi::mechanism::observe::Envelope::bare(
         ExportResponse::Streams(vec![ExportStream::Metrics]),
     ))
     .expect("encode envelope");
     assert_ne!(bare, enveloped);
     // The bare form has no `result` key, so the envelope decode refuses it...
-    assert!(
-        serde_json::from_slice::<busbar_contract::abi::cold::observe::Envelope<ExportResponse>>(
-            &bare
-        )
-        .is_err()
-    );
+    assert!(serde_json::from_slice::<
+        busbar_contract::abi::mechanism::observe::Envelope<ExportResponse>,
+    >(&bare)
+    .is_err());
     // ...and the enveloped form is not a variant name, so the bare decode refuses that.
     assert!(serde_json::from_slice::<ExportResponse>(&enveloped).is_err());
 }
