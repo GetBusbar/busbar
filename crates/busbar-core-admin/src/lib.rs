@@ -129,6 +129,12 @@ mod test_seams {
     include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
     include!(concat!(env!("OUT_DIR"), "/test_operator_auth.rs"));
 
+    /// Every test-linked door plane's door, by its crate's label.
+    pub(crate) fn linked_doors(
+    ) -> &'static [(&'static str, busbar_contract::abi::mechanism::door::DoorFn)] {
+        TEST_LINKED_DOORS
+    }
+
     pub(crate) fn ensure_seam() {
         use busbar_kernel::test_support::seam::{register_test_plane_seam, test_plane_seams};
         static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
