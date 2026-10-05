@@ -2114,3 +2114,10 @@ abi = 1
 # an unlisted vanished dir stays RED.
 [gate.census.deleted]
 "crates/hook-test-plugin" = "TODO P5: delete hook-test-plugin (ARCHITECT 2026-10-04)"
+
+# THE RENAME ROWS (ARCHITECT 2026-10-03, Q-L7B2-CENSUS). A moved-out crate excuses its kind's floor
+# drop only when the root pins it as a git dependency at a rev under the package name it had at the
+# base. A crate whose package name changed with the move counts ONLY with BOTH the git pin under the
+# NEW name AND a row here naming old -> new, the commit that moved it and why. A rename with no row
+# stays RED: nothing else says the new crate is the old one. A broken row (a field missing or empty,
+# a commit that does not resolve) is itself a census problem.
