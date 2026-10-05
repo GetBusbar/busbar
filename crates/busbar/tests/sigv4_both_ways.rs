@@ -208,6 +208,10 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
     assert_outbound_signed(&node, &seen[1], &vk_akid);
 
     // ── 5. over the cap, under a malformed SigV4 line: refused at the cap, before a verdict ──────
+    // (ARCHITECT D1 2026-10-05, INBOUND BUFFERING.) The body a signed ingress buffers for the
+    // verifier is capped at `limits.request_body_max_bytes` BEFORE the buffer: a body over it is
+    // refused with the opaque auth refusal, the same bytes as a bad signature, and never buffered
+    // whole, never verified, never forwarded.
     let bogus = vec![
         (
             "authorization".to_string(),
@@ -223,11 +227,30 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
     let over = vec![b'x'; BODY_CAP + 1];
     let at_cap = send(data_port, &host, &path, &bogus, &over);
     assert_eq!(
-        at_cap.status,
-        413,
-        "a body over the cap under a malformed SigV4 line is refused at the cap (413), before any \
-         verdict: {}\nlog:\n{}",
+        (at_cap.status, at_cap.masked()),
+        (403, bad_sig.masked()),
+        "a body over the cap under a malformed SigV4 line is refused with the opaque auth refusal: \
+         {}\nlog:\n{}",
         at_cap.text,
+        node.log()
+    );
+    assert_eq!(
+        upstream.captured().len(),
+        2,
+        "an over-cap request must never reach the upstream"
+    );
+
+    // ── 6. the CAP refuses it, not the verdict: a CORRECTLY signed request over the cap ──────────
+    // The same key that was admitted in step 1 signs the over-cap body itself; the signature is
+    // good, so only the cap can refuse it — before the verifier is asked.
+    let signed_over = sign_client_request(&vk_akid, &vk_secret, &host, &path, &over);
+    let refused = send(data_port, &host, &path, &signed_over, &over);
+    assert_eq!(
+        (refused.status, refused.masked()),
+        (403, bad_sig.masked()),
+        "a correctly signed body over the cap is refused at the cap with the opaque auth refusal: \
+         {}\nlog:\n{}",
+        refused.text,
         node.log()
     );
     assert_eq!(
