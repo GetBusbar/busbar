@@ -456,6 +456,18 @@ impl Relay {
         }
     }
 
+    /// THE CALLER HAD A USABLE PART: a byte of the answer was relayed and nothing failed it (no
+    /// reader's terminal error, no translate abort), so a caller that leaves now leaves a partial
+    /// answer whose incurred units bill (v1.5.5 `FirstByteBody`'s drop arm).
+    #[must_use]
+    pub fn partial(&self) -> bool {
+        self.first_byte
+            && !self
+                .translate
+                .as_ref()
+                .is_some_and(|t| t.aborted() || t.terminal_error().is_some())
+    }
+
     /// The usage a stream's readers have read so far (cheap: nothing is scanned); `None` for a
     /// relay that reads its usage only at the end.
     #[must_use]

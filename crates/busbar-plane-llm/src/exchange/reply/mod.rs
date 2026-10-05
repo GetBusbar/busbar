@@ -421,6 +421,13 @@ impl Reply {
         }
     }
 
+    /// The caller had a usable part of a success answer when it left (see [`relay::Relay::partial`]):
+    /// its cancel bills the units the answer stated so far.
+    #[must_use]
+    pub fn partial(&self) -> bool {
+        matches!(&self.state, State::Relay { relay, .. } if relay.partial())
+    }
+
     /// CUT the answer: the far end's transfer failed (`transport`) or the kernel's ceiling for it
     /// expired, before its last piece.
     pub fn cut(&mut self, ctx: &ReplyCtx<'_>, transport: bool) -> Piece<'static> {

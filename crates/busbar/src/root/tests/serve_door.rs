@@ -1271,11 +1271,18 @@ async fn the_pools_door_bills_a_non_stream_answer_the_caller_dropped_mid_relay()
     assert!(first.data_ref().is_some_and(|b| !b.is_empty()));
     // THE DISCONNECT: the caller goes before the answer's end.
     drop(body);
+    // The driver finishes a buried unit at the start of its next one.
+    let rig = std::sync::Arc::new(rig);
+    let next = {
+        let rig = std::sync::Arc::clone(&rig);
+        tokio::spawn(async move { rig.chat().await })
+    };
     assert_ne!(
         rig.tokens_after().await,
         0,
         "a non-stream answer dropped mid-relay never bills 0"
     );
+    next.abort();
 }
 
 /// SESSION AFFINITY (legacy rows 2-4; v1.5.5 `affinity_header_for` and the sticky position): the

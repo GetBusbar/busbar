@@ -62,11 +62,11 @@ use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
     PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
-    CANCEL_ABORTED, CLAIM_EXACT, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER,
-    FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_HAS_STATUS,
-    PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, REFUSAL_GATE, ROUTE_DIRECT, ROUTE_POOL,
-    SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR, UNITS_REPORTED,
-    VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
+    CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END,
+    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
+    PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, REFUSAL_GATE, ROUTE_DIRECT,
+    ROUTE_POOL, SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR,
+    UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, RECORD_AUDIT};
@@ -1138,12 +1138,21 @@ slot!(
 slot!(
     /// `cancel`: the unit on the cancelled ticket ends; nothing it owed is delivered.
     Cancel, PlaneCancelIn, PlaneCancelOut, |instance, input, mut out| {
+        let mut partial = false;
         if let Some(door) = instance.get() {
             if let Some(unit) = guard(&door.tickets).remove(&input.cancel.ticket) {
-                guard(&door.units).remove(&unit);
+                partial = guard(&door.units)
+                    .remove(&unit)
+                    .is_some_and(|u| u.reply.as_ref().is_some_and(Reply::partial));
             }
         }
-        out.set(|o| &o.cancel.disposition, CANCEL_ABORTED);
+        // A caller that left a usable part of the answer leaves a PARTIAL unit: the units the
+        // answer stated so far bill (1.5.5's drop arm; item 367 for a buffered relay). Any other
+        // cancel bills nothing.
+        out.set(
+            |o| &o.cancel.disposition,
+            if partial { CANCEL_OK_PARTIAL } else { CANCEL_ABORTED },
+        );
         Outcome::Ready
     }
 );
