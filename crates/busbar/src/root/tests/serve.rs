@@ -508,14 +508,13 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
     };
     let opened = axis
         .open(
-            // The in-memory store, as boot opens it for `store: {module: memory}` (no row is a
-            // default: the store is the one config names, Q-STORE = (B)).
+            // A store the build links, through its door as boot opens it (no row is a default:
+            // the store is the one config names, Q-STORE = (B)).
             StoreDoor::Linked(
                 crate::LINKED
                     .stores
-                    .iter()
-                    .find(|s| s.0 == "memory")
-                    .expect("the build links the in-memory store")
+                    .first()
+                    .expect("the build links a store")
                     .3,
             ),
             "records-attach",

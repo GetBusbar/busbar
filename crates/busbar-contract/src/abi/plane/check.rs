@@ -342,6 +342,7 @@ pub fn check_on_piece(
         return Err(fault(Rule::WrittenOnShort, "on_piece"));
     }
     verdict(outcome, out.verdict)?;
+    fault_reading(outcome, out)?;
     request(out)?;
     // The unit's ledger lane, where the answer names one: inside the arena written.
     span(
@@ -399,6 +400,25 @@ fn verdict(outcome: Outcome, v: u32) -> Result<(), Fault> {
     code(u64::from(v), 0, u64::from(VERDICT_HARD), "on_piece.verdict")?;
     if v != 0 && outcome != Outcome::Ready {
         return Err(fault(Rule::Contradiction, "on_piece.verdict_not_ready"));
+    }
+    Ok(())
+}
+
+/// `on_piece`'s breaker fault reading: a known `FAULT_*` (the transport kind's one vocabulary), none
+/// on an answer that is not READY, and its padding zero.
+fn fault_reading(outcome: Outcome, out: &OnPieceOut) -> Result<(), Fault> {
+    use crate::abi::transport::{FAULT_HARD, FAULT_NONE};
+    code(
+        u64::from(out.fault),
+        0,
+        u64::from(FAULT_HARD),
+        "on_piece.fault",
+    )?;
+    if out.fault != FAULT_NONE && outcome != Outcome::Ready {
+        return Err(fault(Rule::Contradiction, "on_piece.fault_not_ready"));
+    }
+    if out._fault_reserved != [0; 3] {
+        return Err(fault(Rule::Contradiction, "on_piece.fault_reserved"));
     }
     Ok(())
 }
