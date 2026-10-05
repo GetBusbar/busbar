@@ -53,7 +53,12 @@ scan_roots = ["crates/*/src", "crates/*/tests", "crates/*/benches"]
 # two lists share zero members. manifest-allowlist reads THIS one to decide what "a plane names
 # another plane" means. The two collapse into one definition when the legacy engines are deleted;
 # until then a reader must not take either as "the plane kind".
-plane_crates = ["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"]
+#
+# `busbar-mcp` IS STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05: "delete busbar-mcp, add `crates/busbar-mcp`
+# to [gate.census.deleted]"). The engine is deleted and the mcp plane is its door crate
+# `busbar-plane-mcp`, which `gate.plugin_kinds.plane` already scans; the census floor below drops
+# 4 -> 3 by the one ruled deletion, and `ceiling-census` excuses exactly that one entry.
+plane_crates = ["busbar-llm", "busbar-a2a", "busbar-voice"]
 # A file at one of these path fragments is TEST code (same rule the purity lint applies), in
 # addition to any `#[cfg(test)] mod … { … }` block inside a production file.
 # A bare `tests.rs` (Rust's `#[cfg(test)] mod tests;` file convention) is test code too.
@@ -259,7 +264,7 @@ busbar-llm = 226
 # one in mcp/upstream.rs and one in mcp/client/stdio.rs (lane lane-dg-auth, lanes/L2-AUTH.md). The two
 # lines are the secret axis replacing the removed busbar-mcp -> env/file secret dependency, not new reach.
 # busbar-mcp is deleted by DEL-MCP (W2), and the row goes with the crate.
-busbar-mcp = 281
+# STRUCK: busbar-mcp = 281 (P3 DEL-MCP, ARCHITECT 2026-10-05 — the crate is deleted).
 # busbar-a2a 233 -> 232 (downward, at the measure): push delivery names the kernel's engine seam once
 # instead of per signature.
 busbar-a2a = 232
@@ -281,7 +286,7 @@ counts can trend to zero at their own pace."""
 # `busbar_kernel::test_support::tokens`, 47 added `busbar_kernel::` lines across the engine and unit
 # tests (RESOLVE c4, ARCHITECT to re-read).
 busbar-llm = 1027
-busbar-mcp = 185
+# STRUCK: busbar-mcp = 185 (P3 DEL-MCP, ARCHITECT 2026-10-05 — the crate is deleted).
 busbar-a2a = 98
 busbar-voice = 43
 
@@ -1257,7 +1262,10 @@ known_sites = [
   # REVIEWED 2026-09-25 (item 141): a first-party plugin's DECLARED diagnostic joins the process
   # catalogue, whose entries are `&'static Diagnostic` with `&'static str` text by the catalogue's
   # type; one allocation per declared code, once, at boot, before the catalogue is first read.
-  "crates/busbar/src/root/linked.rs::declared_diagnostics",
+  # REPOINTED (pure extraction): SEAM-S1 5d2941f7b3 moved the two reviewed `Box::leak`s, byte for
+  # byte, out of `declared_diagnostics` into the helper it calls once per plugin or door,
+  # `catalogue_entries`; `declared_diagnostics` itself holds none now. Named by function, as before.
+  "crates/busbar/src/root/linked.rs::catalogue_entries",
 ]
 
 # The escape list, mirroring crates/busbar-contract/src/caps/fixtures/lint_rules.rs HOLD_ESCAPES. A test in that
@@ -1550,7 +1558,8 @@ which is the row that can name the home the call belongs in, so one site is neve
 scope_globs = [
   "crates/busbar-plane-*/src/*",
   "crates/busbar-llm/src/unit/*",
-  "crates/busbar-mcp/src/*",
+  # `crates/busbar-mcp/src/*` STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine is deleted and
+  # the mcp plane is its door crate, which `crates/busbar-plane-*/src/*` above already covers whole.
   "crates/busbar-a2a/src/*",
 ]
 # Each is matched as a whole word (an entry starting with `_` as a suffix), and judged against the
@@ -1964,7 +1973,9 @@ because = "a type alias over the rows the loop posted, and a reader of it; the n
 # silent as deleting the table alone was.
 [gate.census]
 legacy_reach_prefixes = 4
-plane_crates = 4
+# 4 -> 3: `busbar-mcp` left `gate.plane_crates` as a ruled deletion ([gate.census.deleted]
+# "crates/busbar-mcp", P3 DEL-MCP, ARCHITECT 2026-10-05) — the one drop `ceiling-census` excuses.
+plane_crates = 3
 
 # HOW MANY CRATE DIRECTORIES EACH KIND GLOB MATCHES.
 #

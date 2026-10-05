@@ -269,14 +269,22 @@ const ROSTER: &[Plane] = &[
                the plane-free node its units are handed to (`root/plane_node.rs`, on the `node` \
                axis)",
     },
+    // RE-POINTED TO THE DOOR SHAPE (P3 DEL-MCP, ARCHITECT 2026-10-05): the legacy engine
+    // `busbar-mcp` is deleted and the plane is served through its memory-ABI door alone — the
+    // `plane-mcp-door = "busbar-plane-mcp"` row on the `plane-door` axis (crates/busbar/Cargo.toml).
+    // Its unit path is the door arm, as the decisions plane's is. `registered` for a door row is
+    // ruled on p3-reach-door (a `plane-door` row counts as registered for any plane) and is not
+    // decided here.
     Plane {
         key: "mcp",
         on_disk: "mcp",
         module: "units_mcp",
-        linked_crate: "busbar-mcp",
+        linked_crate: "busbar-plane-mcp",
         register_tokens: &["McpPlane"],
-        note: "extracted to `busbar-mcp`; served on the kernel loop by the #28 rider, and \
-               `root/units_mcp.rs` is the superseded pre-unification module",
+        note:
+            "a DOOR plane since P3 DEL-MCP: served through its memory-ABI door (`plane-mcp-door`, \
+               the `plane-door` row linking `busbar-plane-mcp`); the engine `busbar-mcp` and the \
+               superseded `root/units_mcp.rs` are deleted",
     },
     Plane {
         key: "a2a",
@@ -2137,9 +2145,26 @@ impl Gate for ReachabilityGate {
                     .into_iter()
                     .map(|h| format!("registry.rs:{h}")),
             );
+            // A DOOR ROW IS REGISTRATION (Part 2 #2: compiled-in = dropped-in): a linked row of the
+            // plane's crate whose `linked-axes` row carries `plane-door` is bound through the
+            // loader's one load at boot (`open_planes` over `LINKED.plane_doors`), the same
+            // registration a dropped-in door gets. The rule decisions' door row is read by, for
+            // every roster row.
+            if folds_linked {
+                hits.extend(
+                    door_rows_of(&manifest, p.linked_crate)
+                        .into_iter()
+                        .map(|feature| {
+                            format!(
+                        "{CRATE_MANIFEST} [package.metadata.busbar.linked-axes] `{feature}` on the \
+                         `{PLANE_DOOR_AXIS}` axis, bound through the loader's one load at boot"
+                    )
+                        }),
+                );
+            }
             let registered = if hits.is_empty() {
                 Err(format!(
-                    "no linked-table row for `{}` on the `plane` axis in {CRATE_MANIFEST} that \
+                    "no linked-table row for `{}` on the `plane` or `plane-door` axis in {CRATE_MANIFEST} that \
                      `register_planes()` ({MAIN_RS}) folds over `LINKED`, and no registration token {:?} appears in \
                      `plane_claims()` ({REGISTRY_RS}). The composition root does not install this \
                      plane, so nothing it declares is served. ({})",
@@ -3065,7 +3090,7 @@ impl Gate for ReachabilityGate {
                 );
                 ov
             },
-            "no linked-table row for `busbar-a2a` on the `plane` axis",
+            "no linked-table row for `busbar-a2a` on the `plane` or `plane-door` axis",
         ));
         report.push(red_over(
             self,
@@ -3082,7 +3107,27 @@ impl Gate for ReachabilityGate {
                 );
                 ov
             },
-            "no linked-table row for `busbar-voice` on the `plane` axis",
+            "no linked-table row for `busbar-voice` on the `plane` or `plane-door` axis",
+        ));
+        // A DOOR ROW IS REGISTRATION (Part 2 #2, compiled-in = dropped-in): a door-shaped plane —
+        // its declaration row on no `plane` axis, its crate linked again on `plane-door`, no
+        // plane_claims token — is registered by its door row, and green end to end. RED: the same
+        // plane with neither a door row nor a plane axis reds its registration row.
+        report.push(green_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a door-shaped plane registered ONLY through its plane-door row is green",
+            evidenced(door_shaped_decision(true)),
+        ));
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a plane with no door row and no plane axis, and no plane_claims token, reds its registration row",
+            &[row_registered("decision")],
+            door_shaped_decision(false),
+            "no linked-table row for `busbar-plane-decisions` on the `plane` or `plane-door` axis",
         ));
         report.push(red_over(
             self,
@@ -3170,7 +3215,7 @@ const FIXTURE_GREEN_KERNEL: &str =
 const FIXTURE_GREEN_DECISION: &str =
     include_str!("../../fixtures/reachability-green/crates/busbar/src/root/plane_decisions.rs");
 const A2A_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_a2a::PLANE_KEY);\n";
-const MCP_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_mcp::PLANE_KEY);\n";
+const MCP_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_plane_mcp::PLANE_KEY);\n";
 const VOICE_FLIP_LINE: &str = "    flip_session_to_kernel(busbar_voice::PLANE_KEY);\n";
 const INSTALL_CALL_LINE: &str = "    root::gauntlet_install::install();\n";
 
@@ -3255,6 +3300,48 @@ fn decision_door_row_beside(driven: bool) -> Overlay {
     ov
 }
 
+/// THE DOOR SHAPE, registration-wise: [`decision_door_row_beside`] (served, driven) with the plane's
+/// declaration row carrying NO `plane` axis and no plane_claims token, so the only registration
+/// left is its door row beside it (`door_row`), or none at all.
+fn door_shaped_decision(door_row: bool) -> Overlay {
+    let mut ov = decision_door_row_beside(true);
+    let mut manifest = FIXTURE_LINKED_MANIFEST.replace(
+        "plane-decisions = \"plane\"\n",
+        "plane-decisions = \"claims\"\n",
+    );
+    if door_row {
+        manifest = manifest
+            .replace(
+                "plane-decisions = \"busbar-plane-decisions\"\n",
+                "plane-decisions = \"busbar-plane-decisions\"\nplane-decisions-door = \"busbar-plane-decisions\"\n",
+            )
+            .replace(
+                "plane-decisions = \"claims\"\n",
+                "plane-decisions = \"claims\"\nplane-decisions-door = \"plane-door\"\n",
+            );
+    }
+    ov.set(CRATE_MANIFEST, manifest);
+    // With no `plane` axis the generated table no longer names the entry module, so `fn main()`
+    // reaches it directly, as a door plane's root module is reached on the real tree.
+    ov.set(
+        MAIN_RS,
+        FIXTURE_GREEN_MAIN.replace(
+            INSTALL_CALL_LINE,
+            &format!(
+                "{INSTALL_CALL_LINE}    let planes = root::serve::compose_planes();\n    let _ = \
+                 root::serve::serve(&planes);\n    let _ = root::plane_decisions::PLANE_HOOKS;\n"
+            ),
+        ),
+    );
+    ov.set(
+        REGISTRY_RS,
+        include_str!("../../fixtures/reachability-green/crates/busbar/src/root/registry.rs")
+            .replace("use busbar_plane_decisions::DecisionPlane;\n", "")
+            .replace("    claims.push(DecisionPlane::KEY);\n", ""),
+    );
+    ov
+}
+
 /// The runner the keys are flipped onto, with its type no longer a `Units` impl.
 fn runner_builds_no_unit() -> Overlay {
     let mut ov = Overlay::new();
@@ -3282,7 +3369,7 @@ fn flips_in_a_colliding_uncalled_fn() -> Overlay {
     ov
 }
 
-/// mcp's flip removed, and `crates/busbar-mcp/src/linked.rs` exporting a `Units` impl — built in its
+/// mcp's flip removed, and `crates/busbar-plane-mcp/src/linked.rs` exporting a `Units` impl — built in its
 /// `PLANE_HOOKS` (on mcp's plane axis) when `built`, in a function nothing exported calls otherwise.
 fn mcp_by_linked_export(built: bool) -> Overlay {
     let hooks = if built {
@@ -3293,7 +3380,7 @@ fn mcp_by_linked_export(built: bool) -> Overlay {
     let mut ov = Overlay::new();
     ov.set(INSTALL_RS, FIXTURE_GREEN_INSTALL.replace(MCP_FLIP_LINE, ""));
     ov.set(
-        "crates/busbar-mcp/src/linked.rs",
+        "crates/busbar-plane-mcp/src/linked.rs",
         format!(
             "pub struct McpLinkedUnit {{\n    n: u64,\n}}\n\n\
              impl busbar_kernel::teller::Units for McpLinkedUnit {{\n    fn drive(&self) -> u64 {{\n        self.n\n    }}\n}}\n\n\

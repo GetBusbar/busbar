@@ -116,17 +116,13 @@ pub fn ledger() -> Vec<LedgerRow> {
     };
     vec![
         d("config.rs", "The parse ORDER these two files shared is gone: plane::config::split_section owns the reserved-key refusals, the two typed lifts and the sequence they run in, and all THREE plane sections are read through it. What is left in each file is that plane's GRAMMAR and nothing else — they share no type, no field, no value rule, no sentence and no caller. What they share is a filename, which on every plane says the same true and un-actionable thing: this is where that section's grammar is written."),
-        d("transport.rs", "mcp/client/transport.rs is JSON-RPC FRAMING on one carrier: it composes a POST from a WireLeg and reduces an SSE answer to its last data payload, building no client and pinning no address. a2a/transport.rs is CLIENT CONSTRUCTION: it pins the host to the address net_guard already judged, refuses every name at the resolver, offers busbar's client certificate and reads the peer SPKI off the accepted handshake. Two LAYERS, one noun."),
-        d("judge", "mcp/client/argguard.rs judges whether an ARGUMENT is a URL-ish SSRF hazard; a2a/registry.rs judges whether an AGENT CARD matches a task shape. Same verb, unrelated subjects."),
-        d("revalidate", "mcp/client/dispatch.rs re-checks a catalogue GENERATION before dispatch; a2a/pushnotify.rs re-resolves a pinned CALLBACK's DNS answer. Both re-check something pinned, but neither shares an input, an output or a failure mode with the other."),
-        d("observed_pin", "mcp/connect.rs observed_pin derives the TransportPin actually presented on the wire, substituting the peer certificate SPKI read off the accepted handshake. a2a/pin.rs observed_pin extracts the CardPin carried by an agent-card Sighting. Different input, different output type, different subject — transport certificate identity versus a signed agent card."),
-        d("contains", "Each asks its OWN registry off the snapshot whether a name is registered — different container, disjoint key space, no shared value. One membership question asked of two unrelated name sets."),
-        d("get", "mcp/admin_view.rs get projects one McpServerDefCfg onto NamedDefView; a2a/admin_view.rs get projects one AgentDefCfg onto the same view. Different config type, a different subset of the view's columns populated, no shared field and no shared caller."),
-        d("list", "The vector twins of get and distinct for the same reason: the same iterate-and-project shape run over two unrelated registries and two unrelated config types, sharing only the verb."),
-        d("openapi_schemas", "Each is its plane's half of PlaneDecl::openapi_schemas writing into the SHARED schemars generators — different response types, a request body on one plane and none on the other, different paths and different verbs."),
-        d("reresolve_gates", "Each is its plane's half of the config-swap gate rebuild, moved out of core so core names no plane registry type — different gate field written, different registry read, different resolver entry point."),
-        d("metadata_route", "Both serve the same well-known path and hand their Metadata to the ONE shared renderer, so the RFC 9728 rendering is NOT duplicated. What is left in each is the plane's own wrapper: two Words impls, two app-access seams, one shared renderer beneath both."),
-        d("admin_view.rs", "Each plane's admin_view.rs is that plane's own read-side adapter over the SHARED admin CRUD, reached through PlaneDecl so core admin names no plane config type. Same filename because both say the same true and un-actionable thing over disjoint config types, disjoint view columns and disjoint verb sets."),
+        // STRUCK at P3 DEL-MCP (ARCHITECT 2026-10-05: busbar-mcp deleted, the mcp plane is served
+        // through its door crate alone): `transport.rs`, `judge`, `revalidate`, `observed_pin`,
+        // `contains`, `get`, `list`, `openapi_schemas`, `reresolve_gates`, `metadata_route` and
+        // `admin_view.rs`. Each signed a distinct claim whose mcp half was a file of the deleted
+        // engine; with the engine gone none of the eleven is duplicated across planes any more, and
+        // `plane-dup:stale-ledger` names every one. A row that outlived its duplication is an
+        // exemption nobody prunes.
     ]
 }
 
