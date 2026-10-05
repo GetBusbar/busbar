@@ -35,10 +35,9 @@
 //!
 //! ## Crypto provider
 //!
-//! rustls 0.23 requires a process-wide [`rustls::crypto::CryptoProvider`]. busbar already links
-//! `ring` (via reqwest/hyper-rustls), so [`install_crypto_provider`] installs ring's provider once
-//! at startup and the `ServerConfig` is built on it — exactly one provider in the process, never
-//! aws-lc-rs.
+//! The process-wide crypto provider TLS needs is installed by the connector
+//! (`busbar_core_connector::tls::install_crypto_provider`), with the `ServerConfig` it builds — TLS
+//! stays in the connector, and this crate names no TLS library.
 //!
 //! ## Failure model
 //!
@@ -118,21 +117,6 @@ use hyper_util::server::graceful::{GracefulShutdown, Watcher};
 use hyper_util::service::TowerToHyperService;
 use tokio::net::TcpListener;
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
-
-/// Install ring's [`rustls::crypto::CryptoProvider`] as the process default.
-///
-/// Idempotent and safe to call alongside reqwest/hyper-rustls, which also use ring: a "provider
-/// already installed" error is expected and ignored, because all we require is that *a ring provider*
-/// is the process default before any `ServerConfig` is built. Must run before
-/// `busbar_core_connector::tls::build_server_config` (which now owns that build — DECISIONS #40) — and
-/// before any other subsystem in this process builds a rustls config, which is why several
-/// unrelated call sites (the egress engine's client-side TLS, test setup) also call this directly
-/// rather than assuming the inbound listener already has.
-pub fn install_crypto_provider() {
-    // Err(_) => some other code path already installed a provider. Since busbar only ever links ring,
-    // that provider is ring too, so there is nothing to fix and nothing to warn about.
-    let _ = rustls::crypto::ring::default_provider().install_default();
-}
 
 // The cert/key/client-CA PARSING and the `rustls::ServerConfig` BUILD that used to sit here moved
 // verbatim to `busbar-core-connector` (DECISIONS #40, the core-side connection-security seam):

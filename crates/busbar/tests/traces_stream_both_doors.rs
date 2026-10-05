@@ -122,40 +122,61 @@ fn a_closed_span_reaches_an_otlp_collector_the_same_through_either_door() {
     std::fs::create_dir_all(dir.join("plugins")).unwrap();
     let tarball = common::plugins::pack_stated("export", DROPPED, &lib, "acme");
     std::fs::write(dir.join("plugins").join("otlp.tar.gz"), tarball).unwrap();
-    let (data_port, admin_port) = (common::boot::free_port(), common::boot::free_port());
     let (collector_port, seen) = common::otlp::collector();
-    write_configs(&dir, data_port, admin_port, collector_port);
-
     let log_path = dir.join("out.log");
-    let log = std::fs::File::create(&log_path).unwrap();
-    let mut child = Reap(
-        Command::new(common::boot::exe())
-            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
-            .env("MOCK_KEY", "x")
-            .env("RUST_LOG", "info")
-            .stdout(log.try_clone().unwrap())
-            .stderr(log)
-            .spawn()
-            .expect("spawn busbar"),
-    );
     let read_log = || std::fs::read_to_string(&log_path).unwrap_or_default();
 
     // Model requests whose upstream refuses: the request path's spans open and close regardless.
     let body =
         r#"{"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"#;
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let mut served = 0;
-    while served < 3 {
-        if let Some(status) = child.0.try_wait().expect("try_wait") {
-            panic!("busbar exited ({status}) before serving:\n{}", read_log());
+    // A PORT PICKED IS NOT A PORT HELD: `free_port` claims its number against every other busbar
+    // test, but any other socket on the machine (an outbound connection's ephemeral source port, a
+    // listener another crate's test bound to `:0`) can take it before the child binds it, and the
+    // child then refuses to boot (BUSBAR-9007, address in use) with nothing of this test's wrong.
+    // That one refusal, and only it, boots again on freshly picked ports; any other exit fails.
+    const BOOTS: usize = 4;
+    let mut boot = 0;
+    let _child = loop {
+        boot += 1;
+        let (data_port, admin_port) = (common::boot::free_port(), common::boot::free_port());
+        write_configs(&dir, data_port, admin_port, collector_port);
+        let log = std::fs::File::create(&log_path).unwrap();
+        let mut child = Reap(
+            Command::new(common::boot::exe())
+                .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+                .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+                .env("MOCK_KEY", "x")
+                .env("RUST_LOG", "info")
+                .stdout(log.try_clone().unwrap())
+                .stderr(log)
+                .spawn()
+                .expect("spawn busbar"),
+        );
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut served = 0;
+        let mut collided = false;
+        while served < 3 {
+            if let Some(status) = child.0.try_wait().expect("try_wait") {
+                let out = read_log();
+                if boot < BOOTS
+                    && out.contains("BUSBAR-9007")
+                    && out.contains("Address already in use")
+                {
+                    collided = true;
+                    break;
+                }
+                panic!("busbar exited ({status}) before serving:\n{out}");
+            }
+            assert!(Instant::now() < deadline, "no data door:\n{}", read_log());
+            match request(data_port, body) {
+                Some(_) => served += 1,
+                None => std::thread::sleep(Duration::from_millis(100)),
+            }
         }
-        assert!(Instant::now() < deadline, "no data door:\n{}", read_log());
-        match request(data_port, body) {
-            Some(_) => served += 1,
-            None => std::thread::sleep(Duration::from_millis(100)),
+        if !collided {
+            break child;
         }
-    }
+    };
 
     // Delivery is off the request path, batched per door: wait until both doors' spans settle.
     let spans_at = |path| {

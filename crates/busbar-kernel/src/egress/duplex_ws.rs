@@ -108,25 +108,15 @@ fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), DialError> {
     Ok((secure, parts.host, port, url.to_string()))
 }
 
-/// The rustls client config for the dial: webpki roots + the explicitly-named `ring` provider, the
-/// SAME posture the egress engine builds its HTTP clients with (an ambient `builder()` panics at first
-/// use when the composed binary carries more than one provider — explicit therefore, never ambient).
-/// Shared by refcount across every dial via a `OnceLock`.
-fn tls_config() -> Arc<rustls::ClientConfig> {
-    static CFG: std::sync::OnceLock<Arc<rustls::ClientConfig>> = std::sync::OnceLock::new();
-    CFG.get_or_init(|| {
-        let roots = rustls::RootCertStore {
-            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-        };
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let cfg = rustls::ClientConfig::builder_with_provider(provider)
-            .with_safe_default_protocol_versions()
-            .expect("ring provider supports the default TLS protocol versions")
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-        Arc::new(cfg)
-    })
-    .clone()
+/// The TLS client for the dial, from the connector's TLS wrap (`crate::secure`): webpki roots +
+/// the explicitly-named `ring` backend, no client identity, no ALPN offer — the SAME posture the
+/// egress engine builds its HTTP clients with — one client shared by every dial. `None` in a process
+/// whose egress-trust capability carries no wrap.
+fn tls_client() -> Result<Option<Arc<dyn crate::secure::ClientTls>>, String> {
+    let Some(layer) = crate::secure::layer() else {
+        return Ok(None);
+    };
+    layer.duplex_client().map(Some)
 }
 
 /// DIAL an upstream `wss://` (or `ws://`) THROUGH the net-guard and hand back the message duplex.
@@ -162,14 +152,17 @@ pub async fn dial(
         .await
         .map_err(|e| DialError::Connect(e.to_string()))?;
 
-    // The client WS handshake over the guarded stream. `wss` wraps the TCP in rustls (SNI = the URL
-    // host, so the certificate is validated against the operator-registered name while the connection
-    // rides the pinned address); `ws` runs the handshake over bare TCP.
+    // The client WS handshake over the guarded stream. `wss` wraps the TCP in the connector's TLS
+    // (SNI = the URL host, so the certificate is validated against the operator-registered name while
+    // the connection rides the pinned address); `ws` runs the handshake over bare TCP.
     if secure {
-        let server_name = rustls::pki_types::ServerName::try_from(host.clone())
+        let client = tls_client()
+            .map_err(DialError::Tls)?
+            .ok_or_else(|| DialError::Tls(crate::secure::NO_LAYER.to_string()))?;
+        let handshake = client
+            .handshake(&host)
             .map_err(|e| DialError::Tls(e.to_string()))?;
-        let tls = tokio_rustls::TlsConnector::from(tls_config())
-            .connect(server_name, tcp)
+        let tls = handshake(tcp)
             .await
             .map_err(|e| DialError::Tls(e.to_string()))?;
         let (ws, _resp) = tokio_tungstenite::client_async(&request_url, tls)

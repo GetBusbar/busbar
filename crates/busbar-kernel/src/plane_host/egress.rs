@@ -958,7 +958,7 @@ fn run_http_stream(
     policy: crate::net_guard::GuardPolicy,
     spec: &ReqSpec,
     identity: (u64, Option<busbar_kernel::egress::engine::ClientIdentity>),
-    extra_roots: (u64, Vec<rustls_pki_types::CertificateDer<'static>>),
+    extra_roots: (u64, Vec<Vec<u8>>),
     pinned: Option<std::net::SocketAddr>,
     timeout: Duration,
     head_tx: &SyncSender<HeadMsg>,

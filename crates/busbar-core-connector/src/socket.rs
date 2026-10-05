@@ -34,6 +34,7 @@ pub fn address_of(authority: &str) -> Option<SocketAddr> {
 
 /// How long a dialled socket sits idle before the OS probes it (1.5.5's `tcp_keepalive`).
 pub const KEEPALIVE_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// The prefix of a UNIX-DOMAIN target (ARCHITECT ruling 2026-10-03 12:10Z, VALKEY-UNIX: the
 /// connector serves unix-domain targets for operator-infrastructure needs): `unix:/absolute/path`.
 pub const UNIX_TARGET: &str = "unix:";

@@ -12,6 +12,8 @@
 //! because that is what reqwest ships and a config that loaded yesterday must load tomorrow
 //! (risk R4: a stricter parser here would be a boot refusal on upgrade). The parity corpus test
 //! drives both parsers over every fixture and adversarial buffer and asserts the verdicts agree.
+//! The walk itself runs in the connector's TLS wrap (`crate::secure`): TLS stays in the connector,
+//! and this crate keeps the parsed DER.
 //!
 //! [`Trust`] names the trust source: the compiled-in webpki (Mozilla) roots always, optionally
 //! JOINED by operator-registered extra roots (DER) — the same "extras join the default store"
@@ -20,7 +22,7 @@
 
 use std::sync::Arc;
 
-use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+use crate::secure::KeyDer;
 
 /// What the engine trusts on a posture.
 pub enum Trust {
@@ -29,16 +31,16 @@ pub enum Trust {
     Webpki,
     /// The webpki roots PLUS these extra roots (DER; parsed from PEM at registration, so a
     /// garbage root fails at parse time exactly as `reqwest::Certificate::from_pem` did).
-    WebpkiPlus(Vec<CertificateDer<'static>>),
+    WebpkiPlus(Vec<Vec<u8>>),
 }
 
 /// Busbar's own end of a mutual handshake: a certificate chain and its private key, parsed once
-/// and shared by refcount (registries clone one identity per hop; `PrivateKeyDer` is not `Clone`,
-/// and `Arc` is cheaper and more honest than `clone_key` per hop).
+/// and shared by refcount (registries clone one identity per hop, and `Arc` is cheaper and more
+/// honest than a key copy per hop).
 #[derive(Clone)]
 pub struct ClientIdentity {
-    chain: Vec<CertificateDer<'static>>,
-    key: Arc<PrivateKeyDer<'static>>,
+    chain: Vec<Vec<u8>>,
+    key: Arc<KeyDer>,
 }
 
 impl ClientIdentity {
@@ -47,55 +49,32 @@ impl ClientIdentity {
     /// means, including the more-than-one-key tolerance). The error names what was missing or
     /// refused, so a boot refusal is actionable.
     pub fn from_pem(pem: &[u8]) -> Result<Self, String> {
-        use rustls_pki_types::pem::{self, SectionKind};
-        let mut cursor = std::io::Cursor::new(pem);
-        let mut chain: Vec<CertificateDer<'static>> = Vec::new();
-        let mut keys: Vec<PrivateKeyDer<'static>> = Vec::new();
-        while let Some((kind, data)) = pem::from_buf(&mut cursor)
-            .map_err(|e| format!("client identity PEM does not parse: {e:?}"))?
-        {
-            match kind {
-                SectionKind::Certificate => chain.push(data.into()),
-                SectionKind::PrivateKey => keys.push(PrivateKeyDer::Pkcs8(data.into())),
-                SectionKind::RsaPrivateKey => keys.push(PrivateKeyDer::Pkcs1(data.into())),
-                SectionKind::EcPrivateKey => keys.push(PrivateKeyDer::Sec1(data.into())),
-                other => {
-                    return Err(format!(
-                        "client identity PEM carries a section that has no place in an \
-                         identity ({other:?}): expected certificates and a private key \
-                         (PKCS#8, PKCS#1 or SEC1)"
-                    ))
-                }
-            }
-        }
-        if chain.is_empty() {
-            return Err("client identity PEM holds no certificate".to_string());
-        }
-        let Some(key) = keys.pop() else {
-            return Err(
-                "client identity PEM holds no private key (PKCS#8, PKCS#1 or SEC1)".to_string(),
-            );
-        };
-        Ok(ClientIdentity {
+        let layer = crate::secure::layer().ok_or_else(|| crate::secure::NO_LAYER.to_string())?;
+        let (chain, key) = layer.identity_from_pem(pem)?;
+        Ok(Self::from_parts(chain, key))
+    }
+
+    /// An identity from its already-parsed parts: the chain (leaf first, DER) and its key.
+    pub fn from_parts(chain: Vec<Vec<u8>>, key: KeyDer) -> Self {
+        ClientIdentity {
             chain,
             key: Arc::new(key),
-        })
+        }
     }
 
-    /// The chain, cloned for `with_client_auth_cert` (rustls takes ownership per config).
-    pub(super) fn chain(&self) -> Vec<CertificateDer<'static>> {
-        self.chain.clone()
+    /// The chain, leaf first, for the client build.
+    pub(super) fn chain(&self) -> &[Vec<u8>] {
+        &self.chain
     }
 
-    /// The key, structurally cloned for `with_client_auth_cert`. Parsed once at registration;
-    /// this copy is per CLIENT BUILD, never per request.
-    pub(super) fn key(&self) -> PrivateKeyDer<'static> {
-        self.key.clone_key()
+    /// The key, for the client build (which copies it per CLIENT BUILD, never per request).
+    pub(super) fn key(&self) -> &KeyDer {
+        &self.key
     }
 
     /// The leaf certificate, DER — what an mTLS peer records busbar as.
     pub fn leaf_der(&self) -> &[u8] {
-        self.chain[0].as_ref()
+        &self.chain[0]
     }
 
     /// Overwrite the private key IF this handle is the last one holding it.
@@ -103,7 +82,7 @@ impl ClientIdentity {
     /// `Arc::get_mut` is the whole guard, and it is not an optimisation: identities are cloned per
     /// hop and per client build (`plane_host::identity::resolve` hands out a clone every time), so a
     /// wipe that did not ask whether anyone else still held the key would blank a key another hop is
-    /// about to hand to rustls, and the handshake it was parsed for would fail. `get_mut` answers
+    /// about to hand to the TLS stack, and the handshake it was parsed for would fail. `get_mut` answers
     /// `Some` only when this is the last strong reference and there are no weak ones — exactly the
     /// moment the key's allocation is about to go back to the allocator.
     ///
@@ -114,7 +93,6 @@ impl ClientIdentity {
     /// call exactly what `Drop` calls and then read the key back, which is the only sound way to
     /// check it — inspecting a value after its own `Drop` has run is a read of freed memory.
     pub(super) fn wipe(&mut self) {
-        use zeroize::Zeroize as _;
         if let Some(key) = Arc::get_mut(&mut self.key) {
             key.zeroize();
         }
@@ -123,8 +101,7 @@ impl ClientIdentity {
 
 /// A superseded identity's private key must not be handed back to the allocator intact.
 ///
-/// `rustls_pki_types::PrivateKeyDer` implements `Zeroize` but NOT `ZeroizeOnDrop`, and its drop glue
-/// is an ordinary `Vec<u8>` deallocation: the key DER sits in freed heap afterwards, readable by a
+/// The key's DER is an ordinary `Vec<u8>`, and its drop glue is an ordinary deallocation: the key DER sits in freed heap afterwards, readable by a
 /// heap dump, a core file, or an out-of-bounds read elsewhere in the process. That drop is reached
 /// on a live path — `plane_host::identity::register` retains at most `MAX_RETAINED_IDENTITIES`
 /// identities and evicts the oldest FIFO, and the evicted `ClientIdentity` drops right there — so an

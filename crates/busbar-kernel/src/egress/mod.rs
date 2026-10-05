@@ -25,8 +25,9 @@ pub mod seam;
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 
 // THE EGRESS ENGINE — the one owned outbound HTTP stack (the owned dial-coalescing pool over
-// rustls, with the boot-armed CONNECT tunnel), relocated from busbar-core's `proxy::egress_client`
-// per the one-egress-stack ruling. Core re-exports every name from its old `crate::proxy::` paths.
+// the connector's TLS wrap, with the boot-armed CONNECT tunnel), relocated from busbar-core's
+// `proxy::egress_client` per the one-egress-stack ruling. Core re-exports every name from its old
+// `crate::proxy::` paths.
 pub mod engine;
 
 // THE NEUTRAL FULL-DUPLEX WS EGRESS DIALER — dial an upstream `wss://` THROUGH `net_guard`
@@ -37,8 +38,9 @@ pub mod engine;
 #[cfg(feature = "runtime")]
 pub mod duplex_ws;
 
-// The differential-harness FIXTURE SERVERS (recording rustls TLS/mTLS servers, the plaintext
-// redirect canary, resolver doubles). Test machinery only: compiled for this crate's own suite and,
+// The differential-harness FIXTURE SERVERS (the plaintext recording server and redirect canary,
+// the throw-away CA material, resolver doubles; the recording TLS/mTLS servers are the connector's,
+// `busbar_core_connector::test_support`). Test machinery only: compiled for this crate's own suite and,
 // under `test-support`, for the dependent test binaries that drive the two egress stacks against
 // the same fixtures (busbar-core's differential harness). Never part of a shipped build.
 #[cfg(any(test, feature = "test-support"))]

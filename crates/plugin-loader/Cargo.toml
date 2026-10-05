@@ -27,9 +27,9 @@ pack = ["dep:jsonschema"]
 # It also gates `test_support`, the fake-call store harness, for the store adapter's minted-token
 # tests in busbar's integration suite (`crates/busbar/tests/store_adapter_verb_seam.rs`; the verb
 # seam takes a `Grant<AdminVerb>`). Enabled from busbar's [dev-dependencies] and busbar-kernel's own
-# `test-support`; never by a shipped build. The store SDK's TLS test table (unix + TLS) pulls
-# `rustls`/`rustls-pki-types` as optional deps turned on only here, never in a shipped build.
-test-support = ["dep:rustls", "dep:rustls-pki-types"]
+# `test-support`; never by a shipped build. Adds no dependency: the harness locates the store
+# both-ways proof's cdylib by the name `build.rs` exports, and the dependent's own graph builds it.
+test-support = []
 # THE PUBLISHED CONFORMANCE SUITE (`src/conformance/`, TODO ABI-b4): every real plugin repo's own
 # `tests/conformance.rs` names this crate as a dev-dependency with this feature, at the busbar commit
 # it pins, and runs the suite over its linked door and its built cdylib (`plugin-ci.yml`'s
@@ -120,10 +120,6 @@ path = "tests/fixtures/neutral_frame_door.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-# `test-support` only (`tcp_conns`, the test connection table's TLS option, standing in for the
-# connector's TLS wrap in a plugin repo's tests): never in a shipped build.
-rustls = { workspace = true, optional = true }
-rustls-pki-types = { workspace = true, optional = true }
 # The three unit-side store seams the composition root binds to one loaded store (`store_adapter`).
 # None of the three crates may name a store, so the adapter that implements all three lives on this
 # side of the seam — where the loaded plugin and its declared payload schema already are. All three
@@ -174,10 +170,6 @@ getrandom = { workspace = true }
 jsonschema = { workspace = true, optional = true }
 
 [dev-dependencies]
-# `tcp_conns`' TLS option in this crate's own tests: a self-signed CA and a TLS backend.
-rustls = { workspace = true }
-rustls-pki-types = { workspace = true }
-rcgen = { workspace = true }
 # The end-to-end DlopenPolicy test drives the async RoutingPolicy methods, so the test needs a
 # runtime + the `#[tokio::test]` macro (the crate's own dep is `rt`/`time` only — no macros).
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util"] }

@@ -209,7 +209,7 @@ impl Line {
 
     /// Read what the connection answered into the parked pieces, waking each holder a piece came
     /// for. `Some` = the connection ended (`Ok`) or failed.
-    fn route(&self, s: &mut State) -> Option<Result<(), Failure>> {
+    fn park_pieces(&self, s: &mut State) -> Option<Result<(), Failure>> {
         let waker = self.fan_waker();
         let mut cx = Context::from_waker(&waker);
         let conn = s.conn.as_mut()?;
@@ -251,7 +251,7 @@ impl Line {
         if let Some(got) = s.parked.get_mut(&stream).and_then(VecDeque::pop_front) {
             return Poll::Ready(Ok(Some(got)));
         }
-        let end = self.route(&mut s);
+        let end = self.park_pieces(&mut s);
         if let Some(got) = s.parked.get_mut(&stream).and_then(VecDeque::pop_front) {
             return Poll::Ready(Ok(Some(got)));
         }
@@ -266,7 +266,7 @@ impl Line {
     pub(crate) fn poll_ready(&self, stream: u64, cx: &mut Context<'_>) -> Poll<()> {
         self.fan.wait(stream, cx.waker());
         let mut s = self.state.lock().expect("line");
-        let end = self.route(&mut s);
+        let end = self.park_pieces(&mut s);
         if end.is_some() || s.conn.is_none() || s.parked.get(&stream).is_some_and(|q| !q.is_empty())
         {
             Poll::Ready(())

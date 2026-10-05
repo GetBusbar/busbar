@@ -38,15 +38,18 @@ pub(crate) const OWN_PROCESS: &str = "stdio:own-process";
 /// The one listener: the process's own standard input and output.
 const OWN_LISTENER: u64 = 1;
 
-/// One connection: its reading and writing halves (each polled by one task at a time), the child it
-/// owns where it was dialled, and the wakers parked on it — so a close wakes both directions.
+/// One connection: its reading and writing halves, the child it owns where it was dialled, and the
+/// wakers parked on it — so a close wakes both directions. The reading half is polled by one task at
+/// a time; the writing half may be polled by several (K concurrent writers), so every writer the
+/// pipe left waiting is parked in `writing` and woken when any write makes progress (see
+/// [`StdioCarrier::poll_writer`]).
 pub(crate) struct Pipe {
     peer: String,
     read: Mutex<Box<dyn AsyncRead + Send + Unpin>>,
     write: Mutex<Box<dyn AsyncWrite + Send + Unpin>>,
     child: Mutex<Option<tokio::process::Child>>,
     reading: Mutex<Option<Waker>>,
-    writing: Mutex<Option<Waker>>,
+    writing: Mutex<Vec<Waker>>,
 }
 
 /// The `stdio` carrier: its connections, whether the process's own standard input and output were handed out, and the
@@ -197,7 +200,7 @@ impl StdioCarrier {
             write: Mutex::new(Box::new(stdin)),
             child: Mutex::new(Some(child)),
             reading: Mutex::new(None),
-            writing: Mutex::new(None),
+            writing: Mutex::new(Vec::new()),
         }))
     }
 
@@ -214,14 +217,34 @@ impl StdioCarrier {
         let Some(pipe) = self.pipe(conn) else {
             return Poll::Ready(Err(TransportError::Closed));
         };
-        park(&pipe.writing, cx);
         let _in = self.reactor.handle.enter();
         // One writer at a time: a second poller waits its turn.
         let Ok(mut half) = pipe.write.try_lock() else {
             cx.waker().wake_by_ref();
             return Poll::Pending;
         };
-        op(std::pin::Pin::new(&mut **half), cx).map_err(|e| map_io(&e))
+        let polled = op(std::pin::Pin::new(&mut **half), cx);
+        // THE PIPE WAKES ONE WRITER: its readiness keeps only the waker of the LAST poll that found
+        // it not writable, so with several writers waiting every earlier one would never be woken.
+        // So each writer the pipe leaves waiting is parked here, and whichever write makes progress
+        // wakes every parked writer to take its turn. The half stays locked until this writer is
+        // parked, so no write can make progress between its poll and its parking.
+        let mut parked = pipe.writing.lock().expect("waker slot poisoned");
+        if polled.is_pending() {
+            if !parked.iter().any(|w| w.will_wake(cx.waker())) {
+                parked.push(cx.waker().clone());
+            }
+        } else {
+            let waiting = std::mem::take(&mut *parked);
+            drop(parked);
+            drop(half);
+            for w in waiting {
+                if !w.will_wake(cx.waker()) {
+                    w.wake();
+                }
+            }
+        }
+        polled.map_err(|e| map_io(&e))
     }
 }
 
@@ -255,7 +278,7 @@ impl Carrier for StdioCarrier {
             write: Mutex::new(Box::new(tokio::io::stdout())),
             child: Mutex::new(None),
             reading: Mutex::new(None),
-            writing: Mutex::new(None),
+            writing: Mutex::new(Vec::new()),
         });
         Poll::Ready(Ok((id, OWN_PROCESS.to_string())))
     }
@@ -313,10 +336,11 @@ impl Carrier for StdioCarrier {
             if let Some(mut child) = pipe.child.lock().expect("child slot poisoned").take() {
                 let _ = child.start_kill();
             }
-            for slot in [&pipe.reading, &pipe.writing] {
-                if let Some(w) = slot.lock().expect("waker slot poisoned").take() {
-                    w.wake();
-                }
+            if let Some(w) = pipe.reading.lock().expect("waker slot poisoned").take() {
+                w.wake();
+            }
+            for w in std::mem::take(&mut *pipe.writing.lock().expect("waker slot poisoned")) {
+                w.wake();
             }
         }
         Poll::Ready(Ok(()))

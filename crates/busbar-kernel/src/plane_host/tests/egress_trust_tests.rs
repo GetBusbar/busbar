@@ -6,29 +6,27 @@
 
 use super::*;
 
-/// A self-signed client identity, built the way the a2a boot resolver builds one (cert + key as
-/// one PEM buffer, the single form `ClientIdentity::from_pem` takes).
+/// A self-signed client identity, from its parts (the PEM walk `ClientIdentity::from_pem` runs is the
+/// connector's, proven over the real wrap in the connector's `tls/engine_tests.rs`).
 fn an_identity() -> ClientIdentity {
     use rcgen::{CertificateParams, KeyPair};
     let kp = KeyPair::generate().expect("a key pair");
     let params = CertificateParams::new(vec!["client.test".to_string()]).expect("params");
     let cert = params.self_signed(&kp).expect("self-signed");
-    let mut pem = cert.pem().into_bytes();
-    if !pem.ends_with(b"\n") {
-        pem.push(b'\n');
-    }
-    pem.extend_from_slice(kp.serialize_pem().as_bytes());
-    ClientIdentity::from_pem(&pem).expect("a usable client identity")
+    ClientIdentity::from_parts(
+        vec![cert.der().to_vec()],
+        crate::secure::KeyDer::Pkcs8(kp.serialize_der()),
+    )
 }
 
 /// A self-signed root certificate, parsed to DER the way the a2a boot resolver parses a
 /// `trusting_root` PEM.
-fn a_root() -> CertificateDer<'static> {
+fn a_root() -> Vec<u8> {
     use rcgen::{CertificateParams, KeyPair};
     let kp = KeyPair::generate().expect("a key pair");
     let params = CertificateParams::new(vec!["root.test".to_string()]).expect("params");
     let cert = params.self_signed(&kp).expect("self-signed");
-    cert.der().clone()
+    cert.der().to_vec()
 }
 
 #[test]
@@ -124,7 +122,10 @@ fn the_pass_through_seam_fails_closed() {
 /// The root's capability hands every answer to the guard behind it, deciding nothing itself.
 #[test]
 fn the_guarded_seam_judges_by_the_guard_behind_it() {
-    let judged = GuardedEgressTrust(crate::egress::fixtures::private_refusing(&[]));
+    let judged = GuardedEgressTrust(
+        crate::egress::fixtures::private_refusing(&[]),
+        crate::egress::fixtures::TlsDouble::default().layer(),
+    );
     let private: std::net::IpAddr = "10.0.0.5".parse().unwrap();
     let public: std::net::IpAddr = "93.184.216.34".parse().unwrap();
     assert!(judged.judge_answer("db.test", &[private], 0).is_err());

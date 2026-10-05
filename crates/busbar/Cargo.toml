@@ -35,7 +35,7 @@ busbar-core-oauth2 = { path = "../busbar-core-oauth2" }
 # feature forwards below turn on `busbar-admin`'s features in lock-step with busbar-core's.
 busbar-core-admin = { path = "../busbar-core-admin", default-features = false }
 # The core-side connection-security seam (DECISIONS #40): builds the opaque `ConnectionSecurity`
-# wrap (identity for a plaintext binding, rustls-backed for a TLS one) the composition root hands
+# wrap (identity for a plaintext binding, TLS for a TLS one) the composition root hands
 # to `busbar_kernel::tls::serve`. A mandatory sibling, like `busbar-admin`/`busbar-core-oauth2` above —
 # never a plugin, always linked.
 busbar-core-connector = { path = "../busbar-core-connector" }

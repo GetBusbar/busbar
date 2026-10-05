@@ -54,6 +54,10 @@ mod program;
 pub mod registry;
 pub mod socket;
 pub mod stream;
+/// The TLS test kit (far ends, the recording TLS fixture server) for this crate's tests that need a
+/// real handshake: TLS stays in the connector, even in a test.
+#[cfg(test)]
+pub mod test_support;
 pub mod tls;
 pub mod udp;
 pub mod wire;
@@ -1429,6 +1433,8 @@ impl Conns for Connector {
                 head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             };
             let conn = Connection::dial_unix(door, dial, path).map_err(|f| map(&f))?;
+            // A unix-domain dial is a dialled, single-use line (no pool, no judgement), as a
+            // program's is: its one exchange rides EXCHANGE_STREAM.
             let line = Line::new(conn);
             return self.slab.insert(
                 caller,
