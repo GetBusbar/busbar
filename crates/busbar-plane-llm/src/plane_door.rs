@@ -177,17 +177,31 @@ const fn open_class(k: usize) -> BillableClass {
     }
 }
 
+/// THE FEE UNIT the plane counts: one per billable request (`busbar_contract::plane::PER_REQUEST`),
+/// reported as a count of 1 exactly where 1.5.5 billed its flat request fee (a reply whose caller
+/// status is a success) and never where 1.5.5 refunded it (owner #77, money-B1: the plane's report is
+/// the ONE fee decider). It is the last of the tail's billable classes, and never usage.
+pub const FEE_CLASS: &str = busbar_contract::plane::PER_REQUEST;
+/// [`FEE_CLASS`]'s index in the tail's billable classes.
+pub const FEE_CLASS_INDEX: u32 = (METER.len() + OPEN_CLASSES.len()) as u32;
+
 const BILLABLE_CLASSES: &[BillableClass] = &[
     billable(0),
     billable(1),
     billable(2),
     billable(3),
     open_class(0),
+    BillableClass {
+        class: abi_str(FEE_CLASS),
+        family: abi_str("request"),
+    },
 ];
+/// The tail's fee units: [`FEE_CLASS`].
+const FEE_UNITS: &[AbiStr] = &[abi_str(FEE_CLASS)];
 const _: () = assert!(
     DIALECTS.len() == DIALECT_NAMES.len()
         && OPS.len() == OP_CLASSES.len()
-        && METER.len() + OPEN_CLASSES.len() == BILLABLE_CLASSES.len(),
+        && METER.len() + OPEN_CLASSES.len() + 1 == BILLABLE_CLASSES.len(),
     "the tail states every dialect, op class and token class the plane declares"
 );
 
@@ -345,8 +359,8 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     billable_classes_len: BILLABLE_CLASSES.len(),
     route_cost: ptr::null(),
     route_cost_len: 0,
-    fee_units: ptr::null(),
-    fee_units_len: 0,
+    fee_units: FEE_UNITS.as_ptr(),
+    fee_units_len: FEE_UNITS.len(),
     record_kinds: ptr::null(),
     record_kinds_len: 0,
     egress_targets: ptr::null(),
@@ -455,6 +469,10 @@ struct UnitState {
     /// `project` found the body unreadable: the unit's refusal reads the previous release's
     /// unreadable-body sentence.
     unreadable: bool,
+    /// The far end's last cumulative counts, as the unit last reported them.
+    reported: Vec<UnitCount>,
+    /// The caller was answered under a success status: the request's fee unit was incurred.
+    fee: bool,
 }
 
 impl UnitState {
@@ -471,6 +489,8 @@ impl UnitState {
             started: None,
             pending: None,
             unreadable: false,
+            reported: Vec::new(),
+            fee: false,
         }
     }
 
@@ -654,6 +674,29 @@ fn verdict(v: Verdict) -> u32 {
         Verdict::Ok => VERDICT_OK,
         Verdict::Retry => VERDICT_RETRY,
         Verdict::Hard => VERDICT_HARD,
+    }
+}
+
+/// THE REQUEST'S FEE UNIT on `answer` (owner #77, money-B1: the plane's report is the one fee
+/// decider): incurred when the caller's reply opens under a success status, which is where 1.5.5
+/// kept its flat request fee (its finish refunded the fee for a non-2xx caller status, and only
+/// then). From that answer on, every answer that carries counts carries the fee unit's 1 beside the
+/// far end's last cumulative counts; an answer that carries none leaves the last report standing.
+/// A probe is no billable request.
+fn fee_unit(unit: &mut UnitState, answer: &mut Answer) {
+    if !answer.units.is_empty() {
+        unit.reported.clone_from(&answer.units);
+    }
+    let incurred =
+        !unit.fee && !unit.probe && !answer.to_far_end && (200..=299).contains(&answer.status);
+    unit.fee |= incurred;
+    if unit.fee && (incurred || !answer.units.is_empty()) {
+        answer.units.clone_from(&unit.reported);
+        answer.units.push(UnitCount {
+            class: FEE_CLASS_INDEX,
+            source: UNITS_REPORTED,
+            amount: 1,
+        });
     }
 }
 
@@ -1086,7 +1129,8 @@ slot!(
                 passthrough: given.passthrough != 0,
                 clock: if given.from == FROM_CALLER { None } else { door.clock() },
             };
-            let answer = answer(&mut unit, given.from, &piece);
+            let mut answer = answer(&mut unit, given.from, &piece);
+            fee_unit(&mut unit, &mut answer);
             unit.pending = Some(Pending {
                 answer,
                 sent: 0,
@@ -1305,4 +1349,88 @@ busbar_contract::plugin_door! {
         arrive: Safe<Arrive>, on_piece: Safe<OnPiece>, refusal: Safe<RefusalSlot>,
         serve: Safe<Serve>, hydrate: Safe<Hydrate>, start: Safe<Start>, project: Safe<Project>,
     },
+}
+
+#[cfg(test)]
+mod fee_unit_tests {
+    use super::*;
+
+    fn tokens(n: u64) -> Vec<UnitCount> {
+        vec![UnitCount {
+            class: 0,
+            source: UNITS_REPORTED,
+            amount: n,
+        }]
+    }
+
+    /// A report as plain triples (the ABI row has no `PartialEq`).
+    fn seen(units: &[UnitCount]) -> Vec<(u32, u32, u64)> {
+        units
+            .iter()
+            .map(|u| (u.class, u.source, u.amount))
+            .collect()
+    }
+
+    fn fee() -> UnitCount {
+        UnitCount {
+            class: FEE_CLASS_INDEX,
+            source: UNITS_REPORTED,
+            amount: 1,
+        }
+    }
+
+    /// THE FEE UNIT (owner #77, money-B1): reported 1 from the answer that opens the caller's reply
+    /// under a success status, beside the far end's last cumulative counts on every later answer
+    /// that carries counts; an answer that carries none leaves the last report standing.
+    #[test]
+    fn a_success_reply_incurs_the_fee_unit_and_every_later_report_keeps_it() {
+        let mut unit = UnitState::new(Arc::default());
+        let mut head = Answer {
+            status: 200,
+            ..Answer::default()
+        };
+        fee_unit(&mut unit, &mut head);
+        assert_eq!(
+            seen(&head.units),
+            seen(&[fee()]),
+            "incurred at the success head"
+        );
+        let mut chunk = Answer::default();
+        fee_unit(&mut unit, &mut chunk);
+        assert!(
+            chunk.units.is_empty(),
+            "a countless answer leaves the report"
+        );
+        let mut last = Answer {
+            units: tokens(7),
+            ..Answer::default()
+        };
+        fee_unit(&mut unit, &mut last);
+        assert_eq!(seen(&last.units), seen(&[tokens(7), vec![fee()]].concat()));
+    }
+
+    /// 1.5.5 refunded its flat fee for a non-2xx caller status: no fee unit is reported, so the
+    /// unit's end refunds; nor for an answer bound for the far end, nor for a probe.
+    #[test]
+    fn a_failed_reply_a_far_request_and_a_probe_incur_no_fee_unit() {
+        for (status, to_far_end, probe) in
+            [(503, false, false), (200, true, false), (200, false, true)]
+        {
+            let mut unit = UnitState::new(Arc::default());
+            unit.probe = probe;
+            let mut answer = Answer {
+                status,
+                to_far_end,
+                units: tokens(3),
+                ..Answer::default()
+            };
+            fee_unit(&mut unit, &mut answer);
+            assert_eq!(
+                seen(&answer.units),
+                seen(&tokens(3)),
+                "{status} {to_far_end} {probe}"
+            );
+            assert!(!unit.fee);
+        }
+    }
 }

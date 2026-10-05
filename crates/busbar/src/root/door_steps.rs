@@ -543,14 +543,10 @@ impl<'s> DoorSteps<'s> {
                 classes: Arc::clone(&self.facts.classes),
                 arrived: self.arrived,
                 mode: exhaustion_of(&self.app, key),
-                // The plane serving the `pools` map bills 1.5.5's flat request fee and refunds it
-                // under 1.5.5's rule (a non-2xx caller status); every other plane's fee is its
-                // reported fee units (#47).
-                fee: if self.facts.plane.is_empty() {
-                    FeeRefund::CallerStatus
-                } else {
-                    FeeRefund::PlaneFeeUnits(Arc::clone(&self.facts.fee_units))
-                },
+                // THE PLANE'S REPORT IS THE ONE FEE DECIDER (owner #77, money-B1): every plane's
+                // fee is its reported fee units (#47); the plane serving the `pools` map reports
+                // its per-request unit exactly where 1.5.5 kept its flat fee.
+                fee: FeeRefund::PlaneFeeUnits(Arc::clone(&self.facts.fee_units)),
                 charge: grant.charge().clone(),
             },
         );

@@ -37,10 +37,21 @@ fn the_tail_is_one_the_contract_accepts() {
     assert_eq!(TAIL.dialects_len, DIALECTS.len());
     assert_eq!(TAIL.op_classes_len, 7);
     assert_eq!(
-        TAIL.billable_classes_len, 5,
-        "tokens in, out, cache read, cache write, then the open classes"
+        TAIL.billable_classes_len, 6,
+        "tokens in, out, cache read, cache write, the open classes, then the per-request fee unit"
     );
     assert_eq!(OPEN_CLASSES, &[("search_units", "units")]);
+    // THE FEE UNIT (owner #77, money-B1): one per billable request, the last billable class.
+    assert_eq!(TAIL.fee_units_len, 1);
+    // SAFETY: the tail's `'static` fee-unit list of `fee_units_len` entries.
+    let fee = unsafe { *TAIL.fee_units };
+    // SAFETY: a `'static` str the door states (abi_str).
+    let fee = unsafe { std::slice::from_raw_parts(fee.ptr, fee.len) };
+    assert_eq!(fee, busbar_contract::plane::PER_REQUEST.as_bytes());
+    assert_eq!(
+        busbar_plane_llm::plane_door::FEE_CLASS_INDEX as usize,
+        TAIL.billable_classes_len - 1
+    );
 }
 
 /// ARCHITECT Q-L1-AUTH (A): every dialect states its default outbound style in the tail, and every
