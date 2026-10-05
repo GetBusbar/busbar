@@ -759,3 +759,125 @@ async fn a_request_whose_bytes_left_is_not_redialled() {
         "the cut request was sent once"
     );
 }
+
+/// An h2c far end whose FIRST connection takes its first request, says nothing, and on `break_in`
+/// writes a frame no HTTP/2 peer may send (a SETTINGS frame five bytes long, RFC 9113 6.5:
+/// FRAME_SIZE_ERROR) and reads on, recording every frame; it answers on `wrote` once the frame
+/// is on the wire. Every connection after it is served as [`serve_h2`] serves.
+async fn breaking_far_end() -> (
+    u16,
+    Arc<FarEnd>,
+    tokio::sync::mpsc::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+) {
+    let l = TcpListener::bind("127.0.0.1:0").await.expect("a port");
+    let port = l.local_addr().expect("its address").port();
+    let far = Arc::new(FarEnd::default());
+    let seen = Arc::clone(&far);
+    let (break_in, mut broken) = tokio::sync::mpsc::channel::<()>(1);
+    let (wrote_tx, wrote) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let Ok((mut s, _)) = l.accept().await else {
+            return;
+        };
+        seen.accepted.fetch_add(1, Ordering::SeqCst);
+        let first = Arc::clone(&seen);
+        tokio::spawn(async move {
+            let mut pre = [0_u8; 24];
+            if s.read_exact(&mut pre).await.is_err() {
+                return;
+            }
+            let _ = s.write_all(&frame(4, 0, 0, &[])).await;
+            let mut wrote_tx = Some(wrote_tx);
+            // `read` (not `read_exact`) under the select, so the break never drops a byte read.
+            let (mut got, mut buf) = (Vec::new(), [0_u8; 4096]);
+            loop {
+                tokio::select! {
+                    r = s.read(&mut buf) => match r {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => got.extend_from_slice(&buf[..n]),
+                    },
+                    Some(()) = broken.recv() => {
+                        let _ = s.write_all(&frame(4, 0, 0, &[0; 5])).await;
+                        let _ = s.flush().await;
+                        if let Some(tx) = wrote_tx.take() {
+                            let _ = tx.send(());
+                        }
+                    }
+                }
+                while got.len() >= 9 {
+                    let len = u32::from_be_bytes([0, got[0], got[1], got[2]]) as usize;
+                    if got.len() < 9 + len {
+                        break;
+                    }
+                    let stream = u32::from_be_bytes([got[5], got[6], got[7], got[8]]) & 0x7fff_ffff;
+                    first
+                        .frames
+                        .lock()
+                        .expect("frames")
+                        .push((got[3], got[4], stream));
+                    got.drain(..9 + len);
+                }
+            }
+        });
+        while let Ok((s, _)) = l.accept().await {
+            seen.accepted.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(serve_h2(s, Arc::clone(&seen)));
+        }
+    });
+    (port, far, break_in, wrote)
+}
+
+/// NO DOUBLE SEND, the open's own drive: a request lent a pooled h2 line whose failure is met in
+/// the same drive that flushed its opening (the bytes left, THEN the line failed) is not
+/// redialled. The far end's break is on the wire before the open and nothing drives the line
+/// meanwhile, so the open's write goes out and its read meets the break: the order a loaded host
+/// gives [`a_request_whose_bytes_left_is_not_redialled`] by chance is given here every time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_request_whose_opening_left_before_the_line_failed_is_not_redialled() {
+    let (port, far, break_in, wrote) = breaking_far_end().await;
+    let settings = pooled(TransportSettings {
+        upstream_h2_prior_knowledge: true,
+        ..TransportSettings::default()
+    });
+    let c = connector(&settings, &EgressTrust::default());
+    let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+    let a = start(&c, &url);
+    drive_until(&c, a, || far.request_streams().len() == 1).await;
+    break_in.send(()).await.expect("the break");
+    wrote.await.expect("the break is on the wire");
+    // The break reaches this side; nothing drives the line meanwhile.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let b = start(&c, &url);
+    let mut buf = [0_u8; 1024];
+    let mut answered = false;
+    loop {
+        let got = tokio::time::timeout(
+            Duration::from_secs(5),
+            std::future::poll_fn(|cx| c.poll_read(OWNER, b, cx, &mut buf)),
+        )
+        .await
+        .expect("the broken line answers at once");
+        match got {
+            Err(_) => break,
+            Ok(p) if p.kind == PieceKind::Completion => break,
+            Ok(p) => answered |= p.kind == PieceKind::Fields,
+        }
+    }
+    // The far end reads what left on its own time: wait for it, never driving this side.
+    for _ in 0..250 {
+        if far.request_streams().len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let _ = c.close(OWNER, b);
+    let _ = c.close(OWNER, a);
+    assert!(!answered, "nothing answered the request the break cut");
+    assert_eq!(far.accepted.load(Ordering::SeqCst), 1, "no redial");
+    assert_eq!(
+        far.request_streams(),
+        vec![1, 3],
+        "the cut request was sent once"
+    );
+}
