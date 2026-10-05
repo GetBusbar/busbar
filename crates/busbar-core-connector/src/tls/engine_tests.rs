@@ -505,8 +505,8 @@ async fn a_tls_trust_refusal_renders_the_real_cause() {
 }
 
 // ── THE DIFFERENTIAL'S TLS ROWS: the owned engine (stack A) beside 1.5.5's pinned reqwest client
-// (stack B), against the same recording TLS fixture (moved here from busbar-llm's
-// `egress_differential_tests`, whose plaintext rows stay there) ───────────────────────────────────
+// (stack B), against the same recording TLS fixture (moved here from the
+// egress differential harness, whose plaintext rows stay where they were) ───────────────────────────────────
 
 /// What one hop came to, across the two stacks.
 #[derive(Debug, PartialEq, Eq)]
@@ -739,15 +739,15 @@ async fn client_cert_fixture_accepts_only_the_carried_identity() {
     );
 }
 
-// ── THE REFUSALS A PLANE'S TRANSPORT ROWS STAND ON: the a2a card transport's batteries ride the
-// kernel's TLS double (that crate names no TLS), so each certificate-verification refusal they
+// ── THE REFUSALS A PLANE'S TRANSPORT ROWS STAND ON: the agent-card transport's batteries ride
+// the kernel's TLS double (that crate names no TLS), so each certificate-verification refusal they
 // once drove over a real handshake is proven here, one for one, through the same engine ──────────
 
 /// THE CHAIN CHECK STAYS ON UNDER THE PIN: a self-signed leaf no root vouches for, served at the
 /// pinned address, is refused at the handshake and the cause names the chain check
 /// (`UnknownIssuer`). The ClientHello still carried the hostname, and no request rode the refused
 /// handshake — no response, so no peer pin could ever be read off it. (The real handshake under
-/// a2a's `a_hop_with_no_extra_root_trusts_the_webpki_roots_alone_and_carries_the_refusal` and
+/// the agent-card transport's `a_hop_with_no_extra_root_trusts_the_webpki_roots_alone_and_carries_the_refusal` and
 /// `a_refused_handshake_produces_no_card_and_therefore_no_pin`.)
 #[tokio::test]
 async fn an_untrusted_self_signed_leaf_is_refused_under_the_pin_naming_unknown_issuer() {
@@ -797,7 +797,8 @@ async fn an_untrusted_self_signed_leaf_is_refused_under_the_pin_naming_unknown_i
 
 /// THE NAME CHECK, NAMED: the leaf's CA is trusted and the socket is the pinned one, so the only
 /// thing left to refuse on is the NAME — and the cause says so, naming both the hostname the hop
-/// verified against and the name the certificate carries. (The real handshake under a2a's
+/// verified against and the name the certificate carries. (The real handshake under the
+/// agent-card transport's
 /// `a_trusted_root_rides_the_hop_and_the_name_it_is_checked_against_is_the_hostname`.)
 #[tokio::test]
 async fn a_wrong_name_refusal_names_the_hostname_and_the_certificates_name() {
@@ -837,7 +838,8 @@ async fn a_wrong_name_refusal_names_the_hostname_and_the_certificates_name() {
 /// THE PIN READ OFF A REAL HANDSHAKE IS THE SERVING LEAF'S KEY: two leaves for the same name, each
 /// from its own CA, have different key pins, and the pin the engine reads off the verified
 /// handshake is the serving leaf's — never the look-alike's. That difference is what an operator's
-/// key pin refuses a look-alike endpoint on. (The real handshake under a2a's
+/// key pin refuses a look-alike endpoint on. (The real handshake under the
+/// agent-card transport's
 /// `a_card_served_under_a_certificate_whose_key_pin_does_not_match_the_pin_is_refused`,
 /// `a_mutual_tls_look_alike_endpoint_is_named_as_one_rather_than_as_a_missing_certificate`.)
 #[tokio::test]
@@ -961,7 +963,7 @@ fn identity_of(material: &busbar_kernel::egress::fixtures::CaLeaf) -> ClientIden
 /// AN mTLS PEER REFUSES A HOP THAT PRESENTS NOTHING, AND SAYS SO: the engine built with no identity
 /// presents none (it never forges one), the peer refuses at the handshake, and the peer's OWN
 /// reason is that no certificate was sent — not that a wrong one was. (The real handshake under
-/// a2a's `a_mutual_tls_peer_refuses_a_card_fetch_that_presents_no_client_certificate`.)
+/// the agent-card transport's `a_mutual_tls_peer_refuses_a_card_fetch_that_presents_no_client_certificate`.)
 #[tokio::test]
 async fn an_mtls_peer_refuses_a_hop_that_presents_no_client_certificate_for_that_reason() {
     connector_tls();
@@ -996,7 +998,7 @@ async fn an_mtls_peer_refuses_a_hop_that_presents_no_client_certificate_for_that
 /// chains to the peer's client CA completes (the peer saw exactly one certificate); the engine
 /// presenting another CA's identity is refused by the peer as an INVALID certificate — something
 /// was offered and refused, which is not the same refusal as nothing offered. (The real handshake
-/// under a2a's `each_registration_presents_its_own_certificate_and_not_another_registrations`,
+/// under the agent-card transport's `each_registration_presents_its_own_certificate_and_not_another_registrations`,
 /// `a_mutual_tls_peer_accepts_the_card_fetch_when_the_registration_names_a_client_identity`,
 /// `the_verb_layers_probe_fetches_a_mutual_tls_vendors_card_with_that_registrations_certificate`,
 /// `a_mutual_tls_registration_that_presents_its_client_certificate_verifies`.)

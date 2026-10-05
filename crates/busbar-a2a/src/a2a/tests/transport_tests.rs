@@ -164,7 +164,7 @@ pub(crate) type ObservedHellos = Arc<Mutex<Vec<PeerHello>>>;
 /// prove is the posture this plane hands the engine (the server name, the extra roots, the client
 /// identity, the peer leaf it reads a pin off). Every real-handshake refusal (an untrusted chain, a
 /// wrong name, a missing or foreign client certificate, a look-alike key) is proven where TLS
-/// lives: `busbar-core-connector`'s `tls/engine_tests.rs`, over the same engine.
+/// lives: the connector's `tls/engine_tests.rs`, over the same engine.
 pub(crate) fn tls_double() {
     install_test_tls(TlsDouble::default().layer());
 }

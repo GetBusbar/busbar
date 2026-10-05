@@ -15,7 +15,7 @@
 //! registration hands the engine, and that a peer's refusal comes back as no card. The same demands
 //! made by a REAL `WebPkiClientVerifier` peer — refusing a hop that presents no certificate, refusing
 //! a certificate from a CA it does not trust, completing against exactly the carried identity's leaf
-//! — are proven where TLS lives, `busbar-core-connector`'s `tls/engine_tests.rs`
+//! — are proven where TLS lives, the connector's `tls/engine_tests.rs`
 //! (`an_mtls_peer_refuses_a_hop_that_presents_no_client_certificate_for_that_reason`,
 //! `an_mtls_peer_accepts_its_own_clients_certificate_and_refuses_a_foreign_one_as_invalid`,
 //! `client_cert_fixture_accepts_only_the_carried_identity`).

@@ -35,7 +35,7 @@ use crate::tcp_conns::{SecureDial, SecuredSock, TcpConns};
 
 /// A TEST DOUBLE of the TLS a table secures with (TLS itself is the connector's, which this crate
 /// cannot name; the real wrap's `upgrade_secure`, verify-off included, is proven in
-/// `busbar-core-connector`'s own suite). It hands the stream back as it is, counting the handshakes
+/// the connector's own suite). It hands the stream back as it is, counting the handshakes
 /// and recording what each asked for; told its backend is self-signed, it refuses a VERIFYING
 /// handshake, as a verifying handshake refuses a self-signed certificate.
 #[derive(Default)]

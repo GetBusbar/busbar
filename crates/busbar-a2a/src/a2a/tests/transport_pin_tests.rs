@@ -20,7 +20,7 @@
 //! argument is an ORDERING: the certificate is observable only because the chain-and-name check
 //! already accepted it. That ordering over a REAL handshake — a refused chain yields no response
 //! and so no pin, and the pin read is the serving leaf's own key and not a look-alike's — is
-//! proven where TLS lives, `busbar-core-connector`'s `tls/engine_tests.rs`
+//! proven where TLS lives, the connector's `tls/engine_tests.rs`
 //! (`an_untrusted_self_signed_leaf_is_refused_under_the_pin_naming_unknown_issuer`,
 //! `the_pin_off_a_real_handshake_is_the_serving_leafs_key_and_not_a_look_alikes`), and
 //! [`no_path_in_this_crate_obtains_a_pin_by_switching_verification_off`] is the ratchet that keeps
