@@ -12,14 +12,20 @@
 //! configured `cert_spki` believed the upstream's certificate was pinned; the upstream's certificate
 //! was never once compared to anything.
 //!
-//! Every test here drives a REAL TLS HANDSHAKE — through `crate::mcp::client::transport::HttpTransport`,
-//! the production wire — against `busbar_kernel::egress::fixtures::spawn_tls`, a real `rustls` server
-//! on a real loopback socket. The one throw-away CA these hops trust
-//! (`crate::mcp::client::transport::test_ca::TEST_CA`) exists because MCP has no config-shaped way to name
-//! a private CA for a registration yet (unlike A2A's `client_identity:` path); see that module for
-//! why one CA correctly serves both the matching and the mismatched case below.
+//! Every test here drives a hop through `crate::mcp::client::transport::HttpTransport`, the production
+//! wire, against a peer on a real loopback socket that presents a real certificate
+//! (`crate::mcp::client::transport::test_ca::TEST_CA`'s leaf), secured by the kernel's TLS test double
+//! (`busbar_kernel::egress::fixtures::TlsDouble`): the TLS itself is the connector's, which this crate
+//! cannot name, so what is proven here is this plane's side — the leaf the engine observed is the one
+//! compared to the operator's pin. That the engine observes the REAL handshake's leaf is the
+//! composition root's `tests/engine_tls.rs`. The one throw-away CA (`TEST_CA`) exists because MCP has
+//! no config-shaped way to name a private CA for a registration yet (unlike A2A's `client_identity:`
+//! path); see that module for why one CA correctly serves both the matching and the mismatched case
+//! below.
 
-use busbar_kernel::egress::fixtures::{spawn_tls, CannedResponse, ClientAuth, TlsServerSpec};
+use busbar_kernel::egress::fixtures::{
+    install_test_tls, spawn_double, CannedResponse, DoubleFixture, DoublePeer, TlsDouble,
+};
 use std::sync::Arc;
 
 use crate::mcp::client::catalogue::CatalogueCache;
@@ -53,16 +59,19 @@ fn tools_list_body() -> String {
     .to_string()
 }
 
-/// A REAL TLS peer serving the one `tools/list` answer, over the certificate every test-build hop
-/// trusts (`TEST_CA`). Kept alive by the caller for as long as a refresh may still reach it.
-fn tls_peer() -> busbar_kernel::egress::fixtures::TlsFixture {
-    spawn_tls(TlsServerSpec {
-        cert_chain_pem: TEST_CA.leaf_pem.clone(),
-        key_pem: TEST_CA.leaf_key_pem.clone(),
-        client_auth: ClientAuth::None,
-        response: CannedResponse::ok(&tools_list_body()),
-        max_requests_per_connection: 4,
-    })
+/// A peer presenting the certificate every test-build hop trusts (`TEST_CA`'s leaf) and serving the
+/// one `tools/list` answer, behind the TLS test double. Kept alive by the caller for as long as a
+/// refresh may still reach it.
+fn tls_peer() -> DoubleFixture {
+    install_test_tls(TlsDouble::default().layer());
+    spawn_double(
+        DoublePeer {
+            leaf: Some(TEST_CA.leaf_der.clone()),
+            ..DoublePeer::default()
+        },
+        CannedResponse::ok(&tools_list_body()),
+        4,
+    )
 }
 
 /// A registration pointed at a REAL TLS peer, pinned under `mechanism` to `key`.

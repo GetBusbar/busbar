@@ -9,7 +9,7 @@
 //! complete a connection is a claim, not a control.
 //!
 //! Every test here runs a REAL rustls handshake against a server built with a
-//! [`rustls::server::WebPkiClientVerifier`] — the same verifier the engine's TLS module installs on busbar's own
+//! `WebPkiClientVerifier` — the same verifier the engine's TLS module installs on busbar's own
 //! inbound listener when an operator sets `tls.client_ca`. That is deliberate: the peer in these
 //! tests demands exactly what busbar demands, so "busbar can talk to an mTLS peer" is proven against
 //! the same rule busbar enforces rather than against a lenient fixture.
@@ -43,7 +43,8 @@ use crate::a2a::fetch::{FetchPolicy, Transport};
 /// alert), not TLS's.
 type ClientCerts = Arc<Mutex<Vec<Result<usize, String>>>>;
 
-/// A real rustls server that REQUIRES a client certificate chaining to `client_ca_pem`.
+/// A real TLS server (the connector's test far end) that REQUIRES a client certificate chaining to
+/// `client_ca_pem`.
 ///
 /// Built with `WebPkiClientVerifier`, which is the same construction the engine's inbound TLS server config
 /// uses for busbar's own inbound mTLS. A client that presents nothing is refused during the
@@ -54,29 +55,14 @@ pub(super) fn spawn_mutual_tls(
     client_ca_pem: &str,
     body: String,
 ) -> (SocketAddr, ClientCerts) {
-    engine().install_crypto_provider();
-    use rustls_pki_types::pem::PemObject;
-    let certs: Vec<rustls_pki_types::CertificateDer<'static>> =
-        rustls_pki_types::CertificateDer::pem_slice_iter(server_cert_pem.as_bytes())
-            .collect::<Result<Vec<_>, _>>()
-            .expect("server cert PEM");
-    let key = rustls_pki_types::PrivateKeyDer::from_pem_slice(server_key_pem.as_bytes())
-        .expect("server key PEM");
-    let mut roots = rustls::RootCertStore::empty();
-    for ca in rustls_pki_types::CertificateDer::pem_slice_iter(client_ca_pem.as_bytes()) {
-        roots
-            .add(ca.expect("client CA PEM"))
-            .expect("add client CA");
-    }
-    let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-        .build()
-        .expect("client verifier");
-    let config = Arc::new(
-        rustls::ServerConfig::builder()
-            .with_client_cert_verifier(verifier)
-            .with_single_cert(certs, key)
-            .expect("server config"),
-    );
+    busbar_core_connector::tls::engine::install();
+    let server = busbar_core_connector::test_support::ServerTls::from_pem(
+        server_cert_pem,
+        server_key_pem,
+        Some(client_ca_pem),
+        &[],
+    )
+    .expect("server config");
 
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind loopback");
     let addr = listener.local_addr().expect("local addr");
@@ -84,27 +70,24 @@ pub(super) fn spawn_mutual_tls(
     let recorder = Arc::clone(&seen);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { break };
-            let Ok(mut conn) = rustls::ServerConnection::new(Arc::clone(&config)) else {
+            let Ok(stream) = stream else { break };
+            let Ok(mut tls) = server.accept_std(stream) else {
                 continue;
             };
-            if let Err(e) = conn.complete_io(&mut stream) {
-                // The server's OWN reason for refusing, as rustls words it.
-                let reason = conn
-                    .process_new_packets()
-                    .err()
-                    .map_or_else(|| e.to_string(), |te| te.to_string());
-                recorder.lock().expect("record").push(Err(reason));
+            if let Some(reason) = tls.refusal() {
+                // The server's OWN reason for refusing, as the TLS stack words it.
+                recorder
+                    .lock()
+                    .expect("record")
+                    .push(Err(reason.to_string()));
                 continue;
             }
             recorder
                 .lock()
                 .expect("record")
-                .push(Ok(conn.peer_certificates().map_or(0, <[_]>::len)));
-            let mut tls = rustls::Stream::new(&mut conn, &mut stream);
+                .push(Ok(tls.peer_certs().len()));
             let mut reader = std::io::BufReader::new(&mut tls);
             let _ = read_request(&mut reader);
-            let mut tls = rustls::Stream::new(&mut conn, &mut stream);
             let _ = tls.write_all(&http_response(200, "OK", &[], &body));
             let _ = tls.flush();
         }

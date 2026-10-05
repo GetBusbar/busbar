@@ -233,7 +233,7 @@ pub(crate) struct ReqwestTransport {
     /// Additional trust anchors (DER), accumulated by [`Self::trusting_root`] (test-only) so the full set
     /// can be re-registered as one host-side [`busbar_kernel::plane_host::trust_anchor`] ref. EMPTY in
     /// production — the platform's roots are the roots.
-    extra_roots: Vec<rustls_pki_types::CertificateDer<'static>>,
+    extra_roots: Vec<Vec<u8>>,
     /// THE OPAQUE host-side trust-anchor ref (`0` = platform roots only). Registered ONCE, when the
     /// transport is built, and carried on every per-hop [`EgressDesc`](busbar_contract::abi::hot::EgressDesc);
     /// the host resolves it to the parsed roots — the certificate bytes never cross the seam.
@@ -280,14 +280,10 @@ impl ReqwestTransport {
 
     #[cfg(all(test, feature = "test-support"))]
     pub(crate) fn trusting_root(mut self, pem: &[u8]) -> Self {
-        {
-            use rustls_pki_types::pem::PemObject;
-            self.extra_roots.extend(
-                rustls_pki_types::CertificateDer::pem_slice_iter(pem)
-                    .collect::<Result<Vec<_>, _>>()
-                    .expect("a PEM certificate"),
-            );
-        }
+        self.extra_roots
+            .extend(busbar_core_connector::test_support::certs_from_pem(
+                std::str::from_utf8(pem).expect("a PEM certificate"),
+            ));
         // Re-register the FULL accumulated set (a fresh ref each time), so the desc's one ref resolves
         // to every root this transport was told to trust — the host owns the parsed certificates.
         self.trust_anchor_ref =

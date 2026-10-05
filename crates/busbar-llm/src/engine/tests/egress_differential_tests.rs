@@ -18,16 +18,16 @@
 //! redirect canary — are asserted equal across stacks; the pinned-only rows pin stack B's
 //! observable behavior so the engine that later replaces it has a recorded target to match.
 //!
-//! The fixtures live in `busbar_kernel::egress::fixtures` so the engine's own tests (in the
-//! substrate crate) and this harness drive the SAME servers.
+//! The fixtures live in `busbar_kernel::egress::fixtures` so the engine's own tests and this harness
+//! drive the SAME servers. The TLS rows (the known-leaf pin and SNI under the pin, the
+//! client-certificate fixture) need a REAL handshake, which is the connector's: TLS stays in the
+//! connector and only the composition root names it, so those rows are the root's
+//! `tests/engine_tls.rs`, over the same two stacks.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use busbar_kernel::egress::fixtures::{
-    ca_and_leaf, spawn_http, spawn_tls, CannedResponse, ClientAuth, RebindingResolver,
-    TlsServerSpec,
-};
+use busbar_kernel::egress::fixtures::{spawn_http, CannedResponse, RebindingResolver};
 use busbar_kernel::egress::{build_pinned_client, with_cause, RefuseSecondLookup};
 use bytes::Bytes;
 use http_body_util::BodyExt;
@@ -196,145 +196,6 @@ async fn redirects_surface_verbatim_and_are_followed_by_neither_stack() {
         fixture.request_lines().len(),
         2,
         "exactly one request per stack: the Location was never followed"
-    );
-}
-
-/// The known-leaf TLS row: the pinned stack (with the private CA as an extra root) completes the
-/// handshake WITH THE HOSTNAME — SNI and the certificate name check stay on `pinned.test` while
-/// the socket goes to the pinned loopback address — and the observed peer SPKI equals a pin
-/// computed DIRECTLY from the served leaf, outside the stack under test. The open-web stack
-/// (webpki trust only) refuses the same server at the connect class: the private CA is not in its
-/// trust story, and "refused" is the correct differential record for that posture.
-#[tokio::test]
-async fn known_leaf_tls_pin_and_sni_are_observed_and_webpki_refuses_the_private_ca() {
-    crate::testkit::install_test_seams();
-    let material = ca_and_leaf(&["pinned.test"]);
-    let fixture = spawn_tls(TlsServerSpec {
-        cert_chain_pem: material.leaf_pem.clone(),
-        key_pem: material.leaf_key_pem.clone(),
-        client_auth: ClientAuth::None,
-        response: CannedResponse::ok("over tls"),
-        max_requests_per_connection: 4,
-    });
-    let root = reqwest::Certificate::from_pem(material.ca_pem.as_bytes()).expect("ca root");
-
-    let (b, leaf_pin) = stack_b(
-        "pinned.test",
-        fixture.addr,
-        &format!("https://pinned.test:{}/v1/x", fixture.addr.port()),
-        "{}",
-        None,
-        std::slice::from_ref(&root),
-    )
-    .await;
-    assert_eq!(
-        b,
-        Outcome::Answered {
-            status: 200,
-            location: None,
-            body: "over tls".to_string()
-        }
-    );
-    let expected_pin =
-        busbar_kernel::plane_host::spki::pin(&material.leaf_der).expect("fixture leaf");
-    assert_eq!(
-        leaf_pin.as_deref(),
-        Some(expected_pin.as_str()),
-        "the observed leaf pin must equal the pin of the leaf the fixture served"
-    );
-
-    // Without the extra root the same posture refuses — the "accepted only with the root" arm.
-    let (without_root, _) = stack_b(
-        "pinned.test",
-        fixture.addr,
-        &format!("https://pinned.test:{}/v1/x", fixture.addr.port()),
-        "{}",
-        None,
-        &[],
-    )
-    .await;
-    assert_eq!(without_root, Outcome::RefusedAtConnect);
-
-    // Stack A, webpki-only trust: the private CA is refused at the same class.
-    let a = stack_a(&format!("https://{}/v1/x", fixture.addr), "{}").await;
-    assert_eq!(a, Outcome::RefusedAtConnect);
-
-    let records = fixture.records();
-    let succeeded: Vec<_> = records.iter().filter(|r| r.handshake_ok).collect();
-    assert_eq!(succeeded.len(), 1, "only the rooted pinned hop completed");
-    assert_eq!(
-        succeeded[0].sni.as_deref(),
-        Some("pinned.test"),
-        "the SNI stayed on the hostname while the socket went to the pinned address"
-    );
-    assert_eq!(
-        succeeded[0].client_cert, None,
-        "no identity was configured, none may be presented"
-    );
-    // The refusing connections still recorded what their ClientHello said.
-    assert_eq!(records.len(), 3, "every connection was recorded");
-}
-
-/// The mTLS row: a server that REQUIRES a client certificate accepts the hop only when the client
-/// carries the identity, and the certificate the server records is byte-identical to the identity's
-/// leaf. Without the identity the handshake is refused by the peer — connect class, presenting
-/// nothing rather than forging something.
-#[tokio::test]
-async fn client_cert_fixture_accepts_only_the_carried_identity() {
-    crate::testkit::install_test_seams();
-    let server = ca_and_leaf(&["client-cert.test"]);
-    let client = ca_and_leaf(&["client.busbar.test"]);
-    let fixture = spawn_tls(TlsServerSpec {
-        cert_chain_pem: server.leaf_pem.clone(),
-        key_pem: server.leaf_key_pem.clone(),
-        client_auth: ClientAuth::Required {
-            ca_pem: client.ca_pem.clone(),
-        },
-        response: CannedResponse::ok("mutually authenticated"),
-        max_requests_per_connection: 4,
-    });
-    let root = reqwest::Certificate::from_pem(server.ca_pem.as_bytes()).expect("ca root");
-    let identity_pem = format!("{}{}", client.leaf_pem, client.leaf_key_pem);
-    let identity = reqwest::Identity::from_pem(identity_pem.as_bytes()).expect("client identity");
-
-    let (with_identity, _) = stack_b(
-        "client-cert.test",
-        fixture.addr,
-        &format!("https://client-cert.test:{}/v1/x", fixture.addr.port()),
-        "{}",
-        Some(identity),
-        std::slice::from_ref(&root),
-    )
-    .await;
-    assert_eq!(
-        with_identity,
-        Outcome::Answered {
-            status: 200,
-            location: None,
-            body: "mutually authenticated".to_string()
-        }
-    );
-
-    let (without_identity, _) = stack_b(
-        "client-cert.test",
-        fixture.addr,
-        &format!("https://client-cert.test:{}/v1/x", fixture.addr.port()),
-        "{}",
-        None,
-        std::slice::from_ref(&root),
-    )
-    .await;
-    // TLS 1.3: the server's `CertificateRequired` alert arrives after the client-side handshake
-    // completed, so the reference stack reports the refusal on the exchange, not the connect.
-    assert_eq!(without_identity, Outcome::RefusedInFlight);
-
-    let records = fixture.records();
-    let accepted: Vec<_> = records.iter().filter(|r| r.handshake_ok).collect();
-    assert_eq!(accepted.len(), 1);
-    assert_eq!(
-        accepted[0].client_cert.as_deref(),
-        Some(client.leaf_der.as_slice()),
-        "the server must have seen exactly the identity's leaf certificate"
     );
 }
 

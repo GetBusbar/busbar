@@ -49,6 +49,7 @@
 use std::sync::Arc;
 
 pub mod client;
+pub mod engine;
 
 use busbar_contract::transport::wire::{ConnectionSecurity, RawIo, SecuredIoFut};
 use busbar_kernel::config::secret::SecretResolver;
@@ -64,13 +65,33 @@ use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 /// Install ring's [`rustls::crypto::CryptoProvider`] as the process default. Must run before
 /// [`build_server_config`].
 ///
-/// A thin re-export of `busbar_kernel::tls::install_crypto_provider` — that function stays in
-/// `busbar-kernel` because it is a process-wide utility several subsystems call (the egress
-/// engine's client-side TLS, `hyper-rustls`, test setup), not something exclusive to an inbound
-/// listener's connection-security prep. This crate names it too so a caller of THIS crate's public
-/// API never has to reach into `busbar-kernel` directly for it.
+/// Idempotent: a "provider already installed" error is expected and ignored, because all we require
+/// is that *a ring provider* is the process default before any `ServerConfig` is built. Must run
+/// before any other subsystem in this process builds a rustls config on the ambient provider, which
+/// is why several call sites (the outbound client config, test setup) call this directly rather
+/// than assuming the inbound listener already has. Moved here from `busbar-kernel`'s `tls` module
+/// with the rest of the TLS code (TLS stays in the connector).
 pub fn install_crypto_provider() {
-    busbar_kernel::tls::install_crypto_provider();
+    // Err(_) => some other code path already installed one. Since busbar only ever links ring, the
+    // installed backend is ring too, so there is nothing to fix and nothing to warn about.
+    let _ = ring().install_default();
+}
+
+/// Ring's crypto backend, the one backend busbar links.
+pub(crate) fn ring() -> rustls::crypto::CryptoProvider {
+    rustls::crypto::ring::default_provider()
+}
+
+/// The process's crypto backend, installed first ([`install_crypto_provider`]): the default the
+/// process holds (ring, the only one busbar links), or ring itself where none could be read. A
+/// verifier that checks only a handshake's signature reads its signature algorithms here, so it
+/// verifies with the same backend every config the process builds uses.
+#[must_use]
+pub fn installed_crypto() -> Arc<rustls::crypto::CryptoProvider> {
+    let _ = ring().install_default();
+    rustls::crypto::CryptoProvider::get_default()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(ring()))
 }
 
 /// Parse the PEM certificate chain (leaf first). Errors name the secret source; cert bytes are
@@ -305,7 +326,8 @@ pub fn prepare(
             label: label.to_string(),
         }),
         Some(tls) => {
-            install_crypto_provider();
+            // Ring installed as the process's backend before the `ServerConfig` is built.
+            let _ = installed_crypto();
             let config = build_server_config(tls, resolver).map_err(|reason| {
                 FailClosed::MaterialUnavailable {
                     label: label.to_string(),

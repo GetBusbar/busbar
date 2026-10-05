@@ -143,10 +143,7 @@ fn wants_client_cert(
 /// honoured for an operator-infrastructure need only (`Connector::upgrade_secure`); never a default.
 #[must_use]
 pub fn unverified_client_config() -> rustls::ClientConfig {
-    install_crypto_provider();
-    let provider = rustls::crypto::CryptoProvider::get_default()
-        .cloned()
-        .unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()));
+    let crypto = crate::tls::installed_crypto();
     rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(AcceptsAnyCertificate(provider)))

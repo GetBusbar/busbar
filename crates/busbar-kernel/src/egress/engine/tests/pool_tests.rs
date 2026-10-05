@@ -26,7 +26,7 @@ use super::client::PoolConfig;
 use super::pool;
 use super::resolve::ResolveNames;
 use super::*;
-use crate::egress::fixtures::{ca_and_leaf, certs_from_pem, spawn_http, CannedResponse};
+use crate::egress::fixtures::{spawn_http, CannedResponse};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -106,42 +106,33 @@ pub(super) fn plain_connector(
     http.enforce_http(false);
     http.set_nodelay(true);
     let http = tunnel::TunnelConnector::new(http, None, dial_bound);
-    let tls = rustls_client_config(&EngineSpec::pooled_webpki(4, 300, false, false)).expect("tls");
-    let https = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_tls_config(tls)
-        .https_or_http()
-        .enable_http1()
-        .wrap_connector(http);
+    let https = https::HttpsConnector::new(
+        http,
+        client_tls(&EngineSpec::pooled_webpki(4, 300, false, false), &[]).expect("tls"),
+    );
     KeyPinObserve::new(ConnectDeadline::new(https, deadline), false)
 }
 
-/// The same shape over a fixture CA with the FULL ALPN offer (h2 then h1) — the evidence-learning
-/// rows.
+/// The same shape over the TLS test double with the FULL ALPN offer (h2 then h1) — the
+/// evidence-learning rows (the far end agrees by `egress::fixtures::DoublePeer::alpn`).
 pub(super) fn tls_connector_all_versions(
-    root_pem: &str,
     resolver: EgressResolver,
     dial_bound: usize,
     deadline: Duration,
 ) -> EngineConnector {
-    let mut roots = rustls::RootCertStore::empty();
-    for der in certs_from_pem(root_pem) {
-        roots.add(der).expect("fixture root");
-    }
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let tls = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .expect("ring provider supports the default TLS protocol versions")
-        .with_root_certificates(roots)
-        .with_no_client_auth();
     let mut http = hyper_util::client::legacy::connect::HttpConnector::new_with_resolver(resolver);
     http.enforce_http(false);
     http.set_nodelay(true);
     let http = tunnel::TunnelConnector::new(http, None, dial_bound);
-    let https = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_tls_config(tls)
-        .https_or_http()
-        .enable_all_versions()
-        .wrap_connector(http);
+    let client = crate::egress::fixtures::TlsDouble::default()
+        .layer()
+        .client(&crate::secure::ClientTlsSpec {
+            extra_roots: None,
+            identity: None,
+            alpn: &[b"h2", b"http/1.1"],
+        })
+        .expect("the double builds");
+    let https = https::HttpsConnector::new(http, Some(client));
     KeyPinObserve::new(ConnectDeadline::new(https, deadline), false)
 }
 
@@ -725,24 +716,23 @@ async fn connect_deadline_expiry_classifies_err_net_timeout_via_owned_pool() {
     );
 }
 
-/// Dial-error cause QUALITY is legacy parity: a TLS trust refusal renders the real rustls cause
-/// through both clients — never a vague \"channel closed\" (the h1 err_rx correlation).
+/// Dial-error cause QUALITY is legacy parity: a refused handshake renders the TLS layer's own cause
+/// through both clients — never a vague "channel closed" (the h1 err_rx correlation). The far end
+/// refuses with the words the real wrap's trust refusal carries; that the real wrap's refusal reads
+/// so through this engine is the root's `tests/engine_tls.rs`.
 #[tokio::test]
 async fn tls_refused_dial_renders_the_real_cause_on_both_clients() {
-    use crate::egress::fixtures::{spawn_tls, ClientAuth, TlsServerSpec};
-    let server_material = ca_and_leaf(&["refused.test"]);
-    let other_ca = ca_and_leaf(&["refused.test"]);
-    let fixture = spawn_tls(TlsServerSpec {
-        cert_chain_pem: server_material.leaf_pem.clone(),
-        key_pem: server_material.leaf_key_pem.clone(),
-        client_auth: ClientAuth::None,
-        response: CannedResponse::ok("never"),
-        max_requests_per_connection: 4,
-    });
-    // Trust ONLY the unrelated CA, so the handshake refuses on trust, deterministically.
+    use crate::egress::fixtures::{spawn_double, DoublePeer};
+    let fixture = spawn_double(
+        DoublePeer {
+            refuse: Some("invalid peer certificate: UnknownIssuer".to_string()),
+            ..DoublePeer::default()
+        },
+        CannedResponse::ok("never"),
+        4,
+    );
     let connector = |bound| {
         tls_connector_all_versions(
-            &other_ca.ca_pem,
             EgressResolver::Pinned {
                 host: Arc::from("refused.test"),
                 addr: fixture.addr.ip(),
@@ -772,7 +762,7 @@ async fn tls_refused_dial_renders_the_real_cause_on_both_clients() {
     for (who, cause) in [("owned", &owned_cause), ("legacy", &legacy_cause)] {
         assert!(
             cause.contains("invalid peer certificate"),
-            "{who} must surface the real rustls refusal, got: {cause}"
+            "{who} must surface the TLS layer's refusal, got: {cause}"
         );
         assert!(
             !cause.to_ascii_lowercase().contains("channel closed"),

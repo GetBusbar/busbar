@@ -24,7 +24,6 @@
 //! the resolver, then the transport with the address that lookup produced — and asserts on what the
 //! real client did with them.
 
-use crate::testkit::engine_boot::engine;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -155,26 +154,13 @@ type Requests = Arc<Mutex<Vec<String>>>;
 /// server name lives, and is precisely what these tests need to read.
 pub(crate) type ObservedSni = Arc<Mutex<Vec<Option<String>>>>;
 
-/// A real rustls server on an ephemeral loopback port. Records the SNI of every connection and, if
+/// A real TLS server (the connector's test far end) on an ephemeral loopback port. Records the SNI of every connection and, if
 /// the handshake completes, answers `body`.
 pub(crate) fn spawn_tls(cert_pem: &str, key_pem: &str, body: String) -> (SocketAddr, ObservedSni) {
-    engine().install_crypto_provider();
-    let certs: Vec<rustls_pki_types::CertificateDer<'static>> = {
-        use rustls_pki_types::pem::PemObject;
-        rustls_pki_types::CertificateDer::pem_slice_iter(cert_pem.as_bytes())
-            .collect::<Result<Vec<_>, _>>()
-            .expect("server cert PEM")
-    };
-    let key = {
-        use rustls_pki_types::pem::PemObject;
-        rustls_pki_types::PrivateKeyDer::from_pem_slice(key_pem.as_bytes()).expect("server key PEM")
-    };
-    let config = Arc::new(
-        rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certs, key)
-            .expect("server config"),
-    );
+    busbar_core_connector::tls::engine::install();
+    let server =
+        busbar_core_connector::test_support::ServerTls::from_pem(cert_pem, key_pem, None, &[])
+            .expect("server config");
 
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind loopback");
     let addr = listener.local_addr().expect("local addr");
@@ -182,27 +168,21 @@ pub(crate) fn spawn_tls(cert_pem: &str, key_pem: &str, body: String) -> (SocketA
     let recorder = Arc::clone(&sni);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { break };
-            let Ok(mut conn) = rustls::ServerConnection::new(Arc::clone(&config)) else {
-                continue;
-            };
+            let Ok(stream) = stream else { break };
             // Drive the handshake. It may FAIL (an untrusted certificate is rejected by the peer);
             // the `ClientHello` has already been read either way, which is what is being observed.
-            let handshake = conn.complete_io(&mut stream);
-            recorder
-                .lock()
-                .expect("record")
-                .push(conn.server_name().map(str::to_string));
-            if handshake.is_err() {
+            let Ok(mut tls) = server.accept_std(stream) else {
+                continue;
+            };
+            recorder.lock().expect("record").push(tls.sni());
+            if !tls.handshake_ok() {
                 continue;
             }
-            let mut tls = rustls::Stream::new(&mut conn, &mut stream);
             let mut buf = [0u8; 4096];
             let _ = tls.read(&mut buf);
             let _ = tls.write_all(&http_response(200, "OK", &[], &body));
             let _ = tls.flush();
-            conn.send_close_notify();
-            let _ = conn.complete_io(&mut stream);
+            tls.close();
         }
     });
     (addr, sni)
