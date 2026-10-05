@@ -86,12 +86,18 @@ pub(crate) struct TokenRequest {
 }
 
 impl TokenRequest {
-    /// A form POST of `body` to `target`, over the need `need`.
+    /// A form POST of `body` to `target`, over the need `need`. Its fields are 1.5.5's, in 1.5.5's
+    /// order: the form's `content-type`, then reqwest's client-default `accept: */*`, which the
+    /// request carries itself (the http door writes no field the caller did not: transport
+    /// neutrality, SEAM-4i).
     pub(crate) fn form(need: u32, target: String, body: String) -> Self {
         Self {
             need,
             target,
-            fields: vec![("content-type", "application/x-www-form-urlencoded")],
+            fields: vec![
+                ("content-type", "application/x-www-form-urlencoded"),
+                ("accept", "*/*"),
+            ],
             body: Redacted::new(body),
         }
     }
