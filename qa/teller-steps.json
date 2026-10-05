@@ -466,7 +466,7 @@
           "state": "proven",
           "leg": "root-voice",
           "test": "crates/busbar/src/root/tests/serve_door.rs::a_streaming_mint_is_served_through_the_door_under_the_providers_credential",
-          "note": "on the streaming door's served leg: only a token bound to the door's audience is admitted to the mint; the same key's plain data-plane token is refused before any dial or charge"
+          "note": "on the streaming door's served leg: the mint is admitted for the key its token resolves, and the same request with no credential is refused before any dial or charge"
         }
       },
       "verify": {

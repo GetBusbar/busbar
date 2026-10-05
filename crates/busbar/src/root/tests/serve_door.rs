@@ -16,7 +16,7 @@
 //!
 //! THE STREAMING DOOR, the same way (the `root-voice` leg of qa/capability-equality.json, ARCHITECT
 //! 2026-10-05 Q1): the browser's ephemeral-secret mint, claimed by the streaming plane's door, served
-//! end to end — an audience-bound caller, the door's DIRECT route to the top-level catalog model
+//! end to end — a keyed caller, the door's DIRECT route to the top-level catalog model
 //! `streams.session.model` names, the provider's own credential presented by the auth plugin, the
 //! caller's spend posted against the key that presented it.
 
@@ -542,10 +542,8 @@ struct Streaming {
     gov: Arc<GovState>,
     app: Arc<busbar_kernel::state::App>,
     key: busbar_contract::records::VirtualKey,
-    /// The key's plain data-plane token.
+    /// The key's data-plane token.
     plain: String,
-    /// The key's token bound to the door's audience, as the browser-facing mint is reached with.
-    bound: String,
     money: Arc<PlaneMoney>,
     post: Arc<NodeEndPost>,
     book: crate::root::durability::NodeBook,
@@ -559,7 +557,6 @@ struct Streaming {
 /// the composition itself, and its claims mounted on the data router.
 #[cfg(feature = "plane-streaming")]
 async fn streaming(instance: &'static str, budget: Option<u64>) -> Streaming {
-    use busbar_kernel::governance::signing::TokenVerifier;
     use busbar_plane_streaming::door::{door as streaming_door, NAME as PLANE};
 
     let published = Published(instance);
@@ -635,14 +632,9 @@ async fn streaming(instance: &'static str, budget: Option<u64>) -> Streaming {
         }
     };
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
-    let verifier = TokenVerifier::single(signer.kid(), signer.verifying_key());
     let gov = Arc::new(
-        GovState::new_with_signer(
-            Arc::new(MemoryStore::new()),
-            None,
-            Some(TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID)),
-        )
-        .expect("governance"),
+        GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
+            .expect("governance"),
     );
     let (key, plain) = gov
         .mint_signed(
@@ -655,17 +647,6 @@ async fn streaming(instance: &'static str, budget: Option<u64>) -> Streaming {
             1_700_000_000,
         )
         .expect("mint");
-    let generation = verifier
-        .verify(plain.expose_secret(), 1_700_000_000, None)
-        .expect("the plain token's claims")
-        .generation;
-    let bound = signer.mint_for_audience(
-        &key.id,
-        4_000_000_000,
-        generation.as_deref(),
-        &format!("{PUBLIC}/v1/realtime"),
-        None,
-    );
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
     let node = Arc::new(Node::new());
     let book = crate::root::durability::node_book_over(Box::new(|| CARD.pin()));
@@ -750,7 +731,6 @@ async fn streaming(instance: &'static str, budget: Option<u64>) -> Streaming {
         app,
         key,
         plain: plain.expose_secret().clone(),
-        bound,
         money,
         post,
         book,
@@ -777,32 +757,32 @@ impl Streaming {
     }
 }
 
-/// THE STREAMING DOOR'S MINT, SERVED (the `root-voice` leg, ARCHITECT 2026-10-05 Q1): an
-/// audience-bound keyed caller's `POST /v1/realtime/client_secrets` is one unit the door carries
-/// (ARRIVAL), admitted only for a token bound to the door's audience (AUTHENTICATE), dialled to the
-/// destination the guard judged (VERIFY) on the DIRECT route to the catalog model
-/// `streams.session.model` names (ROUTE), sent WITH THE PROVIDER'S OWN CREDENTIAL and never the
-/// caller's token (EGRESS-AUTH), charged to the key that presented it (METER, GOVERNANCE-BUDGET),
-/// and closed once with its one line on the node's book (AUDIT, EXIT).
+/// THE STREAMING DOOR'S MINT, SERVED (the `root-voice` leg, ARCHITECT 2026-10-05 Q1): a keyed
+/// caller's `POST /v1/realtime/client_secrets` is one unit the door carries (ARRIVAL), admitted for
+/// the key its token resolves (AUTHENTICATE), dialled to the destination the guard judged (VERIFY) on
+/// the DIRECT route to the catalog model `streams.session.model` names (ROUTE), sent WITH THE
+/// PROVIDER'S OWN CREDENTIAL and never the caller's token (EGRESS-AUTH), charged to the key that
+/// presented it (METER, GOVERNANCE-BUDGET), and closed once with its one line on the node's book
+/// (AUDIT, EXIT). (The door's audience binding is the deployment's mount table's, judged end to end
+/// by the `streams|mint|wrong-audience` oracle cell.)
 ///
-/// RED ARM: the same caller presenting its PLAIN data-plane token (bound to no audience) is refused
-/// before anything is dialled or charged.
+/// RED ARM: the same request with no credential is refused before anything is dialled or charged.
 #[cfg(feature = "plane-streaming")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_streaming_mint_is_served_through_the_door_under_the_providers_credential() {
     let _one = PUBLISHING.lock().await;
     let mut s = streaming("serve-door-streaming", None).await;
 
-    let refused = send_body(&s.router, MINT, Some(&s.plain), "{}").await;
+    let refused = send_body(&s.router, MINT, None, "{}").await;
     assert_eq!(
         refused.status().as_u16(),
         u16::try_from(refusal_status(ReasonCode::Unauthenticated)).expect("a status"),
-        "a token bound to no audience is refused at the streaming door"
+        "an unkeyed caller is refused at the streaming door"
     );
     assert!(s.heard.try_recv().is_err(), "nothing was dialled for it");
     assert_eq!(s.requests(), 0, "nor charged");
 
-    let response = send_body(&s.router, MINT, Some(&s.bound), "{}").await;
+    let response = send_body(&s.router, MINT, Some(&s.plain), "{}").await;
     assert_eq!(response.status(), StatusCode::OK, "served through the door");
     let body = axum::body::to_bytes(response.into_body(), 1 << 16)
         .await
@@ -822,8 +802,8 @@ async fn a_streaming_mint_is_served_through_the_door_under_the_providers_credent
         "the provider's own credential: {head}"
     );
     assert!(
-        !head.contains(&s.bound) && !head.contains(&s.plain),
-        "no caller token reaches the provider: {head}"
+        !head.contains(&s.plain),
+        "the caller's token never reaches the provider: {head}"
     );
     assert!(
         head.contains(r#""model":"m-cap""#),
@@ -849,7 +829,7 @@ async fn a_streaming_mint_is_served_through_the_door_under_the_providers_credent
 async fn a_spent_key_is_refused_at_the_streaming_door_before_any_dial() {
     let _one = PUBLISHING.lock().await;
     let mut s = streaming("serve-door-streaming-spent", Some(0)).await;
-    let response = send_body(&s.router, MINT, Some(&s.bound), "{}").await;
+    let response = send_body(&s.router, MINT, Some(&s.plain), "{}").await;
     assert_eq!(
         response.status().as_u16(),
         429,
