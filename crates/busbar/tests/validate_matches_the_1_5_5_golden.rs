@@ -45,7 +45,10 @@ fn validate(dir: &Path, case: &str) -> String {
     std::fs::write(dir.join("providers.yaml"), "").unwrap();
     std::fs::write(
         dir.join("config.yaml"),
-        format!("listen: \"127.0.0.1:0\"\nproviders: {{}}\nmodels: {{}}\nexport:\n{block}"),
+        // The store 1.5.5 ran this case on, named (Q-STORE = (B)): the golden's lines are unchanged.
+        format!(
+            "listen: \"127.0.0.1:0\"\nstore: {{module: memory}}\nproviders: {{}}\nmodels: {{}}\nexport:\n{block}"
+        ),
     )
     .unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
