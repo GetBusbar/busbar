@@ -53,6 +53,23 @@ fn governed_with(
     keys_chain: bool,
     budget: Option<u64>,
 ) -> Option<Governed> {
+    governed_over(instance, keys_chain, budget, None)
+}
+
+/// The node a composition's units are driven on, and the book it is already bound to.
+type BoundNode = (
+    Arc<Node>,
+    Arc<std::sync::Mutex<crate::root::durability::Durability>>,
+);
+
+/// [`governed_with`], its units driven on `on` (a node already bound to its book), or on a node of
+/// its own bound to a fresh memory-buffered book.
+fn governed_over(
+    instance: &'static str,
+    keys_chain: bool,
+    budget: Option<u64>,
+    on: Option<BoundNode>,
+) -> Option<Governed> {
     // The dispatcher serves its instances the composition's host services (`unit.nest` among
     // them), as the boot's does.
     let services = composed_services();
@@ -113,16 +130,19 @@ fn governed_with(
         .expect("mint");
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
     // The node's one book, as the boot binds it: every unit's one line and its audit record.
-    let book = Arc::new(std::sync::Mutex::new(
-        crate::root::durability::build(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
-            Box::new(busbar_kernel_wal::NullShipper::new()),
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-        )
-        .expect("a memory-buffered journal opens"),
-    ));
-    let node = Arc::new(Node::new());
-    node.bind_book(Arc::clone(&book));
+    let (node, book) = on.unwrap_or_else(|| {
+        let book = Arc::new(std::sync::Mutex::new(
+            crate::root::durability::build(
+                &crate::root::durability::DurabilityConfig { data_dir: None },
+                Box::new(busbar_kernel_wal::NullShipper::new()),
+                Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            )
+            .expect("a memory-buffered journal opens"),
+        ));
+        let node = Arc::new(Node::new());
+        node.bind_book(Arc::clone(&book));
+        (node, book)
+    });
     let post = Arc::new(NodeEndPost::new(node));
     let money = Arc::new(PlaneMoney::new(
         Arc::clone(&gov),
@@ -373,6 +393,137 @@ async fn a_nest_past_the_depth_cap_is_refused() {
         "every unit but the refused one"
     );
     assert_eq!(g.money.open_units(), 0);
+}
+
+/// The child arm of [`the_nodes_boot_hooks_price_and_book_a_door_unit_in_every_build`]: set in the
+/// fresh process that runs it, so the process-wide card holder and node it boots are its own.
+const NODE_HOOKS_ARM: &str = "BUSBAR_TEST_NODE_HOOKS_ARM";
+
+/// THE NODE'S BOOT HOOKS RUN IN EVERY BUILD (ARCHITECT Q1 (3)), so a door unit's money reaches the
+/// durability book under the card in force — in a door-only build too, where no plane rides the
+/// `node` axis. Run in a fresh process of this test binary ([`node_boot_hooks_arm`]): the arm boots
+/// the process-wide card holder and node, which no other test in this binary may share.
+#[test]
+fn the_nodes_boot_hooks_price_and_book_a_door_unit_in_every_build() {
+    if std::env::var_os(NODE_HOOKS_ARM).is_some() {
+        return;
+    }
+    let run = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["--exact", "root::serve::money_tests::node_boot_hooks_arm"])
+        .args(["--test-threads", "1", "--nocapture"])
+        .env(NODE_HOOKS_ARM, "1")
+        .output()
+        .expect("the test binary runs");
+    let text =
+        String::from_utf8_lossy(&run.stdout).into_owned() + &String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "the node-hooks arm failed:\n{text}");
+    assert!(
+        text.contains("1 passed"),
+        "the node-hooks arm ran nothing:\n{text}"
+    );
+}
+
+/// The arm: the generated root-unit table carries the node's unit; its configuration step and its
+/// book step run as `main.rs` runs them (every unit's, in table order) around the real app build and
+/// the real boot book; then a keyed door unit of the test plane, dropped in, is driven on the
+/// process's one node. Its line and its audit record are on that book, and the record names the
+/// card the unit was pinned to at its door: a second apply's entry, so not the opening's `0`.
+#[tokio::test]
+async fn node_boot_hooks_arm() {
+    if std::env::var_os(NODE_HOOKS_ARM).is_none() {
+        return;
+    }
+    // THE TABLE: the node's root unit is keyed to the node itself, never to a plane feature.
+    assert!(
+        include_str!(concat!(env!("OUT_DIR"), "/linked.rs"))
+            .contains("&crate::root::plane_node::ROOT_UNIT,"),
+        "this build's generated ROOT_UNITS does not carry the node's root unit"
+    );
+    // THE CONFIGURATION STEP, before the first app build (main.rs), then the boot build: the card
+    // holder's opening entry.
+    busbar_kernel::metrics::init();
+    let cfg = || {
+        busbar_kernel::test_support::cfg_with_provider_api_key(
+            busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_NODE_HOOKS"),
+        )
+    };
+    let boot = cfg();
+    for step in crate::ROOT_UNITS.iter().filter_map(|u| u.on_config) {
+        step(&boot.limits);
+    }
+    let app = busbar_kernel::test_support::build_once(boot, None).expect("the boot app builds");
+    assert!(
+        crate::root::kernel::ROOT_CARD.pin().is_some(),
+        "the boot build's rates never reached the card holder: its repricer is not installed"
+    );
+    // THE BOOK STEP, over the real boot book.
+    let book = crate::root::boot::book(&app).expect("the boot book opens");
+    let ctx = crate::root::linked::BookCtx {
+        book: &book,
+        app: &app,
+    };
+    for step in crate::ROOT_UNITS.iter().filter_map(|u| u.on_book) {
+        step(&ctx);
+    }
+    // A SECOND APPLY: the card in force moves past the opening entry.
+    let mut applied = cfg();
+    applied.per_request_fee = 3;
+    let _applied =
+        busbar_kernel::test_support::build_once(applied, Some(&app)).expect("the apply builds");
+    let pinned = crate::root::kernel::ROOT_CARD
+        .pin()
+        .expect("the card holder has entries")
+        .seq()
+        .get();
+    assert_ne!(pinned, 0, "the apply appended no entry to the card history");
+
+    // THE DOOR UNIT, on the process's one node.
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed_over(
+        "serve-money-node-hooks",
+        true,
+        None,
+        Some((
+            crate::root::plane_node::node(),
+            Arc::clone(&book.durability),
+        )),
+    ) else {
+        // Under CI the cdylib's absence is already a failure (`planes_tests::bound`).
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let lines = || {
+        book.durability
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .journal
+            .replay()
+            .expect("reads back")
+            .expect("verifies")
+            .len()
+    };
+    let before = lines();
+    let (status, body) = g.post("/call/direct:m", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (503, "refused:503:breaker_open"),
+        "admitted, then the walk is exhausted"
+    );
+    assert_eq!(g.requests(), 1, "its request was charged at admission");
+    assert_eq!(g.post.open_units(), 0, "its node facts closed at its end");
+    assert!(
+        lines() > before,
+        "the door unit settled nothing onto the durability book"
+    );
+    let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
+    let record = durability
+        .audit_records
+        .last()
+        .expect("the door unit's audit record is on the book");
+    assert_eq!(
+        record.usage.rate_card_version, pinned,
+        "the door unit was not pinned to the card in force at its door"
+    );
 }
 
 /// A BUILD THAT LINKS NO PLANE SERVES A DROPPED-IN DOOR PLANE (ARCHITECT Q1 (2), #2: a dropped-in

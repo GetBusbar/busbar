@@ -227,9 +227,9 @@ default = ["auth-admin-tokens", "auth-header", "hooks-ranking", "proto-llm", "pl
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
 # a second, finer answer to a question the owner ruling already settled.
-# ONE switch for the plane and the node its units run through (`src/root/plane_node.rs`): the plane's
-# `linked-axes` row carries the `node` axis, so linking it sets the generated `linked_axis_node` cfg
-# the node compiles under, and its `root-units` row puts the node's `ROOT_UNIT` in the boot order. The
+# ONE switch for the plane (the node its units run through, `src/root/plane_node.rs`, compiles in every
+# build and its `root-units` row is keyed to the node itself, ARCHITECT Q1): the plane's `linked-axes`
+# row carries the `node` axis, so linking it hands the plane's arrivals the node. The
 # plane's arrivals hand every unit to the node and there is no other path an arrival can take
 # (ARCHITECT R7(b): the build that served them through the shell instead is dropped). There is no
 # second, per-node switch (spec #17: one feature per plane, no `root-*`; ARCHITECT K2i residue).
@@ -479,8 +479,8 @@ auth-admin-tokens = "admin-tokens"
 auth-header = "busbar-auth-header"
 
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
-# compiled when its row's cargo feature is on (the node under the `linked_axis_node` cfg that
-# feature's `linked-axes` row sets) and exporting a `ROOT_UNIT` (`root::linked::RootUnit`). Order is
+# compiled when its row's cargo feature is on (the node, keyed `node`, in every build) and exporting
+# a `ROOT_UNIT` (`root::linked::RootUnit`). Order is
 # the order their boot steps run in: seals, then the configuration step, then the book step.
 # THE SERVED-LEG WITNESSES the root's rider tests run: cargo feature -> the plane crate whose
 # `testkit::SERVED` table they drive through the kernel-loop runner `gauntlet_install::install()`
@@ -492,7 +492,9 @@ plane-streaming = "busbar-voice"
 
 [package.metadata.busbar.root-units]
 plane-decisions = "plane_decisions"
-proto-llm = "plane_node"
+# The node's own row, keyed to the node (not a feature): it compiles in every build, so its card
+# repricer and book binding run in every build (ARCHITECT Q1).
+node = "plane_node"
 
 [dev-dependencies]
 # Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
