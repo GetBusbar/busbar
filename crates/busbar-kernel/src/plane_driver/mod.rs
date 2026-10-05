@@ -351,6 +351,74 @@ impl PlaneDriver {
         self
     }
 
+    /// ONE AUDIT ROW a plane wrote (`RECORD_AUDIT`): its outcome code (`kind`), its action (`key`)
+    /// and resource (`value`), written on the audit sink under `principal` (anonymous when none
+    /// was verified). `Err` = a plane fault: an unknown outcome, an empty action, or words that are
+    /// not UTF-8; nothing is written.
+    pub(crate) fn audit_row(
+        &self,
+        outcome: u32,
+        key: &[u8],
+        value: &[u8],
+        principal: Option<&PrincipalId>,
+    ) -> Result<(), ()> {
+        use busbar_contract::abi::plane::{AUDIT_APPLIED, AUDIT_REJECTED};
+        let outcome = match outcome {
+            AUDIT_APPLIED => busbar_contract::vocab::OUTCOME_APPLIED,
+            AUDIT_REJECTED => busbar_contract::vocab::OUTCOME_REJECTED,
+            _ => return Err(()),
+        };
+        let action = std::str::from_utf8(key).map_err(|_| ())?;
+        let resource = std::str::from_utf8(value).map_err(|_| ())?;
+        if action.is_empty() {
+            return Err(());
+        }
+        let anonymous = PrincipalId::anonymous();
+        let principal = principal.unwrap_or(&anonymous);
+        self.audit
+            .record(action, resource, outcome, principal.as_str());
+        Ok(())
+    }
+
+    /// THE RECORD WRITES OF AN ANSWER THAT ENDS NOTHING FURTHER (a refusal's, SEAM-L(o)): each
+    /// audit row folded as [`Self::audit_row`], each put handed to the record write path, its
+    /// acknowledgement not awaited (the refusal has nothing left to fail). A write the plane got
+    /// wrong, or a put with no record path, is logged and dropped: the caller's answer stands.
+    fn fold_records(
+        &self,
+        writes: &[busbar_contract::abi::plane::RecordWrite],
+        arena: &[u8],
+        principal: Option<&PrincipalId>,
+    ) {
+        use busbar_contract::abi::plane::{RECORD_AUDIT, RECORD_PUT};
+        let bytes = |s: Span| {
+            let start = s.offset as usize;
+            arena
+                .get(start..start.saturating_add(s.len as usize))
+                .unwrap_or_default()
+        };
+        for w in writes {
+            let written = match w.op {
+                RECORD_AUDIT => self.audit_row(w.kind, bytes(w.key), bytes(w.value), principal),
+                RECORD_PUT => self.records.as_ref().map_or(Err(()), |(services, caller)| {
+                    let kind = services.record_kind(caller, w.kind).ok_or(())?;
+                    let value = busbar_contract::kinds::RecordBytes::new(bytes(w.value).to_vec())
+                        .map_err(|_| ())?;
+                    services
+                        .record_write(caller, kind.as_str(), bytes(w.key), value, Box::new(|_| {}))
+                        .map_err(|_| ())
+                }),
+                _ => Err(()),
+            };
+            if written.is_err() {
+                tracing::warn!(
+                    op = w.op,
+                    "a plane's record write on a refusal could not be applied; the refusal stands"
+                );
+            }
+        }
+    }
+
     /// Write a unit's audit row (a `RECORD_AUDIT` record write) to `sink` instead of the kernel's
     /// own audit chain ([`CoreAudit`]).
     #[must_use]
@@ -540,6 +608,13 @@ const ZERO_UNIT: UnitCount = UnitCount {
     amount: 0,
 };
 const NO_SPAN: Span = Span { offset: 0, len: 0 };
+const NO_RECORD: busbar_contract::abi::plane::RecordWrite =
+    busbar_contract::abi::plane::RecordWrite {
+        kind: 0,
+        op: 0,
+        key: NO_SPAN,
+        value: NO_SPAN,
+    };
 const NO_FIELD: OutField = OutField {
     name: NO_SPAN,
     value: NO_SPAN,
@@ -649,7 +724,7 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
     /// The plane renders a refusal (`refusal`, ticketless, one re-call when short); the kernel's
     /// generic failure, with no body, when it cannot.
     fn render(&self, reason: ReasonCode) -> Rendered {
-        self.render_as(reason, None, None)
+        self.render_as(reason, None, None, None)
     }
 
     /// [`Self::render`], or under the status and Retry-After the walk chose (an exhaustion
@@ -660,6 +735,7 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
         reason: ReasonCode,
         walk: Option<(u32, Option<u32>)>,
         said: Option<&str>,
+        hook: Option<&str>,
     ) -> Rendered {
         let (unit, dialect, declined, words) = {
             let st = self.lock();
@@ -693,6 +769,7 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             vec![NO_FIELD; caps.fields],
             vec![0u8; caps.arena],
         );
+        let mut records = vec![NO_RECORD; caps.records];
         let mut input = RefusalIn {
             cause: if words.is_some() {
                 REFUSAL_ARRIVE
@@ -715,8 +792,14 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             plane_code: declined.map_or(0, |(code, _)| code),
             retry_after_s,
             target: AbiStr::over(&self.arrival.target),
+            records_buf: records.as_mut_ptr(),
+            records_cap: records.len(),
             ..blank_in()
         };
+        // The vetoing hook's name, on a gate refusal alone (absent = NULL otherwise).
+        if let Some(hook) = hook {
+            input.hook = AbiStr::over(hook.as_bytes());
+        }
         let mut o: RefusalOut = blank_out();
         let outcome = self
             .driver
@@ -725,6 +808,11 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
                 reply.resize((short.reply_needed as usize).max(reply.len()), 0);
                 fields.resize((short.fields_needed as usize).max(fields.len()), NO_FIELD);
                 arena.resize((short.arena_needed as usize).max(arena.len()), 0);
+                records.resize(
+                    (short.records_needed as usize).max(records.len()),
+                    NO_RECORD,
+                );
+                (i.records_buf, i.records_cap) = (records.as_mut_ptr(), records.len());
                 (i.reply_buf, i.reply_cap) = (reply.as_mut_ptr(), reply.len());
                 (i.fields_buf, i.fields_cap) = (fields.as_mut_ptr(), fields.len());
                 (i.arena_buf, i.arena_cap) = (arena.as_mut_ptr(), arena.len());
@@ -735,6 +823,18 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
                 fields: Vec::new(),
                 body: Vec::new(),
             };
+        }
+        // THE REFUSAL'S RECORD WRITES (SEAM-L(o)): the plane's audit row for the unit the kernel
+        // refused, and any put it writes beside it.
+        let written = (o.records_written as usize).min(records.len());
+        if written != 0 {
+            let principal = self.lock().principal.clone();
+            let arena_written = (o.arena_written as usize).min(arena.len());
+            self.driver.fold_records(
+                &records[..written],
+                &arena[..arena_written],
+                principal.as_ref(),
+            );
         }
         let span = |s: Span| {
             let start = s.offset as usize;
@@ -771,6 +871,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                     ReasonCode::HookVeto,
                     Some((veto.status, None)),
                     Some(veto.text.as_str()),
+                    veto.hook.as_deref(),
                 );
                 self.lock().rendered = Some(rendered);
                 self.response_tap(true, veto.status);
@@ -855,15 +956,23 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             route::End::Exhausted(status, retry_after) => {
                 // THE WALK'S EXHAUSTION TERMINAL: its status and its Retry-After floor, handed to
                 // the plane's `refusal` (RefusalIn.retry_after_s), which renders them in its dialect.
-                let rendered =
-                    self.render_as(ReasonCode::BreakerOpen, Some((status, retry_after)), None);
+                let rendered = self.render_as(
+                    ReasonCode::BreakerOpen,
+                    Some((status, retry_after)),
+                    None,
+                    None,
+                );
                 self.lock().rendered = Some(rendered);
                 StepAnswer::refuse(token, Refusal::new(ReasonCode::BreakerOpen))
             }
             route::End::Vetoed(status, text) => {
                 // THE WALK'S REFUSAL FOR A HOOK'S RESTRICTION: answered as the hook would be.
-                let rendered =
-                    self.render_as(ReasonCode::HookVeto, Some((status, None)), Some(&text));
+                let rendered = self.render_as(
+                    ReasonCode::HookVeto,
+                    Some((status, None)),
+                    Some(&text),
+                    None,
+                );
                 self.lock().rendered = Some(rendered);
                 StepAnswer::refuse(token, Refusal::new(ReasonCode::HookVeto))
             }

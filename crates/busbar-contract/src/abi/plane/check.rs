@@ -655,6 +655,31 @@ pub fn check_refusal(
     )
 }
 
+/// `refusal`'s record writes (SEAM-L(o)): under the short-buffer rule over `records_buf`, each
+/// write judged as an `on_piece` answer's, its bytes inside the arena written.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_refusal_records(
+    outcome: Outcome,
+    out: &RefusalOut,
+    records_buf: &[RecordWrite],
+    records_cap: u64,
+    b: &Bounds,
+) -> Result<(), Fault> {
+    let written = u64::from(out.records_written);
+    result(
+        outcome,
+        written,
+        u64::from(out.records_needed),
+        records_cap,
+        MAX_RECORDS,
+        "refusal.records",
+    )?;
+    records(records_buf, written, out.arena_written, b)
+}
+
 /// `serve`: a known `AUDIT_*`, and the reply is valid.
 ///
 /// # Errors

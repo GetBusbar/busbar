@@ -1561,6 +1561,15 @@ pub struct RefusalIn {
     /// authenticates first): the plane then chooses its envelope from the target by its own rule;
     /// the kernel never picks a dialect.
     pub target: AbiStr,
+    /// HOST buffer for record writes: the refusal's record writes, as an `on_piece` answer's
+    /// ([`RecordWrite`], their bytes in the arena), so a plane writes its declared audit row
+    /// ([`RECORD_AUDIT`]) for a unit the kernel refused. A tail addition.
+    pub records_buf: *mut RecordWrite,
+    /// Its capacity.
+    pub records_cap: usize,
+    /// With [`REFUSAL_GATE`]: the name of the hook that vetoed the unit, opaque bytes; absent on
+    /// every other refusal. A tail addition.
+    pub hook: AbiStr,
 }
 
 /// `refusal`'s `out`.
@@ -1586,6 +1595,10 @@ pub struct RefusalOut {
     /// The status number the rendered reply carries, in [`RefusalIn::status`]'s space; the
     /// transport maps it to its wire. `0` = keep [`RefusalIn::status`].
     pub status: u32,
+    /// Record writes written to `records_buf`. A tail addition.
+    pub records_written: u32,
+    /// Short answer: the record writes `records_buf` needs.
+    pub records_needed: u32,
 }
 
 /// `serve`'s `in`.

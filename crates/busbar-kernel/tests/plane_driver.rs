@@ -657,18 +657,61 @@ impl PlaneCalls for Double {
         if input.plane_code != 0 {
             body.extend_from_slice(format!(":{}@{}", input.plane_code, input.unit).as_bytes());
         }
+        // A HOOK VETO (SEAM-L(o), (p)): this plane names the vetoing hook and writes its audit row,
+        // rejected, for the unit the kernel refused.
+        let hook = unsafe { text(input.hook) }.to_vec();
+        if !hook.is_empty() {
+            body.extend_from_slice(b":hook=");
+            body.extend_from_slice(&hook);
+        }
+        let (row_key, row_value) = (b"thing.call".as_slice(), b"thing:x".as_slice());
+        let rows = usize::from(!hook.is_empty());
         let (name, value) = (b"content-type".as_slice(), b"text/plain".as_slice());
-        let arena = name.len() + value.len();
+        let arena = name.len() + value.len() + rows * (row_key.len() + row_value.len());
         for call in 0..2 {
-            if body.len() > input.reply_cap || input.fields_cap < 1 || arena > input.arena_cap {
+            if body.len() > input.reply_cap
+                || input.fields_cap < 1
+                || arena > input.arena_cap
+                || rows > input.records_cap
+            {
                 if call == 1 {
                     return Outcome::Fault;
                 }
                 out.reply_needed = body.len() as u64;
                 out.fields_needed = 1;
                 out.arena_needed = arena as u64;
+                out.records_needed = rows as u32;
                 grow(out, input);
                 continue;
+            }
+            if rows == 1 {
+                let at = name.len() + value.len();
+                // SAFETY: the driver's arena and records buffer, of the capacities checked above.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        row_key.as_ptr(),
+                        input.arena_buf.add(at),
+                        row_key.len(),
+                    );
+                    std::ptr::copy_nonoverlapping(
+                        row_value.as_ptr(),
+                        input.arena_buf.add(at + row_key.len()),
+                        row_value.len(),
+                    );
+                    *input.records_buf = RecordWrite {
+                        kind: busbar_contract::abi::plane::AUDIT_REJECTED,
+                        op: RECORD_AUDIT,
+                        key: Span {
+                            offset: at as u32,
+                            len: row_key.len() as u32,
+                        },
+                        value: Span {
+                            offset: (at + row_key.len()) as u32,
+                            len: row_value.len() as u32,
+                        },
+                    };
+                }
+                out.records_written = 1;
             }
             // SAFETY: the driver's buffers, of the capacities checked above.
             unsafe {
@@ -1586,4 +1629,39 @@ async fn a_gate_first_plane_screens_its_entry_before_the_far_end_and_stops_at_th
     assert!(far.sent().is_empty(), "nothing reached the far end");
     let rendered = units.take_rendered().expect("the veto is rendered");
     assert_eq!(rendered.status, 451);
+}
+
+/// SEAM-L(o), (p): A KERNEL REFUSAL'S RECORD WRITES AND THE VETOING HOOK. A gate's veto hands the
+/// plane's `refusal` the vetoing hook's name, which the plane renders (predev's
+/// `{"reason":"hook_rejected","hook":<name>}`), and the refusal's `RECORD_AUDIT` write is one
+/// rejected row on the kernel's audit chain under the verified principal. RED: the refusal had no
+/// record slot and named no hook.
+#[tokio::test]
+async fn a_vetoed_units_refusal_names_the_hook_and_writes_its_rejected_row() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let rows = Arc::new(AuditRows::default());
+    let binder = Arc::new(GateFirst {
+        gate: Arc::new(Refuses::default()),
+        asked: Mutex::new(Vec::new()),
+    });
+    let driver = r.driver.with_hooks(binder).with_audit(rows.clone());
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["ok"], &[]),
+        cases::Caller::default(),
+    );
+    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
+    let _ = cases::drive(&units).await;
+    let rendered = units.take_rendered().expect("the veto is rendered");
+    let body = String::from_utf8_lossy(&rendered.body).to_string();
+    assert!(body.ends_with(":hook=entry-gate"), "{body}");
+    assert_eq!(
+        *rows.0.lock().unwrap(),
+        vec![(
+            "thing.call".to_string(),
+            "thing:x".to_string(),
+            busbar_contract::vocab::OUTCOME_REJECTED,
+            common::principal().as_str().to_string(),
+        )]
+    );
 }

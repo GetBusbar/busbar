@@ -698,6 +698,43 @@ fn a_ledger_lane_rides_the_arena() {
     assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
 }
 
+/// SEAM-L(o), A REFUSAL'S RECORD WRITES: judged as an `on_piece` answer's, under the short-buffer
+/// rule over the host's `records_buf`: an audit row inside the arena passes; a write past the cap,
+/// an unknown op or a span outside the arena is FAULT. RED: a refusal had no record slot.
+#[test]
+fn a_refusals_record_writes_are_judged_as_an_answers() {
+    let mut o: RefusalOut = z();
+    o.records_written = 1;
+    o.arena_written = 8;
+    let mut r: RecordWrite = z();
+    r.op = RECORD_AUDIT;
+    r.kind = AUDIT_REJECTED;
+    r.key = sp(0, 4);
+    r.value = sp(4, 4);
+    assert_eq!(check_refusal_records(Ready, &o, &[r], 1, &bounds()), Ok(()));
+    assert_eq!(
+        check_refusal_records(Ready, &o, &[r], 0, &bounds()),
+        f(Rule::OverCap, "refusal.records")
+    );
+    let mut bad = r;
+    bad.op = 4;
+    assert_eq!(
+        check_refusal_records(Ready, &o, &[bad], 1, &bounds()),
+        f(Rule::UnknownCode, "record.op")
+    );
+    let mut bad = r;
+    bad.value = sp(6, 4);
+    assert_eq!(
+        check_refusal_records(Ready, &o, &[bad], 1, &bounds()),
+        f(Rule::SpanOutOfBounds, "record.value")
+    );
+    let none: RefusalOut = z();
+    assert_eq!(
+        check_refusal_records(Ready, &none, &[], 0, &bounds()),
+        Ok(())
+    );
+}
+
 // ── refusal, serve, cancel ──
 
 #[test]

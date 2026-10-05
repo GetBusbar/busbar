@@ -621,6 +621,8 @@ pub(crate) struct Veto {
     pub status: u32,
     /// The words.
     pub text: String,
+    /// The vetoing hook's name, where a named hook vetoed (handed to the plane's `refusal`).
+    pub hook: Option<String>,
 }
 
 #[path = "gated.rs"]
@@ -631,6 +633,16 @@ fn veto(status: u16, text: impl Into<String>) -> Stopped {
     Stopped::Veto(Veto {
         status: u32::from(status),
         text: text.into(),
+        hook: None,
+    })
+}
+
+/// [`veto`] by the hook named `hook`.
+fn veto_by(status: u16, text: impl Into<String>, hook: &str) -> Stopped {
+    Stopped::Veto(Veto {
+        status: u32::from(status),
+        text: text.into(),
+        hook: Some(hook.to_string()),
     })
 }
 

@@ -1846,7 +1846,10 @@ fn compute_layout() -> String {
             unit,
             plane_code,
             retry_after_s,
-            target
+            target,
+            records_buf,
+            records_cap,
+            hook
         ]
     );
     record!(
@@ -1861,7 +1864,9 @@ fn compute_layout() -> String {
             marker,
             fields_written,
             fields_needed,
-            status
+            status,
+            records_written,
+            records_needed
         ]
     );
     record!(

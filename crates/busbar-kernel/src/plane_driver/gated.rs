@@ -24,7 +24,7 @@ use busbar_contract::caps::{Pass, Route};
 use busbar_contract::hooks::TransformOutcome;
 
 use super::super::{FarEnd, PlaneUnits};
-use super::{veto, HookBinder, Projection, RewriteChain, Stopped};
+use super::{veto_by, HookBinder, Projection, RewriteChain, Stopped};
 use crate::hooks::gate::{decide_door, DoorSubject, GateVerdict, ScanSubstrate};
 use crate::hooks::wire::{clamp_reject_status, sanitize_reject_message};
 use crate::hooks::ResolvedPolicy;
@@ -161,7 +161,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     status,
                     "a unit refused by a hook gate"
                 );
-                return Err(veto(status, message));
+                return Err(veto_by(status, message, &hook));
             }
         }
 
@@ -192,10 +192,8 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     view = next;
                 }
                 TransformOutcome::Reject { status, message } => {
-                    return Err(veto(
-                        clamp_reject_status(status),
-                        sanitize_reject_message(&message),
-                    ));
+                    let (status, message) = rewrite_refusal(status, &message);
+                    return Err(veto_by(status, message, hook.name()));
                 }
                 TransformOutcome::Abstain => {}
                 TransformOutcome::Failed { message } => {
@@ -209,5 +207,48 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             }
         }
         Ok(())
+    }
+}
+
+/// A REWRITE'S REFUSAL, as the caller is answered (SEAM-L(q), predev parity): a status the hook
+/// chose is clamped to the client-error range and its words sanitized; the seam's OWN failed
+/// verdict (a load-bearing hook, `on_error: reject`, that could not answer) keeps predev's
+/// [`REQUIRED_HOOK_UNAVAILABLE_STATUS`] and its shared words, never clamped to a 4xx.
+///
+/// [`REQUIRED_HOOK_UNAVAILABLE_STATUS`]: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS
+fn rewrite_refusal(status: u16, message: &str) -> (u16, String) {
+    use crate::hooks::{REQUIRED_HOOK_UNAVAILABLE_MESSAGE, REQUIRED_HOOK_UNAVAILABLE_STATUS};
+    if status == REQUIRED_HOOK_UNAVAILABLE_STATUS && message == REQUIRED_HOOK_UNAVAILABLE_MESSAGE {
+        return (status, message.to_string());
+    }
+    (
+        clamp_reject_status(status),
+        sanitize_reject_message(message),
+    )
+}
+
+#[cfg(test)]
+mod rewrite_refusal_tests {
+    use super::rewrite_refusal;
+    use crate::hooks::{REQUIRED_HOOK_UNAVAILABLE_MESSAGE, REQUIRED_HOOK_UNAVAILABLE_STATUS};
+
+    /// SEAM-L(q): a panicking `on_error: reject` hook is the seam's own failed verdict and answers
+    /// predev's 503 with the shared words (RED: clamped to 403); a hook's own out-of-range status
+    /// is still clamped, and its own 503 with other words is a hook-chosen status, clamped.
+    #[test]
+    fn the_seams_own_failed_verdict_keeps_its_503_and_a_hook_status_is_clamped() {
+        assert_eq!(
+            rewrite_refusal(
+                REQUIRED_HOOK_UNAVAILABLE_STATUS,
+                REQUIRED_HOOK_UNAVAILABLE_MESSAGE
+            ),
+            (
+                REQUIRED_HOOK_UNAVAILABLE_STATUS,
+                REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string()
+            )
+        );
+        assert_eq!(rewrite_refusal(503, "mine").0, 403);
+        assert_eq!(rewrite_refusal(200, "ok").0, 403);
+        assert_eq!(rewrite_refusal(429, "slow").0, 429);
     }
 }
