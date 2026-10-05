@@ -271,13 +271,23 @@ impl busbar_contract::Transport for RootWire {
         self.0.encode_envelope(fields, body, arena)
     }
 
+    /// A composing entry ([`HostWire::composed`]) adopts the stream the layer under it hands up
+    /// (`from`'s own detach); an entry over the host's socket adopts nothing.
     fn adopt<'a>(
         &'a self,
-        _from: &'a dyn busbar_contract::Transport,
+        from: &'a dyn busbar_contract::Transport,
         conn: busbar_contract::transport::wire::Conn,
         keys: &'a busbar_contract::TransportKeyHandle,
     ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
-        self.0.adopt(conn, keys)
+        if self.0.composed_over().is_none() {
+            return self.0.adopt(conn, keys);
+        }
+        Box::pin(async move {
+            let raw = from
+                .detach(&conn)
+                .ok_or(busbar_contract::transport::wire::TransportError::HandoffMismatch)?;
+            self.0.adopt_from(raw).await
+        })
     }
 
     fn detach(
@@ -326,7 +336,10 @@ pub fn host_wire(
 
 /// A linked row's build: its door admitted through the one validation, bound under the row's name
 /// `row` ([`row_bind`]), opened with the deployment's `settings`, served over the host's sockets. A
-/// door row frames the host's socket, so it takes no lower layer.
+/// door that frames the host's socket takes no lower layer; one that COMPOSES OVER a layer (SEAM-4f:
+/// a message framer over an upgraded http connection) is built over `lower`, the layer the registry
+/// folded under it ([`HostWire::composed`]), so the row can be door-only: its entry's `door` is its
+/// one face, on the registry and on the connector alike.
 ///
 /// # Panics
 ///
@@ -335,12 +348,34 @@ pub fn host_wire(
 pub fn build(
     row: &str,
     door: DoorFn,
-    _lower: Option<Arc<dyn busbar_contract::Transport>>,
+    lower: Option<Arc<dyn busbar_contract::Transport>>,
     settings: &busbar_contract::transport::TransportSettings,
 ) -> Arc<dyn busbar_contract::Transport> {
     LinkedRow::of(door)
         .and_then(|linked| load_linked::<TransportKind>(&linked, row_bind(row)))
         .map_err(|e| e.to_string())
-        .and_then(|plugin| host_wire(plugin, settings))
+        .and_then(|plugin| composed_wire(plugin, lower.as_deref(), settings))
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+}
+
+/// [`host_wire`], or, for a door that composes over a layer, the wire built over `lower` (`None`
+/// where the composition carries none of its layers: the registry's boot check names it).
+///
+/// # Errors
+///
+/// The door would not open, or `lower` is not a layer it declares.
+pub fn composed_wire(
+    plugin: Plugin<TransportKind>,
+    lower: Option<&dyn busbar_contract::Transport>,
+    settings: &busbar_contract::transport::TransportSettings,
+) -> Result<Arc<dyn busbar_contract::Transport>, String> {
+    let door = Dispatched::open(plugin, settings)?;
+    if door.facts.composes_over.is_empty() {
+        return Ok(Arc::new(RootWire(HostWire::new(Arc::new(door))?)));
+    }
+    let over = lower.map(busbar_contract::Plugin::key);
+    Ok(Arc::new(RootWire(HostWire::composed(
+        Arc::new(door),
+        over,
+    )?)))
 }

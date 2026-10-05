@@ -233,3 +233,32 @@ fn the_pre_parse_judgement_leaves_a_malformed_shape_to_the_plane() {
         "`bays.dock`: `calm_down:` invalid duration unit 'x': use s|m|h|d"
     );
 }
+
+/// RED (SEAM-4f): a plane that declares a PRIVATE REACH key has it read off each registration as a
+/// boolean: `true` only where written `true`; absent or `false` is no reach; any other value
+/// refuses the load in the trust keys' words (and reads as no reach where the plane's own parse
+/// speaks first).
+#[test]
+fn a_registrations_private_reach_is_its_declared_boolean() {
+    use super::private_reach;
+    const REACHING: &[TrustKeyDecl] = &[TrustKeyDecl {
+        key: "inside",
+        role: TrustRole::PrivateReach,
+        fingerprint: false,
+        default: None,
+        mechanisms: &[],
+    }];
+    assert!(private_reach(&entry("inside: true"), REACHING));
+    assert!(!private_reach(&entry("inside: false"), REACHING));
+    assert!(!private_reach(&entry("url: x"), REACHING));
+    assert!(
+        !private_reach(&entry("inside: true"), KEYS),
+        "a plane declaring no reach key reads none"
+    );
+    assert_eq!(
+        parse_entry("`bays.dock`", &entry("inside: yes please"), REACHING).unwrap_err(),
+        "`bays.dock`: `inside:` must be true or false"
+    );
+    assert!(judge_entry("`bays.dock`", &entry("inside: 3"), REACHING).is_ok());
+    assert!(parse_entry("`bays.dock`", &entry("inside: true"), REACHING).is_ok());
+}

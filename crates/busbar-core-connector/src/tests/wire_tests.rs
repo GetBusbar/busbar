@@ -383,11 +383,10 @@ fn a_unit0_refusal_whose_send_fails_still_finalises_and_returns_the_error() {
         let w = wire();
         let (_client, server, _l) = pair(&w).await;
         let held = w.get(server.id()).expect("held");
-        held.socket()
-            .unwrap()
-            .get_ref()
-            .shutdown(std::net::Shutdown::Write)
-            .unwrap();
+        let Some(Io::Socket(sock)) = held.socket() else {
+            panic!("an accepted connection is on the host's socket");
+        };
+        sock.get_ref().shutdown(std::net::Shutdown::Write).unwrap();
         assert!(!held.closed.load(Ordering::Acquire));
         let refusal = busbar_contract::unit::Refusal {
             step: busbar_contract::unit::Step::Arrival,
@@ -506,4 +505,50 @@ fn the_read_chunk_is_sixteen_kib_and_debug_names_the_wire() {
     let shown = format!("{:?}", *wire());
     assert!(shown.contains("HostWire"), "{shown}");
     assert!(shown.contains("bytes"), "{shown}");
+}
+
+/// RED (SEAM-4f): an entry that COMPOSES OVER a layer is served here built over that layer: it
+/// answers the layer it was built over (what the registry's boot check holds against its
+/// declaration), refuses to be built over one it does not declare, and ADOPTS the stream the layer
+/// under it hands up — what the lower framer held first — framing both ways from there; a stream
+/// handed up by another layer is a handoff mismatch.
+#[test]
+fn a_composing_entry_adopts_the_stream_its_lower_layer_hands_up() {
+    worker().block_on(async {
+        let upper = || Arc::new(TestDoor::new("msg", &["msg"], &["bytes"], Knobs::default()));
+        assert!(
+            HostWire::new(upper()).is_err(),
+            "not over the host's socket"
+        );
+        assert!(HostWire::composed(upper(), Some("other")).is_err());
+        assert!(HostWire::composed(Arc::new(TestDoor::identity("bytes")), None).is_err());
+        let composed = HostWire::composed(upper(), Some("bytes")).expect("built over bytes");
+        assert_eq!(composed.composed_over(), Some("bytes"));
+        assert_eq!(composed.key(), "msg");
+
+        let lower = wire();
+        let (client, server, _l) = pair(&lower).await;
+        lower
+            .write(&client, StreamId(0), ScratchBytes::new(b"early"), false)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let raw = lower.detach(&server).expect("hands up");
+        let adopted = composed.adopt_from(raw).await.expect("adopted");
+        assert_eq!(read_n(&composed, &adopted, 5).await, b"early");
+        composed
+            .write(&adopted, StreamId(0), ScratchBytes::new(b"over"), false)
+            .await
+            .unwrap();
+        assert_eq!(read_n(&lower, &client, 4).await, b"over");
+        composed.close(adopted, CloseReason::Normal);
+
+        let (_c2, s2, _l2) = pair(&lower).await;
+        let raw = lower.detach(&s2).expect("hands up");
+        let other = RawStream::new("other", raw.peer().to_owned(), raw.into_io());
+        assert_eq!(
+            composed.adopt_from(other).await.err(),
+            Some(TransportError::HandoffMismatch)
+        );
+    });
 }

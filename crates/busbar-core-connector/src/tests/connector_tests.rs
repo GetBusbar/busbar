@@ -707,6 +707,41 @@ fn loopback_allowed_refuses_plaintext_off_loopback() {
     });
 }
 
+/// RED (SEAM-4f, ARCHITECT ruling on mint endpoints: https or loopback plaintext, as 1.5.5
+/// validated `token_url`/`token_uri`): a mint endpoint's need, its target the binding's own setting,
+/// in the `loopback-allowed` class, dials a plaintext loopback endpoint and refuses a plaintext
+/// private one; the `open-web` class it was declared in refused the loopback endpoint outright.
+#[test]
+fn a_configured_mint_endpoint_takes_loopback_plaintext_and_nothing_else_in_plaintext() {
+    worker().block_on(async {
+        let (_listening, far) = far_end().await;
+        let c = scheme_connector();
+        let need = |class| ReadNeed {
+            egress_class: class,
+            transport: "plain".to_owned(),
+            ..config_targeted_need("settings.token_url")
+        };
+        let declare = |id, class, target: &str| {
+            DeclaredConns::declare(&c, OWNER, NeedId(id), &need(class), Some(target), None)
+        };
+        assert_eq!(declare(0, EGRESS_LOOPBACK_ALLOWED, &far), Ok(()));
+        let id = open_in(&c, 0, &far).expect("a loopback plaintext mint endpoint opens");
+        c.close(OWNER, id).unwrap();
+        assert_eq!(declare(1, EGRESS_LOOPBACK_ALLOWED, "10.1.2.3:80"), Ok(()));
+        assert_eq!(
+            open_in(&c, 1, "10.1.2.3:80"),
+            Err(ConnError::Refused),
+            "plaintext off loopback"
+        );
+        assert_eq!(declare(2, EGRESS_OPEN_WEB, &far), Ok(()));
+        assert_eq!(
+            open_in(&c, 2, &far),
+            Err(ConnError::Refused),
+            "open-web refuses every plaintext endpoint"
+        );
+    });
+}
+
 /// An inbound need listens through the table: the listener is bound for the need's owner, an
 /// accepted connection is held for that owner (read and answered on the piece's stream through the
 /// table), another instance can neither accept on the need nor read the connection, and a need
@@ -1184,6 +1219,7 @@ mod transport_pin {
             let anchors = Anchors {
                 key_pin: Some(format!(" {} ", leaf.pin)),
                 client_identity: None,
+                private_reach: false,
             };
             c.anchor(OWNER, NeedId(0), &far, &anchors).expect("sealed");
             let (id, got) = exchange(&c, &far).await;
@@ -1211,6 +1247,7 @@ mod transport_pin {
             let anchors = Anchors {
                 key_pin: Some(pinned.pin.clone()),
                 client_identity: None,
+                private_reach: false,
             };
             c.anchor(OWNER, NeedId(0), &far, &anchors).expect("sealed");
             let (id, got) = exchange(&c, &far).await;
@@ -1252,6 +1289,7 @@ mod transport_pin {
                     cert_chain: vec![client.der.clone()],
                     private_key: client.key.clone(),
                 }),
+                private_reach: false,
             };
             c.anchor(OWNER, NeedId(0), &far, &anchors).expect("sealed");
             let (id, got) = exchange(&c, &far).await;
@@ -1278,6 +1316,7 @@ mod transport_pin {
             let anchors = Anchors {
                 key_pin: Some(leaf.pin.clone()),
                 client_identity: None,
+                private_reach: false,
             };
             c.anchor(OWNER, NeedId(1), &far, &anchors).expect("sealed");
             assert_eq!(open_in(&c, 1, &far), Err(ConnError::Refused));
@@ -1287,6 +1326,7 @@ mod transport_pin {
                     cert_chain: vec![leaf.der.clone()],
                     private_key: b"not a key".to_vec(),
                 }),
+                private_reach: false,
             };
             assert_eq!(
                 c.anchor(OWNER, NeedId(0), &far, &bad),
@@ -1299,4 +1339,66 @@ mod transport_pin {
             );
         });
     }
+}
+
+/// RED (SEAM-4f, a registration's private reach, `abi::plane::TRUST_PRIVATE_REACH`): under a strict
+/// guard (private refused, nothing allowlisted) a provider-class need whose destination is sealed
+/// with a private reach dials that private destination, as an allowlist entry naming it would; a
+/// second need of the same owner, of the same class, to the same destination is still refused (the
+/// reach is that need's alone, the class unchanged); a reach never admits a cloud-metadata address;
+/// and a seal without it takes it back.
+#[test]
+fn a_needs_private_reach_admits_its_own_destination_and_nothing_else() {
+    use busbar_contract::transport::trust::Anchors;
+    worker().block_on(async {
+        let (_listening, far) = far_end().await;
+        let view = Transports::new(vec![Entry {
+            door: Arc::new(TestDoor::identity("bytes")),
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let strict = Arc::new(crate::LiteralsOnly(crate::guard::Guard::default()));
+        let c = Connector::serving(view, strict, None, Arc::new(|_| {}));
+        for need in [0, 1] {
+            c.declare_need(
+                OWNER,
+                NeedId(need),
+                "bytes",
+                busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
+            )
+            .expect("a served scheme declares");
+        }
+        assert_eq!(
+            open_in(&c, 0, &far),
+            Err(ConnError::Refused),
+            "no reach yet"
+        );
+        let reach = Anchors {
+            private_reach: true,
+            ..Anchors::default()
+        };
+        c.anchor(OWNER, NeedId(0), &far, &reach).expect("sealed");
+        let id = open_in(&c, 0, &far).expect("the reached private destination opens");
+        c.close(OWNER, id).unwrap();
+        assert_eq!(
+            open_in(&c, 1, &far),
+            Err(ConnError::Refused),
+            "another need of the same class holds no reach"
+        );
+        let metadata = "169.254.169.254:80";
+        c.anchor(OWNER, NeedId(0), metadata, &reach)
+            .expect("sealed");
+        assert_eq!(
+            open_in(&c, 0, metadata),
+            Err(ConnError::Refused),
+            "a reach never admits cloud metadata"
+        );
+        c.anchor(OWNER, NeedId(0), &far, &Anchors::default())
+            .expect("dropped");
+        assert_eq!(
+            open_in(&c, 0, &far),
+            Err(ConnError::Refused),
+            "a seal without the reach takes it back"
+        );
+    });
 }

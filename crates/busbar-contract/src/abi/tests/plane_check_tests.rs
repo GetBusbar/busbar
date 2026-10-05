@@ -1648,6 +1648,36 @@ fn well_formed_trust_keys_pass() {
     assert_eq!(check_pin_mechanisms(&MECHANISMS), Ok(()));
 }
 
+/// RED (SEAM-4f): a registration's private reach is a trust key of its own role: a boolean the
+/// host reads, so it carries no flags, no mechanisms and no default (absent reads `false`).
+#[test]
+fn a_private_reach_key_carries_no_default_flags_or_mechanisms() {
+    let reach = TrustKey {
+        default: AbiStr {
+            ptr: null(),
+            len: 0,
+        },
+        ..duration_key(TRUST_PRIVATE_REACH)
+    };
+    assert_eq!(check_trust_keys(&[pin_key(), reach]), Ok(()));
+    assert_eq!(
+        check_trust_keys(&[duration_key(TRUST_PRIVATE_REACH)]),
+        f(Rule::Contradiction, "trust_key.reach_default")
+    );
+    assert_eq!(
+        check_trust_keys(&[TrustKey { flags: 1, ..reach }]),
+        f(Rule::UnknownCode, "trust_key.duration_flags")
+    );
+    assert_eq!(
+        check_trust_keys(&[TrustKey {
+            mechanisms: MECHANISMS.as_ptr(),
+            mechanisms_len: MECHANISMS.len(),
+            ..reach
+        }]),
+        f(Rule::Contradiction, "trust_key.duration_mechanisms")
+    );
+}
+
 #[test]
 fn a_trust_key_is_named() {
     let mut k = pin_key();
@@ -1660,7 +1690,7 @@ fn a_trust_key_is_named() {
 
 #[test]
 fn a_trust_key_role_is_known() {
-    for role in [0, TRUST_RECOVERY_BACKOFF + 1] {
+    for role in [0, TRUST_PRIVATE_REACH + 1] {
         assert_eq!(
             check_trust_keys(&[duration_key(role)]),
             f(Rule::UnknownCode, "trust_key.role")

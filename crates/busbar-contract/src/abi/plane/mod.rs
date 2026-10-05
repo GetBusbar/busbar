@@ -916,6 +916,14 @@ pub const TRUST_REVERIFY_TTL: u32 = 2;
 /// [`TrustKey::role`]: the key holds how long after a drift a clean answer is disbelieved, a
 /// `<n><s|m|h|d>` duration.
 pub const TRUST_RECOVERY_BACKOFF: u32 = 3;
+/// [`TrustKey::role`]: the key holds a boolean, the registration's PRIVATE REACH: `true` admits a
+/// private address (RFC 1918, loopback, link-local and the rest of `net::ip_is_internal`) at the
+/// registration's own target, for its member's need only, as an allowlist entry naming that host
+/// would (`advanced.allow_destinations`); the need keeps its egress class, and a cloud-metadata
+/// address stays refused. Absent or `false`: the class judges alone. The host seals it into the
+/// registration's trust anchors beside its pin, and the connector's one guard honours it on every
+/// connection the need opens to that destination. It carries no default and no mechanisms.
+pub const TRUST_PRIVATE_REACH: u32 = 4;
 /// [`TrustKey::flags`], on a [`TRUST_PIN`] key only: the pin object may also carry `fingerprint`.
 pub const PIN_FINGERPRINT: u32 = 1;
 /// [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key
@@ -967,7 +975,8 @@ pub struct RefusalStatus {
 pub struct TrustKey {
     /// The key, as written inside one registration.
     pub key: AbiStr,
-    /// [`TRUST_PIN`] | [`TRUST_REVERIFY_TTL`] | [`TRUST_RECOVERY_BACKOFF`].
+    /// [`TRUST_PIN`] | [`TRUST_REVERIFY_TTL`] | [`TRUST_RECOVERY_BACKOFF`] |
+    /// [`TRUST_PRIVATE_REACH`].
     pub role: u32,
     /// [`PIN_FINGERPRINT`] on a pin; `0` otherwise.
     pub flags: u32,

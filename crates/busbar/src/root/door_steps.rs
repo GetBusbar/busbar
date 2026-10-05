@@ -1718,8 +1718,10 @@ pub fn member_routes(
 /// THE TRUST ANCHORS OF ONE REGISTRATION MEMBER (ARCHITECT 2026-10-03, THE TRANSPORT PIN: "the connector enforces pins itself"): its pin's key, where the plane declares the pin's
 /// mechanism pins the far end's key (`PinMechanismDecl::peer_key`), and busbar's client identity,
 /// where the member-target need's `trust_from` names a member path (`settings.*.<key>`) and the
-/// registration writes it (`{cert, key}`, secret references, resolved here once). The connector
-/// holds every connection to the member to them ([`compose_egress`] seals them).
+/// registration writes it (`{cert, key}`, secret references, resolved here once), and its PRIVATE
+/// REACH where the plane declares that key (`abi::plane::TRUST_PRIVATE_REACH`: the member's need,
+/// alone, may dial a private address at the member's own target). The connector holds every
+/// connection to the member to them ([`compose_egress`] seals them).
 ///
 /// # Errors
 ///
@@ -1737,6 +1739,10 @@ fn registration_anchors(
         .pin
         .filter(|p| p.peer_key)
         .and_then(|p| p.key);
+    // THE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, SEAM-4f): sealed beside
+    // its pin, honoured by the connector's one guard for this member's need alone.
+    let private_reach =
+        busbar_kernel::trust::section::private_reach(registration, &served.trust_keys);
     let identity_at = served
         .need_trust
         .get(need.0 as usize)
@@ -1766,6 +1772,7 @@ fn registration_anchors(
     Ok(busbar_contract::transport::trust::Anchors {
         key_pin: pin,
         client_identity,
+        private_reach,
     })
 }
 

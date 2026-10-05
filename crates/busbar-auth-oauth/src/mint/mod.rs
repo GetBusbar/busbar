@@ -63,8 +63,8 @@ pub(crate) fn now_epoch() -> u64 {
 }
 
 /// THE PLUGIN'S OWN NEEDS, by their index in the Statement (`crate::NEEDS`): the token endpoint
-/// each style POSTs to, its target the binding's own setting (THE DESIGN §5: egress class
-/// `open-web`, "auth mint endpoints (`token_url`, `token_uri`)").
+/// each style POSTs to, its target the binding's own setting (egress class `loopback-allowed`: https
+/// or loopback plaintext, as 1.5.5 validated a mint endpoint; ARCHITECT ruling, SEAM-4f).
 pub(crate) mod need {
     /// `oauth-client-credentials`: `settings.token_url`.
     pub const TOKEN_URL: u32 = 0;

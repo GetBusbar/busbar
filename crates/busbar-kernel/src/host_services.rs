@@ -100,6 +100,19 @@ pub trait DestJudge: Send + Sync {
         refuse_private: bool,
         done: Box<dyn FnOnce(Admitted) + Send>,
     ) -> Option<Admitted>;
+    /// [`Self::judge`] for a dial to a destination its need holds a PRIVATE REACH to (the
+    /// registration's `abi::plane::TRUST_PRIVATE_REACH`, sealed per need and destination by the
+    /// host): a private address it stands for is admitted as an allowlist entry naming its host
+    /// would; a cloud-metadata address never is, and the class is unchanged. The default honours
+    /// no reach (the class judges alone: fail-closed).
+    fn judge_reaching(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Box<dyn FnOnce(Admitted) + Send>,
+    ) -> Option<Admitted> {
+        self.judge(dest, class, false, done)
+    }
     /// An answer the kernel's own client resolved for `host`, judged whole under `class`.
     ///
     /// # Errors

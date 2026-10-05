@@ -356,6 +356,7 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
             role: match k.role {
                 plane::TRUST_PIN => TrustRole::Pin,
                 plane::TRUST_REVERIFY_TTL => TrustRole::ReverifyTtl,
+                plane::TRUST_PRIVATE_REACH => TrustRole::PrivateReach,
                 _ => TrustRole::RecoveryBackoff,
             },
             fingerprint: k.flags & plane::PIN_FINGERPRINT != 0,
