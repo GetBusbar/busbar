@@ -88,7 +88,10 @@ fixture-secret-file = { package = "busbar-secret-file", git = "https://github.co
 # same rev, one resolved copy in Cargo.lock.
 busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
 # THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "9e6bf2cdbe77e51968dd6e8df6a1eabe96c0a1c4" }
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "fc91230af97997994e9206124ee7414f3aec6eee" }
+# THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
+# links on the transport-door axis (the gRPC module left busbar-transport-http for it).
+busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "5607182ed5d28da20a6e1699aad512909d24142e" }
 # THE WS TRANSPORT: the websocket framer door (kind: transport), pulled at a pinned rev; the logic
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
 busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "1c6a67f010728c96fe9041e41817fb69c8e4fd05" }
@@ -164,12 +167,6 @@ http-body = "1"
 http-body-util = "0.1"
 httpdate = "1.0"
 hyper = { version = "1", default-features = false, features = ["server", "client", "http1", "http2"] }
-hyper-rustls = { version = "0.27", default-features = false, features = [
-    "http1",
-    "http2",
-    "ring",
-    "webpki-tokio",
-] }
 hyper-util = { version = "0.1", default-features = false, features = [
     "client-legacy",
     "http1",
@@ -341,12 +338,12 @@ tokio = "1"
 tokio-util = { version = "0.7", default-features = false, features = ["compat"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 # The neutral full-duplex WEBSOCKET transport (busbar-substrate `ingress`/`egress` duplex-ws): the
-# egress dialer runs the client WS handshake OVER a stream this crate has already TLS-wrapped to a
-# net-guard-pinned address, so only `handshake` is enabled — the crate's own `connect` (which would
+# egress dialer runs the client WS handshake OVER a stream the connector's TLS wrap has already
+# secured to a net-guard-pinned address, so only `handshake` is enabled — the crate's own `connect` (which would
 # resolve DNS itself, bypassing the guard) is deliberately left OFF. Version 0.29 is exactly what
 # axum 0.8's `ws` feature rides, so the ingress acceptor (axum) and the egress dialer share ONE
 # tungstenite in the graph (no duplicate version); the handshake is generic over the already-wrapped
-# stream, so this tracks axum's tungstenite rather than the egress engine's tokio-rustls.
+# stream, so this tracks axum's tungstenite rather than the connector's tokio-rustls.
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
 # The generic gRPC runtime for the A2A gRPC binding. NOT an A2A-specific framework — this is the
 # same crate every Rust gRPC server uses, and taking it is what lets busbar implement the tonic

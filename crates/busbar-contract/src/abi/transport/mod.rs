@@ -882,7 +882,9 @@ pub struct LocateOut {
     pub has_name: u32,
     /// Bytes of `alpn_buf` written: the framer's protocol offer (`0` = it offers none, and the
     /// handshake carries no ALPN). The connector offers exactly these, in this order, and tells
-    /// the framer which one was agreed in [`ConnFacts::agreed_protocol`].
+    /// the framer which one was agreed in [`ConnFacts::agreed_protocol`]. A target without
+    /// connection security has no handshake: there an offer of exactly ONE protocol is the protocol
+    /// the framer speaks by prior knowledge, and the connector hands it back as agreed.
     pub alpn_written: u64,
     /// Short answer: the bytes `alpn_buf` needs.
     pub alpn_needed: u64,
@@ -1010,6 +1012,14 @@ pub struct RefuseIn {
     pub len: usize,
     /// The sink.
     pub sink: FramerSink,
+    /// The refusal's neutral status number, in the space of the plane kind's refusal status
+    /// ([`crate::abi::plane::RefusalIn::status`]): the transport maps it to its own wire, where
+    /// `bytes` do not state one in the wire's own terms. `0` = none stated. Appended (OWNER
+    /// R-addendum 2026-09-30: the refusal carries a neutral status number the transport maps to
+    /// its wire).
+    pub status: u32,
+    /// Alignment padding.
+    pub _reserved2: u32,
 }
 
 /// `finish`'s `in` (the framer's `close`).

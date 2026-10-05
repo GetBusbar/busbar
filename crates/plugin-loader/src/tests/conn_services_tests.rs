@@ -43,6 +43,8 @@ struct Recording {
     opened: Mutex<Vec<(InstanceId, NeedId, String)>>,
     /// The schemes no loaded transport serves, as this table answers [`DeclaredConns::serves`].
     unserved: Vec<&'static str>,
+    /// Every program declaration: owner, need and the program.
+    programs: Mutex<Vec<(InstanceId, NeedId, busbar_contract::conn::Program)>>,
 }
 
 impl DeclaredConns for Recording {
@@ -74,6 +76,20 @@ impl DeclaredConns for Recording {
     }
     fn serves_scheme(&self, transport: &str) -> bool {
         !self.unserved.contains(&transport)
+    }
+    fn declare_program(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        _spec: &ReadNeed,
+        program: &busbar_contract::conn::Program,
+    ) -> Result<(), ConnError> {
+        self.programs
+            .lock()
+            .unwrap()
+            .push((owner, need, program.clone()));
+        self.slab.declare(owner, need);
+        Ok(())
     }
 }
 
@@ -513,6 +529,44 @@ fn recycling_one_instances_ticket_never_replays_anothers_establish() {
         1,
         "a replaced worker forgets only its own instances"
     );
+}
+
+/// RED (ARCHITECT round 4 (e)): a need whose `target_from` names a PROGRAM in the settings
+/// (`{command, args, env}`) is declared as that program, at `open` and every `refresh`; a program
+/// the settings misspell (a bare command name) is declared with no target, which the table refuses.
+#[test]
+fn a_config_program_is_declared_as_a_program() {
+    let table = Arc::new(Recording::default());
+    let p = bound(Box::leak(Box::new(NEEDS)), &table);
+    assert_eq!(
+        open_with(
+            &p,
+            br#"{"upstream":{"command":"/usr/bin/server","args":["--serve"],"env":{"T":"v"}}}"#
+        ),
+        Outcome::Ready
+    );
+    assert_eq!(
+        table.programs.lock().unwrap().as_slice(),
+        &[(
+            p.instance(),
+            NeedId(0),
+            busbar_contract::conn::Program {
+                command: "/usr/bin/server".into(),
+                args: vec!["--serve".into()],
+                env: vec![("T".into(), "v".into())],
+            }
+        )]
+    );
+    assert!(
+        targets(&table, &p).is_empty(),
+        "no target string was declared"
+    );
+    assert_eq!(
+        refresh_with(&p, br#"{"upstream":{"command":"server"}}"#),
+        Outcome::Ready
+    );
+    assert_eq!(targets(&table, &p), vec![None], "a misspelled program");
+    assert_eq!(table.programs.lock().unwrap().len(), 1);
 }
 
 /// `target_from` names `settings.<key>[.<key>...]`, walked to a non-empty string.

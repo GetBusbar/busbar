@@ -16,7 +16,7 @@ use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
 use busbar_contract::redacted::Redacted;
 use busbar_contract::services::{
-    Caller, CredentialRead, HostServices, Later, Ran, Reading, RecordsList, Stored,
+    Caller, CredentialRead, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
 };
 
 /// The App's swap handle, once it exists.
@@ -196,6 +196,33 @@ impl HostServices for CredentialServices {
             spans: vec![span],
             ..Stored::ready(if live { SECRET_LIVE } else { SECRET_NOT_LIVE })
         })
+    }
+
+    fn unit_nest(&self, caller: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran {
+        self.inner.unit_nest(caller, unit, ask, later)
+    }
+
+    fn work_open(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        kind: &str,
+        record: &[u8],
+        later: Later,
+    ) -> Ran {
+        self.inner.work_open(caller, unit, kind, record, later)
+    }
+
+    fn work_find(&self, caller: &Caller, unit: Option<u64>, reference: &[u8], later: Later) -> Ran {
+        self.inner.work_find(caller, unit, reference, later)
+    }
+
+    fn work_settle(&self, caller: &Caller, handle: u64, record: &[u8], later: Later) -> Ran {
+        self.inner.work_settle(caller, handle, record, later)
+    }
+
+    fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran {
+        self.inner.work_resume(caller, unit, handle, later)
     }
 }
 

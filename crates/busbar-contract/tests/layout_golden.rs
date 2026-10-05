@@ -1627,7 +1627,7 @@ fn compute_layout() -> String {
     record!(
         s,
         tkind::RefuseIn,
-        [head, framing, stream, has_stream, _reserved, bytes, len, sink]
+        [head, framing, stream, has_stream, _reserved, bytes, len, sink, status, _reserved2]
     );
     record!(s, tkind::FinishIn, [head, framing, reason, _reserved, sink]);
     record!(s, tkind::FramingIn, [head, framing, sink]);
@@ -2035,7 +2035,7 @@ fn compute_layout() -> String {
     );
     record!(s, hsvc::SignIn, [head, data, into]);
     record!(s, hsvc::UnitNestIn, [head, verb, target, body, into]);
-    record!(s, hsvc::WorkOpenIn, [head, kind, record]);
+    record!(s, hsvc::WorkOpenIn, [head, kind, record, into]);
     record!(s, hsvc::WorkFindIn, [head, reference, into]);
     record!(s, hsvc::WorkSettleIn, [head, handle, record]);
     record!(s, hsvc::WorkResumeIn, [head, handle, into]);
