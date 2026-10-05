@@ -40,8 +40,6 @@ pub enum Door {
     Gemini,
     /// The telephony socket.
     Twilio,
-    /// The protected-resource metadata document, read without a credential.
-    Metadata,
 }
 
 impl Door {
@@ -54,7 +52,6 @@ impl Door {
             2 => Some(Door::Sideband),
             3 => Some(Door::Gemini),
             4 => Some(Door::Twilio),
-            5 => Some(Door::Metadata),
             _ => None,
         }
     }
@@ -96,7 +93,7 @@ pub struct Arrival {
 }
 
 /// `arrive` for claim `claim`: every keyed door opens a session (or brokers one) for a known
-/// principal; the metadata door answers anyone.
+/// principal.
 #[must_use]
 pub const fn arrive(claim: u32) -> Option<Arrival> {
     match Door::of(claim) {
@@ -140,7 +137,8 @@ pub trait Steps {
 }
 
 impl Steps for Door {
-    /// Every keyed door needs a principal; the metadata document answers anyone.
+    /// Every keyed door needs a principal; a door read without a credential (none today) answers
+    /// anyone.
     fn authenticate(&self) -> u32 {
         if self.is_open() {
             busbar_contract::abi::plane::PRINCIPAL_NONE
@@ -163,18 +161,12 @@ impl Steps for Door {
     /// per-session fee, which the kernel counts); the one-request doors report nothing.
     fn admit(&self) -> Vec<(u32, u64)> {
         match self {
-            Door::Mint
-            | Door::Sdp
-            | Door::Sideband
-            | Door::Gemini
-            | Door::Twilio
-            | Door::Metadata => Vec::new(),
+            Door::Mint | Door::Sdp | Door::Sideband | Door::Gemini | Door::Twilio => Vec::new(),
         }
     }
 
     /// The session doors dial the dialect's realtime socket (the credential is the kernel's, never
-    /// in the target); the mint and SDP doors send their one request; the metadata document is
-    /// answered here and sends nothing.
+    /// in the target); the mint and SDP doors send their one request.
     fn route(
         &self,
         config: &SessionConfig,
@@ -196,7 +188,6 @@ impl Steps for Door {
                 fields: Vec::new(),
                 body: Vec::new(),
             }),
-            Door::Metadata => None,
         })
     }
 
@@ -211,12 +202,9 @@ impl Steps for Door {
             .collect()
     }
 
-    /// A session open, or a read of the metadata document.
+    /// A session open.
     fn audit(&self) -> &'static str {
-        match self {
-            Door::Metadata => "streaming.metadata.read",
-            _ => SESSION_OPEN_ACTION,
-        }
+        SESSION_OPEN_ACTION
     }
 }
 
@@ -425,26 +413,3 @@ pub const fn reason_phrase(status: u16) -> Option<&'static str> {
 #[cfg(test)]
 #[path = "tests/driven_tests.rs"]
 mod tests;
-
-/// The protected-resource metadata document for `audience`: the audience a token at the plane's
-/// doors must carry, and the one place a bearer token is accepted. The plane names no authorization
-/// server: it is configured with none.
-#[must_use]
-pub fn metadata_reply(audience: &str) -> Reply {
-    Reply {
-        status: 200,
-        fields: vec![
-            ("cache-control", "public, max-age=3600".to_string()),
-            (
-                FIELD_CONTENT_TYPE,
-                "application/json; charset=utf-8".to_string(),
-            ),
-        ],
-        body: serde_json::to_vec(&serde_json::json!({
-            "resource": audience,
-            "bearer_methods_supported": ["header"],
-        }))
-        .unwrap_or_default(),
-        rtc_call_id: None,
-    }
-}

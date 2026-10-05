@@ -39,7 +39,7 @@ fn the_telephony_door_opens_a_session_behind_the_twilio_envelope() {
 #[test]
 fn a_one_request_door_opens_no_session() {
     let locked = SessionConfig::default();
-    for door in [Door::Mint, Door::Sdp, Door::Metadata] {
+    for door in [Door::Mint, Door::Sdp] {
         assert!(
             open(door, &locked, 0, None, "x", "ref").is_none(),
             "{door:?}"

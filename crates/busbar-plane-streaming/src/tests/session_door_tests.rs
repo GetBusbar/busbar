@@ -51,7 +51,7 @@ fn seconds() -> u32 {
 
 #[test]
 fn a_one_request_door_opens_no_session() {
-    for door in [Door::Mint, Door::Sdp, Door::Metadata] {
+    for door in [Door::Mint, Door::Sdp] {
         assert!(
             Live::open(door, &StreamsCfg::default()).is_none(),
             "{door:?}"

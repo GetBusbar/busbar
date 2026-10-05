@@ -32,9 +32,9 @@
 //!
 //! ## What each unit's pieces are answered
 //!
-//! A one-request door (the mint, the SDP offer, the metadata document) answers its pieces through
-//! a [`RequestUnit`] the instance keeps by the kernel's unit key, built at the unit's first piece
-//! over the newest live generation's session params and audience. Its answer's bytes are paid into
+//! A one-request door (the mint, the SDP offer) answers its pieces through a [`RequestUnit`] the
+//! instance keeps by the kernel's unit key, built at the unit's first piece over the newest live
+//! generation's session params. Its answer's bytes are paid into
 //! the reply buffer across `more = 1` re-calls ([`crate::piece`]).
 //!
 //! A piece that names a stream is a live session's, served by the door's [`Sessions`]
@@ -112,7 +112,7 @@ pub const SIGNATURE_AUTH: &str = "webhook-signature";
 
 /// The mount every door of the plane sits under.
 pub const MOUNT_PATH: &str = "/v1/realtime";
-/// The metadata document a refused caller is pointed at.
+/// The metadata URL a refused caller is pointed at (bound, never claimed: 1.5.5 parity).
 pub const METADATA_PATH: &str = "/.well-known/oauth-protected-resource/v1/realtime";
 
 /// An absent string.
@@ -324,7 +324,7 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     admin_openapi: Blob::ABSENT,
 };
 
-/// The inbound auth style of the metadata door: none, it is read without a credential.
+/// The inbound auth style of a door read without a credential (no door of the plane is, today).
 pub const NO_AUTH: &str = "none";
 
 /// One door a live session is opened through: one line of this plane on a listener's guest list
@@ -385,9 +385,10 @@ impl Route {
 }
 
 /// The doors, in the order a snapshot claims them: the ephemeral-secret mint and the SDP offer (one
-/// request each), the browser's sideband socket, the Gemini Live socket, the telephony socket, and
-/// the protected-resource metadata document a refused caller is pointed at (read without a
-/// credential). The three sockets are upgrade lines.
+/// request each), the browser's sideband socket, the Gemini Live socket and the telephony socket.
+/// The three sockets are upgrade lines. The protected-resource metadata path a refused caller is
+/// pointed at is NOT claimed (1.5.5 parity, ARCHITECT 2026-10-04: no accepted difference): the
+/// data listener's fallback answers it as it did.
 pub const ROUTES: &[Route] = &[
     Route {
         verb: "POST",
@@ -433,15 +434,6 @@ pub const ROUTES: &[Route] = &[
         auth: SIGNATURE_AUTH,
         dialect: 2,
         refusal_dialect: 2,
-    },
-    Route {
-        verb: "GET",
-        target: METADATA_PATH,
-        carrier: HTTP_TRANSPORT,
-        upgrade: false,
-        auth: NO_AUTH,
-        dialect: 0,
-        refusal_dialect: 0,
     },
 ];
 
@@ -573,19 +565,14 @@ pub struct Plane {
 }
 
 impl Plane {
-    /// A unit arriving on claim `claim`, under the newest live generation's session params and
-    /// audience, naming its caller by `caller_ref`. `None` for a claim the plane never published,
-    /// and for a door that opens a live session.
+    /// A unit arriving on claim `claim`, under the newest live generation's session params, naming
+    /// its caller by `caller_ref`. `None` for a claim the plane never published, and for a door
+    /// that opens a live session.
     fn held(&self, claim: u32, caller_ref: Option<String>) -> Option<Held> {
         let door = Door::of(claim)?;
         let generations = lock(&self.generations);
-        let (cfg, g) = generations.last()?;
-        let unit = RequestUnit::open(
-            door,
-            cfg.session.clone(),
-            caller_ref,
-            g.audience().to_string(),
-        )?;
+        let (cfg, _) = generations.last()?;
+        let unit = RequestUnit::open(door, cfg.session.clone(), caller_ref)?;
         Some(Held {
             unit,
             owed: Owed::default(),
@@ -1023,7 +1010,7 @@ fn session_piece(p: &Plane, input: Lent<'_, OnPieceIn>, out: &mut Out<'_, OnPiec
     Outcome::Ready
 }
 
-// `on_piece`: a one-request door's pieces (the mint, the SDP offer, the metadata document), each
+// `on_piece`: a one-request door's pieces (the mint, the SDP offer), each
 // answered by the unit's [`RequestUnit`]: the ATTEMPT's request with its body, the caller's body to
 // the far end, and the caller's answer from the far end's. A finished or refused unit is forgotten.
 // A piece that names a stream is a live session's ([`session_piece`]).

@@ -100,7 +100,6 @@ const SERVED: &[(&str, &str, Door, u32, &str)] = &[
         KEY_AUTH,
     ),
     ("GET", "/twilio/CA123", Door::Twilio, 2, SIGNATURE_AUTH),
-    ("GET", METADATA_PATH, Door::Metadata, 0, NO_AUTH),
 ];
 
 #[test]
@@ -149,7 +148,6 @@ fn a_served_path_under_another_method_is_405_with_the_lines_allow() {
         ("POST", "/v1/realtime/sideband/rtc_abc", "GET"),
         ("POST", "/v1/realtime/gemini/call-1", "GET"),
         ("POST", "/twilio/CA123", "GET"),
-        ("POST", METADATA_PATH, "GET"),
     ] {
         assert_eq!(
             resolve(method, path),
@@ -201,13 +199,16 @@ fn no_two_lines_tie_and_each_lines_own_witness_reaches_it() {
 }
 
 #[test]
-fn only_the_metadata_line_is_open_and_the_telephony_line_is_signed() {
+fn no_line_is_open_and_the_telephony_line_is_signed() {
     let open: Vec<_> = ROUTES
         .iter()
         .filter(|r| r.open())
         .map(|r| r.target)
         .collect();
-    assert_eq!(open, [METADATA_PATH]);
+    assert!(
+        open.is_empty(),
+        "no door is read without a credential: the metadata path is not claimed (1.5.5 parity)"
+    );
     let signed: Vec<_> = ROUTES
         .iter()
         .filter(|r| r.auth == SIGNATURE_AUTH)

@@ -7,14 +7,11 @@ use super::*;
 use crate::broker::{CALLS_PATH, CLIENT_SECRETS_PATH, SAFETY_IDENTIFIER_HEADER};
 use crate::driven::MINT_FAILED_STATUS;
 
-const AUDIENCE: &str = "https://gw.example/v1/realtime";
-
 fn unit(door: Door, caller_ref: Option<&str>) -> RequestUnit {
     RequestUnit::open(
         door,
         SessionConfig::default(),
         caller_ref.map(str::to_owned),
-        AUDIENCE.to_owned(),
     )
     .expect("a one-request door")
 }
@@ -54,7 +51,7 @@ fn reply(a: Answer) -> Reply {
 #[test]
 fn a_session_door_is_no_request_unit() {
     for door in [Door::Sideband, Door::Gemini, Door::Twilio] {
-        assert!(RequestUnit::open(door, SessionConfig::default(), None, String::new()).is_none());
+        assert!(RequestUnit::open(door, SessionConfig::default(), None).is_none());
     }
 }
 
@@ -169,13 +166,4 @@ fn a_piece_from_the_kernel_that_is_no_attempt_is_refused() {
         u.on_piece(piece(From::Kernel(0), &[], false)),
         Answer::Refused
     );
-}
-
-#[test]
-fn the_metadata_document_is_answered_at_once_and_dials_nothing() {
-    let mut u = unit(Door::Metadata, None);
-    let r = reply(u.on_piece(piece(From::Caller, &[], true)));
-    assert_eq!(r, metadata_reply(AUDIENCE));
-    let mut v = unit(Door::Metadata, None);
-    assert_eq!(v.on_piece(far_first(200, b"", true, &[])), Answer::Refused);
 }

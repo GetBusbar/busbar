@@ -63,7 +63,7 @@ pub fn open(
             id,
             owner,
         )),
-        Door::Mint | Door::Sdp | Door::Metadata => return None,
+        Door::Mint | Door::Sdp => return None,
     })
 }
 

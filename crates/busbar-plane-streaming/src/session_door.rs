@@ -168,7 +168,7 @@ impl Live {
             Door::Gemini => {
                 Unit::Gemini(SessionUnit::open(GeminiLiveCodec, locked, false, 0, None))
             }
-            Door::Mint | Door::Sdp | Door::Metadata => return None,
+            Door::Mint | Door::Sdp => return None,
         };
         Some(Live {
             unit,

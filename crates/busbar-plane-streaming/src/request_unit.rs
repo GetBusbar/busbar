@@ -19,7 +19,7 @@
 
 use crate::codec::ir::config::SessionConfig;
 use crate::driven::{
-    metadata_reply, mint_failed, mint_reply, sdp_reply, Attempt, Door, Reply, Steps, FIELD_LOCATION,
+    mint_failed, mint_reply, sdp_reply, Attempt, Door, Reply, Steps, FIELD_LOCATION,
 };
 
 /// Who pushed a piece.
@@ -70,7 +70,6 @@ pub struct RequestUnit {
     door: Door,
     locked: SessionConfig,
     caller_ref: Option<String>,
-    audience: String,
     status: Option<u16>,
     location: Option<String>,
     far: Vec<u8>,
@@ -80,15 +79,10 @@ pub struct RequestUnit {
 impl RequestUnit {
     /// Open the plane's state for one kernel unit on `door` (the unit's identity is the kernel's;
     /// the door keys this state by it): minting over the `locked` session params, naming the caller
-    /// by `caller_ref` (the kernel's reference, never the principal) and answering the metadata
-    /// document for `audience`. `None` for a door that opens a live session.
+    /// by `caller_ref` (the kernel's reference, never the principal). `None` for a door that opens
+    /// a live session.
     #[must_use]
-    pub fn open(
-        door: Door,
-        locked: SessionConfig,
-        caller_ref: Option<String>,
-        audience: String,
-    ) -> Option<Self> {
+    pub fn open(door: Door, locked: SessionConfig, caller_ref: Option<String>) -> Option<Self> {
         if door.is_session() {
             return None;
         }
@@ -96,7 +90,6 @@ impl RequestUnit {
             door,
             locked,
             caller_ref,
-            audience,
             status: None,
             location: None,
             far: Vec::new(),
@@ -127,11 +120,6 @@ impl RequestUnit {
             return Answer::Nothing;
         }
         match (self.door, piece.from) {
-            (Door::Metadata, From::Kernel(_) | From::Caller) => {
-                let reply = metadata_reply(&self.audience);
-                self.answer(reply)
-            }
-            (Door::Metadata, From::FarEnd) => Answer::Refused,
             (_, From::Kernel(0)) => Answer::Refused,
             (_, From::Kernel(_)) => {
                 self.status = None;

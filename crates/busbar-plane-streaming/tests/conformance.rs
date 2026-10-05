@@ -261,8 +261,7 @@ const PUBLIC: &str = "https://gw.example.com/ignored?q=1#f";
 fn expected(public: bool) -> Vec<String> {
     let doors = "POST /v1/realtime/client_secrets http exact, POST /v1/realtime/calls http exact, \
                  GET /v1/realtime/sideband/{call_id} ws, GET /v1/realtime/gemini/{call_id} ws, \
-                 GET /twilio/{call_id} ws, \
-                 GET /.well-known/oauth-protected-resource/v1/realtime http exact open";
+                 GET /twilio/{call_id} ws";
     let (claims, audience, metadata) = if public {
         (
             doors,
@@ -284,7 +283,7 @@ fn expected(public: bool) -> Vec<String> {
         format!("refresh Ready {}", snap(2)),
         "retire 1 Ready".into(),
         "arrive 3 Ready dialect=1 op=0 principal=1".into(),
-        "arrive 5 Ready dialect=0 op=0 principal=0".into(),
+        "arrive 5 Refused dialect=0 op=0 principal=0".into(),
         "arrive 9 Refused dialect=0 op=0 principal=0".into(),
         "tick Ready next=0".into(),
         "cancel Ready failed=true".into(),
@@ -371,8 +370,6 @@ fn the_tail_states_what_the_served_plane_declares() {
 
 /// The section the unit script opens under: the session params a mint locks the browser to.
 const SESSION: &[u8] = br#"{"session":{"model":"m-cap"}}"#;
-/// The audience [`PUBLIC`] reads to.
-const AUDIENCE: &str = "https://gw.example.com/v1/realtime";
 /// The kernel's reference for the caller.
 const CALLER_REF: &str = "c0ffee";
 /// The body the served plane sent its far end for that mint (the recorded
@@ -512,8 +509,8 @@ const fn attempt(unit: u64, claim: u32) -> Push<'static> {
     }
 }
 
-/// THE UNIT SCRIPT: a mint, an SDP offer, a metadata read written 16 bytes at a time, a session
-/// door's piece and an unpublished claim's, in the order the route pump pushes them.
+/// THE UNIT SCRIPT: a mint, an SDP offer, a session door's piece and an unpublished claim's (the
+/// metadata path among them: it is no claim, 1.5.5 parity), in the order the route pump pushes them.
 fn unit_script(p: &Plugin<Plane>) -> Vec<String> {
     let mut t = vec![format!("open {:?}", open(p, 1, SESSION, Some(PUBLIC)).0)];
     let mut b = Bufs::new(256);
@@ -542,19 +539,9 @@ fn unit_script(p: &Plugin<Plane>) -> Vec<String> {
     };
     t.push(format!("sdp far_end {}", b.call(p, &far)));
 
-    let mut narrow = Bufs::new(16);
-    t.push(format!("metadata {}", narrow.call(p, &attempt(9, 5))));
-    for _ in 0..8 {
-        let line = narrow.call(p, &push(9, 5, FROM_KERNEL, 0, &[]));
-        let done = line.contains("done=true");
-        t.push(format!("metadata more {line}"));
-        if done {
-            break;
-        }
-    }
-
     t.push(format!("sideband {}", b.call(p, &attempt(10, 2))));
     t.push(format!("unpublished {}", b.call(p, &attempt(11, 9))));
+    t.push(format!("metadata path {}", b.call(p, &attempt(12, 5))));
     t
 }
 
@@ -562,7 +549,6 @@ fn unit_script(p: &Plugin<Plane>) -> Vec<String> {
 fn unit_expected() -> Vec<String> {
     let none = "verb= target= fields=[]";
     let minted = driven::mint_reply(200, MINTED);
-    let metadata = driven::metadata_reply(AUDIENCE);
     let mut t = vec![
         "open Ready".to_string(),
         format!(
@@ -589,31 +575,14 @@ fn unit_expected() -> Vec<String> {
             String::from_utf8_lossy(SDP_ANSWER)
         ),
     ];
-    let chunks: Vec<&[u8]> = metadata.body.chunks(16).collect();
-    for (n, chunk) in chunks.iter().enumerate() {
-        let last = n + 1 == chunks.len();
-        let (lead, status, fields) = if n == 0 {
-            (
-                "metadata",
-                200,
-                "[\"cache-control=public, max-age=3600\", \
-                 \"content-type=application/json; charset=utf-8\"]",
-            )
-        } else {
-            ("metadata more", 0, "[]")
-        };
-        t.push(format!(
-            "{lead} Ready emitted={} more={} far=false done={last} status={status} verb= target= \
-             fields={fields}",
-            String::from_utf8_lossy(chunk),
-            u32::from(!last),
-        ));
-    }
     t.push(format!(
         "sideband Refused emitted= more=0 far=false done=false status=0 {none}"
     ));
     t.push(format!(
         "unpublished Refused emitted= more=0 far=false done=false status=0 {none}"
+    ));
+    t.push(format!(
+        "metadata path Refused emitted= more=0 far=false done=false status=0 {none}"
     ));
     t
 }
@@ -788,8 +757,8 @@ fn arrive_route(p: &Plugin<Plane>, claim: u32) -> (Outcome, u8, String) {
 }
 
 /// Every door that reaches the far end names the DIRECT route `streams.session.model` (the entry the
-/// composition folds from the top-level models catalog); the metadata door reaches none and names
-/// none; with no model configured nothing is named (the door steps refuse an unnamed keyed route).
+/// composition folds from the top-level models catalog); claim 5 (the metadata path) is no claim
+/// and arrives nowhere; with no model configured nothing is named (the door steps refuse an unnamed keyed route).
 /// Both ways.
 #[test]
 fn a_door_that_reaches_the_far_end_names_the_session_model_as_its_direct_route() {
@@ -806,10 +775,10 @@ fn a_door_that_reaches_the_far_end_names_the_session_model_as_its_direct_route()
                 "claim {claim}"
             );
         }
-        assert_eq!(
-            arrive_route(p, 5),
-            (Outcome::Ready, ROUTE_POOL, String::new()),
-            "the metadata document reaches no far end"
+        assert_ne!(
+            arrive_route(p, 5).0,
+            Outcome::Ready,
+            "the metadata path is no claim of the plane (1.5.5 parity)"
         );
     }
     let bare = linked(&d);

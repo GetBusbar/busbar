@@ -7,7 +7,7 @@ use super::*;
 
 #[test]
 fn every_published_claim_arrives_at_its_door_in_its_dialect() {
-    let doors: Vec<_> = (0..6)
+    let doors: Vec<_> = (0..5)
         .map(|c| arrive(c).map(|a| (a.door, a.dialect, a.op_class)))
         .collect();
     assert_eq!(
@@ -18,15 +18,14 @@ fn every_published_claim_arrives_at_its_door_in_its_dialect() {
             Some((Door::Sideband, 0, 0)),
             Some((Door::Gemini, 1, 0)),
             Some((Door::Twilio, 2, 0)),
-            Some((Door::Metadata, 0, 0)),
         ]
     );
     assert_eq!(
-        arrive(6),
+        arrive(5),
         None,
-        "a claim the plane never published arrives nowhere"
+        "a claim the plane never published arrives nowhere (the metadata path is no claim)"
     );
-    assert_eq!(crate::door::ROUTES.len(), 6, "one door per published claim");
+    assert_eq!(crate::door::ROUTES.len(), 5, "one door per published claim");
 }
 
 #[test]
@@ -115,20 +114,10 @@ fn a_status_prints_with_its_reason_phrase_when_it_has_one() {
 }
 
 #[test]
-fn the_metadata_document_names_the_audience() {
-    let r = metadata_reply("https://gw.example.com/v1/realtime");
-    assert_eq!(r.status, 200);
-    let v: serde_json::Value = serde_json::from_slice(&r.body).expect("json");
-    assert_eq!(v["resource"], "https://gw.example.com/v1/realtime");
-    assert_eq!(v["bearer_methods_supported"], serde_json::json!(["header"]));
-}
-
-#[test]
 fn each_loop_step_has_the_planes_answer() {
-    use busbar_contract::abi::plane::{PRINCIPAL_NONE, PRINCIPAL_REQUIRED};
+    use busbar_contract::abi::plane::PRINCIPAL_REQUIRED;
     assert_eq!(Door::Mint.authenticate(), PRINCIPAL_REQUIRED);
     assert_eq!(Door::Twilio.authenticate(), PRINCIPAL_REQUIRED);
-    assert_eq!(Door::Metadata.authenticate(), PRINCIPAL_NONE);
     assert_eq!(Door::Sideband.verify(), "session.model");
     assert_eq!(Door::Sideband.approve(), ("session", "streaming-server"));
     assert!(
@@ -149,7 +138,6 @@ fn each_loop_step_has_the_planes_answer() {
         Door::Sdp.route(&cfg, None, b"v=0").expect("routes"),
         Some(sdp_attempt(b"v=0"))
     );
-    assert_eq!(Door::Metadata.route(&cfg, None, b"").expect("routes"), None);
     let mut units = crate::session_unit::CumulativeUnits::default();
     units.0[1] = 20;
     units.0[4] = 2;
