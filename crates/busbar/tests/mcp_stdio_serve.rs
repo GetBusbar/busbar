@@ -645,3 +645,56 @@ fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
     assert_eq!(code, 0, "EOF with a live subscription still exits promptly");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// SEAM-S1 RED ARM, THE GRANT PER CALL ON THE LINE CARRIER: every line is its own unit with its own
+/// scope check, so a principal whose role reaches no pool is refused EACH `tools/call` it sends,
+/// in the data listener's words (`not_granted`), while the session goes on serving what it may.
+#[test]
+fn an_ungranted_tool_is_refused_per_call_on_the_line() {
+    let dir = fixture_dir("ungranted");
+    if !install_auth_plugin(&dir) {
+        return;
+    }
+    let token = token_for(canonical());
+    write_configs(
+        &dir,
+        &governed_config(
+            &dir,
+            r#"  role_bindings:
+    idp:
+      tester: { allowed_pools: [] }
+tools:
+  ws:
+    url: "http://127.0.0.1:9/mcp"
+    allow_private: true
+    pin: { mechanism: cert_spki, key: "sha256/UNUSED=" }
+    tools_allow:
+      read: { schema_hash: "sha256:0000" }
+"#,
+        ),
+    );
+    let mut child = spawn(&dir, Some(&token));
+    for i in 0..2 {
+        child.send(&serde_json::json!({
+            "jsonrpc": "2.0", "id": format!("call-{i}"), "method": "tools/call",
+            "params": { "_meta": meta(), "name": "ws_read", "arguments": {} }
+        }));
+        let line = child.recv();
+        assert_eq!(line["id"], format!("call-{i}"), "{line}");
+        assert_eq!(
+            line.pointer("/error/data/reason").and_then(|v| v.as_str()),
+            Some("not_granted"),
+            "each call is refused on its own scope check: {line}"
+        );
+    }
+    // The session still serves what the principal may: the refusals ended their units, not it.
+    child.send(&serde_json::json!({
+        "jsonrpc": "2.0", "id": "list", "method": "tools/list", "params": { "_meta": meta() }
+    }));
+    let list = child.recv();
+    assert_eq!(list["id"], "list", "{list}");
+    assert!(list.get("result").is_some(), "{list}");
+    let code = child.eof_and_wait();
+    assert_eq!(code, 0, "EOF on stdin is a clean shutdown");
+    let _ = std::fs::remove_dir_all(&dir);
+}

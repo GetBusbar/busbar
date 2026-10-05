@@ -193,7 +193,7 @@ pub struct McpDoor {
     /// The subscriptions kept on carrier sessions, by `(session, request id)` ([`door_line`]).
     line_listens: Keyed<(u64, String), door_line::LineListen>,
     /// The last number busbar spelled one of its own requests on a carrier session in.
-    ask_seq: std::sync::atomic::AtomicU64,
+    ask_seq: Keyed<(), u64>,
 }
 
 impl McpDoor {
@@ -303,7 +303,7 @@ slot!(
             answered: Keyed::new(),
             live_asks: Keyed::new(),
             line_listens: Keyed::new(),
-            ask_seq: std::sync::atomic::AtomicU64::new(0),
+            ask_seq: Keyed::new(),
         };
         let spec = door::snapshot_spec_with(plane.admitted.clone(), plane.facts.clone());
         let held = Held::pooled(generation, cfg, pools);

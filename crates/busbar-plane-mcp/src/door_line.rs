@@ -158,10 +158,11 @@ pub(super) fn is_notification(body: &[u8]) -> bool {
 
 /// The next number busbar spells one of its own requests in.
 fn next_ask(plane: &McpDoor) -> u64 {
-    plane
-        .ask_seq
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        .saturating_add(1)
+    plane.ask_seq.with_all(|m| {
+        let n = m.entry(()).or_insert(0);
+        *n = n.saturating_add(1);
+        *n
+    })
 }
 
 /// `bytes` emitted on carrier session `session`, on a fresh handle of `ticket`: whether it went.
