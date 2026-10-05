@@ -34,28 +34,96 @@ struct Governed {
     key: VirtualKey,
     token: String,
     app: Arc<App>,
+    book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
 }
 
 /// `keys_chain`: the deployment's data chain verifies a key (a claim that takes a credential is
 /// then refused by the gate when none is presented).
 fn governed(instance: &'static str, keys_chain: bool) -> Option<Governed> {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    governed_with(instance, keys_chain, None)
+}
+
+/// The test plane's key, the card its fee is charged on: its Statement name.
+const TEST_PLANE: &str = "plane-driver-test-plane";
+
+/// [`governed`], the key bound to a group whose all-time budget is `budget` cents, the test plane
+/// charging one cent per request (`None`: no group, no fee).
+fn governed_with(
+    instance: &'static str,
+    keys_chain: bool,
+    budget: Option<u64>,
+) -> Option<Governed> {
+    // The dispatcher serves its instances the composition's host services (`unit.nest` among
+    // them), as the boot's does.
+    let services = composed_services();
+    let dispatcher = Arc::new(Dispatcher::with_services(
+        DispatchConfig::default(),
+        Arc::clone(&services) as Arc<dyn busbar_contract::services::HostServices>,
+    ));
     let plane = bound(instance, &dispatcher)?;
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     let gov = Arc::new(
         GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
             .expect("governance"),
     );
+    let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = budget
+        .map(|amount| {
+            let limit = busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Budget,
+                amount,
+                per: Some(busbar_kernel::config::groups::LimitWindow::Total),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
+            };
+            let cfg = busbar_kernel::config::GroupCfg {
+                parent: None,
+                enabled: true,
+                limits: vec![limit],
+                ..Default::default()
+            };
+            (format!("{instance}-group"), cfg)
+        })
+        .into_iter()
+        .collect();
+    let cost = match budget {
+        None => CostModel::flat(1),
+        Some(_) => {
+            let fees: busbar_kernel::config::PlaneFeesMap = [(
+                TEST_PLANE.to_string(),
+                busbar_kernel_ledger::cost::PlaneFees {
+                    per_request: 1,
+                    per_session: 0,
+                },
+            )]
+            .into_iter()
+            .collect();
+            CostModel::resolve_parts(None, 0, &groups).with_plane_fees(&fees)
+        }
+    };
     let spec = NewKeySpec {
         name: "door".to_string(),
+        group: groups.keys().next().cloned(),
         ..Default::default()
     };
     let (key, token) = gov
         .mint_signed(spec, 4_000_000_000, 1_700_000_000)
         .expect("mint");
-    gov.hydrate_budgets(&CostModel::flat(1), 0)
-        .expect("hydrate");
-    let post = Arc::new(NodeEndPost::new(Arc::new(Node::new())));
+    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    // The node's one book, as the boot binds it: every unit's one line and its audit record.
+    let book = Arc::new(std::sync::Mutex::new(
+        crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_kernel_wal::NullShipper::new()),
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal opens"),
+    ));
+    let node = Arc::new(Node::new());
+    node.bind_book(Arc::clone(&book));
+    let post = Arc::new(NodeEndPost::new(node));
     let money = Arc::new(PlaneMoney::new(
         Arc::clone(&gov),
         Arc::clone(&post) as Arc<dyn EndPost>,
@@ -66,7 +134,7 @@ fn governed(instance: &'static str, keys_chain: bool) -> Option<Governed> {
     let mut served = compose_planes(
         &[(instance.to_string(), plane)],
         &dispatcher,
-        &composed_services(),
+        &services,
         &sections,
         &move || Arc::clone(&one),
         None,
@@ -77,10 +145,10 @@ fn governed(instance: &'static str, keys_chain: bool) -> Option<Governed> {
         .expect("its claims mount");
     let app = busbar_kernel::test_support::TestApp::new();
     let app = if keys_chain { app.keys_chain() } else { app };
-    let app = app
-        .governance(Arc::clone(&gov))
-        .cost(CostModel::flat(1))
-        .build();
+    let app = groups
+        .iter()
+        .fold(app, |app, (name, cfg)| app.group(name, cfg.clone()));
+    let app = app.governance(Arc::clone(&gov)).cost(cost).build();
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), routes, 1 << 20, 0, false);
     Some(Governed {
@@ -92,6 +160,7 @@ fn governed(instance: &'static str, keys_chain: bool) -> Option<Governed> {
         key,
         token: token.expose_secret().clone(),
         app,
+        book,
     })
 }
 
@@ -203,5 +272,103 @@ async fn an_anonymous_unit_on_an_open_claim_routes_and_opens_no_money() {
         "admitted, then the walk is exhausted"
     );
     assert_eq!(g.requests(), 0, "nothing charged");
+    assert_eq!(g.money.open_units(), 0);
+}
+
+/// A NESTED UNIT (`unit.nest`, ARCHITECT round 4 (c)): the parent's plane runs a child on the claim
+/// it names, under the parent's key (the child is admitted and charged on the same key's chain: one
+/// admission chain), and hands the parent the child's whole reply; both units' money and node facts
+/// close at their ends.
+#[tokio::test]
+async fn a_nested_unit_runs_under_its_parents_key_and_answers_it_whole() {
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed("serve-money-nest", true) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let (status, body) = g.post("/call/nest:/call/local", true).await;
+    assert_eq!((status, body.as_str()), (200, "nested:200:ping"));
+    assert_eq!(
+        g.requests(),
+        2,
+        "the parent and its child, both on the parent's key"
+    );
+    assert_eq!(g.money.open_units(), 0, "both units' money facts closed");
+    assert_eq!(g.post.open_units(), 0, "both units' node facts closed");
+    // Each unit's one audit record: the child's names its parent and its nested origin, under the
+    // parent's principal.
+    {
+        let book = g.book.lock().expect("unpoisoned");
+        let records = &book.audit_records;
+        assert_eq!(records.len(), 2, "one record per unit: {records:?}");
+        let parent = records
+            .iter()
+            .find(|r| r.what.parent.is_none())
+            .expect("the parent's record");
+        let child = records
+            .iter()
+            .find(|r| r.what.parent.is_some())
+            .expect("the child's record");
+        assert_eq!(child.what.parent, Some(parent.what.unit_key));
+        assert_eq!(child.subject, parent.subject, "one principal");
+        assert_eq!(child.origin_kind, "nested");
+        assert_eq!(parent.origin_kind, "client");
+    }
+    // A claim no plane serves is refused, and nothing more is charged.
+    let (status, body) = g.post("/call/nest:/nowhere", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "nest-refused:no plane serves the nested unit's claim")
+    );
+    assert_eq!(g.requests(), 3, "only the parent");
+}
+
+/// BUDGET EXHAUSTION MID-NEST: the parent is admitted while its key's budget holds one more fee;
+/// that fee spends it, so the child the parent then nests is refused over budget at its own
+/// admission (one admission chain), charged nothing, and the parent is handed the refusal.
+#[tokio::test]
+async fn a_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothing() {
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed_with("serve-money-nest-budget", true, Some(1)) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let (status, body) = g.post("/call/nest:/call/local", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "nested:429:refused:429:over_budget"),
+        "the parent ran; its child was refused on the parent's budget"
+    );
+    assert_eq!(g.requests(), 1, "the refused child charged nothing");
+    assert_eq!(g.money.open_units(), 0);
+    assert_eq!(g.post.open_units(), 0);
+}
+
+/// THE DEPTH CAP: a chain of nests is cut at the deepest a nested unit may be; every unit above it
+/// answers, each charged on the one key.
+#[tokio::test]
+async fn a_nest_past_the_depth_cap_is_refused() {
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed("serve-money-nest-deep", true) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let deep = busbar_kernel::host_services::NEST_DEPTH_MAX as usize;
+    let path = format!("{}/call/local", "/call/nest:".repeat(deep + 1));
+    let (status, body) = g.post(&path, true).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        format!(
+            "{}nest-refused:{}",
+            "nested:200:".repeat(deep),
+            busbar_kernel::host_services::NEST_TOO_DEEP
+        )
+    );
+    assert_eq!(
+        g.requests(),
+        deep as u64 + 1,
+        "every unit but the refused one"
+    );
     assert_eq!(g.money.open_units(), 0);
 }

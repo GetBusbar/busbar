@@ -154,16 +154,37 @@ pub fn build(cfg: &MeterPolicyConfig) -> MeterPolicyHandle {
 /// body cap is the same 32 MiB `TransportSettings::default()` carries, so an unset limit changes
 /// nothing.
 ///
-/// The two deprecated upstream env overrides the legacy client build still honors are deliberately
-/// not read here: this is the CONFIGURED posture, and the env vars are the legacy path's own
-/// compatibility shim.
+/// The two deprecated upstream env overrides are read here, as 1.5.5 read them at its client build:
+/// `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` and `BUSBAR_UPSTREAM_HTTP1_ONLY`, when set, win over
+/// `advanced.upstream_h2_prior_knowledge` / `advanced.upstream_http1_only` (anything but empty or
+/// `0` reads as on). The transports these settings open (the http door's prior-knowledge and
+/// http1-only keys) are the egress client now, so an existing pin keeps working across the upgrade.
+/// The deprecation line itself is the kernel's app build's, in 1.5.5's words, once per boot.
 #[must_use]
 pub fn client_settings(limits: &LimitsResolved) -> TransportSettings {
+    client_settings_under(limits, |name| std::env::var_os(name))
+}
+
+/// [`client_settings`] with the process environment read through `env`.
+#[must_use]
+pub(crate) fn client_settings_under(
+    limits: &LimitsResolved,
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> TransportSettings {
+    use busbar_kernel::appbuild::{
+        upstream_bool_env_override, ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE, ENV_UPSTREAM_HTTP1_ONLY,
+    };
     TransportSettings {
         pool_max_idle_per_host: limits.pool_max_idle_per_host,
         pool_idle_timeout_secs: limits.pool_idle_timeout_secs,
-        upstream_http1_only: limits.upstream_http1_only,
-        upstream_h2_prior_knowledge: limits.upstream_h2_prior_knowledge,
+        upstream_http1_only: upstream_bool_env_override(
+            env(ENV_UPSTREAM_HTTP1_ONLY),
+            limits.upstream_http1_only,
+        ),
+        upstream_h2_prior_knowledge: upstream_bool_env_override(
+            env(ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE),
+            limits.upstream_h2_prior_knowledge,
+        ),
         request_body_max_bytes: limits.request_body_max_bytes,
         // The deployment resolves one body limit; the transport holds it against both directions,
         // which is the same posture its own default takes.
