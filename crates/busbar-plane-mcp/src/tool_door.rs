@@ -181,6 +181,12 @@ pub struct McpDoor {
     listens: Keyed<u64, door_listen::Listening>,
     /// The instance's driver ticket and the tick clock, as its last `tick` handed them.
     driver: Keyed<(), (Ticket, u64)>,
+    /// THE STDIO SERVERS' GREETINGS: the generation of each member's child the door ran
+    /// `initialize` on ([`door_program`]), once per generation.
+    greeted: Keyed<String, u64>,
+    /// The requests of a stdio child's own the door answered, by member, generation and id: one
+    /// answer each, whichever exchange read it first.
+    answered: Keyed<(String, u64, String), ()>,
     /// THE TASKS this instance holds, by `taskId` (SEP-2663, [`door_tasks`]).
     tasks: Keyed<String, crate::tool_tasks::Task>,
     /// The result chunks of dropped tasks still to strike, by `taskId`: how many.
@@ -291,6 +297,8 @@ slot!(
             generations: Generations::new(),
             units: Keyed::new(),
             roots: Keyed::new(),
+            greeted: Keyed::new(),
+            answered: Keyed::new(),
         };
         let spec = door::snapshot_spec_with(plane.admitted.clone(), plane.facts.clone());
         let held = Held::pooled(generation, cfg, pools);
@@ -418,6 +426,10 @@ struct CallUnit {
     claim: Option<(String, u32)>,
     /// Verify-on-call's sighting, kept while the kernel's trust book stamps it.
     verified: Option<crate::trust::Sighting>,
+    /// The door's own exchange with a stdio member's child, while it pends ([`door_program`]).
+    program: Option<(door_program::Purpose, crate::tool_program::ProgramExchange)>,
+    /// The attempt whose stdio member the door greeted ([`door_program::ready`]).
+    readied: Option<u32>,
     /// What the unit is to the tasks extension ([`door_tasks`]).
     task: Option<door_tasks::TaskUnit>,
 }
@@ -440,6 +452,8 @@ struct Relay {
     /// The sampling ask being satisfied (its completions run as nested units), kept across the
     /// pends of its host calls.
     sample: Option<crate::tool_sampling::SampleRun>,
+    /// A call relayed to a stdio member: its answer read by id among its child's messages.
+    program: Option<door_program::ProgramRelay>,
     /// A `token_exchange:` member's down-scope for this caller, stated on every round's request.
     scope: Option<String>,
 }
@@ -890,6 +904,8 @@ slot!(
             pending: None,
             claim: None,
             verified: None,
+            program: None,
+            readied: None,
             task: task_run.map(|(reference, params, _)| door_tasks::TaskUnit::run(reference, params)),
         };
         keep(&plane.units, MAX_UNITS, input.get().unit, unit);
@@ -1084,7 +1100,9 @@ fn verify_on_call(
     let Some(def) = held.section.servers.get(server) else {
         return Looked::Fresh;
     };
-    if def.url.is_empty() || !plane.host.is_some_and(|h| h.lends_connector()) {
+    // A `transport: stdio` member is fetched from its own child ([`door_program::tools_listed`]).
+    let program = door_program::is_program(def);
+    if (def.url.is_empty() && !program) || !plane.host.is_some_and(|h| h.lends_connector()) {
         return Looked::Fresh;
     }
     let Some(services) = plane.services else {
@@ -1119,34 +1137,46 @@ fn verify_on_call(
                 return Looked::Fresh;
             }
             let base = VERIFY_SEQ.saturating_add(unit.attempt.saturating_mul(ROUND_SEQ_SPAN));
-            // The verify fetch carries the member's down-scope (token_exchange) or the caller's
-            // lent credential (passthrough) through the connector binding (Q-L3B-DOOR-EXCHANGE).
-            let url = def.url.clone();
-            let scope = crate::tool_scope::exchanges(
-                def,
-                held.section.effective_upstream_credentials(server),
-            )
-            .then(|| crate::tool_scope::registration_scope(server, def));
-            let answer = exchange_at(instance, plane.host.as_ref(), base, &url, || {
-                let mut request =
-                    crate::client::jsonrpc::tools_list(&url, CONNECT_REQUEST_ID, None);
-                scoped(&mut request.headers, scope.as_deref());
-                busbar_contract::abi::sdk::exchange::Request {
-                    method: b"POST".to_vec(),
-                    target: crate::call::path_of(&url).into_bytes(),
-                    fields: request
-                        .headers
-                        .iter()
-                        .map(|(n, v)| (n.as_bytes().to_vec(), v.as_bytes().to_vec()))
-                        .collect(),
-                    body: request.body,
-                    timeout_ms: CONNECT_TIMEOUT_MS,
+            if program {
+                let std::task::Poll::Ready(answer) =
+                    door_program::tools_listed(plane, ticket, unit, def, server, base)
+                else {
+                    return Looked::Pending;
+                };
+                match answer {
+                    Ok((response, id)) => sighting_of(Ok(response), id),
+                    Err(reason) => sighting_of(Err(reason), 0),
                 }
-            });
-            let std::task::Poll::Ready(answer) = answer else {
-                return Looked::Pending;
-            };
-            sighting_of(answer.map_err(|e| e.to_string()), CONNECT_REQUEST_ID)
+            } else {
+                // The verify fetch carries the member's down-scope (token_exchange) or the caller's
+                // lent credential (passthrough) through the connector binding (Q-L3B-DOOR-EXCHANGE).
+                let url = def.url.clone();
+                let scope = crate::tool_scope::exchanges(
+                    def,
+                    held.section.effective_upstream_credentials(server),
+                )
+                .then(|| crate::tool_scope::registration_scope(server, def));
+                let answer = exchange_at(instance, plane.host.as_ref(), base, &url, || {
+                    let mut request =
+                        crate::client::jsonrpc::tools_list(&url, CONNECT_REQUEST_ID, None);
+                    scoped(&mut request.headers, scope.as_deref());
+                    busbar_contract::abi::sdk::exchange::Request {
+                        method: b"POST".to_vec(),
+                        target: crate::call::path_of(&url).into_bytes(),
+                        fields: request
+                            .headers
+                            .iter()
+                            .map(|(n, v)| (n.as_bytes().to_vec(), v.as_bytes().to_vec()))
+                            .collect(),
+                        body: request.body,
+                        timeout_ms: CONNECT_TIMEOUT_MS,
+                    }
+                });
+                let std::task::Poll::Ready(answer) = answer else {
+                    return Looked::Pending;
+                };
+                sighting_of(answer.map_err(|e| e.to_string()), CONNECT_REQUEST_ID)
+            }
         }
     };
     if let Sighting::Seen(obs) = &sighting {
@@ -1272,6 +1302,14 @@ fn answer_body(
                 {
                     return Some(Step::Pending);
                 }
+                // A stdio member's child is greeted (once per generation) before the call.
+                if let Some(member) = unit.member.clone() {
+                    if let Looked::Pending =
+                        door_program::ready(plane, ticket, unit, &held, &member)
+                    {
+                        return Some(Step::Pending);
+                    }
+                }
             }
         }
     }
@@ -1375,12 +1413,21 @@ fn answer_body(
                 };
                 let def = held.section.servers.get(&member)?;
                 let mut relay = Relay::of(admitted);
-                let mut outbound = crate::call::outbound(&relay.admitted, &member, def, 0, None)?;
+                let mut outbound = if door_program::is_program(def) {
+                    // A stdio member: the call carries the unit's own id on the child.
+                    let id = door_program::id_of(unit.key, 0);
+                    relay.program = Some(door_program::ProgramRelay::waiting(id));
+                    crate::call::outbound_program(&relay.admitted, &member, def, None, id)?
+                } else {
+                    crate::call::outbound(&relay.admitted, &member, def, 0, None)?
+                };
                 // A member's token_exchange down-scope / passthrough lend rides its outbound
-                // (Q-L3B-DOOR-EXCHANGE).
-                relay.scope =
-                    exchange_scope(services, ticket, unit, &held, &member, &relay.admitted);
-                scoped(&mut outbound.fields, relay.scope.as_deref());
+                // (Q-L3B-DOOR-EXCHANGE); a stdio child carries none.
+                if relay.program.is_none() {
+                    relay.scope =
+                        exchange_scope(services, ticket, unit, &held, &member, &relay.admitted);
+                    scoped(&mut outbound.fields, relay.scope.as_deref());
+                }
                 unit.pending = Some(Pending::far(outbound));
                 unit.relay = Some(relay);
                 Step::Write
@@ -1568,6 +1615,7 @@ impl Relay {
             next: None,
             frames: Vec::new(),
             sample: None,
+            program: None,
             scope: None,
         }
     }
@@ -1663,6 +1711,16 @@ slot!(
                     .is_ok_and(|n| n.eq_ignore_ascii_case(CONTENT_TYPE))
             })
             .and_then(|f| f.field(|f| &f.value).as_str().ok().map(str::to_string));
+        // A stdio member's lease names the generation of the child it reached in its head.
+        let far_generation = input
+            .head_fields()
+            .iter()
+            .find(|f| {
+                f.field(|f| &f.name).as_str().is_ok_and(|n| {
+                    n.eq_ignore_ascii_case(busbar_contract::conn::PROGRAM_GENERATION_FIELD)
+                })
+            })
+            .and_then(|f| f.field(|f| &f.value).as_str().ok()?.trim().parse::<u64>().ok());
         let step = plane.units.with(&key, |unit| {
             let unit = unit?;
             unit.ticket = Some(ticket);
@@ -1705,6 +1763,49 @@ slot!(
                         None if relay.sample.is_some() => Settled::Sample {
                             payload: Value::Null,
                         },
+                        // A stdio member: its answer is the message carrying the call's id.
+                        None if relay.program.is_some() => {
+                            let member = unit.member.as_deref().unwrap_or_default();
+                            let (Some(def), Some(program)) = (def, relay.program.as_mut()) else {
+                                return None;
+                            };
+                            let last = piece.flags & PIECE_LAST != 0;
+                            let head = far_generation.filter(|_| piece.flags & PIECE_HAS_STATUS != 0);
+                            let far = door_program::far(
+                                plane, ticket, member, def, program, head, bytes, last,
+                            );
+                            let wait = program.wait;
+                            let progress = door_program::progress(program);
+                            match far {
+                                door_program::Far::Taken => {
+                                    relay.frames.extend(progress);
+                                    return Some(Step::Taken);
+                                }
+                                door_program::Far::Pending => {
+                                    relay.frames.extend(progress);
+                                    return Some(Step::Pending);
+                                }
+                                door_program::Far::Settled(Ok(answer)) => {
+                                    relay.frames.extend(progress);
+                                    relay.status = 200;
+                                    relay.far = answer;
+                                    crate::call::settle_call_as(
+                                        &relay.admitted,
+                                        Some(def),
+                                        relay.status,
+                                        &relay.far,
+                                        false,
+                                        relay.round,
+                                        wait,
+                                    )
+                                }
+                                door_program::Far::Settled(Err(reason)) => {
+                                    relay.frames.extend(progress);
+                                    relay.status = 0;
+                                    crate::call::upstream_failed(&relay.admitted, &reason)
+                                }
+                            }
+                        }
                         None => {
                             if piece.flags & PIECE_HAS_STATUS != 0 {
                                 relay.status = piece.status_code;
@@ -1742,6 +1843,52 @@ slot!(
                                 let member = unit.member.clone().unwrap_or_default();
                                 let round = relay.round + 1;
                                 let base = ROUND_SEQ.saturating_add(round.saturating_mul(ROUND_SEQ_SPAN));
+                                // A stdio member's further round goes to its own child, by id.
+                                if let Some(program) = relay.program.as_mut() {
+                                    let id = door_program::id_of(key, round);
+                                    let Some(outbound) = crate::call::outbound_program(
+                                        &relay.admitted,
+                                        &member,
+                                        def,
+                                        Some(&continuation),
+                                        id,
+                                    ) else {
+                                        settled = further_round_refused(&relay.admitted, kind);
+                                        continue;
+                                    };
+                                    relay.next = Some((continuation, kind));
+                                    let std::task::Poll::Ready(answer) = door_program::round(
+                                        plane, ticket, &member, def, program, outbound.body, id, base,
+                                    ) else {
+                                        relay.frames = frames;
+                                        return Some(Step::Pending);
+                                    };
+                                    relay.next = None;
+                                    relay.round = round;
+                                    frames.extend(door_program::progress(program));
+                                    frames.truncate(MAX_PROGRESS_FRAMES);
+                                    settled = match answer {
+                                        Ok(reply) => {
+                                            relay.status = 200;
+                                            relay.far = reply;
+                                            crate::call::settle_call_as(
+                                                &relay.admitted,
+                                                Some(def),
+                                                relay.status,
+                                                &relay.far,
+                                                false,
+                                                relay.round,
+                                                id,
+                                            )
+                                        }
+                                        Err(reason) => {
+                                            relay.status = 0;
+                                            relay.far.clear();
+                                            crate::call::upstream_failed(&relay.admitted, &reason)
+                                        }
+                                    };
+                                    continue;
+                                }
                                 let Some(mut outbound) = crate::call::outbound(
                                     &relay.admitted,
                                     &member,
@@ -2511,6 +2658,23 @@ slot!(
         // THE FETCH, unless a pause on the trust book already holds what it landed.
         let sighting = match instance.resume::<Sighted>() {
             Some(sighted) => sighted.0,
+            // A `transport: stdio` server is fetched from its own child.
+            None if door_program::is_program(&def) => {
+                let std::task::Poll::Ready((answer, id)) =
+                    door_program::connect_child(&instance, plane, &def, name)
+                else {
+                    return Outcome::Pending;
+                };
+                sighting_of(
+                    answer.map(|body| busbar_contract::abi::sdk::exchange::ExchangeResponse {
+                        status: 200,
+                        reason: None,
+                        fields: Vec::new(),
+                        body,
+                    }),
+                    id,
+                )
+            }
             None if def.url.is_empty() => Sighting::Failed(format!(
                 "server `{name}` registers no `url:` this door can reach it at"
             )),
@@ -2727,6 +2891,10 @@ busbar_contract::plugin_door! {
 /// so it reads the door's own unit and answer state.
 #[path = "door_listen.rs"]
 mod door_listen;
+/// THE STDIO SERVERS' LEG (Q-L3B-STDIO-UPSTREAM (A)): a child of the door, so it reads the door's own
+/// unit and relay state.
+#[path = "door_program.rs"]
+mod door_program;
 /// THE TASKS EXTENSION'S UNITS (ARCHITECT round 5 Q-L3B-TASKS (b) → (A)): a child of the door, so it
 /// reads the door's own unit and answer state.
 #[path = "door_tasks.rs"]

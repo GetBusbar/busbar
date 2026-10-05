@@ -211,41 +211,6 @@ fn the_tail_states_every_operation_class() {
     assert_eq!(TAIL.op_classes_len, OP_CLASS_TABLE.len());
 }
 
-/// A SERVER BUSBAR WOULD LAUNCH ITSELF IS REFUSED when the door reads its section (OWNER 2026-10-02:
-/// all of busbar's own stdio use is parked): `transport: stdio` and each local-process key, each in
-/// the park's sentence naming the key, and a network registration beside them unaffected.
-#[test]
-fn a_registration_busbar_would_launch_is_refused_with_the_reason() {
-    let refused = |server: &str| {
-        let section = format!(r#"{{"local":{server}}}"#);
-        read_tools_section(section.as_bytes()).expect_err("a local server is refused")
-    };
-    // Only a `transport: stdio` registration may carry the local-process keys (the grammar refuses
-    // them beside a `url:` in its own words), so each is refused here on a stdio registration.
-    for (server, key) in [
-        (
-            r#"{"transport":"stdio","command":"/usr/bin/srv","pin":{"mechanism":"unpinned"}}"#,
-            "transport: stdio",
-        ),
-        (
-            r#"{"transport":"stdio","command":"/usr/bin/srv","args":["-v"],"pin":{"mechanism":"unpinned"}}"#,
-            "transport: stdio",
-        ),
-    ] {
-        let message = refused(server);
-        assert_eq!(
-            message,
-            format!(
-                "`tools.local`: `{key}` names a local MCP server for busbar to launch, and stdio MCP \
-                 servers are not available in 1.6.0. Register the server by its streamable-HTTP \
-                 `url:` instead."
-            ),
-            "{server}"
-        );
-    }
-    read_tools_section(GOOD).expect("a network registration reads");
-}
-
 /// THE DNS-REBINDING ALLOWLIST is the `mcp:` block's `allowed_origins` (none without a block), and
 /// the refusal is the served engine's words: an OAuth-style `invalid_origin` object.
 #[test]

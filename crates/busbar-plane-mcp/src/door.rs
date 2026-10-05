@@ -20,7 +20,7 @@
 //! on the engine's side pins the two equal, entry by entry, until the engine is gone.
 
 use busbar_contract::abi::host::conn::connector::{
-    Need, DIRECTION_OUTBOUND, EGRESS_PROVIDER, KEEP_NAMED,
+    Need, DIRECTION_OUTBOUND, EGRESS_OPERATOR_INFRASTRUCTURE, EGRESS_PROVIDER, KEEP_NAMED,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Section, SECTION_DECLARING};
@@ -33,7 +33,7 @@ use busbar_contract::abi::sdk::door::abi_str;
 use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec};
 
 use crate::tool_claims::{
-    CARRIER_HTTP, CARRIER_SSE, DEFAULT_METADATA, DEFAULT_MOUNT, TASK_RUN_MOUNT,
+    CARRIER_HTTP, CARRIER_SSE, CARRIER_STDIO, DEFAULT_METADATA, DEFAULT_MOUNT, TASK_RUN_MOUNT,
 };
 use crate::tools_config::{ToolsCfg, DEFAULT_MCP_VERIFY_TTL, SECTION, SUBJECT_NOUN};
 
@@ -88,10 +88,14 @@ pub const SECTIONS: &[Section] = &[
     },
 ];
 
-/// THE SECRET REFERENCES ITS SECTION HOLDS, by settings path (`*` = every registration): a
-/// server's RFC 8693 subject token (busbar's own). The kernel enumerates them so `--validate` and
-/// boot resolve each one.
-pub const SECRET_REFS: &[AbiStr] = &[abi_str("settings.*.token_exchange.subject_token")];
+/// THE SECRET REFERENCES ITS SECTION HOLDS, by settings path (`*` = every registration, every
+/// entry): a server's RFC 8693 subject token (busbar's own) and a stdio child's environment values
+/// that are references (a pipe has no header block, so `env:` is the one channel a child gets a
+/// credential through). The kernel enumerates them so `--validate` and boot resolve each one.
+pub const SECRET_REFS: &[AbiStr] = &[
+    abi_str("settings.*.token_exchange.subject_token"),
+    abi_str("settings.*.env.*"),
+];
 
 /// The far end's response fields the plane reads: the answer's media type (a JSON document or an
 /// event stream) and a session revision's session id.
@@ -103,6 +107,18 @@ pub const KEEP_RESPONSE_HEADERS: &[AbiStr] = &[
 /// The index of [`NEEDS`]' first need: the relayed calls to the registered servers reached at a URL.
 pub const NEED_UPSTREAM: u32 = 0;
 
+/// The index of [`NEEDS`]' second need: the `transport: stdio` registrations, each a PROGRAM the
+/// host keeps running (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)).
+pub const NEED_PROGRAM: u32 = 1;
+
+/// WHERE EACH STDIO SERVER IS REACHED: its registration's own program, as the member-program path
+/// (`busbar_contract::section::MEMBER_PROGRAM`): its `command`, `args` and `env`.
+pub const MEMBER_PROGRAM: &str = busbar_contract::section::MEMBER_PROGRAM;
+
+/// The program need's response field the plane reads: the generation of the child a lease reached.
+pub const KEEP_PROGRAM_HEADERS: &[AbiStr] =
+    &[abi_str(busbar_contract::conn::PROGRAM_GENERATION_FIELD)];
+
 const NO_DETAILS: Blob = Blob {
     ptr: std::ptr::null(),
     len: 0,
@@ -110,28 +126,46 @@ const NO_DETAILS: Blob = Blob {
     flags: 0,
 };
 
-/// THE PLANE'S CONNECTION NEED: outbound over http to the servers the operator registered at a URL,
+/// THE PLANE'S CONNECTION NEEDS: outbound over http to the servers the operator registered at a URL,
 /// governed as upstreams a plane reaches (no auth style is named here: each member's credential is
-/// the binding the kernel seals for it, and it adds the fields when it sends). A server busbar would
-/// launch itself (`transport: stdio`) is refused when the section is read ([`read_tools_section`]):
-/// stdio MCP servers are not available in 1.6.0 (OWNER 2026-10-02).
-pub const NEEDS: &[Need] = &[Need {
-    direction: DIRECTION_OUTBOUND,
-    egress_class: EGRESS_PROVIDER,
-    transport: abi_str(CARRIER_HTTP),
-    auth: NONE,
-    // Each registered server is reached at its own `url` (ARCHITECT Q-L3B-ROUTES).
-    target_from: abi_str(MEMBER_TARGET),
-    trust_from: NONE,
-    details: NO_DETAILS,
-    keep_response_headers: KEEP_RESPONSE_HEADERS.as_ptr(),
-    keep_response_headers_len: KEEP_RESPONSE_HEADERS.len(),
-    timeout_ms: 0,
-    keep_mode: KEEP_NAMED,
-    _reserved: 0,
-    deny_response_headers: std::ptr::null(),
-    deny_response_headers_len: 0,
-}];
+/// the binding the kernel seals for it, and it adds the fields when it sends); and the `transport:
+/// stdio` servers, each the program its registration names, run by the host as the operator's own
+/// infrastructure with no credential (a pipe carries none), one long-lived child per server.
+pub const NEEDS: &[Need] = &[
+    Need {
+        direction: DIRECTION_OUTBOUND,
+        egress_class: EGRESS_PROVIDER,
+        transport: abi_str(CARRIER_HTTP),
+        auth: NONE,
+        // Each registered server is reached at its own `url` (ARCHITECT Q-L3B-ROUTES).
+        target_from: abi_str(MEMBER_TARGET),
+        trust_from: NONE,
+        details: NO_DETAILS,
+        keep_response_headers: KEEP_RESPONSE_HEADERS.as_ptr(),
+        keep_response_headers_len: KEEP_RESPONSE_HEADERS.len(),
+        timeout_ms: 0,
+        keep_mode: KEEP_NAMED,
+        _reserved: 0,
+        deny_response_headers: std::ptr::null(),
+        deny_response_headers_len: 0,
+    },
+    Need {
+        direction: DIRECTION_OUTBOUND,
+        egress_class: EGRESS_OPERATOR_INFRASTRUCTURE,
+        transport: abi_str(CARRIER_STDIO),
+        auth: NONE,
+        target_from: abi_str(MEMBER_PROGRAM),
+        trust_from: NONE,
+        details: NO_DETAILS,
+        keep_response_headers: KEEP_PROGRAM_HEADERS.as_ptr(),
+        keep_response_headers_len: KEEP_PROGRAM_HEADERS.len(),
+        timeout_ms: 0,
+        keep_mode: KEEP_NAMED,
+        _reserved: 0,
+        deny_response_headers: std::ptr::null(),
+        deny_response_headers_len: 0,
+    },
+];
 
 const DIALECTS: &[AbiStr] = &[abi_str(DIALECT)];
 
@@ -484,44 +518,7 @@ pub fn read_tools_section(settings: &[u8]) -> Result<ToolsCfg, String> {
     // The published names are judged over the whole section, as the kernel judges the effective
     // registry (file and overlay): two servers publishing one name refuse it.
     crate::tools_config::validate_published_names(&cfg)?;
-    refuse_launched(&cfg)?;
     Ok(cfg)
-}
-
-/// A SERVER BUSBAR WOULD LAUNCH ITSELF IS REFUSED, never ignored (OWNER 2026-10-02: all of busbar's
-/// own stdio use is parked on `1.6.x-mcp-stdio`): `transport: stdio`, or any of `command:`,
-/// `args:`, `env:`, `cwd:`, names a local child process this door has no way to run, and an operator
-/// whose `command:` was silently dropped would believe busbar serves a server it never starts. The
-/// sentence is the park's (`lane-stdio-park`, the engine's `validate_endpoint`).
-///
-/// # Errors
-///
-/// The first registration, in the operator's order, that names a local server.
-pub fn refuse_launched(cfg: &ToolsCfg) -> Result<(), String> {
-    for (name, def) in &cfg.servers {
-        let launch_key = [
-            (
-                "transport: stdio",
-                def.transport
-                    .is_some_and(crate::tools_config::ServerTransport::spawns_child),
-            ),
-            ("command:", def.command.is_some()),
-            ("args:", !def.args.is_empty()),
-            ("env:", !def.env.is_empty()),
-            ("cwd:", def.cwd.is_some()),
-        ]
-        .into_iter()
-        .find_map(|(key, present)| present.then_some(key));
-        if let Some(key) = launch_key {
-            return Err(format!(
-                "`{section}.{name}`: `{key}` names a local MCP server for busbar to launch, and stdio MCP \
-                 servers are not available in 1.6.0. Register the server by its streamable-HTTP \
-                 `url:` instead.",
-                section = crate::tools_config::SECTION
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// ONE POOL of the section (the unified `pools:` its registrations resolved to, handed at the
