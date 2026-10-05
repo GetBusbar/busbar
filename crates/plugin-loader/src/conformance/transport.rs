@@ -683,10 +683,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         let y = pump(&p, 0, Op::Begin(SIDE_DIAL, &target), &mut tight);
         (y.line(), y.framing)
     });
-    want.push((
-        "begin dial".into(),
-        Want::Is(yielded_line(&opening, &[], &[], armed("begin"), true)),
-    ));
+    want.push(("begin dial".into(), begin_dial_want(dial, armed("begin"))));
     // The far side's opening answer, read before the first frame: it writes and yields nothing.
     if !dial["answer"].is_null() {
         let answer = text(&dial["answer"], "dial.answer");
@@ -1046,6 +1043,14 @@ fn dial_only(
     want.push(("adopt".into(), Want::Starts("Refused ")));
 }
 
+/// THE DIAL'S OPENING: a door that speaks first on dial writes exactly the bytes its inputs
+/// declare in `dial.opening` at `begin`, and a door whose inputs declare none writes nothing. Bytes
+/// the inputs do not declare fail the step: an undeclared opening is refused, never waved through.
+fn begin_dial_want(dial: &serde_json::Value, flags: u32) -> Want {
+    let opening = opt_text(&dial["opening"], "dial.opening");
+    Want::Is(yielded_line(&opening, &[], &[], flags, true))
+}
+
 fn contract(fold: &Fold, want: &[(String, Want)]) {
     for (label, w) in want {
         let got = fold
@@ -1057,5 +1062,47 @@ fn contract(fold: &Fold, want: &[(String, Want)]) {
             Want::Is(line) => assert_eq!(got, line.as_str(), "{label}"),
             Want::Starts(prefix) => assert!(got.starts_with(prefix), "{label}: {got}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod opening_tests {
+    use super::{begin_dial_want, contract, yielded_line, Want};
+    use crate::conformance::Step;
+
+    fn begun(wire: &[u8]) -> Vec<Step> {
+        vec![Step {
+            label: "begin dial".into(),
+            answer: yielded_line(wire, &[], &[], 0, true),
+            crossed: 1,
+            pinned: 1,
+        }]
+    }
+
+    fn judged(inputs: &str, wire: &[u8]) {
+        let dial: serde_json::Value = serde_json::from_str(inputs).expect("inputs");
+        let want: Vec<(String, Want)> = vec![("begin dial".into(), begin_dial_want(&dial, 0))];
+        contract(&begun(wire), &want);
+    }
+
+    /// GREEN: the declared opening, exactly; and nothing where none is declared.
+    #[test]
+    fn a_declared_opening_and_a_silent_dial_both_pass() {
+        judged(r#"{ "opening": { "hex": "00010203" } }"#, &[0, 1, 2, 3]);
+        judged(r#"{}"#, &[]);
+    }
+
+    /// RED: a door that writes bytes its inputs do not declare is refused.
+    #[test]
+    #[should_panic(expected = "begin dial")]
+    fn an_undeclared_opening_is_refused() {
+        judged(r#"{}"#, b"speaks first");
+    }
+
+    /// RED: a door that writes other bytes than the ones declared is refused.
+    #[test]
+    #[should_panic(expected = "begin dial")]
+    fn an_opening_other_than_the_declared_one_is_refused() {
+        judged(r#"{ "opening": "hello" }"#, b"hullo");
     }
 }
