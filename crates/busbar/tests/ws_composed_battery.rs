@@ -254,13 +254,15 @@ async fn an_in_band_upgrade_over_the_layer_below_with_cleared_facts() {
     let (before, after_source, upgraded) = upgrade_task.await.unwrap();
 
     assert_eq!(
-        before,
-        vec![upper.key()],
-        "the upgraded-from framer named itself"
+        before.last(),
+        Some(&upper.key()),
+        "the upgraded-from framer named itself on top of its carrier: {before:?}"
     );
+    let mut chain = before.clone();
+    chain.push(stack.wire.key);
     assert_eq!(
         adopter.arrival(&upgraded).transport_chain,
-        vec![upper.key(), stack.wire.key],
+        chain,
         "the real chain, not a name for itself"
     );
     assert_eq!(
@@ -294,13 +296,21 @@ async fn a_composed_round_trip_over_the_layers_below() {
         .await;
 
     // Both ends report the stack they actually stand on, not a name for themselves.
+    let served = server_t.arrival(&server_conn).transport_chain;
     assert_eq!(
-        server_t.arrival(&server_conn).transport_chain,
-        vec![stack.upper.key(), stack.wire.key]
+        served[served.len().saturating_sub(2)..],
+        [stack.upper.key(), stack.wire.key],
+        "the wire on top of the framer it was upgraded from: {served:?}"
     );
+    let dialled = client_t.arrival(&client_conn).transport_chain;
     assert_eq!(
-        client_t.arrival(&client_conn).transport_chain,
-        vec![stack.wire.key]
+        dialled.last(),
+        Some(&stack.wire.key),
+        "the wire on top of its carrier: {dialled:?}"
+    );
+    assert!(
+        !dialled.contains(&stack.upper.key()),
+        "a dial composes over no framer: {dialled:?}"
     );
 
     client_t

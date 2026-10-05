@@ -522,19 +522,15 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
 }
 
 /// The streaming door's mint claim.
-#[cfg(linked_axis_plane_door)]
 const MINT: &str = "/v1/realtime/client_secrets";
 
 /// The provider's answer to the mint: an ephemeral secret and its expiry.
-#[cfg(linked_axis_plane_door)]
 const MINTED: &str = r#"{"value":"ek_door_0001","expires_at":1767225600}"#;
 
 /// The deployment's public base URL the streaming door fronts.
-#[cfg(linked_axis_plane_door)]
 const PUBLIC: &str = "http://gw.test";
 
 /// The streaming door, served as production composes it, and what each `root-voice` cell reads.
-#[cfg(linked_axis_plane_door)]
 struct SessionDoor {
     _published: Published,
     router: axum::Router,
@@ -551,12 +547,10 @@ struct SessionDoor {
 
 /// The billable class the session door meters a caller's audio under: how the harness finds that
 /// door among the linked plane doors without spelling the plane.
-#[cfg(linked_axis_plane_door)]
 const AUDIO_CLASS: &str = "audio_seconds_in";
 
 /// The linked plane door that meters audio (the session door), bound under `instance`; `None` in a
 /// build that links none.
-#[cfg(linked_axis_plane_door)]
 fn session_door(
     instance: &'static str,
     dispatcher: &Arc<Dispatcher>,
@@ -590,7 +584,6 @@ fn session_door(
 /// an OpenAI-protocol provider on a loopback far end answering the mint, reached through the catalog
 /// model `streams.session.model` names; the door composed under [`PUBLIC`] with its egress sealed by
 /// the composition itself, and its claims mounted on the data router.
-#[cfg(linked_axis_plane_door)]
 async fn session_served(instance: &'static str, budget: Option<u64>) -> Option<SessionDoor> {
     let published = Published(instance);
     let (port, heard) = far_end_answering(MINTED).await;
@@ -764,7 +757,6 @@ async fn session_served(instance: &'static str, budget: Option<u64>) -> Option<S
     })
 }
 
-#[cfg(linked_axis_plane_door)]
 impl SessionDoor {
     /// The requests the governance book admitted for the key, this window.
     fn requests(&self) -> u64 {
@@ -794,7 +786,6 @@ impl SessionDoor {
 /// by the `streams|mint|wrong-audience` oracle cell.)
 ///
 /// RED ARM: the same request with no credential is refused before anything is dialled or charged.
-#[cfg(linked_axis_plane_door)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_session_door_mint_is_served_under_the_providers_credential() {
     let _one = PUBLISHING.lock().await;
@@ -854,7 +845,6 @@ async fn a_session_door_mint_is_served_under_the_providers_credential() {
 /// at admission — over budget, before the provider is dialled, charged nothing, no line written —
 /// while a key with room is served (the mint cell above). RED: a door that dialled before admission
 /// would have reached the far end.
-#[cfg(linked_axis_plane_door)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_spent_key_is_refused_at_the_session_door_before_any_dial() {
     let _one = PUBLISHING.lock().await;
