@@ -64,7 +64,7 @@ pub const ENV_UPSTREAM_HTTP1_ONLY: &str = "BUSBAR_UPSTREAM_HTTP1_ONLY";
 
 /// A deprecated boolean env override on top of a config value: an UNSET var defers to the config
 /// value; a set var wins, with anything other than empty/`"0"` reading as `true`.
-fn upstream_bool_env_override(env: Option<std::ffi::OsString>, config_val: bool) -> bool {
+pub fn upstream_bool_env_override(env: Option<std::ffi::OsString>, config_val: bool) -> bool {
     match env {
         Some(v) => v != "0" && !v.is_empty(),
         None => config_val,
@@ -1209,10 +1209,11 @@ pub fn build_app_from_config(
         p.governance.clone()
     } else {
         // Governance is ALWAYS available (it is inert until an admin token is set and virtual keys are
-        // minted). Only the STORE backend is a choice: ephemeral RAM by default, or a store PLUGIN
-        // (resolved by alias or canonical name from the validated registry — the engine sees only the
-        // returned `dyn Store`, exactly like a compiled-in backend).
-        let g = cfg.store.clone().unwrap_or_default();
+        // minted). Only the STORE backend is a choice, and config makes it (Q-STORE = (B)): a linked
+        // row, or a store PLUGIN (resolved by alias or canonical name from the validated registry —
+        // the engine sees only the returned `dyn Store`, exactly like a compiled-in backend). The
+        // validation above refused an absent block.
+        let g = cfg.store.clone().ok_or_else(config::store_required)?;
         // Is a STATEFUL container plane actually configured? Those planes carry per-task state that
         // the RAM store drops on restart. "Configured" = any `tools:` server / `agents:` agent OR any
         // tool-pool / agent-pool; the pool maps are always typed (present regardless of which planes

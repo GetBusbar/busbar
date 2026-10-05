@@ -19,8 +19,8 @@ use std::sync::Arc;
 use super::resolve::ResolveNames;
 use super::*;
 use crate::egress::fixtures::{
-    ca_and_leaf, certs_from_pem, private_refusing, spawn_http, spawn_tls, CannedResponse,
-    ClientAuth, RebindingResolver, TlsServerSpec,
+    ca_and_leaf, private_refusing, spawn_double, spawn_http, CannedResponse, DoublePeer,
+    RebindingResolver, TlsDouble,
 };
 use crate::host_services::{DestJudge, DestRefusal};
 use busbar_contract::abi::host::service::{DEST_INTERNAL, DEST_METADATA};
@@ -211,28 +211,34 @@ async fn a_refusal_is_connect_class_with_no_timeout_in_its_chain() {
 }
 
 /// THE NAME STAYS ON THE WIRE. A judged TLS dial connects to the address the name answered with
-/// and presents the configured NAME: the ClientHello's SNI is the name, the certificate is
-/// verified against it (the leaf is minted for the name only), and the request head carries it as
-/// `Host`, byte-identical to the head the pinned posture sends for the same request.
+/// and hands the TLS wrap the configured NAME (the SNI, and the name the certificate is verified
+/// against — over the real wrap, the connector's `tls/engine_tests.rs`), and the request head carries it
+/// as `Host`, byte-identical to the head the pinned posture sends for the same request.
 #[tokio::test]
 async fn a_judged_tls_dial_keeps_the_name_for_sni_and_host() {
     let material = ca_and_leaf(&["provider.test"]);
-    let fixture = spawn_tls(TlsServerSpec {
-        cert_chain_pem: material.leaf_pem.clone(),
-        key_pem: material.leaf_key_pem.clone(),
-        client_auth: ClientAuth::None,
-        response: CannedResponse::ok("named"),
-        max_requests_per_connection: 4,
-    });
+    let fixture = spawn_double(
+        DoublePeer {
+            leaf: Some(material.leaf_der.clone()),
+            ..DoublePeer::default()
+        },
+        CannedResponse::ok("named"),
+        4,
+    );
+    let tls = TlsDouble::default();
     let url = format!("https://provider.test:{}/v1/x", fixture.addr.port());
 
     let judged = EngineSpec {
         dns: Dns::Custom(Arc::new(Answers(vec![fixture.addr]))),
         judge: Some(private_refusing(&["provider.test"])),
-        trust: Trust::WebpkiPlus(certs_from_pem(&material.ca_pem)),
+        trust: Trust::WebpkiPlus(vec![material.leaf_der.clone()]),
         ..EngineSpec::pooled_webpki(4, 300, false, false)
     };
-    let client = build_client(&judged).expect("builds");
+    let client = build_client(&EngineSpec {
+        tls: Some(tls.layer()),
+        ..judged
+    })
+    .expect("builds");
     let resp = client.request(get(&url)).await.expect("the named dial");
     assert_eq!(resp.status(), 200);
     let _ = http_body_util::BodyExt::collect(resp.into_body()).await;
@@ -241,16 +247,20 @@ async fn a_judged_tls_dial_keeps_the_name_for_sni_and_host() {
         Arc::from("provider.test"),
         fixture.addr.ip(),
         None,
-        certs_from_pem(&material.ca_pem),
+        vec![material.leaf_der.clone()],
     );
-    let client = build_client(&pinned).expect("builds");
+    let client = build_client(&EngineSpec {
+        tls: Some(tls.layer()),
+        ..pinned
+    })
+    .expect("builds");
     let resp = client.request(get(&url)).await.expect("the pinned dial");
     assert_eq!(resp.status(), 200);
     let _ = http_body_util::BodyExt::collect(resp.into_body()).await;
 
     let records = fixture.records_when(|r| r.len() == 2 && r.iter().all(|c| c.requests == 1));
     let judged_conn = &records[0];
-    assert!(judged_conn.handshake_ok, "verified against the name");
+    assert!(judged_conn.handshake_ok, "the handshake completed");
     assert_eq!(judged_conn.sni.as_deref(), Some("provider.test"));
     let host_line = format!("host: provider.test:{}", fixture.addr.port());
     assert!(
@@ -265,6 +275,11 @@ async fn a_judged_tls_dial_keeps_the_name_for_sni_and_host() {
         "the judged head is the pinned head, byte for byte"
     );
     assert_eq!(judged_conn.sni, records[1].sni);
+    let hellos = tls.hellos();
+    assert!(
+        hellos.iter().all(|h| h.server_name == "provider.test"),
+        "both postures hand the wrap the name: {hellos:?}"
+    );
 }
 
 /// THE SEAM, FAIL CLOSED (ARCHITECT ruling (C)): a pooled client naming no judge of its own asks

@@ -21,7 +21,7 @@ use super::loader::dispatch::{
     load_linked, Bind, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink, OutFrame,
     Plugin,
 };
-use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT};
+use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
@@ -74,23 +74,68 @@ pub struct Dispatched {
     facts: DoorFacts,
 }
 
+/// The deployment's value of the transport setting at config path `path`, as the door's settings
+/// blob carries it (`TransportTail::settings`: "one customer setting the transport reads, at its
+/// 1.5.5 path"), off the resolved transport settings; `None` = the deployment resolves no such
+/// path, and the door keeps the default it declared.
+fn dealt(
+    path: &str,
+    s: &busbar_contract::transport::TransportSettings,
+) -> Option<serde_json::Value> {
+    Some(match path {
+        "advanced.upstream_h2_prior_knowledge" => s.upstream_h2_prior_knowledge.into(),
+        "advanced.upstream_http1_only" => s.upstream_http1_only.into(),
+        "limits.upstream_request_timeout_secs" => s.request_timeout_secs.into(),
+        "limits.request_body_max_bytes" => s.request_body_max_bytes.into(),
+        _ => return None,
+    })
+}
+
+/// The settings blob a door that declares `declared` is opened with: each declared path the
+/// deployment resolves, at its value (`{}` when it declares none the deployment resolves).
+#[must_use]
+pub fn settings_blob(
+    declared: &[&str],
+    s: &busbar_contract::transport::TransportSettings,
+) -> Vec<u8> {
+    let map: serde_json::Map<String, serde_json::Value> = declared
+        .iter()
+        .filter_map(|path| Some(((*path).to_owned(), dealt(path, s)?)))
+        .collect();
+    serde_json::Value::Object(map).to_string().into_bytes()
+}
+
 impl Dispatched {
-    /// Open `plugin` (no settings: a door that reads one states it) and read what its tail states.
+    /// Open `plugin` with the deployment's value of every setting its tail declares
+    /// ([`settings_blob`]; a door that declares none is opened with no settings) and read what its
+    /// tail states.
     ///
     /// # Errors
     ///
     /// The plugin would not open, or it is no transport.
-    pub fn open(plugin: Plugin<TransportKind>) -> Result<Self, String> {
+    pub fn open(
+        plugin: Plugin<TransportKind>,
+        settings: &busbar_contract::transport::TransportSettings,
+    ) -> Result<Self, String> {
         let stated = plugin
             .context::<TransportFacts>()
             .cloned()
             .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
+        let blob = (!stated.settings.is_empty()).then(|| settings_blob(&stated.settings, settings));
         let mut i: OpenIn = blank_in();
-        i.settings = Blob {
-            ptr: std::ptr::null(),
-            len: 0,
-            fmt: BLOB_ABSENT,
-            flags: 0,
+        i.settings = match &blob {
+            Some(b) => Blob {
+                ptr: b.as_ptr(),
+                len: b.len(),
+                fmt: BLOB_JSON,
+                flags: 0,
+            },
+            None => Blob {
+                ptr: std::ptr::null(),
+                len: 0,
+                fmt: BLOB_ABSENT,
+                flags: 0,
+            },
         };
         let mut f = Frame::new(i, blank_out::<OpenOut>());
         let opened = plugin.call(life::OPEN, &mut f);
@@ -265,21 +310,23 @@ impl busbar_contract::Transport for RootWire {
     }
 }
 
-/// A door, opened and served over the host's sockets, presented at the legacy transport seam.
+/// A door, opened with the deployment's `settings` and served over the host's sockets, presented
+/// at the legacy transport seam.
 ///
 /// # Errors
 ///
 /// The door would not open, or it composes over a layer (it does not frame the host's socket).
 pub fn host_wire(
     plugin: Plugin<TransportKind>,
+    settings: &busbar_contract::transport::TransportSettings,
 ) -> Result<Arc<dyn busbar_contract::Transport>, String> {
-    let door = Dispatched::open(plugin)?;
+    let door = Dispatched::open(plugin, settings)?;
     Ok(Arc::new(RootWire(HostWire::new(Arc::new(door))?)))
 }
 
 /// A linked row's build: its door admitted through the one validation, bound under the row's name
-/// `row` ([`row_bind`]), served over the host's sockets. A door row frames the host's socket, so it
-/// takes no lower layer and reads no setting.
+/// `row` ([`row_bind`]), opened with the deployment's `settings`, served over the host's sockets. A
+/// door row frames the host's socket, so it takes no lower layer.
 ///
 /// # Panics
 ///
@@ -289,11 +336,11 @@ pub fn build(
     row: &str,
     door: DoorFn,
     _lower: Option<Arc<dyn busbar_contract::Transport>>,
-    _settings: &busbar_contract::transport::TransportSettings,
+    settings: &busbar_contract::transport::TransportSettings,
 ) -> Arc<dyn busbar_contract::Transport> {
     LinkedRow::of(door)
         .and_then(|linked| load_linked::<TransportKind>(&linked, row_bind(row)))
         .map_err(|e| e.to_string())
-        .and_then(host_wire)
+        .and_then(|plugin| host_wire(plugin, settings))
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
