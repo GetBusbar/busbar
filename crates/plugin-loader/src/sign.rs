@@ -60,14 +60,11 @@ use std::collections::BTreeMap;
 /// cannot (and need not) allowlist a key named `busbar`.
 pub const FIRST_PARTY_PUBLISHER: &str = "busbar";
 
-/// The plugin kinds this binary understands. ONE plugin subsystem: `kind` only selects which C ABI
-/// the cdylib exports and which engine subsystem consumes it; discovery/trust/validation are shared.
-/// `plane` is the SIXTH kind (1.6.0 S4): a protocol plane delivered as a `cdylib`, sharing this exact
-/// discovery/trust/validation pipeline but driven over the HOT-tier `#[repr(C)]` `PlaneDecl` vtable
-/// (`busbar_contract::abi::hot`) rather than the five cold kinds' six-symbol JSON `call` wire. Its
-/// `abi_version` axis is the airlock minor; this crate's own `supported_abi("plane")` gates it.
-/// `transport` is the SEVENTH (#3, OWNER-LOCKED: a kind is swappable, compiled in OR dropped in): the
-/// second HOT kind (#30), driven over the `#[repr(C)]` `TransportDecl` the same way.
+/// The plugin kinds this binary understands. ONE plugin subsystem: `kind` only selects which kind's
+/// table the door answers and which engine subsystem consumes it; discovery/trust/validation are
+/// shared. Each kind's manifest `abi_version` is that kind's one version (`supported_abi`, THE DESIGN
+/// §11.2). `plane` and `transport` images that have not moved to their door still ride the HOT-tier
+/// `#[repr(C)]` decls (`busbar_contract::abi::hot`), whose airlock is checked at load, apart.
 // One line, as it always was: the kind list is one statement, not seven.
 #[rustfmt::skip]
 pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", "plane", "transport"];

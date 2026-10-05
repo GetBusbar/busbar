@@ -87,7 +87,7 @@ fn manifest() -> crate::sign::Manifest {
             busbar_contract::abi::mechanism::kind::TRANSPORT,
             "door-fixture",
             "door-fixture",
-            busbar_contract::abi::ABI_MINOR,
+            busbar_contract::abi::transport::ABI_VERSION,
         )
     }
 }
@@ -132,6 +132,9 @@ fn a_manifest_outside_the_transport_version_window_is_refused() {
     validate_structure(&packed(), b"lib", &crate::supported_abi, "")
         .expect("a transport is a kind the loader admits");
     let mut old = packed();
-    old.abi_version = busbar_contract::abi::hot::TRANSPORT_DECL_MINOR - 1;
+    old.abi_version = busbar_contract::abi::transport::ABI_VERSION - 1;
     assert!(validate_structure(&old, b"lib", &crate::supported_abi, "").is_err());
+    let mut newer = packed();
+    newer.abi_version = busbar_contract::abi::transport::ABI_VERSION + 1;
+    assert!(validate_structure(&newer, b"lib", &crate::supported_abi, "").is_err());
 }
