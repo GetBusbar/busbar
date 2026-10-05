@@ -233,3 +233,62 @@ fn test_sign_and_wire_path_signed_equals_sent_for_reserved_chars() {
         "transmitted path must equal the signed canonical path"
     );
 }
+
+/// THE PLANE'S HALF OF THE DECLARED-CREDENTIAL PROOF (P2 D1): every real dialect declaration's
+/// egress scheme maps to exactly the binding the shared fixture records for it
+/// (`testing/plane-copies/declared-credentials.json`, `bindings`), a signing style's region read
+/// from the host by the dialect's own rule; the `auth: api-key` override to its own. The composition
+/// root binds those same rows on the linked auth plugins and holds the headers they present to the
+/// 1.5.5 builders' (`root/tests/declared_credentials.rs`); neither half names the other.
+#[test]
+fn each_dialects_declared_scheme_maps_to_its_recorded_binding() {
+    crate::testkit::install_test_seams();
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testing/plane-copies/declared-credentials.json"
+    );
+    let fixture: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))
+            .expect("fixture is JSON");
+    let bindings = fixture["bindings"].as_object().expect("bindings");
+    let mut mapped = 0usize;
+    for (dialect, want) in bindings {
+        if dialect == "api-key-override" {
+            let b = crate::engine::credential::api_key_override_binding();
+            assert_eq!(b.style, want["style"], "{dialect}");
+            assert_eq!(b.params, want["params"], "{dialect}");
+            assert!(
+                b.statics.is_empty(),
+                "the override writes no dialect static"
+            );
+            continue;
+        }
+        let decl = busbar_kernel::proto::decl_for(dialect)
+            .unwrap_or_else(|| panic!("{dialect} is a registered dialect"));
+        let scheme = decl
+            .egress_scheme
+            .expect("each dialect declares its scheme");
+        for region in fixture["regions"].as_array().expect("regions") {
+            let host = region["host"].as_str().expect("host");
+            let b = crate::engine::credential::declared_binding(decl, scheme, host);
+            assert_eq!(b.style, want["style"], "{dialect}");
+            let mut params = b.params.clone();
+            if b.style == "sigv4" {
+                let read = params
+                    .as_object_mut()
+                    .and_then(|m| m.remove("region"))
+                    .expect("a signing binding names its region");
+                assert_eq!(
+                    read.as_str(),
+                    Some(region["region"].as_str().unwrap_or("us-east-1")),
+                    "{dialect} at {host}"
+                );
+            }
+            assert_eq!(params, want["params"], "{dialect} at {host}");
+            assert_eq!(b.statics, decl.static_headers, "{dialect}");
+            assert!(b.uses_key, "{dialect}: a declared scheme presents the key");
+        }
+        mapped += 1;
+    }
+    assert_eq!(mapped, 6, "every recorded dialect was mapped");
+}

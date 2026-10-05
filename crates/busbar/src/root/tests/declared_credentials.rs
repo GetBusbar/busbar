@@ -5,13 +5,14 @@
 //! split; #83a SD-2b, SD-3; O7, S2-a).
 //!
 //! The kernel holds no auth style: a lane's credential is bound on the auth plugin serving the
-//! style its dialect's declared scheme maps to (`busbar_llm::engine::credential::declared_binding`),
-//! and every request asks that plugin for its fields. This suite holds that path — the mapping, the
-//! composition root's auth axis, and the auth plugins this build links (`auths`) — to the shared
-//! fixture `testing/plane-copies/declared-credentials.json`: the credential headers each dialect's
-//! own 1.5.5 builder wrote, per credential, mode and request. The plane's own suite holds each real
-//! declaration to the same file's scheme data, so the two halves together are the byte-identity
-//! proof of the switch. Ported from the kernel's `egress_auth` differential, which it replaces.
+//! style its dialect's declared scheme maps to, and every request asks that plugin for its fields.
+//! This suite holds the composition root's auth axis and the auth plugins this build links
+//! (`auths`), bound under each dialect's recorded binding (the shared fixture
+//! `testing/plane-copies/declared-credentials.json`, `bindings`), to the credential headers each
+//! dialect's own 1.5.5 builder wrote, per credential, mode and request (`rows`). The plane's own
+//! suite holds its mapping of each real declaration to the same `bindings`, so the halves together
+//! are the byte-identity proof of the switch, and neither names the other. Ported from the
+//! kernel's `egress_auth` differential, which it replaces.
 //!
 //! Not ported: the two tests that pinned the main log's text for an unpresentable credential. That
 //! line is now the auth plugin's diagnostic, written to the plugin's own log file (THE DESIGN #85).
@@ -52,17 +53,52 @@ fn bound(binding: &StyleBinding, credential: &str) -> Arc<dyn CredentialProvider
     })
 }
 
-/// The headers `decl`'s declared scheme presents for `key` under `ctx`: bound as a lane binds (the
-/// operator's key in `Own` mode; a passthrough lane binds its own, here none, and presents the
-/// caller's per request), in order, as strings.
-fn present(decl: &'static ProtocolDecl, key: &str, ctx: &SigningContext) -> Vec<(String, String)> {
-    let scheme = decl.egress_scheme.expect("declared");
-    let binding = busbar_llm::engine::credential::declared_binding(decl, scheme, ctx.host);
+/// The binding the fixture records for `dialect` (`bindings`): the style its declared scheme is
+/// bound under and its parameters, a signing style's region added from `host` as the plane adds it
+/// (the plane's own suite holds its mapping to the same rows).
+fn binding_of(
+    dialect: &str,
+    host: &str,
+    statics: &'static [(&'static str, &'static str)],
+) -> StyleBinding {
+    let row = &fixture()["bindings"][dialect];
+    let style = row["style"].as_str().expect("style").to_string();
+    let mut params = row["params"].clone();
+    if style == "sigv4" {
+        let region = recorded_region(host).unwrap_or("us-east-1");
+        params["region"] = serde_json::Value::String(region.to_string());
+    }
+    StyleBinding {
+        style,
+        params,
+        uses_key: true,
+        statics,
+    }
+}
+
+/// The headers `dialect`'s declared scheme presents for `key` under `ctx`, with `statics` after
+/// them: bound as a lane binds (the operator's key in `Own` mode; a passthrough lane binds its own,
+/// here none, and presents the caller's per request), in order, as strings.
+fn present_bound(binding: &StyleBinding, key: &str, ctx: &SigningContext) -> Vec<(String, String)> {
     let own = match ctx.upstream_creds {
         UpstreamCreds::Own => key,
         UpstreamCreds::Passthrough => "",
     };
-    strings(&bound(&binding, own).headers_for(key, ctx))
+    strings(&bound(binding, own).headers_for(key, ctx))
+}
+
+/// `decl`'s dialect (its twin name's tail), presented.
+fn present(decl: &'static ProtocolDecl, key: &str, ctx: &SigningContext) -> Vec<(String, String)> {
+    let dialect = decl
+        .name
+        .rsplit('-')
+        .next()
+        .expect("a twin name ends in its dialect");
+    present_bound(
+        &binding_of(dialect, ctx.host, decl.static_headers),
+        key,
+        ctx,
+    )
 }
 
 fn strings(h: &[(axum::http::HeaderName, axum::http::HeaderValue)]) -> Vec<(String, String)> {
@@ -427,7 +463,17 @@ fn presented(name: &str, key: &str, mode: UpstreamCreds) -> Vec<(String, String)
         timestamp_epoch: 1_752_000_000,
         upstream_creds: mode,
     };
-    present(static_twin(name), key, &ctx)
+    // The family-table twins carry the anthropic scheme, the two-statics twin the bearer one.
+    let dialect = if name == "static-twin-two-statics" {
+        "openai"
+    } else {
+        "anthropic"
+    };
+    present_bound(
+        &binding_of(dialect, ctx.host, static_twin(name).static_headers),
+        key,
+        &ctx,
+    )
 }
 
 fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -522,7 +568,7 @@ fn the_api_key_override_presents_the_shared_builders_bytes() {
         "sk\u{0}key",
         "sk\u{7f}key",
     ];
-    let binding = busbar_llm::engine::credential::api_key_override_binding();
+    let binding = binding_of("api-key-override", "h.example.com", &[]);
     for &key in KEYS {
         for upstream_creds in [UpstreamCreds::Own, UpstreamCreds::Passthrough] {
             let ctx = SigningContext {

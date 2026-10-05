@@ -66,11 +66,6 @@ item = "openapi"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/auth/mod.rs"
-item = "sigv4"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/auth/token.rs"
 item = "github"
 

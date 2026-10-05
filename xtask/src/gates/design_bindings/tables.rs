@@ -510,7 +510,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
     ]),
     ("PB-94", &[
         ("test", "test_passthrough_forwards_caller_token", "passthrough sends the caller token"),
-        ("test", "the_family_table_decides_first_and_the_mode_decides_the_rest", "passthrough vs own picks one header for a credential in no family"),
+        ("test", "crates/busbar/src/root/tests/declared_credentials.rs::a_declared_static_header_follows_the_credential_verbatim", "passthrough vs own picks one header for a credential in no family, through the linked auth plugins"),
         ("test", "override_present_runs_full_lookup", "a pool scalar replaces the section default"),
         ("test", "golden_migrate_auth_upstream_credentials_moves_to_pools", "the 1.5.5 key lands under pools"),
     ]),
@@ -574,10 +574,8 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "refresh_rotates_key_and_revokes_the_old_one", "?refresh rotates and revokes"),
     ]),
     ("PB-101", &[
-        ("test", "test_verify_sigv4_ingress_credential_unsigned_payload_rejected", "UNSIGNED-PAYLOAD is refused"),
-        ("test", "test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits", "the pre-buffer structural gate admits a matching body"),
-        ("test", "test_verify_sigv4_ingress_credential_tampered_body_rejected", "a tampered body is refused"),
-        ("test", "test_verify_inbound_sigv4_unknown_key_dummy_secret_is_signature_mismatch", "DUMMY_SECRET constant-time reject"),
+        ("test", "crates/busbar/tests/sigv4_both_ways.rs::sigv4_is_verified_inbound_and_signed_outbound", "on the shipped binary, through the linked sigv4 auth plugin's verify over records.secret: a signed request is admitted, a tampered body and an unknown AccessKeyId are refused byte-identically (the dummy-secret path)"),
+        ("oracle-cell", "llm|bedrock|bedrock|request|unauthenticated", "the bedrock ingress refusal diffed against 1.5.5"),
         ("test", "throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch", "MIN_BODY_THROUGHPUT_BYTES_PER_SEC and the grace"),
         ("test", "a_fast_large_upload_is_not_killed_by_the_throughput_floor", "the floor does not kill a fast upload"),
         ("test", "total_deadline_trips_on_a_body_that_stays_above_the_floor_forever", "the total body deadline"),

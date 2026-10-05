@@ -36,7 +36,7 @@ fn presentation(p: CredentialHeader) -> Value {
 /// with its service, the region its host names (else its default) and its content type. The
 /// dialect's static fields (`decl`'s) follow the plugin's.
 #[must_use]
-pub fn declared_binding(
+pub(crate) fn declared_binding(
     decl: &'static ProtocolDecl,
     scheme: EgressScheme,
     host: &str,
@@ -92,7 +92,7 @@ pub fn declared_binding(
 /// THE `auth: api-key` OVERRIDE's binding: the credential verbatim in `api-key` whatever the
 /// dialect, and none of the dialect's static fields.
 #[must_use]
-pub fn api_key_override_binding() -> StyleBinding {
+pub(crate) fn api_key_override_binding() -> StyleBinding {
     StyleBinding {
         style: "api-key".to_string(),
         params: json!({}),
