@@ -67,24 +67,6 @@ crc32fast = { workspace = true }
 tokio = { workspace = true, features = ["net", "time", "rt", "process"] }
 libc = { workspace = true }
 
-# THE PUBLISHED CONFORMANCE SUITE'S HOST CONNECTOR (`conformance`, never a default and never named by
-# a shipped build): the suite (`busbar-plugin-loader`'s `conformance`) binds a networked plugin over
-# THIS crate's own connector, composed as the root composes it (carrier -> [TLS] -> framer) over the
-# linked tcp and http framer doors. A plugin repo reaches it only through a dev-dependency.
-busbar-plugin-loader = { path = "../plugin-loader", features = ["conformance"], optional = true }
-busbar-transport-tcp = { workspace = true, optional = true }
-busbar-transport-http = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
-
-[features]
-# The suite's host connector (`conformance`): see the optional dependencies above.
-conformance = [
-    "dep:busbar-plugin-loader",
-    "dep:busbar-transport-tcp",
-    "dep:busbar-transport-http",
-    "dep:serde_json",
-]
-
 
 [dev-dependencies]
 # Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.

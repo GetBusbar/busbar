@@ -224,6 +224,44 @@ mod suite_conns {
         }
     }
 
+    /// A host connector handed in (`conformance_suite! { …, host: … }`): stands in for busbar's.
+    fn a_host(
+        wake: Arc<dyn Fn(u64) + Send + Sync>,
+        anchors: Option<&str>,
+    ) -> Arc<dyn busbar_contract::conn::DeclaredConns> {
+        let _ = wake;
+        HOSTED.with(|h| h.set(anchors.map(str::to_owned)));
+        Arc::new(crate::needs_restated::Inert)
+    }
+
+    thread_local! {
+        static HOSTED: std::cell::Cell<Option<String>> = const { std::cell::Cell::new(None) };
+    }
+
+    /// Q-P4-4's seam: with a HOST connector handed in, a need over a scheme the test table does
+    /// not serve (`http`) binds over the host, its TLS handed the suite's test anchors; without
+    /// one it binds as a probe; anchors with no host are refused by name.
+    #[test]
+    fn a_host_connector_handed_in_serves_every_need_and_takes_the_anchors() {
+        let d = dispatcher();
+        let s = subject(http_door).with_host(a_host).with_anchors("PEM");
+        assert!(matches!(s.bind(&d, "hosted").conns, ConnTable::Host(_)));
+        assert_eq!(HOSTED.with(std::cell::Cell::take).as_deref(), Some("PEM"));
+        let plain = subject(http_door);
+        assert!(matches!(plain.bind(&d, "plain").conns, ConnTable::Probe));
+        let unhosted = subject(tcp_door).with_anchors("PEM");
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            unhosted.conns(&d).is_some()
+        }))
+        .expect_err("anchors with no host to trust them");
+        let text = refused
+            .downcast_ref::<&str>()
+            .map(ToString::to_string)
+            .or_else(|| refused.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        assert!(text.contains("name its `host:` too"), "{text}");
+    }
+
     /// A `tcp` need: each leg's bind carries a table of its own, and the instance bound over it
     /// dials a REAL local endpoint through it under its declared need.
     #[test]
@@ -412,13 +450,19 @@ mod resumed_open {
     }
 }
 
-/// RED (Q-P4-7): the store script writes, and looks up, the one credential kind the shipped store
-/// schemas hold (`sigv4`, 1.5.5's), never a kind a schema-constrained store refuses.
+/// RED (Q-P4-7): the store script writes, and looks up, the credential kind the plugin's
+/// `conformance.json` names (`store.credential_kind`: the one kind the shipped store schemas hold,
+/// `sigv4` in 1.5.5's), never a kind of its own a schema-constrained store refuses; a
+/// `conformance.json` that names none is refused by name.
 #[test]
-fn the_store_script_writes_the_only_credential_kind_the_shipped_schemas_hold() {
-    use super::store::{secret, CREDENTIAL_KIND};
-    assert_eq!(CREDENTIAL_KIND, "sigv4");
-    assert_eq!(secret("c1", "k1", "pub1").meta.kind, "sigv4");
+fn the_store_script_writes_the_credential_kind_the_plugin_names() {
+    use super::store::{secret, Inputs};
+    assert_eq!(secret("sigv4", "c1", "k1", "pub1").meta.kind, "sigv4");
+    let none = serde_json::json!({ "node": 1 });
+    let text = std::panic::catch_unwind(|| Inputs::of(&none).credential_kind.to_owned())
+        .expect_err("no credential kind named");
+    let text = text.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(text.contains("store.credential_kind"), "{text}");
 }
 
 // ── THE PER-FOLD NAMESPACE (Q-P4-8) ──
@@ -436,10 +480,10 @@ mod fold_namespace {
     /// Settings that name no placeholder are exactly the plugin's.
     #[test]
     fn settings_without_the_placeholder_are_unchanged() {
-        let s = subject(r#"{"url": "postgres://127.0.0.1/db"}"#);
+        let s = subject(r#"{"url": "db://127.0.0.1/db"}"#);
         assert_eq!(
             Leg::Linked.settings(&s),
-            br#"{"url":"postgres://127.0.0.1/db"}"#.to_vec()
+            br#"{"url":"db://127.0.0.1/db"}"#.to_vec()
         );
     }
 

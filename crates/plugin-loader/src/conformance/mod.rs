@@ -17,15 +17,15 @@
 //! }
 //! ```
 //!
-//! A NETWORKED plugin over `http`/`https`, or one that secures a stream through the host's TLS,
-//! names busbar's host connector too (a dev-dependency on `busbar-core-connector`, feature
-//! `conformance`, at the same pin), and, for TLS, the test CA its local endpoint's certificate
-//! chains to; both go to the HOST, never to the plugin:
+//! A NETWORKED plugin over a framed scheme, or one that secures a stream through the host's TLS,
+//! names busbar's HOST connector too ([`Host`]: busbar's connector composed as production composes
+//! it, carrier -> [TLS] -> framer, Q-P4-4), and, for TLS, the test CA its local endpoint's
+//! certificate chains to; both go to the HOST, never to the plugin:
 //!
 //! ```ignore
 //! busbar_plugin_loader::conformance_suite! {
 //!     door: …, cdylib: …, inputs: …,
-//!     host: busbar_core_connector::conformance::host,
+//!     host: <busbar's host connector, a `conformance::Host`>,
 //!     tls: include_str!("test-ca.pem"),
 //! }
 //! ```
@@ -129,9 +129,8 @@ pub struct Subject {
     /// The plugin's `conformance.json`.
     pub inputs: serde_json::Value,
     /// THE HOST CONNECTOR the suite binds a networked plugin over (`conformance_suite! { …, host: …
-    /// }`): busbar's own connector, composed as the root composes it
-    /// (`busbar_core_connector::conformance::host`). `None`: the loader's test table
-    /// ([`TcpConns`], plain `tcp` only).
+    /// }`): busbar's own connector, composed as the root composes it ([`Host`]). `None`: the
+    /// loader's test table ([`TcpConns`], plain `tcp` only).
     pub host: Option<Host>,
     /// TEST TRUST ANCHORS (CA certificates, PEM) for the HOST connector's TLS
     /// (`conformance_suite! { …, tls: … }`): never handed to the plugin.
@@ -140,8 +139,8 @@ pub struct Subject {
 
 /// The suite's HOST CONNECTOR, as the busbar side builds it for one leg: its parked reads woken
 /// through the leg dispatcher's conn waker, its TLS trusting the test anchors (PEM) when named.
-/// `busbar_core_connector::conformance::host` is one (feature `conformance`; this crate cannot name
-/// it: the connector depends on the kernel, which depends on this crate).
+/// INJECTED, never named here: this crate cannot depend on the connector (the connector depends on
+/// the kernel, which depends on this crate), so the busbar side that composes it hands it in.
 pub type Host = fn(Arc<dyn Fn(u64) + Send + Sync>, Option<&str>) -> Arc<dyn DeclaredConns>;
 
 impl Subject {
@@ -282,8 +281,7 @@ impl Subject {
         }
         assert!(
             self.anchors.is_none(),
-            "conformance_suite!'s `tls:` anchors are the HOST connector's: name its \
-             `host: busbar_core_connector::conformance::host` too"
+            "conformance_suite!'s `tls:` anchors are the HOST connector's: name its `host:` too"
         );
         let table = TcpConns::new(d.conn_waker());
         let served = needs

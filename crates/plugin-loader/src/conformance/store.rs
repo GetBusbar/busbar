@@ -176,17 +176,17 @@ fn audit(seq: u64, action: &str) -> AuditRecord {
     }
 }
 
-/// The credential kind the script writes and looks up (Q-P4-7): `sigv4`, the ONLY kind the shipped
-/// store schemas hold (1.5.5's, unchanged; `abi::cold`'s `PutCredential`: "today only
-/// `kind: \"sigv4\"`"). A store whose schema constrains the kind refuses any other.
-pub(super) const CREDENTIAL_KIND: &str = "sigv4";
-
-pub(super) fn secret(id: &str, key_id: &str, public_id: &str) -> CredentialSecret {
+/// A credential of `kind` (Q-P4-7: the script writes, and looks up, the ONE kind the shipped store
+/// schemas hold, 1.5.5's, `abi::cold`'s `PutCredential` "today only" kind; a store whose schema
+/// constrains the kind refuses any other). The kind is the plugin's `conformance.json`
+/// `store.credential_kind`, never a word this crate spells (`c1-literals`: the loader names no auth
+/// style).
+pub(super) fn secret(kind: &str, id: &str, key_id: &str, public_id: &str) -> CredentialSecret {
     CredentialSecret {
         meta: CredentialMeta {
             id: id.into(),
             key_id: key_id.into(),
-            kind: CREDENTIAL_KIND.into(),
+            kind: kind.into(),
             slot: 0,
             public_id: public_id.into(),
             secret_form: SecretForm::Recoverable,
@@ -247,7 +247,9 @@ fn at<'v>(k: &'v serde_json::Value, path: &str) -> &'v serde_json::Value {
 }
 
 /// The store's inputs, read once.
-struct Inputs<'a> {
+pub(super) struct Inputs<'a> {
+    /// The credential kind the shipped store schemas hold (`store.credential_kind`, Q-P4-7).
+    pub(super) credential_kind: &'a str,
     node: u64,
     cap_bucket: &'a str,
     window_start: u64,
@@ -266,7 +268,7 @@ struct Inputs<'a> {
 }
 
 impl<'a> Inputs<'a> {
-    fn of(k: &'a serde_json::Value) -> Self {
+    pub(super) fn of(k: &'a serde_json::Value) -> Self {
         assert!(k.is_object(), "conformance.json has no `store` inputs");
         let s = |path: &str| -> &'a str {
             at(k, path)
@@ -279,6 +281,7 @@ impl<'a> Inputs<'a> {
                 .unwrap_or_else(|| panic!("conformance.json: store.{path} must be a number"))
         };
         let i = Self {
+            credential_kind: s("credential_kind"),
             node: n("node"),
             cap_bucket: s("caps.bucket"),
             window_start: n("caps.window_start"),
@@ -405,13 +408,16 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     // ── credentials ──
     r.line("put k1", 1, || ans(b.put_key(&key("k1", None))));
     r.line("cred c1", 1, || {
-        ans(b.put_credential(&secret("c1", "k1", "pub1")))
+        ans(b.put_credential(&secret(i.credential_kind, "c1", "k1", "pub1")))
     });
     r.line("cred c9 (live slot)", 1, || {
-        ans(b.put_credential(&secret("c9", "k1", "pub9")))
+        ans(b.put_credential(&secret(i.credential_kind, "c9", "k1", "pub9")))
     });
     r.line("key+cred k2", 1, || {
-        ans(b.put_key_with_credential(&key("k2", None), &secret("c2", "k2", "pub2")))
+        ans(b.put_key_with_credential(
+            &key("k2", None),
+            &secret(i.credential_kind, "c2", "k2", "pub2"),
+        ))
     });
     r.line("creds k1", LEASED, || {
         ans(b
@@ -420,12 +426,12 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     r.line("lookup pub2", LEASED, || {
         ans(b
-            .lookup_credential_secret(CREDENTIAL_KIND, "pub2")
+            .lookup_credential_secret(i.credential_kind, "pub2")
             .map(|c| c.map(|c| (c.meta.id, c.secret))))
     });
     r.line("lookup absent", 1, || {
         ans(b
-            .lookup_credential_secret(CREDENTIAL_KIND, "pub-absent")
+            .lookup_credential_secret(i.credential_kind, "pub-absent")
             .map(|c| c.map(|c| c.meta.id)))
     });
     r.line("revoke c1", 1, || ans(b.revoke_credential("c1", "rotated")));
