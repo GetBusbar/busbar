@@ -168,8 +168,17 @@ fn the_jev_refusal_shape_is_exactly_code_and_message() {
 }
 
 fn totals(rows: &[(&str, &str, u64, &str)]) -> Vec<u8> {
-    json!({"rows": rows.iter().map(|(lane, provider, fees, micros)| json!({
-        "bucket": "k", "day": 0, "lane": lane, "provider": provider,
+    bucketed(
+        &rows
+            .iter()
+            .map(|&(l, p, f, m)| ("k", l, p, f, m))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn bucketed(rows: &[(&str, &str, &str, u64, &str)]) -> Vec<u8> {
+    json!({"rows": rows.iter().map(|(bucket, lane, provider, fees, micros)| json!({
+        "bucket": bucket, "day": 0, "lane": lane, "provider": provider,
         "fee_count": fees, "priced_nanos": "0", "priced_micros": micros,
     })).collect::<Vec<_>>()})
     .to_string()
@@ -180,18 +189,36 @@ fn totals(rows: &[(&str, &str, u64, &str)]) -> Vec<u8> {
 fn the_jev_ledger_shows_one_fee_carrying_the_reported_units() {
     assert_eq!(REPORTED_UNITS, 42);
     // One billable success at 42 units; another lane's rows are not read.
-    assert!(judge_jev_ledger(&totals(&[
-        ("jev-1", "typesafe", 1, "42"),
-        ("gpt", "openai", 9, "100"),
-    ]))
+    assert!(judge_jev_ledger(
+        &totals(&[("jev-1", "typesafe", 1, "42"), ("gpt", "openai", 9, "100")]),
+        "vk_caller"
+    )
     .is_ok());
     // The 422 billed too.
-    assert!(judge_jev_ledger(&totals(&[("jev-1", "typesafe", 2, "42")])).is_err());
+    assert!(judge_jev_ledger(&totals(&[("jev-1", "typesafe", 2, "42")]), "vk_caller").is_err());
     // A fee with no units: the reported usage did not reach the ledger.
-    assert!(judge_jev_ledger(&totals(&[("jev-1", "typesafe", 1, "0")])).is_err());
+    assert!(judge_jev_ledger(&totals(&[("jev-1", "typesafe", 1, "0")]), "vk_caller").is_err());
     // Nothing billed at all.
-    assert!(judge_jev_ledger(&totals(&[])).is_err());
-    assert!(judge_jev_ledger(b"{}").is_err());
+    assert!(judge_jev_ledger(&totals(&[]), "vk_caller").is_err());
+    assert!(judge_jev_ledger(b"{}", "vk_caller").is_err());
+}
+
+/// AT THE WIDTH THE 1.6.0 NODE KEEPS (no lane, no provider: every row a bucket-day), the jev lane's
+/// figures are the rig's caller's own bucket; another caller's row is never read.
+#[test]
+fn at_the_node_width_the_jev_ledger_is_the_callers_bucket() {
+    assert!(judge_jev_ledger(
+        &bucketed(&[
+            ("vk_caller", "", "", 1, "42"),
+            ("vk_other", "", "", 7, "900")
+        ]),
+        "vk_caller"
+    )
+    .is_ok());
+    // RED ARMS: another caller's figures are not the jev lane's, and the caller's own still judge.
+    assert!(judge_jev_ledger(&bucketed(&[("vk_other", "", "", 1, "42")]), "vk_caller").is_err());
+    assert!(judge_jev_ledger(&bucketed(&[("vk_caller", "", "", 0, "42")]), "vk_caller").is_err());
+    assert!(judge_jev_ledger(&bucketed(&[("vk_caller", "", "", 1, "41")]), "vk_caller").is_err());
 }
 
 // ── a2a ───────────────────────────────────────────────────────────────────────────────────────

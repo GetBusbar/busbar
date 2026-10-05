@@ -120,10 +120,19 @@ const OP_CLASSES: &[OpClass] = &[OpClass {
     name: abi_str(tail::OP_CLASSES[0].as_str()),
 }];
 
-const BILLABLE_CLASSES: &[BillableClass] = &[BillableClass {
-    class: abi_str(tail::BILLABLE_CLASSES[0].0.as_str()),
-    family: abi_str(tail::BILLABLE_CLASSES[0].1),
-}];
+const BILLABLE_CLASSES: &[BillableClass] = &[
+    BillableClass {
+        class: abi_str(tail::BILLABLE_CLASSES[0].0.as_str()),
+        family: abi_str(tail::BILLABLE_CLASSES[0].1),
+    },
+    BillableClass {
+        class: abi_str(tail::BILLABLE_CLASSES[1].0.as_str()),
+        family: abi_str(tail::BILLABLE_CLASSES[1].1),
+    },
+];
+
+/// The fee unit the plane counts ([`tail::FEE_UNITS`]).
+const FEE_UNITS: &[AbiStr] = &[abi_str(tail::FEE_UNITS[0])];
 
 /// The far end's one response field the plane relays: the document type of the answer.
 const KEEP_RESPONSE_HEADERS: &[AbiStr] = &[abi_str(FIELD_CONTENT_TYPE)];
@@ -183,9 +192,8 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     billable_classes_len: BILLABLE_CLASSES.len(),
     route_cost: ptr::null(),
     route_cost_len: 0,
-    // No fee unit ([`tail::FEE_UNITS`]).
-    fee_units: ptr::null(),
-    fee_units_len: 0,
+    fee_units: FEE_UNITS.as_ptr(),
+    fee_units_len: FEE_UNITS.len(),
     record_kinds: ptr::null(),
     record_kinds_len: 0,
     egress_targets: ptr::null(),
@@ -270,6 +278,11 @@ struct Unit {
     at: usize,
     /// The `EMIT_*` bits the owed bytes carry.
     owed_flags: u32,
+    /// The caller's fields the far end receives ([`driven::relayed_fields`]), kept from `arrive`
+    /// (the caller's head crosses once) for every ATTEMPT of the unit.
+    caller: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The far end's status, read off its first piece; the request fee is judged on it.
+    status: Option<u32>,
 }
 
 /// One instance: every live generation's snapshot, and the units in flight.
@@ -429,8 +442,19 @@ slot!(
                 PrincipalNeed::Optional => PRINCIPAL_OPTIONAL,
             },
         );
-        if let Some(model) = instance.get().and_then(|plane| plane.routed.get(&())) {
-            out.route(ROUTE_DIRECT, &model);
+        if let Some(plane) = instance.get() {
+            if let Some(model) = plane.routed.get(&()) {
+                out.route(ROUTE_DIRECT, &model);
+            }
+            // The caller's head crosses here once: keep what the far end receives of it.
+            let caller = driven::relayed_fields(input.fields().iter().map(|f| {
+                (
+                    f.field(|f| &f.name).bytes(),
+                    f.field(|f| &f.value).bytes(),
+                )
+            }));
+            let unit = input.get().unit;
+            plane.units.with_all(|units| unit_of(units, unit).caller = caller);
         }
         Outcome::Ready
     }
@@ -515,11 +539,18 @@ fn attempt_piece(
             value: arena.span(value),
         });
     }
+    for (name, value) in &unit.caller {
+        fields.push(OutField {
+            name: arena.span(name),
+            value: arena.span(value),
+        });
+    }
     if settle(out, &fields, &units, &arena) {
         return Outcome::Failed;
     }
     *unit = Unit {
         attempt: true,
+        caller: std::mem::take(&mut unit.caller),
         ..Unit::default()
     };
     out.set(|o| &o.verb, verb);
@@ -542,6 +573,9 @@ fn far_end(
     let last = given.flags & PIECE_LAST != 0;
     if !unit.recall {
         unit.reading.piece(bytes);
+        if first {
+            unit.status = Some(given.status_code);
+        }
     }
     let (mut fields, mut units, mut arena) =
         (input.fields_buf(), input.units_buf(), input.arena_buf());
@@ -557,7 +591,10 @@ fn far_end(
         }
     }
     if last {
-        if let Some(count) = unit.reading.units() {
+        for count in [unit.reading.units(), unit.reading.fee(unit.status)]
+            .into_iter()
+            .flatten()
+        {
             units.push(UnitCount {
                 class: count.class,
                 source: UNITS_REPORTED,
