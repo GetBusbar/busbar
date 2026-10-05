@@ -160,6 +160,43 @@ fn the_transport_client_reads_the_operators_limits_and_not_a_default() {
     assert_eq!(settings.request_timeout_secs, 13);
 }
 
+/// THE DEPRECATED ENV PINS STILL HOLD (1.5.5 honored them at its client build, over the config):
+/// `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` set turns the http door's prior-knowledge key on whatever
+/// `advanced.upstream_h2_prior_knowledge` says, `0` or empty turns it off, and unset leaves the
+/// config's value; `BUSBAR_UPSTREAM_HTTP1_ONLY` the same for the http1-only key.
+#[test]
+fn the_deprecated_upstream_env_pins_win_over_the_config() {
+    let limits = LimitsResolved::default();
+    assert!(!limits.upstream_h2_prior_knowledge && !limits.upstream_http1_only);
+    let under = |pairs: &'static [(&'static str, &'static str)], limits: &LimitsResolved| {
+        client_settings_under(limits, |name| {
+            pairs
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| std::ffi::OsString::from(v))
+        })
+    };
+    let s = under(&[("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE", "1")], &limits);
+    assert!(s.upstream_h2_prior_knowledge && !s.upstream_http1_only);
+    let s = under(&[("BUSBAR_UPSTREAM_HTTP1_ONLY", "true")], &limits);
+    assert!(s.upstream_http1_only && !s.upstream_h2_prior_knowledge);
+    let configured = LimitsResolved {
+        upstream_h2_prior_knowledge: true,
+        upstream_http1_only: true,
+        ..LimitsResolved::default()
+    };
+    let s = under(
+        &[
+            ("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE", "0"),
+            ("BUSBAR_UPSTREAM_HTTP1_ONLY", ""),
+        ],
+        &configured,
+    );
+    assert!(!s.upstream_h2_prior_knowledge && !s.upstream_http1_only);
+    let s = under(&[], &configured);
+    assert!(s.upstream_h2_prior_knowledge && s.upstream_http1_only);
+}
+
 /// And a deployment that set nothing is left where it was: the resolved default body cap is the
 /// same 32 MiB the transport's own `Default` carries, so wiring the knob through cannot move a
 /// deployment that never touched it.

@@ -575,6 +575,52 @@ impl busbar_contract::services::HostServices for ClockOnly {
     ) -> busbar_contract::services::Ran {
         busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
     }
+    fn unit_nest(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: Option<u64>,
+        _: busbar_contract::services::NestAsk,
+        _: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
+    }
+    fn work_open(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: Option<u64>,
+        _: &str,
+        _: &[u8],
+        _: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
+    }
+    fn work_find(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: Option<u64>,
+        _: &[u8],
+        _: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
+    }
+    fn work_settle(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: u64,
+        _: &[u8],
+        _: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
+    }
+    fn work_resume(
+        &self,
+        _: &busbar_contract::services::Caller,
+        _: Option<u64>,
+        _: u64,
+        _: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
+    }
 }
 
 /// A store whose connect is bounded by 200 ms over the dial and the handshake.
