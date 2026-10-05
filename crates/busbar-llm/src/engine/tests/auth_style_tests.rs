@@ -4,16 +4,25 @@ use busbar_kernel::proto::SigningContext;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// A lane whose credential is bound, under `auth`'s style, on the test build's kind-neutral outbound
+/// double (each style's real bytes are its auth plugin's, proven by that plugin's own suite).
 fn lane_with_auth(auth: Option<&str>) -> Lane {
-    let resolved_auth = auth.map(|a| match a {
-        "api-key" => busbar_kernel::config::ProviderAuth::ApiKey,
-        "bearer" => busbar_kernel::config::ProviderAuth::Bearer,
-        other => panic!("unexpected test auth style: {other}"),
-    });
+    let binding = busbar_kernel::bound_credential::StyleBinding {
+        style: auth.unwrap_or("bearer").to_string(),
+        params: serde_json::json!({}),
+        uses_key: true,
+        statics: &[],
+    };
+    let credential = busbar_kernel::bound_credential::bind(
+        &*busbar_kernel::test_support::outbound_auth::axis(),
+        &binding,
+        b"SECRETKEY",
+    )
+    .expect("the double serves every style");
     Lane {
         prebuilt_auth: None,
         latency_reservoir: std::sync::OnceLock::new(),
-        credential: busbar_kernel::egress_auth::resolve("openai", resolved_auth),
+        credential,
         egress_targets: std::collections::HashMap::new(),
         reasoning: false,
         prompt_caching: false,
@@ -53,33 +62,6 @@ fn ctx<'a>(body: &'a [u8]) -> SigningContext<'a> {
     }
 }
 
-#[test]
-fn test_api_key_auth_sends_api_key_header() {
-    crate::testkit::install_test_seams();
-    // Azure-style: `auth: api-key` sends `api-key: <key>`, NOT a bearer Authorization header.
-    let lane = lane_with_auth(Some("api-key"));
-    let headers = lane_auth_headers(&lane, "SECRETKEY", &ctx(b"{}"));
-    assert_eq!(headers.len(), 1);
-    assert_eq!(headers[0].0.as_str(), "api-key");
-    assert_eq!(headers[0].1.to_str().unwrap(), "SECRETKEY");
-}
-
-#[test]
-fn test_default_auth_falls_back_to_protocol_native_scheme() {
-    crate::testkit::install_test_seams();
-    // No/`bearer` auth override uses the protocol's native sign_request (openai → bearer).
-    for auth in [None, Some("bearer")] {
-        let lane = lane_with_auth(auth);
-        let headers = lane_auth_headers(&lane, "SECRETKEY", &ctx(b"{}"));
-        assert_eq!(headers.len(), 1);
-        assert_eq!(headers[0].0.as_str(), "authorization");
-        assert_eq!(
-            headers[0].1.to_str().unwrap(),
-            super::auth_dispatch_tests::credential_header_value("SECRETKEY")
-        );
-    }
-}
-
 /// NO CREDENTIAL ⇒ NO AUTH HEADER. A lane whose provider declared `api_key: none` (a keyless local
 /// upstream — ollama, vLLM) holds an empty key, and an empty key must produce NO auth header at all
 /// — not `Authorization: Bearer ` with an empty token, and not an empty `api-key:` header. A bare
@@ -98,7 +80,7 @@ fn test_keyless_lane_sends_no_auth_header() {
             "an empty credential must send NO auth header (auth style {auth:?})"
         );
         assert!(
-            busbar_kernel::egress_auth::prebuild_auth(&lane.credential, "", &lane.signing_host)
+            busbar_kernel::bound_credential::prebuild_auth(&lane.credential, "", &lane.signing_host)
                 .is_none_or(|h| h.is_empty()),
             "and the boot-time prebuilt freeze must not hold one either (auth style {auth:?})"
         );
