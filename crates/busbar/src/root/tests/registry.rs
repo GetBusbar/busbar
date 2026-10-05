@@ -57,7 +57,26 @@ const CLAIMS_PER_PLANE: &str = include_str!("fixtures/claims_per_plane.txt");
 /// compiled it out is a different composition, not a smaller one. Read off `LINKED`, so this source
 /// names no plane.
 fn session_linked() -> bool {
-    !crate::LINKED.gauntlet_session.is_empty()
+    !crate::LINKED.gauntlet_session.is_empty() || a_swapped_row_is_served_by_its_door()
+}
+
+/// A fold's development-only switch is on and has swapped its plane's legacy row out
+/// (`[package.metadata.busbar.linked-swaps]`): the plane is served by its folded door, and the
+/// wire its sessions ride stays linked. Read off the manifest, so this names no plane.
+fn a_swapped_row_is_served_by_its_door() -> bool {
+    let on: Vec<&str> = env!("BUSBAR_ENABLED_FEATURES").split_whitespace().collect();
+    let mut in_table = false;
+    include_str!("../../../Cargo.toml").lines().any(|line| {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.starts_with('[') {
+            in_table = line == "[package.metadata.busbar.linked-swaps]";
+            return false;
+        }
+        in_table
+            && line
+                .split_once('=')
+                .is_some_and(|(_, switch)| on.contains(&switch.trim().trim_matches('"')))
+    })
 }
 
 /// The non-comment rows of a fixture file, in order. Read only by the shipped-composition pins,
