@@ -1780,7 +1780,8 @@ fn compute_layout() -> String {
             pool,
             route,
             route_flags,
-            _route_reserved
+            _route_reserved,
+            affinity
         ]
     );
     record!(

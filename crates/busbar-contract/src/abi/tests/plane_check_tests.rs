@@ -14,7 +14,7 @@ use crate::abi::host::conn::connector::{
 };
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
-use crate::abi::mechanism::call::{AbiStr, Blob};
+use crate::abi::mechanism::call::{AbiStr, Blob, MAX_TEXT};
 use crate::abi::mechanism::check::{check_needs, fault};
 use crate::abi::mechanism::door::{Section, SECTION_DECLARING, SECTION_REQUIRED};
 use crate::abi::plane::*;
@@ -2736,7 +2736,14 @@ fn a_plane_naming_a_kernel_money_verdict_is_malformed_not_the_verdict() {
 /// contract does not define is FAULT, and an answer that admits nothing states none.
 #[test]
 fn an_arrivals_route_flags_are_once_and_session() {
-    for flags in [ROUTE_ONCE, ROUTE_SESSION, ROUTE_ONCE | ROUTE_SESSION] {
+    for flags in [
+        ROUTE_ONCE,
+        ROUTE_SESSION,
+        ROUTE_STREAM,
+        ROUTE_ONCE | ROUTE_SESSION,
+        ROUTE_ONCE | ROUTE_STREAM,
+        ROUTE_ONCE | ROUTE_SESSION | ROUTE_STREAM,
+    ] {
         let mut o: ArriveOut = z();
         o.route = ROUTE_LOCAL;
         o.route_flags = flags;
@@ -2748,7 +2755,7 @@ fn an_arrivals_route_flags_are_once_and_session() {
     }
     let mut o: ArriveOut = z();
     o.route = ROUTE_LOCAL;
-    o.route_flags = ROUTE_SESSION << 1;
+    o.route_flags = ROUTE_STREAM << 1;
     assert_eq!(
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::UnknownCode, "arrive.route_flags")
@@ -2761,6 +2768,64 @@ fn an_arrivals_route_flags_are_once_and_session() {
         check_arrive(Refused, &o, &[], 4, &bounds()),
         f(Rule::Contradiction, "arrive.pool"),
         "a refused arrival opens no session"
+    );
+}
+
+/// THE STICKY-ROUTING KEY (ARCHITECT Q1 ArriveOut, 2026-10-05): a READY arrival may state an
+/// opaque key, bounded like every plane text; a key counted with no bytes is FAULT, and an answer
+/// that admits nothing states none (RED arms).
+#[test]
+fn an_arrivals_affinity_is_an_admitted_units_own_bounded_key() {
+    let key = b"session-7";
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_LOCAL;
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "none");
+    o.affinity = AbiStr {
+        ptr: key.as_ptr(),
+        len: key.len(),
+    };
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "a key");
+    o.affinity = AbiStr {
+        ptr: std::ptr::null(),
+        len: 3,
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::NullWithCount, "arrive.affinity")
+    );
+    let long = vec![b'k'; MAX_TEXT + 1];
+    o.affinity = AbiStr {
+        ptr: long.as_ptr(),
+        len: long.len(),
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::OverMax, "arrive.affinity")
+    );
+    for outcome in [Pending, Failed] {
+        let mut o: ArriveOut = z();
+        o.units_needed = u32::from(outcome == Failed);
+        o.affinity = AbiStr {
+            ptr: key.as_ptr(),
+            len: key.len(),
+        };
+        assert_eq!(
+            check_arrive(outcome, &o, &[], 0, &bounds()),
+            f(Rule::Contradiction, "arrive.affinity"),
+            "{outcome:?}"
+        );
+    }
+    let mut o: ArriveOut = z();
+    o.refusal = 3;
+    o.refusal_status = 404;
+    o.affinity = AbiStr {
+        ptr: key.as_ptr(),
+        len: key.len(),
+    };
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.affinity"),
+        "a refused arrival routes nowhere"
     );
 }
 
