@@ -252,42 +252,77 @@ fn the_notification_is_the_task_nested_under_task_with_an_rfc3339_timestamp() {
 #[test]
 fn a_callback_token_names_its_one_task_and_nothing_else() {
     let tokens = Tokens::new();
-    let random = [7u8; TOKEN_BYTES];
-    let token = tokens.mint("task.a", &random).expect("minted");
-    assert_eq!(tokens.task_of(&token).as_deref(), Some("task.a"));
-    assert_eq!(
-        tokens.mint("task.a", &[9u8; TOKEN_BYTES]),
-        Some(token.clone())
+    let sig_a = [7u8; 64];
+    let token = tokens.mint("c1", "task.a", &sig_a).expect("minted");
+    assert_eq!(token, format!("task.a.{}", hex(&sig_a)));
+    let (task, caller, presented) = tokens.claim(&token).expect("claimed");
+    assert_eq!((task.as_str(), caller.as_str()), ("task.a", "c1"));
+    assert!(verified(&sig_a, presented));
+    assert!(
+        !verified(&[8u8; 64], presented),
+        "another signature is refused"
     );
-    let other = tokens.mint("task.b", &[8u8; TOKEN_BYTES]).expect("minted");
-    let (_, b_secret) = other.rsplit_once('.').expect("a token");
-    for forged in [
-        format!("task.a.{b_secret}"),
+    let other = tokens.mint("c2", "task.b", &[8u8; 64]).expect("minted");
+    let (_, b_sig) = other.rsplit_once('.').expect("a token");
+    let forged_token = format!("task.a.{b_sig}");
+    let (_, _, forged) = tokens.claim(&forged_token).expect("a claim on a held task");
+    assert!(
+        !verified(&sig_a, forged),
+        "task b's signature names task a for nothing"
+    );
+    for refused in [
         "task.a".to_string(),
         "task.a.".to_string(),
-        format!("task.c.{b_secret}"),
+        format!("task.c.{b_sig}"),
         String::new(),
         ".".to_string(),
     ] {
-        assert_eq!(tokens.task_of(&forged), None, "{forged}");
+        assert_eq!(tokens.claim(&refused), None, "{refused}");
     }
+    assert!(tokens
+        .claim_of_authorization(&format!("bearer {token}"))
+        .is_some());
+    assert!(tokens
+        .claim_of_authorization(&format!("Basic {token}"))
+        .is_none());
     tokens.forget("task.a");
-    assert_eq!(tokens.task_of(&token), None, "a forgotten token is refused");
-    assert_eq!(tokens.mint("t", &[1u8; TOKEN_BYTES - 1]), None);
-    assert_eq!(tokens.mint("", &random), None);
+    assert_eq!(tokens.claim(&token), None, "a forgotten token is refused");
+    assert_eq!(tokens.mint("c", "t", &[]), None);
+    assert_eq!(tokens.mint("c", "", &sig_a), None);
+    assert_eq!(token_input("t"), b"busbar-a2a-push-token\0t".to_vec());
 }
 
 #[test]
 fn tokens_are_bounded() {
     let tokens = Tokens::new();
-    let random = [3u8; TOKEN_BYTES];
+    let sig = [3u8; 64];
     for i in 0..MAX_TOKENS {
-        assert!(tokens.mint(&i.to_string(), &random).is_some());
+        assert!(tokens.mint("c", &i.to_string(), &sig).is_some());
     }
-    assert_eq!(tokens.mint("one-more", &random), None);
+    assert_eq!(tokens.mint("c", "one-more", &sig), None);
     assert!(
-        tokens.mint("0", &random).is_some(),
+        tokens.mint("c", "0", &sig).is_some(),
         "a held one is still answered"
+    );
+}
+
+/// 1.5.5's push-volume bound: 60 per task per fixed 60 s window, other tasks untouched, a fresh
+/// window refills, and a clock that steps back cannot reopen a spent window.
+#[test]
+fn the_push_volume_bound_is_one_point_five_point_fives() {
+    let limiter = PushLimiter::new();
+    for _ in 0..PUSH_RATE_LIMIT {
+        assert!(limiter.admit("t", 120));
+    }
+    assert!(!limiter.admit("t", 179), "the window's budget is spent");
+    assert!(limiter.admit("u", 179), "another task has its own budget");
+    assert!(limiter.admit("t", 180), "the next window refills");
+    for _ in 1..PUSH_RATE_LIMIT {
+        assert!(limiter.admit("t", 181));
+    }
+    assert!(
+        !limiter.admit("t", 60),
+        "a regressed clock judges the newest window"
     );
 }
 
@@ -345,22 +380,25 @@ fn a_callback_token_has_predevs_wire_shape_and_rides_its_bearer_scheme() {
     // predev's own HMAC token for task `t-1` (hex of a 32-byte MAC) is the shape the check holds.
     let predev = "t-1.5d41402abc4b2a76b9719d911017c5925d41402abc4b2a76b9719d911017c592";
     assert!(predev_shaped(predev, "t-1"));
-    for (task, random) in [("t-1", [0u8; TOKEN_BYTES]), ("a.b", [0xffu8; TOKEN_BYTES])] {
-        let token = tokens.mint(task, &random).expect("minted");
+    for (task, sig) in [("t-1", [0u8; 64]), ("a.b", [0xffu8; 64])] {
+        let token = tokens.mint("c", task, &sig).expect("minted");
         assert!(predev_shaped(&token, task), "{token}");
     }
     assert_eq!(TOKEN_SCHEME, "Bearer");
-    let token = tokens.mint("t-2", &[0xabu8; TOKEN_BYTES]).expect("minted");
+    let token = tokens.mint("c", "t-2", &[0xabu8; 64]).expect("minted");
     for presented in [format!("Bearer {token}"), format!("bearer  {token} ")] {
         assert_eq!(
-            tokens.task_of_authorization(&presented).as_deref(),
+            tokens
+                .claim_of_authorization(&presented)
+                .map(|(task, _, _)| task)
+                .as_deref(),
             Some("t-2"),
             "{presented}"
         );
     }
     for presented in [format!("Basic {token}"), token.clone(), String::new()] {
         assert_eq!(
-            tokens.task_of_authorization(&presented),
+            tokens.claim_of_authorization(&presented),
             None,
             "{presented}"
         );

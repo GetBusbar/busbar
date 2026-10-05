@@ -31,8 +31,10 @@
 //! (a sealed field of it, `PushConfig::authentication`). It is held here, in plane memory, only
 //! while a delivery is in flight, never logged or printed, and joins the request only after the
 //! judge has passed. busbar's own callback token
-//! ([`Tokens`]) is a capability for one task, minted from the kernel's random bytes, checked in
-//! constant time, and never logged or audited.
+//! ([`Tokens`]) is a capability for one task, `<task-id>.<signature>`, minted through the host's
+//! signing service (the plane never holds the key) and verified by signing again and comparing in
+//! constant time; it is never logged or audited. [`PushLimiter`] bounds how often one task's token
+//! may be spent, exactly as 1.5.5 bounded it.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Write as _;
@@ -59,9 +61,15 @@ pub const QUEUE_CAPACITY: usize = 64;
 /// no callback of its own with that backend).
 pub const MAX_TOKENS: usize = 4096;
 
-/// The random bytes behind one callback token: written as 64 lower-case hex digits after
-/// `<task-id>.`, the wire shape of predev's `<task-id>.<hex HMAC-SHA256>`.
-pub const TOKEN_BYTES: usize = 32;
+/// The domain a callback token's signature is made in: what the host signs is this, then the task
+/// id, so no other signature the instance asks for verifies as a token.
+pub const TOKEN_DOMAIN: &[u8] = b"busbar-a2a-push-token\0";
+
+/// The fixed push-rate window, seconds (1.5.5's `PUSH_RATE_WINDOW_SECS`).
+pub const PUSH_RATE_WINDOW_SECS: u64 = 60;
+
+/// The pushes one task's token may spend in one window (1.5.5's `PUSH_RATE_LIMIT`).
+pub const PUSH_RATE_LIMIT: u32 = 60;
 
 /// The scheme busbar's callback token rides on: registered as the config's
 /// `authentication.scheme` (its `credentials` = the token), presented back as
@@ -521,11 +529,36 @@ pub fn request(delivery: &Delivery, auth: Option<&DeliveryAuth>) -> Request {
     }
 }
 
-/// BUSBAR'S OWN CALLBACK TOKENS: `<task-id>.<hex>`, one per task, from the kernel's random bytes.
-/// A capability for that task alone; held in plane memory, so a restart refuses every earlier one.
+/// What the host signs for `task_id`'s callback token ([`TOKEN_DOMAIN`], then the id).
+#[must_use]
+pub fn token_input(task_id: &str) -> Vec<u8> {
+    let mut input = TOKEN_DOMAIN.to_vec();
+    input.extend_from_slice(task_id.as_bytes());
+    input
+}
+
+/// The signature bytes a token carries: its first [`TOKEN_MAC_BYTES`], so the token keeps
+/// predev's wire shape (`<task-id>.` and 64 lower-case hex digits).
+pub const TOKEN_MAC_BYTES: usize = 32;
+
+/// A signature, as the lower-case hex a token carries it in (its first [`TOKEN_MAC_BYTES`]).
+#[must_use]
+pub fn hex(signature: &[u8]) -> String {
+    let signature = &signature[..signature.len().min(TOKEN_MAC_BYTES)];
+    let mut out = String::with_capacity(2 * signature.len());
+    for b in signature {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+/// BUSBAR'S OWN CALLBACK TOKENS: `<task-id>.<hex signature>`, one per task, the signature the
+/// host's over [`token_input`]. A capability for that task alone. The instance remembers whose
+/// task each minted token names (a task's records are keyed under its caller), so a restart refuses
+/// every earlier token, as 1.5.5's process-local secret did.
 #[derive(Debug, Default)]
 pub struct Tokens {
-    by_task: Keyed<String, String>,
+    callers: Keyed<String, String>,
 }
 
 impl Tokens {
@@ -535,53 +568,101 @@ impl Tokens {
         Self::default()
     }
 
-    /// The token for `task_id` over `random` ([`TOKEN_BYTES`] from `random.fill`): the one already
-    /// held, or a new one; `None` past [`MAX_TOKENS`] or with too few bytes.
+    /// The token for `caller`'s task `task_id` over the host's `signature` of [`token_input`];
+    /// `None` past [`MAX_TOKENS`] or for an empty id or signature.
     #[must_use]
-    pub fn mint(&self, task_id: &str, random: &[u8]) -> Option<String> {
-        if task_id.is_empty() || random.len() < TOKEN_BYTES {
+    pub fn mint(&self, caller: &str, task_id: &str, signature: &[u8]) -> Option<String> {
+        if task_id.is_empty() || signature.is_empty() {
             return None;
         }
-        let secret = self.by_task.with_all(|m| {
-            if let Some(held) = m.get(task_id) {
-                return Some(held.clone());
+        let held = self.callers.with_all(|m| {
+            if m.contains_key(task_id) {
+                return true;
             }
             if m.len() >= MAX_TOKENS {
-                return None;
+                return false;
             }
-            let mut fresh = String::with_capacity(2 * TOKEN_BYTES);
-            for b in &random[..TOKEN_BYTES] {
-                let _ = write!(fresh, "{b:02x}");
-            }
-            m.insert(task_id.to_string(), fresh.clone());
-            Some(fresh)
-        })?;
-        Some(format!("{task_id}.{secret}"))
+            m.insert(task_id.to_string(), caller.to_string());
+            true
+        });
+        held.then(|| format!("{task_id}.{}", hex(signature)))
     }
 
-    /// The task a presented token names, or `None` for every way it can fail to name one (one
-    /// answer for all, so a task id cannot be confirmed by probing). Compared in constant time.
+    /// The task a presented token CLAIMS, its caller, and its signature as presented: `None` for a
+    /// token this instance never minted for that task. Not yet a verdict: the claim holds only when
+    /// [`verified`] says the host's signature of [`token_input`] is the one presented.
     #[must_use]
-    pub fn task_of(&self, presented: &str) -> Option<String> {
-        let (task_id, secret) = presented.rsplit_once('.')?;
-        let held = self.by_task.get(&task_id.to_string())?;
-        busbar_contract::constant_time_eq(&held, secret).then(|| task_id.to_string())
+    pub fn claim<'t>(&self, presented: &'t str) -> Option<(String, String, &'t str)> {
+        let (task_id, signature) = presented.rsplit_once('.')?;
+        if task_id.is_empty() || signature.is_empty() {
+            return None;
+        }
+        let caller = self.callers.get(&task_id.to_string())?;
+        Some((task_id.to_string(), caller, signature))
     }
 
-    /// The task an `Authorization` value (`Bearer <token>`, the scheme case-insensitive) names,
-    /// or `None` for a missing, foreign-scheme or refused token ([`Tokens::task_of`]).
+    /// The claim an `Authorization` value (`Bearer <token>`, the scheme case-insensitive) makes
+    /// ([`Tokens::claim`]).
     #[must_use]
-    pub fn task_of_authorization(&self, authorization: &str) -> Option<String> {
+    pub fn claim_of_authorization<'t>(
+        &self,
+        authorization: &'t str,
+    ) -> Option<(String, String, &'t str)> {
         let (scheme, token) = authorization.split_once(' ')?;
         if !scheme.eq_ignore_ascii_case(TOKEN_SCHEME) {
             return None;
         }
-        self.task_of(token.trim())
+        self.claim(token.trim())
     }
 
     /// Drop `task_id`'s token (its task reached a terminal state).
     pub fn forget(&self, task_id: &str) {
-        self.by_task.remove(&task_id.to_string());
+        self.callers.remove(&task_id.to_string());
+    }
+}
+
+/// Whether `presented` is the host's `signature` of the claimed task's [`token_input`], compared in
+/// constant time.
+#[must_use]
+pub fn verified(signature: &[u8], presented: &str) -> bool {
+    busbar_contract::constant_time_eq(&hex(signature), presented)
+}
+
+/// THE PUSH-VOLUME BOUND (1.5.5's `PushLimiter`, exactly): a fixed window of
+/// [`PUSH_RATE_WINDOW_SECS`], [`PUSH_RATE_LIMIT`] pushes per task in it, judged against the newest
+/// window ever seen (a wall clock that steps back cannot reopen a spent budget), every window older
+/// than the one judged dropped on each check.
+#[derive(Debug, Default)]
+pub struct PushLimiter {
+    latest: Keyed<(), u64>,
+    windows: Keyed<String, (u64, u32)>,
+}
+
+impl PushLimiter {
+    /// No push spent.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Spend one push from `task_id`'s budget at `now` (unix seconds): `false` once the window's
+    /// budget is spent.
+    pub fn admit(&self, task_id: &str, now: u64) -> bool {
+        let arrived_in = now - (now % PUSH_RATE_WINDOW_SECS);
+        let window = self.latest.with_all(|m| {
+            let w = arrived_in.max(m.get(&()).copied().unwrap_or(0));
+            m.insert((), w);
+            w
+        });
+        self.windows.with_all(|m| {
+            m.retain(|_, (w, _)| *w >= window);
+            let entry = m.entry(task_id.to_string()).or_insert((window, 0));
+            if entry.1 >= PUSH_RATE_LIMIT {
+                return false;
+            }
+            entry.1 += 1;
+            true
+        })
     }
 }
 
