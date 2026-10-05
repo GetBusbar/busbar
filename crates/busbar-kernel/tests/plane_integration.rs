@@ -49,7 +49,8 @@ const AGENTS_YAML: &str =
 fn resolved(sections: &str) -> RootCfg {
     linked::install();
     let yaml = format!(
-        "providers:\n  acme: {{ api_key: none }}\n\
+        "store: {{module: memory}}\n\
+         providers:\n  acme: {{ api_key: none }}\n\
          models:\n  m: {{ provider: acme }}\n{sections}"
     );
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("the document parses");
