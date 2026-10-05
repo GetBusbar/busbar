@@ -33,7 +33,7 @@
 //!
 //! ## Where this lives
 //!
-//! A submodule of [`crate::metrics`], because deciding what a plugin is allowed to have put into the
+//! A submodule of [`crate::snapshot`], because deciding what a plugin is allowed to have put into the
 //! recorder is that module's business and this is installed from its `configure`. The file is at
 //! `src/observe.rs` regardless — a module's home in the tree says what it belongs to; its home on
 //! disk says nothing.
@@ -225,7 +225,7 @@ pub(crate) fn admits_cardinality_opaque(plugin: &str, series: &str, labels: &[u8
 /// process's recorder and diagnostics path.
 ///
 /// Zero-sized. It holds no state because it owns none: the recorder it writes to is the
-/// process-global one ([`crate::metrics`]) and the catalogue it resolves against is static.
+/// process-global one ([`crate::snapshot`]) and the catalogue it resolves against is static.
 pub struct KernelPluginObserver;
 
 /// WHAT THE LOADER GRANTED AT OPEN, as the kernel's observer asks it: whether a plugin was opened

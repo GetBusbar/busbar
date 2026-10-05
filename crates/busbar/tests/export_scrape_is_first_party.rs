@@ -275,7 +275,7 @@ fn kind_rank(kind: &str) -> u8 {
 /// DERIVATION, not a captured guess (a single 1.5.5 capture cannot pin this: within a kind the
 /// order is hash-map order and "varies between runs"). Both v1.5.5
 /// (`v1.5.5:crates/busbar/src/metrics.rs`, `render()` at line 691 calling `h.render()`) and this
-/// binary (`busbar_kernel::metrics::render()`) hand the SAME `metrics-exporter-prometheus` v0.18.3
+/// binary (`busbar_kernel::snapshot::render()`) hand the SAME `metrics-exporter-prometheus` v0.18.3
 /// recorder's `render_to_write` the whole exposition: that function drains its counters map
 /// whole, then its gauges map whole, then its distributions (histogram + summary) map whole —
 /// three sequential, unconditional passes, in that fixed order, in every release either binary

@@ -48,7 +48,7 @@ use busbar_kernel::{
     build_app_from_config, build_split_routers_serving, load_config_from_disk, LoadedConfig,
     ENV_CONFIG,
 };
-use busbar_kernel::{config, config_validate, diagnostics, export, metrics, tls};
+use busbar_kernel::{config, config_validate, diagnostics, export, snapshot, tls};
 // The root's own binds listen through the connector's listener (the one listener source).
 #[cfg(unix)]
 use busbar_core_connector::listen::{AcceptLimits, Listening, DEFAULT_HANDSHAKE_TIMEOUT};
@@ -593,7 +593,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // duplicate singleton — is reported and FATAL a few lines down in `config::resolve`, which runs
     // the same lowering; discarding the error list here just avoids reporting it twice.
     let resolved_export = config::resolve_export(&deploy.export, &mut Vec::new());
-    metrics::configure(
+    snapshot::configure(
         resolved_export
             .recorder
             .as_ref()

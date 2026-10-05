@@ -304,7 +304,7 @@ impl Source {
     }
 }
 
-/// The process recorder is the one leaked [`Source`] (`crate::metrics::init_with`); a test drives a
+/// The process recorder is the one leaked [`Source`] (`crate::snapshot::init_with`); a test drives a
 /// leaked one of its own through `metrics::with_local_recorder`.
 impl Recorder for &'static Source {
     fn describe_counter(&self, name: KeyName, _: Option<Unit>, help: SharedString) {

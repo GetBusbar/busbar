@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE KERNEL'S OBSERVATIONS: the process recorder ([`source`]) every emission site writes through
+//! THE KERNEL'S SNAPSHOT SERVICE (`BUSBAR-1.6.0.md` §5 "/metrics is not in core": the kind-neutral
+//! snapshot service the export kind reads; P2 D4 moved it here from `metrics/`, ARCHITECT Q-D4-METRICS
+//! 2026-10-04): the process recorder ([`source`]) every emission site writes through
 //! the `metrics` facade (`counter!`/`histogram!`/`gauge!`), the scrape-time gauges below, and the
 //! one read of them all — [`snapshot`], the export kind's scrape snapshot. The kernel renders no
 //! exposition: `GET /metrics` hands the snapshot to the export plugin whose sink carries the
@@ -579,7 +581,7 @@ pub fn retaining_from(handle_installed: Option<bool>, opted_in: impl FnOnce() ->
 pub const REQUESTS_TOTAL: &str = "busbar_requests_total"; // labels: ingress_protocol, pool (bounded), outcome
                                                           // UPSTREAM_ATTEMPTS_TOTAL / UPSTREAM_FAILURES_TOTAL metric NAMES moved DOWN to the neutral substrate
                                                           // alongside their hostless emit fns (`busbar_kernel::telemetry`); re-exported here so this file's
-                                                          // `describe_counter!` registrations and every `crate::metrics::UPSTREAM_*` call site resolve unchanged.
+                                                          // `describe_counter!` registrations and every `crate::snapshot::UPSTREAM_*` call site resolve unchanged.
 pub use crate::telemetry::{UPSTREAM_ATTEMPTS_TOTAL, UPSTREAM_FAILURES_TOTAL}; // labels: pool (bounded), lane[, disposition]
 pub const BREAKER_TRIPS_TOTAL: &str = "busbar_breaker_trips_total"; // labels: pool (bounded), lane
 pub const FAILOVERS_TOTAL: &str = "busbar_failovers_total"; // labels: pool (bounded), reason
@@ -596,8 +598,8 @@ pub const PLANE_REQUESTS_TOTAL: &str = "busbar_plane_requests_total"; // labels:
 pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_seconds"; // histogram; labels: plane, ingress_protocol, pool (bounded)
 
 // The ROUTE_POLICY_{SELECTIONS,REJECTIONS}_TOTAL metric NAMES moved DOWN to the neutral substrate
-// (`busbar_kernel::metrics`) so the LLM plane's `pipeline.rs` emission sites name them via the ABI;
-// re-exported here so the `describe_counter!` registrations below and every `crate::metrics::ROUTE_*`
+// (`busbar_kernel::snapshot`) so the LLM plane's `pipeline.rs` emission sites name them via the ABI;
+// re-exported here so the `describe_counter!` registrations below and every `crate::snapshot::ROUTE_*`
 // call site resolve unchanged. Pure `&str` — no registry moved, scrape byte-identical.
 // ROUTE_POLICY_* are defined at the top of this module.
 
@@ -612,8 +614,8 @@ pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_
 // retirement — the ONE shared 1024-permit tap gate now lives there and emits this counter byte-identically,
 // so core no longer names the const (the string is pinned equal substrate-side).
 
-// The HOOK_CONTENT_TRUNCATED_TOTAL metric NAME moved DOWN to `busbar_kernel::metrics` so the LLM
-// plane's `hooks.rs` emission site names it via the ABI; re-exported here so `crate::metrics::…` call
+// The HOOK_CONTENT_TRUNCATED_TOTAL metric NAME moved DOWN to `busbar_kernel::snapshot` so the LLM
+// plane's `hooks.rs` emission site names it via the ABI; re-exported here so `crate::snapshot::…` call
 // sites resolve unchanged. Unlabeled counter: a hook content projection whose serialized size
 // exceeded `limits.hook_content_max_bytes`, so the content was OMITTED WHOLE (never truncated
 // mid-value) and the hook was sent an empty content projection. A steady non-zero rate means a
@@ -641,9 +643,9 @@ pub const BILLING_TAP_DECODE_FAIL_TOTAL: &str = "busbar_billing_tap_decode_fail_
 // bespoke counter of their own, like the inbound cap) is uniformly observable.
 pub const ADMISSION_DENIED_TOTAL: &str = "busbar_admission_denied_total"; // labels: gate
 
-// The BILLING_TRUNCATED_TOTAL metric NAME moved DOWN to `busbar_kernel::metrics` so the LLM plane's
+// The BILLING_TRUNCATED_TOTAL metric NAME moved DOWN to `busbar_kernel::snapshot` so the LLM plane's
 // `response_body.rs` emission site names it via the ABI; re-exported here so the `init_with` pre-touch
-// (below), the `describe_counter!` registration, and every `crate::metrics::…` call site resolve
+// (below), the `describe_counter!` registration, and every `crate::snapshot::…` call site resolve
 // unchanged. Unlabeled counter: same-protocol non-stream responses whose billing-side buffer hit the
 // translate-body cap before the terminal `usage` block, so token usage could not be parsed and the
 // request billed zero despite a full 2xx reaching the client. An operator alerts on a non-zero rate to

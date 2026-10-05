@@ -67,7 +67,7 @@ async fn serve_with_gov(gov: Arc<GovState>) -> (std::net::SocketAddr, tokio::tas
 /// v1 surface answers.
 #[tokio::test]
 async fn test_admin_v1_info_reports_version_features_and_topology() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -136,7 +136,7 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
 #[tokio::test]
 async fn test_admin_v1_topology_reads_pools_models_providers() {
     use busbar_kernel::test_support::LaneSpec;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
 
@@ -215,7 +215,7 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
 /// which previously fell through to the proxied request path's vendor-shaped error output (`error.type`).
 #[tokio::test]
 async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -261,7 +261,7 @@ async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
 #[tokio::test]
 async fn an_unmatched_admin_path_reads_no_body() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -287,7 +287,7 @@ async fn an_unmatched_admin_path_reads_no_body() {
 /// actionable message (previously everything was 404, making `not_found` mean two things).
 #[tokio::test]
 async fn test_keys_surface_governance_disabled_semantics() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let mut app = crate::new_test_app().build(); // NO governance
     {
         // Open admin posture (explicit empty chain) — this test probes HANDLER semantics, not
@@ -344,7 +344,7 @@ async fn test_keys_surface_governance_disabled_semantics() {
 #[tokio::test]
 async fn test_admin_v1_pool_detail_live_status() {
     use busbar_kernel::test_support::LaneSpec;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app()
@@ -453,7 +453,7 @@ async fn test_admin_v1_pool_detail_live_status() {
 #[tokio::test]
 async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
     use busbar_kernel::test_support::LaneSpec;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app()
@@ -537,7 +537,7 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
 /// is `configured: true` with the `admin-token` module. Never a secret.
 #[tokio::test]
 async fn test_admin_v1_admin_auth_read() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -569,7 +569,7 @@ async fn test_admin_v1_admin_auth_read() {
 #[tokio::test]
 async fn test_admin_v1_get_single_key() {
     use busbar_kernel::governance::NewKeySpec;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (minted, minted_secret) = gov
@@ -628,7 +628,7 @@ async fn test_admin_v1_get_single_key() {
 #[tokio::test]
 async fn test_admin_v1_usage_meters_by_model_and_key() {
     use busbar_kernel::governance::NewKeySpec;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     // Prices: 1 cent/request + a rate card of 500 micro-units/token on every tier (the same
     // blended 50 cents/1k tokens the pre-rate-card assertions were derived from). Spend is now
@@ -760,7 +760,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
 /// and metered into today's `/usage` bucket. Returns `(path, status, body)` for each read, and
 /// is the witness the declared-error audit drives for the three `unpriced_class` declarations.
 async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let card: std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> =
@@ -889,7 +889,7 @@ async fn admin_usage_over_an_unpriced_class_answers_named_409() {
 /// hook seam's configure unit level.)
 #[tokio::test]
 async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -987,7 +987,7 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
 #[cfg(unix)]
 #[tokio::test]
 async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answers_null() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let manifest_schema = serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -1074,7 +1074,7 @@ async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answer
 /// If-Match is a 409 that changes nothing.
 #[tokio::test]
 async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app()
@@ -1168,7 +1168,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
 /// changing nothing.
 #[tokio::test]
 async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!("busbar-reload-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let providers_path = dir.join("providers.yaml");
@@ -1325,7 +1325,7 @@ providers: {}
 /// attempts count (these are all 404s — anti-enumeration).
 #[tokio::test]
 async fn test_admin_v1_mutation_rate_limit_config_class() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -1371,7 +1371,7 @@ async fn test_admin_v1_mutation_rate_limit_config_class() {
 /// a DIFFERENT module earns nothing here; the operator token stays full.
 #[tokio::test]
 async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app().governance(gov).build();
@@ -1527,7 +1527,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
 /// (which carries a once-shown secret). Two full principals, same key value, distinct results.
 #[tokio::test]
 async fn test_admin_v1_idempotency_key_is_principal_scoped() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app().governance(gov).build();
@@ -1589,7 +1589,7 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
 /// built-in operator token is NEVER cached (flush finds nothing after operator calls).
 #[tokio::test]
 async fn test_admin_v1_credential_cache_and_flush_endpoint() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app().governance(gov).build();
@@ -1687,7 +1687,7 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
 /// through it. A name that resolves to no admin module is still refused with the same 400.
 #[tokio::test]
 async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     // The test app first: it hands this binary's operator words in, so the provider key read next
@@ -1745,7 +1745,7 @@ async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
 /// unknown modules and a stale If-Match reject.
 #[tokio::test]
 async fn test_admin_v1_put_auth_dry_run_guard() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app().governance(gov).build();
@@ -1894,7 +1894,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
 /// restart opt-in only.
 #[tokio::test]
 async fn test_admin_v1_put_auth_refuses_empty_chain() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -1939,7 +1939,7 @@ async fn test_admin_v1_put_auth_refuses_empty_chain() {
 /// locked config; the guard makes it a `400`.
 #[tokio::test]
 async fn test_admin_v1_put_auth_refused_on_locked_config() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     // `.no_overlay()` = a LOCKED config (the only supported way to reach `overlay_path: None`).
@@ -1979,7 +1979,7 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
 /// on a locked config; the guard makes it a `400`.
 #[tokio::test]
 async fn test_admin_v1_config_apply_refused_on_locked_config() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app()
@@ -2034,7 +2034,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
 /// If-Match is a 409 that changes nothing; a fresh If-Match succeeds.
 #[tokio::test]
 async fn test_admin_v1_key_idempotent_mint_and_if_match() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -2112,7 +2112,7 @@ async fn test_admin_v1_key_idempotent_mint_and_if_match() {
 /// subsequent valid retry under the SAME key mints normally (not a spurious 409/replay).
 #[tokio::test]
 async fn test_admin_v1_idempotency_reservation_frees_on_failure() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -2335,7 +2335,7 @@ impl busbar_kernel::governance::RecordStore for SlowNthPutKeyStore {
 /// could not do: it had no way to tell a disconnect mid-mint from a disconnect after one.
 #[tokio::test]
 async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let inner = Arc::new(MemoryStore::new());
     let (entered_tx, mut entered_rx) = tokio::sync::mpsc::channel::<()>(1);
     let (landed_tx, mut landed_rx) = tokio::sync::mpsc::channel::<()>(1);
@@ -2487,7 +2487,7 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
 /// stable total.
 #[tokio::test]
 async fn test_admin_v1_key_rotate_and_pagination() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov.clone()).build();
@@ -2617,7 +2617,7 @@ async fn test_admin_v1_key_rotate_and_pagination() {
 /// of them, breaking replay entirely.
 #[tokio::test]
 async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -2673,7 +2673,7 @@ async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
 /// back a bogus `200` whose body is the raw `null` sentinel instead of a real rotated key.
 #[tokio::test]
 async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let inner = Arc::new(MemoryStore::new());
     // Slow the SECOND `put_key` call (the rotate's write) so a concurrent second request lands
     // while the first rotation is still in flight; the mint's own `put_key` (the first call) stays
@@ -2758,7 +2758,7 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
 /// length-prefixes each half so no two distinct pairs can join to the same string.
 #[tokio::test]
 async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colon_joined_ids() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -2864,7 +2864,7 @@ async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colo
 /// 409 for a grant change (immutability) and for a stale If-Match.
 #[tokio::test]
 async fn test_admin_v1_put_hook_replaces_live_with_guards() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -2975,7 +2975,7 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
 /// and a stale If-Match conflicts.
 #[tokio::test]
 async fn test_admin_v1_config_versions_rollback_and_diff() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -3074,7 +3074,7 @@ async fn test_admin_v1_config_versions_rollback_and_diff() {
 
 #[tokio::test]
 async fn test_admin_v1_register_hook_takes_effect_live() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -3243,7 +3243,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
 /// other concurrent tests may add entries — assert the specific action appears, not an exact count.)
 #[tokio::test]
 async fn test_admin_v1_audit_records_mutations() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -3326,7 +3326,7 @@ async fn test_admin_v1_audit_records_mutations() {
 /// principal probe which hook names exist by response code alone, with no trail.
 #[tokio::test]
 async fn test_admin_v1_hook_mutation_404_is_audited() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -3397,7 +3397,7 @@ async fn test_admin_v1_hook_mutation_404_is_audited() {
 #[tokio::test]
 async fn test_admin_v1_list_keys_filters() {
     use busbar_kernel::governance::NewKeySpec;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (minted, _secret) = gov
@@ -3460,7 +3460,7 @@ async fn test_admin_v1_list_keys_filters() {
 #[tokio::test]
 async fn test_admin_v1_list_keys_group_filter() {
     use busbar_kernel::governance::NewKeySpec;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mint = |name: &str, group: Option<&str>| {
@@ -3549,7 +3549,7 @@ async fn test_admin_v1_list_keys_group_filter() {
 /// for the marquee feature (catches integration breaks the per-feature tests miss).
 #[tokio::test]
 async fn test_admin_v1_config_plane_golden_path() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("t".to_string()));
     let overlay = std::env::temp_dir().join(format!(
@@ -3660,7 +3660,7 @@ async fn test_admin_v1_config_plane_golden_path() {
 /// the hook — so a runtime-registered hook survives a restart.
 #[tokio::test]
 async fn test_admin_v1_hook_register_persists_to_overlay() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let overlay = std::env::temp_dir().join(format!(
@@ -3721,7 +3721,7 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
 /// the next unrelated group mutation then persisted the truncated registry over the file.
 #[tokio::test]
 async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let overlay = std::env::temp_dir().join(format!(
@@ -3806,7 +3806,7 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
 /// `key.create` / `applied` with the new key's id.
 #[tokio::test]
 async fn test_admin_v1_audit_records_key_mutations() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -3854,7 +3854,7 @@ async fn test_admin_v1_audit_records_key_mutations() {
 /// matching the guard other verbs enforce.
 #[tokio::test]
 async fn test_admin_v1_base_hook_is_read_only_via_api() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let base: busbar_kernel::config::HookCfg = serde_json::from_value(serde_json::json!({
@@ -3925,7 +3925,7 @@ async fn test_admin_v1_base_hook_is_read_only_via_api() {
 /// both before and after this fix.
 #[tokio::test]
 async fn base_hook_delete_conflict_outranks_a_stale_if_match() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let base: busbar_kernel::config::HookCfg = serde_json::from_value(serde_json::json!({
@@ -3958,7 +3958,7 @@ async fn base_hook_delete_conflict_outranks_a_stale_if_match() {
 /// GET /hooks/{name} 404. Deleting an unregistered hook is 404.
 #[tokio::test]
 async fn test_admin_v1_delete_hook_takes_effect_live() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -4021,7 +4021,7 @@ async fn test_admin_v1_delete_hook_takes_effect_live() {
 /// secret. Built on a fixture with one global gate.
 #[tokio::test]
 async fn test_admin_v1_hooks_read_surface() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
 
@@ -4104,7 +4104,7 @@ async fn test_admin_v1_hooks_read_surface() {
 /// nonexistent path reports `reachable: false`. Never fires the hook.
 #[tokio::test]
 async fn test_admin_v1_hook_health_best_effort() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mk = |plugin: &str| busbar_kernel::config::HookCfg {
@@ -4180,7 +4180,7 @@ async fn test_admin_v1_hook_health_best_effort() {
 /// unknown/absent type with the stable `invalid_request` code.
 #[tokio::test]
 async fn test_admin_v1_plugins_catalog_by_type() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let gate = busbar_kernel::config::HookCfg {
@@ -4274,7 +4274,7 @@ async fn test_admin_v1_plugins_catalog_by_type() {
 /// governance-only fixture (no explicit auth chain) is the open front door.
 #[tokio::test]
 async fn test_admin_v1_auth_read() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -4306,7 +4306,7 @@ async fn test_admin_v1_auth_read() {
 /// alongside so the view's answer cannot be bought by loosening it.
 #[tokio::test]
 async fn test_admin_v1_auth_read_keys_chain_reports_1_5_5_open() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut cfg = busbar_kernel::config::AuthCfg::default_none();
@@ -4343,7 +4343,7 @@ async fn test_admin_v1_auth_read_keys_chain_reports_1_5_5_open() {
 /// absent from the defs) returns 200 with `ok:false` and the resolution errors — never mutating.
 #[tokio::test]
 async fn test_admin_v1_config_validate_dry_run() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -4443,7 +4443,7 @@ async fn test_admin_v1_config_validate_dry_run() {
 /// are ONE schema).
 #[tokio::test]
 async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -4487,7 +4487,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
 #[tokio::test]
 async fn test_admin_v1_config_effective_snapshot_no_secrets() {
     use busbar_kernel::test_support::LaneSpec;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let gate = busbar_kernel::config::HookCfg {
@@ -4599,7 +4599,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     use std::collections::{BTreeMap, BTreeSet};
     const PREFIX: &str = busbar_kernel::admin::v1::contract::ADMIN_PREFIX;
     const METHODS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     crate::ensure_seam();
     // Every plane configured: the served document is then unfiltered (Law 7 filters only
     // unconfigured planes) and every plane admin route answers instead of its 404 gate.
@@ -4896,7 +4896,7 @@ fn literal_admin_routes(src: &str) -> Vec<(String, String)> {
 /// first GET); the gzip client costs zero inflation, the identity client a per-request inflate.
 #[tokio::test]
 async fn test_admin_v1_openapi_gzip_negotiation() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -4973,7 +4973,7 @@ async fn test_admin_v1_openapi_gzip_negotiation() {
 /// automatically covered.
 #[tokio::test]
 async fn test_admin_v1_all_reads_require_admin_token() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -5021,7 +5021,7 @@ async fn test_admin_v1_all_reads_require_admin_token() {
 async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_reads() {
     // Minting with `issue_aws_credential: true` returns the AccessKeyId AND the secret access key
     // ONCE at creation; neither the AWS secret nor the generation_hash is ever returned by a later read.
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -5097,7 +5097,7 @@ async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
     // Exercises the create_key / list_keys / key_usage handlers end-to-end after they were moved
     // onto spawn_blocking: a slow store call must not block a Tokio worker, and the offloaded
     // handlers must still return the same responses (no secret/hash leak; usage resolves).
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -5166,7 +5166,7 @@ async fn test_create_key_rejects_removed_budget_period_field() {
     // struct is `#[serde(deny_unknown_fields)]`, so a body carrying the removed field is a loud 400
     // (invalid_request), never silently accepted. The premise of the old test (a typo'd period
     // degrading to `total`) no longer exists: there is no period on a key at all.
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -5220,7 +5220,7 @@ async fn test_create_key_rejects_removed_budget_period_field() {
 /// the whole /metrics exposition can't be broken by one key. A well-formed label set still mints.
 #[tokio::test]
 async fn test_create_key_rejects_unsafe_labels() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -5320,7 +5320,7 @@ async fn test_create_key_rejects_unsafe_labels() {
 /// length itself or admit names arbitrarily longer than the documented cap.
 #[tokio::test]
 async fn test_create_key_name_length_boundary_is_exact() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -5375,7 +5375,7 @@ async fn test_create_key_name_length_boundary_is_exact() {
 /// so axum's stock `Json<T>` rejection — which echoes the raw serde `Display` — must NOT be used.
 #[tokio::test]
 async fn test_admin_malformed_body_returns_generic_400_no_input_fragment() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -5437,7 +5437,7 @@ async fn test_create_key_rejects_removed_max_budget_cents_field() {
     // the mint struct is `#[serde(deny_unknown_fields)]`. The old test's premise (a negative cap
     // slipping past serde into a silent over-budget DoS) is gone: the field no longer exists on the
     // key surface, so ANY body carrying it - negative, zero, or positive - is a loud 400.
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -5486,7 +5486,7 @@ async fn test_create_key_rejects_removed_max_budget_cents_field() {
 async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
     // PATCH /admin/keys/:id can disable a key (without DELETE destroying its history) and
     // adjust caps; it is admin-gated and rejects the same invalid values create() does.
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -5563,7 +5563,7 @@ async fn test_create_key_rejects_removed_rate_limit_fields() {
     // enforcement flows through the bound group), and the mint struct is
     // `#[serde(deny_unknown_fields)]`. The old test's premise (a `0` limit slipping past serde into
     // a permanently-dead key) is gone: ANY body naming these fields is a loud 400.
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -5621,7 +5621,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
     // existence validation). The removed 1.4.x cap fields (rpm_limit/tpm_limit/max_budget_cents)
     // are UNKNOWN fields now and must 400 - PATCH cannot be a back door to a limit surface that
     // no longer exists (limits live on groups).
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     // The rebind target must EXIST: give the App a cost model carrying group "eng".
@@ -5768,7 +5768,7 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
     // different thread, out of the subscriber's reach).
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     // App has exactly one configured pool, "smart" (lane 0). "smrt" is the typo'd sibling.
@@ -5864,7 +5864,7 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
 /// role's allowed-mode set, so the ceiling — not some other guard — is what admits or refuses.
 #[tokio::test]
 async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     // A delegated app-admin identity holding the role the ceiling keys off.
     let principal = busbar_kernel::auth::Principal {
@@ -5947,7 +5947,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
 /// — not the default path — is what produced it: without the ceiling the default mint outlives the cap.
 #[tokio::test]
 async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     const CEIL: u64 = 24 * 3600; // auth.policy.max_ttl = "24h"
 
     // Mint through the real handler under a 24h block ceiling; return (status, gov, expires_at).
@@ -6029,7 +6029,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
 /// handler under the SAME role ceiling, so the ceiling — not another guard — admits or refuses.
 #[tokio::test]
 async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     const ROLE_TTL: u64 = 3600; // the app-admin role may mint at most 1h
 
     // A delegated app-admin identity holding the role the ceiling keys off.
@@ -6130,7 +6130,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
 
 #[tokio::test]
 async fn test_delete_existing_key_returns_200() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (key, _secret) = gov
@@ -6164,7 +6164,7 @@ async fn test_delete_existing_key_returns_200() {
 
 #[tokio::test]
 async fn test_delete_missing_key_returns_404() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
 
@@ -6285,7 +6285,7 @@ impl busbar_kernel::governance::RecordStore for CountingStore {
 /// id by hand.
 #[tokio::test]
 async fn test_single_key_reads_use_get_key_not_list_keys() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(CountingStore::new());
     let gov = gov_with_signer(store.clone(), Some("admintok".to_string()));
     let (key_a, _) = gov
@@ -6411,7 +6411,7 @@ async fn test_single_key_reads_use_get_key_not_list_keys() {
 /// the one unavoidable refresh-driven `list_keys` call remains.
 #[tokio::test]
 async fn test_single_key_writes_use_get_key_for_their_existence_check() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(CountingStore::new());
     let gov = gov_with_signer(store.clone(), Some("admintok".to_string()));
     let (key_a, _) = gov
@@ -6496,7 +6496,7 @@ async fn test_single_key_writes_use_get_key_for_their_existence_check() {
 async fn test_delete_key_is_not_idempotent_204() {
     // After a successful delete, a second delete of the same id must 404 (proves the 204 was a
     // real revocation, not a no-op masquerading as success).
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (key, _secret) = gov
@@ -6537,7 +6537,7 @@ async fn test_concurrent_delete_returns_exactly_one_204() {
     // both observe the key and both return 204 (which would imply two revocations of one row in
     // an audit trail). The delete handler serializes its lookup→delete critical section, so the
     // winner returns 204 and every loser returns 404. Fire a burst and assert exactly one 204.
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (key, _secret) = gov
@@ -6598,7 +6598,7 @@ async fn test_patch_after_delete_404s_and_does_not_recreate_key() {
     // so re-INSERTs a missing row). Serializing `update_key`'s lookup→put behind the same gate as
     // DELETE closes the window. This sequential case (DELETE fully precedes PATCH) proves the base
     // contract: PATCH on a deleted key 404s and leaves it deleted (a later GET/usage stays 404).
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (key, _secret) = gov
@@ -6766,7 +6766,7 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
     // deterministically: the PATCH's `put_key` pauses between the existence check and the write
     // while the DELETE runs. Holding `EXISTENCE_GATE` across lookup→put is what makes the DELETE
     // run strictly after the PATCH's put, so the row is removed last and ends up ABSENT.
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BarrierStore {
@@ -6860,7 +6860,7 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
 /// (attacker-usable) secret. Same deterministic `BarrierStore` interleaving as the PATCH test.
 #[tokio::test]
 async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BarrierStore {
@@ -6977,7 +6977,7 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
     // - Fixed code (gate locked inside the still-running blocking closure): the DELETE blocks on
     // the gate until the PATCH's `put_key` finishes -> the DELETE is STILL PENDING in the
     // window -> this test PASSES. Releasing the barrier then lets both drain.
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BarrierStore {
@@ -7171,7 +7171,7 @@ fn admin_test_tarball_versioned(name: &str, alias: &str, version: &str) -> Vec<u
 #[tokio::test]
 async fn test_admin_v1_plugin_install_list_reload_remove() {
     use base64::Engine as _;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let tarball = admin_test_tarball("acme-store-junk", "junkstore");
     let file = "acme-store-junk.tar.gz";
     let dir =
@@ -7331,7 +7331,7 @@ fn admin_test_tarball_kind(name: &str, alias: &str, kind: &str) -> Vec<u8> {
 #[tokio::test]
 async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
     use base64::Engine as _;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!(
         "busbar-admin-plugins-secret-{}",
         std::process::id()
@@ -7427,7 +7427,7 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
 /// `settings_schema` gets `schema_url: null` (absence, not an empty string or omitted field).
 #[tokio::test]
 async fn test_admin_v1_plugins_list_row_carries_schema_url() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!(
         "busbar-admin-plugins-schemaurl-{}",
         std::process::id()
@@ -7539,7 +7539,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
 /// WITHOUT one, and the compiled-in `memory` row (no backing artifact at all).
 #[tokio::test]
 async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!(
         "busbar-admin-plugins-file-hasschema-{}",
         std::process::id()
@@ -7716,7 +7716,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
 #[tokio::test]
 async fn test_admin_v1_plugins_inspect_previews_without_installing() {
     use base64::Engine as _;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!(
         "busbar-admin-plugins-inspect-{}",
         std::process::id()
@@ -7820,7 +7820,7 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
 /// absence is a valid, common state (most plugins today have none), not a fault.
 #[tokio::test]
 async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let schema = serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -8022,7 +8022,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
 #[tokio::test]
 async fn test_admin_v1_plugin_install_same_name_different_file_is_409() {
     use base64::Engine as _;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!("busbar-admin-plugins-h2-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -8084,7 +8084,7 @@ async fn test_admin_v1_plugin_install_same_name_different_file_is_409() {
 #[tokio::test]
 async fn test_admin_v1_plugin_install_corrupt_existing_tarball_blocks_publish() {
     use base64::Engine as _;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!("busbar-admin-plugins-m7-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -8130,7 +8130,7 @@ async fn test_admin_v1_plugin_install_corrupt_existing_tarball_blocks_publish() 
 #[tokio::test]
 async fn test_admin_v1_plugin_install_rejections() {
     use base64::Engine as _;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!("busbar-admin-plugins-rej-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -8226,7 +8226,7 @@ async fn test_admin_v1_plugin_install_rejections() {
 #[tokio::test]
 #[allow(clippy::field_reassign_with_default)]
 async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     // An App whose cost model KNOWS the "growth" group; "ghost" stays unconfigured.
@@ -8337,7 +8337,7 @@ fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
 /// wins, so the leaf gets the team's per-head default. Also: `group_provisioned: true` is echoed.
 #[tokio::test]
 async fn test_mint_auto_provisions_leaf_from_child_default() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     // acme (org) → team-payments (team, child_default $20/mo per head). No user leaf yet.
@@ -8463,7 +8463,7 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
 /// CORRECT parent (or none) binds fine.
 #[tokio::test]
 async fn test_mint_parent_mismatch_is_409() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let groups = std::collections::BTreeMap::from([
@@ -8535,7 +8535,7 @@ async fn test_mint_parent_mismatch_is_409() {
 /// (default, tested elsewhere) is unlimited.
 #[tokio::test]
 async fn test_max_keys_per_principal_cap_trips() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let groups = std::collections::BTreeMap::from([
@@ -8608,7 +8608,7 @@ async fn test_max_keys_per_principal_cap_trips() {
 /// the two calls and confirm the SAME Idempotency-Key mints on retry.
 #[tokio::test]
 async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let groups = std::collections::BTreeMap::from([(
@@ -8710,7 +8710,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
 #[tokio::test]
 async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission() {
     use busbar_kernel::governance::NewKeySpec;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mint = |name: &str| {
@@ -8788,7 +8788,7 @@ async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission
 /// It also asserts the audit consequence: every one of these refusals writes a `rejected` row —
 /// a refused mint is an attempt to issue a credential, and it must leave a trace.
 async fn drive_key_cap_and_delegation_errors() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let groups = std::collections::BTreeMap::from([
@@ -8967,7 +8967,7 @@ async fn key_cap_and_delegation_refusals_are_reachable_declared_and_audited() {
 /// EXACTLY one succeeds (fills the last slot) and the rest 409, and the group ends at EXACTLY the cap.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let groups = std::collections::BTreeMap::from([(
@@ -9050,7 +9050,7 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
 /// token string appears nowhere in the read body. The token is the credential, shown exactly once.
 #[tokio::test]
 async fn test_signed_mint_returns_token_and_expiry_never_stored() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -9109,7 +9109,7 @@ async fn test_signed_mint_returns_token_and_expiry_never_stored() {
 /// verbatim; both together is a 400; a past `expires_at` is a 400; a malformed duration is a 400.
 #[tokio::test]
 async fn test_signed_mint_expiry_parsing_matrix() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -9184,7 +9184,7 @@ async fn test_signed_mint_expiry_parsing_matrix() {
 /// binding is gone - revoke-then-delete). `is_revoked(sub)` becomes true.
 #[tokio::test]
 async fn test_signed_mint_verify_then_delete_denies() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov.clone()).await;
@@ -9237,7 +9237,7 @@ async fn test_signed_mint_verify_then_delete_denies() {
 /// idempotent (a second revoke is still 200).
 #[tokio::test]
 async fn test_signed_revoke_denylists_without_deleting() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov.clone()).await;
@@ -9309,7 +9309,7 @@ async fn test_signed_revoke_denylists_without_deleting() {
 /// `GET /keys/{id}` now reports a DISTINCT `state`.
 #[tokio::test]
 async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov.clone()).await;
@@ -9425,7 +9425,7 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
 /// the default (omitted) list is unaffected.
 #[tokio::test]
 async fn test_list_keys_include_tombstoned() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov.clone()).await;
@@ -9508,7 +9508,7 @@ async fn test_list_keys_include_tombstoned() {
 /// binding), while an explicit `[]` binds NO pools.
 #[tokio::test]
 async fn test_signed_mint_group_none_and_pool_acl_matrix() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov.clone()).await;
@@ -9566,7 +9566,7 @@ async fn test_signed_mint_group_none_and_pool_acl_matrix() {
 /// (`revoke_all: true`), and is admin-gated.
 #[tokio::test]
 async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
@@ -9682,7 +9682,7 @@ groups:
 /// The overlay file's groups section is cleared while the (empty) hooks section is preserved.
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (dir, config_path, providers_path) = write_reset_fixture("groups");
     let overlay = dir.join("overlay.json");
     let store = Arc::new(MemoryStore::new());
@@ -9841,7 +9841,7 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
 /// after the reset and the base (disk) hook surface is what remains.
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_hooks_reverts_to_base() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (dir, config_path, providers_path) = write_reset_fixture("hooks");
     let overlay = dir.join("overlay.json");
     let store = Arc::new(MemoryStore::new());
@@ -9918,7 +9918,7 @@ async fn test_admin_v1_overlay_reset_hooks_reverts_to_base() {
 /// optimistic-concurrency guard every config-plane mutation honors.
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_stale_if_match_conflicts() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (dir, config_path, providers_path) = write_reset_fixture("ifmatch");
     let overlay = dir.join("overlay.json");
     let store = Arc::new(MemoryStore::new());
@@ -9986,7 +9986,7 @@ async fn test_admin_v1_overlay_reset_stale_if_match_conflicts() {
 /// An unknown section name is a `400 invalid_request` — only `groups`|`hooks` are valid.
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_unknown_section_400() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -10017,7 +10017,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_400() {
 /// onto "expected one of …" is a customer-visible change no ruling allows.
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -10052,7 +10052,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
 /// ⇒ every section is definitionally already at base).
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let overlay = std::env::temp_dir().join(format!(
@@ -10116,7 +10116,7 @@ async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
 /// admin-guarded (an unauthenticated caller never even reaches the scope check).
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_requires_full_scope() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -10326,7 +10326,7 @@ async fn settings_test_app(
     tokio::sync::MutexGuard<'static, ()>, // the process-wide limits slot, held for the test
 ) {
     let limits_lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     // A per-test tag keeps parallel `/config/settings` tests on DISTINCT temp dirs (the fixture dir
     // is keyed on pid + coarse timestamp, which collides for same-second parallel starts).
     let (dir, config_path, providers_path) = write_reset_fixture(&format!("settings-{tag}"));
@@ -10484,7 +10484,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
 /// `overlay_doc` is absent and the `per_request_fee` assertion fails.
 #[tokio::test]
 async fn test_admin_v1_config_settings_survives_a_real_boot_reload_at_default_overlay() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (dir, config_path, providers_path) = write_reset_fixture("boot-default-overlay");
     // The App persists to the SAME path `load_config_from_disk` resolves by default (no `config.overlay`
     // in config.yaml, no `BUSBAR_CONFIG_OVERLAY`): `busbar-overlay.json` next to config.yaml.
@@ -11055,7 +11055,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
 /// corrupt overlay `load_for_rmw` refuses to read-modify-write) and asserts the live cap afterwards.
 #[tokio::test]
 async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     // The installed limits are a PROCESS-GLOBAL slot; hold the lock every mutating test holds so a
     // sibling's install cannot land mid-assertion here.
     let _limits_lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
@@ -11130,7 +11130,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
 /// file `load_for_rmw` refuses to read-modify-write).
 #[tokio::test]
 async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_credentials() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = std::env::temp_dir().join(format!(
         "busbar-settings-gov-rotate-persist-fail-{}-{}",
         std::process::id(),
@@ -11356,7 +11356,7 @@ async fn settings_test_app_no_overlay(
     std::net::SocketAddr,
     tokio::task::JoinHandle<()>,
 ) {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (dir, config_path, providers_path) = write_reset_fixture(&format!("settings-no-ov-{tag}"));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -11690,7 +11690,7 @@ async fn keys_error_surface_is_byte_stable() {
 /// out of the `#[tokio::test]` so the class-level over-claim test can RUN it (and collect its
 /// emissions) without depending on test ordering.
 async fn drive_keys_error_surface() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     // A 65-character id (the cap is 64) and an id that cannot exist.
     const OVERLONG: &str = "vk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const MISSING: &str = "vk_0000000000000000";
@@ -12199,7 +12199,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
 
 /// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_admin_error_surface() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     // A syntactically valid but WRONG config-plane ETag — the stale guard, not the parser.
     const STALE: &str = "\"999999\"";
     const BAD_ETAG: &str = "not-an-etag";
@@ -12970,7 +12970,7 @@ async fn plugin_reload_reports_an_unrebuildable_disk_config() {
 
 /// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_plugin_reload_errors() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     // `pid` alone collides: this helper is called from TWO `#[tokio::test]`s in the same binary
     // (`plugin_reload_reports_an_unrebuildable_disk_config` and
     // `declared_error_set_is_exactly_what_the_handlers_emit`), which can run concurrently and would
@@ -13017,7 +13017,7 @@ async fn drive_plugin_reload_errors() {
 
 /// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_plugin_rollback_errors() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     // Same per-call collision as `drive_plugin_reload_errors` above (two callers, same pid) — see
     // that function's comment.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -13151,7 +13151,7 @@ async fn drive_plugin_rollback_errors() {
 /// so `declared_error_set_is_exactly_what_the_handlers_emit` witnesses the emission through the v1
 /// router's recording layer without depending on test order.
 async fn drive_plugin_inspect_errors() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
         "busbar-admin-inspect-witness-{}-{}",
@@ -13638,7 +13638,7 @@ fn overlay_reset_doc_row_matches_the_section_set() {
 /// restart, so a refusal is never audited as a restart that then failed.
 #[tokio::test]
 async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     // Bracket by seq, not just by action: `AUDIT` is a process-wide ring every admin mutation in
     // the binary writes to, unscoped by principal (every admin-token test shares the SAME fixed
     // operator principal id, so scoping by principal would not distinguish this test's rows from a
@@ -13747,7 +13747,7 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
 /// `page_cursor`) and `list_keys` (its own match arm, a different code path to the same hole).
 #[tokio::test]
 async fn limit_zero_does_not_produce_a_self_referential_cursor() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -13982,7 +13982,7 @@ async fn named_map_app_opts(
     tokio::task::JoinHandle<()>,
 ) {
     linked_export_axis();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (dir, config_path, providers_path) =
         write_named_map_fixture(tag, reference_corp_ad, base_export);
     // Disk truth, read back before the paths move into the fixture: the plane sections below are
@@ -14212,7 +14212,7 @@ async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
 /// BOTH sections and on BOTH the list and the single read, since one generic handler serves all four.
 #[tokio::test]
 async fn test_admin_v1_named_map_reads_project_settings_keys_never_values() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app()
@@ -14344,7 +14344,7 @@ async fn test_admin_v1_named_map_put_honors_expected_version() {
 #[tokio::test]
 async fn test_admin_v1_named_map_rejects_an_under_scoped_caller() {
     linked_export_axis();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app()
@@ -15231,7 +15231,7 @@ async fn drive_named_map_errors() {
     // field on `App`, so a fresh fixture is a fresh budget; raising the limit instead would have
     // made the test pass by weakening the thing it shares with production.
     for section in ["identity-providers", "export", "tools", "agents"] {
-        busbar_kernel::metrics::init();
+        busbar_kernel::snapshot::init();
         let store = Arc::new(MemoryStore::new());
         let gov = gov_with_signer(store, Some("admintok".to_string()));
         let app = crate::new_test_app().governance(gov).build();
@@ -15527,7 +15527,7 @@ async fn test_admin_v1_named_map_read_flags_an_unparseable_overlay_entry() {
 /// `NamedDefView` had to retract.
 #[tokio::test]
 async fn test_admin_v1_hook_reads_project_settings_keys_never_values() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut cfg: busbar_kernel::config::HookCfg = serde_json::from_value(serde_json::json!({
@@ -15664,7 +15664,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
 /// byte-for-byte the first, exactly as v1.5.5.
 #[tokio::test]
 async fn a_durable_node_journals_exactly_one_claim_for_a_repeated_key_post_keys() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
@@ -15735,7 +15735,7 @@ async fn a_durable_node_journals_exactly_one_claim_for_a_repeated_key_post_keys(
 /// nothing, because there is nothing here for it to journal to.
 #[tokio::test]
 async fn a_memory_only_node_journals_no_claim_for_a_repeated_key_post_keys() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();

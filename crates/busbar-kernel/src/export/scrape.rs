@@ -5,9 +5,9 @@
 //! plugin's, a row of the export axis, linked or dropped in.
 //!
 //! What stays the host's is what only the host can hold: the recorder every emit site writes
-//! ([`crate::metrics`]), its scrape-time gauges, and the route. The SCRAPE SINK — the instance whose
+//! ([`crate::snapshot`]), its scrape-time gauges, and the route. The SCRAPE SINK — the instance whose
 //! sink carries the `metrics` stream and which subscribes to it ([`crate::config::PluginExportSettings`])
-//! — is handed the recorder's SNAPSHOT ([`crate::metrics::snapshot`]) and the host serves the
+//! — is handed the recorder's SNAPSHOT ([`crate::snapshot::snapshot`]) and the host serves the
 //! exposition it renders; the kernel renders none of its own. On every scrape, on the route's
 //! blocking thread: with the recorder installed, the scrape-time gauges are refreshed from the LIVE
 //! `App` and every export-axis sink's `status` is folded (the recorder then holds everything it will
@@ -43,12 +43,12 @@ struct Scrape {
 
 impl Scrape {
     fn serve(&self, app: Option<&crate::state::App>) -> EndpointResponse {
-        let installed = crate::metrics::recorder_installed();
+        let installed = crate::snapshot::recorder_installed();
         if let Some(app) = app.filter(|_| installed) {
-            crate::metrics::refresh_scrape_gauges(app);
+            crate::snapshot::refresh_scrape_gauges(app);
             super::plugin::status();
         }
-        exposition((self.sink)().as_deref(), crate::metrics::snapshot())
+        exposition((self.sink)().as_deref(), crate::snapshot::snapshot())
     }
 }
 

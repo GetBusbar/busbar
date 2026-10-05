@@ -98,7 +98,7 @@ fn metrics_served_via_endpoint_registration() {
 /// a sink is a `200` of that sink's bytes under the exposition's content type.
 #[test]
 fn without_a_sink_the_kernel_serves_no_exposition() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let req = EndpointRequest {
         method: "GET".into(),
         path: "/metrics".into(),
@@ -122,7 +122,7 @@ fn without_a_sink_the_kernel_serves_no_exposition() {
         resp.headers,
         vec![("content-type".to_string(), CONTENT_TYPE.to_string())]
     );
-    let snapshot = crate::metrics::snapshot().expect("the recorder is installed");
+    let snapshot = crate::snapshot::snapshot().expect("the recorder is installed");
     assert!(
         resp.body.starts_with(b"# "),
         "the sink's rendering of a non-empty snapshot ({} families)",

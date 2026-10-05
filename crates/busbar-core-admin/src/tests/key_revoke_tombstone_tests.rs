@@ -15,7 +15,7 @@ const X_ADMIN_TOKEN: &str = "x-admin-token";
 
 #[tokio::test]
 async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     let store = Arc::new(MemoryStore::new());
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);

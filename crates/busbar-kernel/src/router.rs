@@ -10,7 +10,7 @@ use axum::Router;
 use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, export, failover, governance, handlers,
-    hooks, ingress, ir, json, limits, metrics, net_guard, oauth_as, observability, operation,
+    hooks, ingress, ir, json, limits, snapshot, net_guard, oauth_as, observability, operation,
     plane, plugin_routes, profile, proto, proxy, state, store, telemetry, tls, transport, trust,
 };
 
@@ -367,7 +367,7 @@ pub(crate) fn base_data_router(
     // the well-known `/metrics` exception), resolved at scrape time so a hot-swap never leaves it
     // stale. The HOOK-metrics scrape (`/metrics/hooks`) stays a core route, mounted only
     // when the recorder is installed (`metrics::enabled()`), reserved against plugin claims.
-    let router = if metrics::enabled() {
+    let router = if snapshot::enabled() {
         // A SEPARATE exposition from busbar's own `/metrics` so a hook can never type-conflict or
         // shadow a first-party series. Verbatim hook metric names + an auto `hook="<name>"` label, so
         // an external dashboard built against a hook repoints here and just works.

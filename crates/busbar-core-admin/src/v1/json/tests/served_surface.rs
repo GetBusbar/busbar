@@ -231,7 +231,7 @@ fn gov(admin_token: &str) -> std::sync::Arc<busbar_kernel::governance::GovState>
 /// copy of a list.
 #[tokio::test]
 async fn admin_corpus_reconciles_with_the_served_router() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let served = served_admin_operations();
 
     // ── the router half, asked live ──
@@ -519,7 +519,7 @@ async fn served_openapi(app: std::sync::Arc<busbar_kernel::state::App>) -> serde
 /// still not.
 #[tokio::test]
 async fn served_openapi_lists_only_the_configured_planes() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let served = served_admin_operations();
     let plane_paths = |doc: &serde_json::Value, section: &str| -> Vec<String> {
         let root = abs(&format!("/{section}"));
@@ -651,7 +651,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
 /// the handlers shows as a status change here.
 #[tokio::test]
 async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     const TOKEN: &str = "served-surface-token";
     let app = crate::new_test_app().governance(gov(TOKEN)).build();
     let router = crate::build_router(app);

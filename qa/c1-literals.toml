@@ -211,7 +211,7 @@ item = "jsonrpc"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/metrics/mod.rs"
+file = "crates/busbar-kernel/src/snapshot/mod.rs"
 item = "prometheus"
 
 [[finding]]

@@ -639,7 +639,7 @@ fn only_gauges_are_expired() {
     );
 }
 
-/// Item 24: the money gauges moved into `metrics/money.rs` and now reach the recorder through ONE
+/// Item 24: the money gauges moved into `snapshot/money.rs` and now reach the recorder through ONE
 /// named boundary, `money::set_gauge`, instead of an inline `as f64` at each site. The served
 /// `/metrics` text must be the text 1.5.5 served. For every probe value the SAME family is written
 /// once the 1.5.5 way (the direct cast, kept here as the reference) and once through the boundary,

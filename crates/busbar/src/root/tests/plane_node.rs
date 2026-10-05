@@ -184,7 +184,7 @@ async fn rig_billed(fixture: Fixture) -> Rig {
 
 async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
     plane::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     let state = Arc::new(MockServerState::new());
     for _ in 0..8 {
@@ -4076,7 +4076,7 @@ const RERANK_UNITS: u64 = 50;
 async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     declare_test_classes();
     plane::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     let state = Arc::new(MockServerState::new());
     for _ in 0..4 {

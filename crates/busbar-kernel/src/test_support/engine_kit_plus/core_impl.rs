@@ -24,8 +24,8 @@ impl EngineTestKitPlus for CoreEngineKit {
     }
 
     fn metrics_render(&self) -> String {
-        crate::metrics::init();
-        crate::metrics::render()
+        crate::snapshot::init();
+        crate::snapshot::render()
     }
 
     fn scrape_exposition(&self) -> (u16, String) {
@@ -53,7 +53,7 @@ impl EngineTestKitPlus for CoreEngineKit {
     }
 
     fn plane_request_family(&self) -> &'static str {
-        crate::metrics::PLANE_REQUESTS_TOTAL
+        crate::snapshot::PLANE_REQUESTS_TOTAL
     }
 
     fn named_map_section_facts(&self, section: &'static str) -> Option<NamedMapSectionFacts> {

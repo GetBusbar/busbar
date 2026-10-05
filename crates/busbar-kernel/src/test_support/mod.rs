@@ -769,7 +769,7 @@ impl LaneSpec {
 /// scrape sink's — here the recorder handle is the stand-in switch (the harness has no `export:`
 /// config surface) and the neutral [`export_axis::LinesSink`] renders.
 fn test_plugin_route_table() -> crate::plugin_routes::PluginRouteTable {
-    if crate::metrics::recorder_installed() {
+    if crate::snapshot::recorder_installed() {
         let decl = export_axis::lines_scrape_route();
         crate::plugin_routes::build_route_table(vec![decl])
             .unwrap_or_else(|_| crate::plugin_routes::PluginRouteTable::empty())
@@ -2192,9 +2192,9 @@ fn hook_double_env(
 /// exact metric name (the char after the name must open the label set / value, so a name never
 /// matches a longer neighbor it happens to prefix).
 pub fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
-    crate::metrics::init();
+    crate::snapshot::init();
     let frags: Vec<String> = labels.iter().map(|(k, v)| format!("{k}=\"{v}\"")).collect();
-    crate::metrics::render()
+    crate::snapshot::render()
         .lines()
         .filter(|l| {
             l.strip_prefix(name)

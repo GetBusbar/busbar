@@ -1843,7 +1843,7 @@ pub fn content_capped(p: PromptProjection<'_>) -> PromptProjection<'_> {
     if bytes <= cap {
         return p;
     }
-    metrics::counter!(crate::metrics::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
+    metrics::counter!(crate::snapshot::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
     PromptProjection {
         system: None,
         messages: Vec::new(),

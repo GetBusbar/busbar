@@ -438,7 +438,7 @@ fn project_request_headers(headers: &HeaderMap) -> Vec<(String, String)> {
         })
         .collect();
     if projected.len() > MAX_PLUGIN_HEADERS {
-        metrics::counter!(crate::metrics::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL).increment(1);
+        metrics::counter!(crate::snapshot::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL).increment(1);
         // Per-request on a client whose header count is legitimately high (proxies/CDNs/tracing
         // headers), so an unlatched warn spams. The PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL counter
         // above is the operator signal; log the detail at `debug!`.
@@ -471,7 +471,7 @@ fn project_request_headers(headers: &HeaderMap) -> Vec<(String, String)> {
 fn relay_response(owner: &str, path: &str, resp: EndpointResponse) -> Response {
     use axum::http::{HeaderName, HeaderValue};
     if resp.headers.len() > MAX_PLUGIN_HEADERS {
-        metrics::counter!(crate::metrics::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL).increment(1);
+        metrics::counter!(crate::snapshot::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL).increment(1);
         // Fail-closed 502 is UNCHANGED. Rate-limit the log to warn-once-per-(plugin,route): a
         // buggy/hostile plugin over-caps on every response, and the PLUGIN_RESPONSE_HEADERS_REJECTED
         // counter above carries the per-request volume. Warn on the first occurrence per key; log

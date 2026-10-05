@@ -901,7 +901,7 @@ fn every_linked_export_row_answers_its_module_ahead_of_a_dropped_in_spelling() {
 fn the_host_series_catalog_holds_every_series_the_host_defines() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let sources = [
-        "busbar-kernel/src/metrics/mod.rs",
+        "busbar-kernel/src/snapshot/mod.rs",
         "busbar-kernel/src/telemetry.rs",
         "busbar-kernel/src/proxy/proxy_vocab.rs",
     ];

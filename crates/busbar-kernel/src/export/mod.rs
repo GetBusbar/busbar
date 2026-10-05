@@ -8,7 +8,7 @@
 //! modules — no config boolean, no dynamic tarball.
 //!
 //! The COLLECTION half stays core: the Prometheus recorder + the ~57 emit sites + the
-//! scrape-time gauge derivation live in [`crate::metrics`]; the request-log projection is still built
+//! scrape-time gauge derivation live in [`crate::snapshot`]; the request-log projection is still built
 //! in the request-finish path. These modules move only the DISTRIBUTION:
 //!
 //! - [`scrape`] — PULL. The host's scrape of the well-known `/metrics`: the export-axis instance

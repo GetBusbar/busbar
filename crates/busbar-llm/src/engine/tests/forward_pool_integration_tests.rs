@@ -271,7 +271,7 @@ async fn test_mock_server_5xx_error() {
 async fn test_non_stream_json_relay() {
     crate::testkit::install_test_seams();
     // ensure the Prometheus recorder is live so the forward path's counters record.
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -312,7 +312,7 @@ async fn test_non_stream_json_relay() {
     // the forward path (forward → forward_with_pool) must have emitted the
     // upstream-attempt counter into the Prometheus exposition.
     assert!(
-        busbar_kernel::metrics::render()
+        busbar_kernel::snapshot::render()
             .contains(busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL),
         "forward path should emit {} into /metrics",
         busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL
@@ -328,7 +328,7 @@ async fn test_non_stream_json_relay() {
 #[tokio::test]
 async fn test_cross_protocol_nonstream_preserves_model() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
             status: StatusCode::OK,
@@ -395,7 +395,7 @@ async fn test_cross_protocol_nonstream_preserves_model() {
 async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     crate::testkit::install_test_seams();
     use crate::test_support::engine_kit::EngineTestKit as _;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     let state = Arc::new(MockServerState::new());
     for _ in 0..2 {
@@ -525,7 +525,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
 async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     crate::testkit::install_test_seams();
     use crate::test_support::engine_kit::EngineTestKit as _;
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     // OpenAI-protocol SSE stream whose final chunk carries usage totalling 160 tokens
     // (prompt 100 + completion 60). The OpenAI reader decodes bare `data:`-framed chunks the
@@ -660,7 +660,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
 #[tokio::test]
 async fn test_max_requests_budget_caps_lane_and_counts_ok() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let state = Arc::new(MockServerState::new());
     for _ in 0..3 {
         state.push(MockResponse::Ok {
@@ -759,7 +759,7 @@ async fn test_max_requests_budget_caps_lane_and_counts_ok() {
 #[tokio::test]
 async fn test_failover_exclusions_remove_member_from_pool() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let mk_server = |model: &'static str| async move {
         let state = Arc::new(MockServerState::new());
         for _ in 0..6 {
@@ -873,8 +873,8 @@ async fn test_failover_exclusions_remove_member_from_pool() {
 #[tokio::test]
 async fn test_metrics_admitted_in_open_relay_mode() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
-    metrics::counter!(busbar_kernel::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
+    busbar_kernel::snapshot::init();
+    metrics::counter!(busbar_kernel::snapshot::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
 
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -901,7 +901,7 @@ async fn test_metrics_admitted_in_open_relay_mode() {
     assert!(ct.starts_with("text/plain"), "content-type was {ct}");
     let body = resp.text().await.unwrap();
     assert!(
-        body.contains(busbar_kernel::metrics::REQUESTS_TOTAL),
+        body.contains(busbar_kernel::snapshot::REQUESTS_TOTAL),
         "exposition should contain a metric; got:\n{body}"
     );
 
@@ -922,8 +922,8 @@ async fn test_metrics_admitted_in_open_relay_mode() {
 #[tokio::test]
 async fn test_metrics_requires_auth_in_chain_mode() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
-    metrics::counter!(busbar_kernel::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
+    busbar_kernel::snapshot::init();
+    metrics::counter!(busbar_kernel::snapshot::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
 
     let token = "grp:metrics-scrapers";
     let auth_cfg = busbar_kernel::config::auth::AuthCfg::with_chain(vec![
@@ -1009,7 +1009,7 @@ async fn test_metrics_requires_auth_in_chain_mode() {
     );
     let body = authed.text().await.unwrap();
     assert!(
-        body.contains(busbar_kernel::metrics::REQUESTS_TOTAL),
+        body.contains(busbar_kernel::snapshot::REQUESTS_TOTAL),
         "authed exposition should contain a metric; got:\n{body}"
     );
 
@@ -1022,7 +1022,7 @@ async fn test_governance_vkey_auth_and_pool_acl() {
     crate::testkit::install_test_seams();
     use crate::test_support::engine_kit::EngineTestKit as _;
 
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
@@ -1102,7 +1102,7 @@ async fn test_governance_budget_over_quota() {
     crate::testkit::install_test_seams();
     use crate::test_support::engine_kit::EngineTestKit as _;
 
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
@@ -1303,7 +1303,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
 #[tokio::test]
 async fn test_budget_over_quota_openai_envelope() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1336,7 +1336,7 @@ async fn test_budget_over_quota_openai_envelope() {
 #[tokio::test]
 async fn test_budget_over_quota_responses_envelope() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1370,7 +1370,7 @@ async fn test_budget_over_quota_responses_envelope() {
 #[tokio::test]
 async fn test_budget_over_quota_cohere_envelope() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1399,7 +1399,7 @@ async fn test_budget_over_quota_cohere_envelope() {
 #[tokio::test]
 async fn test_budget_over_quota_gemini_envelope() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1437,7 +1437,7 @@ async fn test_budget_over_quota_gemini_envelope() {
 #[tokio::test]
 async fn test_budget_over_quota_bedrock_envelope() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1478,7 +1478,7 @@ async fn test_governance_rate_limit_429() {
     crate::testkit::install_test_seams();
     use crate::test_support::engine_kit::EngineTestKit as _;
 
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
@@ -1652,7 +1652,7 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
 #[tokio::test]
 async fn test_rate_limit_429_openai_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1690,7 +1690,7 @@ async fn test_rate_limit_429_openai_native_envelope() {
 #[tokio::test]
 async fn test_rate_limit_429_responses_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1721,7 +1721,7 @@ async fn test_rate_limit_429_responses_native_envelope() {
 #[tokio::test]
 async fn test_rate_limit_429_cohere_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1753,7 +1753,7 @@ async fn test_rate_limit_429_cohere_native_envelope() {
 #[tokio::test]
 async fn test_rate_limit_429_gemini_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1794,7 +1794,7 @@ async fn test_rate_limit_429_gemini_native_envelope() {
 #[tokio::test]
 async fn test_rate_limit_429_bedrock_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -4033,7 +4033,7 @@ async fn test_forward_once_records_success_and_spends_budget() {
 #[tokio::test]
 async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Sse {
             events: vec![
@@ -5899,7 +5899,7 @@ async fn test_same_size_pool_exhausts() {
 #[tokio::test]
 async fn test_clean_sse_end_records_success_not_failure() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let state = Arc::new(MockServerState::new());
 
     // Push several clean SSE responses (each ends normally with message_stop + [DONE]).
@@ -5973,7 +5973,7 @@ async fn test_clean_sse_end_records_success_not_failure() {
 #[tokio::test]
 async fn test_429_retry_after_header_sets_cooldown_floor() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let state = Arc::new(MockServerState::new());
     // Single lane; a 429 with Retry-After: 45. streak=0 → computed backoff is the base (15s),
     // so a floor of 45 must dominate, proving the header was honored end-to-end.
@@ -6039,7 +6039,7 @@ async fn test_429_retry_after_header_sets_cooldown_floor() {
 #[tokio::test]
 async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state.clone()).await;
 
@@ -6110,7 +6110,7 @@ async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
 #[tokio::test]
 async fn test_unbounded_max_concurrent_never_throttles_a_burst() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
@@ -6158,7 +6158,7 @@ async fn test_unbounded_max_concurrent_never_throttles_a_burst() {
 #[tokio::test]
 async fn test_bounded_max_concurrent_still_enforces_the_cap() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
