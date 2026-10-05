@@ -44,7 +44,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::{DeadlineClass, InHead, OutHead, Outcome, FLAG_RESUME};
-use busbar_contract::abi::mechanism::lifecycle::{slot, CancelIn, TickIn, TickOut};
+use busbar_contract::abi::mechanism::lifecycle::{slot, TickIn, TickOut};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::conn::InstanceId;
 
@@ -53,9 +53,7 @@ use super::services::{HostServices, Served, ServiceStore};
 use super::ticket::{
     decode, encode, recycled_generation, Completions, WakeRoute, MAX_INDEX, MAX_WORKERS,
 };
-use super::{
-    cancel_frame, in_head, now_ns, out_head, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame,
-};
+use super::{in_head, now_ns, out_head, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame};
 
 /// The longest a crossing may take before the watchdog faults it, per class. A crossing never
 /// blocks by contract, so these bound a wedged plugin, not a slow request (that is the deadline).
@@ -181,6 +179,8 @@ pub struct Done<I, O> {
     /// `CancelOut.disposition` answered (store: 0 UNKNOWN, 1 NOT_APPLIED, 2 APPLIED). A `cancel`
     /// that FAULTed makes the op FAULT, with no disposition.
     pub disposition: Option<u32>,
+    /// The record writes that `cancel` carried (a plane's, SEAM-L(r)).
+    pub cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
 }
 
 /// One op's completion slot: filled ONCE by the dispatcher, read by a sync waiter (the condvar)
@@ -249,6 +249,7 @@ impl<I: InFrame, O: OutFrame> Settle for ReplySlot<Done<I, O>> {
             detached,
             short: false,
             disposition: None,
+            cancel_writes: Vec::new(),
         })
     }
 }
@@ -317,6 +318,7 @@ impl<I: InFrame, O: OutFrame> Reply<I, O> {
             detached: false,
             short: false,
             disposition: None,
+            cancel_writes: Vec::new(),
         });
         Self { slot, owner: None }
     }
@@ -403,6 +405,7 @@ impl<I: InFrame, O: OutFrame> Job for JobOf<I, O> {
             detached: false,
             short: c.short,
             disposition: c.disposition,
+            cancel_writes: c.cancel_writes,
         });
         // The op is over: nothing crosses on this frame again, so the lent memory may go (the
         // caller's own clone, if it kept one, still holds it).
@@ -1036,18 +1039,23 @@ impl Worker {
                     return Some(st);
                 }
                 // `cancel` may not pend: its head carries NONE; the cancelled ticket is its field.
-                let mut frame = cancel_frame(ticket);
-                frame.input.head.size = size_of::<CancelIn>() as u32;
-                frame.input.head.deadline_class = class as u8;
+                // The kind's own frame (a plane's lends record buffers, SEAM-L(r)).
+                let mut frame = (inst.cancel_frame)();
+                let heads = frame.prepare(ticket, class as u8);
                 let budget = env.budgets.of(slot::CANCEL, class);
-                let (mut st, c) = self.cross(st, &inst, slot::CANCEL, frame.heads(), budget)?;
-                // The op answers the kind's timeout with `cancel`'s disposition; a `cancel` that
-                // FAULTed makes the op FAULT.
+                let (mut st, c) = self.cross(st, &inst, slot::CANCEL, heads, budget)?;
+                // The op answers the kind's timeout with `cancel`'s disposition and the writes it
+                // carried; a `cancel` that FAULTed makes the op FAULT.
                 let ended = if c.outcome == Outcome::Fault {
                     Crossed::host(Outcome::Fault)
                 } else {
                     Crossed {
-                        disposition: Some(frame.out.disposition),
+                        disposition: Some(frame.disposition()),
+                        cancel_writes: if c.outcome == Outcome::Ready {
+                            frame.writes()
+                        } else {
+                            Vec::new()
+                        },
                         ..Crossed::host(timeout)
                     }
                 };

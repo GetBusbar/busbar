@@ -156,6 +156,8 @@ pub(crate) struct Buried {
     pub(crate) facts: Facts,
     /// The op that was in flight.
     pub(crate) flight: Option<Box<dyn PieceInFlight>>,
+    /// The principal the kernel verified for the unit: its cancel row is written under it.
+    pub(crate) principal: Option<busbar_contract::caps::PrincipalId>,
 }
 
 impl PlaneDriver {
@@ -167,7 +169,8 @@ impl PlaneDriver {
         let buried = std::mem::take(&mut *self.lock_buried());
         let mut unsettled = Vec::new();
         for mut unit in buried {
-            let disposition = match unit.flight.take() {
+            let now = |ticket| self.cancel_now(ticket).map(|c| (c.disposition, c.writes));
+            let cancelled = match unit.flight.take() {
                 Some(mut flight) => match flight.settled() {
                     None => {
                         unit.flight = Some(flight);
@@ -177,13 +180,18 @@ impl PlaneDriver {
                     // The client-drop path cancelled the op on its worker; an op that ended on its
                     // own before the cancel reached it leaves the plane owing one.
                     Some(done) => match (done.disposition, done.outcome) {
-                        (Some(d), _) => Some(d),
+                        (Some(d), _) => Some((d, flight.cancel_writes())),
                         (None, AbiOutcome::Fault) => None,
-                        (None, _) => self.cancel_now(unit.ticket),
+                        (None, _) => now(unit.ticket),
                     },
                 },
-                None => self.cancel_now(unit.ticket),
+                None => now(unit.ticket),
             };
+            // THE CANCELLED UNIT'S ROW (SEAM-L(r)): what its `cancel` wrote.
+            if let Some((_, writes)) = &cancelled {
+                self.fold_writes(writes, unit.principal.as_ref());
+            }
+            let disposition = cancelled.map(|(d, _)| d);
             let bill = CancelBill::new(ReasonCode::ClientGone, disposition, &unit.facts);
             self.money.cancelled(&unit.ctx, &bill);
             self.calls.recycle(unit.ticket);
