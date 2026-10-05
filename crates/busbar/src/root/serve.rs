@@ -1437,9 +1437,12 @@ pub fn door_mounts(
     use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
     use busbar_kernel::guest::{Claimant, GuestList, GuestRefusal, LineAuth, Matched};
     use std::collections::HashMap;
+    // THE PUBLIC ROUTES the served planes state (SEAM-4o): each at its own target on the data
+    // listener, open to a caller that presents no busbar credential, served by the plane's `serve`.
+    let public = public_routes(&served);
     if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
         return Ok(DoorMounts {
-            routes: Vec::new(),
+            routes: public,
             sessions: Vec::new(),
         });
     }
@@ -1648,11 +1651,53 @@ pub fn door_mounts(
                 }),
             }
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let mut routes_of = routes_of;
+    routes_of.extend(public);
     Ok(DoorMounts {
         routes: routes_of,
         sessions,
     })
+}
+
+/// THE PUBLIC ROUTES the served door planes state (`abi::plane::ROUTE_PUBLIC`, SEAM-4o): each at its
+/// own target and verb on the data listener's mount, behind no auth gate (`RouteAuth::None`; the
+/// listener's arrival gates still apply), answered by the plane's `serve` op through the kernel's
+/// public serve path. A verb the router does not mount is left out.
+#[cfg(linked_axis_node)]
+fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
+    served
+        .planes
+        .iter()
+        .flat_map(|p| p.snapshot.admin_routes.iter())
+        .filter(|r| r.flags & busbar_contract::abi::plane::ROUTE_PUBLIC != 0)
+        .filter_map(|r| {
+            let method = METHODS
+                .into_iter()
+                .find(|m| m.as_str().eq_ignore_ascii_case(&r.verb))?;
+            Some(PlaneRouteSpec {
+                path: r.target.clone(),
+                method,
+                auth: RouteAuth::None,
+                handler: Arc::new(move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                    Box::pin(async move {
+                        let target = ctx
+                            .uri
+                            .path_and_query()
+                            .map_or_else(|| ctx.path.clone(), |pq| pq.as_str().to_string());
+                        busbar_kernel::plane_driver::serve::answer_public(
+                            ctx.method.as_str(),
+                            &ctx.path,
+                            &target,
+                            &ctx.headers,
+                            ctx.body,
+                        )
+                        .await
+                    })
+                }),
+            })
+        })
+        .collect()
 }
 
 /// A door plane's RFC 9728 facts: its audience and the authorization servers and scopes it states.

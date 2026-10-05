@@ -12,7 +12,7 @@
 //! records the request the relay ASKED to send, so an empty log means no byte was ever composed for
 //! the backend.
 //!
-//! And the gate is the same real `dlopen`ed cdylib the MCP battery uses, driving its verdict off the
+//! And the gate is the same kernel hook double the MCP battery uses, driving its verdict off the
 //! projection busbar sent it: the content half here is that a submission's `parts` — the caller's
 //! prose — reach the hook.
 
@@ -21,7 +21,7 @@ use crate::testkit::engine_boot::engine;
 use busbar_kernel::test_support::engine_kit::HookNeed;
 
 /// The `hooks:` DEFINITION a test attaches, as the document an operator writes (the engine parses
-/// it with its own grammar at build): a `kind: gate` on the hermetic test cdylib, holding the
+/// it with its own grammar at build): a `kind: gate` on the kernel's hook double, holding the
 /// `prompt: ro` grant so the content projection is sent.
 fn gate(settings: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
@@ -33,7 +33,7 @@ fn gate(settings: serde_json::Value) -> serde_json::Value {
         // `tokio::time::timeout` around `policy.decide` fires on pure scheduling delay, and
         // `on_error: "weighted"` maps a timed-out gate to PROCEED — so reject-all serves a 200
         // and the battery flakes red with the fix under test working. 10 s is not a tuned number;
-        // it is "never fires for a healthy in-process dlopen call, on any load this side of a
+        // it is "never fires for a healthy in-process hook call, on any load this side of a
         // wedged host". The deadline path itself is covered by its own tests, on purpose, where
         // firing is the point.
         "timeout_ms": 10_000,
@@ -45,19 +45,10 @@ fn gate(settings: serde_json::Value) -> serde_json::Value {
     })
 }
 
-/// The attach, with the cdylib loaded through the real scan/trust/load pipeline.
-///
-/// ITS ABSENCE IS A HARD FAILURE, never a skip, for the reason the MCP twin's own helper states: a
-/// skipped acceptance test reports green, and with the firing site reverted and the cdylib missing
-/// every assertion in this file passed. The panic names the command that fixes it.
+/// The attach, with the gate's registry row answered by the kernel's hook double behind its hook
+/// axis port. It cannot be absent, so nothing here can skip.
 fn gates(name: &str, settings: serde_json::Value) -> Gates {
-    let env = engine()
-        .hook_env(&["test-hook"], HookNeed::Rw, HookNeed::Ro)
-        .expect(
-            "the busbar-hook-test-plugin cdylib is not built. This battery is the A2A half of the \
-         release's acceptance test and it CANNOT be skipped: with no gate to load, every assertion \
-         below is vacuous and reports a green. Build it: `cargo build -p busbar-hook-test-plugin`.",
-        );
+    let env = engine().hook_env(&["test-hook"], HookNeed::Rw, HookNeed::Ro);
     Gates {
         env,
         hooks: vec![(name.to_string(), gate(settings))],
