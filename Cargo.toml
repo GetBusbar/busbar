@@ -72,8 +72,8 @@ busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", 
 busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "795eadb866e5f9a98bc854b9697ae42a28a51e92" }
 busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "91e0daafcd0ecd490c328bbfdd5999852271a91b" }
 busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "91e0daafcd0ecd490c328bbfdd5999852271a91b" }
-busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "c131243f6f59653872c94a7e555832e4dc45d2d6" }
-busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "c131243f6f59653872c94a7e555832e4dc45d2d6" }
+busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "482bc0fdb0b2254afd2668def34c2a41f8e3a220" }
+busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "482bc0fdb0b2254afd2668def34c2a41f8e3a220" }
 # THE SECRET SOURCES (THE DESIGN, "Plugins"; ARCHITECT 2026-10-02 WIRE-SECRET): `busbar` links each logic
 # crate's door on the secret axis; the kernel's test build stands their `resolve` in. One rev each.
 # The env source's logic crate is also the door the loader's secret conformance suite links; its cdylib
