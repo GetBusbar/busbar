@@ -508,8 +508,8 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
     };
     let opened = axis
         .open(
-            // A linked store, as boot opens it (Q-STORE (B): no row is a default; the ephemeral
-            // row, the one `--migrate-config` writes when config names none).
+            // The build's ephemeral linked store, selected by its stated fact (no row is a default
+            // since Q-STORE (B); row order is not a fact).
             StoreDoor::Linked(
                 crate::LINKED
                     .stores

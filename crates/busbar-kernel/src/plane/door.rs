@@ -694,20 +694,49 @@ fn admin_routes<const I: usize>(
         .collect()
 }
 
-/// The door's stated admin OpenAPI fragment, its paths keyed under the admin mount.
-fn openapi<const I: usize>() -> serde_json::Value {
-    let fragment = door(I)
+/// The key of the door's admin OpenAPI blob that is no path: the component schemas its paths'
+/// `$ref`s name, stated as data because a door links no schema generator (ARCHITECT Q2).
+const OPENAPI_COMPONENTS: &str = "components";
+
+/// The door's stated admin OpenAPI blob as an object (empty when it states none).
+fn openapi_blob<const I: usize>() -> serde_json::Map<String, serde_json::Value> {
+    match door(I)
         .and_then(|d| d.reg.admin_openapi)
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok());
-    let Some(serde_json::Value::Object(paths)) = fragment else {
-        return serde_json::Value::Object(serde_json::Map::new());
-    };
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
+    {
+        Some(serde_json::Value::Object(blob)) => blob,
+        _ => serde_json::Map::new(),
+    }
+}
+
+/// The door's stated admin OpenAPI fragment, its paths keyed under the admin mount (its
+/// `components` key is no path; [`openapi_schemas`] inserts it).
+fn openapi<const I: usize>() -> serde_json::Value {
     serde_json::Value::Object(
-        paths
+        openapi_blob::<I>()
             .into_iter()
+            .filter(|(rel, _)| rel != OPENAPI_COMPONENTS)
             .map(|(rel, item)| (format!("{}{rel}", crate::api::ADMIN_PREFIX), item))
             .collect(),
     )
+}
+
+/// The door's stated `components.schemas`, inserted into the admin document's
+/// `#/components/schemas` as written: the bodies its paths' `$ref`s name (the paths already carry
+/// those `$ref`s, as [`openapi`] keyed them).
+#[cfg(feature = "openapi-schema")]
+fn openapi_schemas<const I: usize>(
+    schema_gen: &mut schemars::SchemaGenerator,
+    _req_gen: &mut schemars::SchemaGenerator,
+    _paths: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    let mut blob = openapi_blob::<I>();
+    let schemas = blob
+        .remove(OPENAPI_COMPONENTS)
+        .and_then(|c| c.get("schemas").cloned());
+    if let Some(serde_json::Value::Object(schemas)) = schemas {
+        schema_gen.definitions_mut().extend(schemas);
+    }
 }
 
 /// `target` with its `{name}` segment filled by `name`.
@@ -800,6 +829,8 @@ struct HookRow {
     default_section: fn() -> Box<dyn PlaneCfg>,
     admin_routes: fn(&dyn std::any::Any) -> Vec<crate::admin_verbs::AdminRouteSpec>,
     openapi: fn() -> serde_json::Value,
+    #[cfg(feature = "openapi-schema")]
+    openapi_schemas: crate::plane::registry::OpenapiSchemasHook,
     #[allow(clippy::type_complexity)]
     parse_endpoint:
         fn(&serde_yaml::Value) -> Result<Box<dyn crate::plane::config::PlaneEndpointCfg>, String>,
@@ -827,6 +858,8 @@ impl HookRow {
             lower_endpoint: lower_endpoint::<I>,
             admin_routes: admin_routes::<I>,
             openapi: openapi::<I>,
+            #[cfg(feature = "openapi-schema")]
+            openapi_schemas: openapi_schemas::<I>,
         }
     }
 
@@ -848,6 +881,9 @@ impl HookRow {
             named_def_get: named.then_some(self.named_def_get),
             registry_contains: named.then_some(self.registry_contains),
             reresolve_gates: Some(self.reresolve_gates),
+            #[cfg(feature = "openapi-schema")]
+            openapi_schemas: admin.then_some(self.openapi_schemas),
+            #[cfg(not(feature = "openapi-schema"))]
             openapi_schemas: None,
             on_swap: None,
             parse_section: Some(self.parse_section),
