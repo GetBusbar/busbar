@@ -32,6 +32,10 @@ models:
   m: { provider: p }
 YAML
 printf 'p:\n  protocol: openai\n  base_url: "http://127.0.0.1:1"\n' >"$W/providers.yaml"
+# The oracle's config step every script cell runs (owner rulings Q42 and Q-STEP7-a D1): the config
+# names its store, `store: {module: memory}`, as the 1.5.5 baseline ran it, and gains any billable
+# class the binary under test names. The 1.5.5 golden lists plugins from the same config.
+"$ORACLE_BIN" upgrade-config "$BIN" "$W/config.yaml" --providers "$W/providers.yaml" || fail "the oracle's upgrade-config step failed"
 BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" ORACLE_UPSTREAM_KEY=x "$BIN" --list-plugins >"$W/stdout" 2>"$W/stderr"; rc=$?
 # the table's FILE column carries the host triple; keep everything else verbatim
 "$ORACLE_BIN" capture-exec "$rc" "$W/stdout" "$W/stderr" --strip-path "$W" --strip-path "$BIN" \
