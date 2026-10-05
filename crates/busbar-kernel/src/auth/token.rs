@@ -181,19 +181,39 @@ fn door_of(methods: &LoginMethods, method: &str) -> Option<Arc<dyn AuthCalls>> {
     }
 }
 
-/// ONE LOGIN STEP ON THE DOOR: `call` submits it on the one dispatcher and its answer is awaited,
-/// so no thread is parked; it holds a slot of the same anonymous-flood budget the cold offload
-/// does ([`login_permit`]), released when the step answers. A step that answered no verdict is
-/// [`LoginOutcome::Reject`] (the loader's door, fail-closed).
+/// One login step for a door plugin.
+enum DoorStep {
+    Begin(BeginLogin),
+    Complete(LoginCallback),
+}
+
+/// SUBMIT `step` to the door plugin `calls`: a plain `fn`, because nothing here crosses into the
+/// plugin on the caller's thread — the step is queued on the one dispatcher, the plugin runs it on
+/// a dispatcher worker, and the answer is the future handed back ([`door_login_call`] awaits it).
+fn submit_door(
+    calls: &dyn AuthCalls,
+    step: DoorStep,
+) -> Box<dyn busbar_contract::auth_calls::LoginCall> {
+    match step {
+        DoorStep::Begin(request) => calls.begin_login(request),
+        DoorStep::Complete(request) => calls.complete_login(request),
+    }
+}
+
+/// ONE LOGIN STEP ON THE DOOR: submitted on the one dispatcher ([`submit_door`]) and its answer
+/// awaited, so no thread is parked; it holds a slot of the same anonymous-flood budget the cold
+/// offload does ([`login_permit`]), released when the step answers. A step that answered no verdict
+/// is [`LoginOutcome::Reject`] (the loader's door, fail-closed).
 async fn door_login_call(
     method: &str,
     op: &'static str,
-    call: impl FnOnce() -> Box<dyn busbar_contract::auth_calls::LoginCall>,
+    calls: Arc<dyn AuthCalls>,
+    step: DoorStep,
 ) -> LoginOutcome {
     let Some(permit) = login_permit(method, op).await else {
         return LoginOutcome::Reject;
     };
-    let outcome = call().await;
+    let outcome = submit_door(&*calls, step).await;
     drop(permit);
     outcome
 }
@@ -551,7 +571,7 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
     // App across the offload.
     // On the door, the step is submitted on the one dispatcher and awaited.
     let outcome = match door_of(&app.login_methods, method) {
-        Some(calls) => door_login_call(method, "begin_login", || calls.begin_login(begin)).await,
+        Some(calls) => door_login_call(method, "begin_login", calls, DoorStep::Begin(begin)).await,
         None => {
             offload_login_call(&app.login_methods, method, "begin_login", move |m| {
                 match &m.module {
@@ -689,9 +709,12 @@ async fn callback(
                 ..Default::default()
             },
         };
-        let principal = match door_login_call(&cookie.method, "complete_login", || {
-            calls.complete_login(request)
-        })
+        let principal = match door_login_call(
+            &cookie.method,
+            "complete_login",
+            calls.clone(),
+            DoorStep::Complete(request),
+        )
         .await
         {
             LoginOutcome::Identify(p) => p,
@@ -944,9 +967,12 @@ pub(crate) async fn credential_submit(
                 nonce: None,
                 login: cl,
             };
-            door_login_call(&cookie.method, "complete_login", || {
-                calls.complete_login(request)
-            })
+            door_login_call(
+                &cookie.method,
+                "complete_login",
+                calls,
+                DoorStep::Complete(request),
+            )
             .await
         }
         None => {
