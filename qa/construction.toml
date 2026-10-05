@@ -642,8 +642,10 @@ loop_verb = "run_unit"
 loop_root = "crates/busbar-kernel/src"
 max_callers_per_plane_crate = 1
 legacy_verb = "run_gauntlet"
-# Today: the LLM, MCP and A2A planes plus the host-seam adapter body. Down to 0 when the planes move.
-max_legacy_sites = 4
+# Today: the LLM and A2A planes. The MCP plane's site left with `busbar-mcp`, and the host-seam
+# adapter body (`EngineHost::run_gauntlet`) was deleted with it (ARCHITECT Q1c). Down to 0 when the
+# planes move.
+max_legacy_sites = 2
 
 # ── 11. no-response-escapes-audit ────────────────────────────────────────────────────────────────
 [rules.no-response-escapes-audit]

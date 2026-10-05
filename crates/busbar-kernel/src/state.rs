@@ -109,9 +109,7 @@ pub struct App {
     /// decl key (the opaque registry key) — a registry-keyed map in place of the former plane-named
     /// pool field, so core carries no plane vocabulary in its own field names. Each plane's
     /// entry is its own resolved pool-member set (member selection derives lanes from member position).
-    /// Read on the plane's submission/route path through [`App::plane_pools`]. (The other container
-    /// plane's own dedicated pool field above keeps its own 3-tuple `pool_members_repeatable` seam,
-    /// which also carries that pool's repeatable-member list.)
+    /// Read on the plane's submission/route path through [`App::plane_pools`].
     // Read on a plane's route/admission path; with one plane's feature off (and another's on) it is
     // never read.
     #[allow(dead_code)]
