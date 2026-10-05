@@ -647,7 +647,8 @@ fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
 }
 
 /// SEAM-S1 RED ARM, THE GRANT PER CALL ON THE LINE CARRIER: every line is its own unit with its own
-/// scope check, so a principal whose role reaches no pool is refused EACH `tools/call` it sends,
+/// scope check, so a principal whose role reaches only another pool (never this server) is refused
+/// EACH `tools/call` it sends,
 /// in the data listener's words (`not_granted`), while the session goes on serving what it may.
 #[test]
 fn an_ungranted_tool_is_refused_per_call_on_the_line() {
@@ -662,7 +663,7 @@ fn an_ungranted_tool_is_refused_per_call_on_the_line() {
             &dir,
             r#"  role_bindings:
     idp:
-      tester: { allowed_pools: [] }
+      tester: { allowed_pools: [elsewhere] }
 tools:
   ws:
     url: "http://127.0.0.1:9/mcp"
