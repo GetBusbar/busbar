@@ -199,7 +199,8 @@ pub fn root_rows() -> RootInstall {
 /// credential's included — resolves through this axis by the key configuration names; the kernel
 /// names none of the rows it registers (DECISIONS #2 rule (1), #40; ARCHITECT 2026-09-27 AUTH-ROW).
 pub use busbar_kernel_identity::operator::{
-    install_linked as install_linked_auth, linked_names as linked_auth_names,
+    install_linked as install_linked_auth, linked as linked_auth_rows,
+    linked_names as linked_auth_names,
 };
 
 /// Opens one build's AUTH AXIS over that build's registry, on the process's one dispatcher: the

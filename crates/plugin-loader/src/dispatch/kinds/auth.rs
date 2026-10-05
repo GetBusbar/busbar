@@ -95,6 +95,19 @@ pub struct OutboundStyle {
     pub points: u32,
 }
 
+/// Whether the auth plugin behind `door` DECLARES an inbound capability (`CAP_INBOUND` in its
+/// Statement's auth tail): it verifies a caller's credential, so an operator can name it in an auth
+/// chain. An outbound-only plugin (style presentation for an upstream credential) states none. A
+/// door whose Statement does not read as an auth Statement declares nothing: `false`. Reads the
+/// door's `'static` Statement only; nothing is opened.
+#[must_use]
+pub fn declares_inbound(door: busbar_contract::abi::mechanism::door::DoorFn) -> bool {
+    crate::dispatch::load::validate::<Auth>(door)
+        .ok()
+        .and_then(|v| facts(&v.statement).ok())
+        .is_some_and(|f| f.caps & auth::CAP_INBOUND != 0)
+}
+
 /// A `'static` Statement string, copied; `None` when malformed.
 fn owned(s: AbiStr) -> Option<String> {
     crate::dispatch::plugin::str_bytes(s).map(|b| String::from_utf8_lossy(b).into_owned())
