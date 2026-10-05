@@ -604,9 +604,9 @@ impl DoorAppliers {
             let walked = walked_section(facts, section, sections);
             let now = p.current();
             let next = now.generation + 1;
-            if let Err(e) =
-                crate::root::loader::dispatch::kinds::plane::refresh_door(&p.plugin, &settings, next)
-            {
+            if let Err(e) = crate::root::loader::dispatch::kinds::plane::refresh_door(
+                &p.plugin, &settings, next,
+            ) {
                 tracing::error!(plane = name, error = %e, "door plane did not refresh onto the new configuration; it keeps serving the previous one");
                 continue;
             }
@@ -1036,9 +1036,13 @@ pub fn compose_planes(
         // Q-L3B-DOOR-EXCHANGE), held on the connection table its need is declared on.
         if let (Some(egress), Some(table)) = (egress, plugin.conn_table()) {
             let pools = DoorPools::of(section);
-            let routes =
-                crate::root::door_steps::member_routes(section, &pools, &served_facts, egress.reach)
-                    .map_err(|e| format!("{instance}: {e}"))?;
+            let routes = crate::root::door_steps::member_routes(
+                section,
+                &pools,
+                &served_facts,
+                egress.reach,
+            )
+            .map_err(|e| format!("{instance}: {e}"))?;
             crate::root::door_steps::bind_member_fetches(
                 &served_facts,
                 &routes,

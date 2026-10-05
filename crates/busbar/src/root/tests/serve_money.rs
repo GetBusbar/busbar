@@ -143,13 +143,8 @@ fn governed_with(
     )
     .expect("the door plane composes");
     served.post = Some(Arc::clone(&post));
-    let routes = door_routes(
-        served,
-        || crate::root::kernel::ROOT_CARD.pin(),
-        &[],
-        &[],
-    )
-    .expect("its claims mount");
+    let routes = door_routes(served, || crate::root::kernel::ROOT_CARD.pin(), &[], &[])
+        .expect("its claims mount");
     let app = busbar_kernel::test_support::TestApp::new();
     let app = if keys_chain { app.keys_chain() } else { app };
     let app = groups
