@@ -28,8 +28,8 @@
 
 use crate::plugin_routes::PluginHttpDispatch;
 use crate::state::App;
-use busbar_contract::abi::cold::endpoint::*;
 use busbar_contract::abi::host::service::{SNAPSHOT_SCOPE_HOOKS, SNAPSHOT_SCOPE_WHOLE};
+use busbar_contract::abi::mechanism::endpoint::*;
 use busbar_contract::services::Snapshot;
 use std::cell::RefCell;
 use std::sync::Arc;

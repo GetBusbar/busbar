@@ -31,7 +31,7 @@ impl EngineTestKitPlus for CoreEngineKit {
     fn scrape_exposition(&self) -> (u16, String) {
         let routes = crate::test_support::export_axis::lines_scrape_routes();
         let resp = routes[0].dispatch.handle_http(
-            &busbar_contract::abi::cold::endpoint::EndpointRequest {
+            &busbar_contract::abi::mechanism::endpoint::EndpointRequest {
                 method: "GET".into(),
                 path: "/metrics".into(),
                 query: String::new(),

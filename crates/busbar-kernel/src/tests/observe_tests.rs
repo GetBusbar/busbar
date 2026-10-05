@@ -50,7 +50,7 @@ fn a_malformed_code_is_refused() {
 /// pages an operator at 3am by asserting that it should.
 #[test]
 fn a_benign_recurring_condition_cannot_be_escalated() {
-    use busbar_contract::abi::cold::observe::DiagLevel;
+    use busbar_contract::abi::mechanism::observe::DiagLevel;
     for claimed in [
         DiagLevel::Error,
         DiagLevel::Warn,
@@ -69,7 +69,7 @@ fn a_benign_recurring_condition_cannot_be_escalated() {
 /// thing only the plugin knows.
 #[test]
 fn an_actionable_condition_keeps_the_reported_level() {
-    use busbar_contract::abi::cold::observe::DiagLevel;
+    use busbar_contract::abi::mechanism::observe::DiagLevel;
     for claimed in [DiagLevel::Error, DiagLevel::Warn, DiagLevel::Debug] {
         assert_eq!(
             clamp_level(claimed, crate::diagnostics::Severity::Actionable),
@@ -184,7 +184,7 @@ impl metrics::Recorder for Registered {
 /// ordinary name from the granted plugin still carries its provenance label.
 #[test]
 fn a_granted_first_party_series_renders_as_declared_and_nothing_else_is_granted() {
-    use busbar_contract::abi::cold::observe::SeriesDecl;
+    use busbar_contract::abi::mechanism::observe::SeriesDecl;
     let declared = [SeriesDecl::new("busbar_s1_fold_total", "counter")];
     grant("s1-first-party", &declared);
     let entry =
@@ -359,7 +359,7 @@ fn hook_envelope_metrics_are_carried_but_not_folded() {
     KernelPluginObserver.observe(
         &*TEST_GRANTS,
         "some-hook",
-        busbar_contract::abi::cold::kind::HOOK,
+        busbar_contract::abi::mechanism::kind::HOOK,
         &entries,
         &[serde_json::json!({"code": "BUSBAR-65535"})],
     );
@@ -384,7 +384,7 @@ fn a_hooks_diagnostic_is_emitted_while_its_metrics_stay_frozen() {
         KernelPluginObserver.observe(
             &*TEST_GRANTS,
             "some-hook",
-            busbar_contract::abi::cold::kind::HOOK,
+            busbar_contract::abi::mechanism::kind::HOOK,
             &[serde_json::json!({"name": "x_total", "type": "counter", "value": 1})],
             &[serde_json::json!({
                 "code": banner,
@@ -423,7 +423,7 @@ fn a_first_party_plugins_diagnostic_is_written_as_the_hosts_own_line() {
         .expect("an actionable code");
     grant("k9c-first-party", &[]);
     let entry = serde_json::to_value(
-        busbar_contract::abi::cold::observe::PluginDiagnostic::warn(
+        busbar_contract::abi::mechanism::observe::PluginDiagnostic::warn(
             format!("BUSBAR-{}", d.code),
             "it broke",
         )
@@ -480,7 +480,7 @@ impl Grants for TestGrants {
 static TEST_GRANTS: std::sync::LazyLock<TestGrants> = std::sync::LazyLock::new(TestGrants::default);
 
 /// Grant `plugin` first-party with `declared` series.
-fn grant(plugin: &str, declared: &[busbar_contract::abi::cold::observe::SeriesDecl]) {
+fn grant(plugin: &str, declared: &[busbar_contract::abi::mechanism::observe::SeriesDecl]) {
     TEST_GRANTS.0.lock().unwrap().insert(
         plugin.to_string(),
         declared
