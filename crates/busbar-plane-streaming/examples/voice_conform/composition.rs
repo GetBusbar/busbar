@@ -744,7 +744,7 @@ fn admit_script(p: &Plugin<Plane>) -> AdmitObs {
     let _ = open(p, SESSION, Some(PUBLIC));
     let rendered = REFUSALS
         .iter()
-        .map(|(status, words, _)| (*status, refusal(p, 60, 0, u32::from(*status), *words)))
+        .map(|(status, words, _)| (*status, refusal(p, 60, 0, u32::from(*status), words)))
         .collect();
     let far = piece(p, &session(60, 2, FROM_FAR_END, 0, &downlink(96)));
     let collect = piece(p, &session(60, 2, FROM_KERNEL, 0, &[]));
@@ -1289,7 +1289,7 @@ fn tool_check(dialect: Dialect, o: &ToolObs) -> Result<String, String> {
             "{name}: the turn's usage was relayed instead of reported"
         ));
     }
-    if !o.units.iter().any(|u| *u == (5, 1, 1)) {
+    if !o.units.contains(&(5, 1, 1)) {
         return Err(format!(
             "{name}: the call was not counted once: {:?}",
             o.units
