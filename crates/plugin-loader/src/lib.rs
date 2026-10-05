@@ -51,6 +51,8 @@ mod hostlog;
 pub mod observe;
 pub mod plane;
 pub mod registry;
+/// THE REGISTRY AS THE KERNEL READS IT (the contract's `PluginRows`).
+pub mod rows;
 pub mod scrape;
 /// THE SECRET AXIS over the one dispatcher: every admitted secret plugin, linked or dropped in.
 pub mod secret_calls;

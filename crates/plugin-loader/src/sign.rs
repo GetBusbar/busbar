@@ -353,31 +353,9 @@ impl HookNeeds {
     }
 }
 
-/// One axis of a hook manifest's declared intent — the SAME `no ⊂ ro ⊂ rw` ladder the operator grant
-/// uses, so the core can compare "declared" against "granted" directly. `rw` is meaningful only on the
-/// `prompt` axis (identity is never rewritten); on `user` it reads as "at least ro".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NeedLevel {
-    /// Declares no need for this content (the default).
-    #[default]
-    No,
-    /// Asks to READ this content.
-    Ro,
-    /// Asks to read AND rewrite (prompt axis only).
-    Rw,
-}
-
-impl NeedLevel {
-    /// Whether the plugin declared it needs to READ this axis (`ro` or `rw`).
-    pub fn wants_read(self) -> bool {
-        !matches!(self, NeedLevel::No)
-    }
-    /// Whether the plugin declared it needs to REWRITE (prompt axis; `rw`).
-    pub fn wants_rewrite(self) -> bool {
-        matches!(self, NeedLevel::Rw)
-    }
-}
+/// One axis of a hook manifest's declared intent: the contract's (`busbar_contract::plugin_rows`),
+/// the shape the kernel reads a row's needs in.
+pub use busbar_contract::plugin_rows::NeedLevel;
 
 /// How a plugin was permitted to load when it is NOT signed by a trusted key - the operator's
 /// EXPLICIT opt-in (never a silent default).
