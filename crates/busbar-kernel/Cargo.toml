@@ -30,11 +30,6 @@ path = "src/lib.rs"
 # plane by what its declaration states, read back from the registry.
 [package.metadata.busbar]
 test-linked = ["busbar-llm", "busbar-mcp", "busbar-a2a"]
-# THE KIND FIXTURES: each kind's in-tree fixture plugin, as DATA (`<kind>=<crate>`). build.rs exports
-# each as `BUSBAR_FIXTURE_<KIND>` (the cdylib's file stem), so test_support finds the fixture's
-# artifact while no source names the plugin. No `store` row: the durable store the kernel's tests
-# need is an in-crate double (`test_support::durable_store`, R-FIX3), linked only.
-test-fixtures = ["hook=busbar-hook-test-plugin"]
 
 [dependencies]
 # ── ABSORBED from the pre-1.6.0 busbar-kernel crate (W4.a #19/#37) ────────────────────────────────

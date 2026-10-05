@@ -371,24 +371,58 @@ async fn transport_meta_matches_the_architecture_row() {
     assert_eq!(<StdioCarrier as TransportMeta>::STATUS_CLASS, None);
 }
 
-/// K concurrent writers each put ONE whole short line on the connection. The carrier's per-poll
+/// K concurrent writers each put ONE whole short line on the connection, ALL OF THEM WAITING ON A
+/// FULL PIPE at once. The pipe's readiness keeps only the waker of the LAST poll that found it not
+/// writable, so the carrier must wake every writer it left waiting once a write makes progress;
+/// otherwise every writer but one is never woken and the connection hangs. The carrier's per-poll
 /// write lock keeps each line's bytes contiguous — a line that fits a single `poll_write` is written
-/// under the lock in one go — so every line comes back off `/bin/cat` intact and exactly once, no
-/// two writers' bytes interleaved within a line. (The removed in-process transport held a per-message
-/// write lock; the carrier is a raw byte pump whose `try_lock` is per poll, and this is the
-/// observable guarantee that remains: a whole short line is not torn apart.)
+/// under the lock in one go — so every line comes back intact and exactly once, no two writers'
+/// bytes interleaved within a line.
 ///
-/// Multi-thread, because the writers block on the child draining its stdin pipe.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+/// Deterministic: the child reads NOTHING until the test opens a gate (it waits on a fifo, then
+/// becomes `/bin/cat`), so the pipe is filled to `Pending` by the test itself (with newlines only,
+/// which are empty lines and so tear no line however a write splits them); each writer is polled
+/// once on this one-thread runtime and parks on the full pipe; only then does the gate open.
+#[tokio::test(flavor = "current_thread")]
 async fn k_concurrent_writers_do_not_interleave_within_a_line() {
+    let dir = std::env::temp_dir().join(format!("stdio-k-writers-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let gate = dir.join("gate");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&gate)
+        .status()
+        .expect("mkfifo runs");
+    assert!(made.success(), "mkfifo {}", gate.display());
+    let script = format!("read -r go < '{}'; exec /bin/cat", gate.display());
     let c = std::sync::Arc::new(StdioCarrier::new());
     let conn = c
         .dial(&Dest::Program {
-            program: "/bin/cat",
-            args: &[],
+            program: "/bin/sh",
+            args: &["-c", &script],
             env: &[],
         })
         .expect("spawn");
+
+    // Fill the child's input until the pipe takes no more: big writes, then single bytes, so not
+    // even a short line fits. A freshly opened pipe's writability is not known until its reactor
+    // has reported it, and until then a poll answers `Pending` with the pipe empty; so the first
+    // byte is written by an AWAITED write, which waits for that report. From then on `Pending`
+    // means the pipe refused a write (it is full), the only thing that clears its writability.
+    write_all(&c, conn, b"\n").await;
+    let mut noop = Context::from_waker(std::task::Waker::noop());
+    let mut filler = 1usize;
+    for chunk in [vec![b'\n'; 4096], vec![b'\n'; 1]] {
+        loop {
+            match c.poll_write(conn, &mut noop, &chunk) {
+                std::task::Poll::Ready(Ok(n)) => filler += n,
+                std::task::Poll::Ready(Err(e)) => panic!("filling the pipe: {e:?}"),
+                std::task::Poll::Pending => break,
+            }
+        }
+    }
+    assert!(filler > 1, "the pipe took nothing past its first byte");
+
     const K: usize = 32;
     // Each line is "writer-NN\n": 7 + 2 + 1 = 10 bytes, so K of them is a known total length.
     const LINE: usize = 10;
@@ -400,10 +434,30 @@ async fn k_concurrent_writers_do_not_interleave_within_a_line() {
             write_all(&c, conn, line.as_bytes()).await;
         }));
     }
-    for h in handles {
-        h.await.unwrap();
+    // One runtime thread: yielding runs every spawned writer to its first `Pending` (the pipe is full
+    // and nothing reads it), so all K are waiting on the pipe before it drains.
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
     }
-    let bytes = read_exact(&c, conn, LINE * K).await;
+    assert!(
+        handles.iter().all(|h| !h.is_finished()),
+        "a writer finished on a full pipe"
+    );
+    std::fs::write(&gate, b"go\n").expect("open the gate");
+
+    // The writers and the reader run together: the child's output drains as its input does.
+    let all = async {
+        let writers = async {
+            for h in handles {
+                h.await.unwrap();
+            }
+        };
+        tokio::join!(writers, read_exact(&c, conn, filler + LINE * K)).1
+    };
+    // A bound, not a synchronisation: a writer the carrier never wakes leaves this pending forever.
+    let bytes = tokio::time::timeout(std::time::Duration::from_secs(30), all)
+        .await
+        .expect("every waiting writer was woken and wrote its line");
     let mut seen = std::collections::BTreeSet::new();
     for line in bytes.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
         let line = std::str::from_utf8(line).expect("utf8");
@@ -421,4 +475,5 @@ async fn k_concurrent_writers_do_not_interleave_within_a_line() {
     wait(|cx| c.poll_close(conn, cx, CloseReason::Normal))
         .await
         .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
 }
