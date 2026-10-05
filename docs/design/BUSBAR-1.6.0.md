@@ -4980,6 +4980,9 @@ Other rulings:
   (the node's `journal_dispatch`: a recovery reads it to tell a unit that sent something from one
   that never did), so it is `$` and is composed with the money steps.
 
+### 2026-10-04 — OWNER RULING Q137: the TLS listener offers ALPN `h2, http/1.1`
+- OWNER (Q137, "offers h2 on the TLS listener. yes why not?"): a `tls:` listener offers ALPN `h2, http/1.1` (1.5.5: `http/1.1` alone), a signed customer-visible change; a client offering only `http/1.1`, or no ALPN, is served byte-identically to 1.5.5, and an ALPN-`h2` connection that does not open with the connection preface is closed with no bytes (RFC 9113 §3.4), in the connector. Parity binding PB-69 cites it.
+
 # APPENDIX C — THE PLANE DRIVER AND HOST SERVICES (design, owner-ruled 2026-09-28)
 
 

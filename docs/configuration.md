@@ -263,7 +263,8 @@ resolving to PEM bytes. The same shape configures the admin listener under `admi
 refuses to boot unless `admin_require_mtls: false` is set deliberately).
 
 Certs/keys are loaded once at startup; any missing or unparseable file is a fatal
-startup error naming the file. ALPN advertises http/1.1. Rotate certs by replacing
+startup error naming the file. ALPN offers `h2, http/1.1`: a client that offers h2 speaks
+HTTP/2, one that offers only http/1.1 is served HTTP/1.1. Rotate certs by replacing
 the files and restarting. Full operational guide:
 [`operations.md`](operations.md#inbound-tls--mutual-tls-mtls).
 

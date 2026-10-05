@@ -830,6 +830,12 @@ each dialect translates, field by field, is listed in the generated
 
 ### Changed
 
+- **The TLS listener now offers h2 via ALPN** (owner-signed, 2026-10-04, Q137). A `tls:` listener offers
+  ALPN `h2, http/1.1`; 1.5.5 offered `http/1.1` alone. A client that offers `h2` (curl, browsers, gRPC
+  clients) speaks HTTP/2 to Busbar over TLS; a client that offers only `http/1.1`, or no ALPN, is served
+  exactly as before. On an HTTP/2 connection a client that does not open with the HTTP/2 connection preface
+  is disconnected, as RFC 9113 requires. **Migration:** none; a client that must stay on HTTP/1.1 offers
+  only `http/1.1`.
 - **The data plane is thread-per-core on unix.** `advanced.worker_threads` (default: one per core,
   cap 128) now sizes N pinned single-threaded runtimes, each with its own `SO_REUSEPORT` listener
   on the data port; the admin plane and background tasks run on a separate control-runtime thread.

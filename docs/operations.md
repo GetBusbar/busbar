@@ -178,7 +178,8 @@ plaintext `cert_file`/`key_file`/`client_ca_file` path keys of earlier releases 
 (server) certificate first, followed by any intermediates: exactly what most CAs
 ship as `fullchain.pem`. `key` resolves to the matching PEM private key in PKCS#8
 (`BEGIN PRIVATE KEY`), PKCS#1 (`BEGIN RSA PRIVATE KEY`), or SEC1
-(`BEGIN EC PRIVATE KEY`) encoding. Busbar advertises **http/1.1** over ALPN.
+(`BEGIN EC PRIVATE KEY`) encoding. Busbar offers **h2, http/1.1** over ALPN (1.6.0; 1.5.5
+offered http/1.1 only): an h2-capable client speaks HTTP/2, an http/1.1-only client is served as before.
 
 **Fail-fast.** Any missing, unreadable, or unparseable cert/key/CA file stops the
 process at startup with a message naming the offending file: a misconfigured
