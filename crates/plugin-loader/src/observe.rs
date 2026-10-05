@@ -297,8 +297,11 @@ impl crate::dispatch::EnvelopeSink for EnvelopeObserver {
             FAMILY_GAUGE => "gauge",
             _ => "histogram",
         };
-        let mut metric =
-            busbar_contract::abi::cold::observe::PluginMetric::new(&family.name, kind, m.value);
+        let mut metric = busbar_contract::abi::mechanism::observe::PluginMetric::new(
+            &family.name,
+            kind,
+            m.value,
+        );
         for (key, value) in family.label_keys.iter().zip(m.labels) {
             metric = metric.label(key, String::from_utf8_lossy(value));
         }
@@ -309,8 +312,8 @@ impl crate::dispatch::EnvelopeSink for EnvelopeObserver {
     }
 
     fn diag(&self, d: crate::dispatch::Diagnostic<'_>) {
-        use busbar_contract::abi::cold::observe::{DiagLevel, PluginDiagnostic};
         use busbar_contract::abi::mechanism::call::{DIAG_LOG, DIAG_LOG_DROPPED};
+        use busbar_contract::abi::mechanism::observe::{DiagLevel, PluginDiagnostic};
         if let Some(then) = &self.then {
             then.diag(d);
         }

@@ -1160,7 +1160,7 @@ const S1_HOST_SERIES: &str = "busbar_s1_host_owned_total";
 /// the open naming it.
 #[test]
 fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
-    use busbar_contract::abi::cold::observe::SeriesDecl;
+    use busbar_contract::abi::mechanism::observe::SeriesDecl;
     crate::observe::install_host_series(|name| name == S1_HOST_SERIES);
     let declared = file_declaration();
     let series: Vec<(String, String)> = declared
@@ -1971,13 +1971,13 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
     // A sink named by the FILE sink's own Statement.
     let sink = crate::observe::EnvelopeObserver::of(
         "busbar-export-file",
-        busbar_contract::abi::cold::kind::EXPORT,
+        busbar_contract::abi::mechanism::kind::EXPORT,
         &stated,
     );
     // A metric of a family the Statement declares, named by the family: a counter with one label.
     let counted = crate::observe::EnvelopeObserver::with_families(
         "busbar-export-file",
-        busbar_contract::abi::cold::kind::EXPORT,
+        busbar_contract::abi::mechanism::kind::EXPORT,
         vec![busbar_contract::abi::mechanism::rendering::ReadFamily {
             name: "busbar_file_logs_rotated_total".into(),
             help: String::new(),
@@ -2060,7 +2060,7 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
             .expect("a log sink"),
         ),
         "busbar-export-file",
-        busbar_contract::abi::cold::kind::EXPORT,
+        busbar_contract::abi::mechanism::kind::EXPORT,
         Vec::new(),
     );
     behind.diag(Diagnostic {

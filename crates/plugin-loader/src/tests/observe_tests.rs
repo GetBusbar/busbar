@@ -219,7 +219,7 @@ fn observed_through_its_bind<K: crate::dispatch::Kind>(
 fn a_plane_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::plane::Plane>(
         crate::plane_door_plugin::door,
-        busbar_contract::abi::cold::kind::PLANE,
+        busbar_contract::abi::mechanism::kind::PLANE,
     );
 }
 
@@ -228,7 +228,7 @@ fn a_plane_envelope_reaches_the_host_observer() {
 fn an_auth_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::auth::Auth>(
         crate::both_ways::door_fixture("auth-verify").1,
-        busbar_contract::abi::cold::kind::AUTH,
+        busbar_contract::abi::mechanism::kind::AUTH,
     );
 }
 
@@ -237,7 +237,7 @@ fn an_auth_envelope_reaches_the_host_observer() {
 fn a_store_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::store::Store>(
         crate::both_ways::store_fixture::door,
-        busbar_contract::abi::cold::kind::STORE,
+        busbar_contract::abi::mechanism::kind::STORE,
     );
 }
 
@@ -246,7 +246,7 @@ fn a_store_envelope_reaches_the_host_observer() {
 fn a_hook_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::hook::Hook>(
         crate::hook_door_conformance_tests::hook_door_plugin::conforming::door,
-        busbar_contract::abi::cold::kind::HOOK,
+        busbar_contract::abi::mechanism::kind::HOOK,
     );
 }
 
@@ -255,7 +255,7 @@ fn a_hook_envelope_reaches_the_host_observer() {
 fn a_secret_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::secret::Secret>(
         crate::both_ways::secret_fixture::door::door,
-        busbar_contract::abi::cold::kind::SECRET,
+        busbar_contract::abi::mechanism::kind::SECRET,
     );
 }
 
@@ -264,7 +264,7 @@ fn a_secret_envelope_reaches_the_host_observer() {
 fn a_transport_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::transport::Transport>(
         crate::both_ways::transport_linked::door,
-        busbar_contract::abi::cold::kind::TRANSPORT,
+        busbar_contract::abi::mechanism::kind::TRANSPORT,
     );
 }
 
@@ -273,7 +273,7 @@ fn a_transport_envelope_reaches_the_host_observer() {
 fn an_export_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::export::Export>(
         busbar_export_file::door,
-        busbar_contract::abi::cold::kind::EXPORT,
+        busbar_contract::abi::mechanism::kind::EXPORT,
     );
 }
 
@@ -285,12 +285,12 @@ fn a_metric_is_named_by_its_family_for_every_kind() {
     use crate::dispatch::EnvelopeSink as _;
     let guard = exclusive();
     let kinds = [
-        busbar_contract::abi::cold::kind::PLANE,
-        busbar_contract::abi::cold::kind::AUTH,
-        busbar_contract::abi::cold::kind::STORE,
-        busbar_contract::abi::cold::kind::HOOK,
-        busbar_contract::abi::cold::kind::SECRET,
-        busbar_contract::abi::cold::kind::TRANSPORT,
+        busbar_contract::abi::mechanism::kind::PLANE,
+        busbar_contract::abi::mechanism::kind::AUTH,
+        busbar_contract::abi::mechanism::kind::STORE,
+        busbar_contract::abi::mechanism::kind::HOOK,
+        busbar_contract::abi::mechanism::kind::SECRET,
+        busbar_contract::abi::mechanism::kind::TRANSPORT,
     ];
     for kind in kinds {
         testing::clear(&guard);
@@ -345,7 +345,7 @@ fn a_full_intake_drops_and_counts_and_never_stalls_the_caller() {
     for n in 0..sent {
         fold_entries(
             "intake-witness",
-            busbar_contract::abi::cold::kind::EXPORT,
+            busbar_contract::abi::mechanism::kind::EXPORT,
             &[serde_json::json!({ "name": "intake_witness_total", "type": "counter", "value": n })],
             &[],
         );

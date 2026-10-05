@@ -1056,7 +1056,7 @@ impl<K: Kind> std::fmt::Debug for Plugin<K> {
 
 /// The kind's name as the host's observer knows it (the cold wire's kind words).
 fn kind_word(kind: KindCode) -> &'static str {
-    use busbar_contract::abi::cold::kind;
+    use busbar_contract::abi::mechanism::kind;
     match kind {
         KindCode::Store => kind::STORE,
         KindCode::Secret => kind::SECRET,
