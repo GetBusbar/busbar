@@ -805,8 +805,10 @@ pub const DEFAULT_MAX_CALLER_ASK_ROUNDS: u32 = 3;
 
 /// THE KERNEL-OWNED TRUST KEYS of one registration, declared for the kernel to parse and judge:
 /// the `pin:` object over the four mechanisms above (no fingerprint: a server here offers none an
-/// operator could approve out of band), and the `verify_ttl:` bound with its default. There is no
-/// recovery-backoff key; the kernel reads its absence as zero.
+/// operator could approve out of band), the `verify_ttl:` bound with its default, and the
+/// registration's private reach, `allow_private:` (the connector admits that server's own private
+/// address for its need, never a metadata one). There is no recovery-backoff key; the kernel reads
+/// its absence as zero.
 pub const TRUST_KEYS: &[TrustKeyDecl] = &[
     TrustKeyDecl {
         key: "pin",
@@ -841,6 +843,13 @@ pub const TRUST_KEYS: &[TrustKeyDecl] = &[
         role: TrustRole::ReverifyTtl,
         fingerprint: false,
         default: Some(DEFAULT_MCP_VERIFY_TTL),
+        mechanisms: &[],
+    },
+    TrustKeyDecl {
+        key: "allow_private",
+        role: TrustRole::PrivateReach,
+        fingerprint: false,
+        default: None,
         mechanisms: &[],
     },
 ];

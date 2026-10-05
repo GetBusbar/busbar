@@ -7,7 +7,8 @@
 use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::abi::plane::check::check_tail;
 use busbar_contract::abi::plane::{
-    CLAIM_EXACT, CLAIM_OPEN, MECHANISM_PEER_KEY, MECHANISM_ROOT, TRUST_PIN, TRUST_REVERIFY_TTL,
+    CLAIM_EXACT, CLAIM_OPEN, MECHANISM_PEER_KEY, MECHANISM_ROOT, TRUST_PIN, TRUST_PRIVATE_REACH,
+    TRUST_REVERIFY_TTL,
 };
 use busbar_contract::plane::TrustRole;
 
@@ -29,6 +30,7 @@ fn text(a: AbiStr) -> String {
     [
         "pin",
         "verify_ttl",
+        "allow_private",
         crate::tools_config::DEFAULT_MCP_VERIFY_TTL,
         "pinned_pubkey",
         "cert_spki",
@@ -63,6 +65,7 @@ fn the_tails_trust_keys_are_the_grammars() {
         let role = match decl.role {
             TrustRole::Pin => TRUST_PIN,
             TrustRole::ReverifyTtl => TRUST_REVERIFY_TTL,
+            TrustRole::PrivateReach => TRUST_PRIVATE_REACH,
             TrustRole::RecoveryBackoff => panic!("the plane declares no recovery-backoff key"),
         };
         assert_eq!(abi.role, role, "{}", decl.key);

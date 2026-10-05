@@ -27,7 +27,8 @@ use busbar_contract::abi::mechanism::door::{KindTailHead, Section, SECTION_DECLA
 use busbar_contract::abi::plane::{
     AdminRoute, BillableClass, OpClass, PinMechanism, PlaneTail, RecordChain, TrustKey,
     CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CLAIM_EXACT, CLAIM_OPEN, INGRESS_REQUEST_RESPONSE,
-    INGRESS_RESPONSE_STREAM, MECHANISM_ROOT, SHAPE_PIECEWISE, TRUST_PIN, TRUST_REVERIFY_TTL,
+    INGRESS_RESPONSE_STREAM, MECHANISM_ROOT, SHAPE_PIECEWISE, TRUST_PIN, TRUST_PRIVATE_REACH,
+    TRUST_REVERIFY_TTL,
 };
 use busbar_contract::abi::sdk::door::abi_str;
 use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec};
@@ -268,6 +269,14 @@ const TRUST_KEYS: &[TrustKey] = &[
         role: TRUST_REVERIFY_TTL,
         flags: 0,
         default: abi_str(DEFAULT_MCP_VERIFY_TTL),
+        mechanisms: std::ptr::null(),
+        mechanisms_len: 0,
+    },
+    TrustKey {
+        key: abi_str("allow_private"),
+        role: TRUST_PRIVATE_REACH,
+        flags: 0,
+        default: NONE,
         mechanisms: std::ptr::null(),
         mechanisms_len: 0,
     },
