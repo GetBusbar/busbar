@@ -33,7 +33,13 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// The canonical order is the doctrine order: the three original protocols, then voice (Plane 4).
-pub const PLANE_KEYS: [&str; 4] = ["llm", "mcp", "a2a", "voice"];
+///
+/// THE LEGACY-ENGINE ROSTER: every consumer reads a key as a `crates/busbar-<key>` directory (see
+/// [`plane_src_roots`]). `mcp` IS STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05; its shell twin
+/// `scripts/plane-keys.sh` says the same in the same commit): `crates/busbar-mcp` is deleted and the
+/// mcp plane is plane-kind only, its door crate `busbar-plane-mcp` — scanned by the plane-kind regime
+/// and located by its door row ([`door_planes`]) wherever a gate resolves the plane's home.
+pub const PLANE_KEYS: [&str; 3] = ["llm", "a2a", "voice"];
 
 /// The default ownership grammar. Overridable for a fixture tree, the way
 /// `PLANE_ROOTS_GRAMMAR` is in the shell.
@@ -101,6 +107,9 @@ pub fn plane_keys_protocol() -> Vec<&'static str> {
 /// `crates/busbar-<k>/src` for every plane key, plus the `-codec` halves that still exist. The gate
 /// scans SOURCES, not manifests, so a split that moved the bulk of a plane's files must be named
 /// here or that bulk stops being scanned — which is the failure mode a split invites.
+///
+/// MCP HAS NO ROOT HERE AT ALL since P3 DEL-MCP (ARCHITECT 2026-10-05): the engine crate is deleted
+/// and `mcp` left [`PLANE_KEYS`]. The paragraph below is the history of its `-codec` half.
 ///
 /// MCP HAS NO `-codec` ROOT ANY MORE, and that is a decision rather than an omission.
 /// `busbar-mcp-codec` dissolved (#39: no `busbar-*-codec` crate). Its `ProtocolDecl` and two
