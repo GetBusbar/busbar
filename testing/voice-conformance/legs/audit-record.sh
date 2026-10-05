@@ -4,25 +4,19 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
-# LEG: audit-record — one governed voice session lands EXACTLY ONE new admin-audit entry, carrying the
-# plane's own action literal and outcome (BUSBAR-1.6.0.md's audit-chain discipline, applied to the
-# voice-plane mutation a session open represents).
+# LEG: audit-record — the audit kind and operation the kernel's ONE row per unit is written under, and
+# no row of the door's own beside it (BUSBAR-1.6.0.md THE DESIGN §1, the fixed record; Part 3 §12 "audit").
 #
-# Before this leg, NOTHING in `busbar-voice` ever called `JournalHost::audit_record` — a session could
-# open, meter and close without leaving a single row on the admin audit trail. `topology::
-# open_admitted_session` now journals ONE row (`action = "streaming.session.open"`, `outcome = "applied"`,
-# `principal` = the session's owner) at its single `Ok` success point, through the live host
-# (`VoiceRuntime::audit_session`, a no-op on the pre-host/dev-default runtime with nothing to journal
-# through). This leg drives that real code path twice over the substrate's `FixtureHost` — a full
-# `EngineHost` double whose `audit_record` now RECORDS (not a no-op) — and asserts:
+# THE DOOR'S HALF (judged, linked AND dropped door): the tail states the `streaming_session` audit kind
+# and the one `streaming.session.open` operation class; every one of the five doors' units arrives
+# as that operation; and the door writes NO record row of its own — it declares no record kind, and
+# across two whole sessions, a mint and a refusal its answers carry zero record writes — so the
+# kernel's one fixed record is the only row (never doubled). RED arm: a door that writes a row fails.
 #
-#   * a clean session open lands EXACTLY ONE row, shaped `("streaming.session.open", "streaming:<call-id>",
-#     "applied", <owner>)` — the literal action/outcome vocabulary, not a placeholder;
-#   * a SECOND, independent session adds exactly one MORE row (two sessions -> two rows, never
-#     doubled, never dropped) — so a leg that always saw "at least one" could not pass by luck.
-#
-# WAS RED: with no call site at all, `FixtureHost::audit_log()` stayed empty across every session this
-# leg opens; the very first assertion (`len() == 1`) is what a truly wired call site must clear.
+# NOT THE DOOR'S: the door does not write the session's audit row — the plane is a pure kind and the
+# kernel writes the one fixed record at the unit's audit step (served leg:
+# crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_audits_each_call_once). The plane's
+# `session_unit` keeps a session row internally, but the door surfaces none (no record kind declared).
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"
