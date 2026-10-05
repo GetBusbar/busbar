@@ -3313,6 +3313,18 @@ fn door_shaped_decision(door_row: bool) -> Overlay {
             );
     }
     ov.set(CRATE_MANIFEST, manifest);
+    // With no `plane` axis the generated table no longer names the entry module, so `fn main()`
+    // reaches it directly, as a door plane's root module is reached on the real tree.
+    ov.set(
+        MAIN_RS,
+        FIXTURE_GREEN_MAIN.replace(
+            INSTALL_CALL_LINE,
+            &format!(
+                "{INSTALL_CALL_LINE}    let planes = root::serve::compose_planes();\n    let _ = \
+                 root::serve::serve(&planes);\n    let _ = root::plane_decisions::PLANE_HOOKS;\n"
+            ),
+        ),
+    );
     ov.set(
         REGISTRY_RS,
         include_str!("../../fixtures/reachability-green/crates/busbar/src/root/registry.rs")
