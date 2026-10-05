@@ -1257,9 +1257,6 @@ known_sites = [
   # plane's registry row is a `&'static PlaneDecl` by the registry's type (rows live as long as the
   # process, as a linked plane's image does); one allocation per door, once, at boot.
   "crates/busbar-kernel/src/plane/door.rs::fold",
-  # REVIEWED 2026-10-04 (DECL-FOLD): the probe dispatcher the door rows bind on before the config
-  # prepass, ahead of the process's one dispatcher; one, once, at boot. Neither is a money hold.
-  "crates/busbar/src/root/linked.rs::door_rows",
 ]
 
 # The escape list, mirroring crates/busbar-contract/src/caps/fixtures/lint_rules.rs HOLD_ESCAPES. A test in that

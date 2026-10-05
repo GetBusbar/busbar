@@ -470,8 +470,8 @@ pub fn plane_rows(
 
 /// THE DOOR PLANES' REGISTRY ROWS (DECL-FOLD; ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL; spec #49
 /// and R2-C): every plane [`dropped_planes_of`] discovered through a door, linked or dropped, bound
-/// once through the loader's one load on a dispatcher of its own (the process's is built after the
-/// configuration is read, and the rows must be in before the config prepass), and its Statement
+/// once through the loader's one load on the process's one dispatcher (booted as main's first act,
+/// before any plane registers and before the config prepass), and its Statement
 /// folded into a registry row by the kernel (`busbar_kernel::plane::door::fold`). The row's every
 /// word is the door's; a plane a linked row already registers keeps that row (the boot fold keeps
 /// the first row of a key). A door that will not bind refuses the boot, as its load would.
@@ -482,15 +482,14 @@ fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
     if doors.is_empty() {
         return Ok(Vec::new());
     }
-    let probe: &'static crate::root::loader::dispatch::Dispatcher =
-        Box::leak(Box::new(crate::root::loader::dispatch::Dispatcher::new(
-            crate::root::loader::dispatch::DispatchConfig::default(),
-        )));
+    // The process's one dispatcher, booted as main's first act before any plane registers (so the
+    // fold adds no worker of its own to the process's thread count).
+    let dispatcher = crate::root::dispatch::dispatcher();
     crate::root::loader::boot::load_planes(
         doors,
         crate::root::boot::plugin_logs(),
         Arc::new(crate::root::loader::dispatch::NoSink),
-        probe.adopter(),
+        dispatcher.adopter(),
         u32::MAX,
         None,
     )?
