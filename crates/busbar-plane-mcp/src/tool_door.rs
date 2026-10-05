@@ -2296,6 +2296,7 @@ slot!(
             let message = std::str::from_utf8(text).unwrap_or_default();
             door_tasks::continuation_refused(plane, given.unit, reference, message);
         }
+        let mut audit: Option<crate::call::AuditRow> = None;
         let (status, body, allow) = if given.cause == REFUSAL_ARRIVE {
             match words_of(text) {
                 Some(Words::Rpc(refusal)) => (refusal.status, refusal.body(), false),
@@ -2325,9 +2326,17 @@ slot!(
             // A CALL THE CALLER IS NOT GRANTED (the kernel's grant check said no before the plane
             // decided it): answered as the served engine answered it, `404 not_granted` in the
             // words an unknown tool gets.
-            let ungranted = given.reason
-                == busbar_contract::abi::plane::RefusalCode::ScopeDenied.code()
-                && !creates_task;
+            let scope_denied =
+                given.reason == busbar_contract::abi::plane::RefusalCode::ScopeDenied.code();
+            let ungranted = scope_denied && !creates_task;
+            // THE AUDIT ROW of a call the KERNEL refused before the plane decided it (SEAM-L(o)):
+            // a scope denial or a hook's veto is the served engine's rejected `mcp_tool.call` on the
+            // tool the caller named.
+            if scope_denied || given.cause == REFUSAL_GATE {
+                audit = called
+                    .as_deref()
+                    .map(|name| crate::call::AuditRow::tool(name, false));
+            }
             if let (true, Some(name)) = (ungranted, called.as_deref()) {
                 let refusal = crate::call::not_granted(
                     unit_id.as_ref().unwrap_or(&Value::Null),
@@ -2351,9 +2360,16 @@ slot!(
                     id: unit_id.clone(),
                     code: crate::codec::CODE_REFUSED,
                     message: message.to_string(),
-                    // A HOOK'S VETO carries the served engine's reason (`hook_rejected`).
+                    // A HOOK'S VETO carries the served engine's reason (`hook_rejected`) and the name
+                    // of the hook that vetoed it (SEAM-L(p)), where the kernel names one.
                     data: (given.cause == REFUSAL_GATE).then(|| {
-                        serde_json::json!({ "reason": busbar_contract::vocab::REASON_HOOK_REJECTED })
+                        let reason = busbar_contract::vocab::REASON_HOOK_REJECTED;
+                        match std::str::from_utf8(input.field(|i| &i.hook).bytes()) {
+                            Ok(hook) if !hook.is_empty() => {
+                                serde_json::json!({ "reason": reason, "hook": hook })
+                            }
+                            _ => serde_json::json!({ "reason": reason }),
+                        }
                     }),
                 }
             };
@@ -2373,14 +2389,30 @@ slot!(
             name: arena.span(CONTENT_TYPE.as_bytes()),
             value: arena.span(JSON.as_bytes()),
         });
-        let short = !(reply.fits() && field_buf.fits() && arena.fits());
+        let mut records = input.records_buf();
+        if let Some(row) = &audit {
+            records.push(RecordWrite {
+                kind: if row.applied {
+                    AUDIT_APPLIED
+                } else {
+                    AUDIT_REJECTED
+                },
+                op: RECORD_AUDIT,
+                key: arena.span(row.action.as_bytes()),
+                value: arena.span(row.resource.as_bytes()),
+            });
+        }
+        let short = !(reply.fits() && field_buf.fits() && arena.fits() && records.fits());
         let (rw, rnd) = reply.settle(short);
         let (fw, fnd) = field_buf.settle(short);
+        let (cw, cnd) = records.settle(short);
         let (aw, and) = arena.settle(short);
         out.set(|o| &o.reply_written, rw as u64);
         out.set(|o| &o.reply_needed, rnd as u64);
         out.set(|o| &o.fields_written, fw as u32);
         out.set(|o| &o.fields_needed, fnd as u32);
+        out.set(|o| &o.records_written, cw as u32);
+        out.set(|o| &o.records_needed, cnd as u32);
         out.set(|o| &o.arena_written, aw as u64);
         out.set(|o| &o.arena_needed, and as u64);
         if short {
