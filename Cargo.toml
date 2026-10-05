@@ -32,7 +32,6 @@ members = [
     "crates/busbar-auth-header",
     "crates/busbar-auth-sigv4",
     "crates/busbar-auth-oauth",
-    "crates/busbar-auth-webhook-signature",
     "testing/ws-conformance/subject",
     "xtask",
 ]

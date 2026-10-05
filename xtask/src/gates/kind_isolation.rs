@@ -408,10 +408,10 @@ const PLANE_ALIASES: &[(&str, &str, &str)] = &[
 /// `dialect` was a pending kind and it is not a kind at all (DECISIONS #4). `secret` and `export`
 /// are pending because their instances live OUTSIDE this repo: the owner deleted the in-tree
 /// fixtures ("FIXTURES", docs/design/1.6.0-QUESTIONS.md) and each kind is proven by its real plugin
-/// repos. `auth` is no longer pending (AUTH-SPLIT): busbar-auth-header, busbar-auth-sigv4,
-/// busbar-auth-oauth and busbar-auth-webhook-signature are in-tree, staged auth-kind plugin crates
-/// (ARCHITECT ruling 2026-09-28, placement (B); each extracts to its own repo at KERNEL<>PLUGINS
-/// step 40), so the dead-kind rule watches them like every other kind.
+/// repos. `auth` is no longer pending (AUTH-SPLIT): busbar-auth-header, busbar-auth-sigv4 and
+/// busbar-auth-oauth are in-tree, staged auth-kind plugin crates (ARCHITECT ruling 2026-09-28,
+/// placement (B); each extracts to its own repo at P5, as busbar-auth-webhook-signature did), so
+/// the dead-kind rule watches them like every other kind.
 const PENDING_KINDS: &[(&str, &str)] = &[
     (
         "secret",
