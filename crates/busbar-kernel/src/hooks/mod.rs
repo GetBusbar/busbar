@@ -178,6 +178,24 @@ impl HookEnv {
         })
     }
 
+    /// A test build's environment over a hook axis it was handed (the kernel's hook port answered
+    /// by `test_support::hook_double`) rather than the one the root builds over `registry`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_axis(
+        registry: std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+        axis: std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>,
+        secret_resolver: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
+    ) -> Self {
+        HookEnv {
+            registry,
+            axis: Some(axis),
+            secret_resolver,
+            banner_seen: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
+        }
+    }
+
     /// Whether a `kind: hook` row answers to `module` here (the axis names it, or the registry
     /// resolves it): a module neither knows is GENUINELY ABSENT.
     fn knows(&self, module: &str) -> bool {
@@ -857,7 +875,7 @@ type Resolved = (Arc<dyn RoutingPolicy>, ResolvedSettings);
 /// names that list as the reason a per-open allocation had to be interned; the load itself was left
 /// alone.
 ///
-/// Measured on this tree, on the 2.1 MB `busbar-hook-test-plugin` cdylib (macOS, 18 cores), timing
+/// Measured on a 2.1 MB hook cdylib (the since-deleted test hook; macOS, 18 cores), timing
 /// the `Library::new` call alone:
 ///
 /// | how it was run | p50 | p90 | max |

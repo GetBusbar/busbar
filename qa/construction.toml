@@ -1098,7 +1098,7 @@ deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # this rule is born. Each is real debt the owner closes by adding the attribute and deleting the
 # name below; a new crate NOT on this list is held to the rule immediately.
 known_missing_forbid = [
-  "hook-test-plugin", "hooks-ranking",
+  "hooks-ranking",
 ]
 known_missing_deny = [ "plugin-loader",
 ]
@@ -2099,7 +2099,7 @@ plane_crates = 4
 # in that repo's plugin CI. `crates/busbar-transport-*` now matches one: stdio.
 [gate.census.plugin_kinds]
 plane = 5
-hook = 2
+hook = 1
 auth = 0
 secret = 0
 store = 1
@@ -2108,3 +2108,9 @@ transport = 1
 loader = 1
 abi = 1
 
+
+# ARCHITECT 2026-10-04: a census floor may also drop by the number of a kind's crate directories DELETED
+# under a ruled TODO deletion, each named here. Add-only vs the base; a listed dir still present is RED;
+# an unlisted vanished dir stays RED.
+[gate.census.deleted]
+"crates/hook-test-plugin" = "TODO P5: delete hook-test-plugin (ARCHITECT 2026-10-04)"

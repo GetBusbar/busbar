@@ -85,20 +85,14 @@ impl EngineTestKit for CoreEngineKit {
         ))
     }
 
-    fn hook_env(
-        &self,
-        aliases: &[&str],
-        prompt: HookNeed,
-        user: HookNeed,
-    ) -> Option<HookEnvHandle> {
-        crate::test_support::test_hook_env(
+    fn hook_env(&self, aliases: &[&str], prompt: HookNeed, user: HookNeed) -> HookEnvHandle {
+        Box::new(crate::test_support::test_hook_env(
             aliases,
             busbar_plugin_loader::sign::HookNeeds {
                 prompt: need(prompt),
                 user: need(user),
             },
-        )
-        .map(|env| Box::new(env) as HookEnvHandle)
+        ))
     }
 
     fn call_next_seq(&self, principal: &str) -> u64 {
