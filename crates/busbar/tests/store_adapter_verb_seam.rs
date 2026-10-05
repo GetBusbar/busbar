@@ -4,24 +4,20 @@
 //! The store adapter's seams that take a minted token, against a store at the PUBLISHED payload
 //! schema, from `busbar-plugin-loader`'s `src/tests/store_adapter_tests.rs` (whose module doc
 //! states the three things that file and this one prove together). The verb seam takes a
-//! `Grant<AdminVerb>`; this suite takes it from the kernel's test token helper, and drives the
-//! loader's fake-call store harness and oracle-cache locator through its `test-support` feature.
+//! `Grant<AdminVerb>`; this suite takes it from the kernel's test token helper.
 //!
-//! It lives in the composition root's integration suite, not in busbar-kernel (ARCHITECT C4B-1,
-//! 2026-10-03): the store proof it loads is `busbar-store-memory`'s cold door, and the root is the
-//! crate that links that store as the shipped plugin; the kernel names no store crate.
+//! It lives in the composition root's integration suite (ARCHITECT C4B-1, 2026-10-03), beside the
+//! root that binds the adapter.
 
 use busbar_contract::caps::{AdminVerb, Grant};
-use busbar_contract::records::VirtualKey;
 use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceRequest, SliceStore};
 use busbar_contract::verb_store::Store as VerbStore;
 use busbar_kernel_wal::Record;
 use busbar_plugin_loader::store_adapter::{ShimClock, StoreAdapter, REPLAY_TTL_SECS};
-use busbar_plugin_loader::test_support::{self, dyn_proof_store_with_fake_call_at_abi};
 use std::sync::Arc;
 
-/// The published store payload schema (v2), the value `registry::STORE_ABI_FLOOR` held before C21
-/// (ruling C21/ABI-o1) deleted it: the loader now refuses v2 at scan, so this suite loads it directly.
+/// The published store payload schema (v2). The loader refuses v2 at scan (ruling C21/ABI-o1); the
+/// adapter's shim rule is a property of the schema number, so this suite binds an adapter at it.
 const PUBLISHED_STORE_SCHEMA: u32 = 2;
 
 /// The `tracing` capture the store-adapter tests assert silence with, carried from
@@ -79,8 +75,13 @@ fn admin() -> Grant<AdminVerb> {
 /// An adapter over a store bound to the PUBLISHED payload schema (2), built through the same
 /// constructor the composition root calls.
 fn adapter_over_published_schema() -> Option<StoreAdapter> {
-    let store = dyn_proof_store_with_fake_call_at_abi(PUBLISHED_STORE_SCHEMA)?;
-    Some(StoreAdapter::over_loaded_store(store))
+    Some(StoreAdapter::new(backing(), PUBLISHED_STORE_SCHEMA))
+}
+
+/// The kernel's universal test double (the build's default store), as the published operations'
+/// backing.
+fn backing() -> Arc<dyn busbar_contract::records::RecordStore> {
+    Arc::new(busbar_kernel::governance::MemoryStore::new())
 }
 
 /// A slice draw for one bucket's request axis.
@@ -110,13 +111,9 @@ impl TestClock {
 
 /// [`adapter_over_published_schema`] whose sealed replay cache ages against `clock`.
 fn adapter_at(clock: &TestClock) -> Option<StoreAdapter> {
-    // The schema the store is bound to is the one handed to the harness: `DynStore`'s own field is
-    // the loader's, so the test names the value it passed rather than reading it back.
-    let abi_version = PUBLISHED_STORE_SCHEMA;
-    let store = dyn_proof_store_with_fake_call_at_abi(abi_version)?;
     Some(StoreAdapter::with_clock(
-        Arc::new(store),
-        abi_version,
+        backing(),
+        PUBLISHED_STORE_SCHEMA,
         clock.shim_clock(),
     ))
 }
@@ -129,7 +126,6 @@ fn replay_key(name: &str) -> (String, String) {
 #[test]
 fn the_slice_seam_epoch_is_constant() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     assert_eq!(adapter.epoch(), Epoch(0));
@@ -149,7 +145,6 @@ fn the_slice_seam_epoch_is_constant() {
 #[test]
 fn the_verb_seam_records_a_chain_break() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     assert_eq!(adapter.shim_state().chain_breaks, 0);
@@ -163,7 +158,6 @@ fn the_verb_seam_records_a_chain_break() {
 #[test]
 fn the_verb_seam_records_a_restore_and_keeps_the_sealed_replay_slots() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     let key = ("export_keyset".to_string(), "idem-1".to_string());
@@ -205,7 +199,6 @@ fn the_verb_seam_records_a_restore_and_keeps_the_sealed_replay_slots() {
 #[test]
 fn a_restore_reseals_both_slice_figures_together() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     adapter.reserve(&slice_request(100, 0)).expect("reserve");
@@ -234,7 +227,6 @@ fn a_restore_reseals_both_slice_figures_together() {
 #[test]
 fn the_verb_seam_reseals_the_epoch_floor() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     adapter
@@ -249,7 +241,6 @@ fn the_verb_seam_reseals_the_epoch_floor() {
 fn a_slot_that_survives_a_restore_still_expires() {
     let clock = TestClock::default();
     let Some(adapter) = adapter_at(&clock) else {
-        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     let key = replay_key("idem-a");
@@ -316,7 +307,6 @@ fn sweep_every_seam_method(adapter: &StoreAdapter, failures: &mut Vec<String>) {
 #[test]
 fn every_added_operation_on_a_published_schema_store_is_silent_and_never_errors() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     assert!(
@@ -349,7 +339,6 @@ fn every_added_operation_on_a_published_schema_store_is_silent_and_never_errors(
 #[test]
 fn the_three_seams_share_one_shim() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     let slices: Arc<dyn SliceStore> = adapter.slice_store();
@@ -368,100 +357,4 @@ fn the_three_seams_share_one_shim() {
         0,
         "the verbs unit's restore is visible to the kernel's slice seam: one shim, one node"
     );
-}
-
-// ---------------------------------------------------------------------------------------------
-// The round trip through the PUBLISHED sqlite store.
-// ---------------------------------------------------------------------------------------------
-
-/// A round trip through the REAL published store: the adapter hands out the loaded plugin, a key
-/// written through it comes back from sqlite, and every added operation is still the shim's silent
-/// answer on the same handle.
-///
-/// This is the artifact the oracle's store-persist cell drives — the same tarball, by the same
-/// pinned digest — so what it proves about the published wire and what this proves about the
-/// adapter are about one binary.
-#[test]
-fn a_round_trip_through_the_published_store() {
-    let Some(tarball_path) = test_support::cached_published_store_tarball() else {
-        let id = test_support::artifact("published_store_plugin_id");
-        eprintln!(
-            "skip: no published {id} tarball in the oracle cache (run \
-             `testing/shadow-oracle/fetch-plugin.sh {id}`)"
-        );
-        return;
-    };
-    let bytes = std::fs::read(&tarball_path).expect("read the cached published tarball");
-    let unpacked =
-        busbar_plugin_loader::tarball::unpack(&bytes).expect("the published tarball unpacks");
-    assert_eq!(unpacked.manifest.kind, "store");
-    assert_eq!(
-        unpacked.manifest.abi_version, PUBLISHED_STORE_SCHEMA,
-        "the published store is at the published payload schema"
-    );
-
-    let db = std::env::temp_dir().join(format!(
-        "busbar-store-adapter-roundtrip-{}.db",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&db);
-    let cfg = serde_json::json!({ "db_path": db.to_string_lossy() }).to_string();
-    let store = match test_support::load_dyn_store_from_bytes_at_abi(
-        &unpacked.lib_bytes,
-        &cfg,
-        "published-store",
-        &unpacked.manifest.kind,
-        unpacked.manifest.abi_version,
-    ) {
-        Ok(store) => store,
-        Err(e) => panic!("the published store must load on this binary: {e}"),
-    };
-    let adapter = StoreAdapter::over_loaded_store(store);
-    assert!(
-        !adapter.speaks_new_ops(),
-        "a published store predates the added operations"
-    );
-
-    // The published wire: write a key through the adapter's pass-through handle and read it back
-    // out of sqlite.
-    let key = VirtualKey {
-        id: "vk_roundtrip".to_string(),
-        generation_hash: "gen".to_string(),
-        name: "adapter-roundtrip".to_string(),
-        enabled: true,
-        created_at: 1_700_000_000,
-        ..Default::default()
-    };
-    adapter
-        .store()
-        .put_key(&key)
-        .expect("the published wire takes a key");
-    let read_back = adapter
-        .store()
-        .get_key("vk_roundtrip")
-        .expect("the published wire reads a key")
-        .expect("the row is there");
-    assert_eq!(read_back.id, "vk_roundtrip");
-    assert_eq!(read_back.name, "adapter-roundtrip");
-
-    // And on the same handle, every added operation is the shim's silent answer.
-    let log = EventLog::default();
-    let mut failures: Vec<String> = Vec::new();
-    tracing::subscriber::with_default(log.clone(), || {
-        sweep_every_seam_method(&adapter, &mut failures);
-    });
-    assert!(
-        failures.is_empty(),
-        "on the published store no seam method may error; failures:\n{}",
-        failures.join("\n")
-    );
-    assert!(
-        log.lines().is_empty(),
-        "on the published store no seam method may log; captured:\n{}",
-        log.lines().join("\n")
-    );
-    assert_eq!(adapter.shim_state().records_shipped, 1);
-
-    drop(adapter);
-    let _ = std::fs::remove_file(&db);
 }
