@@ -241,6 +241,33 @@ pub trait AuditSink: Send + Sync {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CoreAudit;
 
+/// ONE AUDIT ROW a plane wrote (`RECORD_AUDIT`) onto `sink`: its outcome code, its action (`key`)
+/// and resource (`value`), under `principal` (anonymous when none). `Err` = a plane fault (an
+/// unknown outcome, an empty action, words that are not UTF-8); nothing is written.
+pub(crate) fn audit_row_to(
+    sink: &dyn AuditSink,
+    outcome: u32,
+    key: &[u8],
+    value: &[u8],
+    principal: Option<&PrincipalId>,
+) -> Result<(), ()> {
+    use busbar_contract::abi::plane::{AUDIT_APPLIED, AUDIT_REJECTED};
+    let outcome = match outcome {
+        AUDIT_APPLIED => busbar_contract::vocab::OUTCOME_APPLIED,
+        AUDIT_REJECTED => busbar_contract::vocab::OUTCOME_REJECTED,
+        _ => return Err(()),
+    };
+    let action = std::str::from_utf8(key).map_err(|_| ())?;
+    let resource = std::str::from_utf8(value).map_err(|_| ())?;
+    if action.is_empty() {
+        return Err(());
+    }
+    let anonymous = PrincipalId::anonymous();
+    let principal = principal.unwrap_or(&anonymous);
+    sink.record(action, resource, outcome, principal.as_str());
+    Ok(())
+}
+
 impl AuditSink for CoreAudit {
     fn record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
         crate::audit::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
@@ -362,22 +389,7 @@ impl PlaneDriver {
         value: &[u8],
         principal: Option<&PrincipalId>,
     ) -> Result<(), ()> {
-        use busbar_contract::abi::plane::{AUDIT_APPLIED, AUDIT_REJECTED};
-        let outcome = match outcome {
-            AUDIT_APPLIED => busbar_contract::vocab::OUTCOME_APPLIED,
-            AUDIT_REJECTED => busbar_contract::vocab::OUTCOME_REJECTED,
-            _ => return Err(()),
-        };
-        let action = std::str::from_utf8(key).map_err(|_| ())?;
-        let resource = std::str::from_utf8(value).map_err(|_| ())?;
-        if action.is_empty() {
-            return Err(());
-        }
-        let anonymous = PrincipalId::anonymous();
-        let principal = principal.unwrap_or(&anonymous);
-        self.audit
-            .record(action, resource, outcome, principal.as_str());
-        Ok(())
+        audit_row_to(&*self.audit, outcome, key, value, principal)
     }
 
     /// THE RECORD WRITES OF AN ANSWER THAT ENDS NOTHING FURTHER (a refusal's, SEAM-L(o)): each
@@ -608,7 +620,7 @@ const ZERO_UNIT: UnitCount = UnitCount {
     amount: 0,
 };
 const NO_SPAN: Span = Span { offset: 0, len: 0 };
-const NO_RECORD: busbar_contract::abi::plane::RecordWrite =
+pub(crate) const NO_RECORD: busbar_contract::abi::plane::RecordWrite =
     busbar_contract::abi::plane::RecordWrite {
         kind: 0,
         op: 0,

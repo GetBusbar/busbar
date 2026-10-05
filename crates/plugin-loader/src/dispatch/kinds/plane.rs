@@ -46,8 +46,8 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
     check_arrive, check_billable_classes, check_cancel, check_drive, check_fee_units,
     check_on_piece, check_pin_mechanisms, check_project, check_refusal, check_refusal_records,
-    check_refusal_statuses, check_sections, check_serve, check_snapshot, check_tail,
-    check_trust_keys, Bounds, Caps, ProjectHost, MAX_SESSIONS,
+    check_refusal_statuses, check_sections, check_serve, check_serve_records, check_snapshot,
+    check_tail, check_trust_keys, Bounds, Caps, ProjectHost, MAX_SESSIONS,
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, PinMechanism,
@@ -983,7 +983,22 @@ impl Kind for Plane {
                     arena: i.arena_cap as u64,
                     ..Caps::default()
                 };
-                check_serve(a.outcome, o, fields, &caps)
+                check_serve(a.outcome, o, fields, &caps)?;
+                // SAFETY: as `refusal`: the host's `records_buf` of `records_cap` elements.
+                let records = unsafe {
+                    reported(
+                        i.records_buf.cast_const(),
+                        u64::from(o.records_written),
+                        i.records_cap as u64,
+                        "serve.records",
+                    )
+                }?;
+                let b = if o.records_written == 0 {
+                    Bounds::default()
+                } else {
+                    *bounds(a)?
+                };
+                check_serve_records(a.outcome, o, records, i.records_cap as u64, &b)
             }
             slot::PROJECT => project(a),
             life::OPEN if a.outcome == Outcome::Ready => {

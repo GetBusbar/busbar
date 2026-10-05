@@ -668,16 +668,46 @@ pub fn check_refusal_records(
     records_cap: u64,
     b: &Bounds,
 ) -> Result<(), Fault> {
-    let written = u64::from(out.records_written);
+    let n = (out.records_written, out.records_needed, out.arena_written);
+    answer_records(outcome, n, records_buf, records_cap, b, "refusal.records")
+}
+
+/// `serve`'s record writes (SEAM-L(t)): as a refusal's ([`check_refusal_records`]).
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_serve_records(
+    outcome: Outcome,
+    out: &ServeOut,
+    records_buf: &[RecordWrite],
+    records_cap: u64,
+    b: &Bounds,
+) -> Result<(), Fault> {
+    let n = (out.records_written, out.records_needed, out.arena_written);
+    answer_records(outcome, n, records_buf, records_cap, b, "serve.records")
+}
+
+/// An answer's record writes, `(written, needed, arena written)`: the short-buffer rule over the
+/// host's buffer, then each write judged as an `on_piece` answer's.
+fn answer_records(
+    outcome: Outcome,
+    (written, needed, arena): (u32, u32, u64),
+    records_buf: &[RecordWrite],
+    records_cap: u64,
+    b: &Bounds,
+    field: &'static str,
+) -> Result<(), Fault> {
+    let written = u64::from(written);
     result(
         outcome,
         written,
-        u64::from(out.records_needed),
+        u64::from(needed),
         records_cap,
         MAX_RECORDS,
-        "refusal.records",
+        field,
     )?;
-    records(records_buf, written, out.arena_written, b)
+    records(records_buf, written, arena, b)
 }
 
 /// `serve`: a known `AUDIT_*`, and the reply is valid.

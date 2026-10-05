@@ -735,6 +735,37 @@ fn a_refusals_record_writes_are_judged_as_an_answers() {
     );
 }
 
+/// SEAM-L(t), A SERVED REQUEST'S RECORD WRITES: judged as an answer's: a put of a declared kind
+/// inside the arena passes; a short buffer is a short answer; a kind past the tail is FAULT. RED: a
+/// served request had no record slot.
+#[test]
+fn a_served_requests_record_writes_are_judged_as_an_answers() {
+    let mut o: ServeOut = z();
+    o.records_written = 1;
+    o.arena_written = 8;
+    let mut r: RecordWrite = z();
+    r.op = RECORD_PUT;
+    r.key = sp(0, 4);
+    r.value = sp(4, 4);
+    assert_eq!(check_serve_records(Ready, &o, &[r], 1, &bounds()), Ok(()));
+    let mut bad = r;
+    bad.kind = 1;
+    assert_eq!(
+        check_serve_records(Ready, &o, &[bad], 1, &bounds()),
+        f(Rule::IndexOutOfRange, "record.kind")
+    );
+    let mut short: ServeOut = z();
+    short.records_needed = 2;
+    assert_eq!(
+        check_serve_records(Failed, &short, &[], 1, &bounds()),
+        Ok(())
+    );
+    assert_eq!(
+        check_serve_records(Ready, &short, &[], 1, &bounds()),
+        f(Rule::NeededNotFailed, "serve.records")
+    );
+}
+
 // ── refusal, serve, cancel ──
 
 #[test]

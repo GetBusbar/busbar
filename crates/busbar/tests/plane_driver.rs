@@ -783,6 +783,7 @@ fn serve_table(
         calls: Arc::new(PlaneInstance::new(plugin.clone(), dispatcher, 1)),
         caps: BufferCaps::default(),
         routes,
+        records: None,
     };
     (plugin, table)
 }

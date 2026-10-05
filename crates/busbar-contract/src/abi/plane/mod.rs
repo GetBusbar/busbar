@@ -1631,6 +1631,13 @@ pub struct ServeIn {
     pub arena_buf: *mut u8,
     /// Its capacity.
     pub arena_cap: usize,
+    /// HOST buffer for record writes: the served request's record writes, as an `on_piece`
+    /// answer's ([`RecordWrite`], their bytes in the arena), so a route (a public callback among
+    /// them) writes the state transition it recorded to the plane's record chain itself. A tail
+    /// addition.
+    pub records_buf: *mut RecordWrite,
+    /// Its capacity.
+    pub records_cap: usize,
 }
 
 /// `serve`'s `out`.
@@ -1655,6 +1662,10 @@ pub struct ServeOut {
     pub fields_needed: u32,
     /// `AUDIT_*`: the row the kernel audits the request with, under the route's `audit_verb`.
     pub audit: u32,
+    /// Record writes written to `records_buf`. A tail addition.
+    pub records_written: u32,
+    /// Short answer: the record writes `records_buf` needs.
+    pub records_needed: u32,
 }
 
 /// The plane's `drive` `in`: the lifecycle's, plus a HOST buffer for the sessions with output

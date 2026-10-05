@@ -1093,6 +1093,52 @@ async fn a_units_audit_row_reaches_the_kernels_chain_and_its_lane_the_money_step
     assert_eq!(r.book.laned(), vec!["tool_x".to_string()]);
 }
 
+/// SEAM-L(t), A SERVED REQUEST'S RECORD WRITES: a put reaches the instance's records (read back
+/// through `records.get`) and an audit row reaches the audit sink under the request's actor, in the
+/// plane's order; a put with no record path, or an unknown op, answers 502. RED: the served answer
+/// carried no record writes.
+#[tokio::test]
+async fn a_served_requests_record_writes_reach_the_records_and_the_audit_chain() {
+    use busbar_kernel::plane_driver::serve::{write_served_records, Served, Unserved};
+    let s = records();
+    let rows = AuditRows::default();
+    let served = Served {
+        status: 200,
+        fields: Vec::new(),
+        body: Vec::new(),
+        audit: 0,
+        records: vec![
+            (0, RECORD_PUT, b"cb".to_vec(), b"done".to_vec()),
+            (
+                AUDIT_APPLIED,
+                RECORD_AUDIT,
+                b"thing.callback".to_vec(),
+                b"thing:x".to_vec(),
+            ),
+        ],
+    };
+    let path = (Arc::clone(&s), instance());
+    write_served_records(Some(&path), &rows, &served, "acct:caller")
+        .await
+        .expect("written");
+    let cb = get(&s, b"cb");
+    assert_eq!((cb.value, cb.bytes.as_slice()), (svc::FOUND, &b"done"[..]));
+    assert_eq!(
+        *rows.0.lock().unwrap(),
+        vec![(
+            "thing.callback".to_string(),
+            "thing:x".to_string(),
+            busbar_contract::vocab::OUTCOME_APPLIED,
+            "acct:caller".to_string(),
+        )]
+    );
+    assert_eq!(
+        write_served_records(None, &rows, &served, "acct:caller").await,
+        Err(Unserved::Fault),
+        "a put with no record path is never dropped"
+    );
+}
+
 // ── the instance's driver ticket ─────────────────────────────────────────────────────────────────
 
 /// The kernel's host services, with no egress class and no store.
