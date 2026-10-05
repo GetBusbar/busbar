@@ -633,8 +633,10 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
         };
         gated.push((name.to_string(), feature.clone()));
     }
+    // Three since the node compiles in every build (ARCHITECT Q1): the decisions plane's module,
+    // the admin units and the test harness.
     assert!(
-        gated.len() >= 4,
+        gated.len() >= 3,
         "the root declares one feature-gated module per switched plane, or this test is reading \
          the wrong file: found {gated:?}"
     );

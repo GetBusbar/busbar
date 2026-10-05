@@ -972,9 +972,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // THE LINE CARRIER (SEAM-S1, `root::serve::lines`): with the stdio serve mode asked for and a
     // served plane claiming the stdio transport, the served planes are kept for the process's own
     // stdin/stdout, and the data router is built with none of them (it is never bound in this mode).
-    #[cfg(linked_axis_node)]
     let mut served = served;
-    #[cfg(linked_axis_node)]
     let line_served = (stdio_serve_requested(std::env::args())
         && root::serve::lines::line_claim(&served).is_some())
     .then(|| std::mem::take(&mut served));
@@ -1197,9 +1195,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // supervisor never asked for) and speaks newline-delimited JSON-RPC on its own stdin/stdout.
     // EOF on stdin is the shutdown signal, and the tail below is the listener path's own shutdown
     // tail: the final budget/metering flush, then the tracer.
-    // The mode exists only when a linked entry serves it. With none there is no dispatch to serve on
-    // stdin/stdout, so the mode is not offered and the build falls through to its listener path.
-    #[cfg(linked_axis_node)]
+    // The mode is served when a served door plane, compiled in or dropped in, claims the stdio
+    // transport. With none there is nothing to serve on stdin/stdout, so the build falls through to
+    // its listener path.
     if let Some(served) = line_served {
         let code = root::serve::lines::serve_lines(served, app_handle.clone(), || {
             root::kernel::ROOT_CARD.pin()
