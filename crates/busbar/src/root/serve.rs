@@ -99,11 +99,13 @@ pub fn compose(
 /// kernel's services gain what that build made. That is the runtime's blocking pool, bounded at the
 /// record write queue's [`QUEUE_CAP`]; the governance signer, when governance is configured; and
 /// the durable demotion record, its unprefixed rows belonging to the one plane that declares the
-/// demotion record kind ([`demotion_owner`]). Each lives for the process (an apply reuses the
+/// demotion record kind ([`demotion_owner`]); and the configured governance store `records` as the
+/// record store. Each lives for the process (an apply reuses the
 /// governance state and carries the demotion record), so each attaches once. With no kernel
 /// services composed it attaches nothing. Runs on the runtime.
 pub fn attach(
     late: &LateServices,
+    records: Option<&busbar_kernel::governance::GovState>,
     signer: Option<Arc<dyn SignKey>>,
     demotions: &Arc<DemotionRecord>,
     planes: &[&PlaneDeclaration],
@@ -120,6 +122,17 @@ pub fn attach(
     }
     if let Some(signer) = signer {
         kernel.attach_signer(signer);
+    }
+    // THE RECORD STORE (ARCHITECT Q-L3B-RECORDS): the configured governance store, its typed records
+    // and its plane-record slots, so a plane's record writes (a chained kind's journal among them)
+    // persist where the deployment's state does.
+    if let Some(gov) = records {
+        if let Some(calls) = gov.store_calls() {
+            kernel.attach_records(
+                Arc::new(busbar_kernel::host_records::StoreRows(calls)),
+                gov.store(),
+            );
+        }
     }
     if let Some(owner) = demotion_owner(planes) {
         kernel.attach_demotions(Arc::clone(demotions), owner);
