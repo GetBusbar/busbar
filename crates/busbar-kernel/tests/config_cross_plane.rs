@@ -177,6 +177,40 @@ tools:
     resolve(&deploy, &HashMap::new()).expect("distinct published names must resolve");
 }
 
+/// THE EFFECTIVE REGISTRY IS JUDGED WHOLE AT `resolve`: a door section holding entries no parse ever
+/// read together (the file's, plus what the management surface wrote) is held to its door's
+/// section-wide rules there, so an applied registration whose published name collides with another's
+/// is refused exactly as the same file would be. RED without `DoorSection::validate_registry` running
+/// the door's `validate`; GREEN for the same section with distinct names.
+#[test]
+fn a_door_sections_effective_registry_is_judged_whole_at_resolve() {
+    use busbar_kernel::plane::config::PlaneCfg;
+    register_planes();
+    let effective = |publish: &str| -> serde_yaml::Value {
+        serde_yaml::from_str(&format!(
+            r#"
+foo:
+  url: "https://foo/"
+  pin: {{ mechanism: unpinned }}
+  tools_allow: {{ bar: {{}} }}
+other:
+  url: "https://other/"
+  pin: {{ mechanism: unpinned }}
+  tools_allow: {{ anything: {{ publish_as: {publish} }} }}
+"#
+        ))
+        .expect("yaml")
+    };
+    let section = busbar_kernel::plane::door::DoorSection::new("tools", effective("foo_bar"));
+    let refused = section
+        .validate_registry()
+        .expect_err("an effective registry whose published names collide is refused");
+    assert!(refused.contains("published as `foo_bar`"), "{refused}");
+    busbar_kernel::plane::door::DoorSection::new("tools", effective("other_name"))
+        .validate_registry()
+        .expect("distinct published names pass");
+}
+
 /// A member naming nothing is an operator believing a request has somewhere to go when it does not.
 /// 1.6.0: the pool lives in the ONE neutral `pools:` map; kind is INFERRED from the resolvable
 /// member (`search-eu` → a `tools:` server), so the dangling `search-us` is named against `tools:`.

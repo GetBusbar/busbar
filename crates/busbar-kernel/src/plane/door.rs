@@ -252,8 +252,22 @@ impl PlaneCfg for DoorSection {
         }
     }
 
+    /// THE WHOLE EFFECTIVE SECTION, judged by its door: the file's entries and every entry the
+    /// management surface wrote, in one `validate` — the rules no single entry can see (one
+    /// registration's published name colliding with another's) run here, at `resolve`, which boot,
+    /// `--validate` and every config-apply rebuild pass through. An absent section is nothing to judge.
     fn validate_registry(&self) -> Result<(), String> {
-        Ok(())
+        if !self.is_present() {
+            return Ok(());
+        }
+        let Some(fold) = DOORS
+            .iter()
+            .filter_map(OnceLock::get)
+            .find(|f| f.reg.section == self.section)
+        else {
+            return Ok(());
+        };
+        (fold.reg.validate)(&settings_of(&self.value)?)
     }
 
     fn is_present(&self) -> bool {
