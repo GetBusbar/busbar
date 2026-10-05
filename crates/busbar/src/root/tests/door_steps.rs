@@ -761,17 +761,17 @@ fn a_registration_member_is_reached_at_its_own_target() {
     assert!(none.is_empty());
 }
 
-/// THE MCP PLANE, SERVED THROUGH ITS DOOR END TO END (FLIP-MCP; BUSBAR-1.6.0.md Part 3 section 12,
-/// "The switch"; TODO P3) — the mcp plane's root leg (`qa/teller-steps.json` `root-mcp`): a
-/// `tools/call` the mcp door claims reaches that plane's driver through its route on the data
+/// THE TOOL DOOR, SERVED END TO END (the fold's flip; BUSBAR-1.6.0.md Part 3 section 12,
+/// "The switch"; TODO P3) — the tool plane's root leg (`qa/teller-steps.json`): a
+/// `tools/call` the tool door claims reaches that plane's driver through its route on the data
 /// router (mounted at the router's construction), behind the deployment's auth gate, is admitted
 /// and charged by the money steps, crosses the plane's door (`arrive`, the ATTEMPT, the far end's
 /// answer), leaves through the host chokepoint (the plane's egress walk over the process's
-/// connector) to a real MCP server on loopback, and comes back a served 200 whose money record is
+/// connector) to a real tool server on loopback, and comes back a served 200 whose money record is
 /// posted: the governance ledger holds the admitted request and the node's book the unit's one line
-/// with the tool call the plane reported. The plane is the mcp plane's own door, linked (compiled
+/// with the tool call the plane reported. The plane is the tool plane's own door, linked (compiled
 /// in) and bound through the loader's one load, its need declared on the connector, exactly as its
-/// `plane-mcp` row binds it. The dropped-in fold of the same door is the plane crate's own
+/// linked row binds it. The dropped-in fold of the same door is the plane crate's own
 /// conformance suite (`tests/conformance.rs`, one transcript through both loads).
 #[cfg(all(linked_axis_plane_door, linked_axis_node))]
 mod tool_door {
@@ -885,7 +885,7 @@ mod tool_door {
     /// A stateless-revision `tools/list`: the plane's own to answer.
     const LIST: &str = r#"{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
 
-    /// The MCP server's answer: a tool result.
+    /// The tool server's answer: a tool result.
     const ANSWER: &str = r#"{"jsonrpc":"2.0","id":0,"result":{"content":[{"type":"text","text":"from the server"}]}}"#;
 
     /// The `tools:` section: one server on loopback at `port`, one approved tool.
@@ -967,7 +967,7 @@ mod tool_door {
         (status, bytes.to_vec())
     }
 
-    /// An MCP server on loopback answering every request with [`ANSWER`]; what it was sent comes back
+    /// A tool server on loopback answering every request with [`ANSWER`]; what it was sent comes back
     /// on the channel, one request per connection.
     pub(super) async fn tool_server() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
         tool_server_listing(Arc::new(std::sync::Mutex::new(tool_listing()))).await
@@ -990,7 +990,7 @@ mod tool_door {
         .await
     }
 
-    /// An MCP server on loopback answering each request (its head and body, as text) with what
+    /// A tool server on loopback answering each request (its head and body, as text) with what
     /// `answer` makes of it; every request is heard.
     pub(super) async fn tool_server_answering(
         answer: Arc<dyn Fn(&str) -> String + Send + Sync>,
@@ -1001,7 +1001,7 @@ mod tool_door {
     /// What a test server answers a request with: its status and body.
     pub(super) type Replies = Arc<dyn Fn(&str) -> (u16, String) + Send + Sync>;
 
-    /// An MCP server on loopback answering each request with the status and body `answer` makes of
+    /// A tool server on loopback answering each request with the status and body `answer` makes of
     /// it; every request is heard.
     pub(super) async fn tool_server_replying(
         answer: Replies,
@@ -2558,7 +2558,7 @@ mod door_boundary {
     /// everyone, so adding one must be a deliberate act that shows up here. The test's NAME is pinned
     /// by `qa/design-bindings.json` (PB-33) and the structure-lint choke-point table.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_audience_bound_token_is_confined_to_its_door_plane() {
+    async fn an_audience_bound_token_is_confined_to_its_door_plane_through_the_composition() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-boundary-confined";
         let _published = Published(instance);
@@ -3548,7 +3548,7 @@ mod task_continuation {
         panic!("task {task_id} never reached `{status}`");
     }
 
-    /// An MCP server on loopback that answers its tool list at once and holds every `tools/call`
+    /// A tool server on loopback that answers its tool list at once and holds every `tools/call`
     /// until `release` turns true; every request is heard.
     async fn gated_server(
         release: tokio::sync::watch::Receiver<bool>,
@@ -4106,7 +4106,7 @@ mod hook_parity {
     /// What the gate sees is the call's ARGUMENTS: a screen keyed on a token found only inside
     /// them rejects, and a clean call is served.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn mcp_content_reaches_the_gate() {
+    async fn the_calls_content_reaches_the_gate() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-hook-content";
         let _published = Published(instance);

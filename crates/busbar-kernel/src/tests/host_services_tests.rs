@@ -1792,10 +1792,10 @@ fn chain_rows(
 #[test]
 fn a_chained_kind_appends_in_sequence_and_never_overwrites_its_scope() {
     let store = Arc::new(MemoryStore::new());
-    let s = chained_services(&store, "mcp");
-    assert_eq!(append(&s, "mcp", b"ref-a", b"one"), Ok(()));
-    assert_eq!(append(&s, "mcp", b"ref-a", b"two"), Ok(()));
-    let rows = chain_rows(&store, "mcp", "ref-a");
+    let s = chained_services(&store, "tools-plane");
+    assert_eq!(append(&s, "tools-plane", b"ref-a", b"one"), Ok(()));
+    assert_eq!(append(&s, "tools-plane", b"ref-a", b"two"), Ok(()));
+    let rows = chain_rows(&store, "tools-plane", "ref-a");
     assert_eq!(
         rows.iter()
             .map(|r| (r.seq, r.content.clone()))
@@ -1806,16 +1806,16 @@ fn a_chained_kind_appends_in_sequence_and_never_overwrites_its_scope() {
     assert_eq!(rows[1].prev_hash, rows[0].hash, "linked");
     assert_eq!(rows[0].prev_hash, "", "genesis");
     // Nothing went through the write-behind's put.
-    assert!(s.pending().get("mcp", "call", b"ref-a").is_none());
+    assert!(s.pending().get("tools-plane", "call", b"ref-a").is_none());
 }
 
 #[test]
 fn the_host_frames_the_prelude_in_the_declared_framing_and_joins_the_planes_bytes_raw() {
     let store = Arc::new(MemoryStore::new());
-    let s = chained_services(&store, "mcp");
-    append(&s, "mcp", b"ref-a", b"suffix").unwrap();
-    let row = &chain_rows(&store, "mcp", "ref-a")[0];
-    let parent = crate::host_chains::chain_parent("mcp", "ref-a");
+    let s = chained_services(&store, "tools-plane");
+    append(&s, "tools-plane", b"ref-a", b"suffix").unwrap();
+    let row = &chain_rows(&store, "tools-plane", "ref-a")[0];
+    let parent = crate::host_chains::chain_parent("tools-plane", "ref-a");
     let mut input = crate::audit::frame_prelude(
         crate::audit::Framing::LengthPrefixed,
         "",
@@ -1836,23 +1836,30 @@ fn the_host_frames_the_prelude_in_the_declared_framing_and_joins_the_planes_byte
 #[test]
 fn a_restart_resumes_every_chain_from_its_stored_tail() {
     let store = Arc::new(MemoryStore::new());
-    let first = chained_services(&store, "mcp");
-    append(&first, "mcp", b"ref-a", b"one").unwrap();
-    append(&first, "mcp", b"ref-a", b"two").unwrap();
+    let first = chained_services(&store, "tools-plane");
+    append(&first, "tools-plane", b"ref-a", b"one").unwrap();
+    append(&first, "tools-plane", b"ref-a", b"two").unwrap();
     drop(first);
-    let second = chained_services(&store, "mcp");
-    append(&second, "mcp", b"ref-a", b"three").unwrap();
-    let rows = chain_rows(&store, "mcp", "ref-a");
+    let second = chained_services(&store, "tools-plane");
+    append(&second, "tools-plane", b"ref-a", b"three").unwrap();
+    let rows = chain_rows(&store, "tools-plane", "ref-a");
     assert_eq!(
         rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
         vec![1, 2, 3],
         "the chain resumed at its tail, not forked at seq 1"
     );
     assert_eq!(rows[2].prev_hash, rows[1].hash);
-    let chain = second.chained(&caller("mcp"), "call").expect("chained");
+    let chain = second
+        .chained(&caller("tools-plane"), "call")
+        .expect("chained");
     let plane = crate::plane::store::PlaneStoreView::narrow(store.clone());
-    assert_eq!(chain.verify(plane.as_ref(), "mcp", "ref-a").unwrap(), None);
-    assert_eq!(chain.next_seq("mcp", "ref-a"), 4);
+    assert_eq!(
+        chain
+            .verify(plane.as_ref(), "tools-plane", "ref-a")
+            .unwrap(),
+        None
+    );
+    assert_eq!(chain.next_seq("tools-plane", "ref-a"), 4);
 }
 
 #[test]
