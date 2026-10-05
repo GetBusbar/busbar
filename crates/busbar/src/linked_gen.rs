@@ -131,6 +131,17 @@ pub(crate) const SEAMS: &[(&str, &str)] = &[
     ("admin-envelope", "linked_admin_envelope"),
 ];
 
+/// THE SWAPS TABLE (BUSBAR-1.6.0.md Part 3 section 12, "The switch"): `<row feature> = "<switch>"`,
+/// a linked row its fold's development-only switch swaps out. While the switch is on, the row is
+/// not linked (no claims, no routes, no section of its own), so the plane's folded door is its one
+/// claimant: the switch swaps the row, it never adds a second one.
+pub(crate) const LINKED_SWAPS: &str = "package.metadata.busbar.linked-swaps";
+
+/// Whether `feature`'s row is linked: its feature is `on`, and no switch that swaps it is.
+pub(crate) fn swapped_in(swaps: &[(String, String)], on: &dyn Fn(&str) -> bool, feature: &str) -> bool {
+    on(feature) && !swaps.iter().any(|(row, switch)| row == feature && on(switch))
+}
+
 /// The `key = "value"` rows of the `[table]` header of a Cargo manifest, in file order. Deliberately
 /// not a TOML parser: one row per line, both sides optionally double-quoted. An absent or empty
 /// table is a build failure, never an empty list — an empty list would silently register nothing.

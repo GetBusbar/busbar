@@ -479,6 +479,12 @@ auth-header = "busbar-auth-header"
 # `testkit::SERVED` table they drive through the kernel-loop runner `gauntlet_install::install()`
 # registers for that plane's key. Test builds only (`build.rs` emits `$OUT_DIR/served_witness.rs`, which
 # `root/tests/gauntlet_kernel.rs` includes); each crate is linked with `test-support` by the dev-deps.
+# A fold's development-only switch SWAPS its plane's legacy row out (`linked-swaps`, read by build.rs):
+# while `streaming-on-driver` is on, the `plane-streaming` row (busbar-voice) is not linked, so the
+# streaming door, folded and composed on the serve path, is the plane's one claimant.
+[package.metadata.busbar.linked-swaps]
+plane-streaming = "streaming-on-driver"
+
 [package.metadata.busbar.served-witness]
 plane-mcp = "busbar-mcp"
 plane-a2a = "busbar-a2a"
