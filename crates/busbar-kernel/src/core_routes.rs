@@ -72,6 +72,9 @@ pub(crate) struct CoreRouteTable {
     /// names a core route. A `HashMap<String, _>` is queried by `&str` through `Borrow`, so the
     /// lookup allocates nothing.
     by_path: std::collections::HashMap<String, Vec<(RouteMethod, RouteAuth)>>,
+    /// THE DOOR ROUTES' UNIT-LESS REFUSALS (spec Part 3 section 12): each door route's plane
+    /// rendering, at the route's own path and method. Empty on every router that serves no door.
+    door_refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
 }
 
 impl CoreRouteTable {
@@ -87,6 +90,36 @@ impl CoreRouteTable {
             .iter()
             .find(|(m, _)| *m == rm)
             .map(|(_, a)| *a)
+    }
+
+    /// This table with `refusals` recorded: the door routes' unit-less refusals, each at its own
+    /// route's path and method.
+    #[must_use]
+    pub(crate) fn with_door_refusals(
+        mut self,
+        refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
+    ) -> Self {
+        self.door_refusals = refusals;
+        self
+    }
+
+    /// The unit-less refusal of the door route `(path, method)` matches, or `None` when the request
+    /// matches no door route (every residual data-plane path). A route's path is matched as the
+    /// router matched it: literal segments exactly, a `{name}` segment as any one segment, a
+    /// `{*name}` tail as the rest.
+    pub(crate) fn door_refusal(
+        &self,
+        path: &str,
+        method: &Method,
+    ) -> Option<&busbar_kernel::plane_routes::PlaneRefuseFn> {
+        if self.door_refusals.is_empty() {
+            return None;
+        }
+        let rm = route_method_of(method)?;
+        self.door_refusals
+            .iter()
+            .find(|r| r.method == rm && route_matches(&r.path, path))
+            .map(|r| &r.refuse)
     }
 
     /// Every declared route, in mount order. The enumeration a router-walking test iterates so a
@@ -161,5 +194,42 @@ impl CoreRouter {
     /// Split into the mounted router and the table describing it.
     pub(crate) fn into_parts(self) -> (Router<Arc<AppHandle>>, CoreRouteTable) {
         (self.router, self.table)
+    }
+}
+
+/// Whether the request `path` is one the route pattern `route` matches: literal segments exactly, a
+/// `{name}` segment as any one non-empty segment, a `{*name}` tail as whatever remains.
+fn route_matches(route: &str, path: &str) -> bool {
+    let mut want = route.split('/');
+    let mut got = path.split('/');
+    loop {
+        match (want.next(), got.next()) {
+            (None, None) => return true,
+            (Some(w), _) if w.starts_with("{*") && w.ends_with('}') => return true,
+            (Some(w), Some(g)) if w.starts_with('{') && w.ends_with('}') => {
+                if g.is_empty() {
+                    return false;
+                }
+            }
+            (Some(w), Some(g)) if w == g => {}
+            _ => return false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod door_refusal_tests {
+    use super::route_matches;
+
+    #[test]
+    fn a_door_route_pattern_matches_as_the_router_does() {
+        assert!(route_matches("/v1/systemone", "/v1/systemone"));
+        assert!(route_matches("/a2a/tasks/{id}", "/a2a/tasks/7"));
+        assert!(route_matches("/mcp/{*rest}", "/mcp/a/b"));
+        // RED ARMS: a sibling, a longer path, an empty segment for a variable.
+        assert!(!route_matches("/v1/systemone", "/v1/systemones"));
+        assert!(!route_matches("/v1/systemone", "/v1/systemone/x"));
+        assert!(!route_matches("/a2a/tasks/{id}", "/a2a/tasks/"));
+        assert!(!route_matches("/v1/systemone", "/v1"));
     }
 }

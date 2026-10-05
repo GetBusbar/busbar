@@ -1197,6 +1197,30 @@ pub fn build_split_routers_serving_sessions(
     max_inbound_concurrent: usize,
     server_timing_enabled: bool,
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
+    build_split_routers_serving_doors(
+        app,
+        doors,
+        sessions,
+        Vec::new(),
+        request_body_max_bytes,
+        max_inbound_concurrent,
+        server_timing_enabled,
+    )
+}
+
+/// [`build_split_routers_serving_sessions`], with each door route's unit-less refusal (`refusals`,
+/// spec Part 3 section 12, "Refusals") recorded beside its admission bar: a `401` the auth
+/// middleware decides on a door route is rendered by that route's plane, in the route's refusal
+/// dialect, and every other route keeps the residual data plane's envelope.
+pub fn build_split_routers_serving_doors(
+    app: std::sync::Arc<state::App>,
+    doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
+    sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+    refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
+    request_body_max_bytes: usize,
+    max_inbound_concurrent: usize,
+    server_timing_enabled: bool,
+) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
     // Capture the plugin route table before `app` moves into the handle.
     let plugin_routes = app.plugin_routes.clone();
     let plane_slots = app.plane_slots.clone();
@@ -1213,7 +1237,7 @@ pub fn build_split_routers_serving_sessions(
     );
     let data = apply_common_layers(
         data,
-        data_core_routes,
+        data_core_routes.with_door_refusals(refusals),
         &handle,
         request_body_max_bytes,
         server_timing_enabled,

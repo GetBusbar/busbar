@@ -256,21 +256,31 @@ fn a_door_rows_claims_and_audience_are_what_its_open_faced_the_world_with() {
         (decl.admission)(&unbound).is_none(),
         "no public base, no audience"
     );
-    // RED ARM: a door that binds no audience mounts NO audience claim (its claims are served on
-    // the plain data plane), so the mounted-implies-admitted ratchet never sees a claim without one.
+    // R2, ADMITTED BY THE KEY CHAIN: a door that binds no audience still mounts its claims, and
+    // the kernel's key-verify chain admits them; with no key chain there is no admission path at
+    // all, and the boot is refused.
     assert!(
-        (decl.claims)(&unbound).is_empty(),
-        "an unbound door mounts nothing on the plane dispatch"
+        !(decl.claims)(&unbound).is_empty(),
+        "an unbound door mounts its claims"
     );
     let slots: std::collections::BTreeMap<&'static str, &dyn std::any::Any> =
         [(decl.key, &unbound as &dyn std::any::Any)]
             .into_iter()
             .collect();
-    let built = crate::plane::registry::build_dispatch(&[decl], &slots);
+    let keyed = crate::plane::registry::build_dispatch(&[decl], &slots, true);
     assert!(
-        built.is_ok(),
-        "an unbound door does not refuse the boot: {built:?}"
+        keyed.is_ok(),
+        "the key chain admits a door claim: {keyed:?}"
     );
+    let keyed = keyed.unwrap();
+    assert!(
+        keyed.admission_for("/fleet").is_none(),
+        "admitted by the key chain, the claim binds no audience"
+    );
+    // RED ARM: no audience and no key chain is no admission path at all.
+    let refused = crate::plane::registry::build_dispatch(&[decl], &slots, false)
+        .expect_err("a door claim with no admission path refuses the boot");
+    assert!(refused.contains("bound no admission"), "{refused}");
     assert!((decl.claims)(&"not a door slot").is_empty());
 }
 

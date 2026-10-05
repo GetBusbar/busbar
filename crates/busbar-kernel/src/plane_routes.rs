@@ -47,6 +47,35 @@ pub type PlaneRouteFuture = Pin<Box<dyn Future<Output = PlaneResponse> + Send>>;
 /// `axum` closure it mounts.
 pub type PlaneRouteFn = Arc<dyn Fn(PlaneReqCtx) -> PlaneRouteFuture + Send + Sync>;
 
+/// A DOOR ROUTE'S UNIT-LESS REFUSAL (spec Part 3 section 12, "Refusals"): the response its plane
+/// renders, through its `refusal` op in the route's refusal dialect, for a refusal the kernel decided
+/// before any unit exists — `reason`, for the request `target` (path and query). The kernel's auth
+/// chokepoint still decides; this only words its answer in the plane's dialect.
+pub type PlaneRefuseFn =
+    Arc<dyn Fn(busbar_contract::caps::ReasonCode, &str) -> PlaneResponse + Send + Sync>;
+
+/// One door route's unit-less refusal, at the route's own path and method: the data router records it
+/// beside the route's admission bar, and the auth middleware renders a `401` it decides on that route
+/// through it, instead of the residual data plane's envelope.
+#[derive(Clone)]
+pub struct PlaneRefusalSpec {
+    /// The route's axum path pattern, as mounted.
+    pub path: String,
+    /// The route's method.
+    pub method: RouteMethod,
+    /// Its plane's rendering.
+    pub refuse: PlaneRefuseFn,
+}
+
+impl std::fmt::Debug for PlaneRefusalSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlaneRefusalSpec")
+            .field("path", &self.path)
+            .field("method", &self.method)
+            .finish_non_exhaustive()
+    }
+}
+
 /// One data route a plane DECLARES: the exact path, the method, the admission bar, and the neutral
 /// handler. The first three are handed VERBATIM to `CoreRouter::route` by the core adapter, so the
 /// `CoreRouteTable` row this route records is identical to the one the old `mount` fn recorded.

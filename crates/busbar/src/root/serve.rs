@@ -63,7 +63,9 @@ use busbar_kernel::plane_driver::{
     Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, UnitRoute,
 };
 #[cfg(linked_axis_node)]
-use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
+use busbar_kernel::plane_routes::{
+    PlaneRefusalSpec, PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec,
+};
 
 /// The egress class `dest.judge` applies when a plugin names none: the deployment's own stance.
 pub const DEFAULT_EGRESS_CLASS: u32 = 0;
@@ -1225,11 +1227,12 @@ pub fn data_mounts(
     (
         Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
         Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+        Vec<PlaneRefusalSpec>,
     ),
     String,
 > {
     if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
     #[cfg(linked_axis_node)]
     {
@@ -1240,7 +1243,7 @@ pub fn data_mounts(
             core,
             upgrades,
         )
-        .map(|m| (m.routes, m.sessions))
+        .map(|m| (m.routes, m.sessions, m.refusals))
     }
     #[cfg(not(linked_axis_node))]
     {
@@ -1408,6 +1411,8 @@ pub struct DoorMounts {
     pub routes: Vec<PlaneRouteSpec>,
     /// The session routes.
     pub sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+    /// The request routes' unit-less refusals (their `401`, worded by their plane).
+    pub refusals: Vec<PlaneRefusalSpec>,
 }
 
 #[cfg(linked_axis_node)]
@@ -1444,6 +1449,7 @@ pub fn door_mounts(
         return Ok(DoorMounts {
             routes: public,
             sessions: Vec::new(),
+            refusals: Vec::new(),
         });
     }
     let mut upgraded: std::collections::HashSet<DoorClaim> = std::collections::HashSet::new();
@@ -1608,6 +1614,37 @@ pub fn door_mounts(
             ),
         });
     }
+    // THE DOOR ROUTES' UNIT-LESS REFUSALS (ARCHITECT ruling 2026-10-05; spec Part 3 section 12,
+    // "Refusals"): each route that takes a credential, at its own path and method, words the `401`
+    // the kernel's auth decides there through its plane's `refusal`, in the claim's refusal dialect,
+    // for the request target. The decision stays the kernel's; no unit opens, nothing is charged.
+    let refusals: Vec<PlaneRefusalSpec> = requests
+        .iter()
+        .filter(|(_, _, auth, _)| matches!(auth, RouteAuth::Key))
+        .map(|(path, method, _, (plane, claim))| {
+            let (routes, plane, claim) = (Arc::clone(&routes), *plane, *claim);
+            PlaneRefusalSpec {
+                path: path.clone(),
+                method: *method,
+                refuse: Arc::new(move |reason: ReasonCode, target: &str| {
+                    let served = &routes.served.planes[plane];
+                    let dialect = served
+                        .snapshot
+                        .claims
+                        .get(claim as usize)
+                        .map_or(0, |c| u32::from(c.refusal_dialect));
+                    let rendered =
+                        served
+                            .driver
+                            .refuse_unitless(reason, dialect, target.as_bytes());
+                    stated(
+                        (rendered.status, rendered.fields),
+                        Body::from(rendered.body),
+                    )
+                }),
+            }
+        })
+        .collect();
     let routes_of = requests
         .into_iter()
         .map(|(path, method, auth, (plane, claim))| {
@@ -1657,6 +1694,7 @@ pub fn door_mounts(
     Ok(DoorMounts {
         routes: routes_of,
         sessions,
+        refusals,
     })
 }
 
