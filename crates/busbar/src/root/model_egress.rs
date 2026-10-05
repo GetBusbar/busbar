@@ -68,6 +68,9 @@ pub struct ModelPools {
     /// Each pool's ladder as the lane store's record calls take it (the previous release's
     /// `resolve_breaker_cfg`: the pool's own, else the default); `""` = the lane-default cell's.
     records: HashMap<String, busbar_kernel::store::BreakerCfg>,
+    /// Each model's active health probing (K7): its provider's `health:` over the process-wide
+    /// defaults, as 1.5.5's prober resolved it per lane.
+    probes: BTreeMap<String, busbar_kernel::probe::ProbeCfg>,
 }
 
 impl ModelPools {
@@ -145,6 +148,33 @@ impl ModelPools {
             })
             .collect();
         records.insert(String::new(), busbar_kernel::store::BreakerCfg::default());
+        let probes = cfg
+            .models
+            .iter()
+            .filter_map(|(name, m)| {
+                let health = cfg.providers.get(&m.provider)?.health.as_ref()?;
+                Some((
+                    name.clone(),
+                    busbar_kernel::probe::ProbeCfg::resolve(
+                        match health.mode {
+                            busbar_kernel::config::HealthMode::None => {
+                                busbar_kernel::plane_host::HealthModeInput::None
+                            }
+                            busbar_kernel::config::HealthMode::Dead => {
+                                busbar_kernel::plane_host::HealthModeInput::Dead
+                            }
+                            busbar_kernel::config::HealthMode::Active => {
+                                busbar_kernel::plane_host::HealthModeInput::Active
+                            }
+                        },
+                        health.interval_secs,
+                        health.timeout_secs,
+                        cfg.limits.default_probe_interval_secs,
+                        cfg.limits.default_probe_timeout_secs,
+                    ),
+                ))
+            })
+            .collect();
         ModelPools {
             pools,
             lanes,
@@ -152,7 +182,38 @@ impl ModelPools {
             passthrough: cfg.upstream_credentials
                 == busbar_contract::config::UpstreamCreds::Passthrough,
             records,
+            probes,
         }
+    }
+}
+
+impl ModelServing {
+    /// THE MEMBERS THE HEALTH-PROBE SERVICE SCHEDULES (K7), in lane order: each model with a
+    /// probing mode, at its lane's index and destination, under its resolved settings.
+    #[must_use]
+    pub fn probe_members(
+        &self,
+    ) -> (
+        usize,
+        Vec<(DestinationId, busbar_kernel::probe::ProbeMember)>,
+    ) {
+        let mut members: Vec<(DestinationId, busbar_kernel::probe::ProbeMember)> = self
+            .lanes
+            .iter()
+            .filter_map(|(model, lane)| {
+                let cfg = *self.pools.probes.get(model)?;
+                Some((
+                    DestinationId::new(*lane as u64),
+                    busbar_kernel::probe::ProbeMember {
+                        index: *lane,
+                        name: model.clone(),
+                        cfg,
+                    },
+                ))
+            })
+            .collect();
+        members.sort_by_key(|(_, m)| m.index);
+        (self.lanes.values().max().map_or(0, |m| m + 1), members)
     }
 }
 

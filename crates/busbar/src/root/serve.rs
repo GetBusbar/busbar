@@ -348,6 +348,8 @@ pub struct ServedPlane {
     pub kernel: Arc<KernelServices>,
     /// Its tail's dialects, in order: what a unit's dialect index names.
     pub dialects: Vec<&'static str>,
+    /// The health-probe schedule its generations share, phase-stable across a config apply.
+    pub probe_schedule: Arc<busbar_kernel::probe::ProbeSchedule>,
 }
 
 impl std::fmt::Debug for ServedPlane {
@@ -372,6 +374,9 @@ pub struct PlaneLive {
     pub pools: DoorPools,
     /// The sealed egress.
     pub egress: Option<Arc<Egress>>,
+    /// The health-probe service's target for this generation (K7), when the plane answers probes
+    /// and a member probes: held here, so a replaced generation's probers exit at their next tick.
+    pub probes: Option<Arc<busbar_kernel::plane_driver::PlaneProbes>>,
 }
 
 /// EVERY DOOR PLANE THIS PROCESS SERVES, composed once after the first app is built.
@@ -631,7 +636,7 @@ pub fn compose_planes(
                 ));
             }
         }
-        let live = seal_live(
+        let mut live = seal_live(
             instance,
             plugin,
             &served_facts,
@@ -639,9 +644,16 @@ pub fn compose_planes(
             section,
             egress,
         )?;
+        let driver = Arc::new(driver);
+        let probe_schedule = Arc::new(busbar_kernel::probe::ProbeSchedule::new(
+            egress
+                .and_then(|e| e.reach.models)
+                .map_or(0, |m| m.probe_members().0),
+        ));
+        arm_probes(&driver, &served_facts, &mut live, egress, &probe_schedule);
         served.planes.push(ServedPlane {
             instance: instance.clone(),
-            driver: Arc::new(driver),
+            driver,
             snapshot,
             audit_kind: served_facts.audit_kind,
             live: arc_swap::ArcSwap::from_pointee(live),
@@ -651,6 +663,7 @@ pub fn compose_planes(
             money: plane_money,
             kernel: Arc::clone(&kernel),
             dialects: served_facts.dialects.clone(),
+            probe_schedule,
         });
     }
     Ok(served)
@@ -744,7 +757,60 @@ fn seal_live(
         facts,
         pools,
         egress,
+        probes: None,
     })
+}
+
+/// THE HEALTH PROBES OF ONE GENERATION (K7; 1.5.5 `health:` per provider, `none | dead | active`):
+/// for the plane serving the `pools` map whose tail states `TAIL_PROBES`, a probe target over
+/// `live`'s sealed egress and `driver`, its probers spawned as a new generation of `schedule` (the
+/// previous generation's exit at their next tick). A build without the node has no kernel to run
+/// a probe unit on and probes nothing.
+fn arm_probes(
+    driver: &Arc<PlaneDriver>,
+    served_facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+    live: &mut PlaneLive,
+    egress: Option<&DoorEgress<'_>>,
+    schedule: &Arc<busbar_kernel::probe::ProbeSchedule>,
+) {
+    #[cfg(linked_axis_node)]
+    {
+        let (Some(sealed), Some(models)) = (&live.egress, egress.and_then(|e| e.reach.models))
+        else {
+            return;
+        };
+        if served_facts.section != busbar_contract::section::RESERVED_POOLS_KEY {
+            return;
+        }
+        let (lanes, members) = models.probe_members();
+        if members.is_empty() {
+            return;
+        }
+        let (kernel, keys) = crate::root::plane_node::node().kernel_and_keys();
+        let Some(target) = busbar_kernel::plane_driver::PlaneProbes::new(
+            if served_facts.probes {
+                busbar_contract::abi::plane::TAIL_PROBES
+            } else {
+                0
+            },
+            Arc::clone(driver),
+            Arc::clone(sealed),
+            kernel,
+            keys,
+            (0..lanes)
+                .map(|i| busbar_contract::DestinationId::new(i as u64))
+                .collect(),
+        ) else {
+            return;
+        };
+        let target = Arc::new(target);
+        let members: Vec<busbar_kernel::probe::ProbeMember> =
+            members.into_iter().map(|(_, m)| m).collect();
+        busbar_kernel::probe::spawn_probers(&target, schedule, &members);
+        live.probes = Some(target);
+    }
+    #[cfg(not(linked_axis_node))]
+    let _ = (driver, served_facts, live, egress, schedule);
 }
 
 impl std::fmt::Debug for PlaneLive {
@@ -798,7 +864,10 @@ impl Served {
                 &walked,
                 Some(egress),
             ) {
-                Ok(live) => p.live.store(Arc::new(live)),
+                Ok(mut live) => {
+                    arm_probes(&p.driver, facts, &mut live, Some(egress), &p.probe_schedule);
+                    p.live.store(Arc::new(live));
+                }
                 Err(e) => {
                     tracing::error!(instance = %p.instance, error = %e, "door plane's new configuration did not seal; it keeps serving the previous one");
                 }

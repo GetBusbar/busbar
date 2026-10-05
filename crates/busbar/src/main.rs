@@ -946,7 +946,14 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // first config swap, retiring these boot probers (their `Weak` fails to upgrade) exactly as the old
     // `Weak<App>` did when the boot snapshot drained.
     // Built only when some linked entry re-anchors work on it: a build with none holds no host.
-    let on_host = LINKED.on_host;
+    // Under the llm fold's switch the llm plane's health probes run through its door as the K7
+    // probe unit (`root::serve`'s probe target over the plane's sealed egress), so the legacy row's
+    // probers are not spawned beside them: one prober per lane, as 1.5.5 ran.
+    let on_host = if cfg!(feature = "llm-on-driver") {
+        &[][..]
+    } else {
+        LINKED.on_host
+    };
     let boot_host = (!on_host.is_empty()).then(|| busbar_kernel::plane_host::engine_host(&app));
     if let Some(host) = &boot_host {
         for spawn in on_host {
