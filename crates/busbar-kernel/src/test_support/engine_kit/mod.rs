@@ -413,11 +413,10 @@ pub trait EngineTestKit: Send + Sync {
         price_per_request_cents: i64,
         groups: &BTreeMap<String, GroupCfg>,
     ) -> Arc<dyn CostKit>;
-    /// A hook plugin environment loading the hermetic test hook cdylib under `aliases`, declaring
-    /// `prompt`/`user` intent. `None` when the cdylib is not built (the caller decides whether that
-    /// is a skip or a failure).
-    fn hook_env(&self, aliases: &[&str], prompt: HookNeed, user: HookNeed)
-        -> Option<HookEnvHandle>;
+    /// A hook environment whose registry holds a `kind: hook` row under each of `aliases`,
+    /// declaring `prompt`/`user` intent, answered by the kernel's hook double
+    /// (`test_support::hook_double`; no plugin is loaded).
+    fn hook_env(&self, aliases: &[&str], prompt: HookNeed, user: HookNeed) -> HookEnvHandle;
 
     // ── the process-wide per-call log ──────────────────────────────────────────────────────────
     /// The next sequence number `principal`'s call chain will mint.
