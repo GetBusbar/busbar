@@ -24,11 +24,11 @@
 //! than copied.
 
 use crate::testkit::engine_boot::engine;
-use busbar_kernel::egress::fixtures::DoublePeer;
 use std::net::SocketAddr;
 
 use super::transport_tests::{
-    ca_and_leaf, der, spawn_tls, tls_double, url, wait_for_hellos, ObservedHellos, HOST, LOOPBACK,
+    ca_and_leaf, der, spawn_tls, tls_double, url, wait_for_hellos, DoublePeer, ObservedHellos,
+    HOST, LOOPBACK,
 };
 use super::*;
 use crate::a2a::fetch::{FetchPolicy, Transport};

@@ -30,7 +30,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use busbar_kernel::egress::fixtures::{install_test_tls, DoublePeer, PeerHello, TlsDouble};
+pub(crate) use busbar_kernel::egress::{
+    fixtures::{install_test_tls, DoublePeer, PeerHello, TlsDouble},
+    RefuseSecondLookup,
+};
 use rcgen::{CertificateParams, CertifiedKey, IsCa, Issuer, KeyPair};
 
 use super::*;
@@ -335,7 +338,7 @@ fn the_clients_refusing_resolver_names_the_invariant_when_it_is_reached() {
         .enable_all()
         .build()
         .expect("runtime");
-    let refuser = busbar_kernel::egress::RefuseSecondLookup;
+    let refuser = RefuseSecondLookup;
     let err = rt.block_on(async {
         reqwest::dns::Resolve::resolve(&refuser, HOST.parse().expect("a name"))
             .await

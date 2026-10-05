@@ -37,13 +37,14 @@ use rcgen::{CertificateParams, IsCa, Issuer, KeyPair, PublicKeyData};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use super::transport_tests::{presenting, spawn_tls, url, wait_for_hellos, HOST, LOOPBACK};
+use super::transport_tests::{
+    presenting, spawn_tls, url, wait_for_hellos, DoublePeer, HOST, LOOPBACK,
+};
 use super::*;
 use crate::a2a::config::{AgentPinCfg, PinMechanism};
 use crate::a2a::fetch::FetchPolicy;
 use crate::a2a::pin::{approve_registration, ApproveError, CardPin};
 use crate::a2a::verify::{verify_document, Handshake, VerifyRefusal};
-use busbar_kernel::egress::fixtures::DoublePeer;
 use busbar_kernel::trust::{Approval, Observation, Sighting};
 
 /// A CA, a leaf it signed, and — computed independently of the certificate — the pin that leaf's
