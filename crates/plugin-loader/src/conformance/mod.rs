@@ -78,7 +78,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, InHead, OutHead, Outcome, RawOutcome, BLOB_JSON,
+    AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, RawOutcome, BLOB_JSON,
 };
 use busbar_contract::abi::mechanism::door::{Door, DoorFn};
 use busbar_contract::abi::mechanism::lifecycle::{
@@ -796,48 +796,46 @@ pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
 /// an `open` that answers PENDING (a store connecting to its backend) is RESUMED on its wake until
 /// it answers; the frame [`open`]'s.
 pub fn open_resumed<K: Kind>(p: &Plugin<K>, d: &Dispatcher, settings: &[u8]) -> Called {
-    fn on_ticket<K: Kind, I: InFrame, O: OutFrame>(
-        p: &Plugin<K>,
-        d: &Dispatcher,
-        f: Frame<I, O>,
-    ) -> Called {
-        let Some(ticket) = d.mint(0) else {
-            return Called {
-                outcome: Outcome::Refused,
-                error: None,
-                lease: 0,
-                recall: None,
-            };
-        };
-        let deadline = crate::dispatch::now_ns().saturating_add(OPEN_DEADLINE.as_nanos() as u64);
-        let done = d
-            .submit(
-                p,
-                ticket,
-                life::OPEN,
-                f,
-                busbar_contract::abi::mechanism::call::DeadlineClass::Call,
-                deadline,
-            )
-            .wait_done();
-        d.recycle(ticket);
-        Called {
-            outcome: done.outcome,
-            error: done.error,
-            lease: done.lease,
-            recall: None,
-        }
-    }
+    let deadline = crate::dispatch::now_ns().saturating_add(OPEN_DEADLINE.as_nanos() as u64);
     if K::CODE == KindCode::Plane {
         let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
         f.input.open.settings = json(settings);
         f.input.open.generation = 1;
-        return on_ticket(p, d, f);
+        return on_ticket(p, d, life::OPEN, f, DeadlineClass::Call, deadline);
     }
     let mut f: Frame<OpenIn, OpenOut> = Frame::new(input(), output());
     f.input.settings = json(settings);
     f.input.generation = 1;
-    on_ticket(p, d, f)
+    on_ticket(p, d, life::OPEN, f, DeadlineClass::Call, deadline)
+}
+
+/// Op `s` over `f`, submitted AS THE KERNEL SUBMITS IT: on a ticket of `d`'s, in deadline class
+/// `class` (`deadline_ns` 0 = none), so an op that answers PENDING (it waits on the network) is
+/// RESUMED on its wake until it answers; its answer as the host reads it.
+pub fn on_ticket<K: Kind, I: InFrame, O: OutFrame>(
+    p: &Plugin<K>,
+    d: &Dispatcher,
+    s: u32,
+    f: Frame<I, O>,
+    class: DeadlineClass,
+    deadline_ns: u64,
+) -> Called {
+    let Some(ticket) = d.mint(0) else {
+        return Called {
+            outcome: Outcome::Refused,
+            error: None,
+            lease: 0,
+            recall: None,
+        };
+    };
+    let done = d.submit(p, ticket, s, f, class, deadline_ns).wait_done();
+    d.recycle(ticket);
+    Called {
+        outcome: done.outcome,
+        error: done.error,
+        lease: done.lease,
+        recall: None,
+    }
 }
 
 /// How long the suite waits for one resumed `open`: the store bridge's call deadline.
