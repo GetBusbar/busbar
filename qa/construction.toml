@@ -742,7 +742,7 @@ busbar-plane-mcp = ["base64"]
 # a2a.proto at build time (prost-build driving protoc-bin-vendored's protoc, pbjson-build for the
 # ProtoJSON serde) and decodes, encodes and maps them at run time (prost, pbjson); no gRPC server
 # stack and no calendar crate enter its closure (dep-wall, denylist and source-denylist green).
-busbar-plane-a2a = ["indexmap", "url", "prost", "pbjson", "prost-build", "pbjson-build", "protoc-bin-vendored"]
+busbar-plane-a2a = ["indexmap", "url", "prost", "pbjson", "base64", "prost-build", "pbjson-build", "protoc-bin-vendored"]
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a

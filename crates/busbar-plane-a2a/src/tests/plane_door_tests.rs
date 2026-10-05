@@ -284,3 +284,78 @@ fn an_abandoned_look_releases_its_flight_and_wakes_every_waiter_at_once() {
         "the other flight was released too"
     );
 }
+
+/// THE gRPC LINE'S OUTBOX: a whole answer is the rpc's one message at `OK` (no media type, no
+/// length), or the status its error binds with the details field; an answer in events is one
+/// message per event, each emitted on an answer of its own.
+#[test]
+fn the_framed_line_answers_messages_and_statuses() {
+    use crate::framed::{Rpc, DETAILS_FIELD};
+    use prost::Message as _;
+    let task =
+        json!({ "id": "t-1", "contextId": "c-1", "status": { "state": "TASK_STATE_COMPLETED" } });
+    let ok = json!({ "jsonrpc": "2.0", "id": 1, "result": task });
+    let ob = Outbox::framed(reply(200, &ok), Rpc::GetTask).expect("an outbox");
+    assert!(matches!(ob.head, Some(Head::Framed(0, None))));
+    assert!(ob.done && ob.queue.is_empty());
+    let decoded = crate::proto::pb::Task::decode(ob.bytes.as_slice()).expect("a Task");
+    assert_eq!(decoded.id, "t-1");
+
+    let refused = json!({
+        "jsonrpc": "2.0", "id": 1,
+        "error": { "code": -32001, "message": "no task", "data": [{
+            "@type": crate::ERROR_INFO_TYPE, "domain": crate::ERROR_INFO_DOMAIN,
+            "reason": "TASK_NOT_FOUND" }] },
+    });
+    let ob = Outbox::framed(reply(404, &refused), Rpc::GetTask).expect("an outbox");
+    let Some(Head::Framed(code, Some(details))) = &ob.head else {
+        panic!("a status with details: {:?}", ob.head);
+    };
+    assert_eq!(*code, crate::framed::Code::NotFound as u32);
+    assert!(!details.is_empty() && !details.ends_with('='));
+    assert_eq!(ob.bytes, b"no task");
+    assert_eq!(DETAILS_FIELD, "grpc-status-details-bin");
+
+    let event = |state: &str| {
+        format!(
+            "data: {}\n\n",
+            json!({ "jsonrpc": "2.0", "id": 1, "result": { "statusUpdate": {
+                "taskId": "t", "contextId": "c", "status": { "state": state } } } })
+        )
+    };
+    let body = format!(
+        "{}: ping\n\n{}",
+        event("TASK_STATE_WORKING"),
+        event("TASK_STATE_COMPLETED")
+    );
+    let part = Answer::Part(relay::Part {
+        head: true,
+        body: body.into_bytes(),
+        last: true,
+    });
+    let ob = Outbox::framed(part, Rpc::SubscribeToTask).expect("an outbox");
+    assert!(matches!(ob.head, Some(Head::Framed(0, None))));
+    assert_eq!(
+        ob.queue.len(),
+        1,
+        "the second event waits for an answer of its own"
+    );
+    assert!(crate::proto::pb::StreamResponse::decode(ob.bytes.as_slice()).is_ok());
+    assert!(ob.done);
+
+    let failed = format!(
+        "data: {}\n\n",
+        json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32001, "message": "gone" } })
+    );
+    let part = Answer::Part(relay::Part {
+        head: true,
+        body: failed.into_bytes(),
+        last: false,
+    });
+    let ob = Outbox::framed(part, Rpc::SubscribeToTask).expect("an outbox");
+    assert!(
+        matches!(ob.head, Some(Head::Framed(5, _))) && ob.done,
+        "an error before any message ends the call with its status: {:?}",
+        ob.head
+    );
+}

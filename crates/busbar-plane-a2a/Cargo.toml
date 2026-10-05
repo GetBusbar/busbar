@@ -59,6 +59,8 @@ tracing = { workspace = true }
 # ProtoJSON mapping is pbjson's (`pbjson`; the well-known types are the plane's own, `src/wkt.rs`).
 prost = { workspace = true, features = ["derive"] }
 pbjson = { workspace = true }
+# The gRPC line's status details, written as gRPC writes a binary field (unpadded base64).
+base64 = { workspace = true }
 
 [build-dependencies]
 # The message and ProtoJSON code generators `build.rs` runs, and the protoc they drive.

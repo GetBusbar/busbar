@@ -394,6 +394,116 @@ pub fn event(frame: &str) -> Option<Result<Vec<u8>, Status>> {
     Some(from_result::<pb::StreamResponse>(result))
 }
 
+/// The reply head field the status details ride in, its value the details' base64 (unpadded, as
+/// gRPC writes a binary field): the grpc transport renders it into the trailers verbatim, beside the
+/// status it renders from the reply's status and the message it renders from the reply's bytes
+/// (ARCHITECT ruling Q2, 2026-10-04).
+pub const DETAILS_FIELD: &str = "grpc-status-details-bin";
+
+/// ONE REPLY ON THE gRPC LINE, as the plane states it to the grpc transport: the status in the
+/// line's own numbering (`0` = `OK`), the bytes (the response message on `OK`; the status message
+/// otherwise), and the details field's value when the status carries details.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reply {
+    /// The gRPC code.
+    pub code: u32,
+    /// The response message, or the status message.
+    pub body: Vec<u8>,
+    /// [`DETAILS_FIELD`]'s value.
+    pub details: Option<String>,
+}
+
+impl From<Status> for Reply {
+    fn from(status: Status) -> Self {
+        use base64::Engine as _;
+        let details = (!status.details.is_empty())
+            .then(|| base64::engine::general_purpose::STANDARD_NO_PAD.encode(&status.details));
+        Reply {
+            code: status.code as u32,
+            body: status.message.into_bytes(),
+            details,
+        }
+    }
+}
+
+impl Reply {
+    /// An `OK` reply carrying `message`.
+    #[must_use]
+    pub fn ok(message: Vec<u8>) -> Self {
+        Reply {
+            code: Code::Ok as u32,
+            body: message,
+            details: None,
+        }
+    }
+}
+
+/// The whole JSON-RPC answer `body` at neutral `status`, as the rpc's reply ([`answer`]).
+#[must_use]
+pub fn reply(rpc: Rpc, status: u32, body: &[u8]) -> Reply {
+    match answer(rpc, status, body) {
+        Ok(message) => Reply::ok(message),
+        Err(status) => status.into(),
+    }
+}
+
+/// A refusal the plane rendered as its JSON-RPC error envelope at neutral `status`, as the status
+/// the call ends with (the engine's bridge read the envelope its ingress answered the same way).
+#[must_use]
+pub fn refusal(envelope: &[u8], status: u32) -> Reply {
+    let error = serde_json::from_slice::<Value>(envelope)
+        .ok()
+        .and_then(|v| v.get("error").cloned());
+    match error {
+        Some(error) => status_for_error(&error, status).into(),
+        None => status_for_http(status).into(),
+    }
+}
+
+/// AN ANSWER IN EVENTS, as the messages it carries: every whole event-stream frame of `buf` that
+/// carries a result is one `StreamResponse` message, in order; an `error` frame (or a result the
+/// model refuses) ends the stream with its status, and nothing after it is read. A unary rpc
+/// answered in events was not a JSON-RPC answer to the engine's bridge: it ends with the status
+/// gRPC's HTTP mapping gives a `200`.
+#[must_use]
+pub fn events(rpc: Rpc, buf: &[u8]) -> (Vec<Vec<u8>>, Option<Status>) {
+    if !rpc.streams() {
+        return (Vec::new(), Some(status_for_http(200)));
+    }
+    let mut messages = Vec::new();
+    let mut rest = buf.to_vec();
+    while !rest.is_empty() {
+        let frame = take_frame(&mut rest).unwrap_or_else(|| {
+            let whole = std::mem::take(&mut rest);
+            String::from_utf8_lossy(&whole).into_owned()
+        });
+        match event(&frame) {
+            Some(Ok(message)) => messages.push(message),
+            Some(Err(status)) => return (messages, Some(status)),
+            None => {}
+        }
+    }
+    (messages, None)
+}
+
+/// The next complete event-stream frame in `buffered`, consumed from it: a frame ends at a blank
+/// line, in any of the three line-ending spellings the grammar allows (the engine's `take_frame`).
+fn take_frame(buffered: &mut Vec<u8>) -> Option<String> {
+    const TERMINATORS: [&[u8]; 3] = [b"\r\n\r\n", b"\n\n", b"\r\r"];
+    let (at, len) = TERMINATORS
+        .iter()
+        .filter_map(|t| {
+            buffered
+                .windows(t.len())
+                .position(|w| w == *t)
+                .map(|pos| (pos, t.len()))
+        })
+        .min_by_key(|(pos, len)| (*pos, std::cmp::Reverse(*len)))?;
+    let rest = buffered.split_off(at + len);
+    let frame = std::mem::replace(buffered, rest);
+    Some(String::from_utf8_lossy(&frame[..at]).into_owned())
+}
+
 /// The neutral status an event's error is read under (the engine read a stream's error at `500`).
 const STATUS_INTERNAL: u32 = 500;
 

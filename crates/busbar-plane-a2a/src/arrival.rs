@@ -421,9 +421,9 @@ pub enum Dialect {
     JsonRpc,
     /// The HTTP+JSON line: the AIP-193 document.
     RestJson,
-    /// The gRPC line: the JSON-RPC error envelope at the refusal's neutral status, which the grpc
-    /// transport maps to `grpc-status` and its trailers exactly as the engine's gRPC bridge maps
-    /// the envelope its ingress answered.
+    /// The gRPC line: the JSON-RPC error envelope, which the plane's refusal then reads as the
+    /// status the call ends with ([`crate::framed::refusal`]), exactly as the engine's gRPC bridge
+    /// read the envelope its ingress answered.
     Framed,
 }
 

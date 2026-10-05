@@ -962,7 +962,7 @@ mod both_ways {
         REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL,
     };
     use busbar_contract::abi::sdk::door::abi_str;
-    use busbar_plane_a2a::door::{self, DIALECT_DOCUMENT, DIALECT_TARGET};
+    use busbar_plane_a2a::door::{self, DIALECT_DOCUMENT, DIALECT_FRAMED, DIALECT_TARGET};
     use busbar_plane_a2a::{plane_door, MOUNT_PATH};
     use busbar_plugin_loader::dispatch::kinds::plane::{OwnedSnapshot, Plane};
     use busbar_plugin_loader::dispatch::{
@@ -1351,6 +1351,29 @@ mod both_ways {
             b"a gate said no",
         ));
 
+        // THE gRPC LINE: a call's one request message, the rpc its target names.
+        let service = format!("{}/{{method}}", busbar_plane_a2a::framed::SERVICE_PATH);
+        let grpc = ("POST", service.as_str());
+        let rpc = |name: &str| format!("{}/{name}", busbar_plane_a2a::framed::SERVICE_PATH);
+        let call = [Field {
+            name: abi_str("content-type"),
+            value: abi_str("application/grpc"),
+        }];
+        t.push(arrive(p, 8, grpc, &rpc("SendMessage"), &grpc_send(), &call).0);
+        let (line, words) = arrive(p, 9, grpc, &rpc("Nope"), b"", &call);
+        t.push(line);
+        t.push(refuse(p, REFUSAL_ARRIVE, 0, DIALECT_FRAMED, &words));
+        let (line, words) = arrive(p, 10, grpc, &rpc("GetTask"), &[0xff, 0xff, 0xff], &call);
+        t.push(line);
+        t.push(refuse(p, REFUSAL_ARRIVE, 0, DIALECT_FRAMED, &words));
+        t.push(refuse(
+            p,
+            REFUSAL_KERNEL,
+            429,
+            DIALECT_FRAMED,
+            b"this key is over its budget",
+        ));
+
         // THE HOOK VIEW.
         t.push(project(p, 2, agent, &agent_target, SEND, None));
         t.push(project(p, 4, rest_send, &send_route, REST_SEND, None));
@@ -1372,7 +1395,28 @@ mod both_ways {
             b"",
             None,
         ));
+        t.push(project(p, 8, grpc, &rpc("SendMessage"), &grpc_send(), None));
         t
+    }
+
+    /// A `SendMessage` call's request message, as a gRPC client encodes it.
+    fn grpc_send() -> Vec<u8> {
+        use busbar_plane_a2a::proto::pb;
+        use prost::Message as _;
+        pb::SendMessageRequest {
+            message: Some(pb::Message {
+                message_id: "m3".into(),
+                context_id: "ctx-11".into(),
+                role: pb::Role::User as i32,
+                parts: vec![pb::Part {
+                    content: Some(pb::part::Content::Text("hi".into())),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+        .encode_to_vec()
     }
 
     // ── the doors ────────────────────────────────────────────────────────────────────────────────
@@ -1462,6 +1506,54 @@ mod both_ways {
             "a gate's veto wears the hook's own words: {}",
             line(&t, "refusal cause=1 ")
         );
+        // THE gRPC LINE: a call arrives on the framed dialect; a method the service does not have
+        // is UNIMPLEMENTED with no message, a message that does not read INTERNAL, a kernel
+        // refusal the status the engine's bridge read off its envelope (`-32004`, UNIMPLEMENTED),
+        // each with no media type.
+        let sent = line(&t, "arrive 8 ");
+        assert!(
+            sent.contains(&format!("{:?}", Outcome::Ready))
+                && sent.contains(&format!("dialect={DIALECT_FRAMED} ")),
+            "{sent}"
+        );
+        let framed: Vec<&String> = t
+            .iter()
+            .filter(|l| {
+                l.starts_with("refusal cause=")
+                    && l.contains(&format!(" dialect={DIALECT_FRAMED} "))
+            })
+            .collect();
+        assert_eq!(framed.len(), 3, "{framed:#?}");
+        assert!(
+            framed[0].contains(" status=12 ") && framed[0].ends_with("[] "),
+            "{}",
+            framed[0]
+        );
+        assert!(
+            framed[1].contains(" status=13 ") && framed[1].contains("[] "),
+            "{}",
+            framed[1]
+        );
+        assert!(
+            framed[2].contains(" status=12 ") && framed[2].ends_with("this key is over its budget"),
+            "{}",
+            framed[2]
+        );
+    }
+
+    /// `project` on the gRPC line: the view of the JSON-RPC request the call's message composed.
+    #[test]
+    fn project_on_the_grpc_line_views_the_composed_request() {
+        let d = Dispatcher::new(DispatchConfig::default());
+        let t = script(&linked(&d));
+        let projected = line(&t, "project 8 ");
+        let body = body_of(projected);
+        assert_eq!(body["tool"], "SendMessage", "{projected}");
+        assert_eq!(
+            body["arguments"]["message"]["messageId"], "m3",
+            "{projected}"
+        );
+        assert!(projected.contains("session=ctx-11"), "{projected}");
     }
 
     /// `project`: the `{tool, arguments}` view of the request (the envelope the HTTP+JSON line's

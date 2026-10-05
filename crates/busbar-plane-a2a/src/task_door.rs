@@ -371,17 +371,19 @@ pub fn on_piece(
     mut out: Out<'_, OnPieceOut>,
 ) -> Option<Outcome> {
     let unit = input.get().unit;
-    let (verb, rest, composed, addressed, section, generation) = plane.units.with(&unit, |u| {
-        let u = u?;
-        Some((
-            verb_of(&u.disposition)?,
-            std::mem::take(&mut u.pass.rest),
-            u.envelope.clone(),
-            u.agent.clone(),
-            u.section.clone(),
-            u.generation,
-        ))
-    })?;
+    let (verb, rest, composed, framed, addressed, section, generation) =
+        plane.units.with(&unit, |u| {
+            let u = u?;
+            Some((
+                verb_of(&u.disposition)?,
+                std::mem::take(&mut u.pass.rest),
+                u.envelope.clone(),
+                u.framed,
+                u.agent.clone(),
+                u.section.clone(),
+                u.generation,
+            ))
+        })?;
     // The next window of a reply already answered.
     if !rest.is_empty() {
         return Some(window(plane, unit, &input, &mut out, (0, &rest), &[]));
@@ -462,18 +464,36 @@ pub fn on_piece(
             u.pass.served = served;
         }
     });
-    let body = match composed {
-        Some(_) => crate::rest::reframe(answer.status, &answer.body),
-        None => answer.body,
+    let done = match (framed, composed) {
+        // The gRPC line: the rpc's message, or the status the call ends with.
+        (Some(rpc), _) => framed_window(
+            plane,
+            unit,
+            &input,
+            &mut out,
+            &crate::framed::reply(rpc, answer.status, &answer.body),
+            &writes,
+        ),
+        (None, Some(_)) => window(
+            plane,
+            unit,
+            &input,
+            &mut out,
+            (
+                answer.status,
+                &crate::rest::reframe(answer.status, &answer.body),
+            ),
+            &writes,
+        ),
+        (None, None) => window(
+            plane,
+            unit,
+            &input,
+            &mut out,
+            (answer.status, &answer.body),
+            &writes,
+        ),
     };
-    let done = window(
-        plane,
-        unit,
-        &input,
-        &mut out,
-        (answer.status, &body),
-        &writes,
-    );
     if done == Outcome::Ready {
         plane.units.with(&unit, |u| {
             if let Some(u) = u {
@@ -522,6 +542,60 @@ fn window_with(
     writes: &[Write],
     head: &[(&str, &str)],
 ) -> Outcome {
+    let first = (status != 0).then_some(Head {
+        fields: head,
+        length: true,
+    });
+    window_core(plane, unit, input, out, (status, body), writes, first)
+}
+
+/// A WHOLE REPLY ON THE gRPC LINE ([`crate::framed::Reply`]): its status in the line's own
+/// numbering (`0` = `OK`), its details field when it has one, and no media type and no length (the
+/// grpc transport frames).
+fn framed_window(
+    plane: &A2aDoor,
+    unit: u64,
+    input: &Lent<'_, OnPieceIn>,
+    out: &mut Out<'_, OnPieceOut>,
+    reply: &crate::framed::Reply,
+    writes: &[Write],
+) -> Outcome {
+    let details: Vec<(&str, &str)> = reply
+        .details
+        .as_deref()
+        .map(|d| (crate::framed::DETAILS_FIELD, d))
+        .into_iter()
+        .collect();
+    window_core(
+        plane,
+        unit,
+        input,
+        out,
+        (reply.code, &reply.body),
+        writes,
+        Some(Head {
+            fields: &details,
+            length: false,
+        }),
+    )
+}
+
+/// The first window's head: its fields, and whether it states its length.
+struct Head<'h> {
+    fields: &'h [(&'h str, &'h str)],
+    length: bool,
+}
+
+/// One window: on the first (`first`), its head; then as many bytes as the reply buffer holds.
+fn window_core(
+    plane: &A2aDoor,
+    unit: u64,
+    input: &Lent<'_, OnPieceIn>,
+    out: &mut Out<'_, OnPieceOut>,
+    (status, body): (u32, &[u8]),
+    writes: &[Write],
+    first: Option<Head<'_>>,
+) -> Outcome {
     let (mut reply, mut fields, mut records, mut arena, mut units) = (
         input.reply_buf(),
         input.fields_buf(),
@@ -539,8 +613,8 @@ fn window_with(
             amount: 1,
         });
     }
-    if status != 0 {
-        for (name, value) in head {
+    if let Some(head) = &first {
+        for (name, value) in head.fields {
             fields.push(OutField {
                 name: arena.span(name.as_bytes()),
                 value: arena.span(value.as_bytes()),
@@ -548,10 +622,12 @@ fn window_with(
         }
         // A whole answer states its length, so it is sent under it (never chunked), as the
         // engine sent its buffered JSON answer.
-        fields.push(OutField {
-            name: arena.span(crate::plane_door::H_CONTENT_LENGTH.as_bytes()),
-            value: arena.span(body.len().to_string().as_bytes()),
-        });
+        if head.length {
+            fields.push(OutField {
+                name: arena.span(crate::plane_door::H_CONTENT_LENGTH.as_bytes()),
+                value: arena.span(body.len().to_string().as_bytes()),
+            });
+        }
     }
     for w in writes {
         records.push(RecordWrite {
@@ -740,7 +816,7 @@ pub fn card_piece(
 ) -> Outcome {
     use crate::served_card::{self as served, OWN_CARD_CACHE_CONTROL, OWN_CARD_MEDIA_TYPE};
     let unit = input.get().unit;
-    let Some((rest, answered, agent, section, generation, issued, rpc, composed)) =
+    let Some((rest, answered, agent, section, generation, issued, rpc, composed, framed)) =
         plane.units.with(&unit, |u| {
             u.map(|u| {
                 let rpc = match &u.disposition {
@@ -756,6 +832,7 @@ pub fn card_piece(
                     u.pass.issued,
                     rpc,
                     u.envelope.is_some(),
+                    u.framed,
                 )
             })
         })
@@ -801,6 +878,18 @@ pub fn card_piece(
                 &public_url,
                 rpc,
             );
+            // The gRPC line: the card's message, or the status the call ends with.
+            if let Some(rpc) = framed {
+                let seq = signer.seq;
+                plane.units.with(&unit, |u| {
+                    if let Some(u) = u {
+                        u.pass.answered = true;
+                        u.pass.issued = seq;
+                    }
+                });
+                let reply = crate::framed::reply(rpc, status, &body);
+                return framed_window(plane, unit, &input, &mut out, &reply, &[]);
+            }
             let body = if composed {
                 crate::rest::reframe(status, &body)
             } else {

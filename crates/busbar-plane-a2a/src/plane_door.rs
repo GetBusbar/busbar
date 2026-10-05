@@ -105,6 +105,10 @@ pub struct Unit {
     /// what its unit answers and relays in place of the caller's body, its answers re-framed for
     /// the line ([`crate::rest::reframe`]). `None` on the JSON-RPC line.
     pub envelope: Option<Vec<u8>>,
+    /// The rpc a gRPC-line arrival called ([`crate::framed`]): its `envelope` is the JSON-RPC request
+    /// the call's message composed, and its answers are transcoded back to the rpc's messages and
+    /// status. `None` on every other line.
+    pub framed: Option<crate::framed::Rpc>,
     /// The refresh generation it arrived under: the held cards it reads are that generation's.
     pub generation: u64,
 }
@@ -231,6 +235,8 @@ struct Outbox {
     at: usize,
     /// The record writes that ride with the head.
     writes: Vec<Write>,
+    /// On the gRPC line: the messages after `bytes`, each emitted on an answer of its own.
+    queue: std::collections::VecDeque<Vec<u8>>,
 }
 
 /// The head an answer starts with.
@@ -242,6 +248,9 @@ enum Head {
     Reply(u32, &'static str),
     /// The caller's reply in events: `200`, an event stream nothing may cache.
     Events,
+    /// The caller's reply on the gRPC line: its status in the line's own numbering (`0` = `OK`) and
+    /// the status details' field value ([`crate::framed::Reply`]).
+    Framed(u32, Option<String>),
 }
 
 /// The head field a whole answer states its length in.
@@ -283,7 +292,58 @@ impl Outbox {
             bytes,
             at: 0,
             writes: Vec::new(),
+            queue: std::collections::VecDeque::new(),
         })
+    }
+
+    /// The outbox for `answer` on the gRPC line, the rpc `rpc` (the engine's bridge): a whole
+    /// answer is the rpc's one message, or the status it ends with; an answer in events is one
+    /// message per event, each on an answer of its own, an `error` event ending the stream (with its
+    /// status when no message went before it). Everything bound for the far end is as on the
+    /// JSON-RPC line.
+    fn framed(answer: Answer, rpc: crate::framed::Rpc) -> Option<Self> {
+        match answer {
+            Answer::ToCaller(r) => Some(Self::framed_whole(crate::framed::reply(
+                rpc, r.status, &r.body,
+            ))),
+            Answer::Part(part) => {
+                let (messages, terminal) = crate::framed::events(rpc, &part.body);
+                if let Some(status) = terminal.clone() {
+                    if part.head && messages.is_empty() {
+                        return Some(Self::framed_whole(status.into()));
+                    }
+                }
+                let mut queue: std::collections::VecDeque<Vec<u8>> = messages.into();
+                let bytes = queue.pop_front().unwrap_or_default();
+                Some(Outbox {
+                    live: true,
+                    recall: false,
+                    to_far: false,
+                    done: part.last || terminal.is_some(),
+                    head: part.head.then_some(Head::Framed(0, None)),
+                    bytes,
+                    at: 0,
+                    writes: Vec::new(),
+                    queue,
+                })
+            }
+            other => Self::of(other),
+        }
+    }
+
+    /// A whole reply on the gRPC line.
+    fn framed_whole(reply: crate::framed::Reply) -> Self {
+        Outbox {
+            live: true,
+            recall: false,
+            to_far: false,
+            done: true,
+            head: Some(Head::Framed(reply.code, reply.details)),
+            bytes: reply.body,
+            at: 0,
+            writes: Vec::new(),
+            queue: std::collections::VecDeque::new(),
+        }
     }
 }
 
@@ -389,6 +449,23 @@ fn refused(out: &mut Out<'_, ArriveOut>, refusal: &arrival::Refusal) -> Outcome 
 
 /// REFUSED: no line of this door serves the arrival yet. TRANSITIONAL: the gRPC and open lines
 /// are filled when the kernel's plane driver serves the door's request path.
+/// The status a gRPC call is refused with at its arrival, as the refusal its line renders it from
+/// (the JSON-RPC code [`crate::framed::grpc_code`] maps back to it, and its message).
+fn framed_refusal(status: &crate::framed::Status) -> arrival::Refusal {
+    use crate::framed::Code;
+    let code = match status.code() {
+        Code::Unimplemented => -32601,
+        Code::InvalidArgument => arrival::CODE_INVALID_PARAMS,
+        _ => -32603,
+    };
+    arrival::Refusal {
+        status: arrival::STATUS_BAD_REQUEST,
+        id: None,
+        code,
+        message: status.message().to_string(),
+    }
+}
+
 fn unserved(out: &mut Out<'_, ArriveOut>) -> Outcome {
     out.set(|o| &o.refusal, UNSERVED);
     out.set(|o| &o.refusal_status, STATUS_NOT_FOUND);
@@ -560,18 +637,30 @@ slot!(
         };
         let target = input.field(|i| &i.target).as_str().unwrap_or_default();
         let body = input.field(|i| &i.body).bytes();
-        let (dialect, envelope) = match door::line_of(route) {
-            Line::Document => (door::DIALECT_DOCUMENT, None),
+        let (dialect, envelope, framed) = match door::line_of(route) {
+            Line::Document => (door::DIALECT_DOCUMENT, None, None),
             Line::Target => match crate::rest::compose(route, target, body) {
-                Ok(Some(envelope)) => (door::DIALECT_TARGET, Some(envelope)),
+                Ok(Some(envelope)) => (door::DIALECT_TARGET, Some(envelope), None),
                 Ok(None) => return unserved(&mut out),
                 Err(refusal) => return refused(&mut out, &refusal),
             },
             Line::Open => return arrive_card(plane, route, target, given.unit, &mut out),
-            Line::Framed => return unserved(&mut out),
+            // THE gRPC LINE (the engine's `grpc.rs`): the rpc the target names, its one request
+            // message composed as the v1.0 JSON-RPC request it is, served from there as the
+            // JSON-RPC line serves its own; a method the service does not have, or a message that
+            // does not read, is refused in the status the service answered it with.
+            Line::Framed => {
+                let Some(rpc) = crate::framed::Rpc::of_target(target) else {
+                    return refused(&mut out, &framed_refusal(&crate::framed::unimplemented()));
+                };
+                match crate::framed::compose(rpc, body) {
+                    Ok(envelope) => (door::DIALECT_FRAMED, Some(envelope), Some(rpc)),
+                    Err(status) => return refused(&mut out, &framed_refusal(&status)),
+                }
+            }
         };
         let fields = input.fields();
-        let disposition = arrival::decide(envelope.as_deref().unwrap_or(body), |name| {
+        let field = |name: &str| {
             fields
                 .iter()
                 .find(|f| {
@@ -580,7 +669,24 @@ slot!(
                         .is_ok_and(|n| n.eq_ignore_ascii_case(name))
                 })
                 .and_then(|f| f.field(|f| &f.value).as_str().ok())
-        });
+        };
+        let disposition = match framed {
+            // A gRPC call is read as the engine's bridge read it (`Wire::for_grpc`): no media type
+            // and no `Origin` to judge, and the version its `a2a-version` names, `1.0` when it
+            // names none.
+            Some(_) => arrival::decide(envelope.as_deref().unwrap_or(body), |name| {
+                if name.eq_ignore_ascii_case(arrival::H_VERSION) {
+                    field(name).or(Some(crate::framed::DEFAULT_VERSION))
+                } else if name.eq_ignore_ascii_case(arrival::H_CONTENT_TYPE)
+                    || name.eq_ignore_ascii_case(arrival::H_ORIGIN)
+                {
+                    None
+                } else {
+                    field(name)
+                }
+            }),
+            None => arrival::decide(envelope.as_deref().unwrap_or(body), field),
+        };
         if let Disposition::Refused(refusal) = &disposition {
             return refused(&mut out, refusal);
         }
@@ -630,6 +736,7 @@ slot!(
                     hop: None,
                     pass: crate::task_door::Pass::default(),
                     envelope,
+                    framed,
                     generation,
                 },
             );
@@ -673,6 +780,7 @@ slot!(
             hop,
             pass: crate::task_door::Pass::default(),
             envelope,
+            framed,
             generation,
         };
         keep(&plane.units, MAX_UNITS, given.unit, unit);
@@ -738,6 +846,7 @@ fn arrive_card(
             hop: None,
             pass: crate::task_door::Pass::default(),
             envelope: None,
+            framed: None,
             generation,
         },
     );
@@ -1114,7 +1223,8 @@ fn piece(
         .and_then(|s| s.agents.get(member))
         .cloned();
     let addressed = unit.agent.clone();
-    let target_line = unit.envelope.is_some();
+    let framed = unit.framed;
+    let target_line = unit.envelope.is_some() && framed.is_none();
     let pass = &mut unit.pass;
     let Some(hop) = unit.hop.as_mut() else {
         return (Outcome::Refused, false);
@@ -1219,7 +1329,11 @@ fn piece(
                 })
             }
         };
-        let Some(outbox) = Outbox::of(for_line(answer, target_line)) else {
+        let outbox = match framed {
+            Some(rpc) => Outbox::framed(answer, rpc),
+            None => Outbox::of(for_line(answer, target_line)),
+        };
+        let Some(outbox) = outbox else {
             return (Outcome::Refused, false);
         };
         hop.outbox = outbox;
@@ -1291,6 +1405,14 @@ fn piece(
             head_fields(&EVENTS_HEAD.map(|(name, value)| (name, value.to_string())));
             status = relay::STATUS_OK;
         }
+        // The gRPC line's head carries no media type and no length (the grpc transport frames):
+        // its status, and the status details when there are any.
+        Some(Head::Framed(code, details)) => {
+            if let Some(details) = details {
+                head_fields(&[(crate::framed::DETAILS_FIELD, details.clone())]);
+            }
+            status = *code;
+        }
         None => {}
     }
     for w in &ob.writes {
@@ -1320,6 +1442,13 @@ fn piece(
     }
     let n = reply.stream(&ob.bytes[ob.at..]);
     ob.at += n;
+    // The gRPC line's next message, once this one is written: emitted on an answer of its own.
+    if ob.at >= ob.bytes.len() {
+        if let Some(next) = ob.queue.pop_front() {
+            ob.bytes = next;
+            ob.at = 0;
+        }
+    }
     ob.head = None;
     ob.writes.clear();
     ob.recall = false;
@@ -1458,13 +1587,38 @@ slot!(
             let text = std::str::from_utf8(text).unwrap_or_default();
             arrival::render(dialect, &arrival::kernel_refusal(given.status, text), false)
         };
+        // ON THE gRPC LINE the rendered envelope is the status the call ends with, as the engine's
+        // bridge read its ingress's envelope: the status in the line's own numbering, its message
+        // as the reply's bytes, its details as the details field.
+        let (body, head, status) = if dialect == Dialect::Framed {
+            let neutral = if rendered.status == 0 {
+                given.status
+            } else {
+                rendered.status
+            };
+            let reply = crate::framed::refusal(&rendered.body, neutral);
+            let head = reply
+                .details
+                .map(|d| (crate::framed::DETAILS_FIELD, d))
+                .into_iter()
+                .collect::<Vec<_>>();
+            (reply.body, head, reply.code)
+        } else {
+            (
+                rendered.body,
+                vec![("content-type", rendered.content_type.to_string())],
+                rendered.status,
+            )
+        };
         let (mut reply, mut fields, mut arena) =
             (input.reply_buf(), input.fields_buf(), input.arena_buf());
-        reply.extend(&rendered.body);
-        fields.push(OutField {
-            name: arena.span(b"content-type"),
-            value: arena.span(rendered.content_type.as_bytes()),
-        });
+        reply.extend(&body);
+        for (name, value) in &head {
+            fields.push(OutField {
+                name: arena.span(name.as_bytes()),
+                value: arena.span(value.as_bytes()),
+            });
+        }
         let short = !(reply.fits() && fields.fits() && arena.fits());
         let (rw, rnd) = reply.settle(short);
         let (fw, fnd) = fields.settle(short);
@@ -1478,7 +1632,7 @@ slot!(
         if short {
             return Outcome::Failed;
         }
-        out.set(|o| &o.status, rendered.status);
+        out.set(|o| &o.status, status);
         Outcome::Ready
     }
 );
@@ -2338,7 +2492,19 @@ slot!(
                 Ok(Some(envelope)) => envelope,
                 _ => return Outcome::Refused,
             },
-            Line::Framed | Line::Open => return Outcome::Refused,
+            // The gRPC line projects the JSON-RPC request its call's message composed at arrival.
+            Line::Framed => {
+                let composed = instance.get().and_then(|plane| {
+                    plane
+                        .units
+                        .with(&input.get().unit, |u| u.and_then(|u| u.envelope.clone()))
+                });
+                match composed {
+                    Some(envelope) => envelope,
+                    None => return Outcome::Refused,
+                }
+            }
+            Line::Open => return Outcome::Refused,
         };
         let rewrite = input.field(|i| &i.rewrite).bytes();
         let applied = (!rewrite.is_empty())
@@ -2356,9 +2522,11 @@ slot!(
                 if let Some(plane) = instance.get() {
                     plane.units.with(&input.get().unit, |u| {
                         if let Some(u) = u {
-                            let target_line = u.envelope.is_some();
+                            // A line that composed its request relays the composition, so the
+                            // rewrite is what it relays (the HTTP+JSON and gRPC lines).
+                            let composed = u.envelope.is_some();
                             if let Some(hop) = u.hop.as_mut() {
-                                if target_line {
+                                if composed {
                                     hop.relay.send_instead(bytes.clone());
                                 }
                                 hop.rewritten = Some(value.clone());
