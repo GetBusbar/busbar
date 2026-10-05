@@ -966,23 +966,21 @@ pub use exports::BUSBAR_COLD_ENTRY;
 
 /// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a build that links this store registers onto the
 /// cold-kind axis — the same row a dropped-in store takes, opened in process. `STORE` is
-/// `(name, ephemeral, default, open, door)`: the name `governance.store` selects it by, its
-/// statement that what it holds is lost on restart, its claim to be the governance store a
-/// deployment that configures none runs on, the open handed the row's configuration (this backend
-/// reads none), and its store v3 door, which boot opens it through (the store axis).
-/// The composition root resolves the default from the linked rows' claims; two claims refuse boot.
+/// `(name, ephemeral, open, door)`: the name `store.module` selects it by, its statement that what it
+/// holds is lost on restart, the open handed the row's configuration (this backend reads none), and
+/// its store v3 door, which boot opens it through (the store axis). It claims no default: a config
+/// names its store (Q-STORE = (B)).
 pub mod linked {
     /// An in-process store row's open.
     pub type Open = fn(&str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String>;
 
-    /// `(name, ephemeral, default, open, door)`.
+    /// `(name, ephemeral, open, door)`.
     pub const STORE: (
         &str,
         bool,
-        bool,
         Open,
         busbar_contract::abi::mechanism::door::DoorFn,
-    ) = ("memory", true, true, super::open, super::door);
+    ) = ("memory", true, super::open, super::door);
 }
 
 mod v3;

@@ -2606,50 +2606,6 @@ advanced:
         bare.advanced.usage_flush_interval_ms,
         DEFAULT_USAGE_FLUSH_INTERVAL_MS
     );
-    // StoreCfg's own module default is the linked row that declares itself the default.
-    let declaring = crate::preflight::root_rows()
-        .stores
-        .iter()
-        .find(|s| s.2)
-        .map(|s| s.0);
-    let default = declaring.expect("the stand-in store row claims the default");
-    assert_eq!(StoreCfg::default().module, default);
-}
-
-/// STORE-DEFAULT — AN OMITTED `store.module` READS BACK AS THE DEFAULT ROW'S NAME, byte-identical to a
-/// config that names it. The kernel holds no store name: the default is the linked row that declares
-/// itself the default (read here off the rows' own claims), so the readback of
-/// `store: {settings: ...}`, of a `StoreCfg::default()` and of `store: {module: <that name>}` are one
-/// document.
-///
-/// RED when the default stops reading the declaring row (an empty or other name): the first
-/// assertion names the module an omitted one read as.
-#[test]
-fn an_omitted_store_module_reads_back_as_the_declaring_row() {
-    let declaring = crate::preflight::root_rows()
-        .stores
-        .iter()
-        .find(|s| s.2)
-        .map(|s| s.0);
-    let default = declaring.expect("the stand-in store row claims the default");
-    let omitted: DeployCfg =
-        serde_yaml::from_str("providers: {}\nmodels: {}\nstore:\n  settings: {}\n")
-            .expect("a store block without a module parses");
-    let named: DeployCfg = serde_yaml::from_str(&format!(
-        "providers: {{}}\nmodels: {{}}\nstore:\n  module: {default}\n  settings: {{}}\n"
-    ))
-    .expect("a store block naming the default parses");
-    let omitted = omitted.store.expect("store block");
-    assert_eq!(
-        omitted.module, default,
-        "the omitted module reads as the default row"
-    );
-    let readback = |s: &StoreCfg| serde_json::to_string(s).expect("store block serializes");
-    assert_eq!(
-        readback(&omitted),
-        readback(&named.store.expect("store block"))
-    );
-    assert_eq!(readback(&omitted), readback(&StoreCfg::default()));
 }
 
 // ── resolve(): hook-registry synthesis + admin_auth projection ───────────────────────────────────

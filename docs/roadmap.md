@@ -118,7 +118,7 @@ the next **auth adapters** on a seam that already exists.
   truth, leaving the other section's runtime mutations untouched.
 - **Enforcement is always on.** There is no `governance:` block or enabled switch. Enforcement is
   always present and simply inert until keys are minted, so a default deploy behaves as "off" did
-  with the same RAM. Durability is a choice via the top-level `store:` block (`memory` default;
+  with the same RAM. Durability is a choice via the top-level `store:` block (required in 1.6.0; `module: memory` is ephemeral RAM;
   durable backends load as signed plugins).
 - **Dynamic plugins.** Store, auth, and hook backends can load from a signed `.tar.gz` at boot over
   a versioned C ABI, gated by the `plugins.*` block (off by default, ed25519 signature verification

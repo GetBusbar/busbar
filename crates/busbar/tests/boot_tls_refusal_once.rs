@@ -52,6 +52,7 @@ fn a_tls_material_refusal_names_the_listener_once() {
 admin_listen: "127.0.0.1:0"
 advanced:
   allow_destinations: ["127.0.0.1"]
+store: {{module: memory}}
 tls:
   cert: {{ env: BOOT_TLS_ONCE_CERT }}
   key: {{ env: BOOT_TLS_ONCE_KEY }}

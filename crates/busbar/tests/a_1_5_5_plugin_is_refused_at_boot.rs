@@ -64,7 +64,7 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
         dir.join("config.yaml"),
         format!(
             "listen: \"127.0.0.1:{data_port}\"\nadmin_listen: \"127.0.0.1:{admin_port}\"\n\
-             admin_require_mtls: false\nplugins:\n  enabled: true\n  dir: '{}'\n  trust:\n    \
+             admin_require_mtls: false\nstore: {{module: memory}}\nplugins:\n  enabled: true\n  dir: '{}'\n  trust:\n    \
              allow_unsigned: true\nproviders:\n  mock:\n    api_key: {{ env: MOCK_KEY }}\n\
              models:\n  test-model:\n    provider: mock\n",
             dir.join("plugins").display()

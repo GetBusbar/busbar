@@ -163,9 +163,11 @@ from the token ledger × the current `rate_card` + the flat `per_request_fee`. M
 
 ---
 
-## 5. Store: durable backends are signed plugins; `memory` is the default
+## 5. Store: durable backends are signed plugins; `memory` is the compiled-in one
 
-The default store is now `memory`, the compiled-in **ephemeral** RAM store (keys, usage, audit
+> **1.6.0 update:** the `store:` block is now **required**. `busbar --validate` refuses a config without it, and `busbar --migrate-config` inserts `store: {module: memory}`. See [Migrating to 1.6.0](migration-1.6.md#the-store-block-is-required).
+
+In 1.5.x the store defaulted to `memory`, the compiled-in **ephemeral** RAM store (keys, usage, audit
 reset on restart). Every durable backend (`sqlite` / `postgres` / `valkey`) is a signed plugin
 tarball loaded through `plugins`, so it requires `plugins.enabled: true` and the tarball in
 `plugins.dir`.
@@ -174,7 +176,7 @@ tarball loaded through `plugins`, so it requires `plugins.enabled: true` and the
 # 1.5.0
 plugins: { enabled: true, dir: /etc/busbar/plugins }
 store:
-  module: postgres                                 # or sqlite / valkey, or memory (default)
+  module: postgres                                 # or sqlite / valkey, or memory
   settings: { url: "postgres://user:pass@host/busbar" }
 ```
 
@@ -262,7 +264,7 @@ Along with the above, these one-name-each renames are enforced (unknown keys fai
 - [ ] 1.4.x `hooks:` REGISTRY + `socket`/`webhook` transports → a 1.5.3 `hooks:` DEFINITION map of `kind: hook` plugins (`busbar-hook-webrequest` for the HTTP sidecar), referenced by bare name
 - [ ] `governance:` → `groups:` + `rate_card:` + `per_request_fee:` + `store:`
 - [ ] per-key `rpm_limit`/`tpm_limit`/`max_budget_cents`/`budget_period` → group `limits:`
-- [ ] durable store → `store: { module: sqlite|postgres|valkey }` + `plugins.enabled: true` (default is ephemeral `memory`)
+- [ ] durable store → `store: { module: sqlite|postgres|valkey }` + `plugins.enabled: true` (`store:` is required in 1.6.0; `store: {module: memory}` is ephemeral)
 - [ ] tls `cert_file`/`key_file`/`client_ca_file` → `cert`/`key`/`client_ca` secret references
 - [ ] provider `api_key_env:` → `api_key: { env: VAR }`
 - [ ] `busbar --validate`, then **re-mint every virtual key** (1.4.x keys no longer authenticate)

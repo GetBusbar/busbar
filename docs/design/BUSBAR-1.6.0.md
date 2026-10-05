@@ -4224,6 +4224,9 @@ This is signed by the owner as a customer-visible change vs 1.5.5, with its reas
   - the migration corpus gets a no-store fixture;
   - the docs.
 
+### 2026-10-04 — OWNER RULED Q-STEP7-a: the oracle baseline names its store; one accepted difference (#46)
+The owner approved D1 ("Approve D1") and signed D2 ("Sign #46") of 1.6.0-QUESTIONS.md Q-STEP7-a, which settles the oracle follow-through above. D1: every config the oracle hands a binary names `store: {module: memory}`, the store 1.5.5 ran an absent block on, so every 1.5.5 golden stays the 1.5.5 answer; nothing is re-recorded or blessed. Per the ARCHITECT ruling of the same day it is injected at run time (busbar-release `recorder/store_baseline.rs`), never into a stored cell definition, so the golden stays add-only. D2: the cells that move because of Q-STORE = (B) are exactly the 78 `config.migrate|<tag>|migrate` cells, forgiven by the one `breaking` entry "Q-STORE migrate names the store" with its CHANGELOG line. This replaces the "entries for every cell whose config lacks `store:`" item above, which would have forgiven the whole oracle.
+
 ### 2026-09-27 — OWNER MONEY MODEL (confirmed; matches #77)
 - Planes report WHAT UNITS WERE DONE, e.g. `output_tokens = 1`. The kernel WRITES that to the ledger as reported ("what the plane says it did, it did").
 - SEPARATELY, money and spend are computed by reading the ledger and applying the associated rate card. This is a generic read-time conversion (#77(3)); price is never stored.

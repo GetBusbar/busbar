@@ -1672,8 +1672,8 @@ impl AdminService {
 }
 
 /// THE LINKED STORE ROWS of the store catalog: one `compiled-in` row per store this build links, in
-/// the root's table order (the declared default among them). Read off the kernel's installed root
-/// rows, so admin names no store instance.
+/// the root's table order (none a default: a config names its store, Q-STORE = (B)). Read off the
+/// kernel's installed root rows, so admin names no store instance.
 fn linked_store_rows() -> Vec<PluginView> {
     let stores = busbar_kernel::preflight::root_rows().stores;
     let row = |s: &busbar_kernel::preflight::LinkedStore| {

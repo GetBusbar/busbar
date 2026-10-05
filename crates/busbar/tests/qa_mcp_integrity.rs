@@ -331,6 +331,7 @@ async fn boot(tag: &str, upstream: &Upstream, approved_digest: &str) -> Node {
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
+store: {{module: memory}}
 providers: {{}}
 models: {{}}
 pools: {{}}

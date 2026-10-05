@@ -523,9 +523,17 @@ pub fn derive_scopes(root: &Path) -> Vec<Json> {
                 if name == SPLIT_CRATE {
                     // The binary crate's production code is two very different things — the
                     // composition root and the entry point — and one scope over both would let a
-                    // clean read of one stand in for the other.
+                    // clean read of one stand in for the other. The entry point's scope is the REST
+                    // of `src/`, not the one file `main.rs`: the build-stamp derivation and the
+                    // linked-table generator that `build.rs` `include!`s sit beside it, and a scope
+                    // addressed at a single file left both of them, and any file added next to
+                    // them, in no scope at all.
                     prod.push(scope(&format!("{base}/src/root"), "production", &[]));
-                    prod.push(scope(&format!("{base}/src/main.rs"), "production", &[]));
+                    prod.push(scope(
+                        &format!("{base}/src"),
+                        "production",
+                        &[format!("{base}/src/root"), format!("{base}/src/tests")],
+                    ));
                 } else {
                     prod.push(scope(
                         &format!("{base}/src"),
@@ -540,7 +548,9 @@ pub fn derive_scopes(root: &Path) -> Vec<Json> {
             if root.join(&base).join("build.rs").exists() {
                 prod.push(scope(&format!("{base}/build.rs"), "production", &[]));
             }
-            for sub in ["tests", "benches"] {
+            // `examples/` is code cargo builds (`cargo test` compiles every example) and ships in no
+            // binary: the same footing as a bench.
+            for sub in CRATE_TEST_DIRS {
                 if root.join(&base).join(sub).is_dir() {
                     tests.push(scope(&format!("{base}/{sub}"), "test", &[]));
                 }
@@ -557,6 +567,12 @@ pub fn derive_scopes(root: &Path) -> Vec<Json> {
     }
     if root.join("xtask/src/tests").is_dir() {
         tests.push(scope("xtask/src/tests", "test", &[]));
+    }
+    for sub in CRATE_TEST_DIRS {
+        let p = format!("xtask/{sub}");
+        if root.join(&p).is_dir() {
+            tests.push(scope(&p, "test", &[]));
+        }
     }
 
     for p in INSTRUMENT_PATHS {
@@ -601,9 +617,114 @@ pub fn derive_scopes(root: &Path) -> Vec<Json> {
         ));
     }
 
+    // THE REMAINDER. Every rule above is a shape somebody anticipated, and a tracked file in a
+    // shape nobody anticipated — a crate's `dialects/` tables, a C header under `include/`, a new
+    // top-level directory — fell into no scope and stayed there: coverage read RED with no scope
+    // `sync` could ever add to fix it. Each such file now gets a scope at the LARGEST directory
+    // that holds it and contains no scope already derived, so the remainder never overlaps a
+    // placed scope and never needs an exclude. Read from the tracked set, never from the disk: an
+    // untracked `target/` must not become a scope that owns nothing.
+    let placed: Vec<String> = prod
+        .iter()
+        .chain(&tests)
+        .chain(&inst)
+        .flat_map(|s| str_list(s.get("paths")))
+        .collect();
+    let owned = |f: &str| {
+        prod.iter()
+            .chain(&tests)
+            .chain(&inst)
+            .any(|s| scope_owns(s, f))
+    };
+    let mut remainder: BTreeSet<String> = BTreeSet::new();
+    for f in tracked_files(root) {
+        if UNCOVERED_BY_DESIGN.iter().any(|(g, _)| glob_match(&f, g)) || owned(&f) {
+            continue;
+        }
+        if let Some(at) = remainder_address(&f, &placed) {
+            remainder.insert(at);
+        }
+    }
+    for at in remainder {
+        if at.starts_with("crates/") {
+            prod.push(scope(&at, "production", &[]));
+        } else {
+            inst.push(scope(&at, "instrument", &[]));
+        }
+    }
+
     prod.extend(tests);
     prod.extend(inst);
     prod
+}
+
+/// The per-crate (and per-xtask) directories that are code cargo builds but no binary ships.
+const CRATE_TEST_DIRS: [&str; 3] = ["tests", "benches", "examples"];
+
+/// Every path the index tracks under `root`, sorted. Empty when `root` is not a repository, in
+/// which case the remainder rule derives nothing and coverage stays as RED as the tree makes it.
+fn tracked_files(root: &Path) -> Vec<String> {
+    let Ok(out) = crate::gitp::git(root, &["ls-files", "-z"]) else {
+        return Vec::new();
+    };
+    let mut files: Vec<String> = out
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect();
+    files.sort();
+    files
+}
+
+/// Whether scope `sc` owns `path`: under one of its paths and under none of its excludes.
+fn scope_owns(sc: &Json, path: &str) -> bool {
+    str_list(sc.get("paths")).iter().any(|x| under(path, x))
+        && !str_list(sc.get("exclude")).iter().any(|e| under(path, e))
+}
+
+/// Where an unplaced file's scope sits: the SHORTEST prefix of `file` (by path segment) that
+/// contains none of the `placed` scope paths. `conformance/verdicts/ws.json` lands in
+/// `conformance`, `crates/x/dialects/a.toml` in `crates/x/dialects` (because `crates` and
+/// `crates/x` both hold placed scopes), a loose top-level file in itself. Two files under one
+/// unclaimed directory always land in the same scope, because whether a prefix is unclaimed does
+/// not depend on which file asked.
+fn remainder_address(file: &str, placed: &[String]) -> Option<String> {
+    let segs: Vec<&str> = file.split('/').collect();
+    (1..=segs.len())
+        .map(|n| segs[..n].join("/"))
+        .find(|prefix| !placed.iter().any(|p| under(p, prefix)))
+}
+
+/// THE TOP-LEVEL ARM. A top-level directory of the tree at HEAD that no register scope addresses
+/// (no scope path at or under it) and no excuse names whole (`<dir>/**`). File-level coverage is
+/// the finer check; this one says, in the words a reader can act on, that a whole new directory
+/// arrived and the register never heard of it — whatever its files happen to match piecemeal.
+pub fn unscoped_top_dirs(doc: &Json, all: &BTreeMap<String, String>) -> Vec<String> {
+    let paths: Vec<String> = doc
+        .get("scopes")
+        .as_array()
+        .map(|a| a.iter().flat_map(|s| str_list(s.get("paths"))).collect())
+        .unwrap_or_default();
+    let whole: Vec<String> = doc
+        .get("uncovered_by_design")
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e.get("glob").as_str())
+                .filter_map(|g| g.strip_suffix("/**"))
+                .filter(|d| !d.contains('/') && !d.contains('*'))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let tops: BTreeSet<&str> = all
+        .keys()
+        .filter_map(|p| p.split_once('/').map(|(top, _)| top))
+        .collect();
+    tops.into_iter()
+        .filter(|d| !whole.iter().any(|w| w == d) && !paths.iter().any(|p| under(p, d)))
+        .map(str::to_string)
+        .collect()
 }
 
 /// The scope PATHS that own no tracked file at all.

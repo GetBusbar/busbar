@@ -32,7 +32,7 @@ fn make_root_cfg(
         rate_card: None,
         per_request_fee: 0,
         plane_fees: Default::default(),
-        store: None,
+        store: Some(crate::test_support::stand_in_store()),
         secrets: std::collections::BTreeMap::new(),
         global_hooks: Vec::new(),
         blocked_metadata_hosts: Vec::new(),
@@ -4502,8 +4502,8 @@ fn test_validate_rejects_negative_per_request_fee() {
     }
 }
 
-/// An empty `store.module` names no store at all - rejected; the compiled-in `memory` module and
-/// an ABSENT store block (ephemeral RAM store) both pass.
+/// An empty `store.module` names no store at all - rejected; the compiled-in `memory` module passes.
+/// (An ABSENT store block is refused too: `store_required_tests.rs`, Q-STORE = (B).)
 #[test]
 fn test_validate_rejects_empty_store_module() {
     let mut cfg = cost_cfg(&["m"]);
@@ -4518,15 +4518,8 @@ fn test_validate_rejects_empty_store_module() {
         "expected the empty-store-module error; got: {errs:?}"
     );
 
-    let mut cfg = cost_cfg(&["m"]);
-    cfg.store = Some(config::StoreCfg::default()); // module: memory
+    let cfg = cost_cfg(&["m"]); // store: {module: memory}
     assert!(validate(&cfg).is_ok(), "store.module: memory must validate");
-
-    let cfg = cost_cfg(&["m"]); // store: None (block absent)
-    assert!(
-        validate(&cfg).is_ok(),
-        "an absent store block must validate"
-    );
 }
 
 // ---- groups: the ONE limit tree - parents exist, acyclic, depth <= 8, sane amounts ----

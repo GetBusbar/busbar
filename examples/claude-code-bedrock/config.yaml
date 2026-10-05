@@ -22,6 +22,10 @@ advanced:
   response_headers:
     server_timing: true
 
+# A store is required in 1.6.0 (`busbar --migrate-config` inserts this); memory is ephemeral RAM.
+store:
+  module: memory
+
 providers:
   bedrock:
     api_key: { env: AWS_BEDROCK_CREDS }

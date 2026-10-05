@@ -74,17 +74,18 @@ pub struct SecurityCfg {
 /// The top-level `store:` block: the durable store as `{ module, settings }` - the same
 /// module/settings shape as every other plugin instance. `settings` is the store module's OWN
 /// config, passed through verbatim (the built-in sqlite plugin reads `db_path` /
-/// `busy_timeout_ms`; postgres/valkey read `url`). Absent block = the linked store row that
-/// declares itself the default (`crate::preflight::root_rows`).
+/// `busy_timeout_ms`; postgres/valkey read `url`). REQUIRED (owner ruling Q-STORE = (B),
+/// 2026-09-27): exactly one store resolves, from config — a config with no `store:` block is refused
+/// with [`store_required`], and no linked row stands in as a default.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct StoreCfg {
-    /// The store module, by plugin ALIAS or CANONICAL NAME. Omitted, it is the linked store row that
-    /// declares itself the default. A name no linked row answers to names a STORE PLUGIN resolved
-    /// from the `plugins.*` registry - the shipped first-party stores (canonically
-    /// `busbar-store-<x>-plugin`) or a third-party store by its manifest name - and REQUIRES
-    /// `plugins.enabled: true`; anything else is a boot error naming the flag.
-    #[serde(default = "default_governance_store")]
+    /// The store module, by plugin ALIAS or CANONICAL NAME: a linked row's name opens in process; any
+    /// other name is a STORE PLUGIN resolved from the `plugins.*` registry - the shipped first-party
+    /// stores (canonically `busbar-store-<x>-plugin`) or a third-party store by its manifest name -
+    /// and REQUIRES `plugins.enabled: true`; anything else is a boot error naming the flag. Omitted,
+    /// it is empty, which `--validate` refuses as 1.5.5 refused an empty one.
+    #[serde(default)]
     pub module: String,
     /// The module's own opaque settings, passed through verbatim as its config JSON.
     #[serde(default)]
@@ -95,22 +96,25 @@ pub struct StoreCfg {
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
-impl Default for StoreCfg {
-    fn default() -> Self {
-        Self {
-            module: default_governance_store(),
-            settings: serde_json::Map::new(),
-        }
-    }
-}
+/// The store a 1.5.x config with no `store:` block ran on (v1.5.5:crates/busbar/src/config/mod.rs:3026,
+/// `GOVERNANCE_STORE_MEMORY`, read by its `default_governance_store`). 1.6.0 holds no default:
+/// `busbar --migrate-config` writes this module into a config that has none, which is exactly 1.5.5's
+/// implicit behaviour made explicit, and [`store_required`] names it (Q-STORE = (B)).
+pub const MIGRATED_STORE_MODULE: &str = "memory";
 
-/// The `store.module` an omitted one reads as: the default store the composition root resolved from
-/// its linked rows' claims (empty when the build links no row that claims it). The kernel names no
-/// store instance.
-pub fn default_governance_store() -> String {
-    crate::preflight::root_rows()
-        .default_store_module
-        .to_owned()
+/// THE REFUSAL of a config with no `store:` block (Q-STORE = (B)): one `--validate` / boot error line
+/// in the 1.5.5 shape — the empty-`store.module` refusal's words for the choice
+/// (v1.5.5:crates/busbar/src/config_validate/mod.rs:1655) and the 1.x-config refusal's command
+/// (v1.5.5:crates/busbar/src/config/migrate.rs:44).
+pub fn store_required() -> String {
+    format!(
+        "store is required; add a `store:` block, e.g. `store: {{module: {m}}}` (the compiled-in \
+         RAM store, what a 1.5.x config without one ran on) or a store plugin name/alias ({} | \
+         <third-party>), or run `busbar --migrate-config <config.yaml>`, which inserts \
+         `store: {{module: {m}}}`",
+        crate::config::migrate::legacy_store_text("module_examples"),
+        m = MIGRATED_STORE_MODULE,
+    )
 }
 
 /// A top-level `secrets:` entry — MODULE-LEVEL initialization config for a `kind: secret` plugin,

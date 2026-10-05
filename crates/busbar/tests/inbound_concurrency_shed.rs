@@ -183,6 +183,7 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream_port: u16
 admin_listen: "127.0.0.1:{admin_port}"
 advanced:
   allow_destinations: ["127.0.0.1"]
+store: {{module: memory}}
 admin_require_mtls: false
 auth:
   chain: []

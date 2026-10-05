@@ -335,3 +335,50 @@ fn red_the_roots_listeners_head_the_one_list_of_listeners() {
     let report = stages(&doc, Vec::new(), got).ok().unwrap().lines();
     assert!(report.iter().all(|l| !l.contains("listens:")), "{report:?}");
 }
+
+// ── STAGE 3g: THE DEAL ──
+
+use busbar_contract::plugin::Kind;
+
+/// RED (TODO step 9): at 3g each seat is dealt only its own section, reserved sub-keys stripped,
+/// and a plugin's validation refusal names the operator's file position in 1.5.5's form.
+#[test]
+fn red_3g_deals_each_seat_its_section_and_positions_a_refusal() {
+    let doc = Document::parse(
+        "agents:\n  a1:\n    url: b\n    tier: big\ntools:\n  t1:\n    url: a\nhooks:\n  h1:\n    module: m\n    settings:\n      k: 1\n"
+            .to_owned(),
+    )
+    .expect("parses");
+    let (agents, tools) = (vec!["agents".to_owned()], vec!["tools".to_owned()]);
+    let seats = [
+        ("p-agents", Seat::of(Kind::Plane, &agents, "p-agents")),
+        ("p-tools", Seat::of(Kind::Plane, &tools, "p-tools")),
+        ("h1", Seat::of(Kind::Hook, &[], "h1")),
+    ];
+    let mut seen = Vec::new();
+    validate_dealt(&doc, seats, |instance, blob| {
+        seen.push((instance, String::from_utf8(blob.to_vec()).unwrap()));
+        Ok(())
+    })
+    .expect("nothing refuses");
+    assert_eq!(
+        seen,
+        [
+            ("p-agents", r#"{"agents":{"a1":{"url":"b"}}}"#.to_owned()),
+            ("p-tools", r#"{"tools":{"t1":{"url":"a"}}}"#.to_owned()),
+            ("h1", r#"{"k":1}"#.to_owned()),
+        ]
+    );
+
+    let refused = validate_dealt(&doc, seats, |instance, _| {
+        if instance == "p-tools" {
+            Err("missing field `kind`".to_owned())
+        } else {
+            Ok(())
+        }
+    });
+    assert_eq!(
+        refused,
+        Err("config.yaml: invalid YAML: tools: missing field `kind` at line 6 column 3".to_owned())
+    );
+}

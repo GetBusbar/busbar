@@ -199,6 +199,7 @@ fn write_configs(dir: &Path, extra: &str) {
 admin_listen: "127.0.0.1:0"
 advanced:
   allow_destinations: ["127.0.0.1"]
+store: {{module: memory}}
 {providers}{section}{extra}"#,
             section = include_str!("fixtures/stdio_plane_section.yaml")
                 .replace("{canonical}", canonical()),
@@ -363,7 +364,11 @@ fn the_catalog_sections_are_required_only_when_a_linked_plane_requires_them() {
     const STAMP: &str = "BUSBAR-3015: ";
     let dir = fixture_dir("catalog");
     std::fs::write(dir.join("providers.yaml"), "").unwrap();
-    std::fs::write(dir.join("config.yaml"), "listen: \"127.0.0.1:0\"\n").unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        "listen: \"127.0.0.1:0\"\nstore: {module: memory}\n",
+    )
+    .unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .arg("--validate")
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))

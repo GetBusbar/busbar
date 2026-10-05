@@ -1476,6 +1476,9 @@ fn cmd_move(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
 #[derive(Default)]
 pub struct CheckFindings {
     pub gaps: Vec<String>,
+    /// Top-level directories no register scope addresses and no excuse names whole. See
+    /// [`crate::audit::unscoped_top_dirs`].
+    pub unscoped: Vec<String>,
     pub missing: Vec<String>,
     pub problems: Vec<String>,
     pub invalid: Vec<String>,
@@ -1494,6 +1497,7 @@ pub struct CheckFindings {
 impl CheckFindings {
     pub fn red(&self) -> bool {
         !self.gaps.is_empty()
+            || !self.unscoped.is_empty()
             || !self.missing.is_empty()
             || !self.problems.is_empty()
             || !self.invalid.is_empty()
@@ -1544,6 +1548,7 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
     };
 
     f.gaps = audit::coverage_gaps(&doc, &all);
+    f.unscoped = audit::unscoped_top_dirs(&doc, &all);
 
     // THE TREE IMPLIES SCOPES THE REGISTER DOES NOT CARRY. A new crate is uncovered the moment it
     // lands, and this is the line that says so.
@@ -1756,6 +1761,11 @@ fn cmd_check(git: &Git, register: &std::path::Path) -> i32 {
         }
         println!("  run: cargo xtask ledger sync --write");
     }
+    block(
+        &f.unscoped,
+        "top-level director(ies) no scope addresses (a new directory the register never heard of):",
+        "  ",
+    );
     block(
         &f.missing,
         "scope(s) the tree implies are not in the register:",
@@ -2320,5 +2330,117 @@ mod move_tests {
             "a destination that is on no disk is a refusal, not a write"
         );
         assert_eq!(s.raw(), untouched, "and the register is byte-identical");
+    }
+
+    /// `sync --write`, committed, twice: the first write creates `qa/`, which is itself a scope the
+    /// second derivation sees. What a real tree looks like after its register is first written.
+    fn settle(s: &Scratch) {
+        for msg in ["register", "register sees itself"] {
+            assert_eq!(s.xtask(&["sync", "--write"]), 0);
+            s.run(&["add", "-A"]);
+            s.run(&["commit", "-q", "--allow-empty", "-m", msg]);
+        }
+    }
+
+    /// THE REMAINDER RULE. A crate directory nobody anticipated (`dialects/`, `include/`), a
+    /// crate's `examples/`, the binary crate's files beside `main.rs`, and `xtask/tests` each land
+    /// in a scope `sync` derives, so coverage closes without one excuse glob.
+    #[test]
+    fn every_tracked_file_in_an_unanticipated_place_gets_a_derived_scope() {
+        let s = scratch("remainder");
+        s.crate_at("plane", "pub fn serve() {}\n");
+        s.write("crates/plane/dialects/a.toml", "name = \"a\"\n");
+        s.write("crates/plane/examples/door.rs", "fn main() {}\n");
+        s.crate_at("busbar", "pub mod root;\n");
+        s.write("crates/busbar/src/root/mod.rs", "pub fn boot() {}\n");
+        s.write("crates/busbar/src/main.rs", "fn main() {}\n");
+        s.write("crates/busbar/src/build_stamp.rs", "pub fn stamp() {}\n");
+        s.write("xtask/src/main.rs", "fn main() {}\n");
+        s.write("xtask/tests/cli.rs", "#[test] fn t() {}\n");
+        s.write("conformance/registry.toml", "x = 1\n");
+        s.write(".mailmap", "a <a@b>\n");
+        s.commit("base");
+        settle(&s);
+
+        for (id, kind) in [
+            ("crates/plane/dialects", "production"),
+            ("crates/plane/examples", "test"),
+            ("crates/busbar/src", "production"),
+            ("crates/busbar/src/root", "production"),
+            ("xtask/tests", "test"),
+            ("conformance", "instrument"),
+            (".mailmap", "instrument"),
+        ] {
+            let sc = s
+                .scope(id)
+                .unwrap_or_else(|| panic!("{id} is derived as a scope"));
+            assert_eq!(
+                sc.get("kind").as_str(),
+                Some(kind),
+                "{id} is a {kind} scope"
+            );
+        }
+        assert!(
+            s.scope("crates/busbar/src/main.rs").is_none(),
+            "the entry point is the rest of src/, not the one file main.rs"
+        );
+        let f = s.check();
+        assert!(
+            f.gaps.is_empty(),
+            "every tracked file has a scope: {:?}",
+            f.gaps
+        );
+        assert!(
+            f.unscoped.is_empty() && f.missing.is_empty(),
+            "and the register is current"
+        );
+        assert!(
+            !f.red(),
+            "an all-unaudited, fully covered register is not red"
+        );
+    }
+
+    /// THE TOP-LEVEL ARM. A new top-level directory is RED by its own name until a scope addresses
+    /// it — not only through the per-file gap list — and a directory an excuse names whole is not.
+    #[test]
+    fn a_new_top_level_directory_is_red_until_a_scope_addresses_it() {
+        let s = scratch("topdir");
+        s.crate_at("kernel", "pub fn admit() {}\n");
+        s.write("docs/guide.md", "prose\n");
+        s.commit("base");
+        settle(&s);
+        let f = s.check();
+        assert!(
+            !f.red() && f.unscoped.is_empty(),
+            "positive control: `docs/` is excused whole and the tree is covered: {:?}",
+            f.unscoped
+        );
+
+        s.write("newtool/run.sh", "#!/bin/sh\n");
+        s.commit("a directory the register never heard of");
+        let f = s.check();
+        assert_eq!(
+            f.unscoped,
+            vec!["newtool".to_string()],
+            "named as a directory"
+        );
+        assert_eq!(
+            f.gaps,
+            vec!["newtool/run.sh".to_string()],
+            "and as an uncovered file"
+        );
+        assert!(
+            f.missing.contains(&"newtool".to_string()),
+            "and sync can derive its scope"
+        );
+        assert!(f.red(), "so --check is RED");
+
+        settle(&s);
+        let f = s.check();
+        assert!(
+            !f.red(),
+            "sync derives its scope and the arm goes quiet: {:?}",
+            f.unscoped
+        );
     }
 }
