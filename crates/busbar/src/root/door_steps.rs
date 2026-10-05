@@ -1039,8 +1039,9 @@ impl OutboundAuths {
     }
 
     /// The bind one auth row is loaded under: its needs on the connection table, its diagnostics
-    /// (a mint that failed and will retry) in its own log file under the configured `plugins.logs`
-    /// (THE DESIGN #85).
+    /// (a mint that failed and will retry, a credential it could not present) in its own log file
+    /// under the configured `plugins.logs` (THE DESIGN #85) AND, each declared one, in the main log
+    /// in the line 1.5.5 wrote there ([`MainLogSink`]).
     fn bind(&self, name: &str) -> crate::root::loader::dispatch::Bind {
         self.bind_with(name, self.conns.clone())
     }
@@ -1062,6 +1063,7 @@ impl OutboundAuths {
                 |_| Arc::new(NoSink) as Arc<dyn EnvelopeSink>,
                 |s| Arc::new(s) as Arc<dyn EnvelopeSink>,
             );
+        let sink: Arc<dyn EnvelopeSink> = Arc::new(MainLogSink(sink));
         crate::root::loader::dispatch::Bind {
             instance: Arc::from(name),
             max_inflight_cap: 64,
@@ -1207,6 +1209,94 @@ impl OutboundAuths {
             );
         }
         Ok(Vec::new())
+    }
+}
+
+/// AN AUTH ROW'S DECLARED DIAGNOSTICS, WRITTEN TO THE MAIN LOG IN 1.5.5'S LINE (ARCHITECT D1
+/// 2026-10-05, LOG LINES; THE DESIGN #85).
+///
+/// 1.5.5 wrote a credential it could not present, and a mint that failed, to the main log; the auth
+/// plugin that now holds the credential reports the same condition as a DECLARED diagnostic on the
+/// #85 envelope of the call that met it, and this sink writes it there again, word for word, before
+/// the row's own log file keeps it too. A plugin's free log records ([`DIAG_LOG`]) stay in its own
+/// file only.
+///
+/// The line: the text up to its first named value is the message; the named values follow as
+/// ` name=value`, in 1.5.5's order — `protocol`, `header`, then `error` (which runs to the end) —
+/// and are written as the fields 1.5.5 wrote them (`protocol` and `header` as text, `error` as
+/// display). A declared id that is a code of the host's catalog (`BUSBAR-NNNN`) is written as the
+/// `diag` field, at the level the catalog's severity sets (benign-recurring: debug); any other at
+/// the plugin's own severity.
+///
+/// [`DIAG_LOG`]: busbar_contract::abi::mechanism::call::DIAG_LOG
+pub(crate) struct MainLogSink(pub(crate) Arc<dyn crate::root::loader::dispatch::EnvelopeSink>);
+
+impl MainLogSink {
+    /// `text` split into its message and the named values 1.5.5's line carried.
+    fn named(text: &str) -> (&str, Option<&str>, Option<&str>, Option<&str>) {
+        let split = |t: &'_ str, name: &str| -> (usize, Option<usize>) {
+            t.find(name)
+                .map_or((t.len(), None), |at| (at, Some(at + name.len())))
+        };
+        let (end, from) = split(text, " error=");
+        let error = from.map(|f| &text[f..]);
+        let rest = &text[..end];
+        let (end, from) = split(rest, " header=");
+        let header = from.map(|f| &rest[f..]);
+        let rest = &rest[..end];
+        let (end, from) = split(rest, " protocol=");
+        let protocol = from.map(|f| &rest[f..]);
+        (&rest[..end], protocol, header, error)
+    }
+
+    /// Write one declared diagnostic to the main log.
+    fn write(d: &crate::root::loader::dispatch::Diagnostic<'_>) {
+        use busbar_contract::diagnostic::Severity;
+        use tracing::Level;
+        let text = String::from_utf8_lossy(d.text);
+        let (message, protocol, header, error) = Self::named(&text);
+        let code = std::str::from_utf8(d.name)
+            .ok()
+            .and_then(|n| n.strip_prefix("BUSBAR-"))
+            .and_then(|n| n.parse::<u16>().ok())
+            .and_then(busbar_kernel::diagnostics::by_code);
+        let level = match (code.map(|c| c.severity), d.severity) {
+            (Some(Severity::BenignRecurring), _) => Level::DEBUG,
+            (Some(Severity::Fatal), _) | (_, 2..) => Level::ERROR,
+            (_, 1) => Level::WARN,
+            _ => Level::INFO,
+        };
+        let diag = code.map(|c| tracing::field::display(c.banner()));
+        let error = error.map(tracing::field::display);
+        macro_rules! line {
+            ($level:expr) => {
+                tracing::event!($level, diag, protocol, header, error, "{message}")
+            };
+        }
+        match level {
+            Level::DEBUG => line!(Level::DEBUG),
+            Level::INFO => line!(Level::INFO),
+            Level::WARN => line!(Level::WARN),
+            _ => line!(Level::ERROR),
+        }
+    }
+}
+
+impl crate::root::loader::dispatch::EnvelopeSink for MainLogSink {
+    fn metric(&self, m: crate::root::loader::dispatch::Metric<'_>) {
+        self.0.metric(m);
+    }
+
+    fn diag(&self, d: crate::root::loader::dispatch::Diagnostic<'_>) {
+        use busbar_contract::abi::mechanism::call::{DIAG_LOG, DIAG_LOG_DROPPED};
+        if d.id != DIAG_LOG && d.id != DIAG_LOG_DROPPED {
+            Self::write(&d);
+        }
+        self.0.diag(d);
+    }
+
+    fn dropped(&self, why: crate::root::loader::dispatch::Dropped) {
+        self.0.dropped(why);
     }
 }
 

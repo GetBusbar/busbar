@@ -32,7 +32,8 @@ fn presentation(p: CredentialHeader) -> Value {
 }
 
 /// The binding a DECLARED egress scheme is opened under: a static scheme on the `api-key` style
-/// with its whole presentation table as parameters, a per-request signature on the `sigv4` style
+/// with its whole presentation table as parameters and the dialect's name (the `protocol` an
+/// unpresentable credential's line names, as 1.5.5's did), a per-request signature on the `sigv4` style
 /// with its service, the region its host names (else its default) and its content type. The
 /// dialect's static fields (`decl`'s) follow the plugin's.
 #[must_use]
@@ -64,6 +65,7 @@ pub(crate) fn declared_binding(
                     "families": families,
                     "own": presentation(own),
                     "passthrough": presentation(passthrough),
+                    "protocol": decl.name,
                 }),
             )
         }

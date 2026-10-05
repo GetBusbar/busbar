@@ -14,8 +14,10 @@
 //! are the byte-identity proof of the switch, and neither names the other. Ported from the
 //! kernel's `egress_auth` differential, which it replaces.
 //!
-//! Not ported: the two tests that pinned the main log's text for an unpresentable credential. That
-//! line is now the auth plugin's diagnostic, written to the plugin's own log file (THE DESIGN #85).
+//! THE MAIN LOG'S LINES (ARCHITECT D1 2026-10-05, LOG LINES): a credential the plugin cannot present
+//! is its declared diagnostic on the #85 envelope, which the root writes to the main log in the line
+//! 1.5.5's builder wrote there ([`crate::root::door_steps::MainLogSink`]). The two tests that pinned
+//! those lines are ported below, word for word.
 
 use std::sync::{Arc, OnceLock};
 
@@ -605,4 +607,175 @@ fn the_api_key_override_presents_the_shared_builders_bytes() {
             assert_eq!(got, want, "key {key:?}, mode {upstream_creds:?}");
         }
     }
+}
+
+/// `dialect`'s recorded binding, its lines naming `protocol` (the name 1.5.5's twin carried).
+fn named_binding(dialect: &str, protocol: &str) -> StyleBinding {
+    let mut binding = binding_of(dialect, SIGNING_HOST, &[]);
+    if binding.style == "api-key" {
+        binding.params["protocol"] = serde_json::Value::String(protocol.to_string());
+    }
+    binding
+}
+
+const SIGNING_HOST: &str = "bedrock-runtime.us-east-1.amazonaws.com";
+
+/// Every line the main log took, DEBUG and above, while `f` ran.
+fn main_log(f: impl FnOnce()) -> Vec<String> {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::capturing_debug();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    tracing::subscriber::with_default(subscriber, f);
+    cap.messages()
+        .into_iter()
+        .map(|m| m.trim_end().to_string())
+        .collect()
+}
+
+/// The main log's lines while `binding` was bound with `key` and asked for one `mode` request
+/// (`Passthrough`: `key` is the caller's, the lane binds none).
+fn lines_in(binding: &StyleBinding, key: &str, mode: UpstreamCreds) -> Vec<String> {
+    let own = match mode {
+        UpstreamCreds::Own => key,
+        UpstreamCreds::Passthrough => "",
+    };
+    main_log(|| {
+        let ctx = SigningContext {
+            host: SIGNING_HOST,
+            canonical_uri: "/model/m/converse",
+            body: b"{}",
+            timestamp_epoch: 1_756_000_000,
+            upstream_creds: mode,
+        };
+        bound(binding, own).headers_for(key, &ctx);
+    })
+}
+
+/// [`lines_in`] for the lane's own credential.
+fn lines(binding: &StyleBinding, key: &str) -> Vec<String> {
+    lines_in(binding, key, UpstreamCreds::Own)
+}
+
+/// A signing credential whose session token no header value may carry logs, word for word, the
+/// line the dialect's own signer logged in 1.5.5 — naming the declared service — and signs
+/// nothing. A malformed credential without that token logged nothing then and logs nothing now.
+#[test]
+fn an_unsendable_session_token_logs_the_signers_own_line() {
+    let signing = named_binding("bedrock", "static-twin-signing");
+    assert_eq!(
+        lines(&signing, "AKID:SECRET:TOK\r\nEN"),
+        vec![
+            "Bedrock lane session token contains a byte rejected by HeaderValue; skipping \
+             signing to avoid a signed-but-absent x-amz-security-token header."
+                .to_string()
+        ]
+    );
+    for quiet in [
+        "not-a-valid-key",
+        "AKID\r\nINJECT:SECRET",
+        "AKID:SECRET:CLEAN",
+    ] {
+        assert!(lines(&signing, quiet).is_empty(), "{quiet:?}");
+    }
+}
+
+/// A bearer credential with a byte no header value may carry logs the bearer builder's 1.5.5
+/// line, naming the protocol; a static custom header's and a credential-family table's keep
+/// theirs, each naming the header it omitted.
+#[test]
+fn an_unpresentable_static_credential_logs_its_builders_own_line() {
+    let bearer = named_binding("openai", "static-twin-bearer");
+    assert_eq!(
+        lines(&bearer, "bad\nkey"),
+        vec![
+            "authorization credential contains invalid header bytes (ASCII control \
+             character); omitting auth header — upstream will reject with 401 \
+             diag=BUSBAR-7087 protocol=static-twin-bearer"
+                .to_string()
+        ]
+    );
+    assert_eq!(
+        lines(&named_binding("gemini", "static-twin-header"), "bad\nkey"),
+        vec![
+            "egress credential contains invalid header bytes (ASCII control character); \
+             omitting auth header — upstream will reject with 401 diag=BUSBAR-4013 \
+             header=x-goog-api-key"
+                .to_string()
+        ]
+    );
+    for (key, header) in [
+        ("sk-ant-api03-bad\nkey", "x-api-key"),
+        ("sk-ant-oat01-bad\ntoken", "authorization"),
+    ] {
+        assert_eq!(
+            lines(&named_binding("anthropic", "static-twin-versioned"), key),
+            vec![format!(
+                "auth credential contains bytes invalid for an HTTP header value (e.g. a \
+                 trailing newline); omitting the credential header — upstream will return \
+                 401, check the key configuration protocol=static-twin-versioned \
+                 header={header}"
+            )]
+        );
+    }
+    assert!(lines(&bearer, "good-key").is_empty());
+}
+
+/// A CALLER's credential no header value may carry logs its builder's line on the request that
+/// presents it, as 1.5.5 built (and logged) a passthrough header per request; a signing
+/// credential's unsendable token, likewise per request in either mode.
+#[test]
+fn a_callers_unpresentable_credential_logs_on_its_request() {
+    assert_eq!(
+        lines_in(
+            &named_binding("openai", "static-twin-bearer"),
+            "bad\nkey",
+            UpstreamCreds::Passthrough
+        ),
+        vec![
+            "authorization credential contains invalid header bytes (ASCII control \
+             character); omitting auth header — upstream will reject with 401 \
+             diag=BUSBAR-7087 protocol=static-twin-bearer"
+                .to_string()
+        ]
+    );
+    assert_eq!(
+        lines_in(
+            &named_binding("bedrock", "static-twin-signing"),
+            "AKID:SECRET:TOK\r\nEN",
+            UpstreamCreds::Passthrough
+        )
+        .len(),
+        1
+    );
+}
+
+/// A declared diagnostic outside the credential lines is written in 1.5.5's shape too: a mint that
+/// failed, its catalog code as `diag` and the error as its trailing named value; a plugin's free
+/// log record stays out of the main log.
+#[test]
+fn the_main_log_sink_writes_a_declared_diagnostic_in_its_one_five_five_shape() {
+    use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, NoSink};
+    let sink = crate::root::door_steps::MainLogSink(Arc::new(NoSink));
+    let got = main_log(|| {
+        sink.diag(Diagnostic {
+            id: 2,
+            name: b"BUSBAR-4016",
+            severity: 1,
+            text: b"OAuth token mint failed; will retry error=connect: refused (os error 111)",
+        });
+        sink.diag(Diagnostic {
+            id: busbar_contract::abi::mechanism::call::DIAG_LOG,
+            name: b"",
+            severity: 1,
+            text: b"the plugin's own record",
+        });
+    });
+    assert_eq!(
+        got,
+        vec![
+            "OAuth token mint failed; will retry diag=BUSBAR-4016 error=connect: refused (os \
+             error 111)"
+                .to_string()
+        ]
+    );
 }
