@@ -1735,8 +1735,7 @@ pub use busbar_kernel::config::sections::{
 // Moved to `busbar_kernel::config::sections`; re-exported at their historical `config::` path.
 pub use busbar_kernel::config::sections::{
     rate_entry_per_mtok, ConfigMgmtCfg, ExportDefCfg, ExportDefs, OverlayBackend, OverlayCfg,
-    RateEntryCfg, EXPORT_MODULES, EXPORT_MODULE_OTLP, EXPORT_MODULE_REQUEST_LOG_FILE,
-    EXPORT_MODULE_REQUEST_LOG_WEBHOOK,
+    RateEntryCfg,
 };
 
 /// The serde default for `per_request_fee:` - 0 (no flat per-request charge; token spend derives
@@ -1913,17 +1912,13 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                     scrape,
                 })
             }
-            // The modules THIS build serves: the ones it links, in the frozen order. A default
-            // build links every sink, so its text is 1.5.5's byte for byte.
+            // The modules THIS build serves: the export rows it links, in the order the
+            // composition root registered them (1.5.5's, so a default build, which links every
+            // sink, prints 1.5.5's text byte for byte). The kernel names none.
             other => errors.push(format!(
                 "export.{name}.module: unknown exporter '{other}'; the built-in export modules are \
                  {}",
-                EXPORT_MODULES
-                    .iter()
-                    .copied()
-                    .filter(|m| crate::export::plugin::linked(m))
-                    .collect::<Vec<_>>()
-                    .join(" | ")
+                crate::export::plugin::linked_modules().join(" | ")
             )),
         }
     }

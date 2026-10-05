@@ -343,6 +343,12 @@ pub trait ExportAxis: Send + Sync {
         let _ = module;
         false
     }
+
+    /// The `module:` words of the export rows this build LINKS, in the order the composition root
+    /// registered them: what an unknown-exporter refusal lists. None by default.
+    fn linked_modules(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]

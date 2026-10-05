@@ -167,6 +167,17 @@ impl<'r> ExportRows<'r> {
         }
     }
 
+    /// The `module:` words (aliases) of the export rows this build LINKS, in registration order.
+    #[must_use]
+    pub fn linked_modules(&self) -> Vec<String> {
+        self.registry
+            .linked()
+            .iter()
+            .filter(|p| p.manifest.kind == "export")
+            .map(|p| p.manifest.alias.clone())
+            .collect()
+    }
+
     /// Whether `module`'s row states the `one_instance` mark (at most one instance may be
     /// configured): read off its Statement at bind. A row that will not load here, or a cold row,
     /// states none.

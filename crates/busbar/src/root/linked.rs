@@ -262,7 +262,18 @@ pub fn linked_exports(
         manifest(name, alias, declares)
             .map(|m| crate::root::loader::LinkedPlugin::boundary(m, entry))
     });
-    doors.chain(cold).collect()
+    let mut rows = doors.chain(cold).collect::<Result<Vec<_>, String>>()?;
+    // In 1.5.5's order (the root legacy table's `export_modules`, the order 1.5.5 listed its
+    // built-in exporters in), so the kernel's unknown-exporter refusal, which lists the linked rows
+    // in registration order, reads as 1.5.5's did. A row the table does not name follows, in place.
+    let order = crate::root::legacy::export_order();
+    rows.sort_by_key(|p| {
+        order
+            .iter()
+            .position(|m| *m == p.manifest.alias)
+            .unwrap_or(usize::MAX)
+    });
+    Ok(rows)
 }
 
 /// What the composition root wires for one of its own unit modules — the kernel-loop half of a plane

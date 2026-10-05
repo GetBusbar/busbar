@@ -66,10 +66,9 @@ fn streams_of(bytes: &[u8]) -> Vec<ExportStream> {
         .collect()
 }
 
-/// Whether `module` names a row this build LINKS on the export axis, as opposed to one a plugins
-/// directory dropped in. The unknown-module diagnostic lists these beside the kernel's own modules.
-pub(crate) fn linked(module: &str) -> bool {
-    axis().is_some_and(|axis| axis.linked(module))
+/// The `module:` words of the export rows this build links, in the composition root's order.
+pub(crate) fn linked_modules() -> Vec<String> {
+    axis().map(|axis| axis.linked_modules()).unwrap_or_default()
 }
 
 /// Whether `module` names a row the host grants FIRST-PARTY — linked, or dropped in signed by the

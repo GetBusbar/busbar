@@ -76,4 +76,8 @@ impl ExportAxis for RootExports {
     fn one_instance(&self, module: &str) -> bool {
         rows().is_some_and(|r| r.one_instance(module))
     }
+
+    fn linked_modules(&self) -> Vec<String> {
+        rows().map(|r| r.linked_modules()).unwrap_or_default()
+    }
 }

@@ -506,21 +506,3 @@ pub struct ExportDefCfg {
 /// The top-level `export:` NAMED-DEFINITION map: instance name → [`ExportDefCfg`]. Insertion-ordered
 /// so the resolved sink order (and therefore delivery order) is deterministic.
 pub type ExportDefs = indexmap::IndexMap<String, ExportDefCfg>;
-
-/// `export.<name>.module: prometheus` — the PULL metrics exporter (Metrics stream).
-pub const EXPORT_MODULE_PROMETHEUS: &str = "prometheus";
-/// `export.<name>.module: request-log-webhook` — the PUSH per-request webhook (Logs stream).
-pub const EXPORT_MODULE_REQUEST_LOG_WEBHOOK: &str = "request-log-webhook";
-/// `export.<name>.module: request-log-file` — the PUSH per-request JSONL append (Logs stream).
-pub const EXPORT_MODULE_REQUEST_LOG_FILE: &str = "request-log-file";
-/// `export.<name>.module: otlp` — the OTLP/HTTP trace exporter (Traces stream). Absorbs the DELETED
-/// `observability.otlp_url`.
-pub const EXPORT_MODULE_OTLP: &str = "otlp";
-
-/// Every built-in `export:` module, for the boot-time unknown-module diagnostic.
-pub const EXPORT_MODULES: &[&str] = &[
-    EXPORT_MODULE_PROMETHEUS,
-    EXPORT_MODULE_REQUEST_LOG_WEBHOOK,
-    EXPORT_MODULE_REQUEST_LOG_FILE,
-    EXPORT_MODULE_OTLP,
-];

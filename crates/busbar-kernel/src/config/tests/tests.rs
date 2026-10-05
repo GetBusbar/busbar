@@ -358,7 +358,7 @@ fn test_otlp_folds_into_an_export_instance() {
         otlp,
         vec![(
             "traces",
-            crate::config::EXPORT_MODULE_OTLP,
+            "otlp",
             Some(&serde_json::json!("http://localhost:4318/v1/traces"))
         )]
     );

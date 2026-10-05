@@ -121,6 +121,10 @@ impl busbar_contract::export_calls::ExportAxis for StandIn {
     fn one_instance(&self, module: &str) -> bool {
         rows().is_some_and(|r| r.one_instance(module))
     }
+
+    fn linked_modules(&self) -> Vec<String> {
+        rows().map(|r| r.linked_modules()).unwrap_or_default()
+    }
 }
 
 /// The axis every test in this binary resolves `export:` against — installed once, as the
@@ -142,7 +146,10 @@ pub fn install_export_axis_with(linked: Vec<busbar_plugin_loader::LinkedPlugin>)
             ("k9-axis-sink", "k9-tail"),
             ("k9b-log-file", "request-log-file"),
             ("k9c-webhook", "request-log-webhook"),
-            ("k9e-otlp", crate::config::EXPORT_MODULE_OTLP),
+            (
+                "k9e-otlp",
+                crate::config::legacy::text("export_trace_module"),
+            ),
         ];
         let scanned = registry_of("installed", &rows);
         scanned
