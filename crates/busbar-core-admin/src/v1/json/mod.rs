@@ -387,8 +387,7 @@ fn mount_one_admin_spec(
 
 /// Frame a plane handler's [`busbar_kernel::admin_verbs::AdminReply`] onto the wire, and record the
 /// audit row for an `Audited` verb. The variants encode the pre-seam behaviour exactly: `Refused` is
-/// the un-audited resolve-time refusal, `Applied`/`Rejected` are the audited look-time outcomes, and
-/// `Prebuilt` is a verb that built its own envelope and audited itself (returned verbatim).
+/// the un-audited resolve-time refusal, and `Applied`/`Rejected` are the audited look-time outcomes.
 fn finish_admin_reply(
     plane: &'static str,
     name: &str,
@@ -405,7 +404,6 @@ fn finish_admin_reply(
         }
     };
     match reply {
-        AdminReply::Prebuilt(resp) => resp,
         AdminReply::Refused(e) => {
             busbar_kernel::admin::planeverbs::refusal_response(plane, name, e)
         }
@@ -431,8 +429,8 @@ fn finish_admin_reply(
 
 // The v1 envelope PRIMITIVES (`ok_json`/`err_json`/`err_json_cond`) STAY in busbar-core
 // (`busbar_kernel::admin::v1::json`): `busbar_kernel::router::fallback_error_response` renders `err_json`
-// for the native-API root, and `busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope` reaches all
-// three — so they cannot move here without the forbidden reverse dependency edge. Imported so every
+// for the native-API root, and `busbar_kernel::admin::planeverbs::refusal_response` reaches
+// `err_json`/`err_json_cond` — so they cannot move here without the forbidden reverse dependency edge. Imported so every
 // call site below is unchanged.
 use busbar_kernel::admin::v1::json::{err_json, err_json_cond, ok_json};
 

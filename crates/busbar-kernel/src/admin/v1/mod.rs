@@ -9,7 +9,7 @@
 //! - [`contract`] — v1 typed views + the stable error taxonomy (the frozen surface in Rust), the
 //!   `PATH_*`/`ADMIN_PREFIX`/`required_scope` constants `auth`/`ratelimit`/`router` reference.
 //! - [`json`] — the JSON envelope PRIMITIVES (`err_json`/`ok_json`/`err_json_cond`) only, which
-//!   `router::fallback_error_response` and `admin::planeverbs::CorePlaneAdminEnvelope` render through.
+//!   `router::fallback_error_response` and `admin::planeverbs::refusal_response` render through.
 
 pub mod contract;
 pub mod json;

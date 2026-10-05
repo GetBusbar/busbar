@@ -17,6 +17,13 @@
 //! A lookup that no linked plane answers REFUSES, naming what was asked for and where the list
 //! lives — a test addressed at a plane that is not test-linked fails loudly, never passes vacuously
 //! over an empty roster (`tests/linked_roster.rs` holds that arm).
+//!
+//! THE DOOR ROW. A build's roster is its linked rows AND the door planes the composition root folds
+//! beside them (DECL-FOLD: `busbar_kernel::plane::door::fold` over each door's stated registration).
+//! The linked crates bring only legacy rows, so the roster here carries one door row too: the
+//! kernel's door-plane double ([`door`]), folded by the kernel's own fold and registered after the
+//! linked rows, as production orders them. It owns the fourth frozen named-definition section and
+//! speaks several wire formats, which is what the cross-plane tests address it by.
 
 #![allow(dead_code)]
 
@@ -25,11 +32,15 @@ use busbar_kernel::test_support::seam::{
     register_test_plane_seam, test_plane_seams, TestPlaneSeam,
 };
 
+pub mod door;
+
 include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
 
 /// Install every test-linked plane exactly as the composition root installs it in production
-/// (protocol declarations, plane row, ingress seams). Idempotent: each entry's own install is
-/// first-wins, and the registration loop runs once per test binary.
+/// (protocol declarations, plane row, ingress seams), then the door row beside them, as the
+/// composition root folds its doors after its linked rows. Idempotent: each entry's own install is
+/// first-wins, the door row is folded once and registered first-wins by key, and the registration
+/// loop runs once per test binary.
 pub fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -40,11 +51,13 @@ pub fn install() {
     for seam in test_plane_seams() {
         (seam.install)();
     }
+    busbar_kernel::plane::registry::register_test_plane(door::row());
 }
 
-/// How many plane crates this test binary links (the length of the Cargo.toml list).
+/// How many registry rows this test binary's roster holds: one per plane crate it links (the
+/// length of the Cargo.toml list) and the one door row.
 pub fn linked_count() -> usize {
-    TEST_LINKED.len()
+    TEST_LINKED.len() + 1
 }
 
 /// The registered plane list after [`install`], in registration order.
@@ -96,7 +109,7 @@ pub fn door_section(decl: &PlaneDecl) -> &'static str {
 }
 
 /// `decl`'s own test-seam entry — what its test kit exports for a cross-plane test to drive it by
-/// (its served-call framer, its carried verify-gate reader), found by the key it declares.
+/// (its served-call framer), found by the key it declares.
 pub fn seam(decl: &PlaneDecl) -> &'static TestPlaneSeam {
     install();
     test_plane_seams()

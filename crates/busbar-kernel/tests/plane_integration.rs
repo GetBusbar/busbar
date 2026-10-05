@@ -10,6 +10,12 @@
 //! it owns, its endpoint door — read back from the registry, and it is CONFIGURED the way an operator
 //! configures it: a deploy document run through the kernel's own `resolve`, and the plane's runtime
 //! object built through its own declared `build`, `claims` and `admission` hooks.
+//!
+//! The `agents:` section's owner is the roster's DOOR row (`linked::door`). The test that read the
+//! `agents:` plane's carried verify-on-call gate off its runtime object through its test seam is
+//! gone with the linked engine crate that installed that seam: a door row carries no kernel verify
+//! gate on its slot (its `retain_verify_gates` hook is `None`; the door judges its own
+//! registrations), and no remaining plane installs `TestPlaneSeam::verify_gate`.
 
 mod linked;
 
@@ -23,7 +29,9 @@ fn door_plane() -> &'static PlaneDecl {
     linked::owning("tools")
 }
 
-/// The linked plane that owns the `agents:` section.
+/// The plane that owns the `agents:` section: the roster's DOOR row (`linked::door`, the kernel's
+/// door-plane double folded by the kernel's own door fold, as the composition root folds the door
+/// plane that owns that section in a shipped build).
 fn agents_plane() -> &'static PlaneDecl {
     linked::owning("agents")
 }
@@ -131,65 +139,6 @@ fn jsonrpc_mount(decl: &'static PlaneDecl, sections: &str) -> String {
         .unwrap_or_else(|| panic!("the `{}` plane claims a JSON-RPC front door", decl.key))
 }
 
-/// THE CARRIED VERIFY GATE of the `agents:` plane. The gate is a field of that plane's runtime
-/// object, whose type this file cannot name, so the plane's own test-seam entry reads it off the
-/// built App's plane slots — found in the registry by the key the plane declares.
-fn carried_gate(app: &busbar_kernel::state::App) -> Option<Arc<busbar_kernel::trust::VerifyGate>> {
-    let read = linked::seam(agents_plane())
-        .verify_gate
-        .expect("the `agents:` plane reads its carried verify gate through its test seam");
-    read(app)
-}
-
-/// The `agents:` plane's verify-on-call gate lives ON its runtime object, carried across a config
-/// apply off the prior generation's plane. This exercises the two ways a carried entry stops
-/// leaking:
-///
-/// 1. A SURVIVING plane whose live set no longer names a subject must PRUNE that subject's carried
-///    flight/drift-latch — the plane's `retain_verify_gates` hook, reading the gate off the plane
-///    slot rather than off a shared `App` field.
-/// 2. REMOVING the `agents:` block drops the whole plane, and with it the gate — a deployment
-///    fronting no agents runs no delegation that could read a leaked entry.
-#[test]
-fn the_carried_verify_gate_prunes_dead_subjects_and_drops_with_the_plane() {
-    busbar_kernel::metrics::init();
-    let key = agents_plane().key;
-    let prior = build_once(resolved(AGENTS_YAML), None).expect("boot with an agents: block");
-    // The plane's OWN verify gate accumulated per-subject coordination for an agent this deployment
-    // once fronted. "retired-agent" is NOT the live "planner", so a retain against the live set
-    // must drop it.
-    let prior_gate = carried_gate(&prior).expect("agents: configured => the plane is present");
-    prior_gate.report(key, "retired-agent", true, false);
-    assert!(
-        prior_gate.tracks_subject("retired-agent"),
-        "seed: the plane's VerifyGate must track the subject before the apply"
-    );
-
-    // (1) Re-apply KEEPING the `agents:` block: the new plane carries the same gate forward, and the
-    // retain hook prunes the dead subject against the live set (`{planner}`).
-    let kept = build_once(resolved(AGENTS_YAML), Some(&prior)).expect("re-apply keeping agents:");
-    let kept_gate = carried_gate(&kept).expect("agents: still configured => the plane is present");
-    assert!(
-        Arc::ptr_eq(&kept_gate, &prior_gate),
-        "the surviving plane must carry the prior generation's gate forward, not start a new one"
-    );
-    assert!(
-        !kept_gate.tracks_subject("retired-agent"),
-        "a surviving plane must prune the carried gate entry no live agent names, not leak it"
-    );
-    assert!(
-        kept.plane_slot(key).is_some(),
-        "the surviving plane holds its slot"
-    );
-
-    // (2) Re-apply REMOVING the `agents:` block: the plane — and the gate it holds — is dropped whole.
-    let removed = build_once(resolved(""), Some(&prior)).expect("apply with agents removed");
-    assert!(
-        carried_gate(&removed).is_none() && removed.plane_slot(key).is_none(),
-        "removing the agents: block leaves no `{key}` plane and no carried verify gate to leak"
-    );
-}
-
 /// THE SHIPPED DEFECT: an oversized POST to a MOUNTED endpoint-door plane was answered with an
 /// **OpenAI** error envelope — `{"error":{"message","type","code"}}` — because the error-shaping
 /// classifier read the PATH SHAPE only, knew nothing of the mount table, and fell through its
@@ -257,8 +206,12 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
 /// `App::plane_slot(<key>)` is `Some` for EACH configured plane, every read hands back the SAME
 /// object (one construction, not a second, merely-equal one), and that object is the plane's own:
 /// its declared `admission` hook reads it, and every JSON-RPC path its declared `claims` hook reads
-/// off it is a route the built router mounted. So `build_app_from_config` builds each plane ONCE via its
-/// `build` hook, and the router surface and the audience check come off that one slot object.
+/// off it is mounted in the built App's dispatch table for that plane — and, for a plane that
+/// contributes its data routes through the slot seam (`PlaneDecl::routes`), is a route the built
+/// router mounted. So `build_app_from_config` builds each plane ONCE via its `build` hook, and the
+/// mount table, the router surface and the audience check come off that one slot object. A DOOR row
+/// (the `agents:` owner here, `linked::door`) contributes no data route through the slot seam: its
+/// claimed paths are served by the plane driver behind the mount table, which is what it is held to.
 #[test]
 fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
     busbar_kernel::metrics::init();
@@ -305,10 +258,19 @@ fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
             "the `{key}` plane claims its JSON-RPC door"
         );
         for path in claims {
-            assert!(
-                routes.iter().any(|(p, _, _)| *p == path),
-                "`{path}`, claimed off the `{key}` slot object, must be a route the router mounted"
+            assert_eq!(
+                app.planes.mounted_plane_of(&path),
+                Some(key),
+                "`{path}`, claimed off the `{key}` slot object, must be mounted for `{key}` in the \
+                 App's dispatch table"
             );
+            if decl.routes.is_some() {
+                assert!(
+                    routes.iter().any(|(p, _, _)| *p == path),
+                    "`{path}`, claimed off the `{key}` slot object, must be a route the router \
+                     mounted"
+                );
+            }
         }
     }
 }

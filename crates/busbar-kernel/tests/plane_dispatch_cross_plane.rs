@@ -10,8 +10,11 @@
 //! from the test-linked table (`tests/linked/mod.rs`; K3, architect ruling N02) and are ADDRESSED by
 //! what they declare, read back from the registry: the fallback plane, the plane that owns the
 //! `tools:` section (one wire format over several transports) and the plane that owns `agents:`
-//! (several bindings of one agent). This file spells no plane key; each plane pins its own literal
-//! identity in its own crate. Every test installs the roster first (idempotent, first-wins). A handful of `pub(crate)` items (`Ingress`, `PlaneDispatch::{ingress_of,
+//! (several bindings of one registration). The `agents:` owner is a DOOR row — the kernel's
+//! door-plane double (`linked::door`), folded by the kernel's own door fold as the composition root
+//! folds the door plane that owns that section in a shipped build (the linked engine crate that used
+//! to own it is deleted). This file spells no plane key; each plane pins its own literal identity in
+//! its own crate. Every test installs the roster first (idempotent, first-wins). A handful of `pub(crate)` items (`Ingress`, `PlaneDispatch::{ingress_of,
 //! wire_format_of, mounted_plane_of}`, `sole_wire_format`, `has_superset_ir`, `sole_of`,
 //! `superset_of`, `ingress::native::envelope_dialect`) were widened to `pub` for exactly this move.
 
@@ -38,7 +41,7 @@ fn single() -> &'static str {
     linked::owning("tools").key
 }
 
-/// The key of the plane that owns the `agents:` section — a plane with several bindings.
+/// The key of the plane that owns the `agents:` section — a door row with several bindings.
 fn multi() -> &'static str {
     linked::owning("agents").key
 }
@@ -135,7 +138,7 @@ fn a_plane_earns_a_superset_ir_at_two_wire_formats_and_not_before() {
     }
 }
 
-/// Today, and only as a consequence of the rule above, expressed on the three linked planes.
+/// Today, and only as a consequence of the rule above, expressed on the three rows of the roster.
 #[test]
 fn the_fallback_and_multi_binding_planes_have_earned_an_ir_today() {
     register_planes();
@@ -150,15 +153,16 @@ fn the_fallback_and_multi_binding_planes_have_earned_an_ir_today() {
     );
 }
 
-/// THE A2A LEGS' NAMES ARE THE A2A PLANE'S WIRE FORMATS, and this is the assertion that keeps the
-/// two lists one vocabulary rather than two that happen to agree. The card a served agent publishes
-/// spells its `protocolBinding` from the plane's list (`serve::servable_bindings` upper-cases it),
-/// and the metric label an operator reads spells it from here. If these ever diverge, an operator
-/// correlating a Prometheus series with a published binding is silently comparing two strings that
-/// no longer describe the same leg.
+/// THE MULTI-BINDING LEGS' NAMES ARE THE PLANE'S WIRE FORMATS, and this is the assertion that keeps
+/// the two lists one vocabulary rather than two that happen to agree. A door row carries its
+/// Statement's dialect words verbatim (the kernel's fold copies them), the mount table labels a
+/// request with the word of the door it was knocked on (`wire_format_of`), and the transport axis
+/// names its legs with `Transport::name`. If these ever diverge, an operator correlating a
+/// Prometheus series with a leg is silently comparing two strings that no longer describe the same
+/// leg. The `agents:` owner is the kernel's door-plane double, which states the kernel's own
+/// wire-format words; the shipped door's card spelling of each binding is pinned in its own crate.
 ///
-/// Relocated from `src/tests/transport_tests.rs` (the "fix the 38" pass): it asserts real `a2a`
-/// wire-format behaviour, so — like every other test in this file — it needs the real roster.
+/// Relocated from `src/tests/transport_tests.rs` (the "fix the 38" pass).
 #[test]
 fn the_multi_binding_legs_are_named_by_the_planes_wire_formats() {
     register_planes();
@@ -385,7 +389,7 @@ fn a_multi_binding_plane_is_still_labelled_at_the_door_that_was_knocked_on() {
 /// A CLAIM MAY ONLY NAME A DIALECT ITS PLANE ADMITS TO SPEAKING. Every mounted plane's canonical door
 /// speaks JSON-RPC, so every mountable linked plane must declare it; each plane's OWN claims (its
 /// real mount paths and their bindings) are pinned against its declared list in that plane's crate
-/// (busbar-a2a `serve_tests`, busbar-mcp `decl_tests`).
+/// (the door plane's own suite, busbar-mcp `decl_tests`).
 #[test]
 fn a_claim_only_names_a_wire_format_its_plane_speaks() {
     register_planes();

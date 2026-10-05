@@ -19,10 +19,9 @@
 //!   config transaction all reference these, so they cannot move without the forbidden cycle (the
 //!   remaining core↔admin contract coupling; the eventual target is `busbar-contract::SurfaceError`).
 //! * [`v1::json`] — the ENVELOPE PRIMITIVES (`err_json`/`ok_json`/`err_json_cond`) only.
-//!   `router::fallback_error_response` and [`planeverbs::CorePlaneAdminEnvelope`] render through them.
-//! * [`planeverbs`] — [`planeverbs::CorePlaneAdminEnvelope`], the core backing for the self-enveloping
-//!   plane-verb seam. `busbar-a2a`/`busbar-mcp` name it at
-//!   `busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope`, so it stays in core.
+//!   `router::fallback_error_response` and [`planeverbs::refusal_response`] render through them.
+//! * [`planeverbs`] — the core half of the plane trust verbs: the audit record and the boundary from
+//!   a plane's neutral refusal to the frozen envelope ([`planeverbs::refusal_response`]).
 
 pub mod seam;
 

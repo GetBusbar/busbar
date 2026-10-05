@@ -171,11 +171,6 @@ item = "SINK"
 
 [[finding]]
 rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/admin_verbs.rs"
-item = "PLANE_ADMIN_ENVELOPE"
-
-[[finding]]
-rule = "door-only:static-seam"
 file = "crates/busbar-kernel/src/egress/seam.rs"
 item = "HOSTLESS"
 

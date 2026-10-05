@@ -5,8 +5,11 @@
 //! `src/config/tests/named_map_tests.rs` (the "fix the 38" pass after the A6/HostCtx
 //! dev-dependency-cycle cleanup): `sections()` is folded from the REAL registered plane roster (see
 //! its doc — under the default/test/openapi feature set the fold is `[identity-providers, export,
-//! tools, agents]`, where `"tools"`/`"agents"` are the REAL `busbar_mcp`/`busbar_a2a` planes' own
-//! declared config sections). Pinning that frozen order is a claim about the real roster, which
+//! tools, agents]`, where `"tools"` is the linked tool plane's own declared config section and
+//! `"agents"` the section the roster's DOOR row states — the kernel's door-plane double
+//! (`linked::door`), folded by the kernel's own door fold and registered after the linked rows, as
+//! the composition root folds the door plane that owns that section in a shipped build). Pinning
+//! that frozen order is a claim about the roster's fold, which
 //! `cargo xtask gate construction`'s `neutral-no-dialect` rule (ceiling 0) forbids `busbar-kernel`
 //! itself from asserting via a synthetic `#[cfg(test)]` decl. Every other test in
 //! `named_map_tests.rs` is parameterized over WHATEVER `NamedMapSection::sections()` returns and

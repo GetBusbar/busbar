@@ -14,7 +14,7 @@
 //!
 //! What STAYED in busbar-core: `admin::v1::contract` (the frozen `AdminError`/`PATH_*` surface),
 //! `admin::v1::json` (the `err_json`/`ok_json`/`err_json_cond` envelope primitives),
-//! and `admin::planeverbs` (`CorePlaneAdminEnvelope`). The config version history (`versions`) lives here, on `App` behind the seam's slot.
+//! and `admin::planeverbs` (the plane trust verbs' audit record and refusal envelope). The config version history (`versions`) lives here, on `App` behind the seam's slot.
 
 pub mod admin_state;
 pub mod keys;
@@ -124,6 +124,10 @@ fn seam_mount(
 ///
 /// A `#[cfg(test)]` MODULE, not a bare `#[cfg(test)] fn`: this body is test-binary-only code, and the
 /// module is the form `plane-purity` reads as test scope.
+///
+/// The roster also carries the DOOR row a shipped build folds beside its linked rows (DECL-FOLD):
+/// [`door_double`], the kernel's door fold over a door-plane double that owns the fourth frozen
+/// named-definition section, registered after the linked rows as the composition root orders them.
 #[cfg(test)]
 mod test_seams {
     include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
@@ -153,12 +157,18 @@ mod test_seams {
             for seam in test_plane_seams() {
                 (seam.install)();
             }
+            busbar_kernel::plane::registry::register_test_plane(super::door_double::row());
             super::install();
         });
     }
 }
 #[cfg(test)]
 use test_seams::ensure_seam;
+
+/// The door row of the test roster (see [`test_seams`]).
+#[cfg(test)]
+#[path = "tests/door_double.rs"]
+mod door_double;
 
 /// Build a `TestApp` after ensuring the process-wide test seams (planes, protocols, runtimes, mount
 /// seam) are installed — moved admin tests use this in place of `TestApp::new()` so the seams are in

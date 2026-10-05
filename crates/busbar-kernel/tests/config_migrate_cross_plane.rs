@@ -4,10 +4,12 @@
 //! CROSS-PLANE MIGRATE→RESOLVE TESTS, relocated here from `src/config/tests/migrate_tests.rs` (the
 //! "fix the 85" pass after the A6/HostCtx dev-dependency-cycle cleanup): the fixture below configures
 //! a real `tools:`/`agents:` block and then asserts on `cfg.tool_pools`/`cfg.agent_pools`, which only
-//! exist once the REAL `busbar_mcp`/`busbar_a2a` failover planes actually claim those sections —
-//! `resolve()` refuses a `tools:`/`agents:` section as "compiled without the plane that owns it"
-//! unless the owning plane is registered, and a neutral fake plane cannot stand in for what these
-//! assertions read back. That only type-checks with ONE `busbar_kernel` in the graph, which is
+//! exist once a registered plane actually claims each section — `resolve()` refuses a
+//! `tools:`/`agents:` section as "compiled without the plane that owns it" unless the owning plane
+//! is registered. `tools:` is the linked tool plane's; `agents:` is the roster's DOOR row
+//! (`linked::door`, the kernel's door-plane double folded by the kernel's own door fold, as the
+//! composition root folds the door plane that owns that section in a shipped build), so the
+//! section is parsed, judged and pooled by the kernel's production code for a door. That only type-checks with ONE `busbar_kernel` in the graph, which is
 //! exactly what an integration-test target gives. See `plane_integration.rs`'s header for the same
 //! rationale, first written there.
 
@@ -16,7 +18,8 @@ mod linked;
 use busbar_kernel::config::migrate::migrate_config;
 use busbar_kernel::config::{deploy_from_yaml_str, resolve, DeployCfg, ProviderDef};
 
-/// Register the real llm/mcp/a2a planes in the process registry, idempotent (first-wins).
+/// Register the roster (the linked planes and the door row) in the process registry, idempotent
+/// (first-wins).
 fn register_planes() {
     linked::install();
 }
