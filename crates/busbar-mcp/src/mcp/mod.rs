@@ -1126,7 +1126,7 @@ impl std::fmt::Display for McpCfgError {
 /// `DEFAULT_MOUNT` is THE ONE PATH this endpoint is served at: the compile-time claim, read from the
 /// claim table rather than written a second time here, so the path validation accepts and the path
 /// claimed cannot disagree.
-use busbar_plane_mcp::{tool_claims::DEFAULT_MOUNT, codec::protected_resource_metadata_path};
+use busbar_plane_mcp::{codec::protected_resource_metadata_path, tool_claims::DEFAULT_MOUNT};
 
 impl McpResource {
     /// Validate and derive. Every refusal is fail-closed at BOOT rather than at first request: an

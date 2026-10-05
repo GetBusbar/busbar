@@ -34,7 +34,8 @@ use super::upstream_support::{gov_with_scopes, mcp_cfg};
 use crate::mcp::client::issue::{issue, Issued};
 use crate::mcp::client::verb::UpstreamVerb;
 use crate::mcp::config::{
-    McpPinMechanism, McpServerDefCfg, ServerPinCfg, ServerRequestGrants, ToolAllowCfg, ServerTransport as Transport,
+    McpPinMechanism, McpServerDefCfg, ServerPinCfg, ServerRequestGrants,
+    ServerTransport as Transport, ToolAllowCfg,
 };
 use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
