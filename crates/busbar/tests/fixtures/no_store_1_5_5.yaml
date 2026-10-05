@@ -1,0 +1,10 @@
+# THE NO-STORE FIXTURE (owner ruling Q-STORE = (B), 2026-09-27): a 1.5.5-shaped config with no
+# `store:` block. 1.5.5 booted it on the in-memory store; 1.6.0 refuses it, and
+# `busbar --migrate-config` inserts `store: {module: memory}`. Driven by tests/store_required.rs.
+listen: "127.0.0.1:0"
+providers:
+  mock:
+    api_key: { env: MOCK_KEY }
+models:
+  test-model:
+    provider: mock

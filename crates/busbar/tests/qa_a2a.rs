@@ -371,6 +371,7 @@ async fn boot(tag: &str, agent: &Agent) -> Node {
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
+store: {{module: memory}}
 public_url: "http://127.0.0.1:{data_port}"
 providers: {{}}
 models: {{}}

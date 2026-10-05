@@ -3541,7 +3541,10 @@ mod disposition_matrix_tests {
                 rate_card: None,
                 per_request_fee: 0,
                 plane_fees: Default::default(),
-                store: None,
+                store: Some(busbar_kernel::config::StoreCfg {
+                    module: "memory".into(),
+                    settings: Default::default(),
+                }),
                 secrets: std::collections::BTreeMap::new(),
                 providers,
                 models,
