@@ -61,8 +61,13 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
             if bytes.is_empty() {
                 return Ok(());
             }
-            let doc: serde_json::Value =
+            // The blob is dealt as stage 3g deals it: `{<section>: <section as written>}`.
+            let dealt: serde_json::Value =
                 serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+            let doc = dealt.get(section).cloned().unwrap_or_default();
+            if doc.is_null() {
+                return Ok(());
+            }
             let Some(map) = doc.as_object() else {
                 return Err("expected a map".to_string());
             };
