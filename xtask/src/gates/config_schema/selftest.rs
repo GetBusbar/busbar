@@ -450,6 +450,35 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &["no struct in the tracked"],
     ));
 
+    // A DOOR plane's Statement declares its section in a `Section` row flagged SECTION_DECLARING
+    // (no PlaneDecl), and the reader reads it there: a door row naming a section no struct carries is
+    // an orphan exactly as a PlaneDecl's is. A row that only CONSUMES a section declares nothing.
+    let door_row = |flags: &str| {
+        format!(
+            "const ZZ_SECTION: &str = \"zz_door_no_such_carrier\";\nconst SECTIONS: &[Section] = \
+             &[Section {{\n    name: abi_str(ZZ_SECTION),\n    flags: {flags},\n    _reserved: 0,\n}}];\n"
+        )
+    };
+    let mut ov = Overlay::new();
+    ov.set(plane_fixture, door_row("SECTION_DECLARING"));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a section a plane DOOR declares that no struct carries is REFUSED",
+        &[ROW_TRACKED_SOURCES],
+        ov,
+        &["no struct in the tracked"],
+    ));
+    let mut ov = Overlay::new();
+    ov.set(plane_fixture, door_row("SECTION_CONSUMED"));
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a section a plane door only CONSUMES is not read as declared",
+        &[ROW_TRACKED_SOURCES],
+        ov,
+    ));
+
     // A declared section this reader cannot resolve to a string is a section it cannot freeze.
     let mut ov = Overlay::new();
     ov.set(plane_fixture, declaration("ZZ_NO_SUCH_CONST", ""));
