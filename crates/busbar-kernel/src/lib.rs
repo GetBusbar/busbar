@@ -348,6 +348,9 @@ pub mod trust;
 #[path = "tests/alarm_silence_tests.rs"]
 mod alarm_silence_tests;
 pub mod appbuild;
+#[cfg(test)]
+#[path = "tests/license_tests.rs"]
+mod license_header_tests;
 // `key_revoke_tombstone_tests` drives the admin key-revoke HTTP surface; it moved to `busbar-admin`
 // with the service (`busbar_admin::tests::key_revoke_tombstone_tests`).
 pub mod preflight;
