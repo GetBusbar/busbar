@@ -241,6 +241,12 @@ struct Outbox {
     writes: Vec<Write>,
     /// On the gRPC line: the messages after `bytes`, each emitted on an answer of its own.
     queue: std::collections::VecDeque<Vec<u8>>,
+    /// On the gRPC line: `bytes` (and each queued one) is a message, its last byte a message
+    /// boundary (`EMIT_MESSAGE_END`); `false` for a status's message text.
+    messages: bool,
+    /// On the gRPC line: the status a stream that already sent messages ends with, stated on its
+    /// closing answer (`EMIT_FINAL_STATUS`).
+    final_status: Option<crate::framed::Reply>,
 }
 
 /// The head an answer starts with.
@@ -297,6 +303,8 @@ impl Outbox {
             at: 0,
             writes: Vec::new(),
             queue: std::collections::VecDeque::new(),
+            messages: false,
+            final_status: None,
         })
     }
 
@@ -317,6 +325,7 @@ impl Outbox {
                         return Some(Self::framed_whole(status.into()));
                     }
                 }
+                let emits = !messages.is_empty();
                 let mut queue: std::collections::VecDeque<Vec<u8>> = messages.into();
                 let bytes = queue.pop_front().unwrap_or_default();
                 Some(Outbox {
@@ -329,6 +338,8 @@ impl Outbox {
                     at: 0,
                     writes: Vec::new(),
                     queue,
+                    messages: emits,
+                    final_status: terminal.map(Into::into),
                 })
             }
             other => Self::of(other),
@@ -342,11 +353,13 @@ impl Outbox {
             recall: false,
             to_far: false,
             done: true,
+            messages: reply.code == crate::framed::Code::Ok as u32,
             head: Some(Head::Framed(reply.code, reply.details)),
             bytes: reply.body,
             at: 0,
             writes: Vec::new(),
             queue: std::collections::VecDeque::new(),
+            final_status: None,
         }
     }
 }
@@ -1532,6 +1545,19 @@ fn piece(
             value: arena.span(&w.value),
         });
     }
+    // A stream that already sent messages states the status it ends with on its closing answer:
+    // its message and details are in the arena by then.
+    let closing_final = ob
+        .final_status
+        .as_ref()
+        .filter(|_| ob.done && ob.queue.is_empty())
+        .map(|f| {
+            (
+                f.code,
+                arena.span(&f.body),
+                arena.span(f.details.as_deref().unwrap_or_default().as_bytes()),
+            )
+        });
     let short = !(fields.fits() && records.fits() && arena.fits() && units.fits());
     let (fw, fnd) = fields.settle(short);
     let (rw, rnd) = records.settle(short);
@@ -1551,6 +1577,8 @@ fn piece(
     }
     let n = reply.stream(&ob.bytes[ob.at..]);
     ob.at += n;
+    // A message's last byte is written: the boundary that frames it (the gRPC line).
+    let message_end = ob.messages && ob.at >= ob.bytes.len();
     // The gRPC line's next message, once this one is written: emitted on an answer of its own.
     if ob.at >= ob.bytes.len() {
         if let Some(next) = ob.queue.pop_front() {
@@ -1570,6 +1598,15 @@ fn piece(
     let done = ob.done && !more;
     if done {
         flags |= EMIT_DONE;
+    }
+    if message_end {
+        flags |= busbar_contract::abi::plane::EMIT_MESSAGE_END;
+    }
+    if let Some((code, message, details)) = closing_final.filter(|_| done) {
+        flags |= busbar_contract::abi::plane::EMIT_FINAL_STATUS;
+        out.set(|o| &o.final_status, code);
+        out.set(|o| &o.final_message, message);
+        out.set(|o| &o.final_details, details);
     }
     if let (Some(v), Some(t)) = (verb, target) {
         out.set(|o| &o.verb, v);

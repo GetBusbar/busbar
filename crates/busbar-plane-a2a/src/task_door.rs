@@ -59,6 +59,8 @@ pub struct Pass {
     listing: Option<Box<crate::mirror::Originated>>,
     listed: Option<Listed>,
     refreshed_queued: usize,
+    /// The reply the windows write is one message (the gRPC line's).
+    message: bool,
 }
 
 /// A finished listing: the handle the piece's calls count on from after it, and its answer's status
@@ -899,6 +901,7 @@ fn window_with(
     let first = (status != 0).then_some(Head {
         fields: head,
         length: true,
+        message: false,
     });
     window_core(plane, unit, input, out, (status, body), writes, first)
 }
@@ -930,14 +933,17 @@ fn framed_window(
         Some(Head {
             fields: &details,
             length: false,
+            message: reply.code == crate::framed::Code::Ok as u32,
         }),
     )
 }
 
-/// The first window's head: its fields, and whether it states its length.
+/// The first window's head: its fields, whether it states its length, and whether its body is one
+/// message (the gRPC line's: its last byte is a message boundary).
 struct Head<'h> {
     fields: &'h [(&'h str, &'h str)],
     length: bool,
+    message: bool,
 }
 
 /// One window: on the first (`first`), its head; then as many bytes as the reply buffer holds.
@@ -1011,13 +1017,26 @@ fn window_core(
     let rest = &body[n..];
     out.set(|o| &o.emitted, n as u64);
     out.set(|o| &o.reply_status, status);
+    // Whether the body is one message (the gRPC line's): the first window says, the later ones
+    // remember.
+    let message = match &first {
+        Some(head) => head.message,
+        None => plane
+            .units
+            .with(&unit, |u| u.is_some_and(|u| u.pass.message)),
+    };
     if rest.is_empty() {
-        out.set(|o| &o.flags, EMIT_DONE);
+        let mut flags = EMIT_DONE;
+        if message {
+            flags |= busbar_contract::abi::plane::EMIT_MESSAGE_END;
+        }
+        out.set(|o| &o.flags, flags);
     } else {
         out.set(|o| &o.more, 1);
         plane.units.with(&unit, |u| {
             if let Some(u) = u {
                 u.pass.rest = rest.to_vec();
+                u.pass.message = message;
             }
         });
     }

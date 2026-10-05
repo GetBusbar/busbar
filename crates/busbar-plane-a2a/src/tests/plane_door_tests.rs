@@ -359,3 +359,48 @@ fn the_framed_line_answers_messages_and_statuses() {
         ob.head
     );
 }
+
+/// THE gRPC LINE'S BOUNDARIES (SEAM-4l): a whole OK answer is one message, a status's text is no
+/// message, and a stream that fails after its first message ends with its own final status.
+#[test]
+fn the_framed_line_marks_its_messages_and_a_late_failure() {
+    use crate::framed::Rpc;
+    let ok = json!({ "jsonrpc": "2.0", "id": 1, "result": {
+        "id": "t-1", "contextId": "c-1", "status": { "state": "TASK_STATE_WORKING" } } });
+    let whole = Outbox::framed(reply(200, &ok), Rpc::GetTask).expect("an outbox");
+    assert!(whole.messages && whole.final_status.is_none());
+    let refused = json!({ "jsonrpc": "2.0", "id": 1,
+        "error": { "code": -32001, "message": "no task" } });
+    let status = Outbox::framed(reply(404, &refused), Rpc::GetTask).expect("an outbox");
+    assert!(!status.messages, "a status's text is no message");
+
+    let event = format!(
+        "data: {}\n\n",
+        json!({ "jsonrpc": "2.0", "id": 1, "result": { "statusUpdate": {
+            "taskId": "t", "contextId": "c", "status": { "state": "TASK_STATE_WORKING" } } } })
+    );
+    let failed = format!(
+        "data: {}\n\n",
+        json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32603, "message": "boom" } })
+    );
+    let part = Answer::Part(relay::Part {
+        head: true,
+        body: format!("{event}{failed}").into_bytes(),
+        last: false,
+    });
+    let late = Outbox::framed(part, Rpc::SubscribeToTask).expect("an outbox");
+    assert!(late.messages && late.done);
+    let end = late
+        .final_status
+        .expect("the stream ends with its own status");
+    assert_eq!(end.code, crate::framed::Code::Internal as u32);
+    assert_eq!(end.body, b"boom");
+    // A later part that fails with no message of its own ends the stream the same way.
+    let part = Answer::Part(relay::Part {
+        head: false,
+        body: failed.into_bytes(),
+        last: false,
+    });
+    let after = Outbox::framed(part, Rpc::SubscribeToTask).expect("an outbox");
+    assert!(after.done && after.bytes.is_empty() && after.final_status.is_some());
+}
