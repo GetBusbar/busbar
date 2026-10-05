@@ -545,6 +545,12 @@ is now a `400` naming the field; and the always-`null` `at` field on the hook vi
   message naming the rebuild against the 1.6.0 SDK (see the SDK migration note).
 - A config with no `store:` block is refused at boot and by `--validate`; `busbar --migrate-config`
   inserts `store: {module: memory}`, the in-memory store such a config ran on in 1.5.x.
+- A request translated between LLM dialects no longer has a value substituted for one the target
+  dialect cannot carry: an image whose format Bedrock Converse does not accept is dropped instead
+  of relabelled `png`, and a Gemini `thinkingBudget: -1` ("the model decides") is dropped on a
+  target with no such setting instead of sent as the `medium` effort; each drop is warned and
+  audited by its wire path. A wrong-typed Gemini `thinkingBudget` or Anthropic image `media_type` is
+  answered with the caller's own 400 error instead of being translated.
 
 ### Deprecated env vars still honoured
 
@@ -879,12 +885,6 @@ each dialect translates, field by field, is listed in the generated
 - A request translated between LLM dialects no longer carries an empty text block in place of a
   content block the target dialect cannot represent, and an answer translated back no longer
   delivers one; the block is dropped with a warning and an audit row naming its wire path.
-- A request translated between LLM dialects no longer has a value substituted for one the target
-  dialect cannot carry: an image whose format Bedrock Converse does not accept is dropped instead
-  of relabelled `png`, and a Gemini `thinkingBudget: -1` ("the model decides") is dropped on a
-  target with no such setting instead of sent as the `medium` effort; each drop is warned and
-  audited by its wire path. A wrong-typed Gemini `thinkingBudget` or Anthropic image `media_type` is
-  answered with the caller's own 400 error instead of being translated.
 - What a dialect's reader cannot carry across a translation (an unknown image detail or effort
   word, a tool-choice form or modality with no counterpart, extra choices or candidates, a Bedrock-only
   answer member, a Responses answer's request echoes) is now audited like a writer's drop, and every
