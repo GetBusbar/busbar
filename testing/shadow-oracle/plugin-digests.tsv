@@ -41,3 +41,17 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-aarch64-apple-darwin.tar.gz	
 hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-aarch64-unknown-linux-gnu.tar.gz	3de1216de2a81b6a0a206cfbab072ced0a725ed00d0c8ac45af79b90330ec4b5
 hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-apple-darwin.tar.gz	800951b63418541672f84ae8bdb59ef5ae28950d55a0f132b75e9b12b23b5b29
 hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar.gz	da8f83080ff21b0f38e25f0acbaaad7b2022e3932cc0b8f87f4e38d664d742e1
+# THE 1.6 LINE IS UNRELEASED: its plugins are BUILT from the commit busbar pins (ARCHITECT Q1, 2026-10-05;
+# busbar-release recorder::plugin_build). `src:<commit>` + `build:<GetBusbar repo>`; the build follows the
+# plugin's own release.yml recipe at that commit and is signed by the run's throwaway oracle key. No
+# floating builds: every row is an exact commit. auth-oidc is the rev busbar's Cargo.lock links; the
+# others are each repo's dev head on 2026-10-05.
+store-sqlite	src:55418eb8aebfd8398fe7efd814cc62a29b6dbb5a	build:busbar-store-sqlite	-	1.6
+store-postgres	src:43e14267d80f078969d5e7dcb52cc40776f23872	build:busbar-store-postgres	-	1.6
+store-valkey	src:e9e4b0be72883456cac69eb1f3396de5521cc8e8	build:busbar-store-valkey	-	1.6
+store-mysql	src:2842a1f00d3add1a1b0d88a5325c769ed7cef06b	build:busbar-store-mysql	-	1.6
+hashicorp-vault	src:8b36c32e82e80cbe5f47b132f7feb5af4e888e30	build:busbar-secret-vault	-	1.6
+auth-oidc	src:9ff64ff4d74bdd4d043ed7200d8771389810d19b	build:busbar-auth-oidc	-	1.6
+auth-github	src:96cf0d401dc7a70a235d5abdc5eec911cd2696ed	build:busbar-auth-github	-	1.6
+auth-ldap	src:00b2129497e7b07e0172ed466ed3a2802b3d66ea	build:busbar-auth-ldap	-	1.6
+webrequest-hook	src:97c0d9c2ad824bd6d67e9e5336d5d8be3800768d	build:busbar-hook-webrequest	-	1.6
