@@ -12,7 +12,7 @@
 //! `BreakerCellAccess` trait so the FSM logic could run against either without duplication. This
 //! unit has exactly one destination-cell shape (every cell, including a lane's default `""` pool,
 //! is a [`BreakerCell`]), so that trait collapses to inherent methods on one struct — the FSM
-//! arithmetic itself (cooldown, jitter, the Retry-After floor, every state transition) is
+//! arithmetic itself (cooldown, jitter, the requested-wait floor, every state transition) is
 //! unchanged.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -395,7 +395,7 @@ impl BreakerCell {
         }
     }
 
-    /// Compute the escalating cooldown duration, with jitter and an optional Retry-After floor.
+    /// Compute the escalating cooldown duration, with jitter and an optional requested-wait floor.
     ///
     /// `streak == 0` gives `base_cooldown_secs`; otherwise `base << streak.min(63)` computed in
     /// u128 (a plain u64 `checked_shl` guards only the shift COUNT, not the value — an even base at
@@ -413,10 +413,10 @@ impl BreakerCell {
     /// `.max(1)` floor exists so `base_cooldown_secs == 1` can never jitter down to a zero cooldown
     /// (an instantly-re-admitting "tripped" cell).
     ///
-    /// Finally, when `honor_retry_after` is set and the upstream sent a Retry-After, that value is a
+    /// Finally, when `honor_retry_after` is set and the upstream sent a requested wait, that value is a
     /// FLOOR under the computed cooldown (`duration.max(retry_after)`) — honored even past
     /// `max_cooldown_secs` (a legitimate upstream hint may exceed it) but clamped to
-    /// `max_honored_retry_after_secs` so a hostile Retry-After cannot park a lane for millennia or
+    /// `max_honored_retry_after_secs` so a hostile requested wait cannot park a lane for millennia or
     /// overflow `now + duration`.
     pub fn compute_cooldown_with_retry_after(
         &self,
@@ -489,7 +489,7 @@ impl BreakerCell {
             retry_after,
             max_honored_retry_after_secs,
         );
-        // saturating_add: `duration` may carry a server-supplied Retry-After (already clamped
+        // saturating_add: `duration` may carry a server-supplied requested wait (already clamped
         // above, but defense in depth) — never wrap `now + duration`, which would land
         // `cooldown_until` in the past and instantly re-ready a tripped cell.
         self.cooldown_until
@@ -641,7 +641,7 @@ impl BreakerCell {
                 } else if !cfg.bench_below_trip_threshold {
                     // A degenerate single-member cell: there is no sibling to fail over to, so a
                     // sub-threshold failure benches nothing — it has not earned a cooldown. An
-                    // upstream-requested Retry-After is still honored, but only for as long as it
+                    // upstream's requested wait is still honored, but only for as long as it
                     // asked, not the escalating backoff a real trip earns.
                     if cfg.honor_retry_after {
                         if let Some(asked) = retry_after {

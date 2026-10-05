@@ -178,15 +178,15 @@ fn retry_after_is_honored_as_a_floor_under_the_computed_cooldown() {
         trip: TripConfig::default(),
         bench_below_trip_threshold: true,
     };
-    // A 500s Retry-After floors a would-be-15s cooldown up to (at least) 500s, well past
+    // A 500s requested wait floors a would-be-15s cooldown up to (at least) 500s, well past
     // max_cooldown_secs — the server's explicit hint is honored past the configured cap.
     let duration = cell.compute_cooldown_with_retry_after(NOW, &cfg, Some(500), 86_400);
     assert!(
         duration >= 500,
-        "Retry-After floor was not applied: {duration}"
+        "requested-wait floor was not applied: {duration}"
     );
 
-    // The ceiling still applies: a hostile 10_000_000s Retry-After is clamped to
+    // The ceiling still applies: a hostile 10_000_000s requested wait is clamped to
     // max_honored_retry_after_secs, never honored past it.
     let duration = cell.compute_cooldown_with_retry_after(NOW, &cfg, Some(10_000_000), 86_400);
     assert_eq!(duration, 86_400);
@@ -196,7 +196,7 @@ fn retry_after_is_honored_as_a_floor_under_the_computed_cooldown() {
 ///
 /// A unit crate answers from its arguments. The cooldown's jitter seed used to mix
 /// `SystemTime::now()` even though the caller had already handed the trip its `now`, so the same
-/// cell, driven from the same `now` with the same cfg, streak and Retry-After, armed a DIFFERENT
+/// cell, driven from the same `now` with the same cfg, streak and requested wait, armed a DIFFERENT
 /// `cooldown_until` depending on which wall second the process happened to be in — a replayed
 /// decision could not be reproduced, and the crate read a clock it is not allowed to read.
 ///
@@ -431,7 +431,7 @@ fn budget_spend_never_drives_the_counter_negative() {
 // `should_trip`'s `ErrorRate` arm decides from: below the floor, at the floor, at the threshold,
 // below the threshold, and outside the window.
 
-/// The Retry-After ceiling the cases below pass: they supply no upstream Retry-After, so the
+/// The requested-wait ceiling the cases below pass: they supply no upstream requested wait, so the
 /// ceiling on one is never reached. Named rather than repeated so a reader is not invited to read
 /// meaning into the number.
 const MAX_RETRY_AFTER: u64 = 3_600;
