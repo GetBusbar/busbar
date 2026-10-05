@@ -44,7 +44,8 @@
 //! THE RED ARMS, run in the plugin's own run: a perturbed pinned count is refused by the same
 //! comparator; the door restated at its kind ABI ± 1 is refused, linked (`KindAbi`) and dropped in
 //! (`ManifestKindAbi`, before `dlopen`); the door with a `ready` that fails refuses the boot with the
-//! plugin's text. And `BUSBAR_CONFORMANCE_RED=count` perturbs the both-ways arm itself, so the CI
+//! plugin's text; a networked door (the real one, or restated with a `tcp` need) bound to serve with
+//! no connection table is refused at bind, naming the plugin. And `BUSBAR_CONFORMANCE_RED=count` perturbs the both-ways arm itself, so the CI
 //! step can require that the suite FAILS when a count moves.
 //!
 //! THE SEAM (QUESTIONS, slot CONF-SUITE): the suite lives here, behind the `conformance` feature,
@@ -688,12 +689,16 @@ impl Restated {
 static ABI_UP: Restated = Restated::new();
 static ABI_DOWN: Restated = Restated::new();
 static READY_FAILS: Restated = Restated::new();
+static NETWORKED: Restated = Restated::new();
 
 extern "C" fn abi_up_door() -> *const Door {
     ABI_UP.get()
 }
 extern "C" fn abi_down_door() -> *const Door {
     ABI_DOWN.get()
+}
+extern "C" fn networked_door() -> *const Door {
+    NETWORKED.get()
 }
 extern "C" fn ready_fails_door() -> *const Door {
     READY_FAILS.get()
@@ -868,6 +873,89 @@ pub fn red_ready(s: &Subject) {
     });
 }
 
+/// The real door restated with one outbound `tcp` need, its target its own (the RED arm's subject
+/// for a door that declares none).
+fn with_a_tcp_need(real: Door) -> Door {
+    use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_NAMED};
+    use busbar_contract::abi::mechanism::door::Statement;
+    const NONE: AbiStr = AbiStr {
+        ptr: std::ptr::null(),
+        len: 0,
+    };
+    const TCP: &str = "tcp";
+    let needs: &'static [Need] = Box::leak(Box::new([Need {
+        direction: DIRECTION_OUTBOUND,
+        egress_class: 0,
+        transport: AbiStr {
+            ptr: TCP.as_ptr(),
+            len: TCP.len(),
+        },
+        auth: NONE,
+        target_from: NONE,
+        trust_from: NONE,
+        details: crate::dispatch::NO_BLOB,
+        keep_response_headers: std::ptr::null(),
+        keep_response_headers_len: 0,
+        timeout_ms: 0,
+        keep_mode: KEEP_NAMED,
+        _reserved: 0,
+        deny_response_headers: std::ptr::null(),
+        deny_response_headers_len: 0,
+    }]));
+    // SAFETY: a door's Statement is `'static`; only its needs are restated.
+    let st: Statement = unsafe { real.statement.read_unaligned() };
+    let st: &'static Statement = Box::leak(Box::new(Statement {
+        needs: needs.as_ptr(),
+        needs_len: needs.len(),
+        ..st
+    }));
+    Door {
+        statement: st,
+        ..real
+    }
+}
+
+/// **RED: a networked door bound to serve with NO connection table is refused, naming the plugin**
+/// (Q-P4-3). A door that declares a need is bound as the kernel serves it but with no table
+/// ([`bind`]: [`ConnTable::NoNeeds`]), linked and dropped in, and refused at bind with
+/// [`LoadError::NoConnectionTable`]; a door that declares none is restated with one `tcp` need (as
+/// [`red_ready`] restates its `ready`) and bound linked. The GREEN twins: the same door bound as a
+/// PROBE binds, and the honest door binds over the suite's own table ([`Subject::bind`]).
+///
+/// # Panics
+/// When a networked door binds to serve with no table, or a twin does not bind.
+pub fn red_no_table(s: &Subject) {
+    let real = real_door(s);
+    let needs = s.needs().len();
+    by_kind!(s.kind(), K => {
+        let d = dispatcher();
+        load::<K>(s, Leg::Linked, s.bind(&d, "honest")).expect("the honest door binds over the suite's table");
+        let restated = needs == 0;
+        let (door, needs): (DoorFn, usize) = if restated {
+            NETWORKED.set(with_a_tcp_need(real));
+            (networked_door, 1)
+        } else {
+            (s.door, needs)
+        };
+        let row = LinkedRow::of(door).expect("the door states its Statement");
+        let plugin = rendering::read(&row.statement).expect("its Statement reads back").name;
+        let want = LoadError::NoConnectionTable { plugin: plugin.clone(), needs };
+        let refused = load_linked::<K>(&row, bind(&d, "red-no-table"))
+            .map(|_| ())
+            .expect_err("a networked door serving with no connection table is refused");
+        assert_eq!(refused, want);
+        assert!(refused.to_string().contains(&format!("plugin '{plugin}'")), "{refused}");
+        if !restated {
+            let refused = load::<K>(s, Leg::Dropped, bind(&d, "red-no-table-dropped"))
+                .map(|_| ())
+                .expect_err("dropped in, the same door serving with no table is refused");
+            assert_eq!(refused, want);
+        }
+        load_linked::<K>(&row, Bind { conns: ConnTable::Probe, ..bind(&d, "probe") })
+            .expect("bound as a probe, with no table, it binds");
+    });
+}
+
 /// THE PROFILE GUARD: asked for the release binary (M6/contract), the suite refuses a debug build.
 /// `debug` is the caller's `cfg!(debug_assertions)` (the plugin's test crate's, not this one's).
 ///
@@ -912,6 +1000,12 @@ macro_rules! conformance_suite {
         #[test]
         fn red_a_failing_ready_refuses_the_boot() {
             $crate::conformance::red_ready(&__busbar_conformance_subject());
+        }
+
+        /// RED: a networked door bound to serve with no connection table is refused by name.
+        #[test]
+        fn red_a_networked_door_with_no_connection_table_is_refused() {
+            $crate::conformance::red_no_table(&__busbar_conformance_subject());
         }
 
         /// The release binary, when asked for.

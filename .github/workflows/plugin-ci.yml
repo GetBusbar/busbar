@@ -341,7 +341,7 @@ jobs:
           CRATE: ${{ inputs.plugin_crate }}
         run: |
           set -euo pipefail
-          suite="the_linked_and_the_dropped_in_door_are_one_plugin red_a_moved_crossing_count_is_refused red_a_door_at_another_kind_abi_is_refused red_a_failing_ready_refuses_the_boot the_suite_runs_in_the_profile_it_was_asked_to"
+          suite="the_linked_and_the_dropped_in_door_are_one_plugin red_a_moved_crossing_count_is_refused red_a_door_at_another_kind_abi_is_refused red_a_failing_ready_refuses_the_boot red_a_networked_door_with_no_connection_table_is_refused the_suite_runs_in_the_profile_it_was_asked_to"
           list="$RUNNER_TEMP/conformance.list"
           cargo test --release --locked -p "$CRATE" --test conformance -- --list > "$list" \
             || { echo "::error::no conformance target ($CRATE/tests/conformance.rs: busbar_plugin_loader::conformance_suite!)"; exit 1; }
