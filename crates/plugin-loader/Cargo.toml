@@ -27,9 +27,11 @@ pack = ["dep:jsonschema"]
 # It also gates `test_support`, the fake-call store harness, for the store adapter's minted-token
 # tests in busbar's integration suite (`crates/busbar/tests/store_adapter_verb_seam.rs`; the verb
 # seam takes a `Grant<AdminVerb>`). Enabled from busbar's [dev-dependencies] and busbar-kernel's own
-# `test-support`; never by a shipped build. The store SDK's TLS test table (unix + TLS) pulls
-# `rustls`/`rustls-pki-types` as optional deps turned on only here, never in a shipped build.
-test-support = ["dep:rustls", "dep:rustls-pki-types", "dep:rcgen", "dep:ring", "dep:base64"]
+# `test-support`; never by a shipped build. The harness locates the store both-ways proof's cdylib
+# by the name `build.rs` exports, and the dependent's own graph builds it. Its local token issuer
+# (`test_issuer`: an ES256 key, its JWKS, signed tokens) takes `ring` and `base64`, optional deps
+# turned on only here; no TLS library (TLS stays in the connector).
+test-support = ["dep:ring", "dep:base64"]
 # THE PUBLISHED CONFORMANCE SUITE (`src/conformance/`, TODO ABI-b4): every real plugin repo's own
 # `tests/conformance.rs` names this crate as a dev-dependency with this feature, at the busbar commit
 # it pins, and runs the suite over its linked door and its built cdylib (`plugin-ci.yml`'s
@@ -120,13 +122,8 @@ path = "tests/fixtures/neutral_frame_door.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-# `test-support` only (`tcp_conns`, the test connection table's TLS option, standing in for the
-# connector's TLS wrap in a plugin repo's tests): never in a shipped build.
-rustls = { workspace = true, optional = true }
-rustls-pki-types = { workspace = true, optional = true }
-# `test-support` only (`test_issuer`, a local token issuer: an ES256 key, a self-signed loopback
-# certificate, the JWKS and signed tokens; `https_conns` reads a trust_from PEM): never shipped.
-rcgen = { workspace = true, optional = true, features = ["pem"] }
+# `test-support` only (`test_issuer`: a local token issuer's ES256 key and base64url JWKS/JWS):
+# never in a shipped build.
 ring = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 # The three unit-side store seams the composition root binds to one loaded store (`store_adapter`).
@@ -179,11 +176,7 @@ getrandom = { workspace = true }
 jsonschema = { workspace = true, optional = true }
 
 [dev-dependencies]
-# `tcp_conns`' TLS option in this crate's own tests: a self-signed CA and a TLS backend.
-rustls = { workspace = true }
-rustls-pki-types = { workspace = true }
-rcgen = { workspace = true, features = ["pem"] }
-# `test_issuer` and `https_conns` in this crate's own tests (their `test-support` deps, here too).
+# `test_issuer` in this crate's own tests (its `test-support` deps, here too).
 ring = { workspace = true }
 base64 = { workspace = true }
 # The end-to-end DlopenPolicy test drives the async RoutingPolicy methods, so the test needs a

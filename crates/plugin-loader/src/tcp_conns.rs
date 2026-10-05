@@ -6,9 +6,10 @@
 //! connector can be opened on a [`Dispatcher`](crate::dispatch::Dispatcher) in a test without the
 //! process's connector. As the connector does, it dials `host:port` (bounded by the open's
 //! timeout), a `unix:/absolute/path` target over a unix-domain socket, and secures a stream on
-//! `upgrade_secure` with TLS trusting the CA a test hands it ([`TcpConns::with_roots`]), standing in
-//! for the connector's TLS wrap. A read with nothing ready answers PENDING and wakes the ticket
-//! shortly after, so a plugin's pending path is exercised. A test double: it never ships
+//! `upgrade_secure` with the TLS a test hands it ([`TcpConns::with_tls`], a [`SecureDial`]): TLS
+//! stays in the connector and this crate names no TLS library, so a test hands it a double of the
+//! connector's (whose real `upgrade_secure` its own suite proves). A read with nothing ready answers
+//! PENDING and wakes the ticket shortly after, so a plugin's pending path is exercised. A test double: it never ships
 //! (`test-support`).
 
 use std::io::{ErrorKind, Read, Write};
@@ -31,11 +32,36 @@ const POLL: Duration = Duration::from_millis(1);
 /// A unix-domain target's prefix, as the connector reads it.
 pub const UNIX_PREFIX: &str = "unix:";
 
+/// The TLS a table secures a stream with on `upgrade_secure`, handed to it by a test
+/// ([`TcpConns::with_tls`]): the connector's, never this crate's.
+pub trait SecureDial: Send + Sync {
+    /// Secure the blocking `tcp` for `server` to a completed handshake: verifying the peer against
+    /// the trust this dial was built with, or, on `verify_off`, checking no certificate (only the
+    /// handshake's signature).
+    ///
+    /// # Errors
+    /// `server` is unusable, or the handshake failed.
+    fn secure(
+        &self,
+        server: &str,
+        verify_off: bool,
+        tcp: TcpStream,
+    ) -> std::io::Result<Box<dyn SecuredSock>>;
+}
+
+/// A stream [`SecureDial::secure`] secured: its bytes, the socket under it, and its close.
+pub trait SecuredSock: Read + Write + Send {
+    /// The socket under the session.
+    fn tcp(&self) -> &TcpStream;
+    /// Send the close alert, flush it and shut the socket down.
+    fn close(&mut self);
+}
+
 /// One connection's socket.
 enum Sock {
     Tcp(TcpStream),
     Unix(UnixStream),
-    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
+    Tls(Box<dyn SecuredSock>),
     Gone,
 }
 
@@ -78,7 +104,7 @@ struct Conn {
 pub struct TcpConns {
     slab: ConnSlab<Mutex<Conn>>,
     wake: Arc<dyn Fn(u64) + Send + Sync>,
-    tls: Option<Arc<rustls::ClientConfig>>,
+    tls: Option<Arc<dyn SecureDial>>,
     timeouts: Mutex<Vec<u64>>,
     /// Each declared need's egress class, by owner and need.
     classes: Mutex<std::collections::HashMap<(InstanceId, NeedId), u32>>,
@@ -113,86 +139,13 @@ impl TcpConns {
         }
     }
 
-    /// [`TcpConns::new`], securing a stream on `upgrade_secure` with TLS that trusts exactly the
-    /// CA certificate `ca_der` (DER).
-    ///
-    /// # Panics
-    /// `ca_der` is not a certificate the TLS stack accepts as a root.
+    /// [`TcpConns::new`], securing a stream on `upgrade_secure` with `tls`.
     #[must_use]
-    pub fn with_roots(wake: Arc<dyn Fn(u64) + Send + Sync>, ca_der: &[u8]) -> Self {
-        let mut roots = rustls::RootCertStore::empty();
-        roots
-            .add(rustls_pki_types::CertificateDer::from(ca_der.to_vec()))
-            .expect("the test CA is a root certificate");
-        let config = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .expect("the default protocol versions")
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    pub fn with_tls(wake: Arc<dyn Fn(u64) + Send + Sync>, tls: Arc<dyn SecureDial>) -> Self {
         Self {
-            tls: Some(Arc::new(config)),
+            tls: Some(tls),
             ..Self::new(wake)
         }
-    }
-}
-
-/// A TLS client config that checks no certificate, only the handshake's signature.
-fn unverified() -> Arc<rustls::ClientConfig> {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    Arc::new(
-        rustls::ClientConfig::builder_with_provider(provider.clone())
-            .with_safe_default_protocol_versions()
-            .expect("the default protocol versions")
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(AnyCertificate(provider)))
-            .with_no_client_auth(),
-    )
-}
-
-#[derive(Debug)]
-struct AnyCertificate(Arc<rustls::crypto::CryptoProvider>);
-
-impl rustls::client::danger::ServerCertVerifier for AnyCertificate {
-    fn verify_server_cert(
-        &self,
-        _: &rustls_pki_types::CertificateDer<'_>,
-        _: &[rustls_pki_types::CertificateDer<'_>],
-        _: &rustls_pki_types::ServerName<'_>,
-        _: &[u8],
-        _: rustls_pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls_pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
-            message,
-            cert,
-            dss,
-            &self.0.signature_verification_algorithms,
-        )
-    }
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls_pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
-            message,
-            cert,
-            dss,
-            &self.0.signature_verification_algorithms,
-        )
-    }
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.0.signature_verification_algorithms.supported_schemes()
     }
 }
 
@@ -352,11 +305,7 @@ impl Conns for TcpConns {
             Sock::Unix(s) => {
                 let _ = s.shutdown(std::net::Shutdown::Both);
             }
-            Sock::Tls(mut s) => {
-                s.conn.send_close_notify();
-                let _ = s.flush();
-                let _ = s.sock.shutdown(std::net::Shutdown::Both);
-            }
+            Sock::Tls(mut s) => s.close(),
             Sock::Gone => {}
         }
         Ok(())
@@ -387,9 +336,10 @@ impl DeclaredConns for TcpConns {
         self.slab.check_need(owner, need).ok().map(Ok)
     }
 
-    /// TLS from the stream's next byte, trusting the table's CA ([`TcpConns::with_roots`]), or,
-    /// on `verify_off` (an operator-infrastructure need's only, as the connector rules), checking
-    /// no certificate; the handshake runs to completion here (a test double may block its caller).
+    /// TLS from the stream's next byte, through the table's TLS ([`TcpConns::with_tls`]):
+    /// verifying, or, on `verify_off` (an operator-infrastructure need's only, as the connector
+    /// rules), checking no certificate; the handshake runs to completion here (a test double may
+    /// block its caller). A table without TLS refuses every upgrade.
     fn upgrade_secure(
         &self,
         caller: InstanceId,
@@ -400,7 +350,7 @@ impl DeclaredConns for TcpConns {
         _: u64,
     ) -> Result<(), ConnError> {
         let (need, c) = self.slab.get(caller, conn)?;
-        let config = if verify_off {
+        if verify_off {
             let class = self
                 .classes
                 .lock()
@@ -412,27 +362,19 @@ impl DeclaredConns for TcpConns {
             {
                 return Err(ConnError::Refused);
             }
-            unverified()
-        } else {
-            self.tls.clone().ok_or(ConnError::Refused)?
-        };
+        }
+        let secure = self.tls.clone().ok_or(ConnError::Refused)?;
         let mut c = c.lock().unwrap_or_else(PoisonError::into_inner);
         let server = name.map_or_else(|| host_of(&c.target), str::to_owned);
-        let server =
-            rustls_pki_types::ServerName::try_from(server).map_err(|_| ConnError::Refused)?;
-        let Sock::Tcp(mut tcp) = std::mem::replace(&mut c.sock, Sock::Gone) else {
+        let Sock::Tcp(tcp) = std::mem::replace(&mut c.sock, Sock::Gone) else {
             return Err(ConnError::Refused);
         };
-        let mut tls =
-            rustls::ClientConnection::new(config, server).map_err(|_| ConnError::Refused)?;
         tcp.set_nonblocking(false).map_err(|e| io(&e))?;
-        while tls.is_handshaking() {
-            if tls.complete_io(&mut tcp).is_err() {
-                return Err(ConnError::Refused);
-            }
-        }
-        tcp.set_nonblocking(true).map_err(|e| io(&e))?;
-        c.sock = Sock::Tls(Box::new(rustls::StreamOwned::new(tls, tcp)));
+        let tls = secure
+            .secure(&server, verify_off, tcp)
+            .map_err(|_| ConnError::Refused)?;
+        tls.tcp().set_nonblocking(true).map_err(|e| io(&e))?;
+        c.sock = Sock::Tls(tls);
         Ok(())
     }
 

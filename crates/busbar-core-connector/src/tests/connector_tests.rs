@@ -846,3 +846,164 @@ fn a_declared_target_carrying_a_userinfo_is_refused() {
         );
     });
 }
+
+// ── a need whose target is a PROGRAM ───────────────────────────────────────────────────────────
+
+/// An outbound program need over the test transport, in `class`, with `auth`.
+fn program_need(class: u32, auth: &str) -> ReadNeed {
+    ReadNeed {
+        egress_class: class,
+        auth: auth.to_owned(),
+        ..config_targeted_need("settings.server")
+    }
+}
+
+fn program(command: &str, args: &[&str], env: &[(&str, &str)]) -> busbar_contract::conn::Program {
+    busbar_contract::conn::Program {
+        command: command.to_owned(),
+        args: args.iter().map(|a| (*a).to_owned()).collect(),
+        env: env
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect(),
+    }
+}
+
+/// Read until `want` bytes arrived (or the connection ended), driving it by the caller's reads.
+async fn read_all(c: &Connector, id: ConnId, want: usize) -> Vec<u8> {
+    let mut got = Vec::new();
+    let mut buf = [0_u8; 256];
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while got.len() < want && std::time::Instant::now() < deadline {
+        match c.read(OWNER, id, 7, &mut buf) {
+            Ok(piece) => {
+                got.extend_from_slice(&buf[..piece.len]);
+                if piece.kind == PieceKind::Completion {
+                    break;
+                }
+            }
+            Err(ConnError::Pending) => {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            Err(e) => panic!("the read failed: {e:?}"),
+        }
+    }
+    got
+}
+
+/// Whether process `pid` is gone (or a zombie: it ended and waits to be reaped).
+fn gone(pid: &str) -> bool {
+    let out = std::process::Command::new("/bin/ps")
+        .args(["-o", "stat=", "-p", pid])
+        .output()
+        .expect("ps runs");
+    let stat = String::from_utf8_lossy(&out.stdout);
+    stat.trim().is_empty() || stat.trim().starts_with('Z')
+}
+
+/// RED (ARCHITECT round 4 (e)): a need whose `target_from` resolved to a PROGRAM is carried in the
+/// operator-infrastructure class: every open spawns it (no shell, only its stated environment),
+/// its stdin and stdout are the connection, and the connector kills it on close.
+#[test]
+fn a_program_need_spawns_its_program_and_kills_it_on_close() {
+    use busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE;
+    worker().block_on(async {
+        let c = literal_connector();
+        let need = program_need(EGRESS_OPERATOR_INFRASTRUCTURE, "");
+        // The program states its process id, then echoes what it is sent.
+        let echo = program("/bin/sh", &["-c", "echo $$; exec /bin/cat"], &[]);
+        assert_eq!(
+            DeclaredConns::declare_program(&c, OWNER, NeedId(0), &need, &echo),
+            Ok(())
+        );
+        assert_eq!(DeclaredConns::declared(&c, OWNER, NeedId(0)), Some(Ok(())));
+        let id = c
+            .open(OWNER, NeedId(0), &OpenDesc::default())
+            .expect("the program opens");
+        let first = read_all(&c, id, 1).await;
+        let line = String::from_utf8(first).unwrap();
+        let pid = line.lines().next().expect("the pid line").trim().to_owned();
+        assert!(pid.parse::<u32>().is_ok(), "{line:?}");
+        assert_eq!(c.write(OWNER, id, b"hello\n", true, false), Ok(6));
+        let echoed = read_all(&c, id, 6).await;
+        assert_eq!(echoed, b"hello\n");
+        assert!(!gone(&pid), "the program runs while the connection is open");
+        c.close(OWNER, id).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !gone(&pid) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(gone(&pid), "the connector killed the program on close");
+    });
+}
+
+/// The program's environment is ONLY what its settings state: nothing of the host's leaks in.
+#[test]
+fn a_program_inherits_no_environment_but_its_own() {
+    use busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE;
+    worker().block_on(async {
+        let c = literal_connector();
+        let need = program_need(EGRESS_OPERATOR_INFRASTRUCTURE, "");
+        let env = program("/usr/bin/env", &[], &[("DECLARED", "yes")]);
+        DeclaredConns::declare_program(&c, OWNER, NeedId(0), &need, &env).unwrap();
+        let id = c.open(OWNER, NeedId(0), &OpenDesc::default()).unwrap();
+        let out = read_all(&c, id, usize::MAX).await;
+        assert_eq!(String::from_utf8(out).unwrap(), "DECLARED=yes\n");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// RED: a program need is refused outside the operator-infrastructure class, with an auth style,
+/// over an unserved scheme, or for a command that is not an absolute path — and an open on it that
+/// names a target of its own is refused: it spawns its program and nothing else.
+#[test]
+fn a_program_need_is_refused_unless_the_operator_declared_it_as_written() {
+    use busbar_contract::abi::host::conn::connector::{
+        EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+    };
+    worker().block_on(async {
+        let c = literal_connector();
+        let cat = program("/bin/cat", &[], &[]);
+        let refused = |need: &ReadNeed, p: &busbar_contract::conn::Program| {
+            assert_eq!(
+                DeclaredConns::declare_program(&c, OWNER, NeedId(0), need, p),
+                Err(ConnError::Refused)
+            );
+            assert!(
+                c.open(OWNER, NeedId(0), &OpenDesc::default()).is_err(),
+                "nothing opens on a refused need"
+            );
+        };
+        refused(&program_need(EGRESS_OPEN_WEB, ""), &cat);
+        refused(&program_need(crate::DEFAULT_CLASS, ""), &cat);
+        refused(
+            &program_need(EGRESS_OPERATOR_INFRASTRUCTURE, "bearer"),
+            &cat,
+        );
+        refused(
+            &ReadNeed {
+                transport: "nowhere".into(),
+                ..program_need(EGRESS_OPERATOR_INFRASTRUCTURE, "")
+            },
+            &cat,
+        );
+        refused(
+            &program_need(EGRESS_OPERATOR_INFRASTRUCTURE, ""),
+            &program("cat", &[], &[]),
+        );
+        let need = program_need(EGRESS_OPERATOR_INFRASTRUCTURE, "");
+        DeclaredConns::declare_program(&c, OWNER, NeedId(0), &need, &cat).unwrap();
+        assert_eq!(
+            c.open(
+                OWNER,
+                NeedId(0),
+                &OpenDesc {
+                    target: "127.0.0.1:1",
+                    ..OpenDesc::default()
+                }
+            ),
+            Err(ConnError::Refused),
+            "a program need dials no target of the open's"
+        );
+    });
+}

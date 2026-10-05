@@ -14,9 +14,9 @@
 //! ([`crate::auth_axis::AuthRows`], the axis the kernel opens every `kind: auth` provider through)
 //! on a real dispatcher, BOUND TO A CONNECTION TABLE ([`crate::https_conns::HttpsConns`], standing
 //! in for the process's connector): the plugin holds no socket and no TLS; the table fetches its
-//! JWKS for it from a LOCAL ISSUER ([`crate::test_issuer::Issuer`]: an ES256 key, its JWKS on a
-//! certificate-verified loopback endpoint trusted through the plugin's `ca_cert_pem`, genuinely
-//! signed tokens). Both run one script — every token case to its verdict, the login kind, the
+//! JWKS for it from a LOCAL ISSUER ([`crate::test_issuer::Issuer`]: an ES256 key, its JWKS served
+//! only to a need trusting the issuer's certificate, which the plugin names as its `ca_cert_pem`,
+//! and genuinely signed tokens). Both run one script — every token case to its verdict, the login kind, the
 //! authorize URL, a code redeemed at an unreachable token endpoint — and the two registry rows and
 //! the two transcripts must be byte-identical.
 //!
@@ -51,6 +51,13 @@ const ALIAS: &str = "the-auth";
 
 /// The audience the issuer's tokens are minted for.
 const AUDIENCE: &str = "api://both-ways";
+
+/// A connection table serving the local issuer's JWKS.
+fn conns() -> Arc<HttpsConns> {
+    let c = Arc::new(HttpsConns::new());
+    c.serve_issuer(issuer());
+    c
+}
 
 /// The ONE local issuer of this test process.
 fn issuer() -> &'static Issuer {
@@ -223,7 +230,7 @@ async fn the_linked_and_the_dropped_in_auth_door_are_one_plugin() {
         rows[0]
     );
     assert_eq!(rows[0], rows[1], "the two doors must register one row");
-    let (linked_conns, dropped_conns) = (Arc::new(HttpsConns::new()), Arc::new(HttpsConns::new()));
+    let (linked_conns, dropped_conns) = (conns(), conns());
     let a = transcript(linked, AUDIENCE, Some(linked_conns.clone())).await;
     let b = transcript(dropped, AUDIENCE, Some(dropped_conns.clone())).await;
     assert_eq!(a, b, "the two doors must answer as one plugin");
@@ -265,13 +272,8 @@ async fn a_door_judging_another_audience_is_told_apart() {
         eprintln!("skip: the auth fixture's cdylib is not built");
         return;
     };
-    let a = transcript(linked, AUDIENCE, Some(Arc::new(HttpsConns::new()))).await;
-    let b = transcript(
-        dropped,
-        "api://someone-else",
-        Some(Arc::new(HttpsConns::new())),
-    )
-    .await;
+    let a = transcript(linked, AUDIENCE, Some(conns())).await;
+    let b = transcript(dropped, "api://someone-else", Some(conns())).await;
     assert!(a.contains("valid -> Identity("), "{a}");
     assert!(b.contains("valid -> Reject"), "{b}");
     assert_ne!(

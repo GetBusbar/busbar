@@ -1,25 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A TEST STAND-IN FOR THE HOST'S CONNECTION TABLE, FRAMED HTTPS: [`HttpsConns`] serves a plugin's
+//! A TEST STAND-IN FOR THE HOST'S CONNECTION TABLE, FRAMED: [`HttpsConns`] serves a plugin's
 //! declared outbound needs over the `http` transport (the scheme the http framer claims), to
-//! `https` targets, as the connector's framed `exchange()` does, so a plugin that
-//! fetches over the host (an IdP's JWKS, a token endpoint) can be opened on a
-//! [`Dispatcher`](crate::dispatch::Dispatcher) in a build that cannot link the process's connector
-//! (a kernel test). A test double: it never ships (`test-support`).
+//! `https` targets, as the connector's framed `exchange()` does, so a plugin that fetches over the
+//! host (an IdP's JWKS) can be opened on a [`Dispatcher`](crate::dispatch::Dispatcher) in a build
+//! that cannot link the process's connector (a kernel test). A test double: it never ships
+//! (`test-support`), and it names no TLS library (TLS stays in the connector).
 //!
-//! As the connector does, it refuses a need whose `target_from` or `trust_from` resolved to nothing,
-//! dials only the target a need's config names when it names one, and secures every connection with
-//! TLS trusting exactly the operator CA the need's `trust_from` named (a test has no public roots
-//! to reach). Unlike the connector it makes the request whole at `open`, on the caller's thread,
-//! over HTTP/1.1 with `Connection: close`, and answers every read at once (no PENDING): a loopback
-//! test issuer answers in microseconds.
+//! Its far ends are IN PROCESS: each is a URL the test registers ([`HttpsConns::serve`]) with the
+//! certificate it presents and its answer. As the connector does, the table refuses a need whose
+//! `target_from` or `trust_from` resolved to nothing, dials only the target a need's config names
+//! when it names one, and reaches a far end only over a need that trusts the certificate that far
+//! end presents (the operator CA its `trust_from` named; a test has no public roots): a need trusting
+//! another certificate, or a URL nothing serves, is refused as the connector refuses an unverified
+//! or unreachable peer. Every read answers at once (no PENDING).
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::TcpStream;
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::sync::{Mutex, PoisonError};
 
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::conn::{
@@ -29,15 +27,21 @@ use busbar_contract::conn::{
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::ConnFacts;
 
-/// The bound on one request when the need states none.
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// One declared need, as the table carries it.
 struct Declared {
     /// The target its config names (`target_from`), if any.
     target: Option<String>,
-    /// TLS trusting the operator CA its `trust_from` named; `None` = no CA (nothing to trust).
-    tls: Option<Arc<rustls::ClientConfig>>,
+    /// The operator CA its `trust_from` named; `None` = none (the public roots, which no test far
+    /// end chains to).
+    trust: Option<String>,
+}
+
+/// One far end: the certificate it presents and its answer.
+#[derive(Clone)]
+struct FarEnd {
+    cert_pem: String,
+    status: u32,
+    body: Vec<u8>,
 }
 
 /// One answered request, read back piece by piece.
@@ -48,11 +52,12 @@ struct Reply {
     at: usize,
 }
 
-/// THE TEST CONNECTION TABLE (framed https).
+/// THE TEST CONNECTION TABLE.
 #[derive(Default)]
 pub struct HttpsConns {
     slab: ConnSlab<Mutex<Reply>>,
     needs: Mutex<HashMap<(InstanceId, NeedId), Result<Declared, ConnError>>>,
+    far: Mutex<HashMap<String, FarEnd>>,
     sent: Mutex<Vec<(u32, String)>>,
 }
 
@@ -63,13 +68,34 @@ impl std::fmt::Debug for HttpsConns {
 }
 
 impl HttpsConns {
-    /// An empty table.
+    /// A table with no far end.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Every request made, `(need, target)`, in order.
+    /// Serve `url` (exact, query included) under the certificate `cert_pem`, answering `status`
+    /// and `body`.
+    pub fn serve(&self, url: &str, cert_pem: &str, status: u32, body: &str) {
+        self.far
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                url.to_owned(),
+                FarEnd {
+                    cert_pem: cert_pem.to_owned(),
+                    status,
+                    body: body.as_bytes().to_vec(),
+                },
+            );
+    }
+
+    /// Serve a test issuer's JWKS at its URL, under its certificate.
+    pub fn serve_issuer(&self, issuer: &crate::test_issuer::Issuer) {
+        self.serve(issuer.jwks_url(), issuer.cert_pem(), 200, issuer.jwks());
+    }
+
+    /// Every request made, `(need, target)`, in order (refused ones included).
     #[must_use]
     pub fn sent(&self) -> Vec<(u32, String)> {
         self.sent
@@ -77,51 +103,6 @@ impl HttpsConns {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
-}
-
-/// TLS trusting exactly the certificates in `pem`.
-fn trusting(pem: &str) -> Result<Arc<rustls::ClientConfig>, ConnError> {
-    let mut roots = rustls::RootCertStore::empty();
-    let mut found = false;
-    for der in pem_certificates(pem) {
-        roots
-            .add(rustls_pki_types::CertificateDer::from(der))
-            .map_err(|_| ConnError::Refused)?;
-        found = true;
-    }
-    if !found {
-        return Err(ConnError::Refused);
-    }
-    Ok(Arc::new(
-        rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .map_err(|_| ConnError::Refused)?
-        .with_root_certificates(roots)
-        .with_no_client_auth(),
-    ))
-}
-
-/// The DER of each `CERTIFICATE` block in `pem`.
-fn pem_certificates(pem: &str) -> Vec<Vec<u8>> {
-    use base64::Engine as _;
-    let mut out = Vec::new();
-    let mut body = None::<String>;
-    for line in pem.lines().map(str::trim) {
-        match (line, body.as_mut()) {
-            ("-----BEGIN CERTIFICATE-----", _) => body = Some(String::new()),
-            ("-----END CERTIFICATE-----", Some(b)) => {
-                if let Ok(der) = base64::engine::general_purpose::STANDARD.decode(b.as_bytes()) {
-                    out.push(der);
-                }
-                body = None;
-            }
-            (l, Some(b)) => b.push_str(l),
-            _ => {}
-        }
-    }
-    out
 }
 
 /// `https://host[:port]/...` as `(host, port)`.
@@ -143,73 +124,19 @@ fn authority(url: &str) -> Option<(String, u16)> {
     Some((host.to_ascii_lowercase(), port))
 }
 
-/// The request made whole over TLS, and the far end's status and body.
-fn exchange(
-    tls: Arc<rustls::ClientConfig>,
-    (host, port): (String, u16),
-    desc: &OpenDesc<'_>,
-) -> Result<(u32, Vec<u8>), ConnError> {
-    let timeout = match desc.timeout_ms {
-        0 => DEFAULT_TIMEOUT,
-        ms => Duration::from_millis(ms),
-    };
-    let tcp = TcpStream::connect((host.as_str(), port)).map_err(|_| ConnError::Refused)?;
-    tcp.set_read_timeout(Some(timeout))
-        .map_err(|_| ConnError::Fault)?;
-    let name =
-        rustls_pki_types::ServerName::try_from(host.clone()).map_err(|_| ConnError::Refused)?;
-    let conn = rustls::ClientConnection::new(tls, name).map_err(|_| ConnError::Refused)?;
-    let mut s = rustls::StreamOwned::new(conn, tcp);
-    let method = if desc.method.is_empty() {
-        &b"GET"[..]
+/// The URL a request reaches: the target's scheme and authority, then the request's own path and
+/// query (the head target).
+fn reached(target: &str, desc: &OpenDesc<'_>) -> String {
+    let origin_end = target
+        .strip_prefix("https://")
+        .and_then(|r| r.find(['/', '?', '#']).map(|i| i + "https://".len()))
+        .unwrap_or(target.len());
+    let path = String::from_utf8_lossy(desc.head_target);
+    if path.is_empty() {
+        target.to_owned()
     } else {
-        desc.method
-    };
-    let target = if desc.head_target.is_empty() {
-        &b"/"[..]
-    } else {
-        desc.head_target
-    };
-    let mut head = Vec::new();
-    head.extend_from_slice(method);
-    head.push(b' ');
-    head.extend_from_slice(target);
-    head.extend_from_slice(format!(" HTTP/1.1\r\nhost: {host}:{port}\r\n").as_bytes());
-    for (n, v) in desc.fields {
-        head.extend_from_slice(n.as_bytes());
-        head.extend_from_slice(b": ");
-        head.extend_from_slice(v);
-        head.extend_from_slice(b"\r\n");
+        format!("{}{path}", &target[..origin_end])
     }
-    head.extend_from_slice(
-        format!(
-            "content-length: {}\r\nconnection: close\r\n\r\n",
-            desc.body.len()
-        )
-        .as_bytes(),
-    );
-    head.extend_from_slice(desc.body);
-    s.write_all(&head).map_err(|_| ConnError::Refused)?;
-    s.flush().map_err(|_| ConnError::Refused)?;
-    let mut raw = Vec::new();
-    match s.read_to_end(&mut raw) {
-        Ok(_) => {}
-        // A far end that closes without a close_notify still sent its whole answer.
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {}
-        Err(_) if !raw.is_empty() => {}
-        Err(_) => return Err(ConnError::Closed),
-    }
-    let split = raw
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or(ConnError::Closed)?;
-    let head = String::from_utf8_lossy(&raw[..split]).into_owned();
-    let status = head
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .ok_or(ConnError::Closed)?;
-    Ok((status, raw[split + 4..].to_vec()))
 }
 
 fn piece(kind: PieceKind, len: usize) -> Piece {
@@ -233,17 +160,12 @@ impl Conns for HttpsConns {
         need: NeedId,
         desc: &OpenDesc<'_>,
     ) -> Result<ConnId, ConnError> {
-        self.slab.check_need(caller, need).inspect_err(|e| {
-            eprintln!("https_conns: need {} is not declared: {e}", need.0);
-        })?;
-        let (declared_target, tls) = {
+        self.slab.check_need(caller, need)?;
+        let (declared_target, trust) = {
             let needs = self.needs.lock().unwrap_or_else(PoisonError::into_inner);
             match needs.get(&(caller, need)) {
-                Some(Ok(d)) => (d.target.clone(), d.tls.clone()),
-                Some(Err(e)) => {
-                    eprintln!("https_conns: need {} was refused at declaration", need.0);
-                    return Err(*e);
-                }
+                Some(Ok(d)) => (d.target.clone(), d.trust.clone()),
+                Some(Err(e)) => return Err(*e),
                 None => return Err(ConnError::UndeclaredNeed),
             }
         };
@@ -251,35 +173,36 @@ impl Conns for HttpsConns {
             ("", Some(d)) => d.to_owned(),
             (named, _) => named.to_owned(),
         };
-        let Some(at) = authority(&target) else {
-            eprintln!(
-                "https_conns: need {} -> {target}: not an https target",
-                need.0
-            );
-            return Err(ConnError::Refused);
-        };
+        let url = reached(&target, desc);
+        self.sent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((need.0, url.clone()));
+        let at = authority(&target).ok_or(ConnError::Refused)?;
         // A need whose config names its target dials that target and no other.
         if let Some(d) = declared_target {
             if authority(&d).as_ref() != Some(&at) {
                 return Err(ConnError::Refused);
             }
         }
-        self.sent
+        let far = self
+            .far
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push((need.0, target.clone()));
-        let tls = tls.ok_or(ConnError::Refused)?;
-        let (status, body) = exchange(tls, at, desc).inspect_err(|e| {
-            // A test double: say why on the test's stderr (shown when the test fails).
-            eprintln!("https_conns: need {} -> {target}: {e}", need.0);
-        })?;
+            .get(&url)
+            .cloned()
+            .ok_or(ConnError::Refused)?;
+        // The peer is reached only over a need trusting the certificate it presents.
+        if trust.as_deref() != Some(far.cert_pem.as_str()) {
+            return Err(ConnError::Refused);
+        }
         self.slab.insert(
             caller,
             need,
             Mutex::new(Reply {
                 step: 0,
-                status,
-                body,
+                status: far.status,
+                body: far.body,
                 at: 0,
             }),
         )
@@ -351,13 +274,10 @@ impl DeclaredConns for HttpsConns {
         let answer = if spec.transport != "http" || unresolved {
             Err(ConnError::Refused)
         } else {
-            match trust.map(trusting).transpose() {
-                Ok(tls) => Ok(Declared {
-                    target: target.map(str::to_owned),
-                    tls,
-                }),
-                Err(e) => Err(e),
-            }
+            Ok(Declared {
+                target: target.map(str::to_owned),
+                trust: trust.map(str::to_owned),
+            })
         };
         let result = answer.as_ref().map(|_| ()).map_err(|e| *e);
         if result.is_ok() {

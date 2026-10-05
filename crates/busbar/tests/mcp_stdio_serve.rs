@@ -77,16 +77,70 @@ fn fixture_dir(tag: &str) -> PathBuf {
     d
 }
 
-/// THE LOCAL ISSUER, one per test process (the loader's `test_issuer`): an ES256 key, its JWKS
-/// served over a certificate-verified loopback endpoint the module trusts through `ca_cert_pem`, and
-/// genuinely signed tokens. The child `busbar` process's connector fetches the JWKS over the
-/// dropped-in module's declared need, and the module does the whole verification.
+/// THE LOCAL ISSUER, one per test process (the loader's `test_issuer`: an ES256 key, its JWKS and
+/// genuinely signed tokens), its JWKS served over a certificate-verified loopback TLS endpoint
+/// ([`serve_jwks`]) the module trusts through `ca_cert_pem`. The child `busbar` process's OWN
+/// connector fetches the JWKS over the dropped-in module's declared need, and the module does the
+/// whole verification.
 fn issuer() -> &'static busbar_plugin_loader::test_issuer::Issuer {
     static ONE: std::sync::OnceLock<busbar_plugin_loader::test_issuer::Issuer> =
         std::sync::OnceLock::new();
     ONE.get_or_init(|| {
-        busbar_plugin_loader::test_issuer::Issuer::start("https://issuer.e2e.invalid", "e2e-issuer")
+        let issuer = busbar_plugin_loader::test_issuer::Issuer::start(
+            "https://issuer.e2e.invalid",
+            "e2e-issuer",
+        );
+        let (url, cert_pem) = serve_jwks(issuer.jwks().to_string());
+        issuer.served_at(&url, &cert_pem)
     })
+}
+
+/// Serve `jwks` over TLS on a fresh loopback port for the life of the process, under a self-signed
+/// certificate for `127.0.0.1`: the JWKS URL and the certificate's PEM. One background thread
+/// answers every request with the document.
+fn serve_jwks(jwks: String) -> (String, String) {
+    use std::io::{Read as _, Write as _};
+    let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()])
+        .expect("mint a self-signed certificate");
+    let cert_pem = cert.cert.pem();
+    let private = rustls_pki_types::PrivateKeyDer::Pkcs8(
+        rustls_pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()),
+    );
+    let config = std::sync::Arc::new(
+        rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("protocol versions")
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.cert.der().clone()], private)
+        .expect("server certificate"),
+    );
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+    let url = format!(
+        "https://{}/jwks",
+        listener.local_addr().expect("local addr")
+    );
+    std::thread::spawn(move || {
+        for socket in listener.incoming() {
+            let (Ok(socket), Ok(session)) = (socket, rustls::ServerConnection::new(config.clone()))
+            else {
+                continue;
+            };
+            let mut stream = rustls::StreamOwned::new(session, socket);
+            let _ = stream.read(&mut [0u8; 4096]);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{jwks}",
+                jwks.len()
+            );
+            let _ = stream.flush();
+            stream.conn.send_close_notify();
+            let _ = stream.flush();
+        }
+    });
+    (url, cert_pem)
 }
 
 /// A JWT for principal `e2e` with role `tester`, bound to `aud` and signed by the local issuer —
@@ -213,6 +267,7 @@ fn write_configs(dir: &Path, extra: &str) {
 admin_listen: "127.0.0.1:0"
 advanced:
   allow_destinations: ["127.0.0.1"]
+store: {{module: memory}}
 {providers}{section}{extra}"#,
             section = include_str!("fixtures/stdio_plane_section.yaml")
                 .replace("{canonical}", canonical()),
@@ -377,7 +432,11 @@ fn the_catalog_sections_are_required_only_when_a_linked_plane_requires_them() {
     const STAMP: &str = "BUSBAR-3015: ";
     let dir = fixture_dir("catalog");
     std::fs::write(dir.join("providers.yaml"), "").unwrap();
-    std::fs::write(dir.join("config.yaml"), "listen: \"127.0.0.1:0\"\n").unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        "listen: \"127.0.0.1:0\"\nstore: {module: memory}\n",
+    )
+    .unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .arg("--validate")
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))

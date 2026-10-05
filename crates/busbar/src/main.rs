@@ -268,8 +268,8 @@ fn register_planes() {
     // The root legacy table, before the first configuration read (the dropped-plugin scan below
     // reads it): the kernel's 1.x detector and `--migrate-config` rewrite through it.
     root::legacy::install();
-    // The linked store and hook rows onto the kernel's cold-kind axis, with the default store the
-    // store rows declare, and its auth rows onto the auth axis, before anything resolves one.
+    // The linked store and hook rows onto the kernel's cold-kind axis, and its auth rows onto the
+    // auth axis, before anything resolves one.
     root::linked::register_stores(&LINKED);
     busbar_kernel::preflight::install_linked_auth(
         LINKED.auths,
@@ -715,10 +715,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass.
     let _sealed = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
     // THE PROCESS'S ONE CONNECTOR, right after the transport registry sealed: every linked
-    // transport door as a framer entry, every dial judged by the one destination guard. Inbound
-    // listening and outbound egress both take it from `root::connector::the()`.
+    // transport door as a framer entry opened with the same settings the seal built the transports
+    // from, every dial judged by the one destination guard. Inbound listening and outbound egress
+    // both take it from `root::connector::the()`.
     let _connector = root::connector::boot(
         LINKED_TRANSPORT_DOORS,
+        &root::policy::client_settings(&cfg.limits),
         dest,
         &[cfg.listen.as_str(), cfg.admin_listen.as_str()],
     );

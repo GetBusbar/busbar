@@ -9,9 +9,11 @@
 //! TLS, and fetches through the host's connection table over the needs its Statement declares. We
 //! pack it into a tarball stating that Statement, run it through `plugins_preflight` +
 //! `AuthMiddleware::new` against a LOCAL issuer (the loader's `test_issuer`: an ES256 key whose JWKS
-//! is served over a real HTTPS listener, trusted through the module's `ca_cert_pem` setting) reached
-//! through a connection table (the loader's `https_conns`, standing in for the process's connector,
-//! which this crate cannot link: the connector depends on it), present SIGNED JWTs, and prove:
+//! is served only to a need trusting the issuer's certificate, the module's `ca_cert_pem` setting)
+//! reached through a connection table (the loader's `https_conns`, standing in for the process's
+//! connector, which this crate cannot link: the connector depends on it; the real connector's fetch
+//! over real TLS is the composition root's `mcp_stdio_serve` proof), present SIGNED JWTs, and
+//! prove:
 //!
 //! * a valid token → `Identify` → a mapped `Principal` whose roles resolve to `role_bindings`
 //!   policy AND whose admin scope is capped by `auth.chain.<module>.max_admin_scope`;
@@ -81,18 +83,19 @@ const ISSUER: &str = "https://issuer.plugin-chain.invalid";
 const AUDIENCE: &str = "api://plugin-chain";
 
 /// THE LOCAL ISSUER, one per test process (the loader's `test_issuer`): an ES256 key, its JWKS
-/// served over a certificate-verified loopback endpoint the module trusts through `ca_cert_pem`,
-/// and genuinely signed tokens. Starting it also binds the test build's auth axis to a connection
-/// table (`https_conns`): the host fetches the JWKS for the module over its declared need, and the
-/// module does the whole verification.
+/// served only to a need trusting the issuer's certificate (which the module names as its
+/// `ca_cert_pem`), and genuinely signed tokens. Starting it also binds the test build's auth axis to
+/// a connection table serving that JWKS (`https_conns`): the host fetches it for the module over its
+/// declared need, and the module does the whole verification.
 fn issuer() -> &'static busbar_plugin_loader::test_issuer::Issuer {
     static ONE: std::sync::OnceLock<busbar_plugin_loader::test_issuer::Issuer> =
         std::sync::OnceLock::new();
     ONE.get_or_init(|| {
-        busbar_plugin_loader::auth_axis::stand_in_conns(std::sync::Arc::new(
-            busbar_plugin_loader::https_conns::HttpsConns::new(),
-        ));
-        busbar_plugin_loader::test_issuer::Issuer::start(ISSUER, "plugin-chain")
+        let issuer = busbar_plugin_loader::test_issuer::Issuer::start(ISSUER, "plugin-chain");
+        let conns = busbar_plugin_loader::https_conns::HttpsConns::new();
+        conns.serve_issuer(&issuer);
+        busbar_plugin_loader::auth_axis::stand_in_conns(std::sync::Arc::new(conns));
+        issuer
     })
 }
 
@@ -271,8 +274,9 @@ fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>
 
 /// A SECRET-REFERENCE SETTING, END TO END (the ADR-0010 delivery path, on a real module): a setting
 /// spelled as a SecretRef (`{ env: VAR }`) is RESOLVED by the engine and DELIVERED to the plugin,
-/// which uses it ITSELF — here the module's `ca_cert_pem`, the trust root its own HTTPS fetcher needs
-/// to reach the issuer, so a token only verifies if the resolved PEM arrived. Conversely, an
+/// which uses it ITSELF — here the module's `ca_cert_pem`, the trust root its need declares for the
+/// host to reach the issuer with (`trust_from`), so a token only verifies if the resolved PEM
+/// arrived. Conversely, an
 /// UNRESOLVABLE ref fails the load FAIL-CLOSED — the plugin is never handed a dangling reference.
 #[test]
 fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {

@@ -2,31 +2,30 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A LOCAL TOKEN ISSUER FOR TESTS (`test-support`, never in a shipped build): an ES256 key, its
-//! JWKS served over a certificate-verified loopback HTTPS endpoint, and genuinely signed tokens.
+//! JWKS, and genuinely signed tokens.
 //!
-//! A test that loads a token-verifying auth plugin points it here: the plugin names the JWKS URL
-//! and trusts the endpoint's certificate through its own settings (`ca_cert_pem`, the need's
-//! `trust_from`), and the HOST fetches it for the plugin over a declared need (the plugin holds no
-//! socket and no TLS). [`Issuer::start`] binds a fresh loopback port and answers every request on
-//! it with the JWKS, on one background thread, for the life of the process; [`Issuer::mint`] signs
-//! tokens with the matching key. Nothing is stubbed: the plugin under test does the whole
-//! verification, and the host does the whole fetch.
-
-use std::io::{Read as _, Write as _};
-use std::sync::Arc;
+//! A test that loads a token-verifying auth plugin points it here: the plugin names the JWKS URL and
+//! trusts the endpoint's certificate through its own settings (`ca_cert_pem`, the need's
+//! `trust_from`), and the HOST fetches the JWKS for it over a declared need (the plugin holds no
+//! socket and no TLS). Where the JWKS is served is the test's: in process, by the stand-in
+//! connection table [`crate::https_conns::HttpsConns`] (which serves it only to a need trusting
+//! [`Issuer::cert_pem`]), or over real TLS by a test that may hold a TLS library (the composition
+//! root's, which then names its address and certificate with [`Issuer::served_at`]). No TLS library
+//! is named here: TLS stays in the connector.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ring::signature::{EcdsaKeyPair, KeyPair as _, ECDSA_P256_SHA256_FIXED_SIGNING};
 
-/// A running local issuer: its identity, its signing key, and where its JWKS is served.
+/// A local issuer: its identity, its signing key, its JWKS, and where (and under which
+/// certificate) that JWKS is served.
 pub struct Issuer {
     issuer: String,
     kid: String,
     key: EcdsaKeyPair,
     rng: ring::rand::SystemRandom,
+    jwks: String,
     jwks_url: String,
     cert_pem: String,
-    cert_der: Vec<u8>,
 }
 
 impl std::fmt::Debug for Issuer {
@@ -39,11 +38,13 @@ impl std::fmt::Debug for Issuer {
 }
 
 impl Issuer {
-    /// Start an issuer named `issuer` (the `iss` its tokens carry), signing under key id `kid`,
-    /// with its JWKS served on a fresh loopback port for the life of the process.
+    /// An issuer named `issuer` (the `iss` its tokens carry), signing under key id `kid`. Its JWKS
+    /// is served in process by [`crate::https_conns::HttpsConns`], at `<issuer>/jwks`, under a
+    /// certificate of its own ([`Issuer::cert_pem`], an opaque PEM the table holds a need's trust
+    /// against).
     ///
     /// # Panics
-    /// The key, the certificate or the loopback listener cannot be made.
+    /// The key cannot be made.
     #[must_use]
     pub fn start(issuer: &str, kid: &str) -> Self {
         let rng = ring::rand::SystemRandom::new();
@@ -58,59 +59,32 @@ impl Issuer {
             "y": URL_SAFE_NO_PAD.encode(&point[33..65]),
         }]})
         .to_string();
-
-        let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()])
-            .expect("mint a self-signed certificate");
-        let cert_pem = cert.cert.pem();
-        let cert_der = cert.cert.der().to_vec();
-        let chain = vec![cert.cert.der().clone()];
-        let private = rustls_pki_types::PrivateKeyDer::Pkcs8(
-            rustls_pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()),
+        // An opaque certificate PEM unique to this issuer: what a need must trust for the
+        // in-process table to serve it.
+        let mut seed = [0u8; 48];
+        ring::rand::SecureRandom::fill(&rng, &mut seed).expect("randomness");
+        let cert_pem = format!(
+            "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+            base64::engine::general_purpose::STANDARD.encode(seed)
         );
-        let config = Arc::new(
-            rustls::ServerConfig::builder_with_provider(Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
-            .with_safe_default_protocol_versions()
-            .expect("protocol versions")
-            .with_no_client_auth()
-            .with_single_cert(chain, private)
-            .expect("server certificate"),
-        );
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
-        let jwks_url = format!(
-            "https://{}/jwks",
-            listener.local_addr().expect("local addr")
-        );
-        std::thread::spawn(move || {
-            for socket in listener.incoming() {
-                let (Ok(socket), Ok(session)) =
-                    (socket, rustls::ServerConnection::new(config.clone()))
-                else {
-                    continue;
-                };
-                let mut stream = rustls::StreamOwned::new(session, socket);
-                let _ = stream.read(&mut [0u8; 4096]);
-                let _ = write!(
-                    stream,
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-                     Connection: close\r\n\r\n{jwks}",
-                    jwks.len()
-                );
-                let _ = stream.flush();
-                stream.conn.send_close_notify();
-                let _ = stream.flush();
-            }
-        });
         Self {
+            jwks_url: format!("{}/jwks", issuer.trim_end_matches('/')),
             issuer: issuer.to_string(),
             kid: kid.to_string(),
             key,
             rng,
-            jwks_url,
+            jwks,
             cert_pem,
-            cert_der,
         }
+    }
+
+    /// The same issuer, its JWKS served over real TLS at `jwks_url` under the certificate
+    /// `cert_pem` (a test that stands that endpoint up names it here).
+    #[must_use]
+    pub fn served_at(mut self, jwks_url: &str, cert_pem: &str) -> Self {
+        jwks_url.clone_into(&mut self.jwks_url);
+        cert_pem.clone_into(&mut self.cert_pem);
+        self
     }
 
     /// The `iss` this issuer's tokens carry.
@@ -119,22 +93,22 @@ impl Issuer {
         &self.issuer
     }
 
-    /// Where the JWKS is served (`https://127.0.0.1:<port>/jwks`).
+    /// The JWKS document (the public key, under its key id).
+    #[must_use]
+    pub fn jwks(&self) -> &str {
+        &self.jwks
+    }
+
+    /// Where the JWKS is served.
     #[must_use]
     pub fn jwks_url(&self) -> &str {
         &self.jwks_url
     }
 
-    /// The PEM certificate the JWKS endpoint presents (a plugin's `ca_cert_pem`).
+    /// The certificate the JWKS endpoint presents (a plugin's `ca_cert_pem`).
     #[must_use]
     pub fn cert_pem(&self) -> &str {
         &self.cert_pem
-    }
-
-    /// The same certificate, DER.
-    #[must_use]
-    pub fn cert_der(&self) -> &[u8] {
-        &self.cert_der
     }
 
     /// Settings that verify this issuer's tokens for `audience`: the issuer, the JWKS URL and its

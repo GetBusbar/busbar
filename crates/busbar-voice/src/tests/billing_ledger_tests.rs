@@ -164,7 +164,7 @@ fn a_voice_sessions_metering_writes_no_row_keyed_by_the_upstream_provider() {
 /// The node's resolved config from `yaml` (beside empty providers/models), under whatever plane
 /// declarations the registry holds.
 fn resolved(yaml: &str) -> config::RootCfg {
-    let text = format!("providers: {{}}\nmodels: {{}}\n{yaml}");
+    let text = format!("store: {{module: memory}}\nproviders: {{}}\nmodels: {{}}\n{yaml}");
     let deploy = config::deploy_from_yaml_str(&text).expect("the config parses");
     config::resolve(&deploy, &Default::default()).expect("it resolves")
 }
