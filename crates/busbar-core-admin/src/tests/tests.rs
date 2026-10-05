@@ -1103,6 +1103,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         },
         "config": {
             "listen": "127.0.0.1:0",
+            "store": {"module": "memory"},
             "providers": {"test-provider": {"api_key": "none"}},
             "models": {
                 "m0": {"provider": "test-provider", "max_concurrent": 4},
@@ -1137,7 +1138,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .header("if-match", "\"0\"")
         .body(
             serde_json::json!({
-                "config": {"listen": "127.0.0.1:0", "providers": {}, "models": {}, "pools": {}},
+                "config": {"listen": "127.0.0.1:0", "store": {"module": "memory"}, "providers": {}, "models": {}, "pools": {}},
             })
             .to_string(),
         )
@@ -1150,7 +1151,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .header("if-match", "\"not-a-version\"")
         .body(
             serde_json::json!({
-                "config": {"listen": "127.0.0.1:0", "providers": {}, "models": {}, "pools": {}},
+                "config": {"listen": "127.0.0.1:0", "store": {"module": "memory"}, "providers": {}, "models": {}, "pools": {}},
             })
             .to_string(),
         )
@@ -1188,6 +1189,7 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
     std::fs::write(
         &config_path,
         "listen: 127.0.0.1:0
+store: {module: memory}
 providers:
   test-provider:
     api_key: none
@@ -1284,6 +1286,7 @@ pools:
     std::fs::write(
         &config_path,
         "listen: 127.0.0.1:0
+store: {module: memory}
 models:
   broken:
     provider: nope
@@ -2000,6 +2003,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         },
         "config": {
             "listen": "127.0.0.1:0",
+            "store": {"module": "memory"},
             "providers": {"test-provider": {"api_key": "none"}},
             "models": {"m0": {"provider": "test-provider", "max_concurrent": 4}},
             "pools": {"p": {"members": [{"model": "m0"}]}}
@@ -3765,7 +3769,7 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         .post(format!("http://{addr}/api/v1/admin/config/apply"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"config": {"providers": {}, "models": {}}}).to_string())
+        .body(serde_json::json!({"config": {"providers": {}, "models": {}, "store": {"module": "memory"}}}).to_string())
         .send()
         .await
         .unwrap();
@@ -4369,6 +4373,7 @@ async fn test_admin_v1_config_validate_dry_run() {
     let proposed = serde_json::json!({
         "config": {
             "providers": { "acme": { "api_key": { "env": "ACME_KEY" } } },
+            "store": {"module": "memory"},
             "models": {}
         },
         "providers": {}
@@ -4403,6 +4408,7 @@ async fn test_admin_v1_config_validate_dry_run() {
         "config": {
             "secrets": { "acme-vault": { "settings": {} } },
             "providers": {},
+            "store": {"module": "memory"},
             "models": {}
         },
         "providers": {}
@@ -4455,6 +4461,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
         "config": {
             "oauth_as": null,
             "providers": {},
+            "store": {"module": "memory"},
             "models": {}
         },
         "providers": {}
@@ -9656,6 +9663,7 @@ fn write_reset_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, st
     std::fs::write(
         &config_path,
         "listen: 127.0.0.1:0
+store: {module: memory}
 providers:
   test-provider:
     api_key: none
@@ -10555,6 +10563,7 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         .body(
             serde_json::json!({
                 "listen": "127.0.0.1:0",
+                "store": {"module": "memory"},
                 "store": { "module": "memory" },
                 "per_request_fee": 3
             })
@@ -11159,6 +11168,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
         &config_path,
         format!(
             "listen: 127.0.0.1:0
+store: {{module: memory}}
 providers:
   test-provider:
     api_key: none
@@ -12850,7 +12860,9 @@ async fn drive_admin_error_surface() {
             "POST",
             "/config/apply",
             Some(STALE),
-            Some(r#"{"config":{"listen":"127.0.0.1:0","providers":{},"models":{},"pools":{}}}"#),
+            Some(
+                r#"{"config":{"listen":"127.0.0.1:0","store":{"module":"memory"},"providers":{},"models":{},"pools":{}}}"#,
+            ),
             409,
             "version_conflict",
         ),
@@ -13896,6 +13908,7 @@ fn write_named_map_fixture(
     std::fs::write(
         &config_path,
         ("listen: 127.0.0.1:0
+store: {module: memory}
 providers:
   test-provider:
     api_key: none
