@@ -1005,17 +1005,146 @@ if not isinstance(per, dict) or not per:
 
 with open(waivers_path, encoding="utf-8") as fh:
     pin = json.load(fh)
-waived = set(pin.get("waived") or [])
-if not waived:
-    sys.exit("\n%s pins no waivers at all; refusing to trust an empty pin silently." % waivers_path)
+
+# THE LEDGER: every forgiveness carries a PREMISE this gate EVALUATES against the run in front of it
+# (BUSBAR-1.6.0.md Law 10: "a forgiveness whose premise is never checked is a blindfold"; a premise
+# that cannot be evaluated is not a reason and the entry is refused). Two lists, one shape:
+#   waived   a MUST that reports FAIL, forgiven only while its premise holds;
+#   skipped  a MUST that reports SKIPPED, justified only while its premise holds (Law 8: a SKIP is
+#            a requirement that produced no evidence, so each one is named, never excused as a class).
+# `premise` is a non-empty LIST of conditions, ALL of which must hold. The vocabulary is CLOSED; an
+# unknown kind is refused, not ignored:
+#   errors_match                  {pattern}: the requirement's own `errors` are non-empty and EVERY
+#                                 one matches `pattern` -- it fails for the stated reason and no other.
+#   card_equals                   {path, value}: the agent card the suite read (`agent_card` in this
+#                                 report) holds exactly `value` at the dotted `path`.
+#   card_lacks_required_extension {uri}: that card declares no extension `uri` as required.
+#   requirement_passes            {id}: another MUST reports PASS on this same run.
+PREMISE_KINDS = {
+    "requirement_passes": {"id": str},
+    "errors_match": {"pattern": str},
+    "card_equals": {"path": str, "value": object},
+    "card_lacks_required_extension": {"uri": str},
+}
+
+def ledger(key):
+    entries = pin.get(key)
+    if not isinstance(entries, list):
+        sys.exit("\n%s carries no `%s` list; the ledger is malformed." % (waivers_path, key))
+    out = {}
+    for e in entries:
+        if not isinstance(e, dict):
+            sys.exit("\n%s `%s` entry %r is an id only. A forgiveness by id alone states no premise\n"
+                     "and nothing can turn it back into a refusal (Law 10); every entry is\n"
+                     "{id, why, premise}." % (waivers_path, key, e))
+        rid, why, prem = e.get("id"), e.get("why"), e.get("premise")
+        if not isinstance(rid, str) or not rid:
+            sys.exit("\n%s `%s` entry %r names no id." % (waivers_path, key, e))
+        if not isinstance(why, str) or not why.strip():
+            sys.exit("\n%s `%s` entry %s states no `why`." % (waivers_path, key, rid))
+        if not isinstance(prem, list) or not prem:
+            sys.exit("\n%s `%s` entry %s carries no premise (a non-empty list of conditions); a\n"
+                     "forgiveness with no premise cannot be evaluated, and the entry is refused."
+                     % (waivers_path, key, rid))
+        for cond in prem:
+            if not isinstance(cond, dict) or cond.get("kind") not in PREMISE_KINDS:
+                sys.exit("\n%s `%s` entry %s carries a condition this gate cannot evaluate: %r (kind\n"
+                         "must be one of %s); a premise that cannot be evaluated is a wish, and the\n"
+                         "entry is refused." % (waivers_path, key, rid, cond, ", ".join(sorted(PREMISE_KINDS))))
+            for field, ty in PREMISE_KINDS[cond["kind"]].items():
+                if field not in cond or (ty is not object and not (isinstance(cond[field], ty) and cond[field])):
+                    sys.exit("\n%s `%s` entry %s: condition %s needs `%s`." % (waivers_path, key, rid, cond["kind"], field))
+        if rid in out:
+            sys.exit("\n%s `%s` names %s twice." % (waivers_path, key, rid))
+        out[rid] = e
+    return out
+
+waived = ledger("waived")
+justified_skips = ledger("skipped")
+# An EMPTY list is accepted: a ledger that forgives nothing is the strictest one there is, and a
+# waiver retired because its requirement now passes must leave a ledger the gate still reads. What
+# is refused is a ledger with no list at all (`ledger` above), the shape a misspelt key takes.
+both = sorted(set(waived) & set(justified_skips))
+if both:
+    sys.exit("\n%s names %s as both waived and skipped." % (waivers_path, ", ".join(both)))
+
+card = report.get("agent_card")
+
+def card_at(path):
+    node = card
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return (False, None)
+        node = node[part]
+    return (True, node)
+
+def premise_holds(rid, prem):
+    """(holds, what was observed) over every condition. A condition this run carries no evidence
+    for does NOT hold."""
+    seen = [condition_holds(rid, c) for c in prem]
+    return (all(ok for ok, _ in seen), "; ".join("%s: %s" % (c["kind"], w) for c, (_, w) in zip(prem, seen)))
+
+def condition_holds(rid, prem):
+    kind = prem["kind"]
+    if kind == "requirement_passes":
+        got = must.get(prem["id"], {}).get("status")
+        return (got == "PASS", "%s reports %s" % (prem["id"], got or "NOTHING"))
+    if kind == "errors_match":
+        errs = must.get(rid, {}).get("errors")
+        if not isinstance(errs, list) or not errs:
+            return (False, "the report carries no errors for %s" % rid)
+        try:
+            rx = re.compile(prem["pattern"])
+        except re.error as exc:
+            return (False, "pattern %r does not compile (%s)" % (prem["pattern"], exc))
+        off = [e for e in errs if not (isinstance(e, str) and rx.search(e))]
+        if off:
+            return (False, "%d of %d error(s) do not match %r, first: %r"
+                    % (len(off), len(errs), prem["pattern"], str(off[0])[:200]))
+        return (True, "all %d error(s) match %r" % (len(errs), prem["pattern"]))
+    if not isinstance(card, dict):
+        return (False, "the report carries no agent_card to evaluate the premise against")
+    if kind == "card_equals":
+        found, got = card_at(prem["path"])
+        if not found:
+            return (False, "the agent card has no %s" % prem["path"])
+        ok = got == prem["value"] and type(got) is type(prem["value"])
+        return (ok, "agent_card.%s = %s" % (prem["path"], json.dumps(got)))
+    if kind == "card_lacks_required_extension":
+        found, exts = card_at("capabilities.extensions")
+        if found and not isinstance(exts, list):
+            return (False, "agent_card.capabilities.extensions is not a list")
+        req = [x for x in (exts or []) if isinstance(x, dict) and x.get("uri") == prem["uri"]
+               and x.get("required") is True]
+        return (not req, "the card declares %s as required: %s" % (prem["uri"], "yes" if req else "no"))
+    return (False, "unknown premise kind %r" % kind)
 
 must = {k: v for k, v in per.items() if isinstance(v, dict) and v.get("level") == "MUST"}
+# THE PARTITION (Law 8): every MUST lands in exactly one of the four statuses the suite reports. A
+# status this gate does not know is not silently dropped from every count below.
+KNOWN = ("PASS", "FAIL", "SKIPPED", "NOT TESTED")
+unknown_status = sorted("%s=%r" % (k, v.get("status")) for k, v in must.items() if v.get("status") not in KNOWN)
 not_tested = sorted(k for k, v in must.items() if v.get("status") == "NOT TESTED")
 failing = sorted(k for k, v in must.items() if v.get("status") == "FAIL")
+skipped = sorted(k for k, v in must.items() if v.get("status") == "SKIPPED")
 unwaived = sorted(k for k in failing if k not in waived)
-waived_and_failing = sorted(k for k in failing if k in waived)
-waived_but_passing = sorted(k for k in waived if must.get(k, {}).get("status") not in (None, "FAIL"))
+unjustified_skips = sorted(k for k in skipped if k not in justified_skips)
 executed = sorted(k for k, v in must.items() if v.get("status") in ("PASS", "FAIL"))
+
+# EVERY LEDGER ENTRY IS EVALUATED, AND ITS REQUIREMENT MUST BE IN THE STATE IT FORGIVES. A waiver
+# whose requirement now passes, or a justified SKIP whose requirement now runs, is a forgiveness of
+# something that is no longer happening: its premise is false, it is RED until it is retired.
+ledger_held, ledger_false = [], []
+for key, entries, want in (("waived", waived, "FAIL"), ("skipped", justified_skips, "SKIPPED")):
+    for rid in sorted(entries):
+        got = must.get(rid, {}).get("status")
+        if got != want:
+            ledger_false.append("%s %s: the requirement reports %s, not %s -- retire the entry"
+                                % (key, rid, got or "NOTHING (not a MUST in this report)", want))
+            continue
+        ok, seen = premise_holds(rid, entries[rid]["premise"])
+        (ledger_held if ok else ledger_false).append(
+            "%s %s: premise %s -- %s" % (key, rid, "HOLDS" if ok else "IS FALSE", seen))
 
 # THE CONTROL'S OWN NOT-TESTED SET: the only NOT TESTED this gate may excuse. Union over every
 # pinned control, because a requirement one transport's control cannot test (e.g. HTTP_JSON-SVC-001)
@@ -1052,20 +1181,32 @@ for r in not_tested_unexcused:
     print("      %s" % r)
 if not not_tested_unexcused:
     print("      (none)")
-print("    FAIL, PINNED WAIVED (see WAIVERS.md; expected, not gated):")
-for r in waived_and_failing:
+print("    LEDGER (testing/a2a-tck/subject-waivers.json), every premise evaluated on this run:")
+for line in ledger_held:
+    print("      %s" % line)
+print("    LEDGER ENTRIES WHOSE PREMISE IS FALSE (RED):")
+for line in ledger_false:
+    print("      %s" % line)
+if not ledger_false:
+    print("      (none)")
+print("    SKIPPED WITH NO JUSTIFICATION IN THE LEDGER (RED):")
+for r in unjustified_skips:
     print("      %s" % r)
-if waived_but_passing:
-    print("    PINNED WAIVED BUT NOW PASSING (retire from testing/a2a-tck/subject-waivers.json and")
-    print("    WAIVERS.md -- this is good news, not a failure):")
-    for r in waived_but_passing:
-        print("      %s" % r)
+if not unjustified_skips:
+    print("      (none)")
 print("    FAIL, UNWAIVED (RED):")
 for r in unwaived:
     print("      %s" % r)
 if not unwaived:
     print("      (none)")
+print("    PARTITION: %d PASS + %d FAIL + %d SKIPPED + %d NOT TESTED + %d unknown = %d MUST"
+      % (len(executed) - len(failing), len(failing), len(skipped), len(not_tested),
+         len(unknown_status), len(must)))
 
+if unknown_status:
+    sys.exit("\n%d MUST requirement(s) report a status this gate does not know: %s.\n"
+             "A status outside PASS/FAIL/SKIPPED/NOT TESTED is not dropped from the count."
+             % (len(unknown_status), ", ".join(unknown_status)))
 if not executed:
     sys.exit(
         "\nNOT ONE of %d MUST requirements executed (PASS or FAIL) against busbar. A run that tested\n"
@@ -1076,6 +1217,19 @@ if not_tested_unexcused:
         "\n%d MUST requirement(s) went NOT TESTED against busbar that the pinned control DID execute:\n"
         "%s.\nThat is not the suite's limitation -- the suite could run them and did not run them here."
         % (len(not_tested_unexcused), ", ".join(not_tested_unexcused))
+    )
+if ledger_false:
+    sys.exit(
+        "\n%d ledger entr(ies) forgive something whose premise is false on this run:\n  %s\n"
+        "A forgiveness that cannot turn back into a refusal is not a forgiveness (Law 10)."
+        % (len(ledger_false), "\n  ".join(ledger_false))
+    )
+if unjustified_skips:
+    sys.exit(
+        "\n%d MUST requirement(s) were SKIPPED with no justification in the ledger: %s.\n"
+        "A SKIP is a requirement that produced no evidence about busbar. Each one is named in\n"
+        "testing/a2a-tck/subject-waivers.json `skipped` with a premise this gate evaluates, or the\n"
+        "leg is RED." % (len(unjustified_skips), ", ".join(unjustified_skips))
     )
 if unwaived:
     sys.exit(
@@ -1277,10 +1431,13 @@ PY
     say "  ok: a MUST row with no requirement-level report behind it is RED"
   fi
 
-  # A minimal, disposable waiver pin used by the next four cases, so they do not depend on --
-  # or drift with -- the real testing/a2a-tck/subject-waivers.json.
+  # A minimal, disposable LEDGER used by every case below, so they do not depend on -- or drift
+  # with -- the real testing/a2a-tck/subject-waivers.json. Every entry carries a premise the gate
+  # evaluates (Law 10): the waiver's is the refusal text in the requirement's own errors, the
+  # justified SKIP's is the card the suite read.
   local pin; pin="$(mktemp)"
-  printf '{"waived": ["PUSH-DELIVER-001"]}\n' > "$pin"
+  local pin_json='{"waived": [{"id": "PUSH-DELIVER-001", "why": "fixture", "premise": [{"kind": "errors_match", "pattern": "callback scheme .http. is refused"}]}], "skipped": [{"id": "CAP-SKIP-001", "why": "fixture", "premise": [{"kind": "card_equals", "path": "capabilities.streaming", "value": true}]}]}'
+  printf '%s\n' "$pin_json" > "$pin"
   local report; report="$(mktemp)"
   # A disposable CONTROL baseline, same reasoning: the NOT TESTED excuse is read against it, never
   # against the real testing/a2a-tck/baselines/. It names exactly the 21 ids GREEN 2 plants, as the
@@ -1293,140 +1450,155 @@ per.update({'SOME-REQ-001': 'PASS', 'PUSH-DELIVER-001': 'FAIL'})
 per.update({'EXEC-%03d' % i: 'PASS' for i in range(114)})
 json.dump({'per_requirement': per}, open('$ctl/control-fixture.json', 'w'))
 "
+  printf '| MUST | 113 | 1 | 0 | 114 |\n' > "$tmp"
+
+  # THE REPORT EVERY CASE STARTS FROM: the ledger's two entries in the state they forgive with their
+  # premises true, and one executed PASS. Each case applies ONE change (python, over `per` and
+  # `card`), so it is RED or GREEN for that change alone.
+  _selftest_report() {
+    python3 - "$1" "$2" <<'PY'
+import json, sys
+per = {
+    "SOME-REQ-001": {"level": "MUST", "status": "PASS"},
+    "PUSH-DELIVER-001": {"level": "MUST", "status": "FAIL", "errors": [
+        "Skipped: send_message failed: push callback scheme `http` is refused; a callback carries "
+        "task metadata off-box and must be https"]},
+    "CAP-SKIP-001": {"level": "MUST", "status": "SKIPPED"},
+}
+card = {"capabilities": {"streaming": True}}
+exec(sys.argv[2])
+doc = {"per_requirement": per}
+if card is not None:
+    doc["agent_card"] = card
+json.dump(doc, open(sys.argv[1], "w"))
+PY
+  }
+  # A RED case is RED for ITS reason: the refusal must carry `marker`, so a case that goes red for an
+  # unrelated reason (a malformed fixture) is a MISS, not an ok.
+  _selftest_red() {
+    local label="$1" marker="$2" change="$3" ledger="${4:-$pin}" got
+    _selftest_report "$report" "$change"
+    if got="$(_assert_tck_number_with_pin "$tmp" "$report" "$ledger" "$ctl" 2>&1)"; then
+      say "  MISS: $label was accepted"; failures=$((failures+1))
+    elif printf '%s' "$got" | grep -qF -- "$marker"; then
+      say "  ok: $label is RED"
+    else
+      say "  MISS: $label was refused, but not for its reason (no \`$marker\`)"; failures=$((failures+1))
+    fi
+  }
+  _selftest_green() {
+    local label="$1" change="$2" ledger="${3:-$pin}"
+    _selftest_report "$report" "$change"
+    if _assert_tck_number_with_pin "$tmp" "$report" "$ledger" "$ctl" >/dev/null 2>&1; then
+      say "  ok: $label is accepted"
+    else
+      say "  MISS: $label was refused"; failures=$((failures+1))
+    fi
+  }
+
+  # GREEN 1: the ONLY FAIL is a waived one whose premise holds, the ONLY SKIP a justified one whose
+  # premise holds. Green because both forgivenesses were evaluated and held, not because nothing
+  # failed.
+  _selftest_green "a waived FAIL and a justified SKIP, both premises holding," "pass"
 
   # RED 7: an UNWAIVED MUST requirement reports FAIL. Red regardless of the suite's own row, and
   # regardless of how many other requirements pass.
-  printf '| MUST | 113 | 1 | 0 | 114 |\n' > "$tmp"
-  python3 -c "
-import json
-json.dump({'per_requirement': {
-    'SOME-REQ-001': {'level': 'MUST', 'status': 'FAIL'},
-}}, open('$report', 'w'))
-"
-  if _assert_tck_number_with_pin "$tmp" "$report" "$pin" "$ctl"; then
-    say "  MISS: an unwaived FAIL requirement was accepted"; failures=$((failures+1))
-  else
-    say "  ok: an unwaived FAIL requirement is RED"
-  fi
+  _selftest_red "an unwaived FAIL requirement" "outside the pinned waiver set" \
+    "per['OTHER-REQ-001'] = {'level': 'MUST', 'status': 'FAIL', 'errors': ['x']}"
 
-  # GREEN 1: the ONLY FAIL requirement is inside the pin. Green, because that failure is expected
-  # and dated in WAIVERS.md, not because nothing failed.
-  python3 -c "
-import json
-json.dump({'per_requirement': {
-    'PUSH-DELIVER-001': {'level': 'MUST', 'status': 'FAIL'},
-}}, open('$report', 'w'))
-"
-  if _assert_tck_number_with_pin "$tmp" "$report" "$pin" "$ctl"; then
-    say "  ok: a FAIL requirement inside the pinned waiver set is accepted"
-  else
-    say "  MISS: a pinned, waived FAIL requirement was refused"; failures=$((failures+1))
-  fi
-
-  # GREEN 2: NOT TESTED requirements are never gated on, however many there are -- they are the
-  # suite's own limitation, not evidence about busbar. This is the case that used to be misread as
-  # 21 busbar failures.
-  python3 -c "
-import json
-per = {'NOT-TESTED-%03d' % i: {'level': 'MUST', 'status': 'NOT TESTED'} for i in range(21)}
-per['PUSH-DELIVER-001'] = {'level': 'MUST', 'status': 'FAIL'}
-json.dump({'per_requirement': per}, open('$report', 'w'))
-"
-  if _assert_tck_number_with_pin "$tmp" "$report" "$pin" "$ctl"; then
-    say "  ok: NOT TESTED requirements are reported, not gated on"
-  else
-    say "  MISS: NOT TESTED requirements were treated as failures"; failures=$((failures+1))
-  fi
+  # GREEN 2: NOT TESTED requirements the control also could not test are never gated on, however
+  # many there are -- they are the suite's own limitation. This is the case that used to be misread
+  # as 21 busbar failures.
+  _selftest_green "NOT TESTED requirements the control also could not test" \
+    "per.update({'NOT-TESTED-%03d' % i: {'level': 'MUST', 'status': 'NOT TESTED'} for i in range(21)})"
 
   # RED 9: EVERY MUST degraded to NOT TESTED -- the pin bump / undialable transport / never-served
   # subject shape. The suite's own row still says 114, so the `total == 0` floor does not see it;
-  # 114 NOT TESTED that the control executed must be RED, not "0 FAIL, (none) unwaived".
-  printf '| MUST | 0 | 114 | 0 | 114 |\n' > "$tmp"
-  python3 -c "
-import json
-json.dump({'per_requirement': {'EXEC-%03d' % i: {'level': 'MUST', 'status': 'NOT TESTED'}
-                                for i in range(114)}}, open('$report', 'w'))
-"
-  if _assert_tck_number_with_pin "$tmp" "$report" "$pin" "$ctl"; then
-    say "  MISS: a run where every MUST went NOT TESTED was accepted"; failures=$((failures+1))
-  else
-    say "  ok: a run where every MUST went NOT TESTED is RED"
-  fi
+  # a run in which nothing executed has no number (RED 10 holds the per-requirement control half).
+  _selftest_red "a run where every MUST went NOT TESTED" "NOT ONE of" \
+    "per.clear(); per.update({'EXEC-%03d' % i: {'level': 'MUST', 'status': 'NOT TESTED'} for i in range(114)})" \
+    <(printf '{"waived": [], "skipped": []}\n')
 
   # RED 10: ONE NOT TESTED the control executed, among otherwise excused ones. The excuse is per
   # requirement, not a count.
-  python3 -c "
-import json
-per = {'NOT-TESTED-%03d' % i: {'level': 'MUST', 'status': 'NOT TESTED'} for i in range(21)}
-per['EXEC-000'] = {'level': 'MUST', 'status': 'NOT TESTED'}
-per['SOME-REQ-001'] = {'level': 'MUST', 'status': 'PASS'}
-json.dump({'per_requirement': per}, open('$report', 'w'))
-"
-  if _assert_tck_number_with_pin "$tmp" "$report" "$pin" "$ctl"; then
-    say "  MISS: a NOT TESTED requirement the control executed was excused"; failures=$((failures+1))
-  else
-    say "  ok: a NOT TESTED requirement the control executed is RED"
-  fi
+  _selftest_red "a NOT TESTED requirement the control executed" "EXEC-000" \
+    "per.update({'NOT-TESTED-%03d' % i: {'level': 'MUST', 'status': 'NOT TESTED'} for i in range(21)}); per['EXEC-000'] = {'level': 'MUST', 'status': 'NOT TESTED'}"
 
   # RED 11: nothing executed at all, even though every NOT TESTED is one the control also could not
   # test. Zero executed MUSTs is no number.
-  python3 -c "
-import json
-json.dump({'per_requirement': {'NOT-TESTED-%03d' % i: {'level': 'MUST', 'status': 'NOT TESTED'}
-                                for i in range(21)}}, open('$report', 'w'))
-"
-  if _assert_tck_number_with_pin "$tmp" "$report" "$pin" "$ctl"; then
-    say "  MISS: a run that executed no MUST at all was accepted"; failures=$((failures+1))
-  else
-    say "  ok: a run that executed no MUST at all is RED"
-  fi
+  _selftest_red "a run that executed no MUST at all" "NOT ONE of" \
+    "per.clear(); per.update({'NOT-TESTED-%03d' % i: {'level': 'MUST', 'status': 'NOT TESTED'} for i in range(21)})" \
+    <(printf '{"waived": [], "skipped": []}\n')
 
   # RED 12: no control baseline to read the excuse from. Refused, not read as "nothing to excuse".
   local noctl; noctl="$(mktemp -d)"
-  python3 -c "
-import json
-json.dump({'per_requirement': {'SOME-REQ-001': {'level': 'MUST', 'status': 'PASS'}}}, open('$report', 'w'))
-"
-  if _assert_tck_number_with_pin "$tmp" "$report" "$pin" "$noctl"; then
+  _selftest_report "$report" "pass"
+  if _assert_tck_number_with_pin "$tmp" "$report" "$pin" "$noctl" >/dev/null 2>&1; then
     say "  MISS: a gate with no control baseline to read was accepted"; failures=$((failures+1))
   else
     say "  ok: a gate with no control baseline is refused"
   fi
   rmdir "$noctl"
 
-  # RED 8: an empty pin is refused outright -- an empty waiver file would silently exempt nothing
-  # while looking configured, which is a gate that always passes for the wrong reason.
-  printf '{"waived": []}\n' > "$pin"
-  python3 -c "
-import json
-json.dump({'per_requirement': {
-    'SOME-REQ-001': {'level': 'MUST', 'status': 'PASS'},
-}}, open('$report', 'w'))
-"
-  if _assert_tck_number_with_pin "$tmp" "$report" "$pin" "$ctl"; then
-    say "  MISS: an empty waiver pin was accepted"; failures=$((failures+1))
-  else
-    say "  ok: an empty waiver pin is refused"
-  fi
-  rm -f "$tmp" "$pin" "$report"
+  # RED 8: a ledger with no `waived` list is refused -- a misspelt key would otherwise read as a
+  # ledger that forgives nothing while the real entries sit unread.
+  _selftest_red "a ledger with no waived list" "carries no \`waived\` list" "pass" \
+    <(printf '{"skipped": []}\n')
 
-  # GREEN 3: a clean report (no FAIL, no NOT TESTED) is accepted, so none of the checks above is one
-  # that refuses everything.
-  local tmp2; tmp2="$(mktemp)"; local report2; report2="$(mktemp)"; local pin2; pin2="$(mktemp)"
-  printf '| MUST | 114 | 0 | 0 | 114 |\n' > "$tmp2"
-  printf '{"waived": ["PUSH-DELIVER-001"]}\n' > "$pin2"
-  python3 -c "
-import json
-json.dump({'per_requirement': {
-    'SOME-REQ-001': {'level': 'MUST', 'status': 'PASS'},
-}}, open('$report2', 'w'))
-"
-  if _assert_tck_number_with_pin "$tmp2" "$report2" "$pin2" "$ctl"; then
-    say "  ok: a clean requirement-level report is accepted"
-  else
-    say "  MISS: a clean requirement-level report was refused"; failures=$((failures+1))
-  fi
-  rm -f "$tmp2" "$report2" "$pin2"
+  # ── LAW 10: EVERY FORGIVENESS CARRIES A PREMISE, AND THE PREMISE IS EVALUATED ─────────────────
+  # RED 13: a waiver by id alone -- the exact shape the ledger had, with its premise in prose only.
+  _selftest_red "a waiver by id alone" "is an id only" "pass" \
+    <(printf '{"waived": ["PUSH-DELIVER-001"], "skipped": []}\n')
+  # RED 14: the waived requirement fails, but for a DIFFERENT reason than the premise states.
+  _selftest_red "a waived FAIL failing for another reason" "IS FALSE" \
+    "per['PUSH-DELIVER-001']['errors'] = ['delivery timed out after 30s']"
+  # RED 15: one of several errors is the stated reason, another is not: EVERY error must match.
+  _selftest_red "a waived FAIL with one off-premise error" "IS FALSE" \
+    "per['PUSH-DELIVER-001']['errors'].append('the delivery carried no Authorization header')"
+  # RED 16: the waived requirement reports FAIL with no errors: no evidence, so no premise holds.
+  _selftest_red "a waived FAIL carrying no errors" "carries no errors" \
+    "per['PUSH-DELIVER-001']['errors'] = []"
+  # RED 17: the waived requirement now PASSES: the waiver forgives nothing that is happening.
+  _selftest_red "a waiver whose requirement now passes" "retire the entry" \
+    "per['PUSH-DELIVER-001'] = {'level': 'MUST', 'status': 'PASS'}"
+  # RED 18: a condition of a kind the gate cannot evaluate is refused, not ignored.
+  _selftest_red "a premise the gate cannot evaluate" "cannot evaluate" "pass" \
+    <(printf '{"waived": [{"id": "PUSH-DELIVER-001", "why": "w", "premise": [{"kind": "trust_me"}]}], "skipped": []}\n')
+  # RED 19: an entry with an empty premise list.
+  _selftest_red "a waiver with an empty premise" "carries no premise" "pass" \
+    <(printf '{"waived": [{"id": "PUSH-DELIVER-001", "why": "w", "premise": []}], "skipped": []}\n')
+
+  # ── LAW 8: EVERY SKIP IS NAMED AND JUSTIFIED, PER REQUIREMENT ──────────────────────────────────
+  # RED 20: a SKIPPED MUST the ledger does not name -- the class the gate used to excuse silently.
+  _selftest_red "an unjustified SKIP" "OTHER-SKIP-001" \
+    "per['OTHER-SKIP-001'] = {'level': 'MUST', 'status': 'SKIPPED'}"
+  # RED 21: a justified SKIP whose card premise is false on this run.
+  _selftest_red "a justified SKIP whose premise is false" "IS FALSE" \
+    "card['capabilities']['streaming'] = False"
+  # RED 22: a justified SKIP with no card in the report to evaluate it against.
+  _selftest_red "a justified SKIP with no card to evaluate" "no agent_card" "card = None"
+  # RED 23: a justified SKIP whose requirement now RUNS: the justification is stale.
+  _selftest_red "a justification whose requirement now runs" "retire the entry" \
+    "per['CAP-SKIP-001'] = {'level': 'MUST', 'status': 'PASS'}"
+  # RED 24: a MUST in a status the gate does not know is not dropped from the partition.
+  _selftest_red "a MUST in an unknown status" "does not know" \
+    "per['ODD-001'] = {'level': 'MUST', 'status': 'XFAIL'}"
+  # GREEN 4: the other premise kinds, holding: a required extension the card does not declare, and a
+  # sibling requirement passing on the same run.
+  _selftest_green "the card-extension and sibling-requirement premises, holding," \
+    "per.pop('PUSH-DELIVER-001')" \
+    <(printf '{"waived": [], "skipped": [{"id": "CAP-SKIP-001", "why": "w", "premise": [{"kind": "card_lacks_required_extension", "uri": "urn:x"}, {"kind": "requirement_passes", "id": "SOME-REQ-001"}]}]}\n')
+  # RED 25: the same premises, false: the card declares the extension required.
+  _selftest_red "a required-extension premise that is false" "IS FALSE" \
+    "per.pop('PUSH-DELIVER-001'); card['capabilities']['extensions'] = [{'uri': 'urn:x', 'required': True}]" \
+    <(printf '{"waived": [], "skipped": [{"id": "CAP-SKIP-001", "why": "w", "premise": [{"kind": "card_lacks_required_extension", "uri": "urn:x"}]}]}\n')
+
+  # GREEN 3: a clean report (no FAIL, no SKIP, no NOT TESTED) under an EMPTY ledger is accepted: an
+  # empty ledger forgives nothing, which is the strictest ledger there is, and none of the checks
+  # above is one that refuses everything.
+  _selftest_green "a clean report under an empty ledger" \
+    "per.pop('PUSH-DELIVER-001'); per.pop('CAP-SKIP-001')" <(printf '{"waived": [], "skipped": []}\n')
+  rm -f "$tmp" "$pin" "$report"
   rm -rf "$ctl"
 
   [ "$failures" -eq 0 ] || die "$failures self-test expectation(s) did not hold. No verdict from \
