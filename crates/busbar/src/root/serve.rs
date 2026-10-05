@@ -2058,7 +2058,7 @@ mod tests;
 // `--no-default-features`, where no plane rides the node axis.
 #[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_planes.rs"]
-mod planes_tests;
+pub(crate) mod planes_tests;
 
 #[cfg(all(test, feature = "plane-decisions", linked_axis_node))]
 #[path = "tests/serve_door.rs"]
