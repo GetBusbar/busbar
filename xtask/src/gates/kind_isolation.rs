@@ -359,10 +359,12 @@ static KINDS: &[KindDef] = &[
         family: Family::Neutral,
         matchers: &["busbar-export-"],
     },
+    // `=busbar-mcp` STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine is deleted; the mcp plane
+    // is `busbar-plane-mcp`, a `plane` crate (`legacy-retired` asked for exactly this strike).
     KindDef {
         kind: "legacy",
         family: Family::Plane,
-        matchers: &["=busbar-llm", "=busbar-mcp", "=busbar-a2a", "=busbar-voice"],
+        matchers: &["=busbar-llm", "=busbar-a2a", "=busbar-voice"],
     },
 ];
 
@@ -439,8 +441,9 @@ const PENDING_EDGES: &[(&str, &str)] = &[
     // class the design grants ahead of the tree lands here.
 ];
 
-/// The retiring 1.5.x crates, named so the ratchet can check they still exist.
-const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"];
+/// The retiring 1.5.x crates, named so the ratchet can check they still exist. `busbar-mcp` retired
+/// at P3 DEL-MCP (ARCHITECT 2026-10-05) and is struck, as `legacy-retired` requires.
+const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-a2a", "busbar-voice"];
 
 /// THE MANIFESTS IN THIS REPOSITORY THAT ARE NOT CRATES OF THE TREE, each with the sentence that
 /// says why, and each on the expiry ratchet every allowance in this file lives under: an entry that

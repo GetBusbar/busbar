@@ -37,14 +37,6 @@ busbar-llm	rustls
 busbar-llm	socket2
 busbar-llm	tokio (net)
 busbar-llm	tokio-rustls
-busbar-mcp	hyper-util
-busbar-mcp	reqwest
-busbar-mcp	rustls
-busbar-mcp	socket2
-busbar-mcp	std::net
-busbar-mcp	tokio (net)
-busbar-mcp	tokio-rustls
-busbar-mcp	tokio::net
 # busbar-transport-grpc reaches socket2 only as socket2 <- tokio <- hyper: tokio's `net` feature is on by
 # workspace feature unification, and the door opens no socket (it frames the host's bytes through
 # hyper_io!). Same precedent as the http and ws doors. ARCHITECT ruling GRPC-DOOR Q2 2026-10-01.
