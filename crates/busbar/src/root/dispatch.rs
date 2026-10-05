@@ -53,13 +53,76 @@ pub fn dispatcher() -> Arc<Dispatcher> {
 /// (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1). Installed on the kernel as its auth-axis opener
 /// (`busbar_kernel::preflight::install_auth_axis`), so the kernel opens every auth instance through
 /// the contract's `AuthAxis` and names neither the loader's rows nor this dispatcher.
+///
+/// Its outbound half ([`busbar_contract::auth_calls::AuthAxis::serving`]) is the process's one set
+/// of outbound auth instances ([`crate::root::door_steps::process_auths`]): an outbound style is
+/// served by the same opened instance whichever build binds it, its tick schedule running once.
 pub fn auth_axis(
     registry: Arc<crate::root::loader::PluginRegistry>,
 ) -> Arc<dyn busbar_contract::auth_calls::AuthAxis> {
-    Arc::new(crate::root::loader::auth_axis::AuthRows::new(
+    Arc::new(RootAuthAxis(crate::root::loader::auth_axis::AuthRows::new(
         registry,
         dispatcher(),
-    ))
+    )))
+}
+
+/// One build's auth rows, with the process's outbound auth instances as its outbound half.
+struct RootAuthAxis(crate::root::loader::auth_axis::AuthRows);
+
+impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
+    fn linked_names(&self) -> Vec<String> {
+        self.0.linked_names()
+    }
+
+    fn answers(&self, module: &str) -> bool {
+        self.0.answers(module)
+    }
+
+    fn linked(&self, module: &str) -> bool {
+        self.0.linked(module)
+    }
+
+    fn operator(&self) -> Option<(String, String)> {
+        self.0.operator()
+    }
+
+    fn open(
+        &self,
+        module: &str,
+        label: &str,
+        settings: &serde_json::Value,
+    ) -> Result<Arc<dyn busbar_contract::auth_calls::AuthCalls>, String> {
+        self.0.open(module, label, settings)
+    }
+
+    fn credential_readers(&self) -> Vec<String> {
+        self.0.credential_readers()
+    }
+
+    fn check_outbound(
+        &self,
+        style: &str,
+        credential: &[u8],
+        settings: &serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        crate::root::door_steps::process_auths().check(style, credential, settings)
+    }
+
+    fn serving(
+        &self,
+        style: &str,
+        settings: &serde_json::Value,
+    ) -> Result<Option<busbar_contract::auth_calls::OutboundServing>, String> {
+        Ok(crate::root::door_steps::process_auths()
+            .serving(style, settings)?
+            .map(
+                |(auth, decl)| busbar_contract::auth_calls::OutboundServing {
+                    auth,
+                    flags: decl.flags,
+                    points: decl.points,
+                },
+            ))
+    }
 }
 
 #[cfg(test)]

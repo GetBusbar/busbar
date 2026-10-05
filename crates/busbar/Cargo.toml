@@ -89,7 +89,7 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 busbar-contract = { path = "../busbar-contract" }
 # The seven kernel workflow crates (#36).
-busbar-kernel-identity = { path = "../busbar-kernel-identity", features = ["sha256"] }
+busbar-kernel-identity = { path = "../busbar-kernel-identity" }
 busbar-kernel-scope = { path = "../busbar-kernel-scope" }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
@@ -142,6 +142,12 @@ busbar-auth-admin-tokens-plugin = { workspace = true, optional = true }
 # (ARCHITECT Q-L1-AUTH (A), 2026-10-03). It lives in its own repo (GetBusbar/busbar-auth-header), pulled
 # at a pinned rev; its only busbar edge is `busbar-contract`.
 busbar-auth-header = { workspace = true, optional = true }
+# THE SIGV4 STYLE (outbound signing, inbound verify of busbar's own SigV4 keys) and THE OAUTH MINTING
+# STYLES (jwt-bearer, oauth-client-credentials): the auth plugins a provider's credential is bound
+# under when its style is one of theirs, linked through the `auths` axis (P2 D1, the auth split: the
+# kernel holds no auth style). Each lives in its own repo, pulled at a pinned rev.
+busbar-auth-sigv4 = { workspace = true, optional = true }
+busbar-auth-oauth = { workspace = true, optional = true }
 # THE REQUEST-LOG FILE SINK (`module: request-log-file`), a first-party EXPORT plugin linked through
 # the `exports` axis (K9b) — the same row a signed tarball of it registers when dropped in. It lives
 # in its own repo (GetBusbar/busbar-export-file) and is pulled at a PINNED rev; the workspace `[patch]`
@@ -221,7 +227,7 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
 # SAME default set the monolithic crate had; `root-admin` is the addition, and it is a path rather
 # than a surface — the operations, their bytes and their features are unchanged.
-default = ["auth-admin-tokens", "auth-header", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-streaming", "plane-decisions", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp"]
+default = ["auth-admin-tokens", "auth-header", "auth-sigv4", "auth-oauth", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-streaming", "plane-decisions", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -337,6 +343,10 @@ auth-admin-tokens = ["dep:busbar-auth-admin-tokens-plugin"]
 # plugin serving a plane need's header style, on the `auths` axis. Off, a member whose style it serves
 # binds only when a signed tarball of the module is dropped into `plugins/`.
 auth-header = ["dep:busbar-auth-header"]
+# THE SIGV4 AND OAUTH STYLES' LINKED ROWS, DEFAULT ON (P2 D1): off, a provider whose style one of them
+# serves binds only when a signed tarball of the module is dropped into `plugins/`.
+auth-sigv4 = ["dep:busbar-auth-sigv4"]
+auth-oauth = ["dep:busbar-auth-oauth"]
 hooks-ranking = ["dep:busbar-hook-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
@@ -369,6 +379,8 @@ export-otlp = "busbar-export-otlp"
 # THE AUTH AXIS: the operator credential's module, under its packaging feature.
 auth-admin-tokens = "busbar-auth-admin-tokens-plugin"
 auth-header = "busbar-auth-header"
+auth-sigv4 = "busbar-auth-sigv4"
+auth-oauth = "busbar-auth-oauth"
 # THE COLD-KIND AXIS's in-process rows: the default store (a required dependency: every build links
 # it) and the ranking hooks (under their feature).
 store-memory = "busbar-store-memory"
@@ -418,6 +430,8 @@ export-prometheus = "export-doors"
 export-otlp = "export-doors"
 auth-admin-tokens = "auths"
 auth-header = "auths"
+auth-sigv4 = "auths"
+auth-oauth = "auths"
 store-memory = "stores"
 hooks-ranking = "hooks"
 secret-env = "secret-doors"
@@ -447,6 +461,8 @@ busbar-secret-file = "busbar_secret_file::door"
 # An auth plugin's entry is its crate root; its memory-ABI door is `<entry>::door::door`.
 busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
 busbar-auth-header = "busbar_auth_header::compiled_in"
+busbar-auth-sigv4 = "busbar_auth_sigv4::compiled_in"
+busbar-auth-oauth = "busbar_auth_oauth::compiled_in"
 # A plane door row's entry is the module that exports its `door`.
 plane-decisions-door = "busbar_plane_decisions::plane_door"
 llm-on-driver = "busbar_plane_llm::plane_door"
@@ -458,6 +474,8 @@ busbar-export-otlp = "busbar_export_otlp::door"
 [package.metadata.busbar.linked-name]
 auth-admin-tokens = "admin-tokens"
 auth-header = "busbar-auth-header"
+auth-sigv4 = "busbar-auth-sigv4"
+auth-oauth = "busbar-auth-oauth"
 
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
 # compiled when its row's cargo feature is on (the node under the `linked_axis_node` cfg that
@@ -492,7 +510,7 @@ busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
 busbar-voice = { path = "../busbar-voice", features = ["test-support"] }
 # `root::door_steps` tests: a member bound under an OAuth grant, its credential minted by the real
-# token-style auth plugin through its own need (TODO row 22).
+# token-style auth plugin through its own need (TODO row 22). The same pin the `auth-oauth` row links.
 busbar-auth-oauth = { workspace = true }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
 # through the kernel's test_support, exposed to dependents only behind this feature.

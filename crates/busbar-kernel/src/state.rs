@@ -393,9 +393,6 @@ pub struct App {
     /// LAW 7 — this generation's configured plane sections (`RootCfg::plane_sections`). `None` only on
     /// a test fixture that states none, where every linked plane counts as configured.
     pub plane_sections: Option<std::collections::BTreeSet<&'static str>>,
-    /// The credential cache — Arc-shared ACROSS config swaps (like the
-    /// mutation limiter): an apply/reload must not silently re-open every cached-allow window.
-    pub credential_cache: Arc<crate::auth_cache::CredentialCache>,
     /// Per-module `max_admin_scope:` ceilings (from the auth chain entries) - consulted at admin
     /// scope resolution.
     pub auth_scope_caps: std::collections::HashMap<String, String>,
@@ -502,6 +499,23 @@ pub struct App {
     /// mutation tell the operator "restart required" instead of silently no-opping
     /// ([`crate::plugin_routes::paths_awaiting_restart`]).
     pub boot_route_paths: Arc<std::collections::HashSet<String>>,
+}
+
+impl App {
+    /// THE ADMIN CACHE FLUSH: every data-chain position and every external admin module (or only
+    /// the one `module` names) refreshed, so each auth plugin drops the verified credentials it
+    /// caches inside itself; the sum of the entries they report (THE DESIGN 11.11 R3). The
+    /// operator credential caches nothing.
+    pub fn flush_verified_credentials(&self, module: Option<&str>) -> u64 {
+        let admin: u64 = self
+            .admin_modules
+            .modules
+            .iter()
+            .filter(|(name, _)| module.is_none_or(|m| m == name.as_str()))
+            .map(|(_, m)| m.calls.refresh().unwrap_or(0))
+            .sum();
+        self.auth.flush_verified(module) + admin
+    }
 }
 
 impl App {

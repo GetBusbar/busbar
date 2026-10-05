@@ -1004,6 +1004,15 @@ impl OutboundAuths {
     /// (a mint that failed and will retry) in its own log file under the configured `plugins.logs`
     /// (THE DESIGN #85).
     fn bind(&self, name: &str) -> crate::root::loader::dispatch::Bind {
+        self.bind_with(name, self.conns.clone())
+    }
+
+    /// [`Self::bind`] with the needs declared on `conns` (`None`: no need is granted).
+    fn bind_with(
+        &self,
+        name: &str,
+        conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+    ) -> crate::root::loader::dispatch::Bind {
         use crate::root::loader::dispatch::{EnvelopeSink, NoSink};
         let sink: Arc<dyn EnvelopeSink> = crate::root::boot::plugin_logs()
             .sink(
@@ -1020,7 +1029,7 @@ impl OutboundAuths {
             max_inflight_cap: 64,
             sink,
             dispatcher: self.dispatcher.adopter(),
-            conns: self.conns.clone(),
+            conns,
         }
     }
 
@@ -1032,12 +1041,25 @@ impl OutboundAuths {
         String,
         crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::auth::Auth>,
     )> {
+        self.rows_with(true)
+    }
+
+    /// [`Self::rows`], each loaded with its needs granted (`granted`) or with none.
+    fn rows_with(
+        &self,
+        granted: bool,
+    ) -> Vec<(
+        String,
+        crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::auth::Auth>,
+    )> {
         use crate::root::loader::dispatch::kinds::auth::Auth;
         use crate::root::loader::dispatch::{load_dropped_bytes, load_linked, LinkedRow};
+        let bind =
+            |name: &str| self.bind_with(name, if granted { self.conns.clone() } else { None });
         let mut rows = Vec::new();
         for (name, door) in &self.linked {
             if let Ok(plugin) =
-                LinkedRow::of(*door).and_then(|row| load_linked::<Auth>(&row, self.bind(name)))
+                LinkedRow::of(*door).and_then(|row| load_linked::<Auth>(&row, bind(name)))
             {
                 rows.push(((*name).to_string(), plugin));
             }
@@ -1049,7 +1071,7 @@ impl OutboundAuths {
                 continue;
             };
             if let Ok(plugin) =
-                load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, self.bind(name))
+                load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, bind(name))
             {
                 rows.push((name.clone(), plugin));
             }
@@ -1110,6 +1132,62 @@ impl OutboundAuths {
         }
         Ok(None)
     }
+}
+
+impl OutboundAuths {
+    /// CHECK, NEVER DIAL: `credential` bound under `settings` on a FRESH instance of the plugin
+    /// serving `style`, loaded with no need granted (so it mints nothing), and the refusals it names
+    /// for the credential itself — its `credential:` lines, their text. Empty when it accepts the
+    /// credential or no row states the style.
+    ///
+    /// # Errors
+    ///
+    /// The serving plugin would not open for its outbound styles.
+    pub fn check(
+        &self,
+        style: &str,
+        credential: &[u8],
+        settings: &serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        use crate::root::loader::dispatch::auth_outbound::{serves_style, OutboundInstance};
+        for (_, plugin) in self.rows_with(false) {
+            if serves_style(&plugin, style).is_none() {
+                continue;
+            }
+            let bytes = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
+            let instance =
+                OutboundInstance::open_with(plugin, Arc::clone(&self.dispatcher), 0, &bytes)?;
+            return Ok(
+                match instance.open_outbound_raw(style, credential, settings) {
+                    Ok(_) => Vec::new(),
+                    Err((_, why)) => why
+                        .lines()
+                        .filter_map(|l| l.strip_prefix("credential: "))
+                        .map(str::to_string)
+                        .collect(),
+                },
+            );
+        }
+        Ok(Vec::new())
+    }
+}
+
+/// THE PROCESS'S OUTBOUND AUTH INSTANCES: the build's linked `auths` rows, then the plugins
+/// directory's, on the process's dispatcher, their needs declared on the process's one connector.
+/// One set per process, so a style is served by one opened instance (and one tick schedule)
+/// whichever plane's member, or whichever configuration generation, binds it. Read only once the
+/// connector is booted (the first read pins the connector, `root::connector::the`).
+pub fn process_auths() -> &'static OutboundAuths {
+    static AUTHS: std::sync::OnceLock<OutboundAuths> = std::sync::OnceLock::new();
+    AUTHS.get_or_init(|| {
+        OutboundAuths::new(
+            crate::root::dispatch::dispatcher(),
+            crate::LINKED.auths,
+            crate::root::boot::dropped_registry(),
+            Some(Arc::clone(crate::root::connector::the())
+                as Arc<dyn busbar_contract::conn::DeclaredConns>),
+        )
+    })
 }
 
 /// WHAT A DOOR PLANE'S MEMBERS ARE REACHED THROUGH, for the process (THE DESIGN §6 steps 2-3, §5):

@@ -1825,9 +1825,9 @@ use crate::breaker::CanonicalSignal;
 use crate::plane::approvals::Sealer;
 use crate::plane::calllog::CallInput;
 pub use crate::plane_host::build_input::{
-    AffinityInput, AuthStyleInput, BreakerInput, ClientSettingsInput, FailoverInput, HealthInput,
-    HealthModeInput, LaneInput, OnExhaustedInput, PlaneBuildInput, PoolInput, PoolMemberInput,
-    TripInput, TripModeInput,
+    AffinityInput, AuthReach, AuthStyleInput, BreakerInput, ClientSettingsInput, FailoverInput,
+    HealthInput, HealthModeInput, LaneInput, OnExhaustedInput, PlaneBuildInput, PoolInput,
+    PoolMemberInput, TripInput, TripModeInput,
 };
 pub use crate::plane_host::engine_view::{
     EmptyEngineTablesView, EngineTablesView, LaneView, EMPTY_VIEW,

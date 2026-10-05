@@ -24,11 +24,10 @@ use crate::state::App;
 use crate::store::{HealthState, LaneData};
 #[allow(unused_imports)]
 use crate::{
-    admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
-    core_routes, cost, durable, egress_auth, endpoints, export, failover, governance, handlers,
-    hooks, ingress, ir, json, limits, metrics, net_guard, oauth_as, observability, operation,
-    plane, plugin_routes, profile, proto, proxy, ratelimit, state, store, telemetry, tls,
-    transport, trust,
+    admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
+    durable, endpoints, export, failover, governance, handlers, hooks, ingress, ir, json, limits,
+    metrics, net_guard, oauth_as, observability, operation, plane, plugin_routes, profile, proto,
+    proxy, ratelimit, state, store, telemetry, tls, transport, trust,
 };
 use busbar_kernel::plane_host::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
@@ -154,7 +153,8 @@ pub fn stateful_plane_ephemeral_store_warn(
 }
 
 /// Map a provider's `Option<config::ProviderAuth>` to the NEUTRAL [`AuthStyleInput`] the carrier holds
-/// (`None` ⇒ the protocol's native auth). The fallback plane maps it back to drive `egress_auth::*`.
+/// (`None` ⇒ the protocol's native auth). The fallback plane maps it to the style its lane's credential
+/// is bound under, on the auth plugin serving that style.
 fn auth_style_of(auth: Option<config::ProviderAuth>) -> AuthStyleInput {
     match auth {
         None => AuthStyleInput::Default,
@@ -823,8 +823,8 @@ pub fn build_app_from_config(
 
     // Every lane, flattened into the NEUTRAL `LaneInput` carrier (1.6.0 money-path Phase 3-4 C):
     // the fallback plane's `build_runtime` reconstructs its own concrete lane object (egress targets,
-    // resolved credential, prebuilt auth) FROM these scalars — the `proxy::build_egress_targets` /
-    // `egress_auth::*` calls that used to run here moved in-plane (the allowed plane→core edge), so
+    // resolved credential, prebuilt auth) FROM these scalars — the `proxy::build_egress_targets` call
+    // and the credential's binding on its style's auth plugin run in-plane (the allowed plane→core edge), so
     // core names no plane-owned lane/egress-target/credential-provider type. This loop keeps only the NEUTRAL work:
     // resolve+validate the protocol name, carry the pre-resolved api-key plaintext, and mirror the
     // provider's config into neutral scalars.
@@ -1658,6 +1658,10 @@ pub fn build_app_from_config(
             exclusions: None,
             max_hops: crate::config::DEFAULT_FAILOVER_CAP,
         }),
+        // THE BUILD'S AUTH AXIS over the SAME validated registry the inbound chain opened its
+        // positions on: each lane's credential is bound by the auth plugin serving its style.
+        auths: crate::preflight::auth_axis(plugin_registry.clone())
+            .map(busbar_kernel::plane_host::AuthReach),
     };
 
     let fallback_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());
@@ -1974,10 +1978,6 @@ pub fn build_app_from_config(
         demotion_record: prior.map_or_else(
             || Arc::new(crate::plane::quarantine::DemotionRecord::new()),
             |p| p.demotion_record.clone(),
-        ),
-        credential_cache: prior.map_or_else(
-            || Arc::new(auth_cache::CredentialCache::new()),
-            |p| p.credential_cache.clone(),
         ),
         auth_scope_caps: cfg
             .auth

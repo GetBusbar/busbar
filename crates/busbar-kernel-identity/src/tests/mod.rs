@@ -3,7 +3,6 @@
 
 //! The unit's tests, ported with their assertions intact from the shipped chain's own suite.
 
-mod cache_tests;
 mod caller_ref_tests;
 mod chain_tests;
 mod exchange_tests;
@@ -61,19 +60,6 @@ impl AuthModule for Canned {
     }
 }
 
-/// A module whose cacheability is left at the trait default — the shape that proves the default is
-/// "not cacheable" rather than "cacheable".
-pub(crate) struct DefaultCacheability;
-
-impl AuthModule for DefaultCacheability {
-    fn name(&self) -> &'static str {
-        "default-cacheability"
-    }
-    fn authenticate(&self, _candidate: Option<&str>) -> AuthOutcome {
-        AuthOutcome::Identify(Principal::from_id("someone"))
-    }
-}
-
 pub(crate) fn entry(provider: &str, module: Box<dyn AuthModule>) -> ChainEntry {
     ChainEntry {
         provider: provider.to_string(),
@@ -102,15 +88,4 @@ impl crate::chain::KeyVerifier for OneKey {
             name: "the one key".to_string(),
         })
     }
-}
-
-/// A stand-in credential digest. It is not a hash and does not need to be: the cache's rules are
-/// about lifetimes, eviction and the flush generation, none of which depend on the digest being
-/// one-way. Distinct credentials still map to distinct keys, which is all the rules require.
-pub(crate) fn test_digest(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push_str(&format!("{b:02x}"));
-    }
-    out
 }

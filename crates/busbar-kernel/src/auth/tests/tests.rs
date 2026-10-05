@@ -1,5 +1,4 @@
 use super::*;
-use crate::test_support::sigv4;
 use busbar_contract::records::ScopeRef;
 
 /// Helper: a `RoleBindingCfg` from optional pool list / group / admin scope.
@@ -1227,7 +1226,7 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     store
         .put_key(&VirtualKey {
             id: "empty".to_string(),
-            generation_hash: sigv4::sha256_hex(b""),
+            generation_hash: busbar_contract::redacted::sha256_hex(b""),
             name: "empty".to_string(),
             allowed_scopes: Some(vec![ScopeRef::pool("pa")]),
             enabled: true,
@@ -1356,60 +1355,6 @@ fn test_caller_token_debug_redacts_value() {
 
 // ===================== INBOUND SigV4 WIRING TESTS =====================
 
-/// Sign a SigV4 POST (the verifier is service-agnostic: the service is read from the credential scope) and return the full `Authorization` header value plus the headers
-/// (host / x-amz-date / x-amz-content-sha256) the client would send, using the SAME signer
-/// (`sigv4::sign_v4`) a real client uses. `amzdate` controls the signature timestamp.
-fn sign_sigv4_request(
-    secret: &str,
-    access_key_id: &str,
-    region: &str,
-    service: &str,
-    path: &str,
-    body: &[u8],
-    amzdate: &str,
-) -> (String, Vec<(String, String)>) {
-    let datestamp = &amzdate[0..8];
-    let payload_hash = sigv4::sha256_hex(body);
-    let headers = vec![
-        (
-            "host".to_string(),
-            "svc.us-east-1.amazonaws.com".to_string(),
-        ),
-        (X_AMZ_CONTENT_SHA256.to_string(), payload_hash.clone()),
-        (X_AMZ_DATE.to_string(), amzdate.to_string()),
-    ];
-    let canonical_uri = sigv4::uri_encode_path(path);
-    let (sig, signed_headers) = sigv4::sign_v4(
-        secret,
-        region,
-        service,
-        "POST",
-        &canonical_uri,
-        "",
-        &headers,
-        &payload_hash,
-        amzdate,
-        datestamp,
-    );
-    let auth = format!(
-        "AWS4-HMAC-SHA256 Credential={access_key_id}/{datestamp}/{region}/{service}/aws4_request, \
-             SignedHeaders={signed_headers}, Signature={sig}"
-    );
-    (auth, headers)
-}
-
-/// Build a `Request` with the given Authorization + signed headers (for `verify_sigv4_ingress_credential`).
-fn sigv4_request(path: &str, auth: &str, headers: &[(String, String)]) -> Request<Body> {
-    let mut b = Request::builder()
-        .method("POST")
-        .uri(path)
-        .header(AUTHORIZATION, auth);
-    for (k, v) in headers {
-        b = b.header(k.as_str(), v.as_str());
-    }
-    b.body(Body::empty()).expect("test request must build")
-}
-
 fn gov_with_aws_key() -> (std::sync::Arc<crate::governance::GovState>, String, String) {
     use crate::governance::{GovState, MemoryStore, NewKeySpec};
     let store = std::sync::Arc::new(MemoryStore::new());
@@ -1427,371 +1372,6 @@ fn gov_with_aws_key() -> (std::sync::Arc<crate::governance::GovState>, String, S
         )
         .unwrap();
     (gov, akid, secret)
-}
-
-#[test]
-fn test_verify_sigv4_ingress_credential_roundtrip_admits_with_govctx() {
-    // A request signed with the key's REAL secret verifies and yields the owning (enabled) key.
-    crate::metrics::init();
-    let (gov, akid, secret) = gov_with_aws_key();
-    let amzdate = {
-        let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
-        a
-    };
-    let path = "/model/vendor.model/converse";
-    let (auth, headers) =
-        sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, b"", &amzdate);
-    let req = sigv4_request(path, &auth, &headers);
-    let key = verify_sigv4_ingress_credential(&gov, &req, b"")
-        .expect("a correctly-signed request must verify");
-    // Behavioral: the function resolved the SPECIFIC owning key (not just "some enabled key").
-    // Tying to the key's identity (name) is a stronger statement than `key.enabled`, which merely
-    // restates an input property. The owning key here is the one `gov_with_aws_key` created.
-    assert_eq!(
-        key.name, "aws-signer",
-        "verify must resolve the AWS-credentialed key that owns this AccessKeyId"
-    );
-}
-
-#[test]
-fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admits() {
-    // Regression for the query-string double-encoding bug: `canonical_query_string` must NOT
-    // re-URI-encode the wire query string, which arrives already percent-encoded once by the
-    // client. A real SigV4 client signs a CanonicalQueryString built from ONE encoding pass over
-    // its query params, and sends that SAME single-encoded text on the wire. If busbar's inbound
-    // verifier ran the wire text through the encoder a second time, the canonical query string it
-    // reconstructs would diverge from what the client signed, and EVERY request carrying a query
-    // parameter that needed escaping (here, a literal '/' in the value) would fail verification.
-    crate::metrics::init();
-    let (gov, akid, secret) = gov_with_aws_key();
-    let amzdate = {
-        let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
-        a
-    };
-    let datestamp = &amzdate[0..8];
-    let path = "/model/vendor.model/converse";
-    // The client's ONE correct URI-encoding of a value containing '/' (per AWS SigV4 query rules,
-    // which — unlike CanonicalURI — are never double-encoded).
-    let wire_query = "p=a%2Fb";
-    let payload_hash = sigv4::sha256_hex(b"");
-    let headers = vec![
-        (
-            "host".to_string(),
-            "svc.us-east-1.amazonaws.com".to_string(),
-        ),
-        (X_AMZ_CONTENT_SHA256.to_string(), payload_hash.clone()),
-        (X_AMZ_DATE.to_string(), amzdate.to_string()),
-    ];
-    let canonical_uri = sigv4::uri_encode_path(path);
-    // The client signs the wire query text UNCHANGED — that IS its CanonicalQueryString.
-    let (sig, signed_headers) = sigv4::sign_v4(
-        &secret,
-        "us-east-1",
-        "svc",
-        "POST",
-        &canonical_uri,
-        wire_query,
-        &headers,
-        &payload_hash,
-        &amzdate,
-        datestamp,
-    );
-    let auth = format!(
-        "AWS4-HMAC-SHA256 Credential={akid}/{datestamp}/us-east-1/svc/aws4_request, \
-             SignedHeaders={signed_headers}, Signature={sig}"
-    );
-    let full_path = format!("{path}?{wire_query}");
-    let req = sigv4_request(&full_path, &auth, &headers);
-    let key = verify_sigv4_ingress_credential(&gov, &req, b"")
-        .expect("a correctly-signed request with an escaped query param must verify");
-    assert_eq!(key.name, "aws-signer");
-}
-
-#[test]
-fn test_verify_sigv4_ingress_credential_wrong_secret_rejected() {
-    crate::metrics::init();
-    let (gov, akid, _secret) = gov_with_aws_key();
-    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
-    let path = "/model/vendor.model/converse";
-    // Sign with a DIFFERENT secret than the key's.
-    let (auth, headers) = sign_sigv4_request(
-        "not-the-real-secret",
-        &akid,
-        "us-east-1",
-        "svc",
-        path,
-        b"",
-        &a,
-    );
-    let req = sigv4_request(path, &auth, &headers);
-    // `verify_sigv4_ingress_credential` collapses every failure to the SAME opaque `Err(())` (no
-    // enumeration oracle). Assert that exact value, not just `is_err()`. The variant-level
-    // distinction — that a wrong secret is a `SignatureMismatch`, NOT a distinct key-not-found
-    // variant — is pinned one layer down in `sigv4::verify_inbound_sigv4`'s tests (a real-secret
-    // signature verified against the dummy secret yields `SignatureMismatch`).
-    assert_eq!(
-        verify_sigv4_ingress_credential(&gov, &req, b""),
-        Err(()),
-        "a wrong-secret signature must be rejected with the opaque Err(())"
-    );
-}
-
-#[test]
-fn test_verify_sigv4_ingress_credential_unknown_access_key_id_rejected() {
-    crate::metrics::init();
-    let (gov, _akid, secret) = gov_with_aws_key();
-    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
-    let path = "/model/vendor.model/converse";
-    // A well-formed signature under an AccessKeyId that does not exist in the store.
-    let (auth, headers) = sign_sigv4_request(
-        &secret,
-        "AKIADOESNOTEXIST0000",
-        "us-east-1",
-        "svc",
-        path,
-        b"",
-        &a,
-    );
-    let req = sigv4_request(path, &auth, &headers);
-    // Identical opaque `Err(())` to the wrong-secret case above — the unknown-AccessKeyId path is
-    // verified against a dummy secret precisely so it is indistinguishable from a bad signature
-    // (no AccessKeyId-enumeration oracle). Assert the exact value, not just `is_err()`.
-    assert_eq!(
-        verify_sigv4_ingress_credential(&gov, &req, b""),
-        Err(()),
-        "unknown AccessKeyId must be rejected with the SAME opaque Err(()) as a bad signature"
-    );
-}
-
-#[test]
-fn test_verify_sigv4_ingress_credential_expired_date_rejected() {
-    crate::metrics::init();
-    let (gov, akid, secret) = gov_with_aws_key();
-    // Sign with a timestamp 10 minutes in the past — outside the ±5min skew window.
-    let stale = busbar_kernel::store::now().saturating_sub(sigv4::CLOCK_SKEW_SECS + 60);
-    let (a, _d) = sigv4::format_amz_time(stale);
-    let path = "/model/vendor.model/converse";
-    let (auth, headers) = sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, b"", &a);
-    let req = sigv4_request(path, &auth, &headers);
-    assert!(
-        verify_sigv4_ingress_credential(&gov, &req, b"").is_err(),
-        "an expired x-amz-date must be rejected"
-    );
-}
-
-#[test]
-fn test_verify_sigv4_ingress_credential_missing_authorization_rejected() {
-    crate::metrics::init();
-    let (gov, _akid, _secret) = gov_with_aws_key();
-    // No Authorization header at all.
-    let req = Request::builder()
-        .method("POST")
-        .uri("/model/vendor.model/converse")
-        .body(Body::empty())
-        .unwrap();
-    assert!(verify_sigv4_ingress_credential(&gov, &req, b"").is_err());
-}
-
-#[test]
-fn test_verify_sigv4_ingress_credential_disabled_key_rejected() {
-    crate::metrics::init();
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
-    let store = std::sync::Arc::new(MemoryStore::new());
-    let gov = std::sync::Arc::new(GovState::new(store, None).unwrap());
-    let (key, _b, akid, secret) = gov
-        .create_key_with_aws(
-            NewKeySpec {
-                name: "k".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-                ..Default::default()
-            },
-            busbar_kernel::store::now(),
-        )
-        .unwrap();
-    // Disable the key.
-    gov.update_key(&key.id, Some(false), None).unwrap();
-    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
-    let path = "/model/vendor.model/converse";
-    let (auth, headers) = sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, b"", &a);
-    let req = sigv4_request(path, &auth, &headers);
-    assert!(
-        verify_sigv4_ingress_credential(&gov, &req, b"").is_err(),
-        "a correctly-signed request for a DISABLED key must be rejected"
-    );
-}
-
-#[test]
-fn test_verify_sigv4_ingress_credential_revoked_key_rejected() {
-    // A dual-credential key minted with
-    // BOTH a busbar signed bearer token AND a SigV4 credential is bound to ONE subject id. `revoke`
-    // denylists that subject but DELIBERATELY leaves `enabled = true` (it preserves the binding for
-    // history). The signed-token path consults the denylist and rejects; before the fix the inbound
-    // SigV4 admit path resolved purely by AccessKeyId -> key and admitted on `key.enabled` alone,
-    // NEVER consulting the denylist — so the revoked key's SigV4 credential kept authenticating.
-    // The fix gates the SigV4 admit on `!gov.is_revoked(&key.id)`, mirroring the signed-token path.
-    crate::metrics::init();
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
-    let store = std::sync::Arc::new(MemoryStore::new());
-    let gov = std::sync::Arc::new(GovState::new(store, None).unwrap());
-    // A DUAL-credential key: `create_key_with_aws` issues a signed bearer AND a SigV4 credential.
-    let (key, _bearer, akid, secret) = gov
-        .create_key_with_aws(
-            NewKeySpec {
-                name: "dual".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-                ..Default::default()
-            },
-            busbar_kernel::store::now(),
-        )
-        .unwrap();
-
-    let amzdate = {
-        let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
-        a
-    };
-    let path = "/model/vendor.model/converse";
-
-    // Baseline: before revocation, the correctly-signed SigV4 request ADMITS.
-    let (auth, headers) =
-        sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, b"", &amzdate);
-    let req = sigv4_request(path, &auth, &headers);
-    let admitted = verify_sigv4_ingress_credential(&gov, &req, b"")
-        .expect("a non-revoked dual-credential key must admit via SigV4");
-    assert_eq!(admitted.name, "dual");
-
-    // Revoke by subject id. This denylists the subject WITHOUT flipping `enabled` (revoke preserves
-    // the binding), exactly as the admin `revoke_key` verb does.
-    gov.revoke(&key.id, "audit regression").unwrap();
-    assert!(gov.is_revoked(&key.id), "revoke must denylist the subject");
-
-    // Re-sign a fresh request (same secret/akid) and assert the SigV4 path now REJECTS — the revoked
-    // subject's SigV4 credential must be rejected exactly like its signed token would be.
-    let amzdate2 = {
-        let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
-        a
-    };
-    let (auth2, headers2) =
-        sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, b"", &amzdate2);
-    let req2 = sigv4_request(path, &auth2, &headers2);
-    assert_eq!(
-        verify_sigv4_ingress_credential(&gov, &req2, b""),
-        Err(()),
-        "a correctly-signed SigV4 request for a REVOKED (denylisted) key must be rejected"
-    );
-}
-
-#[test]
-fn test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits() {
-    // (a) A non-empty body whose bytes hash to the signed `x-amz-content-sha256` is accepted.
-    // This exercises the body-integrity bind on a real payload (the roundtrip test signs an empty
-    // body): the verifier must re-hash THESE bytes and find they match the signed digest.
-    crate::metrics::init();
-    let (gov, akid, secret) = gov_with_aws_key();
-    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
-    let path = "/model/vendor.model/converse";
-    let body = br#"{"messages":[{"role":"user","content":"hi"}]}"#;
-    let (auth, headers) = sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, body, &a);
-    let req = sigv4_request(path, &auth, &headers);
-    let key = verify_sigv4_ingress_credential(&gov, &req, body)
-        .expect("a correctly-signed request whose body matches the signed hash must verify");
-    assert_eq!(key.name, "aws-signer");
-}
-
-#[test]
-fn test_verify_sigv4_ingress_credential_tampered_body_rejected() {
-    // (b) THE core fix: a VALID signature (signed over the original body) but the body bytes
-    // actually delivered are DIFFERENT (a MitM tampered them in transit). The signature still
-    // verifies against the declared `x-amz-content-sha256`, but the bytes no longer hash to it, so
-    // the request MUST be rejected — fail-closed — with the SAME opaque `Err(())` as any other
-    // failure (no oracle distinguishing "body tampered" from "bad signature").
-    crate::metrics::init();
-    let (gov, akid, secret) = gov_with_aws_key();
-    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
-    let path = "/model/vendor.model/converse";
-    let signed_body = br#"{"max_tokens":16}"#;
-    let tampered_body = br#"{"max_tokens":999999}"#;
-    // Sign over the ORIGINAL body (so Authorization + x-amz-content-sha256 are valid for it)...
-    let (auth, headers) =
-        sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, signed_body, &a);
-    let req = sigv4_request(path, &auth, &headers);
-    // ...but feed the verifier the TAMPERED bytes (what the middleware would have buffered).
-    assert_eq!(
-        verify_sigv4_ingress_credential(&gov, &req, tampered_body),
-        Err(()),
-        "a body whose bytes don't match the signed x-amz-content-sha256 must fail-closed"
-    );
-}
-
-#[test]
-fn test_verify_sigv4_ingress_credential_unsigned_payload_rejected() {
-    // (c) `UNSIGNED-PAYLOAD` is rejected for this governed ingress: we require a signed payload, so
-    // a client declaring it did not hash its body cannot authenticate. Sign a request normally,
-    // then overwrite the x-amz-content-sha256 header with the sentinel; the body-integrity gate
-    // rejects it independently of any signature check, with the same opaque `Err(())`.
-    crate::metrics::init();
-    let (gov, akid, secret) = gov_with_aws_key();
-    let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
-    let path = "/model/vendor.model/converse";
-    let body = b"some-body";
-    let (auth, mut headers) =
-        sign_sigv4_request(&secret, &akid, "us-east-1", "svc", path, body, &a);
-    for (k, v) in headers.iter_mut() {
-        if k == X_AMZ_CONTENT_SHA256 {
-            *v = "UNSIGNED-PAYLOAD".to_string();
-        }
-    }
-    let req = sigv4_request(path, &auth, &headers);
-    assert_eq!(
-        verify_sigv4_ingress_credential(&gov, &req, body),
-        Err(()),
-        "UNSIGNED-PAYLOAD must be rejected for governed SigV4 ingress"
-    );
-}
-
-#[test]
-fn test_has_sigv4_authorization_detects_scheme() {
-    let yes = Request::builder()
-        .uri("/x")
-        .header(
-            AUTHORIZATION,
-            "AWS4-HMAC-SHA256 Credential=a/b/c/d/aws4_request, SignedHeaders=host, Signature=z",
-        )
-        .body(Body::empty())
-        .unwrap();
-    assert!(has_sigv4_authorization(&yes));
-    let bearer = Request::builder()
-        .uri("/x")
-        .header(AUTHORIZATION, "Bearer tok")
-        .body(Body::empty())
-        .unwrap();
-    assert!(!has_sigv4_authorization(&bearer));
-    let none = Request::builder().uri("/x").body(Body::empty()).unwrap();
-    assert!(!has_sigv4_authorization(&none));
-}
-
-#[test]
-fn test_canonical_query_string_sorts_but_does_not_reencode() {
-    assert_eq!(canonical_query_string(None), "");
-    assert_eq!(canonical_query_string(Some("")), "");
-    // Sorted by key.
-    assert_eq!(canonical_query_string(Some("b=2&a=1")), "a=1&b=2");
-    // Bare key signs as key= (empty value).
-    assert_eq!(canonical_query_string(Some("flag")), "flag=");
-    // REGRESSION (bug: re-URI-encoding the already-encoded wire query string): `query` is the RAW
-    // wire query string, i.e. ALREADY percent-encoded once by the client (per AWS SigV4, the client
-    // builds its wire query string and its CanonicalQueryString with the SAME single encoding pass).
-    // A wire value like `a%2Fb` (the client's one correct encoding of `a/b`) must pass through
-    // UNCHANGED — re-encoding it here would double-encode the `%` into `a%252Fb`, diverging from
-    // what the client signed and breaking verification of every request with an escaped query char.
-    assert_eq!(canonical_query_string(Some("p=a%2Fb")), "p=a%2Fb");
-    // A literal (unencoded) '/' on the wire — also valid, since '/' is unreserved-in-query per RFC
-    // 3986 and some clients don't escape it — likewise passes through unchanged: busbar trusts the
-    // wire bytes are exactly what the client signed, it does not re-derive the "should be" encoding.
-    assert_eq!(canonical_query_string(Some("p=a/b")), "p=a/b");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1958,90 +1538,6 @@ fn test_dry_run_empty_admin_chain_is_not_full() {
     );
 }
 
-/// The structural SigV4 gate rejects a malformed `AWS4-HMAC-SHA256` Authorization header
-/// WITHOUT reading the request body. Discriminator: the client announces a `Content-Length` and then
-/// sends ZERO body bytes. If the gate rejects on headers alone, the 403 arrives immediately; if the
-/// (pre-fix) code buffers the body first (`axum::body::to_bytes`), the server blocks waiting for
-/// bytes that never arrive, and the client's read hangs (this test drives `axum::serve` directly,
-/// with no `TimeoutBody`/read-timeout wrapper, specifically so an unbounded hang is the only
-/// alternative to an immediate response - there is no third outcome to confuse the result).
-#[tokio::test]
-async fn structural_sigv4_gate_rejects_without_reading_the_body() {
-    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use std::sync::Arc;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    crate::metrics::init();
-
-    let state = Arc::new(MockServerState::new());
-    let server = MockServer::new(state).await;
-    let auth_cfg = chain_cfg(&["test-groups-module"]);
-    // The inbound-SigV4 verify branch runs only when governance is enabled with an admin token
-    // configured (`auth/mod.rs`'s `app.governance.filter(|g| g.admin_token_hash().is_some())`) - a
-    // deploy with no admin token can never have a virtual key to resolve against. Without this the
-    // request falls through the plain bearer-token path instead, which never touches the SigV4
-    // structural gate at all (and rejects just as fast, defeating the discriminator).
-    let gov = std::sync::Arc::new(
-        crate::governance::GovState::new(
-            std::sync::Arc::new(crate::governance::MemoryStore::new()),
-            Some("admintok".to_string()),
-        )
-        .unwrap(),
-    );
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new(
-                "test-model",
-                crate::proto::PROTO_ANTHROPIC,
-                &server.base_url(),
-            )
-            .api_key("busbar-upstream-key"),
-        )
-        .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
-        .governance(gov)
-        .build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
-    // Malformed: `AWS4-HMAC-SHA256` with no Credential/SignedHeaders/Signature at all, and no
-    // x-amz-content-sha256/x-amz-date headers either - fails `parse_authorization_header` AND the
-    // header-presence checks, so both gate conditions independently reject it. A large
-    // Content-Length is announced; NO body bytes are ever sent.
-    sock.write_all(
-        b"POST /model/vendor.model/converse HTTP/1.1\r\n\
-          Host: localhost\r\n\
-          Authorization: AWS4-HMAC-SHA256\r\n\
-          Content-Length: 1000000\r\n\
-          \r\n",
-    )
-    .await
-    .unwrap();
-    sock.flush().await.unwrap();
-
-    let mut buf = [0u8; 512];
-    let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), sock.read(&mut buf))
-        .await
-        .expect(
-            "the structural gate did NOT reject before reading the body: the connection hung \
-             waiting for body bytes that were never sent, meaning `to_bytes` was called first",
-        )
-        .unwrap();
-    assert!(outcome > 0, "expected a response, got EOF");
-    let resp = String::from_utf8_lossy(&buf[..outcome]);
-    assert!(
-        resp.starts_with("HTTP/1.1 403"),
-        "expected an immediate 403 from the structural gate: {resp}"
-    );
-
-    handle.abort();
-    server.shutdown().await;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // 1.5.2 DATA-PLANE / ADMIN-TOKEN DECOUPLING.
 // The admin token no longer gates the data plane; admission is decided SOLELY by the chain shape.
@@ -2134,11 +1630,11 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     server.shutdown().await;
 }
 
-/// The `keys` ENGINE ARM is CACHE-EXEMPT: running a keys chain WITH a credential cache
-/// resolves the vkey (Identified{resolved:Some}) but writes NOTHING to the cache (revocation stays
-/// per-request). Before 1.5.2 no keys engine arm / no `resolved` field existed at all.
+/// The `keys` ENGINE ARM resolves the vkey (Identified{resolved:Some}); no verdict of it is ever
+/// cached (revocation stays per-request). Before 1.5.2 no keys engine arm / no `resolved` field
+/// existed at all.
 #[test]
-fn test_1_5_2_keys_arm_is_cache_exempt() {
+fn test_1_5_2_keys_arm_resolves_the_vkey() {
     use crate::governance::{GovState, MemoryStore, NewKeySpec};
     crate::metrics::init();
     let store = std::sync::Arc::new(MemoryStore::new());
@@ -2162,9 +1658,8 @@ fn test_1_5_2_keys_arm_is_cache_exempt() {
         .unwrap();
     let secret = secret.expose_secret().as_str();
     let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
-    let cache = crate::auth_cache::CredentialCache::new();
     let now = busbar_kernel::store::now();
-    let verdict = mw.run_chain_cached(Some(secret), Some(&cache), Some(&gov), now, None);
+    let verdict = mw.run_chain_with(Some(secret), Some(&gov), now, None);
     assert!(
         matches!(
             verdict,
@@ -2174,10 +1669,6 @@ fn test_1_5_2_keys_arm_is_cache_exempt() {
             }
         ),
         "the keys arm must resolve the vkey"
-    );
-    assert!(
-        cache.get(crate::config::KEYS_MODULE, secret, now).is_none(),
-        "the keys engine arm must NOT cache vkey verdicts (revocation window unchanged)"
     );
 }
 
@@ -2505,12 +1996,10 @@ fn door_then_identifier(verified: busbar_contract::auth_calls::Verified) -> Auth
 #[tokio::test]
 async fn a_data_plane_door_overloaded_or_without_a_verdict_denies_the_chain() {
     use busbar_contract::auth_calls::Verified;
-    let cache = std::sync::Arc::new(crate::auth_cache::CredentialCache::new());
     for verified in [Verified::Overloaded, Verified::Failed] {
         let auth = std::sync::Arc::new(door_then_identifier(verified.clone()));
         let verdict = AuthMiddleware::run_chain_on_request_path(
             &auth,
-            &cache,
             Some("grp:admins".into()),
             ChainHead::default(),
             None,
@@ -2673,11 +2162,6 @@ async fn an_external_admin_door_is_lent_the_candidate_and_its_outage_is_the_rule
             admin_door(&app, "GET", "/", &headers),
             AdminDoor::Identified(..)
         ));
-        assert_eq!(
-            app.credential_cache.flush_all(),
-            0,
-            "the kernel caches no door's verdict"
-        );
     }
     let wrong = admin_headers(Some("not-tok"), None);
     for (otherwise, want) in [

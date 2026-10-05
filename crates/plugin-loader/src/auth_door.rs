@@ -673,6 +673,14 @@ impl AuthCalls for AuthInstance {
         self.facts.facts
     }
 
+    fn credential_kinds(&self) -> Vec<String> {
+        self.facts.credential_kinds.clone()
+    }
+
+    fn carriers(&self) -> Vec<String> {
+        self.facts.carriers.clone()
+    }
+
     fn verify_now(&self, request: &VerifyRequest) -> Option<VerifyAnswer> {
         let presented = request.credential.is_some();
         let plugin = &self.shared.plugin;
