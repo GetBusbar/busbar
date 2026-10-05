@@ -59,6 +59,9 @@ pub struct TransportFacts {
     /// list (ARCHITECT ruling Q128 U7). The handoff target on an upgrade is the claim that owns the
     /// requested scheme.
     pub upgrades: Vec<&'static str>,
+    /// The claims whose row carries a session (`session = 1`): a duplex line, never one request
+    /// and its response.
+    pub sessions: Vec<&'static str>,
     /// The claims it composes over; empty = directly over the host's socket (a framer) or the
     /// bottom of its stack (a carrier).
     pub composes_over: Vec<&'static str>,
@@ -128,10 +131,17 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         .filter(|(_, row)| row.unit0_trigger == busbar_contract::abi::transport::UNIT0_UPGRADE)
         .map(|(name, _)| *name)
         .collect();
+    let sessions = claims
+        .iter()
+        .zip(rows)
+        .filter(|(_, row)| row.session == 1)
+        .map(|(name, _)| *name)
+        .collect();
     Ok(TransportFacts {
         role: tail.role,
         claims,
         upgrades,
+        sessions,
         composes_over: under
             .iter()
             .map(|s| owned(*s, "composes_over"))
