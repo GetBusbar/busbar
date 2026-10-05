@@ -454,7 +454,7 @@ pub fn judge_callback(reach: &mut dyn Reach, url: &str) -> Result<Result<(), Str
 }
 
 /// THE TASK a push-config request names, through the same scoped read every verb uses.
-fn addressed(
+pub(crate) fn addressed(
     rec: &mut dyn Records,
     params: &Value,
     caller: &str,

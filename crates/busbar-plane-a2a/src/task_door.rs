@@ -50,6 +50,18 @@ pub struct Pass {
     served: bool,
     /// A card read's answer was written: a later piece answers nothing more.
     answered: bool,
+    /// A local answer decided and held while busbar's own callback is mirrored onto the agent
+    /// ([`crate::mirror`]): its status, its body, its record writes, and the mirror in flight.
+    held: Option<Held>,
+}
+
+/// A local answer held across the mirror's PENDING entries.
+#[derive(Debug)]
+pub(crate) struct Held {
+    status: u32,
+    body: Vec<u8>,
+    writes: Vec<Write>,
+    flight: Box<crate::mirror::Flight>,
 }
 
 /// One piece's stamp: its clock, and whether it runs the second's sweep.
@@ -371,9 +383,13 @@ pub fn on_piece(
     mut out: Out<'_, OnPieceOut>,
 ) -> Option<Outcome> {
     let unit = input.get().unit;
-    let (verb, rest, composed, framed, addressed, section, generation) =
+    let (verb, rest, composed, framed, addressed, section, generation, version, held) =
         plane.units.with(&unit, |u| {
             let u = u?;
+            let version = match &u.disposition {
+                Disposition::Request { version, .. } => *version,
+                _ => crate::arrival::DEFAULT_VERSION,
+            };
             Some((
                 verb_of(&u.disposition)?,
                 std::mem::take(&mut u.pass.rest),
@@ -382,11 +398,40 @@ pub fn on_piece(
                 u.agent.clone(),
                 u.section.clone(),
                 u.generation,
+                version,
+                u.pass.held.take(),
             ))
         })?;
     // The next window of a reply already answered.
     if !rest.is_empty() {
         return Some(window(plane, unit, &input, &mut out, (0, &rest), &[]));
+    }
+    // An answer held while busbar's own callback is mirrored: the mirror goes on, then the answer.
+    if let Some(mut held) = held {
+        if crate::plane_door::drive_mirror(plane, instance.ticket(), &mut held.flight).is_pending()
+        {
+            plane.units.with(&unit, |u| {
+                if let Some(u) = u {
+                    u.pass.held = Some(held);
+                }
+            });
+            return Some(Outcome::Pending);
+        }
+        let issued = held.flight.seq;
+        let answer = local::Answer {
+            status: held.status,
+            body: held.body,
+        };
+        return Some(answered_window(
+            plane,
+            unit,
+            &input,
+            &mut out,
+            (framed, composed.is_some()),
+            &answer,
+            &held.writes,
+            issued,
+        ));
     }
     // The ATTEMPT piece: the caller's body follows, and the answer comes on it.
     if input.get().from != FROM_CALLER {
@@ -458,40 +503,174 @@ pub fn on_piece(
         Ok(None) => return Some(Outcome::Refused),
         Ok(Some(answer)) => answer,
     };
-    let issued = via.issued();
     plane.units.with(&unit, |u| {
         if let Some(u) = u {
             u.pass.served = served;
         }
     });
+    // BUSBAR'S OWN CALLBACK, MIRRORED ONTO THE AGENT before the answer goes (the engine awaited it
+    // there): only on a successful local answer about a live task the agent has named.
+    let mirrored = crate::mirror::mirrored_verb(verb).filter(|_| served && answer.status == 200);
+    let flight = match mirrored {
+        Some(method) => match mirror_flight(
+            plane,
+            instance,
+            &mut via,
+            (method, version),
+            &envelope,
+            (caller, member),
+            (section.as_deref(), generation, entry.now),
+        ) {
+            Err(Halt::Pending) => return Some(Outcome::Pending),
+            Err(Halt::Failed(_)) => None,
+            Ok(flight) => flight,
+        },
+        None => None,
+    };
+    if let Some(mut flight) = flight {
+        if crate::plane_door::drive_mirror(plane, instance.ticket(), &mut flight).is_pending() {
+            plane.units.with(&unit, |u| {
+                if let Some(u) = u {
+                    u.pass.held = Some(Held {
+                        status: answer.status,
+                        body: answer.body.clone(),
+                        writes: writes.clone(),
+                        flight,
+                    });
+                }
+            });
+            return Some(Outcome::Pending);
+        }
+        let issued = flight.seq;
+        return Some(answered_window(
+            plane,
+            unit,
+            &input,
+            &mut out,
+            (framed, composed.is_some()),
+            &answer,
+            &writes,
+            issued,
+        ));
+    }
+    let issued = via.issued();
+    Some(answered_window(
+        plane,
+        unit,
+        &input,
+        &mut out,
+        (framed, composed.is_some()),
+        &answer,
+        &writes,
+        issued,
+    ))
+}
+
+/// THE MIRROR a successful push-config verb owes ([`crate::mirror`]), or `None` when it owes none:
+/// no `https` public url, no task the verb names live for this caller, no agent's own id for it, an
+/// agent whose card speaks no binding the plane frames, or a token the host would not sign.
+fn mirror_flight(
+    plane: &A2aDoor,
+    instance: &Instance<'_, A2aDoor>,
+    via: &mut Via<'_>,
+    (method, version): (&'static str, &'static str),
+    envelope: &Value,
+    (caller, member): (&str, &str),
+    (section, generation, now): (Option<&crate::a2a::config::AgentsCfg>, u64, u64),
+) -> Result<Option<Box<crate::mirror::Flight>>, Halt> {
+    let Some(our_url) = plane
+        .public_url
+        .as_deref()
+        .and_then(crate::mirror::callback_url)
+    else {
+        return Ok(None);
+    };
+    let Some(def) = section.and_then(|s| s.agents.get(member)) else {
+        return Ok(None);
+    };
+    let params = envelope.get("params").cloned().unwrap_or(Value::Null);
+    let Some(task) = local::addressed(via, &params, caller, now)? else {
+        return Ok(None);
+    };
+    if task.state.is_terminal() {
+        return Ok(None);
+    }
+    let Some(backend_task) = plane.backend_of(caller, &task.task_id) else {
+        return Ok(None);
+    };
+    let card = plane.cards.at(member, generation);
+    let Some(binding) = crate::binding::speakable(&crate::binding::binding_of(card.as_deref()))
+    else {
+        return Ok(None);
+    };
+    let mut signer = HostSigner {
+        services: plane.services.as_ref(),
+        ticket: instance.ticket(),
+        seq: via.issued(),
+    };
+    let Some(token) = signer
+        .signed(&crate::push::token_input(&task.task_id))
+        .and_then(|(_, sig)| plane.tokens.mint(caller, &task.task_id, &sig))
+    else {
+        return Ok(None);
+    };
+    let create = crate::mirror::create_params(&backend_task, &our_url, &token);
+    Ok(Some(Box::new(crate::mirror::Flight {
+        stage: crate::mirror::Stage::Mirror,
+        method,
+        backend_task,
+        create,
+        agent: member.to_string(),
+        url: def.url.clone(),
+        allow_private: def.allow_private,
+        binding,
+        version,
+        seq: signer.seq,
+        exchange: None,
+    })))
+}
+
+/// The caller's local answer, written for its line: the gRPC line's message or status, the
+/// HTTP+JSON line's re-framed document, the JSON-RPC line's envelope as answered.
+#[allow(clippy::too_many_arguments)]
+fn answered_window(
+    plane: &A2aDoor,
+    unit: u64,
+    input: &Lent<'_, OnPieceIn>,
+    out: &mut Out<'_, OnPieceOut>,
+    (framed, composed): (Option<crate::framed::Rpc>, bool),
+    answer: &local::Answer,
+    writes: &[Write],
+    issued: u32,
+) -> Outcome {
     let done = match (framed, composed) {
         // The gRPC line: the rpc's message, or the status the call ends with.
         (Some(rpc), _) => framed_window(
             plane,
             unit,
-            &input,
-            &mut out,
+            input,
+            out,
             &crate::framed::reply(rpc, answer.status, &answer.body),
-            &writes,
+            writes,
         ),
-        (None, Some(_)) => window(
+        (None, true) => window(
             plane,
             unit,
-            &input,
-            &mut out,
+            input,
+            out,
             (
                 answer.status,
                 &crate::rest::reframe(answer.status, &answer.body),
             ),
-            &writes,
+            writes,
         ),
-        (None, None) => window(
+        (None, false) => window(
             plane,
             unit,
-            &input,
-            &mut out,
+            input,
+            out,
             (answer.status, &answer.body),
-            &writes,
+            writes,
         ),
     };
     if done == Outcome::Ready {
@@ -502,7 +681,7 @@ pub fn on_piece(
             }
         });
     }
-    Some(done)
+    done
 }
 
 /// The kind index `kind` is in the tail's record kinds.

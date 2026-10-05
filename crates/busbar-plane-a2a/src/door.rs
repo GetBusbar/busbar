@@ -424,7 +424,6 @@ pub const ROUTES: &[Route] = &[
     keyed("POST", "/a2a/agents/{agent_id}"),
     keyed("POST", "/a2a"),
     keyed("POST", "/a2a/"),
-    open("POST", "/a2a/push"),
     Route {
         verb: "POST",
         target: "/lf.a2a.v1.A2AService/{method}",
@@ -476,28 +475,40 @@ pub fn line_of(route: &Route) -> Line {
     Line::Target
 }
 
-/// The trust verbs the plane serves on the kernel's admin mount, relative to it: `(verb, target)`.
+/// The trust verbs the plane serves on the kernel's admin mount, relative to it: `(verb, target)`;
+/// then busbar's own push callback, a PUBLIC route ([`PUSH_ROUTE`]).
 pub const ADMIN_VERBS: &[(&str, &str)] = &[
     ("POST", "/agents/{name}/connect"),
     ("POST", "/agents/{name}/approve"),
+    ("POST", "/a2a/push"),
 ];
 
-/// The word the kernel's audit row names each [`ADMIN_VERBS`] request by: the engine's audit verbs
-/// (the shared `connect`, and `approve`).
-pub const ADMIN_AUDIT_VERBS: [&str; 2] = ["connect", "approve"];
+/// BUSBAR'S OWN PUSH CALLBACK's index in [`ADMIN_VERBS`]: `POST /a2a/push`, a PUBLIC route
+/// (`ROUTE_PUBLIC`) on the data listener's mount beside the plane's claims, served by `serve` to
+/// an agent that holds no busbar key (ARCHITECT ruling Q3c, 2026-10-04; its kernel path is
+/// SEAM-4o's). It is not a claim: the plane is not a second claimant of the path.
+pub const PUSH_ROUTE: usize = 2;
 
-const fn admin_route(i: usize) -> AdminRoute {
+/// The word the kernel's audit row names each [`ADMIN_VERBS`] request by: the engine's audit verbs
+/// (the shared `connect`, and `approve`); the push callback is never audited (the engine's was not).
+pub const ADMIN_AUDIT_VERBS: [&str; 3] = ["connect", "approve", ""];
+
+const fn admin_route(i: usize, flags: u32) -> AdminRoute {
     AdminRoute {
         verb: abi_str(ADMIN_VERBS[i].0),
         target: abi_str(ADMIN_VERBS[i].1),
-        flags: 0,
+        flags,
         _reserved: 0,
         audit_verb: abi_str(ADMIN_AUDIT_VERBS[i]),
     }
 }
 
 /// [`ADMIN_VERBS`] in the ABI's spelling.
-pub const ADMIN_ROUTES: &[AdminRoute] = &[admin_route(0), admin_route(1)];
+pub const ADMIN_ROUTES: &[AdminRoute] = &[
+    admin_route(0, 0),
+    admin_route(1, 0),
+    admin_route(PUSH_ROUTE, busbar_contract::abi::plane::ROUTE_PUBLIC),
+];
 
 /// THE TRUST VERBS' OpenAPI FRAGMENT, each path relative to the admin mount (the kernel keys it
 /// under the mount): the served engine's text.

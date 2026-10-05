@@ -351,6 +351,82 @@ impl Outbox {
     }
 }
 
+/// THE MIRROR's requests ([`crate::mirror::Flight`]), each judged as a relayed hop's endpoint is
+/// and then sent over the agent's need, until its last stage is answered. Its outcome is only ever
+/// the next stage: a request that cannot be judged, framed or answered is a request not answered.
+pub(crate) fn drive_mirror(
+    plane: &A2aDoor,
+    ticket: Ticket,
+    flight: &mut crate::mirror::Flight,
+) -> Poll<()> {
+    use crate::mirror::{self, Stage};
+    use busbar_contract::abi::sdk::exchange::{exchange, Exchange};
+    loop {
+        if flight.stage == Stage::Done {
+            return Poll::Ready(());
+        }
+        if flight.exchange.is_none() {
+            let at = LookAt {
+                plane,
+                ticket,
+                base: flight.seq,
+            };
+            let within = match judge_hop(&at, &flight.url, flight.allow_private, flight.seq) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(_)) => {
+                    flight.advance(None);
+                    continue;
+                }
+                Poll::Ready(Ok((next, within))) => {
+                    flight.seq = next;
+                    within
+                }
+            };
+            let issuing = flight.issuing();
+            let params = mirror::params_for(issuing, &flight.backend_task, &flight.create);
+            let request = mirror::request(
+                flight.binding,
+                &flight.url,
+                flight.version,
+                issuing,
+                &params,
+            )
+            .and_then(|r| Exchange::request(r).ok());
+            match request {
+                Some(ex) => {
+                    flight.exchange = Some((
+                        flight.seq,
+                        Box::new(ex.landing_within(within).as_member(flight.agent.clone())),
+                    ))
+                }
+                None => {
+                    flight.advance(None);
+                    continue;
+                }
+            }
+        }
+        let Some(host) = plane.host.as_ref() else {
+            flight.stage = Stage::Done;
+            return Poll::Ready(());
+        };
+        let Some((start, ex)) = flight.exchange.as_mut() else {
+            continue;
+        };
+        let mut conn = host.connector_from(ticket, *start);
+        match exchange(&mut conn, ex, door::NEED_AGENT, Some(&flight.url)) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(answer) => {
+                flight.seq = conn.issued();
+                flight.exchange = None;
+                match answer {
+                    Ok(reply) => flight.advance(Some((reply.status, &reply.body))),
+                    Err(_) => flight.advance(None),
+                }
+            }
+        }
+    }
+}
+
 /// One instance: the public base URL `open` was given, the host tables, every live generation's
 /// snapshot and section, the units in flight, the second the task store was last swept, and the
 /// far end's own id for each relayed task busbar learnt it for.
@@ -368,6 +444,10 @@ pub struct A2aDoor {
     pub(crate) cards: crate::cards::Cards,
     /// The push notifications waiting for delivery, and the webhook credentials they present.
     pub(crate) deliveries: crate::push::Deliveries,
+    /// Busbar's own callback tokens, by the task each names ([`crate::push::Tokens`]).
+    pub(crate) tokens: crate::push::Tokens,
+    /// The push-volume bound on busbar's own callback ([`crate::push::PushLimiter`]).
+    pub(crate) pushes: crate::push::PushLimiter,
     /// The newest refresh generation published.
     newest: Keyed<(), u64>,
     /// The sizes short host-records answers named, per handle ([`crate::task_door::Grown`]).
@@ -380,6 +460,11 @@ pub struct A2aDoor {
 }
 
 impl A2aDoor {
+    /// The agent's own id for `caller`'s task `task_id`, once the agent named it.
+    pub(crate) fn backend_of(&self, caller: &str, task_id: &str) -> Option<String> {
+        self.backends.get(&task_key(caller, task_id))
+    }
+
     /// The newest refresh generation published; `0` before `open`.
     fn newest(&self) -> u64 {
         self.newest.get(&()).unwrap_or(0)
@@ -524,6 +609,8 @@ slot!(
             backends: Keyed::new(),
             cards: crate::cards::Cards::new(),
             deliveries: crate::push::Deliveries::new(),
+            tokens: crate::push::Tokens::new(),
+            pushes: crate::push::PushLimiter::new(),
             newest: Keyed::new(),
             grown: Keyed::new(),
             flights: Flights::default(),
@@ -1853,6 +1940,7 @@ fn guard_relay(
 /// Q-DEL-A2A-SPKI) and the handles issued; the parked fetch while one of its services is in flight.
 fn fetch_card(
     at: &LookAt<'_>,
+    name: &str,
     def: &crate::a2a::config::AgentDefCfg,
     resumed: Option<(CardHop, Option<ParkedExchange>)>,
 ) -> Result<
@@ -1916,7 +2004,9 @@ fn fetch_card(
                     })
                     // RESOLVE, PIN, DIAL THE PIN: the dial lands on an address the judgement judged,
                     // and the stream's facts are read before it closes.
-                    .map(|request| request.landing_within(within).observing());
+                    // ... and names the registration it reaches, so that registration's own private
+                    // reach (SEAM-4k/4p) is the one the dial holds.
+                    .map(|request| request.landing_within(within).observing().as_member(name));
                     (start, request)
                 }
             };
@@ -2036,7 +2126,7 @@ fn look(
         Some(LookParked::Fetching { hop, exchange }) => Some((hop, exchange)),
         None => None,
     };
-    let (card, hop, issued) = fetch_card(at, def, resumed)?;
+    let (card, hop, issued) = fetch_card(at, name, def, resumed)?;
     let (verify_seq, sight_seq) = (issued, issued + 1);
     // A fetch the connector refused for the agent's pinned key reads as the pin's own refusal.
     let card = card.map_err(|e| crate::trust::hop_refusal(&def.pin, &hop, &def.url).unwrap_or(e));
@@ -2293,6 +2383,9 @@ slot!(
         let Some(plane) = instance.get() else {
             return Outcome::Failed;
         };
+        if input.get().route as usize == door::PUSH_ROUTE {
+            return crate::push_serve::serve(plane, &instance, input, out);
+        }
         let Some((_, route)) = door::ADMIN_VERBS.get(input.get().route as usize) else {
             return verb_refused(&input, &mut out, STATUS_NOT_FOUND, "", None, AUDIT_NONE);
         };

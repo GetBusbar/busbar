@@ -190,16 +190,26 @@ fn the_abi_admin_routes_are_the_admin_verbs() {
 }
 
 #[test]
-fn exactly_the_discovery_documents_and_the_callback_are_open() {
+fn exactly_the_discovery_documents_are_open_claims() {
     let open: Vec<&str> = ROUTES.iter().filter(|r| r.open).map(|r| r.target).collect();
+    assert_eq!(open, [crate::METADATA_PATH, crate::WELL_KNOWN_CARD_PATH]);
+}
+
+/// BUSBAR'S OWN PUSH CALLBACK is the plane's one PUBLIC route, served by `serve` (ARCHITECT ruling
+/// Q3c), never a claim: the plane is not a second claimant of its path.
+#[test]
+fn the_push_callback_is_a_public_route_and_no_claim() {
+    use busbar_contract::abi::plane::ROUTE_PUBLIC;
+    assert_eq!(ADMIN_VERBS[PUSH_ROUTE], ("POST", "/a2a/push"));
+    assert_eq!(ADMIN_ROUTES[PUSH_ROUTE].flags, ROUTE_PUBLIC);
     assert_eq!(
-        open,
-        [
-            crate::METADATA_PATH,
-            crate::WELL_KNOWN_CARD_PATH,
-            "/a2a/push",
-        ]
+        ADMIN_AUDIT_VERBS[PUSH_ROUTE], "",
+        "the callback is never audited"
     );
+    for (i, r) in ADMIN_ROUTES.iter().enumerate() {
+        assert_eq!(r.flags == ROUTE_PUBLIC, i == PUSH_ROUTE);
+    }
+    assert!(ROUTES.iter().all(|r| r.target != "/a2a/push"));
 }
 
 #[test]
@@ -238,7 +248,7 @@ fn every_route_is_one_line_of_the_dialect_in_mount_order() {
         lines,
         [
             Target, Target, Target, Target, Target, Target, Target, Target, Target, Target, Open,
-            Open, Open, Document, Document, Document, Open, Framed,
+            Open, Open, Document, Document, Document, Framed,
         ]
     );
     // Each line's refusals speak the binding its dialect index names.
