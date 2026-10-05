@@ -2435,7 +2435,34 @@ pub fn resolve(
     // section carries no per-registration containers, only its section-wide `<section>.hooks:`
     // list, read through the SAME `container_gates` seam the `tools:` block above reads). An entry
     // naming an undefined hook booted silently before this.
-    for (section, cfg) in &deploy.declared.0 {
+    //
+    // A RAW-carried section ([`DeployCfg::plane_raw`]) whose registered plane parses its section
+    // (a plane served through its door: `busbar_kernel::plane::door`, whose parse is the door's own
+    // `validate`) is judged HERE too, so `--validate` and boot refuse a section its plane refuses,
+    // naming the section, and the parsed section answers the same reserved-word checks a declared
+    // one does (its `hooks:` list here, its model map's provider references below).
+    let raw_judged: Vec<(&'static str, Box<dyn crate::plane::config::PlaneCfg>)> = deploy
+        .plane_raw
+        .iter()
+        .filter(|(_, v)| !v.is_null())
+        .filter_map(|(&section, value)| {
+            let parse = crate::plane::registry::plane_decls()
+                .iter()
+                .find(|d| d.config_section == section)
+                .and_then(|d| d.parse_section)?;
+            parse(value)
+                .map_err(|e| errors.push(format!("`{section}:` is not valid: {e}")))
+                .ok()
+                .map(|cfg| (section, cfg))
+        })
+        .collect();
+    let judged = deploy
+        .declared
+        .0
+        .iter()
+        .map(|(s, c)| (*s, c))
+        .chain(raw_judged.iter().map(|(s, c)| (*s, c)));
+    for (section, cfg) in judged {
         for hook in &cfg.container_gates().section_hooks {
             if !deploy.hooks.contains_key(hook) {
                 errors.push(format!(
@@ -2455,7 +2482,12 @@ pub fn resolve(
     // (BUSBAR-1.6.0.md #51, OWNER-LOCKED: an unknown dialect fails closed — "the decisions plane
     // (only jev) handed `anthropic` fails"). Dialect validation stays the PLANE's answer (`#49`: core
     // spells no protocol literal); this loop only compares strings the plane itself supplied.
-    let declared = deploy.declared.0.values().map(AsRef::as_ref);
+    let declared = deploy
+        .declared
+        .0
+        .values()
+        .chain(raw_judged.iter().map(|(_, c)| c))
+        .map(AsRef::as_ref);
     for section in [deploy.tools.0.as_ref(), deploy.agents.0.as_ref()]
         .into_iter()
         .chain(declared)

@@ -226,6 +226,44 @@ impl PlaneCfg for DoorSection {
         Ok(())
     }
 
+    /// Every `<section>.models.<m>.provider` reference the section's reserved model map makes
+    /// (`busbar_contract::section::RESERVED_MODELS_KEY`), in the order written: `resolve` checks each
+    /// names a configured connection and, for a door that consumes the connections, speaks one of
+    /// its dialects ([`Self::known_dialects`]). A section with no model map makes none.
+    fn model_provider_refs(&self) -> Vec<(String, String)> {
+        use busbar_contract::section::{MODEL_PROVIDER_KEY, RESERVED_MODELS_KEY};
+        self.value
+            .get(RESERVED_MODELS_KEY)
+            .and_then(serde_yaml::Value::as_mapping)
+            .into_iter()
+            .flat_map(|m| m.iter())
+            .filter_map(|(name, entry)| {
+                let provider = entry.get(MODEL_PROVIDER_KEY)?.as_str()?;
+                Some((
+                    format!(
+                        "{}.{RESERVED_MODELS_KEY}.{}.{MODEL_PROVIDER_KEY}",
+                        self.section,
+                        name.as_str()?
+                    ),
+                    provider.to_string(),
+                ))
+            })
+            .collect()
+    }
+
+    /// The door's stated dialects, when it consumes the connections section (the transport kind's
+    /// root): the members it reaches there must speak one of them (#51: a plane handed a dialect it
+    /// does not speak fails closed). A door that consumes no connection restricts none.
+    fn known_dialects(&self) -> Option<&'static [&'static str]> {
+        let connections = busbar_contract::plugin::Kind::Transport.root();
+        DOORS
+            .iter()
+            .filter_map(OnceLock::get)
+            .find(|d| d.reg.section == self.section)
+            .filter(|d| d.reg.consumes.contains(&connections))
+            .map(|d| d.dialects)
+    }
+
     fn is_present(&self) -> bool {
         match &self.value {
             serde_yaml::Value::Null => false,

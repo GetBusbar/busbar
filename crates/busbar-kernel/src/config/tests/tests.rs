@@ -3837,8 +3837,8 @@ static NEUTRAL_SECTION_PLANE: crate::plane::registry::PlaneDecl =
 /// literal, so the neutral section lands exactly where `decisions:` does — and the seam takes its
 /// raw arm. The typed half — that the
 /// hooks are wired, that `deny_unknown_fields` runs inside the block, and that `decisions: "hello"`
-/// is REFUSED — is proven where the owning decl is written and registrable,
-/// `crates/busbar/src/root/tests/plane_decisions.rs`.
+/// is REFUSED — is proven on the served build, where the plane's door folds its row and judges its
+/// section with its own `validate` (`crates/busbar/tests/cli_validate.rs`, the decisions block).
 #[test]
 fn test_decisions_section_parses() {
     let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[

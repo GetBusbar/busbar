@@ -8,11 +8,11 @@
 //! through `busbar_contract::export_door!`), so the two cannot answer differently.
 //! `tests/conformance.rs` loads both through the one loader and requires one transcript.
 //!
-//! The composition root links [`door`] on its `plane-door` axis under its development-only switch
-//! `plane-decisions-door` (`BUSBAR-1.6.0.md` Part 3, section 12, "The switch") and binds it through
-//! the loader's one load beside the dropped-in plane doors. The root still declares the plane with
-//! its inert claims (`crates/busbar/src/root/plane_decisions.rs`); a request reaches the door once
-//! the serve path composes the bound door planes.
+//! The composition root links [`door`] on its `plane-door` axis under the plane's one switch
+//! `plane-decisions` (`BUSBAR-1.6.0.md` Part 3, section 12, "The switch": the fold is complete and
+//! its development-only switch is gone) and binds it through the loader's one load beside the
+//! dropped-in plane doors. The plane's registry row is this door's Statement, folded by the kernel;
+//! the serve path composes the bound door and hands it its arrivals through the plane driver.
 //!
 //! * The Statement: the plane's key and version, `decisions:` declared and `providers:` consumed,
 //!   its one outbound need, and the tail [`TAIL`] (every list read off [`crate::driven::tail`]).

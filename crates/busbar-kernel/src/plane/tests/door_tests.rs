@@ -23,6 +23,7 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
         key,
         section,
         owns: Vec::new(),
+        consumes: Vec::new(),
         admin_routes: Vec::new(),
         admin_openapi: None,
         secret_refs: vec!["settings.*.token.secret", "settings.*.env.*"],
