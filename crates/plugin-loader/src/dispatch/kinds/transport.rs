@@ -27,12 +27,14 @@ use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::transport::check::{
     check_accept, check_arrival, check_cancel, check_claims, check_composes_over, check_framer,
-    check_framer_fields, check_head_slots, check_io, check_listen, check_locate, check_tail,
+    check_framer_fields, check_head_slots, check_io, check_listen, check_locate, check_settings,
+    check_tail,
 };
 use busbar_contract::abi::transport::{
     self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
     ConnOut, DialIn, EmitIn, EncodeIn, FinishIn, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
-    ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, ShutIn, TransportTail, WriteIn,
+    ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, SettingDecl, ShutIn, TransportTail,
+    WriteIn,
 };
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
@@ -55,6 +57,9 @@ pub struct TransportFacts {
     /// The claims it composes over; empty = directly over the host's socket (a framer) or the
     /// bottom of its stack (a carrier).
     pub composes_over: Vec<&'static str>,
+    /// The customer settings it reads, by their 1.5.5 config paths (`TransportTail::settings`), in
+    /// its order: the host deals each one's value to its `open`.
+    pub settings: Vec<&'static str>,
 }
 
 /// A plugin string, interned.
@@ -100,6 +105,13 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         unsafe { std::slice::from_raw_parts(tail.composes_over, tail.composes_over_len) }
     };
     check_composes_over(under).map_err(broke)?;
+    let settings: &[SettingDecl] = if tail.settings_len == 0 {
+        &[]
+    } else {
+        // SAFETY: `check_tail` refused a NULL list with a count; the list is `'static` plugin data.
+        unsafe { std::slice::from_raw_parts(tail.settings, tail.settings_len) }
+    };
+    check_settings(settings).map_err(broke)?;
     Ok(TransportFacts {
         role: tail.role,
         claims: names
@@ -109,6 +121,10 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         composes_over: under
             .iter()
             .map(|s| owned(*s, "composes_over"))
+            .collect::<Result<_, _>>()?,
+        settings: settings
+            .iter()
+            .map(|s| owned(s.path, "settings"))
             .collect::<Result<_, _>>()?,
     })
 }

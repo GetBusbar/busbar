@@ -169,6 +169,9 @@ busbar-export-otlp = { workspace = true, optional = true }
 # Which wires a build links is the `transport` rows of the linked table below; the source names none.
 busbar-transport-tcp = { workspace = true }
 busbar-transport-http = { workspace = true }
+# gRPC: its own framer door over the carrier (OWNER 2026-09-29, "1 new transport"), linked on the
+# transport-door axis.
+busbar-transport-grpc = { workspace = true }
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
@@ -383,7 +386,7 @@ transport-tcp = "busbar-transport-tcp"
 transport-http = "busbar-transport-http"
 transport-sse = "busbar-transport-http"
 transport-ws = "busbar-transport-ws"
-transport-grpc = "busbar-transport-http"
+transport-grpc = "busbar-transport-grpc"
 transport-stdio = "busbar-transport-stdio"
 # THE PLANE DOOR AXIS (#2, THE DESIGN section 11.4): a plane's memory-ABI `door`, bound through the
 # loader's one load beside the dropped-in plane doors.
@@ -427,8 +430,8 @@ transport-tcp = "transport transport-door"
 transport-http = "transport connector-door"
 transport-sse = "transport"
 transport-ws = "transport"
-transport-grpc = "transport"
-transport-stdio = "transport"
+transport-grpc = "transport transport-door"
+transport-stdio = "transport transport-door"
 plane-decisions-door = "plane-door"
 llm-on-driver = "plane-door"
 
@@ -439,7 +442,6 @@ llm-on-driver = "plane-door"
 busbar-plane-decisions = "crate::root::plane_decisions"
 # One crate, several wires: each row past the crate's own `linked` names its entry.
 transport-sse = "busbar_transport_http::linked::sse"
-transport-grpc = "busbar_transport_http::linked::grpc"
 # A secret plugin's door is its `door` module's.
 busbar-secret-env = "busbar_secret_env::door"
 busbar-secret-file = "busbar_secret_file::door"
@@ -480,6 +482,11 @@ proto-llm = "plane_node"
 sha2 = { workspace = true }
 # root_listeners_are_the_connectors.rs: the TLS data door's certificate, generated per run.
 rcgen = { workspace = true, features = ["pem"] }
+# root/tests/connector_h2.rs: the TLS far end the connector dials with the http door's protocol
+# offer (it reads the offer off the ClientHello). Already in the lock through the connector.
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+tokio-rustls = { workspace = true }
 # The loop-unify shadow-compare test (`root::gauntlet_kernel`) implements a deterministic
 # `GauntletPlane` to drive both the substrate gauntlet and the kernel rider on one input; the trait
 # is `#[async_trait]`, so its test impl needs the macro.

@@ -22,14 +22,16 @@ use busbar_kernel::config::Destinations;
 use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal};
 
 use crate::guard::{Guard, Resolve, SystemResolver};
+use crate::pool::PoolPosture;
 use crate::registry::{Entry, Transports};
 use crate::{Connector, DialJudge, Judged, Verdict, WakeTicket};
 
 /// THE PROCESS'S CONNECTOR over the framer entries `entries` yields, judging every dial through
 /// `dest` ([`judge`], the node's `own_ports` refused to a loopback-allowed need), securing a
-/// connection with the default outbound trust where its target asks for it, and waking a plugin's
-/// ticket through `wake`. The trust is built before `entries` is asked for, so a boot that cannot
-/// secure a connection loads no transport door.
+/// connection with the default outbound trust where its target asks for it, waking a plugin's
+/// ticket through `wake`, and keeping a dialled connection whose exchange finished whole under the
+/// deployment's `pool` posture ([`crate::pool`]). The trust is built before `entries` is asked for,
+/// so a boot that cannot secure a connection loads no transport door.
 ///
 /// # Errors
 ///
@@ -40,16 +42,14 @@ pub fn build(
     dest: Arc<dyn DestJudge>,
     own_ports: &[u16],
     wake: WakeTicket,
+    pool: PoolPosture,
 ) -> Result<Arc<Connector>, String> {
     let tls = crate::tls::client::build_client_config(&EgressTrust::default())
         .map_err(|e| format!("its connection security: {e}"))?;
     let view = Transports::new(entries()?).map_err(|e| e.to_string())?;
-    Ok(Arc::new(Connector::serving(
-        view,
-        judge(dest, own_ports),
-        Some(Arc::new(tls)),
-        wake,
-    )))
+    Ok(Arc::new(
+        Connector::serving(view, judge(dest, own_ports), Some(Arc::new(tls)), wake).pooling(pool),
+    ))
 }
 
 /// THE DEPLOYMENT'S ONE DESTINATION JUDGE: its [`Guard`] over the system resolver.

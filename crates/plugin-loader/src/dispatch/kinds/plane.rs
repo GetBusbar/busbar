@@ -457,6 +457,36 @@ impl Kind for Plane {
         Box::new(PlaneDrive::new())
     }
 
+    /// THE REQUEST LOOKUP: the unit an `arrive`, an `on_piece` or a `refusal` serves, the kernel-
+    /// minted key its `in` carries (`ArriveIn::unit`, `OnPieceIn::unit`, `RefusalIn::unit`), so a
+    /// host service the plane calls inside the crossing (`entitlement.check`) answers for that
+    /// unit's principal. `0` is no unit (a refusal before any unit arrived); every other op serves
+    /// none.
+    // The trait's own contract (`Kind::unit_of`): `input` is the dispatcher's own `in` of `in_size`
+    // bytes, written by the host for this crossing; only the dispatcher calls it.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    fn unit_of(s: u32, input: *const InHead, in_size: usize) -> Option<u64> {
+        /// The host's `in` read as a `T`, when its frame holds a whole one.
+        ///
+        /// # Safety
+        /// `input` is the host's own `in`, `in_size` bytes, live for the crossing.
+        unsafe fn read<T: Copy>(input: *const InHead, in_size: usize) -> Option<T> {
+            // SAFETY: the frame holds a whole `T` (the caller's contract).
+            (in_size >= std::mem::size_of::<T>())
+                .then(|| unsafe { input.cast::<T>().read_unaligned() })
+        }
+        // SAFETY: the dispatcher hands its own `in` and the size it wrote.
+        let key = unsafe {
+            match s {
+                slot::ARRIVE => read::<ArriveIn>(input, in_size).map(|i| i.unit),
+                slot::ON_PIECE => read::<OnPieceIn>(input, in_size).map(|i| i.unit),
+                slot::REFUSAL => read::<RefusalIn>(input, in_size).map(|i| i.unit),
+                _ => None,
+            }
+        };
+        key.filter(|k| *k != 0)
+    }
+
     fn short(a: &Answer) -> bool {
         if a.outcome != Outcome::Failed {
             return false;

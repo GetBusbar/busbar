@@ -77,8 +77,8 @@
 //!
 //! ## The shape that would pass both checks and still refuse every connection
 //!
-//! Two of the transports have a constructor that yields a serviceable transport and a constructor
-//! that does not: `ws` and `grpc` built over nothing refuse every listen, accept and dial. A root
+//! One of the transports has a constructor that yields a serviceable transport and a constructor
+//! that does not: `ws` built over nothing refuses every listen, accept and dial. A root
 //! that forgot the composition would register, pass `check_composition` — because `composed_over()`
 //! returns `None` and the check reads a declaration — and then refuse every connection. That is why
 //! the fold hands every wire the layer it built beneath it, and why the registered rows record what
@@ -424,7 +424,7 @@ pub fn seal(
 /// refused to boot has no boot to log. Nothing is written on the success path; the sealed registry
 /// is handed back for the listeners to serve from.
 pub fn seal_or_exit(linked: &Linked, settings: TransportSettings) -> BootRegistry {
-    let dropped = crate::root::boot::dropped_transports();
+    let dropped = crate::root::boot::dropped_transports(&settings);
     seal(linked, dropped, settings).unwrap_or_else(|refusal| {
         eprintln!("busbar: the composition root did not seal: {refusal}");
         std::process::exit(2);
