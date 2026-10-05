@@ -55,6 +55,9 @@ enum Door {
 pub struct AuthRows {
     registry: Arc<PluginRegistry>,
     dispatcher: Arc<Dispatcher>,
+    /// The host's connection table an OPENED instance declares its needs on (the process's one
+    /// connector in a shipped build); `None` = none handed (a test without one).
+    conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
 }
 
 impl std::fmt::Debug for AuthRows {
@@ -70,7 +73,20 @@ impl AuthRows {
         Self {
             registry,
             dispatcher,
+            conns: None,
         }
+    }
+
+    /// The same axis, each instance it OPENS bound to `conns`, the host's connection table: its
+    /// Statement's needs are declared there (a need whose target or trust comes from settings, at
+    /// every `open` and `refresh`), and its requests go out through it (an IdP's discovery, JWKS and
+    /// token exchange, each one `exchange()`). A row only probed (the operator row, the
+    /// one-reader-per-kind check) binds none: nothing is opened to the network while a
+    /// configuration is judged.
+    #[must_use]
+    pub fn with_conns(mut self, conns: Arc<dyn busbar_contract::conn::DeclaredConns>) -> Self {
+        self.conns = Some(conns);
+        self
     }
 
     /// The `kind: auth` row config names by `module`: the registry's name or manifest alias, else
@@ -92,7 +108,7 @@ impl AuthRows {
 
     /// Load `row`'s door for the instance `label`, bound to the dispatcher and admitted against
     /// the Statement the row states (a linked door's own rendering, a dropped plugin's signed one).
-    fn load(&self, row: &LoadablePlugin, label: &str) -> Result<Door, String> {
+    fn load(&self, row: &LoadablePlugin, label: &str, opening: bool) -> Result<Door, String> {
         let name = &row.manifest.name;
         let refused = |e: String| format!("auth plugin '{name}': {e}");
         let sink = AuthSink::new(name);
@@ -101,7 +117,7 @@ impl AuthRows {
             max_inflight_cap: MAX_INFLIGHT_CAP,
             sink: sink.bind(),
             dispatcher: self.dispatcher.adopter(),
-            conns: None,
+            conns: self.conns.clone().filter(|_| opening),
         };
         let loaded = match row.door() {
             Some(door) => LinkedRow::of(door).and_then(|r| load_linked::<Auth>(&r, bind)),
@@ -155,7 +171,7 @@ impl AuthRows {
             .chain(self.registry.loadable());
         rows.filter(|p| p.manifest.kind == AUTH).find_map(|row| {
             let alias = &row.manifest.alias;
-            let Ok(Door::Memory(plugin, _)) = self.load(row, alias) else {
+            let Ok(Door::Memory(plugin, _)) = self.load(row, alias, false) else {
                 return None;
             };
             let principal = plugin.context::<AuthFacts>()?.operator_principal.clone()?;
@@ -178,7 +194,7 @@ impl AuthRows {
             .chain(self.registry.loadable());
         let alias = &row.manifest.alias;
         for other in rows.filter(|p| p.manifest.kind == AUTH && p.manifest.alias != *alias) {
-            let Ok(Door::Memory(theirs, _)) = self.load(other, &other.manifest.alias) else {
+            let Ok(Door::Memory(theirs, _)) = self.load(other, &other.manifest.alias, false) else {
                 continue;
             };
             let Some(f) = theirs.context::<AuthFacts>() else {
@@ -208,7 +224,7 @@ impl AuthRows {
         let row = self
             .row(module)
             .ok_or_else(|| format!("no `kind: auth` plugin answers to '{module}'"))?;
-        match self.load(row, label)? {
+        match self.load(row, label, true)? {
             Door::Memory(plugin, sink) => {
                 let kinds = plugin
                     .context::<AuthFacts>()
@@ -264,7 +280,30 @@ pub fn stand_in(registry: Arc<PluginRegistry>) -> Arc<dyn busbar_contract::auth_
     static DISPATCHER: std::sync::OnceLock<Arc<Dispatcher>> = std::sync::OnceLock::new();
     let dispatcher = DISPATCHER
         .get_or_init(|| Arc::new(Dispatcher::new(crate::dispatch::DispatchConfig::default())));
-    Arc::new(AuthRows::new(registry, dispatcher.clone()))
+    let rows = AuthRows::new(registry, dispatcher.clone());
+    let conns = STAND_IN_CONNS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    Arc::new(match conns {
+        Some(conns) => rows.with_conns(conns),
+        None => rows,
+    })
+}
+
+/// The connection table the TEST STAND-IN's opened instances are bound to, when a test installed
+/// one ([`stand_in_conns`]).
+#[cfg(any(test, feature = "test-support"))]
+static STAND_IN_CONNS: std::sync::Mutex<Option<Arc<dyn busbar_contract::conn::DeclaredConns>>> =
+    std::sync::Mutex::new(None);
+
+/// TEST STAND-IN: bind every instance the stand-in axis opens from now on to `conns` (a test's
+/// stand-in for the process's connector, e.g. [`crate::https_conns::HttpsConns`]). Never shipped.
+#[cfg(any(test, feature = "test-support"))]
+pub fn stand_in_conns(conns: Arc<dyn busbar_contract::conn::DeclaredConns>) {
+    *STAND_IN_CONNS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(conns);
 }
 
 /// The contract's auth axis over one build's rows: what the kernel's identity chain opens auth

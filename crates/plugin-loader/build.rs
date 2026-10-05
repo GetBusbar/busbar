@@ -27,7 +27,7 @@ const HOT_KINDS: &[&str] = &["plane", "transport", "secret"];
 /// The rows whose fixture is on its kind's MEMORY ABI: the linked door is the fixture's
 /// `door::door` (THE DESIGN, compiled-in = dropped-in: the same door its dropped-in build exports),
 /// not a cold entry.
-const DOOR_ROWS: &[&str] = &["auth-verify"];
+const DOOR_ROWS: &[&str] = &["auth", "auth-verify"];
 
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");

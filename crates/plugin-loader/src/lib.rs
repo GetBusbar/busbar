@@ -69,6 +69,10 @@ pub mod secret_calls;
 // The former `busbar-plugin-sign` crate, folded in whole (DECISIONS #33): signature verify +
 // trust evaluation is the loader's OWN job, not a crate the loader reaches for. Pure data +
 // policy, no I/O -- the I/O that acts on its verdicts is `tarball`, `fetch` and `registry`.
+/// TEST ONLY: the framed-https connection-table stand-in (`test-support`), for a build that
+/// cannot link the process's connector.
+#[cfg(any(test, feature = "test-support"))]
+pub mod https_conns;
 pub mod sign;
 mod stage;
 pub mod store_adapter;
@@ -76,6 +80,10 @@ pub mod store_v3;
 pub mod tarball;
 #[cfg(any(test, feature = "test-support"))]
 pub mod tcp_conns;
+/// TEST ONLY: a local token issuer (an ES256 key, its JWKS on a loopback HTTPS endpoint, signed
+/// tokens) for the tests of a host that loads a token-verifying auth plugin (`test-support`).
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_issuer;
 /// TEST ONLY: the fake-call store harness the kernel's minting tests share with this crate's own.
 /// Compiled for this crate's tests and under the `test-support` feature, which only
 /// busbar-kernel's `[dev-dependencies]` edge turns on; never in a shipped build.

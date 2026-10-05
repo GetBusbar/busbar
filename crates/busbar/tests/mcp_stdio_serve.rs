@@ -12,9 +12,11 @@
 //!   chain with no `BUSBAR_MCP_STDIO_CREDENTIAL`, or with one the admission refuses, **exits
 //!   nonzero without serving a single frame** — the stdio spelling of the HTTP door's `401`;
 //! * a GOVERNED SESSION end to end: the credential — a JWT a local issuer signed — is verified by a
-//!   REAL token-verifying auth plugin (GetBusbar/busbar-auth-oidc, against the issuer's JWKS on a
-//!   certificate-verified loopback endpoint) loaded over the REAL plugin pipeline, `role_bindings` binds the session to a
-//!   budget-capped group,
+//!   REAL token-verifying auth plugin (GetBusbar/busbar-auth-oidc, on the auth kind's door) loaded
+//!   over the REAL plugin pipeline, the issuer's JWKS on a certificate-verified loopback endpoint
+//!   fetched for it by the child's OWN connector over the plugin's declared need (the plugin holds
+//!   no socket and no TLS; `advanced.allow_destinations` lets the loopback through the destination
+//!   guard), `role_bindings` binds the session to a budget-capped group,
 //!   the operator's `ask_caller` is driven as LIVE `elicitation/create` requests over the pipes,
 //!   and **the call over budget is refused with the budget named** — governance applied to a
 //!   child process, watched from outside it;
@@ -75,14 +77,15 @@ fn fixture_dir(tag: &str) -> PathBuf {
     d
 }
 
-/// THE LOCAL ISSUER, one per test process: the auth module's OWN test issuer (its logic crate's
-/// `testkit` feature) — an ES256 key, its JWKS served over a certificate-verified loopback endpoint
-/// the module trusts through `ca_cert_pem`, and genuinely signed tokens. The child `busbar` process's
-/// dropped-in module does the whole fetch and the whole verification.
-fn issuer() -> &'static busbar_auth_oidc::testkit::Issuer {
-    static ONE: std::sync::OnceLock<busbar_auth_oidc::testkit::Issuer> = std::sync::OnceLock::new();
+/// THE LOCAL ISSUER, one per test process (the loader's `test_issuer`): an ES256 key, its JWKS
+/// served over a certificate-verified loopback endpoint the module trusts through `ca_cert_pem`, and
+/// genuinely signed tokens. The child `busbar` process's connector fetches the JWKS over the
+/// dropped-in module's declared need, and the module does the whole verification.
+fn issuer() -> &'static busbar_plugin_loader::test_issuer::Issuer {
+    static ONE: std::sync::OnceLock<busbar_plugin_loader::test_issuer::Issuer> =
+        std::sync::OnceLock::new();
     ONE.get_or_init(|| {
-        busbar_auth_oidc::testkit::Issuer::start("https://issuer.e2e.invalid", "e2e-issuer")
+        busbar_plugin_loader::test_issuer::Issuer::start("https://issuer.e2e.invalid", "e2e-issuer")
     })
 }
 
@@ -154,7 +157,8 @@ fn record_skip(reason: &str) {
 
 /// Package the REAL `busbar-auth-oidc-plugin` cdylib (GetBusbar/busbar-auth-oidc, a pinned git
 /// dev-dependency of this crate, so the build leaves it under `deps/` with a metadata hash) into an
-/// unsigned `kind: auth` tarball in the fixture's plugins dir. `false` when the cdylib is not built —
+/// unsigned `kind: auth` tarball in the fixture's plugins dir, its manifest stating the door's
+/// Statement as the pack tool renders it. `false` when the cdylib is not built —
 /// a skip locally, a hard failure under CI, the same posture busbar-kernel's
 /// `auth/tests/plugin_chain_tests.rs` takes for the same artifact.
 fn install_auth_plugin(dir: &Path) -> bool {
@@ -164,6 +168,16 @@ fn install_auth_plugin(dir: &Path) -> bool {
     };
     let mut m = common::plugins::manifest("auth", "e2e-idp-module", "e2e");
     m.alias = "e2e-idp".into();
+    let path = std::env::temp_dir().join(format!(
+        "busbar-stdio-idp-{}{}",
+        std::process::id(),
+        std::env::consts::DLL_SUFFIX
+    ));
+    std::fs::write(&path, &lib).expect("stage the library");
+    m.statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
+        .expect("the auth-oidc cdylib states its door")
+        .map(hex::encode);
+    let _ = std::fs::remove_file(&path);
     let bytes = common::plugins::seal(m, &lib);
     std::fs::write(dir.join("plugins").join("e2e-idp-module.tar.gz"), bytes).unwrap();
     true

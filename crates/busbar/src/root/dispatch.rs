@@ -56,10 +56,13 @@ pub fn dispatcher() -> Arc<Dispatcher> {
 pub fn auth_axis(
     registry: Arc<crate::root::loader::PluginRegistry>,
 ) -> Arc<dyn busbar_contract::auth_calls::AuthAxis> {
-    Arc::new(crate::root::loader::auth_axis::AuthRows::new(
-        registry,
-        dispatcher(),
-    ))
+    // Each instance it opens declares its needs on the process's ONE connection table, as the
+    // export, store and plane rows do (an IdP's discovery, JWKS and token exchange go out there).
+    let conns: Arc<dyn busbar_contract::conn::DeclaredConns> =
+        crate::root::connector::the().clone();
+    Arc::new(
+        crate::root::loader::auth_axis::AuthRows::new(registry, dispatcher()).with_conns(conns),
+    )
 }
 
 #[cfg(test)]

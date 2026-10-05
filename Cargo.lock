@@ -466,28 +466,26 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc"
 version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=9ff64ff4d74bdd4d043ed7200d8771389810d19b#9ff64ff4d74bdd4d043ed7200d8771389810d19b"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=09d85c4950186a453596dbdcba6a2aee7dbe5d4b#09d85c4950186a453596dbdcba6a2aee7dbe5d4b"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
- "rcgen",
- "reqwest",
+ "http",
  "ring",
- "rustls",
  "serde",
  "serde_json",
  "tracing",
+ "url",
+ "zeroize",
 ]
 
 [[package]]
 name = "busbar-auth-oidc-plugin"
 version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=9ff64ff4d74bdd4d043ed7200d8771389810d19b#9ff64ff4d74bdd4d043ed7200d8771389810d19b"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=09d85c4950186a453596dbdcba6a2aee7dbe5d4b#09d85c4950186a453596dbdcba6a2aee7dbe5d4b"
 dependencies = [
  "busbar-auth-oidc",
  "busbar-contract",
- "serde_json",
- "tracing",
 ]
 
 [[package]]
@@ -975,7 +973,9 @@ dependencies = [
 name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
+ "base64 0.22.1",
  "busbar-auth-admin-tokens-plugin",
+ "busbar-auth-oidc",
  "busbar-auth-oidc-plugin",
  "busbar-contract",
  "busbar-export-file-plugin",
@@ -1002,6 +1002,7 @@ dependencies = [
  "libloading",
  "log",
  "rcgen",
+ "ring",
  "rustls",
  "rustls-pki-types",
  "serde",
@@ -3216,7 +3217,6 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64 0.22.1",
  "bytes",
- "futures-channel",
  "futures-core",
  "futures-util",
  "h2",
