@@ -1058,15 +1058,11 @@ source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=7bc8bf640d5
 dependencies = [
  "busbar-contract",
  "bytes",
- "futures",
  "http",
  "http-body-util",
  "hyper",
- "hyper-util",
  "memchr",
  "serde_json",
- "tokio",
- "tokio-util",
 ]
 
 [[package]]
