@@ -58,6 +58,10 @@ impl Clock for NodeClock {
         self.origin.elapsed().as_millis()
     }
 
+    fn now_micros(&self) -> u128 {
+        self.origin.elapsed().as_micros()
+    }
+
     fn sleep(&self, ms: u64) -> BoxFut<'_, ()> {
         Box::pin(tokio::time::sleep(std::time::Duration::from_millis(ms)))
     }

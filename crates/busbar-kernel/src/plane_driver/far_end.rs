@@ -375,6 +375,8 @@ struct Live {
     passthrough: bool,
     /// When the send started, ms.
     anchor_ms: u128,
+    /// The same anchor, in microseconds: the head's latency sample is taken from it.
+    anchor_us: u128,
     /// The far end answered.
     answered: bool,
     /// One unit of lifetime budget was spent on the success.
@@ -734,6 +736,7 @@ impl EgressFarEnd<'_> {
             degraded,
             passthrough,
             anchor_ms: 0,
+            anchor_us: 0,
             answered: false,
             spent: false,
             delivered: false,
@@ -1051,6 +1054,7 @@ impl EgressFarEnd<'_> {
             },
         );
         let now_ms = e.clock.now_millis();
+        let now_us = e.clock.now_micros();
         match opened {
             Ok(conn) => {
                 {
@@ -1059,6 +1063,7 @@ impl EgressFarEnd<'_> {
                         live.keep = keep;
                         live.conn = Some(conn);
                         live.anchor_ms = now_ms;
+                        live.anchor_us = now_us;
                     }
                 }
                 if request.text && !request.body.is_empty() {
@@ -1338,9 +1343,12 @@ impl EgressFarEnd<'_> {
             live.probe = None;
             live.spent = e.breaker.spend_budget(destination);
             live.delivered = self.route.wants_stream && !bytes.is_empty();
-            let head_ms = e.clock.now_millis().saturating_sub(live.anchor_ms);
+            // In fractional milliseconds, as 1.5.5 measured it (`elapsed().as_secs_f64() * 1000`):
+            // a sub-millisecond head is a sample, not the EWMA's "none".
+            let head_us = e.clock.now_micros().saturating_sub(live.anchor_us);
             #[allow(clippy::cast_precision_loss)]
-            e.telemetry.upstream_latency(destination, head_ms as f64);
+            e.telemetry
+                .upstream_latency(destination, head_us as f64 / 1000.0);
             return FarPiece {
                 bytes,
                 status: far_status,

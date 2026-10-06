@@ -515,7 +515,7 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
                     .stores
                     .first()
                     .expect("the build links a store")
-                    .3,
+                    .2,
             ),
             "records-attach",
             b"{}",
