@@ -16,8 +16,8 @@ use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
 use busbar_contract::redacted::Redacted;
 use busbar_contract::services::{
-    Caller, CredentialRead, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList,
-    Stored,
+    Caller, CredentialRead, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading,
+    RecordsList, Stored,
 };
 
 /// The App's swap handle, once it exists.

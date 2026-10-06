@@ -64,7 +64,8 @@ use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::RecordStore;
 use busbar_contract::services::{
-    merge_list, Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    merge_list, Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList,
+    Stored,
 };
 
 /// The refusal of a record write past the write queue's bound.
