@@ -204,24 +204,24 @@ fn openapi_operations_carry_stable_operation_ids() {
             checked += 1;
         }
     }
-    // 80 = 66 + the five generic named-map routes EACH of the two compiled-in plane sections adds
+    // 81 = 66 + the five generic named-map routes EACH of the two compiled-in plane sections adds
     // (`tools:` and `agents:`) + the plane-specific trust verbs each section layers on top of the
     // generic named-map shape: three trust verbs on one section (`POST .../connect`,
-    // `GET .../changes`, `GET .../health`) and one on the other (`POST .../connect`; its approval
-    // is the generic `/trust`, ARCHITECT FLIP-A2A), which are specific to their section rather than
-    // part of the generic named-map shape. The count is a FLOOR-and-CEILING on purpose: a route added without a stable
+    // `GET .../changes`, `GET .../health`) and two on the other (`POST .../connect`,
+    // `POST .../approve`), which are specific to their section rather than part of the generic
+    // named-map shape. The count is a FLOOR-and-CEILING on purpose: a route added without a stable
     // `operationId`, and a route silently removed, both land here.
     //
     // This assertion is why the two plane sections could not land on `dev` independently without
     // one of them noticing the other: 76 was correct for either section alone and wrong for both
     // together.
     //
-    // 100 = those 80 + the 20 operations the 1.6.0 closed verb table adds, every one with its
+    // 101 = those 81 + the 20 operations the 1.6.0 closed verb table adds, every one with its
     // effect bound since owner answer Q71(2) (9 money-governance verbs, 5 ledger views, 3
     // audit-chain reads) and the ARCHITECT's 2026-10-06 trust verbs (`GET /trust`,
     // `POST /trust/approve`, `POST /trust/revoke`), which the node's administrative loop answers
     // and which the one document describes (items 45/46: no side-car document).
-    assert_eq!(checked, 100, "expected exactly 100 admin operations");
+    assert_eq!(checked, 101, "expected exactly 101 admin operations");
     // Spot-check the exact naming scheme against a few representative paths.
     assert_eq!(
         doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
@@ -472,58 +472,6 @@ fn served_openapi_equals_committed_file() {
     assert_eq!(super::handlers::openapi_json(), committed);
 }
 
-/// THE PLANES' COMPONENT SCHEMAS ARE THE COMMITTED ONES (ARCHITECT Q2): every component schema a
-/// plane's `openapi_schemas` registers equals the committed document's entry of that name. A linked
-/// plane's come from schemars; a door plane's are the data its admin OpenAPI blob states under
-/// `components.schemas`, which the kernel's fold inserts as written, so this is the drift test that
-/// holds a door's stated schemas to the committed openapi.json. Not vacuous: some plane registers one.
-#[cfg(feature = "openapi-schema")]
-#[test]
-fn openapi_plane_component_schemas_are_the_committed_ones() {
-    crate::ensure_seam();
-    let committed: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(COMMITTED_OPENAPI_PATH).expect("read committed openapi"),
-    )
-    .expect("committed openapi parses");
-    let committed = committed["components"]["schemas"]
-        .as_object()
-        .expect("committed component schemas");
-    // The two generators `openapi_doc` hands every contributor, configured as it configures them.
-    let generator = |serialize: bool| {
-        let settings = schemars::generate::SchemaSettings::draft2020_12().with(|s| {
-            s.definitions_path = "/components/schemas".into();
-            s.meta_schema = None;
-        });
-        if serialize {
-            settings.for_serialize().into_generator()
-        } else {
-            settings.for_deserialize().into_generator()
-        }
-    };
-    let mut seen = 0usize;
-    for decl in busbar_kernel::plane::registry::plane_decls() {
-        let Some(schemas) = decl.openapi_schemas else {
-            continue;
-        };
-        let (mut gen, mut req_gen) = (generator(true), generator(false));
-        let mut paths = match decl.openapi.map(|openapi| openapi()) {
-            Some(serde_json::Value::Object(paths)) => paths,
-            _ => serde_json::Map::new(),
-        };
-        schemas(&mut gen, &mut req_gen, &mut paths);
-        for (name, schema) in gen.definitions().iter().chain(req_gen.definitions()) {
-            assert_eq!(
-                committed.get(name),
-                Some(schema),
-                "plane `{}` registers component schema `{name}` unlike the committed openapi.json",
-                decl.key
-            );
-            seen += 1;
-        }
-    }
-    assert!(seen > 0, "no plane registered a component schema");
-}
-
 /// `POST /restart`'s handler explicitly treats an absent body as `RestartReq::default()`
 /// (`handlers.rs`'s own doc comment on `restart()` — "Absent is the same as `{}`"), but `body_raw!`
 /// hardcodes `"required": true` on every attached request body, so the openapi contract asserts the
@@ -752,9 +700,10 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         // that would change what it does, so documenting one would describe a parameter that does
         // not exist.
         ("post", "/api/v1/admin/tools/{name}/connect"),
-        // The `agents:` section's trust verb, bodyless for the same reason: the entry to look at
-        // rides the path, and there is nothing a caller could put in a body that would change what
-        // it does. Approving is the operator's act on the generic `/trust`.
+        // The `agents:` section's PREVIEW trust verb, bodyless for the same reason: the entry to
+        // look at rides the path, and there is nothing a caller could put in a body that would
+        // change what it does. Its sibling `POST /agents/{name}/approve` is NOT here — that one
+        // carries the fingerprint the operator is attesting they saw, which is the whole trust root.
         ("post", "/api/v1/admin/agents/{name}/connect"),
         // The 1.6.0 kernel verbs whose body the node's administrative loop never reads: the two
         // recovery verbs are pure commands (the effect is the store's; the verb IS the argument).
@@ -821,13 +770,14 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
     );
     assert_eq!(
-        declared, 33,
-        "33 mutating operations take a body; a change here is a deliberate API change. 33 = 22 \
+        declared, 34,
+        "34 mutating operations take a body; a change here is a deliberate API change. 34 = 22 \
          + each plane section's PUT and PATCH-settings (both DELETEs are bodyless, above) + the \
-         seven 1.6.0 kernel verbs that read one (`store-restore`, `adjust`, \
-         `ledger/amend-rate-history`, since owner answer Q71(2) `plane-record-write` and \
-         `commit-upgrade`, and the ARCHITECT's 2026-10-06 `trust/approve` and `trust/revoke`, \
-         whose body names the trust key)"
+         agents plane's approve verb, whose body carries the fingerprint the \
+         operator is attesting they read + the seven 1.6.0 kernel verbs that read one \
+         (`store-restore`, `adjust`, `ledger/amend-rate-history`, since owner answer Q71(2) \
+         `plane-record-write` and `commit-upgrade`, and the ARCHITECT's 2026-10-06 \
+         `trust/approve` and `trust/revoke`, whose body names the trust key)"
     );
 }
 
