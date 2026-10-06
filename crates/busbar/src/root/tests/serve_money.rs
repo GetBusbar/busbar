@@ -468,6 +468,13 @@ async fn a_configured_gate_blocks_in_session_content_through_a_dropped_in_plane(
 #[tokio::test]
 async fn a_gate_a_config_apply_adds_blocks_the_next_units_content_with_no_restart() {
     let _one = PUBLISHING.lock().await;
+    // A swap runs every REGISTERED plane's `on_swap` over both generations, and which planes this
+    // test binary has registered depends on which tests ran first (a plane's test seams register it
+    // process-wide). Every generation this test builds therefore carries the MCP plane's runtime,
+    // as every production generation does, whatever ran before it.
+    busbar_kernel::test_support::install_test_section_plane_runtime_factory(
+        busbar_mcp::testkit::default_mcp_runtime,
+    );
     let Some(g) = governed("serve-money-live", true) else {
         eprintln!("skip: the test plane's cdylib is not built in this scoped run");
         return;
