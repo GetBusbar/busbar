@@ -638,7 +638,9 @@ impl Connection {
     pub fn fresh(&mut self, cx: &mut Context<'_>) -> bool {
         loop {
             match self.drive(cx) {
-                Ok(true) if self.inbox.is_empty() => {}
+                // Something moved and nothing arrived: drive again, while the connection is live.
+                // One the framer ended (the far end closed it) is spent, whatever else moved.
+                Ok(true) if self.inbox.is_empty() && self.live() => {}
                 Ok(_) => return self.reusable(),
                 Err(f) => {
                     self.phase = Phase::Failed(f);
