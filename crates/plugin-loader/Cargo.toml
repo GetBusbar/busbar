@@ -195,17 +195,11 @@ busbar-export-prometheus = { workspace = true }
 busbar-export-prometheus-plugin = { workspace = true }
 busbar-export-otlp = { workspace = true }
 busbar-export-otlp-plugin = { workspace = true }
-# The `kind: store` BOTH-WAYS proof is a REAL store (owner FIXTURES ruling: "store: store-memory +
-# store-*"; R-FIX1: every real plugin gets its dropped-in door): the build's default RAM store. Its
-# `rlib` gives the test the COMPILED-IN store (its `pub fn open`, its `linked::STORE` row and its
-# `BUSBAR_COLD_ENTRY`), its `cdylib` is `dlopen`ed. `store_conformance_tests` requires the two to answer
-# every store operation byte-identically; `store_scope_kind_conformance_tests` requires them to
-# round-trip a plane scope grant identically — a dropped-in store's copy of the scope-kind registry is
-# never populated by the engine's boot registration. `cold-dropped-in`: the cdylib's legacy cold door
-# (deleted at M6). The store v3 door DROPPED IN is the `store_v3_door` example below, not the crate's own
-# `dropped-in` feature: that exports `busbar_plugin_door` from the rlib too, which this test build's
-# own linked fixtures already define.
-busbar-store-memory = { path = "../store-memory", features = ["cold-dropped-in"] }
+# The `kind: store` proof is a REAL store (owner FIXTURES ruling: "store: store-memory + store-*"): the
+# build's default RAM store, its `rlib` the COMPILED-IN door. The store v3 door DROPPED IN is the
+# `store_v3_door` example below, not the crate's own `dropped-in` feature: that exports
+# `busbar_plugin_door` from the rlib too, which this test build's own linked fixtures already define.
+busbar-store-memory = { path = "../store-memory" }
 # The `kind: secret` BOTH-WAYS proof is a REAL secret source (owner FIXTURES ruling: "real plugins are the
 # examples"): the env source from its own repo (GetBusbar/busbar-secret-env) at the rev the workspace pins.
 # The edge is its LOGIC crate: that crate's door is the LINKED door. The DROPPED-IN door is the same repo's

@@ -865,7 +865,12 @@ pub fn load_plane(lib_path: &Path) -> Result<DynPlane, String> {
     // compiled-in plane. The path comes from config/the plugins dir, never the request path.
     let lib = crate::dlopen_on_worker(lib_path.as_os_str())
         .map_err(|e| format!("failed to load plane '{display}': {e}"))?;
-    wire_up_plane(lib, display, busbar_contract::abi::cold::kind::PLANE, None)
+    wire_up_plane(
+        lib,
+        display,
+        busbar_contract::abi::mechanism::kind::PLANE,
+        None,
+    )
 }
 
 /// Resolve + validate a mapped plane library against the frozen contract (transport handshake, kind
@@ -882,7 +887,7 @@ fn wire_up_plane(
 
     // ── 2. Kind bound at load — exported kind must be `plane` AND equal the signed manifest kind. ──
     let exported_kind = crate::read_plugin_kind(&lib, &display)?;
-    if exported_kind != busbar_contract::abi::cold::kind::PLANE {
+    if exported_kind != busbar_contract::abi::mechanism::kind::PLANE {
         return Err(format!(
             "plane '{display}' exports kind '{exported_kind}', not 'plane'"
         ));

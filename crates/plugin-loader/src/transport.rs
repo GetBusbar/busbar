@@ -1082,7 +1082,7 @@ pub(crate) fn wire_up_transport(
 ) -> Result<DynTransport, String> {
     crate::abi_handshake(crate::abi_symbol(&lib, &display)?, &display, "transport")?;
     let exported_kind = crate::read_plugin_kind(&lib, &display)?;
-    if exported_kind != busbar_contract::abi::cold::kind::TRANSPORT {
+    if exported_kind != busbar_contract::abi::mechanism::kind::TRANSPORT {
         return Err(format!(
             "transport '{display}' exports kind '{exported_kind}', not 'transport'"
         ));

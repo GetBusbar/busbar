@@ -10,22 +10,29 @@ fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
-/// ONE VERSION PER KIND (THE DESIGN §11.8): each JSON-contract kind's window is exactly its current
-/// version — the 1.5.5 floors are gone (ruling C21/ABI-o1).
+/// ONE VERSION PER KIND (THE DESIGN §11.2, §11.8; A.9): each kind's window is exactly
+/// `abi::<kind>::ABI_VERSION` — no ranges, no JSON-lane versions, no 1.5.5 floors (ruling
+/// C21/ABI-o1) — at the shipped numbers.
+///
+/// RED before the P2 switch-over: store, secret and auth answered their JSON-lane versions (4, 1, 3),
+/// plane the range `[1, ABI_MINOR]` and transport `[TRANSPORT_DECL_MINOR, ABI_MINOR]`.
 #[test]
 fn supported_abi_is_one_version_per_kind() {
-    use busbar_contract::abi::cold;
-    assert_eq!(supported_abi("store"), &[cold::ABI_VERSION]);
-    assert_eq!(supported_abi("secret"), &[cold::SECRET_ABI_VERSION]);
-    assert_eq!(supported_abi("auth"), &[cold::AUTH_ABI_VERSION]);
-    assert_eq!(
-        supported_abi("hook"),
-        &[busbar_contract::abi::hook::ABI_VERSION]
-    );
-    assert_eq!(
-        supported_abi("export"),
-        &[busbar_contract::abi::export::ABI_VERSION]
-    );
+    use busbar_contract::abi;
+    let shipped: &[(&str, u32, u32)] = &[
+        ("store", abi::store::ABI_VERSION, 3),
+        ("secret", abi::secret::ABI_VERSION, 2),
+        ("auth", abi::auth::ABI_VERSION, 3),
+        ("hook", abi::hook::ABI_VERSION, 2),
+        ("export", abi::export::ABI_VERSION, 3),
+        ("plane", abi::plane::ABI_VERSION, 1),
+        ("transport", abi::transport::ABI_VERSION, 1),
+    ];
+    for &(kind, version, number) in shipped {
+        assert_eq!(supported_abi(kind), &[version], "{kind}");
+        assert_eq!(version, number, "{kind} ships at {number}");
+    }
+    assert!(supported_abi("nonsense").is_empty());
 }
 
 /// C21 (ABI-o1, THE DESIGN §11.8): a signed, otherwise-valid artifact stating its kind's 1.5.5
@@ -74,7 +81,7 @@ fn a_store_newer_than_the_host_is_refused() {
     let release = key(1);
     let dir = tmpdir("newer");
     let mut m = manifest("busbar-store-edge", "edge", "busbar");
-    m.abi_version = busbar_contract::abi::cold::ABI_VERSION + 1;
+    m.abi_version = busbar_contract::abi::store::ABI_VERSION + 1;
     let m = sign(&release, m, b"edge lib");
     write_tarball(&dir, "edge.tar.gz", &m, b"edge lib");
 
@@ -100,7 +107,7 @@ fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
         kind: "store".into(),
         version: "1.5.0".into(),
         publisher: publisher.into(),
-        abi_version: busbar_contract::abi::cold::ABI_VERSION,
+        abi_version: busbar_contract::abi::store::ABI_VERSION,
         sha256: String::new(),
         signature: String::new(),
         description: String::new(),
@@ -274,7 +281,7 @@ fn untrusted_is_skipped_not_fatal_but_reference_fails_loud() {
         reg.resolve("dynamo").is_none(),
         "a skipped plugin never resolves"
     );
-    let err = reg.open_store("dynamo", "{}").map(|_| ()).unwrap_err();
+    let err = reg.store_door("dynamo").map(|_| ()).unwrap_err();
     assert!(err.contains("was not loaded"), "got {err}");
     assert!(err.contains("allowlist"), "carries the trust reason: {err}");
     let _ = std::fs::remove_dir_all(&dir);
@@ -395,7 +402,7 @@ fn open_store_refuses_non_store_kind() {
     let m = sign(&release, m, b"hook lib");
     write_tarball(&dir, "hook.tar.gz", &m, b"hook lib");
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
-    let err = reg.open_store("ranker", "{}").map(|_| ()).unwrap_err();
+    let err = reg.store_door("ranker").map(|_| ()).unwrap_err();
     assert!(err.contains("kind 'hook'"), "got {err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -411,7 +418,7 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     // A trusted secret plugin (abi_version stamped to the secret ABI so the scan admits it).
     let mut m = manifest("busbar-secret-vault", "vault", "busbar");
     m.kind = "secret".into();
-    m.abi_version = busbar_contract::abi::cold::SECRET_ABI_VERSION;
+    m.abi_version = busbar_contract::abi::secret::ABI_VERSION;
     let m = sign(&release, m, b"secret lib");
     write_tarball(&dir, "vault.tar.gz", &m, b"secret lib");
     // And a trusted store plugin beside it.
@@ -424,21 +431,28 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan admits both kinds");
     assert_eq!(reg.loadable().len(), 2, "one secret + one store validated");
     // The kind gates: a store referenced as a secret module fails naming the kind...
-    let err = reg.open_secret("gamma", "{}").map(|_| ()).unwrap_err();
+    let err = reg.secret_refusal("gamma");
     assert!(err.contains("kind 'store'"), "got {err}");
     // ...and a secret plugin cannot back the store.
-    let err = reg.open_store("vault", "{}").map(|_| ()).unwrap_err();
+    let err = reg.store_door("vault").map(|_| ()).unwrap_err();
     assert!(err.contains("kind 'secret'"), "got {err}");
     // An unknown secret module name is fail-closed with the loadable set named.
-    let err = reg.open_secret("nope", "{}").map(|_| ()).unwrap_err();
+    let err = reg.secret_refusal("nope");
     assert!(err.contains("no plugin named or aliased"), "got {err}");
+    // A secret plugin that states no door (a 1.5.5 JSON-contract plugin) is refused naming the
+    // rebuild: no JSON secret lane remains (THE DESIGN §11.8).
+    let err = reg.secret_refusal("vault");
+    assert!(
+        err.contains(crate::registry::JSON_SECRET_REFUSED),
+        "got {err}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Kind gating: a non-auth plugin resolves but cannot serve as an auth module. Mirrors
 /// `open_store_refuses_non_store_kind`: a store-kind manifest passes phase 1/2/3 (its default
-/// `kind`/`abi_version` from `manifest()` are already store-admissible) and is then handed to
-/// `open_auth`, which must reject on the KIND gate before ever attempting to load it.
+/// `kind`/`abi_version` from `manifest()` are already store-admissible) and is then resolved as an
+/// auth row, which must reject on the KIND gate before ever attempting to load it.
 #[test]
 fn open_auth_refuses_non_auth_kind() {
     let release = key(1);
@@ -450,7 +464,10 @@ fn open_auth_refuses_non_auth_kind() {
     );
     write_tarball(&dir, "gamma.tar.gz", &m, b"store lib");
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
-    let err = reg.open_auth("gamma", "{}").map(|_| ()).unwrap_err();
+    let err = reg
+        .resolve_kind("gamma", "auth", "serve as an auth module")
+        .map(|_| ())
+        .unwrap_err();
     assert!(err.contains("kind 'store'"), "got {err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -558,67 +575,6 @@ fn inventory_reports_every_row_class_without_loading() {
     assert!(by_file("third.tar.gz").status.starts_with("SKIPPED:"));
     assert_eq!(by_file("junk.tar.gz").signature, "INVALID");
     assert!(by_file("junk.tar.gz").status.starts_with("INVALID:"));
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// The REAL `kind: store` cdylib — exactly the loader tests' `store_fixture_plugin_path` in
-/// `crate::tests` (the sibling-built store-beta plugin, else the in-tree store proof; see
-/// that function's doc for where a missing cdylib is a hard failure: the removed ci.yml's `check` job on every
-/// push, the removed qa-gate.yml's `loader` job on `qa`). Used here purely to prove the tarball PIPELINE's
-/// mechanics (sign, package, scan, resolve-by-alias, open), never store-specific behavior.
-fn store_fixture_cdylib() -> Option<PathBuf> {
-    crate::tests::store_fixture_plugin_path()
-}
-
-/// END-TO-END, REAL CODE: package the real kind:store fixture cdylib into a SIGNED tarball, run
-/// the full three-phase pipeline, resolve by ALIAS, and open a live `dyn Store` through the
-/// memfd (Linux) / private-temp loader - exercising put/get over the C ABI. This is the exact
-/// seam the engine sees: verified bytes in, `Box<dyn Store>` out, indistinguishable from a
-/// compiled-in backend.
-#[test]
-fn end_to_end_open_store_from_signed_tarball() {
-    let Some(path) = store_fixture_cdylib() else {
-        eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
-        );
-        return;
-    };
-    let lib = std::fs::read(&path).expect("read the kind:store fixture cdylib");
-    let acme = key(3);
-    let dir = tmpdir("e2e");
-    let m = sign(&acme, manifest("acme-store-beta", "beta", "acme"), &lib);
-    let bytes = tarball::package(&m, "libbusbar_store_beta_plugin.so", &lib).unwrap();
-    std::fs::write(dir.join("beta.tar.gz"), bytes).unwrap();
-
-    let mut pol = policy(&key(1));
-    pol.publishers
-        .insert("acme".to_string(), acme.verifying_key());
-    let reg = scan_and_validate(&dir, &pol).expect("scan");
-    let store = reg
-        .open_store("beta", r#"{"db_path": ":memory:"}"#)
-        .expect("open the real store through the full pipeline");
-    let key = busbar_contract::records::VirtualKey {
-        id: "vk_pipeline".into(),
-        generation_hash: "h".into(),
-        name: "pipeline".into(),
-        allowed_scopes: Some(vec![busbar_contract::records::ScopeRef::pool("p")]),
-        enabled: true,
-        created_at: 1,
-        group: Some("growth".into()),
-        labels: std::collections::BTreeMap::new(),
-        expires_at: None,
-        deleted_at: None,
-        revision: 1,
-        ..Default::default()
-    };
-    store.put_key(&key).expect("put over the ABI");
-    let got = store.get_key("vk_pipeline").unwrap().unwrap();
-    assert_eq!(got.group.as_deref(), Some("growth"));
-    assert_eq!(
-        got.allowed_scopes,
-        Some(vec![busbar_contract::records::ScopeRef::pool("p")])
-    );
-    drop(store);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

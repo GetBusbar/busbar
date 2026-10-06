@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The **auth** payload schema (kind = [`crate::abi::cold::kind::AUTH`]) that rides the kind-neutral `call`.
+//! The **auth** payload schema (kind = `auth`) that rides the kind-neutral `call`.
 //!
 //! ## Identity-only — STRUCTURAL, not merely conventional
 //!
@@ -258,13 +258,13 @@ pub struct HttpResponse {
 
 impl HttpResponse {
     /// The [`status`](Self::status), VALIDATED via
-    /// [`crate::abi::cold::endpoint::safe_relay_status`] — a real HTTP status code, or `502` when the
+    /// [`crate::abi::mechanism::endpoint::safe_relay_status`] — a real HTTP status code, or `502` when the
     /// value is out of range. THE safe conversion for any host path that turns this plugin-chosen
     /// status into a `StatusCode`, so an attacker-chosen `0`/`65535` can never panic a naive
     /// `from_u16(status).unwrap()`.
     #[must_use]
     pub fn safe_status(&self) -> u16 {
-        crate::abi::cold::endpoint::safe_relay_status(self.status)
+        crate::abi::mechanism::endpoint::safe_relay_status(self.status)
     }
 }
 

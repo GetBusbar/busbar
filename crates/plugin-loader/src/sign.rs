@@ -60,14 +60,11 @@ use std::collections::BTreeMap;
 /// cannot (and need not) allowlist a key named `busbar`.
 pub const FIRST_PARTY_PUBLISHER: &str = "busbar";
 
-/// The plugin kinds this binary understands. ONE plugin subsystem: `kind` only selects which C ABI
-/// the cdylib exports and which engine subsystem consumes it; discovery/trust/validation are shared.
-/// `plane` is the SIXTH kind (1.6.0 S4): a protocol plane delivered as a `cdylib`, sharing this exact
-/// discovery/trust/validation pipeline but driven over the HOT-tier `#[repr(C)]` `PlaneDecl` vtable
-/// (`busbar_contract::abi::hot`) rather than the five cold kinds' six-symbol JSON `call` wire. Its
-/// `abi_version` axis is the airlock minor; this crate's own `supported_abi("plane")` gates it.
-/// `transport` is the SEVENTH (#3, OWNER-LOCKED: a kind is swappable, compiled in OR dropped in): the
-/// second HOT kind (#30), driven over the `#[repr(C)]` `TransportDecl` the same way.
+/// The plugin kinds this binary understands. ONE plugin subsystem: `kind` only selects which kind's
+/// table the door answers and which engine subsystem consumes it; discovery/trust/validation are
+/// shared. Each kind's manifest `abi_version` is that kind's one version (`supported_abi`, THE DESIGN
+/// §11.2). `plane` and `transport` images that have not moved to their door still ride the HOT-tier
+/// `#[repr(C)]` decls (`busbar_contract::abi::hot`), whose airlock is checked at load, apart.
 // One line, as it always was: the kind list is one statement, not seven.
 #[rustfmt::skip]
 pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", "plane", "transport"];
@@ -248,7 +245,7 @@ impl Manifest {
 
 /// The declaration shapes a manifest's `declares` section carries, named here so a packer or a
 /// host reaches them beside [`Manifest`].
-pub use busbar_contract::abi::cold::observe::{DiagnosticDecl, SeriesDecl};
+pub use busbar_contract::abi::mechanism::observe::{DiagnosticDecl, SeriesDecl};
 
 /// A manifest's `declares` section — the statements a plugin makes ABOUT ITSELF that the host
 /// grants or refuses at open, never trusts as-is (the export ABI's minor, `EXPORT_ABI_MINOR`).
@@ -256,13 +253,13 @@ pub use busbar_contract::abi::cold::observe::{DiagnosticDecl, SeriesDecl};
 #[serde(deny_unknown_fields, default)]
 pub struct Declares {
     /// The metric series the plugin emits (S1, the first-party metric namespace): granted to a
-    /// first-party plugin only — see [`busbar_contract::abi::cold::observe::SeriesDecl`].
+    /// first-party plugin only — see [`busbar_contract::abi::mechanism::observe::SeriesDecl`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub metrics: Vec<busbar_contract::abi::cold::observe::SeriesDecl>,
+    pub metrics: Vec<busbar_contract::abi::mechanism::observe::SeriesDecl>,
     /// The `BUSBAR-NNNN` diagnostics the plugin raises: registered into the host's catalogue
-    /// for a first-party plugin — see [`busbar_contract::abi::cold::observe::DiagnosticDecl`].
+    /// for a first-party plugin — see [`busbar_contract::abi::mechanism::observe::DiagnosticDecl`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub diagnostics: Vec<busbar_contract::abi::cold::observe::DiagnosticDecl>,
+    pub diagnostics: Vec<busbar_contract::abi::mechanism::observe::DiagnosticDecl>,
     /// The SETTINGS KEYS that name a destination the host opens for the plugin (S4, the
     /// destination handle): the host resolves each against the operator's settings at open, and
     /// the plugin's host ops name the key, never a path.

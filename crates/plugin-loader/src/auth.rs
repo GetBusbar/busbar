@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The AUTH seam of the kind-neutral loader: [`DynAuth`], a [`busbar_contract::auth::AuthModule`] backed by a
-//! dynamically-loaded plugin whose kind was bound to `auth` at load. Its verdict carries only an
-//! identity-only [`busbar_contract::abi::cold::auth::Identity`] (→ [`busbar_contract::auth::Principal`]); a misbehaving
-//! plugin is FAIL-CLOSED (rejected, never admitted).
+//! M6-COLD-DELETE RESIDUE: THE AUTH KIND'S JSON-LANE LOAD. [`DynAuth`] is a `kind: auth` plugin
+//! built on `export_login_plugin!` (the auth-oidc plugin at its pinned rev), loaded for the hosted
+//! browser login ([`load_login_image`], `PluginRegistry::open_login`) and, as a chain position, for
+//! its verify ([`load_auth_image`], `crate::auth_axis::ColdAuth`), until that plugin's door re-pin
+//! lands (the p4-oidc-repin lane). A misbehaving plugin is FAIL-CLOSED (rejected, never admitted).
 
 use crate::RawPlugin;
-use busbar_contract::abi::cold::{
-    auth::{AuthRequest, AuthResponse},
-    kind as abi_kind,
-};
+use busbar_contract::abi::cold::auth::{AuthRequest, AuthResponse};
+use busbar_contract::abi::mechanism::kind as abi_kind;
 use busbar_contract::auth::{
     AuthModule, AuthPlugin, AuthVerdict, BeginLogin, CompleteLogin, LoginKind, LoginModule,
     LoginOutcome, Principal,

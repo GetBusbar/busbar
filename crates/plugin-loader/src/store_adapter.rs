@@ -33,7 +33,7 @@
 //! # Why the shim answers on every store this binary can load
 //!
 //! The ten additions have no request variant on any payload schema in this binary's store window
-//! ([`crate::registry::supported_abi`] pins `ABI_VERSION`, which is 4). They gain
+//! ([`crate::registry::supported_abi`] pins the store kind's one version, 3). They gain
 //! one at [`STORE_ABI_WITH_NEW_OPS`], which is above that window's top. So for every store this
 //! binary can actually load the shim IS the answer, and
 //! [`StoreAdapter::speaks_new_ops`] says so out loud rather than leaving it implied. When the wire
@@ -76,7 +76,6 @@
 //! back onto the rows, because a deployment booting on a read-only replica or a grant-restricted
 //! database is the previous release's supported shape and must keep booting.
 
-use crate::DynStore;
 use busbar_contract::caps::{AdminVerb, Grant};
 use busbar_contract::records::RecordStore as AbiStore;
 use busbar_contract::records::{
@@ -251,12 +250,8 @@ impl StoreAdapter {
     ///
     /// **This is the constructor the composition root calls.** It takes the store the plugin
     /// registry loaded (or the in-tree memory store, which is the default when a config names none)
-    /// together with the schema the registry read off the manifest — the same pair
-    /// [`crate::load_store_from_bytes_at_abi`] is given, because the registry is the only caller
-    /// that has read the manifest. For a store loaded by this crate, prefer
-    /// [`StoreAdapter::over_loaded_store`], which reads the schema off the loaded plugin instead of
-    /// asking the caller to carry it. For an in-tree store built against the current schema, use
-    /// [`StoreAdapter::native`].
+    /// together with the schema the registry read off the manifest. For an in-tree store built
+    /// against the current schema, use [`StoreAdapter::native`].
     ///
     /// Infallible and does no I/O: it must be constructible before the transports listen, because
     /// the first accepted connection can settle and the ledger's dual write is already holding this
@@ -279,17 +274,10 @@ impl StoreAdapter {
         }
     }
 
-    /// [`StoreAdapter::new`] over a store this crate loaded, reading the payload schema off the
-    /// loaded plugin rather than asking the caller to repeat it.
-    pub fn over_loaded_store(store: DynStore) -> Self {
-        let abi_version = store.abi_version;
-        StoreAdapter::new(Arc::new(store), abi_version)
-    }
-
     /// [`StoreAdapter::new`] for a store built against the CURRENT payload schema — the in-tree
     /// memory store, which is what a config that names no store gets.
     pub fn native(store: Arc<dyn AbiStore>) -> Self {
-        StoreAdapter::new(store, busbar_contract::abi::cold::ABI_VERSION)
+        StoreAdapter::new(store, busbar_contract::abi::store::ABI_VERSION)
     }
 
     /// The loaded store itself, for the published operations: keys, usage, metering, audit, and the

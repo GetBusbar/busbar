@@ -14,20 +14,15 @@
 //!    line — proven with a `tracing` capture on the calling thread, the thread the adapter and the
 //!    loaded store both log on, and repeated so a warn-once latch that merely happened to be quiet
 //!    on the first pass cannot pass either.
-//! 3. **The published operations still pass through.** The adapter hands the loaded store out
-//!    untouched, so a key written through it is the plugin's row, and on the published sqlite store
-//!    it is the same row after a fresh handle onto the same database.
+//! 3. **The published operations still pass through.** The adapter hands the store out untouched,
+//!    so a key written through it is the store's row.
 //!
-//! The store at the published schema is modelled two ways, on purpose. The fast one is the in-tree
-//! example plugin with its call seam faked, bound to payload schema 2 — the same double the
-//! appendix-rule tests next door use, so this file needs no artifact that is not built by
-//! `cargo test --workspace`. The real one is the PUBLISHED sqlite store, fetched by digest into the
-//! oracle cache by `testing/shadow-oracle/fetch-plugin.sh`; that test skips when the cache is cold,
-//! because a machine with no cached tarball is not evidence of a broken adapter.
+//! The store at the published schema is the build's store fixture bound to payload schema 2: the shim's
+//! rule is a property of the schema number, not of the store behind it.
 //!
-//! The tests that drive the verb seam (it takes a minted `Grant<AdminVerb>`) and the round trip
-//! through the published store live in busbar's integration suite, which takes the token from the
-//! kernel's test token helper: `crates/busbar/tests/store_adapter_verb_seam.rs`.
+//! The tests that drive the verb seam (it takes a minted `Grant<AdminVerb>`) live in busbar's
+//! integration suite, which takes the token from the kernel's test token helper:
+//! `crates/busbar/tests/store_adapter_verb_seam.rs`.
 
 use super::*;
 use crate::store_adapter::{
@@ -38,11 +33,15 @@ use busbar_contract::verb_store::Store as VerbStore;
 use busbar_kernel_wal::Record;
 use std::sync::Arc;
 
+/// The build's store fixture (reached by kind), as the published operations' backing.
+fn backing() -> Arc<dyn busbar_contract::records::RecordStore> {
+    Arc::from(crate::both_ways::store_fixture::open("{}").expect("the store fixture opens"))
+}
+
 /// An adapter over a store bound to the PUBLISHED payload schema (2), built through the same
 /// constructor the composition root calls.
 fn adapter_over_published_schema() -> Option<StoreAdapter> {
-    let store = dyn_proof_store_with_fake_call_at_abi(PUBLISHED_STORE_SCHEMA)?;
-    Some(StoreAdapter::over_loaded_store(store))
+    Some(StoreAdapter::new(backing(), PUBLISHED_STORE_SCHEMA))
 }
 
 /// A slice draw for one bucket's request axis.
@@ -86,7 +85,6 @@ fn no_payload_schema_this_binary_can_load_speaks_the_added_operations() {
 #[test]
 fn the_slice_seam_reserves_in_full_at_the_shim_epoch() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     let grant = adapter
@@ -117,7 +115,6 @@ fn the_slice_seam_reserves_in_full_at_the_shim_epoch() {
 #[test]
 fn the_slice_seam_stamps_a_foreign_epoch_rather_than_refusing_it() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     let grant = adapter
@@ -132,7 +129,6 @@ fn the_slice_seam_stamps_a_foreign_epoch_rather_than_refusing_it() {
 #[test]
 fn the_slice_seam_releases_and_forgives_an_unknown_id() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     let grant = adapter.reserve(&slice_request(100, 0)).expect("reserve");
@@ -159,7 +155,6 @@ fn the_slice_seam_releases_and_forgives_an_unknown_id() {
 #[test]
 fn concurrent_shippers_never_split_the_count_from_the_head() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     const PER_SHIPPER: u64 = 20_000;
@@ -222,7 +217,6 @@ fn concurrent_shippers_never_split_the_count_from_the_head() {
 #[test]
 fn the_verb_seam_replay_cache_reserves_then_replays_the_committed_bytes() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     let key = ("set_operator_key".to_string(), "idem-7".to_string());
@@ -282,11 +276,9 @@ impl TestClock {
 
 /// [`adapter_over_published_schema`] whose sealed replay cache ages against `clock`.
 fn adapter_at(clock: &TestClock) -> Option<StoreAdapter> {
-    let store = dyn_proof_store_with_fake_call_at_abi(PUBLISHED_STORE_SCHEMA)?;
-    let abi_version = store.abi_version;
     Some(StoreAdapter::with_clock(
-        Arc::new(store),
-        abi_version,
+        backing(),
+        PUBLISHED_STORE_SCHEMA,
         clock.shim_clock(),
     ))
 }
@@ -300,7 +292,6 @@ fn replay_key(name: &str) -> (String, String) {
 fn a_replay_inside_the_window_returns_the_committed_bytes() {
     let clock = TestClock::default();
     let Some(adapter) = adapter_at(&clock) else {
-        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     let key = replay_key("idem-a");
@@ -323,7 +314,6 @@ fn a_replay_inside_the_window_returns_the_committed_bytes() {
 fn a_slot_past_the_window_is_neither_answered_nor_held() {
     let clock = TestClock::default();
     let Some(adapter) = adapter_at(&clock) else {
-        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     let committed = replay_key("idem-a");
@@ -367,7 +357,6 @@ fn a_slot_past_the_window_is_neither_answered_nor_held() {
 #[test]
 fn the_shipper_seam_acknowledges_a_batch_and_keeps_the_head() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     let mut shipper = adapter.shipper();
@@ -398,7 +387,6 @@ fn the_shipper_seam_acknowledges_a_batch_and_keeps_the_head() {
 #[test]
 fn the_published_operations_pass_through_the_adapter_to_the_plugin() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: the store proof's cdylib is not built");
         return;
     };
     assert_eq!(
@@ -406,7 +394,7 @@ fn the_published_operations_pass_through_the_adapter_to_the_plugin() {
         PUBLISHED_STORE_SCHEMA,
         "the adapter carries the schema the manifest declared"
     );
-    let row = VirtualKey {
+    let row = busbar_contract::records::VirtualKey {
         id: "vk_pass".to_string(),
         generation_hash: "gen".to_string(),
         name: "legacy".to_string(),
@@ -414,9 +402,10 @@ fn the_published_operations_pass_through_the_adapter_to_the_plugin() {
         created_at: 1_700_000_000,
         ..Default::default()
     };
-    let body = serde_json::to_vec(&StoreResponse::Keys(vec![row])).expect("serialize");
-    let leaked: &'static [u8] = Box::leak(body.into_boxed_slice());
-    FAKE_CALL_HANDLE.with(|c| c.set((STATUS_OK, leaked)));
+    adapter
+        .store()
+        .put_key(&row)
+        .expect("put_key passes through");
     let keys = adapter
         .store()
         .list_keys()

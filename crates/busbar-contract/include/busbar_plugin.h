@@ -77,6 +77,13 @@ extern "C" {
 #define BB_MECH_SLOT_CLOSE UINT32_C(8) /* `close`. */
 #define BB_MECH_SLOT_READY UINT32_C(0xffffffff) /* `ready`: the door's optional tail op ([`super::super::door::Door::ready`]), NOT a table */
 #define BB_MECH_LIFECYCLE_SLOTS UINT32_C(9) /* How many lifecycle slots [`OpsHead`] holds. */
+#define BB_MECH_KIND_STORE "store" /* `abi/store/`. */
+#define BB_MECH_KIND_SECRET "secret" /* `abi/secret/`. */
+#define BB_MECH_KIND_AUTH "auth" /* `abi/auth/`. */
+#define BB_MECH_KIND_HOOK "hook" /* `abi/hook/`. */
+#define BB_MECH_KIND_EXPORT "export" /* `abi/export/`. */
+#define BB_MECH_KIND_PLANE "plane" /* `abi/plane/`. */
+#define BB_MECH_KIND_TRANSPORT "transport" /* `abi/transport/`. */
 #define BB_MECH_MECHANISM_VERSION UINT32_C(2) /* The mechanism's version, stamped in every [`door::Door`]. v1.5.5 called it `TRANSPORT_VERSION` */
 #define BB_MECH_DOOR_MAGIC UINT64_C(0x4c50524142535542) /* ASCII `"BUSBARPL"`, little-endian: a door's first eight bytes. Deliberately not the retired */
 #define BB_MECH_DOOR_SYMBOL "busbar_plugin_door" /* The ONE symbol a plugin exports, NUL-terminated for `dlsym`. */

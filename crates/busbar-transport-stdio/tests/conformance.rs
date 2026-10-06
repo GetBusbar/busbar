@@ -160,7 +160,7 @@ fn dropped_in() -> &'static DynTransport {
             kind: "transport".into(),
             version: VERSION.into(),
             publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
-            abi_version: busbar_contract::abi::ABI_MINOR,
+            abi_version: busbar_contract::abi::transport::ABI_VERSION,
             sha256: String::new(),
             signature: String::new(),
             description: String::new(),

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The **endpoint** wire (kind = [`crate::abi::cold::kind::EXPORT`] / [`crate::abi::cold::kind::HOOK`]) that rides the
-//! kind-neutral `call`: plugin route registration ([`Route`](crate::abi::mechanism::route::Route)) and the inbound-request dispatch
+//! The **endpoint** pair (an export sink's or a hook's served route): plugin route registration ([`Route`](crate::abi::mechanism::route::Route)) and the inbound-request dispatch
 //! pair ([`EndpointRequest`] / [`EndpointResponse`]).
 //!
 //! ## Why a general primitive, not a metrics special-case
@@ -82,5 +81,5 @@ impl EndpointResponse {
 }
 
 #[cfg(test)]
-#[path = "tests/endpoint_tests.rs"]
+#[path = "../tests/endpoint_tests.rs"]
 mod tests;

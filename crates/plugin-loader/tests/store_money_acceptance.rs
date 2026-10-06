@@ -53,46 +53,8 @@ struct Subject {
     store: Arc<dyn RecordStore>,
 }
 
-/// The dropped-in cdylib of the build's store, if built (a scoped `cargo test -p` builds it as this
-/// crate's dev-dependency). Under CI a missing artifact is a failure, never a silent skip.
-fn dropped_in() -> Option<Arc<dyn RecordStore>> {
-    let exe = std::env::current_exe().ok()?;
-    let profile_dir = exe.parent()?.parent()?;
-    let name = format!(
-        "{}{STORE_FIXTURE_CDYLIB}{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    );
-    let found = [
-        profile_dir.join(&name),
-        profile_dir.join("deps").join(&name),
-    ]
-    .into_iter()
-    .filter(|p| p.exists())
-    .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
-    let Some(path) = found else {
-        assert!(
-            std::env::var_os("CI").is_none(),
-            "the store's dropped-in cdylib ({name}) is not built under CI; refusing to skip the \
-             over-the-ABI leg of the money suite"
-        );
-        return None;
-    };
-    let bytes = std::fs::read(&path).expect("read the store's cdylib");
-    let store = busbar_plugin_loader::load_store_from_bytes_at_abi(
-        &bytes,
-        "{}",
-        "money-acceptance",
-        "store",
-        busbar_contract::abi::cold::ABI_VERSION,
-    )
-    .expect("load the store's dropped-in door");
-    Some(Arc::from(store))
-}
-
 /// A FRESH store on every door: its Rust type, the compiled-in door through the store v3 table,
-/// the root's adapter over that, the dropped-in door through the same table, and (until M6: the cold ABI's deletion) the legacy
-/// cold dropped-in door.
+/// the root's adapter over that, and the dropped-in door through the same table.
 fn subjects() -> Vec<Subject> {
     let mut all = vec![
         Subject {
@@ -112,12 +74,6 @@ fn subjects() -> Vec<Subject> {
         all.push(Subject {
             door: "dropped-in table",
             store: Arc::new(store),
-        });
-    }
-    if let Some(store) = dropped_in() {
-        all.push(Subject {
-            door: "cold dropped-in, legacy",
-            store,
         });
     }
     all

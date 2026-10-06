@@ -43,7 +43,7 @@ pub mod workitem;
 /// [`PlaneDecl`]. This is the HOT-lane analogue of the cold lane's six `busbar_*` symbols
 /// ([`crate::abi::cold::symbol`]): a plane `cdylib` still exports `busbar_abi()` (the SHARED
 /// [`TRANSPORT_VERSION`](crate::abi::cold::TRANSPORT_VERSION) handshake) and `busbar_plugin_kind()` (==
-/// `"plane"`, [`crate::abi::cold::kind::PLANE`]) so it rides the EXACT same tarball / signed-manifest /
+/// `"plane"`, [`crate::abi::mechanism::kind::PLANE`]) so it rides the EXACT same tarball / signed-manifest /
 /// trust discovery pipeline; the ONE extra symbol below is how it hands core the `#[repr(C)]` decl
 /// pointer instead of the JSON `call` wire.
 pub mod symbol {

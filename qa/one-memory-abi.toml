@@ -66,12 +66,12 @@ item = "extern 'C-unwind'"
 
 [[finding]]
 rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-kernel/src/calllog.rs"
+file = "crates/busbar-kernel/src/audit/auditlog.rs"
 item = "extern 'C-unwind'"
 
 [[finding]]
 rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-kernel/src/audit/auditlog.rs"
+file = "crates/busbar-kernel/src/calllog.rs"
 item = "extern 'C-unwind'"
 
 [[finding]]
@@ -161,18 +161,18 @@ item = "busbar_call"
 
 [[finding]]
 rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-kernel/src/observe.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-kernel/src/test_support/engine_kit_plus/core_impl.rs"
+file = "crates/busbar/src/root/boot.rs"
 item = "abi::cold"
 
 [[finding]]
 rule = "one-memory-abi:cold-lane"
 file = "crates/busbar/src/root/linked.rs"
 item = "ColdEntry"
+
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/busbar/src/root/linked.rs"
+item = "abi::cold"
 
 [[finding]]
 rule = "one-memory-abi:cold-lane"
@@ -206,16 +206,6 @@ item = "abi::cold"
 
 [[finding]]
 rule = "one-memory-abi:cold-lane"
-file = "crates/plugin-loader/src/observe.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/plugin-loader/src/plane.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
 file = "crates/plugin-loader/src/registry.rs"
 item = "ColdEntry"
 
@@ -227,21 +217,6 @@ item = "abi::cold"
 [[finding]]
 rule = "one-memory-abi:cold-lane"
 file = "crates/plugin-loader/src/scrape.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/plugin-loader/src/sign.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/plugin-loader/src/store_adapter.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/plugin-loader/src/transport.rs"
 item = "abi::cold"
 
 [[finding]]
@@ -303,52 +278,3 @@ item = "spawn_blocking"
 rule = "one-memory-abi:spawn-blocking"
 file = "crates/plugin-loader/src/host.rs"
 item = "spawn_blocking"
-
-# ── Q77-PENDING (a): THE R2 RE-SPELLINGS OF THE COLD LANE'S CALL SHAPES — EXPIRES AT M6-COLD-DELETE ──
-# ARCHITECT ruling 2026-10-01 on one-memory-abi:cold-lane (fallback approved as Q77-PENDING class
-# (a), a cited spec-forced move): R2 (the loader re-exports no contract type, 9a391817c) deleted
-# the loader shims that spelled these references, so the same live cold-lane call shapes
-# (EndpointRequest/EndpointResponse, HostResult/HttpRequest/HttpResponse, ColdEntry; spec R2-A:
-# linked COLD rows dispatch through the ColdEntry boundary) are now named at abi::cold. The
-# vocabulary the memory ABI speaks left abi/cold first (abi::export, abi::mechanism::route), so
-# what remains is the cold lane's own plumbing. Each row is COUNTED (lines carrying the item) and
-# lower-only: a new reference fails. All of it is deleted at M6-COLD-DELETE (the M6 checklist:
-# "delete abi/cold and abi/hot"). Test files are not scanned by this gate (src/** outside /tests/
-# only), so the block has no test rows.
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar/src/root/linked.rs"
-item = "abi::cold"
-count = 1
-expires = "M6-COLD-DELETE"
-
-# BOOT-TAIL card item 4: the host egress carrier moved whole from root/linked.rs into root/boot.rs
-# (a pure move), and its 15 cold-lane lines with it: linked.rs 16 -> 1, boot.rs 15. Net zero.
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar/src/root/boot.rs"
-item = "abi::cold"
-count = 15
-expires = "M6-COLD-DELETE"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-kernel/src/export/plugin.rs"
-item = "abi::cold"
-count = 1
-expires = "M6-COLD-DELETE"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-kernel/src/export/scrape.rs"
-item = "abi::cold"
-count = 1
-expires = "M6-COLD-DELETE"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-kernel/src/plugin_routes.rs"
-item = "abi::cold"
-count = 1
-expires = "M6-COLD-DELETE"
