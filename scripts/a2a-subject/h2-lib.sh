@@ -252,6 +252,10 @@ print(rows[0].get('$field') if rows else '-')"
 # is not a quantity; #44's flat fee is the dimension that prices it). Used by the class-price leg to
 # ask the one question that needs no rate card to be answerable: did the plane report a number for
 # what it moved, at all?
+#
+# A PLANE'S OWN CLASSES ARE COLUMNS TOO: the row's `classes` object (new in 1.6.0, FLIP-A2A ruling --
+# 1.5.5's rows carried the token split alone and 1.5.5 served no plane with a class of its own) holds
+# each plane-declared class's `{count, cost}`, and its counts are summed with the token columns.
 h2_meter_row_quantity() {
   local model="$1" provider="$2"
   curl -sS -m 10 -H "Authorization: Bearer $H2_ADMIN_TOKEN" \
@@ -263,7 +267,8 @@ if not rows:
     print('-')
 else:
     r=rows[0]
-    print(sum(int(r.get(k) or 0) for k in ('tokens_input','tokens_output','tokens_cache_read','tokens_cache_creation')))"
+    print(sum(int(r.get(k) or 0) for k in ('tokens_input','tokens_output','tokens_cache_read','tokens_cache_creation'))
+          + sum(int((c or {}).get('count') or 0) for c in (r.get('classes') or {}).values()))"
 }
 
 # One scalar off `GET /api/v1/admin/usage`'s `total` block — the OTHER admin money read, and since
