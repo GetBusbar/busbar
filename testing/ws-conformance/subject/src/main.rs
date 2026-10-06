@@ -52,13 +52,19 @@ fn open(key: &str, door: busbar_contract::abi::mechanism::door::DoorFn) -> Arc<d
 
 /// The `ws` door.
 fn ws_door() -> Arc<dyn FramerDoor> {
-    open(busbar_transport_ws::linked::KEY, busbar_transport_ws::door::door)
+    open(
+        busbar_transport_ws::linked::KEY,
+        busbar_transport_ws::door::door,
+    )
 }
 
 /// The carrier it frames over: the `tcp` door, served from the host's I/O.
 fn carrier() -> busbar_core_connector::compose::Via {
     busbar_core_connector::compose::Via {
-        door: open(busbar_transport_tcp::linked::KEY, busbar_transport_tcp::door::door),
+        door: open(
+            busbar_transport_tcp::linked::KEY,
+            busbar_transport_tcp::door::door,
+        ),
         io: busbar_core_connector::hostio::process(),
     }
 }
