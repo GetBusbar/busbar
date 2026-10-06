@@ -39,9 +39,9 @@
 //! [`install_crypto_provider`] are relocated byte-for-byte (only the module path each name is
 //! reached through changed) from `busbar-kernel`'s own `tls` module, where the SAME native inbound
 //! TLS termination has built its `rustls::ServerConfig` this way since before this crate existed.
-//! `busbar_kernel::tls` keeps `read_pem` (an outbound TLS-identity reader in `busbar-a2a` also calls
-//! it) and the accept-loop/hyper-serving machinery — a LISTENER concern this crate does not touch —
-//! but no longer builds a `ServerConfig` itself.
+//! `busbar_kernel::tls` keeps `read_pem` (the one turn-a-`SecretRef`-into-PEM function, which the
+//! readers below call) and the accept-loop/hyper-serving machinery — a LISTENER concern this crate
+//! does not touch — but no longer builds a `ServerConfig` itself.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
