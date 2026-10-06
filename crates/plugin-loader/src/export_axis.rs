@@ -200,33 +200,28 @@ impl<'r> ExportRows<'r> {
     }
 
     /// Whether `module`'s row states the `one_instance` mark (at most one instance may be
-    /// configured): read off its Statement at bind. A row that will not load here, or a cold row,
-    /// states none.
+    /// configured): read off its Statement at bind. A row that will not load here states
+    /// none.
     #[must_use]
     pub fn one_instance(&self, module: &str) -> bool {
         let Some(row) = self.row(module) else {
             return false;
         };
-        match self.load(row, &label(module), false) {
-            Ok(Door::Memory(p)) => p.context::<ExportFacts>().is_some_and(|f| f.one_instance),
-            _ => false,
-        }
+        self.load(row, &label(module), None)
+            .is_ok_and(|p| p.context::<ExportFacts>().is_some_and(|f| f.one_instance))
     }
 
     /// The routes `module`'s row declares, read off its Statement at bind (no instance opens). A
-    /// row that will not load here, or a cold row, declares none.
+    /// row that will not load here declares none.
     #[must_use]
     pub fn routes(&self, module: &str) -> Vec<busbar_contract::abi::mechanism::route::Route> {
         let Some(row) = self.row(module) else {
             return Vec::new();
         };
-        match self.load(row, &label(module), false) {
-            Ok(Door::Memory(p)) => p
-                .context::<ExportFacts>()
-                .map(|f| f.routes.clone())
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        }
+        self.load(row, &label(module), None)
+            .ok()
+            .and_then(|p| p.context::<ExportFacts>().map(|f| f.routes.clone()))
+            .unwrap_or_default()
     }
 
     /// The sink's own checks across `instances` of `module` at `phase`; `None` when `module` is

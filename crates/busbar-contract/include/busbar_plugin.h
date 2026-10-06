@@ -573,7 +573,8 @@ extern "C" {
 #define BB_HSVC_OP_TRUST_VERIFY UINT32_C(20) /* `trust.verify`. */
 #define BB_HSVC_OP_RECORDS_SECRET UINT32_C(21) /* `records.secret`. */
 #define BB_HSVC_OP_DISK_APPEND UINT32_C(22) /* `disk.append`. */
-#define BB_HSVC_SERVICES UINT32_C(23) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_SNAPSHOT_READ UINT32_C(23) /* `snapshot.read`. */
+#define BB_HSVC_SERVICES UINT32_C(24) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
 #define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
@@ -615,6 +616,10 @@ extern "C" {
 #define BB_HSVC_MAX_RANDOM_FILL UINT64_C(1024) /* The most bytes one `random.fill` answers. */
 #define BB_HSVC_CONTENT_PASS UINT64_C(0) /* `content.scan`: the content passes. */
 #define BB_HSVC_CONTENT_BLOCK UINT64_C(1) /* `content.scan`: the gate blocked it. */
+#define BB_HSVC_SNAPSHOT_SCOPE_WHOLE UINT32_C(0) /* [`SnapshotReadIn::scope`]: the host recorder's WHOLE snapshot, in its order (kind, then name), */
+#define BB_HSVC_SNAPSHOT_SCOPE_HOOKS UINT32_C(1) /* [`SnapshotReadIn::scope`]: the families the configured hooks REPORT (each hook's own metrics, */
+#define BB_HSVC_SNAPSHOT_SCOPES UINT32_C(2) /* How many scopes there are; a scope at or past it is REFUSED. */
+#define BB_HSVC_SNAPSHOT_ALIGN ((size_t)8) /* The alignment [`SnapshotReadIn::into`]'s `buf` holds (the scrape layout's: every record of it */
 #define BB_HSVC_DISK_ROTATED UINT8_C(1) /* [`DiskWritten::rotated`]: the host rotated the file before appending. */
 #define BB_HSVC_DISK_RETENTION_FAILED UINT8_C(1) /* [`DiskWritten::faults`]: dropping the oldest archive failed (the archive series may exceed the */
 #define BB_HSVC_DISK_SHIFT_FAILED UINT8_C(2) /* [`DiskWritten::faults`]: shifting an archive up one slot failed (it was left in place). */
@@ -3553,9 +3558,10 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn trust_verify;
     bb_hsvc_ServiceFn records_secret;
     bb_hsvc_ServiceFn disk_append;
+    bb_hsvc_ServiceFn snapshot_read;
 };
 
-/* ---- layout proof: 262 of 265 structures are pinned by the golden ---- */
+/* ---- layout proof: 263 of 266 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -5544,7 +5550,7 @@ BB_ASSERT(offsetof(bb_hsvc_DiskWritten, rotated) == 4, "bb_hsvc_DiskWritten.rota
 BB_ASSERT(offsetof(bb_hsvc_DiskWritten, faults) == 5, "bb_hsvc_DiskWritten.faults: offset");
 BB_ASSERT(offsetof(bb_hsvc_DiskWritten, _reserved) == 6, "bb_hsvc_DiskWritten._reserved: offset");
 BB_ASSERT(offsetof(bb_hsvc_DiskWritten, written) == 8, "bb_hsvc_DiskWritten.written: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 192, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 200, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -5571,6 +5577,7 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, need_admit) == 160, "bb_hsvc_HostSlots.nee
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_verify) == 168, "bb_hsvc_HostSlots.trust_verify: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, records_secret) == 176, "bb_hsvc_HostSlots.records_secret: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, disk_append) == 184, "bb_hsvc_HostSlots.disk_append: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, snapshot_read) == 192, "bb_hsvc_HostSlots.snapshot_read: offset");
 #endif
 
 #ifdef __cplusplus
