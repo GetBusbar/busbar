@@ -244,8 +244,14 @@
 # RELEASE_REF moves to the same sha in the same commit. Feature branch head; re-pin to the merge commit
 # when it lands.
 #
+# 2026-10-06 (ARCHITECT RELEASE_REF rule: the pin is always a busbar-release DEV commit that contains
+# every earlier pin): moved 30d072960aa1 -> 1869c0032ecf, the merge of busbar-release #168 into dev
+# (#168 = the voice-runtime row strike above, merged with dev 5b89bdf67326 = #166). It contains
+# 4a7a7bba2cef, 0ede76aea9 (#157) and 5b89bdf67326 (#166). promote.yml RELEASE_REF moves to the same
+# sha in the same commit.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=30d072960aa13af8a2bb59fc87de4251c2238ba1
+release_ref=1869c0032ecf2cdad8b1153ccf25311cb6baad75
 crate=busbar-release-oracle
 bin=busbar-oracle
