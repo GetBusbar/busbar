@@ -283,6 +283,28 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
             self.put(|o| &o.affinity, key);
         }
     }
+
+    /// THE UNIT'S TRUST FACTS ([`crate::abi::plane::ArriveOut::trust_counterparty`], and the item
+    /// there and the digest it is offered at), kept until the instance's next call; the kernel's
+    /// Approve judges them. An empty counterparty states none; an empty item or digest states no
+    /// item or no digest.
+    pub fn trust(&mut self, counterparty: &str, item: Option<&str>, digest: Option<&str>) {
+        if counterparty.is_empty() {
+            return;
+        }
+        if let Some(kept) = self.kept {
+            let c = kept.text(counterparty.to_string());
+            self.put(|o| &o.trust_counterparty, c);
+            if let Some(item) = item.filter(|s| !s.is_empty()) {
+                let i = kept.text(item.to_string());
+                self.put(|o| &o.trust_item, i);
+            }
+            if let Some(digest) = digest.filter(|s| !s.is_empty()) {
+                let d = kept.text(digest.to_string());
+                self.put(|o| &o.trust_digest, d);
+            }
+        }
+    }
 }
 
 impl Out<'_, crate::abi::plane::ServeOut> {
