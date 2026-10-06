@@ -482,18 +482,20 @@ async fn an_http1_keep_alive_connection_carries_the_next_request() {
 }
 
 /// A cleartext HTTP/1.1 far end that answers each connection's one request `200` with an empty
-/// body (`content-length: 0`) and no `connection: close`, then CLOSES the connection (the OTLP
-/// collector's answer byte for byte): the client's line goes back to its pool whole, and the far end's end arrives on it while
-/// it sits idle.
-async fn closing_h1_far_end() -> (u16, Arc<FarEnd>) {
+/// body (`content-length: 0`) and no `connection: close` (the OTLP collector's answer byte for
+/// byte), then CLOSES the connection on `close`: the client's line went back to its pool whole, and
+/// the far end's end arrives on it while it sits idle.
+async fn closing_h1_far_end() -> (u16, Arc<FarEnd>, Arc<tokio::sync::Notify>) {
     let l = TcpListener::bind("127.0.0.1:0").await.expect("a port");
     let port = l.local_addr().expect("its address").port();
     let far = Arc::new(FarEnd::default());
     let seen = Arc::clone(&far);
+    let close = Arc::new(tokio::sync::Notify::new());
+    let closing = Arc::clone(&close);
     tokio::spawn(async move {
         while let Ok((mut s, _)) = l.accept().await {
             seen.accepted.fetch_add(1, Ordering::SeqCst);
-            let seen = Arc::clone(&seen);
+            let (seen, closing) = (Arc::clone(&seen), Arc::clone(&closing));
             tokio::spawn(async move {
                 let (mut got, mut buf) = (Vec::new(), [0_u8; 4096]);
                 loop {
@@ -517,25 +519,26 @@ async fn closing_h1_far_end() -> (u16, Arc<FarEnd>) {
                 let _ = s
                     .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
                     .await;
-                // The connection closes here: the far end's end, with nothing unread.
+                // The connection closes on `close`: the far end's end, with nothing unread.
+                closing.notified().await;
             });
         }
     });
-    (port, far)
+    (port, far, close)
 }
 
-/// THE FAR END'S END IS NEWS ONCE, on a pooled HTTP/1.1 line whose far end closed after answering
-/// (an OTLP collector's shape, a vendor closing an idle connection): whenever that end is read, it
-/// is read and handed to the framer once, the line is found spent and let go, and the next open
-/// dials afresh and is answered. `late` reads the answer only after the far end's close is on the
-/// wire (a loaded host's order: the answer and the end arrive together); otherwise the answer is
-/// read at once and the end arrives while the line sits idle in the pool. Nothing drives the line
-/// while the close travels, so each order is met every time. Before, the socket's end of file was
-/// re-read and re-fed to the framer as movement on every pass, and the next open's freshness check
-/// spun inside the open (inside an export's `deliver` crossing, until the dispatcher's watchdog
-/// faulted it and its batch was dropped).
-async fn a_line_the_far_end_closed_is_let_go(late: bool) {
-    let (port, far) = closing_h1_far_end().await;
+/// THE FAR END'S END IS NEWS ONCE: a pooled HTTP/1.1 line whose far end closed while it sat idle
+/// (an OTLP collector closing after its answer, a vendor closing an idle connection) is read once
+/// for that end when the next open would take it, found spent and let go, and the open dials
+/// afresh and is answered. The far end closes only once the line is back in its pool, and nothing
+/// drives the line while the close travels, so the open's freshness check meets the end every
+/// time. Before, the socket's end of file was re-read and re-fed to the framer as movement on every
+/// pass, even after the framer had ended the connection on it, and that check spun inside the open
+/// (inside an export's `deliver` crossing, until the dispatcher's watchdog faulted it and its batch
+/// was dropped).
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn an_idle_http1_line_the_far_end_closed_is_let_go_not_spun_on() {
+    let (port, far, close) = closing_h1_far_end().await;
     let c = Arc::new(connector(
         &pooled(TransportSettings::default()),
         &EgressTrust::default(),
@@ -572,13 +575,11 @@ async fn a_line_the_far_end_closed_is_let_go(late: bool) {
         .await
         .expect("the wait")
         .expect("the first open answers");
-    if late {
-        // The answer and the close reach this side before anything reads them.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
     let (status, body) = finish(&c, a).await;
     assert_eq!((status, body.as_slice()), (Some(200), &b""[..]));
-    // The far end's close reaches this side; nothing drives the idle line meanwhile.
+    // The line is back in its pool, idle; now the far end closes it, and its end reaches this side
+    // while nothing drives the line.
+    close.notify_one();
     tokio::time::sleep(Duration::from_millis(200)).await;
     let b = open()
         .await
@@ -591,19 +592,6 @@ async fn a_line_the_far_end_closed_is_let_go(late: bool) {
         2,
         "the spent line is let go and the open dials afresh"
     );
-}
-
-/// [`a_line_the_far_end_closed_is_let_go`], the answer read at once and the close arriving while
-/// the line sits idle.
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn an_idle_http1_line_the_far_end_closed_is_let_go_not_spun_on() {
-    a_line_the_far_end_closed_is_let_go(false).await;
-}
-
-/// [`a_line_the_far_end_closed_is_let_go`], the answer and the close arriving together.
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn an_http1_line_closed_with_its_answer_is_let_go_not_spun_on() {
-    a_line_the_far_end_closed_is_let_go(true).await;
 }
 
 /// No pool posture, no reuse: each open dials (the posture is the deployment's).
