@@ -93,7 +93,6 @@ pub mod linked;
 pub(crate) mod loader;
 pub mod migration;
 pub mod observe;
-pub mod otlp;
 #[cfg(feature = "plane-decisions")]
 pub mod plane_decisions;
 // The node a plane's units run through, compiled in every build: a door plane's units are driven

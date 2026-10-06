@@ -447,8 +447,28 @@ kind = "transport"
 
 
 [[cell]]
-crate = "busbar-core-oauth2"
+crate = "busbar-mcp"
+kind = "cleanliness"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "hooks"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "legacy"
+
+[[cell]]
+crate = "busbar-mcp"
 kind = "plane"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "plugin-tooling"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "transport"
 
 [[cell]]
 crate = "busbar-plane-a2a"

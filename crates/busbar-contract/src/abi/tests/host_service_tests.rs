@@ -486,6 +486,7 @@ fn every_service_field_sits_at_its_op_index() {
         (offset_of!(HostSlots, need_admit), op::NEED_ADMIT),
         (offset_of!(HostSlots, trust_verify), op::TRUST_VERIFY),
         (offset_of!(HostSlots, records_secret), op::RECORDS_SECRET),
+        (offset_of!(HostSlots, disk_append), op::DISK_APPEND),
         (offset_of!(HostSlots, session_emit), op::SESSION_EMIT),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
@@ -725,4 +726,141 @@ fn a_work_record_past_its_cap_is_refused() {
         check_work_record(&at(MAX_WORK_RECORD + 1)).unwrap_err(),
         fault(Rule::OverMax, "work.record")
     );
+}
+
+/// A `disk.append` `in` appending `bytes` to `key`, its result into `result`.
+fn disk_in(
+    ticket: Ticket,
+    key: &'static str,
+    bytes: &[u8],
+    result: &mut DiskWritten,
+) -> DiskAppendIn {
+    DiskAppendIn {
+        head: head(
+            op::DISK_APPEND,
+            ticket,
+            core::mem::size_of::<DiskAppendIn>(),
+        ),
+        dest_key: AbiStr {
+            ptr: key.as_ptr(),
+            len: key.len(),
+        },
+        bytes: Blob {
+            ptr: bytes.as_ptr(),
+            len: bytes.len(),
+            fmt: crate::abi::mechanism::call::BLOB_OCTETS,
+            flags: 0,
+        },
+        result: core::ptr::from_mut(result),
+    }
+}
+
+/// A `DiskWritten` of this layout.
+fn written(rotated: u8, faults: u8, written: u64) -> DiskWritten {
+    DiskWritten {
+        size: core::mem::size_of::<DiskWritten>() as u32,
+        rotated,
+        faults,
+        _reserved: [0; 2],
+        written,
+    }
+}
+
+/// THE HOST'S CHECK OF A `disk.append` `in` (`check_disk_append_in`), one RED per arm: no key, a key
+/// or bytes as a count behind NULL, no result slot. A well-formed `in` passes.
+#[test]
+fn the_host_refuses_a_disk_append_in_with_no_key_a_null_range_or_no_result() {
+    let mut w = written(0, 0, 0);
+    let good = disk_in(TICKET, "path", b"line\n", &mut w);
+    assert_eq!(check_disk_append_in(&good), Ok(()));
+
+    let mut i = good;
+    i.dest_key = none();
+    assert_eq!(
+        check_disk_append_in(&i).unwrap_err(),
+        fault(Rule::Missing, "disk_append.dest_key")
+    );
+    let mut i = good;
+    i.dest_key.ptr = core::ptr::null();
+    assert_eq!(
+        check_disk_append_in(&i).unwrap_err().rule,
+        Rule::NullWithCount
+    );
+    let mut i = good;
+    i.bytes.ptr = core::ptr::null();
+    assert_eq!(
+        check_disk_append_in(&i).unwrap_err().rule,
+        Rule::NullWithCount
+    );
+    let mut i = good;
+    i.result = core::ptr::null_mut();
+    assert_eq!(
+        check_disk_append_in(&i).unwrap_err(),
+        fault(Rule::Missing, "disk_append.result")
+    );
+    // Empty bytes append nothing, and are legal.
+    let mut i = good;
+    i.bytes = empty_blob();
+    assert_eq!(check_disk_append_in(&i), Ok(()));
+}
+
+/// `disk.append`'s ANSWER (`check_disk_append`): READY writes the whole of `bytes`, a known
+/// `rotated` and known fault bits into a result of this layout; FAILED writes nothing appended and
+/// names its step; it may pend on a ticket and never without one. One RED per arm.
+#[test]
+fn a_disk_append_answer_lands_whole_or_names_its_failed_step() {
+    let bytes = b"one line\n";
+    let len = bytes.len() as u64;
+    let check = |w: DiskWritten, o: &ServiceOut, ticket: Ticket| {
+        let mut slot = w;
+        let i = disk_in(ticket, "path", bytes, &mut slot);
+        check_disk_append(&i, o.outcome, o)
+    };
+    let ready = out(Outcome::Ready);
+    assert_eq!(
+        check(written(0, 0, len), &ready, TICKET),
+        Ok(Filled::Written)
+    );
+    assert_eq!(
+        check(written(DISK_ROTATED, DISK_FAULTS, len), &ready, TICKET),
+        Ok(Filled::Written)
+    );
+    // A partial append on READY.
+    assert_eq!(
+        rule(check(written(0, 0, len - 1), &ready, TICKET)),
+        Rule::Contradiction
+    );
+    // A foreign result.
+    let mut foreign = written(0, 0, len);
+    foreign.size += 8;
+    assert_eq!(rule(check(foreign, &ready, TICKET)), Rule::Foreign);
+    // `rotated` outside {0, DISK_ROTATED}; a fault bit no one knows.
+    assert_eq!(
+        rule(check(written(2, 0, len), &ready, TICKET)),
+        Rule::UnknownCode
+    );
+    assert_ne!(
+        check(written(0, 8, len), &ready, TICKET),
+        Ok(Filled::Written)
+    );
+    // FAILED: the step is named, nothing was appended, the rotation is still reported.
+    let mut failed = out(Outcome::Failed);
+    for step in [DISK_OPEN_FAILED, DISK_APPEND_FAILED] {
+        failed.value = step;
+        assert!(check(written(DISK_ROTATED, 0, 0), &failed, TICKET).is_ok());
+    }
+    assert_eq!(
+        rule(check(written(0, 0, len), &failed, TICKET)),
+        Rule::Contradiction
+    );
+    failed.value = 0;
+    assert_eq!(
+        rule(check(written(0, 0, 0), &failed, TICKET)),
+        Rule::UnknownCode
+    );
+    // PENDING on a ticket is legal; with none it is FAULT.
+    let pending = out(Outcome::Pending);
+    assert!(check(written(0, 0, 0), &pending, TICKET).is_ok());
+    assert!(check(written(0, 0, 0), &pending, Ticket::NONE).is_err());
+    assert!(may_pend(op::DISK_APPEND));
 }

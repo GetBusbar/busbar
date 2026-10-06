@@ -624,6 +624,56 @@ pub enum RejectKind {
     Tampered,
     /// Validly signed but by a publisher NOT in the allowlist, and `allow_third_party` is off.
     UnknownPublisher,
+    /// Admitted on trust, but NOT first-party, and its Statement declares a connection need in an
+    /// egress class the host grants to a first-party plugin only ([`egress_grant`]).
+    EgressGrant,
+}
+
+/// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: every
+/// class that relaxes the open web's rule — a provider's allow-list and metadata hosts, the
+/// operator infrastructure's private and plaintext targets, a collector's loopback plaintext.
+/// The connector's default class and the open web are any trusted plugin's (ARCHITECT ruling
+/// EGRESS-GRANT 2026-10-03; the cold lane's `declares.egress` grant, on the door's needs).
+pub const FIRST_PARTY_EGRESS: [(u32, &str); 3] = [
+    (
+        busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
+        "provider",
+    ),
+    (
+        busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE,
+        "operator-infrastructure",
+    ),
+    (
+        busbar_contract::abi::host::conn::connector::EGRESS_LOOPBACK_ALLOWED,
+        "loopback-allowed",
+    ),
+];
+
+/// THE EGRESS-CLASS GRANT on a door plugin's needs: `Err` naming the first need of `manifest`'s
+/// stated Statement whose egress class is a first-party grant ([`FIRST_PARTY_EGRESS`]). Asked of a
+/// plugin that is not first-party; a manifest that states no Statement (a cold plugin) declares no
+/// need here.
+///
+/// # Errors
+///
+/// The refusal, naming the plugin and the class.
+pub fn egress_grant(manifest: &Manifest) -> Result<(), String> {
+    let Some(stated) = manifest.stated()? else {
+        return Ok(());
+    };
+    for need in &stated.needs {
+        if let Some((_, class)) = FIRST_PARTY_EGRESS
+            .iter()
+            .find(|(c, _)| *c == need.egress_class)
+        {
+            return Err(format!(
+                "plugin '{}' declares a `{}` need in the `{class}` egress class, which the host \
+                 grants to a first-party plugin only",
+                manifest.name, need.transport
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Trust failure. The posture forbids loading this plugin; the message is safe to surface. `kind` is

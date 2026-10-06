@@ -2033,6 +2033,14 @@ mod both_ways {
         ) -> busbar_plugin_loader::dispatch::Ran {
             busbar_plugin_loader::dispatch::Ran::Now(Stored::refused(UNSERVED))
         }
+        fn disk_append(
+            &self,
+            _: &busbar_contract::services::DiskDest,
+            _: Vec<u8>,
+            _: busbar_plugin_loader::dispatch::Later,
+        ) -> busbar_plugin_loader::dispatch::Ran {
+            busbar_plugin_loader::dispatch::Ran::Now(Stored::refused(UNSERVED))
+        }
     }
 
     use busbar_contract::services::{Caller, Stored, UNSERVED};

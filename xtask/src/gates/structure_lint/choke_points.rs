@@ -128,8 +128,10 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         //         cleanup / 0600 mode) its author forgot.
         //
         //         LEDGERED EXEMPTION, `fs::rename`, for the request-log sink's rotate-by-rename,
-        //         which the plugin host performs for an export destination
-        //         (`crates/plugin-loader/src/host.rs`): rotation renames a file whose bytes are
+        //         which the plugin host performs for a plugin log file
+        //         (`crates/plugin-loader/src/host.rs`) and the kernel's disk lane for an export
+        //         destination (`crates/busbar-kernel/src/host_disk.rs`, `disk.append`, ARCHITECT
+        //         ruling Q-C1-FILE): rotation renames a file whose bytes are
         //         already fully on disk, and `fs::rename` moves a directory entry without touching
         //         them, so there is no torn state to protect. LEDGERED EXEMPTION, `sync_[ad]` and
         //         `create_dir_all`, for the WAL: it is a SIBLING durability primitive, not a
@@ -157,6 +159,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                     &[
                         "crates/busbar-kernel-wal/src/durable.rs".into(),
                         "crates/plugin-loader/src/host.rs".into(),
+                        "crates/busbar-kernel/src/host_disk.rs".into(),
                     ],
                 )
                 .core_tier(),

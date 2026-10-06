@@ -237,6 +237,7 @@ pub mod handlers;
 pub mod hooks;
 pub(crate) mod host_chains;
 pub mod host_claims;
+pub mod host_disk;
 pub mod host_records;
 pub mod host_units;
 pub mod host_work;

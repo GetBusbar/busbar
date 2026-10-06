@@ -49,7 +49,6 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("on-host", "on_host", "on_host"),
     ("compose", "compose", "compose"),
     ("cli-help", "cli_help", "CLI_HELP"),
-    ("exports", "exports", "EXPORT"),
     ("stores", "stores", "STORE"),
     // The hook axis: each linked `kind: hook` row's door (`plugin_door!`), the same door its
     // dropped-in build exports.
