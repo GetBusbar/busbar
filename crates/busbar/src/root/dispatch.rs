@@ -129,6 +129,10 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
 #[path = "tests/dispatch.rs"]
 mod tests;
 
-#[cfg(test)]
+// The suite binds each dialect's declared scheme on the LINKED auth plugins serving its style: the
+// static schemes on `busbar-auth-header`, the signing scheme on `busbar-auth-sigv4` (the default
+// distribution links both). A build without either links no plugin serving that style, so the bind
+// is refused there, exactly as `door_steps`' positive binding proof is gated on `auth-header`.
+#[cfg(all(test, feature = "auth-header", feature = "auth-sigv4"))]
 #[path = "tests/declared_credentials.rs"]
 mod declared_credentials_tests;
