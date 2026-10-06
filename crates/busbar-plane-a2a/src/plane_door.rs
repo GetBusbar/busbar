@@ -859,9 +859,13 @@ slot!(
             Some(agent) => {
                 out.route(ROUTE_DIRECT, agent);
                 if let Some(def) = section.as_ref().and_then(|s| s.agents.get(agent)) {
-                    if let Err(refusal) =
-                        admit_unit(plane, (agent, def), Some(agent), generation, request.as_ref())
-                    {
+                    if let Err(refusal) = admit_addressed(
+                        plane,
+                        (agent, def),
+                        generation,
+                        request.as_ref(),
+                        &mut out,
+                    ) {
                         return refused(&mut out, &refusal);
                     }
                 }
@@ -941,8 +945,7 @@ fn arrive_card(
             out.route(ROUTE_DIRECT, agent);
             let section = plane.generations.current();
             if let Some(def) = section.as_ref().and_then(|s| s.agents.get(agent)) {
-                if let Err(refusal) = admit_unit(plane, (agent, def), Some(agent), generation, None)
-                {
+                if let Err(refusal) = admit_addressed(plane, (agent, def), generation, None, out) {
                     return refused(out, &refusal);
                 }
             }
@@ -1269,6 +1272,25 @@ pub(crate) fn verdict(plane: &A2aDoor, agent: &str) -> u64 {
     services
         .trust_serves(handle, agent, None, None)
         .unwrap_or(svc::DISTRUST_UNKNOWN)
+}
+
+/// AN ARRIVAL ADDRESSED TO `member` STATES ITS TRUST FACTS (the agent, as the counterparty, ARCHITECT
+/// FLIP-A2A): the kernel's Approve judges them and refuses an agent its trust book does not serve
+/// (`untrusted`, rendered by `refusal` in the admission's words). Only an agent the book serves is
+/// held to the plane's own admission here ([`admit_unit`]: its suspension and its card's fit), so
+/// trust is judged before the fit, as 1.5.5's admission ordered them.
+fn admit_addressed(
+    plane: &A2aDoor,
+    (member, def): (&str, &crate::a2a::config::AgentDefCfg),
+    generation: u64,
+    envelope: Option<&serde_json::Value>,
+    out: &mut Out<'_, ArriveOut>,
+) -> Result<Option<String>, arrival::Refusal> {
+    out.trust(member, None, None);
+    if verdict(plane, member) != busbar_contract::abi::host::service::DISTRUST_NONE {
+        return Ok(None);
+    }
+    admit_unit(plane, (member, def), Some(member), generation, envelope)
 }
 
 /// THE ADMISSION AND THE CATALOGUE (the engine's `receive::admit`, after the kernel's identity and
