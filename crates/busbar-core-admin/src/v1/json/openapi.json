@@ -2,22 +2,8 @@
   "components": {
     "schemas": {
       "A2aTrustView": {
-        "description": "THE TRUST VIEW of one registered agent — what both verbs answer with.\n\nThe sibling of the tool-serving plane's trust view and shaped like it on purpose: an\noperator console rendering both planes should be rendering one component. It is NOT the same\ntype, because the two planes' capability vocabularies differ (a `tools:` entry has an approved\ndigest per tool; an `agents:` entry has a skill set on a card) and merging them would mean one\nof the planes filling in fields that mean nothing to it.",
+        "description": "THE TRUST VIEW of one registered agent: what `connect` answers with.\n\nIts state is the kernel's verdict on the agent's trust key (approving is the operator's act on\nthe generic `/admin/trust`), or the plane's own `suspended`/`error`.",
         "properties": {
-          "added": {
-            "description": "Offered now, never ruled on.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "changed": {
-            "description": "Approved, but offered at a DIFFERENT digest. THIS IS THE RUG-PULL ROW.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
           "failure": {
             "description": "Why the contact failed, when it did.",
             "type": [
@@ -26,7 +12,7 @@
             ]
           },
           "fingerprint": {
-            "description": "THE CANONICAL CARD FINGERPRINT AN OPERATOR IS BEING ASKED TO APPROVE. Surfaced explicitly\nrather than left for a caller to dig out, because this is the one string that goes in front\nof the human and `approve` refuses anything else.",
+            "description": "THE CANONICAL CARD FINGERPRINT the card presented: what this look sighted on the kernel's\ntrust book, and so what an approval of the agent's key approves.",
             "type": [
               "string",
               "null"
@@ -41,23 +27,12 @@
             "minimum": 0,
             "type": "integer"
           },
-          "pin_changed": {
-            "description": "The presented identity is not the locked one. Its own axis: adopting a new identity is a\ndifferent act from adopting new content.",
-            "type": "boolean"
-          },
           "pin_mechanism": {
             "description": "The operator's word for the authenticity root, as the OBSERVED pin names it. Never\ninterpreted by the machine.",
             "type": "string"
           },
-          "removed": {
-            "description": "Approved, and no longer offered.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
           "state": {
-            "description": "`pending`, `approved`, `quarantined`, `suspended` or `error`. DERIVED on every read from the\nstanding approval and the sighting, so there is no stored state to go stale.",
+            "description": "`pending`, `approved`, `quarantined`, `suspended` or `error`: the kernel's verdict on the\nagent's trust key, the plane's own anomaly suspension, or a failed contact.",
             "type": "string"
           }
         },
@@ -66,10 +41,6 @@
           "state",
           "pin_mechanism",
           "fingerprint",
-          "pin_changed",
-          "added",
-          "changed",
-          "removed",
           "observed_skills",
           "failure"
         ],
@@ -341,20 +312,6 @@
         "description": "A money figure: a decimal integer carried as TEXT. The ledger keeps money in 128-bit integers and\nJSON's number is a double, exact only to 2^53; a nano-unit total passes that on a busy day, and a\nfigure that silently lost its last digits would still look like money.",
         "pattern": "^-?[0-9]+$",
         "type": "string"
-      },
-      "ApproveReq": {
-        "additionalProperties": false,
-        "description": "The `approve` request body. ONE required field, and it is required because it is the operator's\nevidence that they looked.",
-        "properties": {
-          "fingerprint": {
-            "description": "The canonical card fingerprint EXACTLY as `connect` reported it.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "fingerprint"
-        ],
-        "type": "object"
       },
       "AuditChainHeadView": {
         "description": "`GET /audit/head`: where the audit record chain is now, and the recipe a verifier applies.",
@@ -3996,6 +3953,88 @@
         ],
         "type": "object"
       },
+      "TrustKeyReq": {
+        "description": "`POST /trust/approve` and `/trust/revoke`: the trust key decided.",
+        "properties": {
+          "key": {
+            "description": "`<instance>/<counterparty>[/<item>]`, as `GET /trust` lists it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "TrustKeyView": {
+        "description": "One trust key of the kernel's trust book and its state.",
+        "properties": {
+          "approved": {
+            "description": "What it is approved at: the catalogue hash, or the item's digest.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "counterparty": {
+            "description": "The counterparty, as the instance's configuration names it.",
+            "type": "string"
+          },
+          "instance": {
+            "description": "The plane instance label.",
+            "type": "string"
+          },
+          "item": {
+            "description": "The item at the counterparty, for an item key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "key": {
+            "description": "The key, `<instance>/<counterparty>[/<item>]`: what `POST /trust/approve` and `/revoke` name.",
+            "type": "string"
+          },
+          "seen": {
+            "description": "What it was last sighted at.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "`new` (sighted and never approved, or revoked: refused), `approved` (approved, not sighted\nsince), `same` (sighted as approved), `drifted` (sighted other than approved: refused until\nre-approved) or `quarantined` (the counterparty's catalogue moved: refused until re-approved).",
+            "pattern": "^(new|approved|same|drifted|quarantined)$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "instance",
+          "counterparty",
+          "item",
+          "state",
+          "approved",
+          "seen"
+        ],
+        "type": "object"
+      },
+      "TrustListView": {
+        "description": "`GET /trust`: every trust key and its state.",
+        "properties": {
+          "keys": {
+            "description": "Ordered by instance, counterparty and item, each counterparty before its items.",
+            "items": {
+              "$ref": "#/components/schemas/TrustKeyView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "keys"
+        ],
+        "type": "object"
+      },
       "UpdateKeyReq": {
         "additionalProperties": false,
         "description": "Partial update to an existing key. Keys are PURE AUTH (1.5.0), so the mutable surface is\nauth-shaped only. Every field is optional; only the present ones change. The credential, name,\nallowed-pools, and labels are immutable here (rotate/recreate for those).\n\n`group` is THREE-STATE via serde double-option (`Option<Option<String>>`):\n- absent (`#[serde(default)]` -> outer `None`): leave the binding unchanged.\n- JSON `null` (`Some(None)`): UNBIND to no group (authed + unlimited).\n- a value (`Some(Some(name))`): REBIND to that group (must exist; mint-parity check).\n\nA single `Option<T>` could not tell absent from present-null, so a binding could never be\ncleared once set. `enabled` is a plain `Option<bool>` (a bool has no clear state). The 1.4.x\ncap fields (`rpm_limit`/`tpm_limit`/`max_budget_cents`) are GONE: limits live on the group.",
@@ -4894,114 +4933,6 @@
         "x-busbar-required-scope": "full"
       }
     },
-    "/api/v1/admin/agents/{name}/approve": {
-      "post": {
-        "operationId": "PostAgentsNameApprove",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ApproveReq"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/A2aTrustView"
-                }
-              }
-            },
-            "description": "OK (the registration's state AFTER the approval, read off the live registry)"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`invalid_request`: malformed body / unknown field, invalid config; nothing changed"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`not_found`: unknown resource"
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Lock a registered agent to the card fingerprint the operator has SEEN. The card is re-fetched and re-verified, and an approval naming any other fingerprint is refused",
-        "x-busbar-plane": "agents",
-        "x-busbar-required-scope": "full"
-      }
-    },
     "/api/v1/admin/agents/{name}/connect": {
       "post": {
         "operationId": "PostAgentsNameConnect",
@@ -5024,7 +4955,7 @@
                 }
               }
             },
-            "description": "OK (the derived trust state and the fingerprint a human is being asked to approve; a card that could not be authenticated is still a 200 — the reason is in `failure` and the state is `error`)"
+            "description": "OK (the agent's key's state on the kernel's trust book and the fingerprint the card presented, which this look sighted; a first sighting is `pending` until the operator approves `<instance>/<agent>` on `/admin/trust`; a card that could not be authenticated is still a 200 — the reason is in `failure` and the state is `error`)"
           },
           "401": {
             "content": {
@@ -5085,7 +5016,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Fetch a registered agent's card, verify it against the operator's out-of-band root, and report the fingerprint. Approves nothing and writes nothing",
+        "summary": "Fetch a registered agent's card, verify it against the operator's out-of-band root, and report what it presented and the state its trust key stands in. Approves nothing: approving is the operator's act on /admin/trust",
         "x-busbar-plane": "agents",
         "x-busbar-required-scope": "full"
       }
@@ -13494,6 +13425,243 @@
         "summary": "Replace ONLY the opaque `settings:` bag of one `tools:` definition; every other field is left byte-identical",
         "x-busbar-plane": "tools",
         "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/trust": {
+      "get": {
+        "description": "The counterparties every plane instance this node serves declares, and the items sighted or approved at each: its key, state, what it is approved at and what it was last sighted at. A read: it mutates nothing and needs `read-only`.",
+        "operationId": "GetTrust",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustListView"
+                }
+              }
+            },
+            "description": "Every trust key and its state"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Every trust key of the kernel's trust book and its state",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/trust/approve": {
+      "post": {
+        "description": "A counterparty is approved at the catalogue hash it last reported, which clears its quarantine; an item at the digest it was last sighted at. The decision is kept durably and outlives a restart. Idempotent: the same key twice answers the same row.",
+        "operationId": "PostTrustApprove",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrustKeyReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustKeyView"
+                }
+              }
+            },
+            "description": "The key, decided"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed body, `key is required`, or a request body that could not be read to the operator's size cap"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: ``trust key `<key>` not found`` — no plane instance this node serves has the key"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`conflict`: ``trust key `<key>` was never sighted`` — nothing to approve it at"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or could not keep the decision. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Approve one trust key at what it was last sighted at",
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/trust/revoke": {
+      "post": {
+        "description": "Refused until approved again: a counterparty revoked refuses everything at it, an item revoked refuses it over its configured approval. The decision is kept durably and outlives a restart. Idempotent: the same key twice answers the same row.",
+        "operationId": "PostTrustRevoke",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrustKeyReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustKeyView"
+                }
+              }
+            },
+            "description": "The key, decided"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed body, `key is required`, or a request body that could not be read to the operator's size cap"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: ``trust key `<key>` not found`` — no plane instance this node serves has the key"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or could not keep the decision. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Revoke one trust key",
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
       }
     },
     "/api/v1/admin/usage": {

@@ -190,7 +190,7 @@
                   "application/json"
                 ]
               ],
-              "body": "{\"key\":\"agents/probe\"}"
+              "body": "{\"key\":\"a2a/probe\"}"
             },
             "record": false,
             "expect": 200

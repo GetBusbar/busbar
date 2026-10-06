@@ -2822,7 +2822,7 @@ mod agent_door {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-apply";
         let _published = Published(instance);
-        let agent = Agent::start(200, ANSWER).await;
+        let mut agent = Agent::start(200, ANSWER).await;
         let s = served(instance, &agent.entry("planner", "1h"), false, None);
         approve(&s, "planner").await;
         let send = || rpc("planner", "message/send", SEND, Some(&s.token));

@@ -204,23 +204,24 @@ fn openapi_operations_carry_stable_operation_ids() {
             checked += 1;
         }
     }
-    // 81 = 66 + the five generic named-map routes EACH of the two compiled-in plane sections adds
+    // 80 = 66 + the five generic named-map routes EACH of the two compiled-in plane sections adds
     // (`tools:` and `agents:`) + the plane-specific trust verbs each section layers on top of the
     // generic named-map shape: three trust verbs on one section (`POST .../connect`,
-    // `GET .../changes`, `GET .../health`) and two on the other (`POST .../connect`,
-    // `POST .../approve`), which are specific to their section rather than part of the generic
-    // named-map shape. The count is a FLOOR-and-CEILING on purpose: a route added without a stable
+    // `GET .../changes`, `GET .../health`) and one on the other (`POST .../connect`; its approval
+    // is the generic `/trust`, ARCHITECT FLIP-A2A), which are specific to their section rather than
+    // part of the generic named-map shape. The count is a FLOOR-and-CEILING on purpose: a route added without a stable
     // `operationId`, and a route silently removed, both land here.
     //
     // This assertion is why the two plane sections could not land on `dev` independently without
     // one of them noticing the other: 76 was correct for either section alone and wrong for both
     // together.
     //
-    // 98 = those 81 + the 17 operations the 1.6.0 closed verb table adds, every one with its effect
-    // bound since owner answer Q71(2) (9 money-governance verbs, 5 ledger views, 3 audit-chain
-    // reads), which the node's administrative loop answers and which the one document describes
-    // (items 45/46: no side-car document).
-    assert_eq!(checked, 98, "expected exactly 98 admin operations");
+    // 100 = those 80 + the 20 operations the 1.6.0 closed verb table adds, every one with its
+    // effect bound since owner answer Q71(2) (9 money-governance verbs, 5 ledger views, 3
+    // audit-chain reads) and the ARCHITECT's 2026-10-06 trust verbs (`GET /trust`,
+    // `POST /trust/approve`, `POST /trust/revoke`), which the node's administrative loop answers
+    // and which the one document describes (items 45/46: no side-car document).
+    assert_eq!(checked, 100, "expected exactly 100 admin operations");
     // Spot-check the exact naming scheme against a few representative paths.
     assert_eq!(
         doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
@@ -820,13 +821,13 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
     );
     assert_eq!(
-        declared, 32,
-        "32 mutating operations take a body; a change here is a deliberate API change. 32 = 22 \
+        declared, 33,
+        "33 mutating operations take a body; a change here is a deliberate API change. 33 = 22 \
          + each plane section's PUT and PATCH-settings (both DELETEs are bodyless, above) + the \
-         agents plane's approve verb, whose body carries the fingerprint the \
-         operator is attesting they read + the five 1.6.0 kernel verbs that read one \
-         (`store-restore`, `adjust`, `ledger/amend-rate-history`, and since owner answer Q71(2) \
-         `plane-record-write` and `commit-upgrade`)"
+         seven 1.6.0 kernel verbs that read one (`store-restore`, `adjust`, \
+         `ledger/amend-rate-history`, since owner answer Q71(2) `plane-record-write` and \
+         `commit-upgrade`, and the ARCHITECT's 2026-10-06 `trust/approve` and `trust/revoke`, \
+         whose body names the trust key)"
     );
 }
 
