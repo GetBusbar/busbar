@@ -110,7 +110,7 @@ fn a_second_install_is_refused() {
 /// counter.
 #[test]
 fn a_granted_shed_declaration_is_the_hosts_shed_counter() {
-    use busbar_contract::abi::cold::observe::SeriesDecl;
+    use busbar_contract::abi::mechanism::observe::SeriesDecl;
     let declared = [
         SeriesDecl::new("k9b_rotated_total", "counter"),
         SeriesDecl::new("k9b_dropped_total", "counter").shed(),
