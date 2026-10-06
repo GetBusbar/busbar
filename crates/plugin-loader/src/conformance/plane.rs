@@ -14,7 +14,8 @@
 //! ```json
 //! { "settings": <the settings it opens over (generation 1)>,
 //!   "plane": {
-//!     "bad_settings": [<settings `validate` must refuse, naming why>, ...],
+//!     "bad_settings": [<settings `validate` must refuse, naming why; dealt to it as
+//!                       `{<declaring section>: <settings>}`, the stage-3g shape>, ...],
 //!     "refresh_settings": <the settings generation 2 is refreshed over>,
 //!     "open_claims":    [["<verb>", "<target>"], ...],   // generation 1's snapshot claims
 //!     "refresh_claims": [["<verb>", "<target>"], ...],   // generation 2's
@@ -365,12 +366,19 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             p.max_inflight()
         )
     });
+    // `validate` is handed the blob stage 3g deals a plane: `{<declaring section>: <settings>}`
+    // (`config_validate::deal`, `Seat::Verbs`); `open` and `refresh` take the section as written.
+    let section = p.served().section;
+    let dealt = |b: &[u8]| -> Vec<u8> {
+        let value: Value = serde_json::from_slice(b).expect("conformance.json settings are JSON");
+        serde_json::to_vec(&serde_json::json!({ section: value })).expect("a dealt blob")
+    };
     for (i, b) in k.bad.iter().enumerate() {
         r.line(&format!("validate bad #{i}"), 1, || {
-            called(&validate(&p, b))
+            called(&validate(&p, &dealt(b)))
         });
     }
-    r.line("validate", 1, || called(&validate(&p, &settings)));
+    r.line("validate", 1, || called(&validate(&p, &dealt(&settings))));
     // No instance yet: the host refuses without a crossing.
     r.line("arrive unopened", 0, || arrive(&p, &k.claimed, &k.request));
     let open = |what: &[u8]| {

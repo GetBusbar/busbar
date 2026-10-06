@@ -1185,9 +1185,12 @@ mod both_ways {
     /// One fronted server, the section the door's own tests read.
     const SECTION: &[u8] =
         br#"{"fs": {"url": "https://mcp.example/fs", "pin": {"mechanism": "unpinned"}}}"#;
-    /// A registration the grammar refuses: a server id holding the routing-key separator.
-    const BAD_SECTION: &[u8] =
-        br#"{"my_fs": {"url": "https://mcp.example/fs", "pin": {"mechanism": "unpinned"}}}"#;
+    /// [`SECTION`] as stage 3g deals it to `validate` (`{tools: <section>}`), and a dealt section
+    /// the grammar refuses: a server id holding the routing-key separator.
+    const DEALT: &[u8] =
+        br#"{"tools": {"fs": {"url": "https://mcp.example/fs", "pin": {"mechanism": "unpinned"}}}}"#;
+    const BAD_DEALT: &[u8] =
+        br#"{"tools": {"my_fs": {"url": "https://mcp.example/fs", "pin": {"mechanism": "unpinned"}}}}"#;
     /// The deployment's public base URL the host lends `open`.
     const PUBLIC_URL: &str = "https://busbar.example";
 
@@ -1486,7 +1489,7 @@ mod both_ways {
         let mut v = Frame::new(
             ValidateIn {
                 head: in_head(),
-                settings: octets(BAD_SECTION),
+                settings: octets(BAD_DEALT),
                 err_buf: std::ptr::null_mut(),
                 err_cap: 0,
             },
@@ -1496,7 +1499,7 @@ mod both_ways {
             "validate refused",
             p.call(life::VALIDATE, &mut v).outcome,
         ));
-        v.input.settings = octets(SECTION);
+        v.input.settings = octets(DEALT);
         t.push(Step::new(
             "validate",
             p.call(life::VALIDATE, &mut v).outcome,
