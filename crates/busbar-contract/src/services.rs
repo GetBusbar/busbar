@@ -85,6 +85,49 @@ pub trait HostServices: Send + Sync {
     /// state. READY with a `TRUST_*` verdict.
     fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran;
 
+    /// `trust.sight` with `TRUST_UNREACHABLE`: the plane could not reach `counterparty`. READY with
+    /// the LAST `TRUST_*` verdict, nothing changed. Never pends. Unserved by default.
+    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
+        let _ = (caller, counterparty);
+        Stored::refused(UNSERVED)
+    }
+
+    /// `trust.sight_item`: record the digest `item` of `counterparty` is offered at now (the
+    /// plane's live re-fetch), READY with a `TRUST_*` sighting verdict. Never pends. Unserved by
+    /// default.
+    fn trust_sight_item(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Stored {
+        let _ = (caller, counterparty, item, digest);
+        Stored::refused(UNSERVED)
+    }
+
+    /// `trust.state`: the kernel's trust state of `counterparty` and its items (a `KEY_*` value;
+    /// one span per item, its value `<word>\0<approved>\0<seen>`). Never pends. Unserved by
+    /// default.
+    fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
+        let _ = (caller, counterparty);
+        Stored::refused(UNSERVED)
+    }
+
+    /// `trust.serves`: THE KERNEL'S APPROVE as a query: whether `counterparty` serves `item`
+    /// (`None` = the counterparty as a whole) at `digest` (`None` = its last sighting). READY
+    /// with `DISTRUST_NONE` or the `DISTRUST_*` that refuses it. Never pends. Unserved by default.
+    fn trust_serves(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        let _ = (caller, counterparty, item, digest);
+        Stored::refused(UNSERVED)
+    }
+
     /// `trust.due`: the counterparties of `caller` the kernel's tick marked for re-verification, one
     /// span each (key = the counterparty), drained. Never pends.
     fn trust_due(&self, caller: &Caller) -> Stored;

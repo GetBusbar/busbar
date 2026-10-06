@@ -289,6 +289,8 @@ fn a_ready_value_outside_the_service_range_is_fault() {
         head: head(op::TRUST_SIGHT, TICKET, 0),
         counterparty: none(),
         catalogue_hash: none(),
+        outcome: TRUST_REACHED,
+        _outcome_reserved: 0,
     };
     o.value = TRUST_QUARANTINED + 1;
     assert_eq!(
@@ -412,7 +414,7 @@ fn the_host_refuses_a_capacity_with_a_null_buffer() {
 }
 
 #[test]
-fn the_services_that_never_pend_are_exactly_the_stated_nine() {
+fn the_services_that_never_pend_are_exactly_the_stated_twelve() {
     let never: Vec<u32> = (0..SERVICES).filter(|s| !may_pend(*s)).collect();
     assert_eq!(
         never,
@@ -425,6 +427,9 @@ fn the_services_that_never_pend_are_exactly_the_stated_nine() {
             op::RANDOM_FILL,
             op::NEED_ADMIT,
             op::TRUST_VERIFY,
+            op::TRUST_SIGHT_ITEM,
+            op::TRUST_SERVES,
+            op::TRUST_STATE,
             op::SESSION_EMIT
         ]
     );
@@ -487,6 +492,12 @@ fn every_service_field_sits_at_its_op_index() {
         (offset_of!(HostSlots, trust_verify), op::TRUST_VERIFY),
         (offset_of!(HostSlots, records_secret), op::RECORDS_SECRET),
         (offset_of!(HostSlots, disk_append), op::DISK_APPEND),
+        (
+            offset_of!(HostSlots, trust_sight_item),
+            op::TRUST_SIGHT_ITEM,
+        ),
+        (offset_of!(HostSlots, trust_serves), op::TRUST_SERVES),
+        (offset_of!(HostSlots, trust_state), op::TRUST_STATE),
         (offset_of!(HostSlots, session_emit), op::SESSION_EMIT),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {

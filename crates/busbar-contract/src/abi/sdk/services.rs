@@ -22,12 +22,14 @@ use crate::abi::host::service::{
     check_clock_now, check_dest_judge, check_entitlement_check, check_random_fill,
     check_random_fill_in, check_records_claim, check_records_claim_in, check_records_get,
     check_records_list, check_session_emit, check_session_emit_in, check_sign, check_trust_due,
-    check_trust_sight, check_trust_verify, check_unit_nest, check_work_find, check_work_open,
-    check_work_resume, check_work_settle, op, ClockNowIn, ClockReading, DestJudgeIn,
-    EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn, RecordsClaimIn, RecordsGetIn,
-    RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut, SessionEmitIn, SignIn,
-    TrustDueIn, TrustSightIn, TrustVerifyIn, UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn,
-    WorkSettleIn, ABSENT, CLAIM_WON, DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND,
+    check_trust_serves, check_trust_sight, check_trust_sight_item, check_trust_state,
+    check_trust_verify, check_unit_nest, check_work_find, check_work_open, check_work_resume,
+    check_work_settle, op, ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots,
+    ItemSpan, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceFn,
+    ServiceHead, ServiceOut, SessionEmitIn, SignIn, TrustDueIn, TrustServesIn, TrustSightIn,
+    TrustSightItemIn, TrustStateIn, TrustVerifyIn, UnitNestIn, WorkFindIn, WorkOpenIn,
+    WorkResumeIn, WorkSettleIn, ABSENT, CLAIM_WON, DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND,
+    TRUST_REACHED, TRUST_UNREACHABLE,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
@@ -162,6 +164,48 @@ impl<'b> Records<'b> {
     #[must_use]
     pub fn last_key(&self) -> Option<&'b [u8]> {
         present(self.bytes, self.spans.last()?.key)
+    }
+}
+
+/// `trust.state`'s answer: the counterparty's `KEY_*` state, and its items, in item order.
+#[derive(Debug, Clone, Copy)]
+pub struct TrustItems<'b> {
+    /// The counterparty's `KEY_*` state.
+    pub state: u64,
+    bytes: &'b [u8],
+    spans: &'b [ItemSpan],
+}
+
+/// One item of [`TrustItems`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrustItem<'b> {
+    /// The item.
+    pub item: &'b str,
+    /// Its state word: `new`, `same`, `drifted`, `quarantined` or `approved`.
+    pub state: &'b str,
+    /// The digest it is approved at; `None` = none.
+    pub approved: Option<&'b str>,
+    /// The digest it was last sighted at; `None` = never.
+    pub seen: Option<&'b str>,
+}
+
+impl<'b> TrustItems<'b> {
+    /// The items, in item order.
+    pub fn items(&self) -> impl Iterator<Item = TrustItem<'b>> + 'b {
+        let bytes = self.bytes;
+        self.spans.iter().filter_map(move |s| {
+            let item = name(bytes, s)?;
+            let value = std::str::from_utf8(present(bytes, s.value)?).ok()?;
+            let mut parts = value.splitn(3, '\0');
+            let (state, approved, seen) = (parts.next()?, parts.next()?, parts.next()?);
+            let some = |s: &'b str| (!s.is_empty()).then_some(s);
+            Some(TrustItem {
+                item,
+                state,
+                approved: some(approved),
+                seen: some(seen),
+            })
+        })
     }
 }
 
@@ -408,10 +452,33 @@ impl Services {
         counterparty: &str,
         catalogue_hash: &str,
     ) -> Pend<u64> {
+        self.sighting(handle, counterparty, catalogue_hash, TRUST_REACHED)
+    }
+
+    /// `trust.sight` with [`TRUST_UNREACHABLE`]: the plane could NOT reach `counterparty` to look.
+    /// Ready: the KERNEL's last `TRUST_*` verdict, nothing changed; the plane fails its call as an
+    /// upstream failure. Never drifts, never clears, never quarantines.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::trust_sight`].
+    pub fn trust_unreachable(&self, handle: CompletionHandle, counterparty: &str) -> Pend<u64> {
+        self.sighting(handle, counterparty, "", TRUST_UNREACHABLE)
+    }
+
+    fn sighting(
+        &self,
+        handle: CompletionHandle,
+        counterparty: &str,
+        catalogue_hash: &str,
+        outcome: u32,
+    ) -> Pend<u64> {
         let input = TrustSightIn {
             head: head::<TrustSightIn>(op::TRUST_SIGHT, handle),
             counterparty: text(counterparty),
             catalogue_hash: text(catalogue_hash),
+            outcome,
+            _outcome_reserved: 0,
         };
         verdict(self.cross(
             op::TRUST_SIGHT,
@@ -419,6 +486,103 @@ impl Services {
             &input,
             check_trust_sight,
         ))
+    }
+
+    /// `trust.sight_item`: report the digest ONE ITEM of `counterparty` is offered at now (the
+    /// plane's live re-fetch); the KERNEL records it. Ready: a `TRUST_*` sighting verdict. Never
+    /// pends.
+    ///
+    /// # Errors
+    ///
+    /// As every service: unserved, declined, or broken.
+    pub fn trust_sight_item(
+        &self,
+        handle: CompletionHandle,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Result<u64, ServiceError> {
+        let input = TrustSightItemIn {
+            head: head::<TrustSightItemIn>(op::TRUST_SIGHT_ITEM, handle),
+            counterparty: text(counterparty),
+            item: text(item),
+            digest: text(digest),
+        };
+        let crossed = self.cross(
+            op::TRUST_SIGHT_ITEM,
+            |t| t.trust_sight_item,
+            &input,
+            check_trust_sight_item,
+        )?;
+        Ok(ready(crossed)?.value)
+    }
+
+    /// `trust.serves`: THE KERNEL'S APPROVE as a query, for a route leg after its live re-fetch:
+    /// whether `counterparty` serves `item` (`None` = as a whole) at `digest` (`None` = its last
+    /// sighting). Ready: `DISTRUST_NONE`, or the `DISTRUST_*` that refuses it (an unknown item
+    /// apart from a known one ungranted). Never pends.
+    ///
+    /// # Errors
+    ///
+    /// As every service: unserved, declined, or broken.
+    pub fn trust_serves(
+        &self,
+        handle: CompletionHandle,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Result<u64, ServiceError> {
+        let input = TrustServesIn {
+            head: head::<TrustServesIn>(op::TRUST_SERVES, handle),
+            counterparty: text(counterparty),
+            item: text(item.unwrap_or("")),
+            digest: text(digest.unwrap_or("")),
+        };
+        let crossed = self.cross(
+            op::TRUST_SERVES,
+            |t| t.trust_serves,
+            &input,
+            check_trust_serves,
+        )?;
+        Ok(ready(crossed)?.value)
+    }
+
+    /// `trust.state`: the KERNEL'S TRUST STATE of `counterparty` and its items, as the core-admin
+    /// `GET /api/v1/admin/trust` lists them, for the plane's own administrative views; written into
+    /// the caller's preallocated `buf` and `spans`. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::Short`] when the buffers are short (re-call once, same handle); otherwise
+    /// as every service: unserved, declined (an undeclared counterparty), or broken.
+    pub fn trust_state<'b>(
+        &self,
+        handle: CompletionHandle,
+        counterparty: &str,
+        buf: &'b mut [u8],
+        spans: &'b mut [ItemSpan],
+    ) -> Result<TrustItems<'b>, ServiceError> {
+        let input = TrustStateIn {
+            head: head::<TrustStateIn>(op::TRUST_STATE, handle),
+            counterparty: text(counterparty),
+            into: bufs(buf, spans),
+        };
+        let crossed = self.cross(
+            op::TRUST_STATE,
+            |t| t.trust_state,
+            &input,
+            check_trust_state,
+        )?;
+        let out = ready(crossed)?;
+        let items = TrustItems {
+            state: out.value,
+            bytes: &buf[..out.len as usize],
+            spans: &spans[..out.items as usize],
+        };
+        if items.items().count() != items.spans.len() {
+            return Err(ServiceError::Broken);
+        }
+        Ok(items)
     }
 
     /// `trust.due`: the counterparties the kernel's `tick` marked for re-verification, written

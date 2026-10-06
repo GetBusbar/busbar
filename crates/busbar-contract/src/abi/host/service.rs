@@ -152,12 +152,18 @@ pub mod op {
     pub const RECORDS_SECRET: u32 = 21;
     /// `disk.append`.
     pub const DISK_APPEND: u32 = 22;
+    /// `trust.sight_item`.
+    pub const TRUST_SIGHT_ITEM: u32 = 23;
+    /// `trust.serves`.
+    pub const TRUST_SERVES: u32 = 24;
+    /// `trust.state`.
+    pub const TRUST_STATE: u32 = 25;
     /// `session.emit`.
-    pub const SESSION_EMIT: u32 = 23;
+    pub const SESSION_EMIT: u32 = 26;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 24;
+pub const SERVICES: u32 = 27;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
 /// an index past the table.
@@ -173,6 +179,9 @@ pub const fn may_pend(service: u32) -> bool {
             | op::RANDOM_FILL
             | op::NEED_ADMIT
             | op::TRUST_VERIFY
+            | op::TRUST_SIGHT_ITEM
+            | op::TRUST_SERVES
+            | op::TRUST_STATE
             | op::SESSION_EMIT
     ) && service < SERVICES
 }
@@ -468,7 +477,9 @@ pub struct WorkResumeIn {
 // ── trust ─────────────────────────────────────────────────────────────────────────────────────
 
 /// [`op::TRUST_SIGHT`]'s `in`: report a counterparty's catalogue hash; the kernel judges it.
-/// `value` = a `TRUST_*` verdict.
+/// `value` = a `TRUST_*` verdict. With [`TRUST_UNREACHABLE`] the plane reports it could not reach
+/// the counterparty to look: the kernel answers its LAST verdict and changes nothing (the hash is
+/// unread and may be empty), and the plane fails its call as an upstream failure.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct TrustSightIn {
@@ -478,7 +489,16 @@ pub struct TrustSightIn {
     pub counterparty: AbiStr,
     /// Its catalogue hash.
     pub catalogue_hash: AbiStr,
+    /// [`TRUST_REACHED`] | [`TRUST_UNREACHABLE`]; any other value is a fault.
+    pub outcome: u32,
+    /// Alignment padding.
+    pub _outcome_reserved: u32,
 }
+
+/// [`TrustSightIn::outcome`]: the plane reached the counterparty and reports what it serves.
+pub const TRUST_REACHED: u32 = 0;
+/// [`TrustSightIn::outcome`]: the plane could not reach the counterparty; nothing is sighted.
+pub const TRUST_UNREACHABLE: u32 = 1;
 
 /// [`op::TRUST_DUE`]'s `in`: the counterparties the kernel's `tick` marked for re-verification,
 /// one span each (key = the counterparty). Never pends.
@@ -499,6 +519,83 @@ pub const TRUST_SAME: u64 = 2;
 pub const TRUST_DRIFTED: u64 = 3;
 /// `trust.sight` verdict: the counterparty is quarantined.
 pub const TRUST_QUARANTINED: u64 = 4;
+
+/// [`op::TRUST_SIGHT_ITEM`]'s `in`: report the digest ONE ITEM of a counterparty (a tool, a skill:
+/// the plane's own per-item trust key) is offered at now, from the plane's live re-fetch; the
+/// kernel records it and answers a `TRUST_*` sighting verdict (`TRUST_NEW` the first sighting,
+/// `TRUST_SAME` the same digest as the last, `TRUST_DRIFTED` another, `TRUST_QUARANTINED` when
+/// the counterparty is). Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TrustSightItemIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The counterparty.
+    pub counterparty: AbiStr,
+    /// The item, opaque to the kernel.
+    pub item: AbiStr,
+    /// Its digest now, opaque to the kernel.
+    pub digest: AbiStr,
+}
+
+/// [`op::TRUST_SERVES`]'s `in`: the KERNEL'S APPROVE as a query (ARCHITECT 2026-10-06: trust is
+/// the kernel's Approve step), for a plane's route leg after its live re-fetch: whether the
+/// counterparty serves `item` at `digest` (absent = the item's last sighting). `value` =
+/// [`DISTRUST_NONE`] (it serves) or the `DISTRUST_*` that refuses it. Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TrustServesIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The counterparty.
+    pub counterparty: AbiStr,
+    /// The item; absent = the counterparty as a whole.
+    pub item: AbiStr,
+    /// The digest it is offered at now; absent = its last sighting.
+    pub digest: AbiStr,
+}
+
+/// THE ONE TRUST VOCABULARY (`trust.serves`'s value, and `abi::plane::RefusalIn::trust`): it serves.
+pub const DISTRUST_NONE: u64 = 0;
+/// The instance declares no such counterparty.
+pub const DISTRUST_UNKNOWN: u64 = 1;
+/// The counterparty was never sighted: nothing is pinned to judge by.
+pub const DISTRUST_UNSIGHTED: u64 = 2;
+/// The counterparty is quarantined: its last sighting drifted from its pin.
+pub const DISTRUST_QUARANTINED: u64 = 3;
+/// The item is known (sighted) and was never approved: a known item ungranted (a 403's case).
+pub const DISTRUST_NOT_APPROVED: u64 = 4;
+/// The item is offered at another digest than the one approved (or at none).
+pub const DISTRUST_CHANGED: u64 = 5;
+/// The item was never sighted at this counterparty: an unknown item (a 404's case).
+pub const DISTRUST_UNKNOWN_ITEM: u64 = 6;
+
+/// [`op::TRUST_STATE`]'s `in`: the KERNEL'S TRUST STATE of one counterparty and its items, as the
+/// core-admin `GET /api/v1/admin/trust` lists it, for a plane's own administrative views. `value` =
+/// the counterparty's `KEY_*` state; one span per item, in item order: key = the item, value =
+/// `<state word>\0<approved digest or empty>\0<last sighted digest or empty>`, the word one of
+/// `new`, `same`, `drifted`, `quarantined`, `approved`. Short-buffer rule. Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TrustStateIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The counterparty.
+    pub counterparty: AbiStr,
+    /// Where the items go.
+    pub into: ServiceBufs,
+}
+
+/// `trust.state`'s value: sighted (or declared) and never approved, or revoked: refused.
+pub const KEY_NEW: u64 = 1;
+/// `trust.state`'s value: approved, and its last sighting is what was approved.
+pub const KEY_SAME: u64 = 2;
+/// `trust.state`'s value: approved, and its last sighting moved from it: refused until re-approved.
+pub const KEY_DRIFTED: u64 = 3;
+/// `trust.state`'s value: quarantined: refused until re-approved (or its pin is seen again).
+pub const KEY_QUARANTINED: u64 = 4;
+/// `trust.state`'s value: approved, and not sighted since.
+pub const KEY_APPROVED: u64 = 5;
 
 /// [`op::TRUST_VERIFY`]'s `in`: verify a document's detached signatures against the root key the
 /// kernel holds for `counterparty` (the operator's out-of-band material its declared pin names).
@@ -857,6 +954,12 @@ pub struct HostSlots {
     pub records_secret: Option<ServiceFn>,
     /// [`op::DISK_APPEND`], in [`DiskAppendIn`].
     pub disk_append: Option<ServiceFn>,
+    /// [`op::TRUST_SIGHT_ITEM`], in [`TrustSightItemIn`]. A tail addition.
+    pub trust_sight_item: Option<ServiceFn>,
+    /// [`op::TRUST_SERVES`], in [`TrustServesIn`]. A tail addition.
+    pub trust_serves: Option<ServiceFn>,
+    /// [`op::TRUST_STATE`], in [`TrustStateIn`]. A tail addition.
+    pub trust_state: Option<ServiceFn>,
     /// [`op::SESSION_EMIT`], in [`SessionEmitIn`].
     pub session_emit: Option<ServiceFn>,
 }
@@ -1241,6 +1344,60 @@ pub fn check_trust_sight(
         &i.head,
         out,
         bare(op::TRUST_SIGHT, (TRUST_NEW, TRUST_QUARANTINED)),
+    )
+}
+
+/// `trust.sight_item`'s answer: a sighting verdict.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_trust_sight_item(
+    i: &TrustSightItemIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    answer(
+        ret,
+        &i.head,
+        out,
+        bare(op::TRUST_SIGHT_ITEM, (TRUST_NEW, TRUST_QUARANTINED)),
+    )
+}
+
+/// `trust.serves`'s answer: [`DISTRUST_NONE`] or a `DISTRUST_*`.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_trust_serves(
+    i: &TrustServesIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    answer(
+        ret,
+        &i.head,
+        out,
+        bare(op::TRUST_SERVES, (DISTRUST_NONE, DISTRUST_UNKNOWN_ITEM)),
+    )
+}
+
+/// `trust.state`'s answer: a `KEY_*` state, and the items into the caller's buffers.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_trust_state(
+    i: &TrustStateIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    answer(
+        ret,
+        &i.head,
+        out,
+        into(op::TRUST_STATE, i.into, (KEY_NEW, KEY_APPROVED)),
     )
 }
 

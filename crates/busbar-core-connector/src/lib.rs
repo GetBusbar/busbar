@@ -43,6 +43,7 @@
 pub mod compose;
 pub mod dtls;
 pub mod endpoint;
+pub mod framed_stream;
 pub mod framer;
 pub mod guard;
 pub mod io;
@@ -532,6 +533,17 @@ impl Connector {
             .expect("transports")
             .serving(transport)
             .is_some()
+    }
+
+    /// The framer entry that answers `scheme`, where a loaded one does: what frames a stream that
+    /// arrived on that claim (ARCHITECT 4l, [`framed_stream`]).
+    #[must_use]
+    pub fn framer_for(&self, scheme: &str) -> Option<Arc<dyn framer::FramerDoor>> {
+        self.transports
+            .read()
+            .expect("transports")
+            .serving(scheme)
+            .map(|s| Arc::clone(&s.entry.door))
     }
 
     /// Record that `owner` declared `need` over `transport` (a scheme the registry view serves), in
@@ -1623,6 +1635,16 @@ impl Conns for Connector {
                         let held =
                             Held::over(Some((line, stream)), None, pooled).bounded(desc.timeout_ms);
                         *held.redial.lock().expect("redial") = Some(redial);
+                        return self.slab.insert(caller, need, held);
+                    }
+                    // The attach wrote the opening and THEN found the line failed (the far end's
+                    // close met in the same drive that flushed it): a byte of the exchange left,
+                    // so it is never re-sent (Q-L18-RETRY). It holds the failed line and its read
+                    // answers the failure, as a failure met at the first read does; the line is
+                    // let go when it closes. Whether the failure is met here or at that read is
+                    // the far end's timing; the verdict is the socket's count either way.
+                    Err((stream, _)) if line.flushed() != redial.mark => {
+                        let held = Held::over(Some((line, stream)), None, pooled);
                         return self.slab.insert(caller, need, held);
                     }
                     // The lent line failed before the exchange left (ARCHITECT ruling

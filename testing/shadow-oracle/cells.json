@@ -55,16 +55,16 @@
     }
   ],
   "counts": {
-    "total": 2506,
+    "total": 2512,
     "by_plane": {
       "a2a": 468,
-      "core": 977,
+      "core": 983,
       "llm": 149,
       "mcp": 912
     },
     "by_family": {
       "a2a": 469,
-      "admin.ops": 323,
+      "admin.ops": 329,
       "admin.plugins": 7,
       "auth.lifecycle": 3,
       "billing": 15,
@@ -8052,6 +8052,38 @@
       "why": "no credential -> 401 envelope"
     },
     {
+      "id": "admin.ops|GetTrust|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/trust",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Read-only new verb, never dual-controlled. Bound in 1.6.0 (ARCHITECT 2026-10-06): lists every trust key of the kernel's trust book (`<instance>/<counterparty>[/"
+    },
+    {
+      "id": "admin.ops|GetTrust|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/trust",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
       "id": "admin.ops|GetUsage|no-usage-after-mutation",
       "plane": "core",
       "family": "admin.ops",
@@ -10892,6 +10924,70 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/admin/tools/{name}/connect",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostTrustApprove|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/trust/approve",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Not irreducible. Bound in 1.6.0 (ARCHITECT 2026-10-06): approves one trust key at what it was last sighted at (body `{\"key\": \"<instance>/<counterparty>[/<item>]"
+    },
+    {
+      "id": "admin.ops|PostTrustApprove|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/trust/approve",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "admin"
+      },
+      "why": "no credential -> 401 envelope"
+    },
+    {
+      "id": "admin.ops|PostTrustRevoke|ok",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/trust/revoke",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "Not irreducible. Bound in 1.6.0 (ARCHITECT 2026-10-06): revokes one trust key (body `{\"key\": \"<instance>/<counterparty>[/<item>]\"}`), idempotent, audited; an un"
+    },
+    {
+      "id": "admin.ops|PostTrustRevoke|unauth",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/trust/revoke",
         "headers": {},
         "body": null,
         "auth": "none",

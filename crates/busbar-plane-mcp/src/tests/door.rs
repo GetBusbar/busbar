@@ -67,6 +67,7 @@ fn the_tails_trust_keys_are_the_grammars() {
             TrustRole::ReverifyTtl => TRUST_REVERIFY_TTL,
             TrustRole::PrivateReach => TRUST_PRIVATE_REACH,
             TrustRole::RecoveryBackoff => panic!("the plane declares no recovery-backoff key"),
+            TrustRole::ItemApprovals => busbar_contract::abi::plane::TRUST_ITEM_APPROVALS,
         };
         assert_eq!(abi.role, role, "{}", decl.key);
         assert_eq!(

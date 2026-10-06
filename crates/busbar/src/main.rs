@@ -1110,6 +1110,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                 units.admin.records = Some(root::units_admin::live_records(std::sync::Arc::clone(
                     &app_handle,
                 )));
+                // ARCHITECT 2026-10-06: the trust verbs read and decide over the kernel's trust
+                // book — the composed services, reached through the late install.
+                let late = std::sync::Arc::clone(&late_services);
+                units.admin.trust = std::sync::Arc::new(move || late.kernel());
                 // The root breaker is the kernel's own: one cell set on the node, read through the
                 // live snapshot so an apply's rebuilt store is the one it observes into.
                 units.breaker = root::adapters::BreakerAdapter::over_kernel(

@@ -427,6 +427,13 @@ pub const ROUTE_ONCE: u8 = 1;
 /// one unit with one line. Unset, the unit's route is one request's.
 pub const ROUTE_SESSION: u8 = 2;
 
+/// [`ArriveOut::route_flags`]: the caller asked for its answer STREAMED (ARCHITECT Q1 ArriveOut,
+/// 2026-10-05). The plane states it, because only the plane reads its dialect's body; the kernel
+/// applies what a stream means to the walk from it: the stream ceiling bounds the whole send rather
+/// than the pool's request timeout, and once a byte of the answer has reached the caller a cut is
+/// not a refund (Part 2 #62). Unset, the answer is the caller's whole or not at all.
+pub const ROUTE_STREAM: u8 = 4;
+
 /// [`OnPieceIn::from`]: the piece is the caller's.
 pub const FROM_CALLER: u32 = 0;
 /// [`OnPieceIn::from`]: the piece is the far end's.
@@ -677,6 +684,8 @@ pub enum RefusalCode {
     ClientGone = 40,
     /// `DeadlineExceeded`.
     DeadlineExceeded = 41,
+    /// `Untrusted`.
+    Untrusted = 42,
 }
 
 impl RefusalCode {
@@ -724,6 +733,7 @@ impl RefusalCode {
         RefusalCode::Superseded,
         RefusalCode::ClientGone,
         RefusalCode::DeadlineExceeded,
+        RefusalCode::Untrusted,
     ];
 
     /// The number on the wire.
@@ -799,6 +809,7 @@ pub const fn wire_code(reason: ReasonCode) -> RefusalCode {
         ReasonCode::Superseded => RefusalCode::Superseded,
         ReasonCode::ClientGone => RefusalCode::ClientGone,
         ReasonCode::DeadlineExceeded => RefusalCode::DeadlineExceeded,
+        ReasonCode::Untrusted => RefusalCode::Untrusted,
     }
 }
 
@@ -853,6 +864,7 @@ pub const fn reason_of(code: u32) -> Option<ReasonCode> {
         RefusalCode::Superseded => ReasonCode::Superseded,
         RefusalCode::ClientGone => ReasonCode::ClientGone,
         RefusalCode::DeadlineExceeded => ReasonCode::DeadlineExceeded,
+        RefusalCode::Untrusted => ReasonCode::Untrusted,
     })
 }
 
@@ -947,6 +959,14 @@ pub const TRUST_RECOVERY_BACKOFF: u32 = 3;
 /// registration's trust anchors beside its pin, and the connector's one guard honours it on every
 /// connection the need opens to that destination. It carries no default and no mechanisms.
 pub const TRUST_PRIVATE_REACH: u32 = 4;
+/// [`TrustKey::role`]: the key holds the registration's CONFIGURED ITEM APPROVALS, a map of item to
+/// an object whose field [`TrustKey::default`] names holds the digest the operator approved the
+/// item at (`{<item>: {<field>: "<digest>"}}`). The kernel seeds the counterparty's approved items
+/// from it at every admit (an edit is the operator's re-approval); an item written with a blank or
+/// absent digest is allowed but approved at none, and is served at none. The core-admin trust verbs
+/// approve and revoke on top of it. It carries no mechanisms and no flags; its `default` is
+/// required.
+pub const TRUST_ITEM_APPROVALS: u32 = 5;
 /// [`TrustKey::flags`], on a [`TRUST_PIN`] key only: the pin object may also carry `fingerprint`.
 pub const PIN_FINGERPRINT: u32 = 1;
 /// [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key
@@ -999,11 +1019,12 @@ pub struct TrustKey {
     /// The key, as written inside one registration.
     pub key: AbiStr,
     /// [`TRUST_PIN`] | [`TRUST_REVERIFY_TTL`] | [`TRUST_RECOVERY_BACKOFF`] |
-    /// [`TRUST_PRIVATE_REACH`].
+    /// [`TRUST_PRIVATE_REACH`] | [`TRUST_ITEM_APPROVALS`].
     pub role: u32,
     /// [`PIN_FINGERPRINT`] on a pin; `0` otherwise.
     pub flags: u32,
-    /// A duration key's value when a registration writes none; absent = zero. A pin has none.
+    /// A duration key's value when a registration writes none; absent = zero. A pin has none. On a
+    /// [`TRUST_ITEM_APPROVALS`] key: the field of each item's object holding its approved digest.
     pub default: AbiStr,
     /// A pin's mechanisms; empty for a duration key.
     pub mechanisms: *const PinMechanism,
@@ -1399,11 +1420,32 @@ pub struct ArriveOut {
     /// [`ROUTE_POOL`] on every
     /// other outcome.
     pub route: u8,
-    /// On READY: `ROUTE_*` flag bits ([`ROUTE_ONCE`], [`ROUTE_SESSION`]); `0` on every other
-    /// outcome. A tail addition, in what was padding.
+    /// On READY: `ROUTE_*` flag bits ([`ROUTE_ONCE`], [`ROUTE_SESSION`], [`ROUTE_STREAM`]); `0`
+    /// on every other outcome. A tail addition, in what was padding.
     pub route_flags: u8,
     /// Alignment padding.
     pub _route_reserved: [u8; 6],
+    /// On READY: the unit's STICKY-ROUTING KEY, opaque to the kernel (ARCHITECT Q1 ArriveOut,
+    /// 2026-10-05): the plane computes it from what only it reads (its dialect's body, its own
+    /// section's settings), and the walk prefers one stable member for every unit stating the same
+    /// key, with no plane or protocol knowledge. Absent (NULL, `0`) = no affinity, and absent on
+    /// every other outcome. Plane memory, valid until the instance's next call. A tail addition.
+    pub affinity: AbiStr,
+    /// On READY: THE TRUST FACTS the unit rests on (ARCHITECT 2026-10-06: trust is the kernel's
+    /// Approve step, and a plane states facts and judges none): the COUNTERPARTY, a name among the
+    /// trust entries the plane's section declares (its trust keys). The kernel's Approve judges it
+    /// against its trust book (declared, sighted, not quarantined) and refuses the unit
+    /// [`RefusalCode::Untrusted`] otherwise. Absent = the unit rests on no counterparty, and nothing
+    /// is judged; absent on every other outcome. Plane memory, valid until the instance's next
+    /// call. A tail addition.
+    pub trust_counterparty: AbiStr,
+    /// With `trust_counterparty`: the ITEM the unit uses there (a tool, a skill: the plane's own
+    /// per-item trust key), opaque to the kernel; the kernel requires it sighted and approved at
+    /// `trust_digest`. Absent = the counterparty as a whole.
+    pub trust_item: AbiStr,
+    /// With `trust_item`: the DIGEST the item is offered at now, as the plane observed it,
+    /// opaque to the kernel. Absent = the item's last sighting (`trust.sight_item`) stands.
+    pub trust_digest: AbiStr,
 }
 
 /// `on_piece`'s `in`.
@@ -1523,8 +1565,16 @@ pub struct OnPieceOut {
     /// `0` = the member's first bound need (a plane with one outbound need never names one). A tail
     /// addition.
     pub need: u32,
+    /// THE PLANE'S BREAKER FAULT READING of a far-end answer (ARCHITECT 2026-10-05): the
+    /// destination's health as the plane reads the answer, in the transport kind's ONE fault
+    /// vocabulary (`abi::transport::FAULT_*`: none, caller, transient, hard), which the breaker
+    /// records against the destination. Separate from [`OnPieceOut::verdict`] (the walk's routing
+    /// reading): an answer the walk retries elsewhere may be the caller's fault, and one it keeps
+    /// may still be the destination's. `FAULT_NONE` = no reading. Laid in the padding after
+    /// `need` (pre-tag v1).
+    pub fault: u8,
     /// Alignment padding.
-    pub _need_reserved: u32,
+    pub _fault_reserved: [u8; 3],
     /// THE UNIT'S LEDGER LANE, in the arena; a zero length = none named. The billing identity the
     /// unit's units are priced, ledgered and metered under, which is not the route entry the walk
     /// picked (a call of one tool on a pooled server is the tool's lane, not the server's). The
@@ -1595,6 +1645,13 @@ pub struct RefusalIn {
     /// With [`REFUSAL_GATE`]: the name of the hook that vetoed the unit, opaque bytes; absent on
     /// every other refusal. A tail addition.
     pub hook: AbiStr,
+    /// With [`RefusalCode::Untrusted`]: why the kernel's Approve did not trust the unit's stated
+    /// facts (`abi::host::service::DISTRUST_*`, the one trust vocabulary, `trust.serves`'s too),
+    /// so the plane renders the words its dialect has for each (an unknown item as not found, a
+    /// known one ungranted as refused); `0` on every other refusal. A tail addition.
+    pub trust: u32,
+    /// Alignment padding.
+    pub _trust_reserved: u32,
 }
 
 /// `refusal`'s `out`.

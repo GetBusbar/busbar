@@ -137,6 +137,28 @@ impl HostServices for Provider {
         Stored::ready(0)
     }
 
+    /// One item `t` approved at `d1`, sighted at `d2`: drifted; the counterparty the same.
+    fn trust_state(&self, c: &Caller, counterparty: &str) -> Stored {
+        self.saw(c, "trust.state", counterparty.as_bytes());
+        let value = b"drifted\0d1\0d2";
+        let mut stored = Stored::ready(svc::KEY_SAME);
+        stored.bytes = [&b"t"[..], value].concat();
+        stored.spans = vec![ItemSpan {
+            key: Span { offset: 0, len: 1 },
+            value: Span {
+                offset: 1,
+                len: value.len() as u32,
+            },
+        }];
+        stored
+    }
+
+    /// The last verdict, never a sighting: `TRUST_SAME`.
+    fn trust_unreached(&self, c: &Caller, counterparty: &str) -> Stored {
+        self.saw(c, "trust.unreached", counterparty.as_bytes());
+        Stored::ready(svc::TRUST_SAME)
+    }
+
     /// Answers the payload's length as the verdict, and the counterparty as the bytes.
     fn trust_verify(&self, c: &Caller, cp: &str, payload: &[u8], sigs: &[u8]) -> Stored {
         self.saw(c, "trust.verify", &[payload, b"|", sigs].concat());
@@ -448,6 +470,9 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.trust_verify,
         HOST_SLOTS.records_secret,
         HOST_SLOTS.disk_append,
+        HOST_SLOTS.trust_sight_item,
+        HOST_SLOTS.trust_serves,
+        HOST_SLOTS.trust_state,
         HOST_SLOTS.session_emit,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
@@ -1443,4 +1468,69 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
     assert_eq!(error(&o), "No such file or directory");
     assert!(svc::check_disk_append(&i, ret, &o).is_ok());
     assert_eq!((w.rotated, w.written), (svc::DISK_ROTATED, 0));
+}
+
+/// `trust.sight` WITH `TRUST_UNREACHABLE` (ARCHITECT 2026-10-06): the plane could not reach the
+/// counterparty; the kernel answers its last verdict and nothing is sighted (the hash is unread,
+/// and may be empty). RED: an outcome the vocabulary does not hold is FAULT, and reaches nothing.
+#[test]
+fn an_unreachable_sighting_reaches_the_last_verdict_and_an_unknown_outcome_is_fault() {
+    let d = double();
+    let sight = |outcome: u32| svc::TrustSightIn {
+        head: head(op::TRUST_SIGHT, TICKET, 0, size_of::<svc::TrustSightIn>()),
+        counterparty: text("peer"),
+        catalogue_hash: text(""),
+        outcome,
+        _outcome_reserved: 0,
+    };
+    let call = |i: &svc::TrustSightIn| {
+        let mut o = blank();
+        let ret = HOST_SLOTS.trust_sight.unwrap()(d.ctx, std::ptr::from_ref(i).cast(), &mut o);
+        (ret, o)
+    };
+    let unreached = sight(svc::TRUST_UNREACHABLE);
+    let (ret, o) = call(&unreached);
+    assert_eq!((ret.outcome(), o.value), (Outcome::Ready, svc::TRUST_SAME));
+    assert!(svc::check_trust_sight(&unreached, ret, &o).is_ok());
+    let (ret, _) = call(&sight(svc::TRUST_UNREACHABLE + 1));
+    assert_eq!(ret.outcome(), Outcome::Fault);
+    let seen = d.route.provider.scoped.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![("double".to_string(), "trust.unreached", b"peer".to_vec())]
+    );
+}
+
+/// `trust.state` OVER THE SDK: the counterparty's state and its items, read through the
+/// caller's buffers under the short-buffer rule (a short buffer is `Short`, the re-call on the same
+/// handle reads the stored answer), and the kernel was asked once.
+#[test]
+fn the_sdk_trust_state_reads_the_kernels_items_under_the_short_buffer_rule() {
+    use busbar_contract::abi::sdk::{ServiceError, TrustItem};
+    let d = double();
+    let s = sdk(&d);
+    let (mut buf, mut spans) = ([0u8; 4], [NO_SPAN; 4]);
+    assert!(matches!(
+        s.trust_state(ticketed(0), "peer", &mut buf, &mut spans),
+        Err(ServiceError::Short { .. })
+    ));
+    let (mut buf, mut spans) = ([0u8; 32], [NO_SPAN; 4]);
+    let state = s
+        .trust_state(ticketed(0), "peer", &mut buf, &mut spans)
+        .expect("the stored answer");
+    assert_eq!(state.state, svc::KEY_SAME);
+    assert_eq!(
+        state.items().collect::<Vec<_>>(),
+        vec![TrustItem {
+            item: "t",
+            state: "drifted",
+            approved: Some("d1"),
+            seen: Some("d2"),
+        }]
+    );
+    let seen = d.route.provider.scoped.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![("double".to_string(), "trust.state", b"peer".to_vec())]
+    );
 }
