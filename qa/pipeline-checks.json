@@ -1,0 +1,14 @@
+{
+  "_comment": "THE CHECKS busbar declares for the release turnstile beyond the `cargo xtask gate` battery (busbar-release-turnstile `pipeline.rs`: a check runs when the rung being entered is in its `rungs`; `run` is one bash line run in the checkout with pipefail; every `<id>\\t<PASS|FAIL|SKIP>\\t<title>\\t<detail>` line it prints is a ledger row). fuzz-smoke: every coverage-guided harness `fuzz/Cargo.toml` declares as a `[[bin]]` is built with libFuzzer's coverage instrumentation on the pinned stable toolchain (the flags cargo-fuzz passes, so no nightly and no cargo-fuzz install) and run for 60 s from an empty corpus; a harness that does not build or crashes is a FAIL row, and a manifest declaring no harness is a FAIL, never a pass that fuzzed nothing (Law 8). The harnesses are a separate workspace, so this is the only place they build. Run at the qa and main rungs, where the removed qa-fuzz.yml ran.",
+  "checks": [
+    {
+      "id": "fuzz-smoke",
+      "rungs": [
+        "qa",
+        "main"
+      ],
+      "run": "host=$(rustc -vV | sed -n 's/^host: //p'); targets=$(awk '/^\\[\\[bin\\]\\]/{b=1;next} b&&/^name *=/{gsub(/^name *= *\"|\"$/,\"\");print;b=0}' fuzz/Cargo.toml); [ -n \"$targets\" ] || { printf 'fuzz-smoke:targets\\tFAIL\\tthe fuzz harnesses\\tfuzz/Cargo.toml declares no [[bin]] target, so this check would fuzz nothing\\n'; exit 1; }; rc=0; for t in $targets; do if RUSTFLAGS='-Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares --cfg fuzzing -Cdebug-assertions -Coverflow-checks' cargo build --release --manifest-path fuzz/Cargo.toml --target-dir fuzz/target --target \"$host\" --bin \"$t\" >&2 && mkdir -p \"fuzz/target/corpus-$t\" && \"fuzz/target/$host/release/$t\" \"fuzz/target/corpus-$t\" -max_total_time=60 >&2; then printf 'fuzz-smoke:%s\\tPASS\\t%s\\t60 s, no crash\\n' \"$t\" \"$t\"; else printf 'fuzz-smoke:%s\\tFAIL\\t%s\\tthe harness did not build, or crashed within 60 s\\n' \"$t\" \"$t\"; rc=1; fi; done; exit $rc",
+      "timeout_secs": 3600
+    }
+  ]
+}

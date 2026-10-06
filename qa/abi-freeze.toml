@@ -11,4 +11,4 @@ lines = "6346"
 
 [[frozen]]
 dir = "crates/busbar-contract/src/abi/cold"
-lines = "2164"
+lines = "1138"
