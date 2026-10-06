@@ -782,3 +782,34 @@ fn the_plain_subject_config_names_its_store() {
     assert_eq!(doc["store"]["module"].as_str(), Some("memory"));
     assert_eq!(doc["listen"].as_str(), Some("127.0.0.1:41000"));
 }
+
+/// The oidf rig builds the dropped-in oidc plugin over ITS OWN REPO's workspace (the pinned git
+/// checkout), never `cargo build -p` in this one, where the plugin is a dev-only edge and cargo's
+/// feature resolver panics. The workspace is the nearest manifest above the crate that declares
+/// `[workspace]`, so a two-crate fleet repo resolves to its root, not to the plugin crate.
+#[test]
+fn the_oidc_plugin_is_built_over_its_own_repo_workspace() {
+    let d = std::env::temp_dir().join(format!("xtask-ws-above-{}", std::process::id()));
+    let crate_dir = d.join("auth-oidc-plugin");
+    std::fs::create_dir_all(&crate_dir).unwrap();
+    std::fs::write(
+        d.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"auth-oidc-plugin\"]\n",
+    )
+    .unwrap();
+    std::fs::write(crate_dir.join("Cargo.toml"), "[package]\nname = \"p\"\n").unwrap();
+    assert_eq!(
+        xtask::conformance_record::workspace_above(&crate_dir.join("Cargo.toml")),
+        Some(d.join("Cargo.toml"))
+    );
+    // A crate with no workspace above it within the tree resolves to nothing rather than to itself.
+    let lone = d.join("lone");
+    std::fs::create_dir_all(&lone).unwrap();
+    std::fs::remove_file(d.join("Cargo.toml")).unwrap();
+    std::fs::write(lone.join("Cargo.toml"), "[package]\nname = \"l\"\n").unwrap();
+    assert!(
+        xtask::conformance_record::workspace_above(&lone.join("Cargo.toml"))
+            .is_none_or(|m| !m.starts_with(&d))
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
