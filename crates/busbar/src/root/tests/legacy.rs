@@ -154,7 +154,8 @@ const MANIFEST: &str = include_str!("../../../Cargo.toml");
 const REGISTRY: &str = include_str!("../../../../../plugins.yaml");
 const HEADER: &str = "[package.metadata.busbar.legacy]";
 const NOTE: &str = "# THE ROOT LEGACY TABLE (BUSBAR-1.6.0.md §2), @generated from plugins.yaml (`legacy:` and each\n\
-# entry's `retired:`); src/root/tests/legacy.rs is red on an edit and prints the render to paste.\n\
+# entry's `retired:` and `former_names:`); src/root/tests/legacy.rs is red on an edit and prints the\n\
+# render to paste.\n\
 # build.rs emits it as `LEGACY_ROWS`, which the root hands to the kernel before any config is read.\n";
 
 fn text(v: &serde_yaml::Value, k: &str) -> Option<String> {
@@ -163,7 +164,9 @@ fn text(v: &serde_yaml::Value, k: &str) -> Option<String> {
 
 /// The table's rows, in order: the `legacy:` block's frozen 1.5.5 text, sorted by key; then, per
 /// entry in registry order with a `retired:` list, one `retired.<kind>.<word> = "<alias>"` row per
-/// word and the entry's `manifest.<alias>` / `asset.<alias>` rows (each defaulting to the repo).
+/// word and the entry's `manifest.<alias>` / `asset.<alias>` rows (each defaulting to the repo); and,
+/// per entry with a `former_names:` list, one `former.<alias> = "<name> …"` row (space-separated),
+/// which a linked row of the plugin answers by.
 fn rows(registry: &str) -> Vec<(String, String)> {
     let doc: serde_yaml::Value = serde_yaml::from_str(registry).expect("plugins.yaml parses");
     let mut out: Vec<(String, String)> = doc["legacy"]
@@ -182,6 +185,18 @@ fn rows(registry: &str) -> Vec<(String, String)> {
         .unwrap_or_default();
     out.sort();
     for p in doc["plugins"].as_sequence().expect("`plugins:`") {
+        let former: Vec<&str> = p["former_names"]
+            .as_sequence()
+            .map(|s| {
+                s.iter()
+                    .map(|w| w.as_str().expect("a `former_names:` word is a string"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !former.is_empty() {
+            let alias = text(p, "alias").expect("`alias`");
+            out.push((format!("former.{alias}"), former.join(" ")));
+        }
         let Some(retired) = p["retired"].as_sequence() else {
             continue;
         };
@@ -293,8 +308,51 @@ fn retired_words_render_as_rows_of_their_kind_and_alias() {
     );
 }
 
-/// Every frozen `legacy:` row of plugins.yaml cites the v1.5.5 line it is verbatim from (a
-/// `# … v1.5.5:crates/…` comment above it), and every row parsed.
+/// A plugin's `former_names:` become one `former.<alias>` row, space-separated, whether or not it has
+/// `retired:` words; a plugin with none adds no row. RED arm: a former name added to plugins.yaml
+/// without its row is drift.
+#[test]
+fn former_names_render_as_one_row_of_the_alias() {
+    let registry = "plugins:\n  - repo: busbar-hook-alpha\n    kind: hook\n    alias: alpha\n    \
+                    former_names: [busbar-alpha, alpha-hook]\n  - repo: busbar-secret-beta\n    kind: secret\n    alias: beta\n";
+    let row = |k: &str, v: &str| (k.to_string(), v.to_string());
+    assert_eq!(
+        rows(registry),
+        vec![row("former.alpha", "busbar-alpha alpha-hook")]
+    );
+    let added = REGISTRY.replacen(
+        "former_names: [busbar-webrequest]",
+        "former_names: [busbar-webrequest, planted-name]",
+        1,
+    );
+    assert_ne!(added, REGISTRY, "the planted name landed");
+    let reason = drift(MANIFEST, &added).expect("an unrendered former name is drift");
+    assert!(
+        reason.contains("\"former.webrequest\" = \"busbar-webrequest planted-name\""),
+        "{reason}"
+    );
+}
+
+/// The root's table answers a linked plugin's former names by its alias
+/// (`busbar_kernel::config::legacy::former_names`), from the committed plugins.yaml.
+#[test]
+fn a_linked_plugin_reads_its_former_names_by_its_alias() {
+    install();
+    assert_eq!(
+        busbar_kernel::config::legacy::former_names("webrequest"),
+        ["busbar-webrequest"]
+    );
+    assert_eq!(
+        busbar_kernel::config::legacy::former_names("postgres"),
+        ["busbar-store-postgres-plugin"]
+    );
+    assert!(busbar_kernel::config::legacy::former_names("env").is_empty());
+}
+
+/// Every frozen `legacy:` row of plugins.yaml cites the v1.5.5 source it is verbatim from (a
+/// `# … v1.5.5:crates/…` comment above it, or, for a 1.5.5 MANIFEST NAME, the published release
+/// tarball it was read off: `# GetBusbar/<repo> release v<x.y.z>: <asset> manifest.json name`), and
+/// every row parsed.
 #[test]
 fn every_legacy_row_cites_v1_5_5() {
     let block: Vec<&str> = REGISTRY
@@ -307,7 +365,10 @@ fn every_legacy_row_cites_v1_5_5() {
     for line in block {
         let t = line.trim();
         if t.starts_with('#') {
-            cited |= t.contains("v1.5.5:crates/");
+            cited |= t.contains("v1.5.5:crates/")
+                || (t.starts_with("# GetBusbar/busbar-")
+                    && t.contains(" release v")
+                    && t.ends_with("manifest.json name"));
             continue;
         }
         if t.is_empty() {

@@ -225,7 +225,16 @@ fn linked_rows() -> Vec<LinkedPlugin> {
     let rows = stores.iter().map(store);
     let auths = busbar_kernel_identity::operator::linked().iter();
     rows.chain(auths.map(|&(name, door)| LinkedPlugin::auth_door(name, door)))
+        .map(answering_former_names)
         .collect()
+}
+
+/// `row`, answering also to the former names the root legacy table declares for its alias
+/// (`former.<alias>`, from plugins.yaml `former_names:`): a linked plugin answers the names its
+/// earlier releases carried exactly as its dropped-in copy's signed manifest does.
+pub fn answering_former_names(row: LinkedPlugin) -> LinkedPlugin {
+    let former = config::legacy::former_names(&row.manifest.alias);
+    row.with_former_names(former)
 }
 
 /// The hook axis over this build's LINKED rows alone (no plugins directory): where a pool strategy

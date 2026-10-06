@@ -697,6 +697,7 @@ pub(crate) fn plugin_manifest(
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     }
 }
 

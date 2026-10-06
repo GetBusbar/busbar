@@ -769,9 +769,9 @@ impl HookRows {
             let Some(stated) = p.manifest.stated_rendering().map_err(named)? else {
                 return Err(named(JSON_HOOK_REFUSED.to_string()));
             };
-            let c = Candidate::from_rendering(
+            let c = Candidate::from_manifest(
                 stated,
-                Some(&p.manifest.alias),
+                &p.manifest,
                 Origin::Dropped {
                     file: p.file.clone(),
                     bytes: Arc::new(p.lib_bytes.clone()),
@@ -783,9 +783,34 @@ impl HookRows {
             }
             candidates.push(c);
         }
+        crate::boot::one_owner(&candidates)?;
         let mut rows = Self::of(candidates, dispatcher);
         rows.first_party = first_party;
         Ok(rows)
+    }
+
+    /// Each LINKED row answering also to the former names `former_of` gives for any of its words
+    /// (its name or an alias): the names its earlier releases' manifests carried, which a dropped-in
+    /// copy states in its signed manifest (compiled in = dropped in). A row that would then claim a
+    /// word another plugin answers to is refused, as [`Self::new`] refuses it.
+    ///
+    /// # Errors
+    /// The contested word and the two plugins that claim it.
+    pub fn with_former_names(
+        mut self,
+        former_of: impl Fn(&str) -> Vec<String>,
+    ) -> Result<Self, String> {
+        for c in &mut self.candidates {
+            if matches!(c.origin, Origin::Linked(_)) {
+                let words: Vec<String> = std::iter::once(c.name.clone())
+                    .chain(c.aliases.iter().cloned())
+                    .flat_map(|w| former_of(&w))
+                    .collect();
+                *c = c.clone().answering(words);
+            }
+        }
+        crate::boot::one_owner(&self.candidates)?;
+        Ok(self)
     }
 
     /// The rows `candidates` state (each a `kind: hook` candidate, a linked one ahead of a

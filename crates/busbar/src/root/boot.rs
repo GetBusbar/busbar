@@ -57,7 +57,7 @@ pub fn registry(
     )?;
     // The dropped-in secret plugins that state a door join the secret axis (the root's, over the
     // one dispatcher); a 1.5.x one with no door stays on the cold lane (M6).
-    super::linked::secret_rows().set_dropped(discovered(&registry, |kind| kind == "secret")?);
+    super::linked::secret_rows().admit_dropped(discovered(&registry, |kind| kind == "secret")?)?;
     Ok(registry)
 }
 
@@ -226,7 +226,7 @@ fn discovered(
             bytes: Arc::new(row.lib_bytes.clone()),
         };
         out.push(
-            Candidate::from_rendering(stated, Some(&row.manifest.alias), origin)
+            Candidate::from_manifest(stated, &row.manifest, origin)
                 .map_err(|e| format!("plugin '{}': {e}", row.manifest.name))?,
         );
     }

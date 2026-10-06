@@ -193,7 +193,7 @@ pub struct Candidate {
     /// Its name.
     pub name: String,
     /// The other names config may give it: its Statement's alias rewrites and, for a dropped
-    /// plugin, its manifest's alias.
+    /// plugin, its manifest's alias and former names.
     pub aliases: Vec<String>,
     /// The reference keys that name it (its sugar rewrites).
     pub sugar: Vec<String>,
@@ -253,6 +253,40 @@ impl Candidate {
         })
     }
 
+    /// The candidate a DROPPED-IN plugin's signed manifest states: its Statement rendering, its
+    /// manifest alias and each of its former names ([`crate::sign::Manifest::former_names`]), so
+    /// config reaches it by every name the registry resolves it by.
+    ///
+    /// # Errors
+    ///
+    /// As [`Candidate::from_rendering`].
+    pub fn from_manifest(
+        stated: Vec<u8>,
+        manifest: &crate::sign::Manifest,
+        origin: Origin,
+    ) -> Result<Self, String> {
+        Self::from_rendering(stated, Some(&manifest.alias), origin)
+            .map(|c| c.answering(&manifest.former_names))
+    }
+
+    /// This candidate, answering also to each of `names` it does not already answer to (a plugin's
+    /// former names: what config written for its earlier releases calls it).
+    #[must_use]
+    pub fn answering<S: AsRef<str>>(mut self, names: impl IntoIterator<Item = S>) -> Self {
+        for word in names {
+            let word = word.as_ref();
+            if !self.answers(word) {
+                self.aliases.push(word.to_string());
+            }
+        }
+        self
+    }
+
+    /// Every word config may name this candidate by: its name, then its aliases.
+    fn words(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.name.as_str()).chain(self.aliases.iter().map(String::as_str))
+    }
+
     /// A compiled-in row's candidate: its row's rendering.
     ///
     /// # Errors
@@ -267,6 +301,32 @@ impl Candidate {
     fn answers(&self, word: &str) -> bool {
         self.name == word || self.aliases.iter().any(|a| a == word)
     }
+}
+
+/// THE ONE-OWNER RULE over an axis's candidates (linked and dropped in alike): two DIFFERENT
+/// plugins (different names) that answer one word — a name, an alias, a former name — are refused,
+/// naming both and the word, so no reference resolves ambiguously. Two candidates of the SAME
+/// plugin (a linked row and its dropped-in copy) are not a conflict: the linked row answers ahead.
+///
+/// # Errors
+///
+/// The first contested word, with the two plugins that claim it.
+pub fn one_owner(candidates: &[Candidate]) -> Result<(), String> {
+    for (i, a) in candidates.iter().enumerate() {
+        for b in &candidates[i + 1..] {
+            if a.name == b.name {
+                continue;
+            }
+            if let Some(word) = a.words().find(|w| b.answers(w)) {
+                return Err(format!(
+                    "plugin claim conflict: '{word}' is claimed by both '{}' and '{}' - a name, \
+                     alias or former name must resolve to one plugin; remove one",
+                    a.name, b.name
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ── SELECT: the plugins the configuration uses ──────────────────────────────────────────────────

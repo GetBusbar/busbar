@@ -300,6 +300,51 @@ impl SecretRows {
         Ok(self)
     }
 
+    /// Each LINKED row answering also to the former names `former_of` gives for any of its words
+    /// (its name or an alias), as a dropped-in copy states them in its signed manifest (compiled in
+    /// = dropped in).
+    ///
+    /// # Errors
+    /// A linked row that would then claim a word another linked plugin answers to, naming both.
+    pub fn with_former_names(
+        &mut self,
+        former_of: impl Fn(&str) -> Vec<String>,
+    ) -> Result<&mut Self, String> {
+        for c in &mut self.linked {
+            let words: Vec<String> = std::iter::once(c.name.clone())
+                .chain(c.aliases.iter().cloned())
+                .flat_map(|w| former_of(&w))
+                .collect();
+            *c = c.clone().answering(words);
+        }
+        crate::boot::one_owner(&self.linked)?;
+        Ok(self)
+    }
+
+    /// [`Self::set_dropped`], refused when a dropped-in secret plugin and another plugin (linked or
+    /// dropped in) answer one word but are different plugins ([`crate::boot::one_owner`]).
+    ///
+    /// # Errors
+    /// The contested word and the two plugins that claim it; the last set stays.
+    pub fn admit_dropped(
+        &self,
+        candidates: impl IntoIterator<Item = Candidate>,
+    ) -> Result<(), String> {
+        let secrets: Vec<Candidate> = candidates
+            .into_iter()
+            .filter(|c| c.kind == KindCode::Secret)
+            .collect();
+        let all: Vec<Candidate> = self
+            .linked
+            .iter()
+            .cloned()
+            .chain(secrets.iter().cloned())
+            .collect();
+        crate::boot::one_owner(&all)?;
+        self.set_dropped(secrets);
+        Ok(())
+    }
+
     /// The DROPPED-IN secret plugins: every secret-kind candidate among `candidates` (the registry's
     /// discovered rows), replacing the last set.
     pub fn set_dropped(&self, candidates: impl IntoIterator<Item = Candidate>) {

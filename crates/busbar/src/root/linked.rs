@@ -252,6 +252,7 @@ pub fn linked_exports(
             host: None,
             declares,
             statement: None,
+            former_names: Vec::new(),
         })
     };
     let doors = doors.iter().map(|d| {
@@ -262,7 +263,10 @@ pub fn linked_exports(
         manifest(name, alias, declares)
             .map(|m| crate::root::loader::LinkedPlugin::boundary(m, entry))
     });
-    doors.chain(cold).collect()
+    doors
+        .chain(cold)
+        .map(|row| row.map(busbar_kernel::preflight::answering_former_names))
+        .collect()
 }
 
 /// What the composition root wires for one of its own unit modules — the kernel-loop half of a plane
@@ -391,6 +395,7 @@ pub fn link_secrets(
         rows.link(*door)
             .map_err(|e| format!("a linked secret plugin does not state itself: {e}"))?;
     }
+    rows.with_former_names(busbar_kernel::config::legacy::former_names)?;
     Ok(SECRETS.get_or_init(|| rows))
 }
 

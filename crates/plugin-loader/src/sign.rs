@@ -199,9 +199,35 @@ pub struct Manifest {
     /// manifest packed before it keeps its canonical bytes and its signature.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub statement: Option<String>,
+    /// The FORMER NAMES the plugin answers to beside `name` and `alias`: the manifest names its
+    /// earlier releases carried (a 1.5.5 config names `busbar-webrequest`, the 1.6.0 plugin is
+    /// `busbar-hook-webrequest`), so a configuration written for those releases loads unchanged.
+    /// Each is a reference the registry resolves exactly as it resolves the alias, and each is held
+    /// to the alias's rules (lowercase `[a-z0-9-]+`) and to phase 3's collision checks. SIGNED like
+    /// every field; `busbar-plugin-pack --former-name` (repeatable) writes it from plugins.yaml's
+    /// `former_names:`. Absent on every manifest packed before it existed, and skipped when empty,
+    /// so their canonical bytes, and therefore their signatures, are unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub former_names: Vec<String>,
 }
 
 impl Manifest {
+    /// The names config may reference this plugin by beside its canonical `name`: the alias, then
+    /// each former name ([`Manifest::former_names`]).
+    pub fn config_names(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.alias.as_str()).chain(self.former_names.iter().map(String::as_str))
+    }
+
+    /// Every identifier this plugin claims: its canonical `name`, then [`Manifest::config_names`].
+    pub fn identities(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.name.as_str()).chain(self.config_names())
+    }
+
+    /// Whether config naming `word` names this plugin: its name, its alias or a former name.
+    pub fn answers_to(&self, word: &str) -> bool {
+        self.identities().any(|n| n == word)
+    }
+
     /// The Statement rendering this manifest states ([`Manifest::statement`], hex-decoded); `None`
     /// when it states none.
     ///
@@ -806,8 +832,8 @@ pub fn validate_structure(
 }
 
 /// The STATEMENT half of [`validate_structure`] — everything a manifest says about the plugin rather
-/// than about the artifact file (`sha256` is the file's): name, alias, kind, version, publisher,
-/// host. A plugin linked into the build has no artifact, and states exactly this; the registry's
+/// than about the artifact file (`sha256` is the file's): name, alias, former names, kind, version,
+/// publisher, host. A plugin linked into the build has no artifact, and states exactly this; the registry's
 /// linked door runs it, then [`validate_abi`], so a linked row passes the same structural gate a
 /// dropped-in one does.
 pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String> {
@@ -822,6 +848,18 @@ pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String
             "manifest alias '{}' is not a valid plugin alias (lowercase [a-z0-9-]+)",
             m.alias
         ));
+    }
+    for (i, former) in m.former_names.iter().enumerate() {
+        if !valid_name(former) {
+            return Err(format!(
+                "manifest former name '{former}' is not a valid plugin name (lowercase [a-z0-9-]+)"
+            ));
+        }
+        if *former == m.name || *former == m.alias || m.former_names[..i].contains(former) {
+            return Err(format!(
+                "manifest former name '{former}' repeats another name of the plugin"
+            ));
+        }
     }
     if !KNOWN_KINDS.contains(&m.kind.as_str()) {
         return Err(format!(
