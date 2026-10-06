@@ -658,6 +658,10 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
     let scheme = door.facts().claims[0];
     let plain = socket_framer_door().expect("a carrier door is built beside the test");
     let raw = plain.facts().claims[0];
+    // The framer rides the connector's ADDRESS carrier (the first carrier serving a port): the test
+    // carrier over the process's host I/O, served first. The neutral door's claim stays a raw stream.
+    let layer: std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> =
+        std::sync::Arc::new(support::TestDoor::identity("test-carrier"));
     let judge = |dest: &str, _: u32, _: Judged| {
         Some(dest.parse::<std::net::SocketAddr>().map_err(|_| 1_u64))
     };
@@ -665,6 +669,10 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
         Transports::new(vec![
             Entry {
                 door,
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: layer,
                 alpn: Vec::new(),
             },
             Entry {

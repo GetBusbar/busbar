@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOST'S I/O TABLE, `io.*` (`BUSBAR-1.6.0.md` THE DESIGN §5, the connections section: "No
+//! THE HOST'S I/O TABLE, `io.*` (`BUSBAR-1.6.0.md` THE DESIGN, the connections section: "No
 //! plugin opens a socket, dials, binds or does TLS"; TRANSPORT-STACK (2): a CARRIER writes "with
 //! readiness via core `io.*`"): the kind-neutral primitives a carrier moves bytes with, over OS
 //! handles the HOST owns. One table, [`IoSlots`], handed in [`HostTables::io`].
@@ -16,8 +16,8 @@
 //!   host makes a non-blocking stream and starts its connect, and answers its handle at once. The
 //!   connect settles under [`op::READY`] for [`DIR_WRITE`] (FAILED with the system's text when the
 //!   far end refused). The host opens only an address it ADMITTED for the dial that asked (the
-//!   connector's one destination guard, THE DESIGN §5): any other is REFUSED, before any system
-//!   call.
+//!   connector's one destination guard, THE DESIGN's connections section): any other is REFUSED,
+//!   before any system call.
 //! * [`op::LISTEN`] binds a listener on `ip:port` and writes the address bound.
 //! * [`op::ACCEPT`] takes the next connection off a listener and writes its far end's address.
 //! * [`op::READ`] / [`op::WRITE`] move bytes; `len` `0` from a READ is the clean end.
