@@ -76,7 +76,6 @@ fn the_state_is_derived_from_the_approval_and_the_last_sighting() {
     let good =
         seen(json!([{ "name": "read", "description": "reads a file", "inputSchema": schema() }]));
     assert_eq!(state(&Approval::of(&def), &good), State::Approved);
-    assert_eq!(refused_as(&def, &good, "read"), None);
     let pulled = seen(json!([
         { "name": "read", "description": "reads a file", "inputSchema": { "type": "object" } },
         { "name": "extra" }
@@ -87,15 +86,10 @@ fn the_state_is_derived_from_the_approval_and_the_last_sighting() {
         (d.changed, d.added, d.removed),
         (vec!["read".to_string()], vec!["extra".to_string()], vec![])
     );
-    assert_eq!(refused_as(&def, &pulled, "read"), Some("quarantined"));
     let failed = Sighting::Failed("down".to_string());
     assert_eq!(state(&Approval::of(&def), &failed), State::Error);
     let unpinned = def_unpinned();
     assert_eq!(state(&Approval::of(&unpinned), &good), State::Pending);
-    assert_eq!(
-        refused_as(&unpinned, &Sighting::Never, "read"),
-        Some("pending")
-    );
 }
 
 fn def_unpinned() -> McpServerDefCfg {

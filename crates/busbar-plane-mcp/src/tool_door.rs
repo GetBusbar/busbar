@@ -1387,10 +1387,68 @@ fn verify_on_call(
             unit.verified = Some(sighting);
             return Looked::Pending;
         }
+        // EACH TOOL'S SIGHTING (ARCHITECT Q3): the digest the live list offers it at, under the
+        // registration and the tool's trust key (its `tools_allow` name), recorded by the kernel; a tool the list no longer
+        // offers has nothing to sight, and the catalogue's own drift is the server's sighting above.
+        for entry in held.catalogue.tools_of(server) {
+            let Some(digest) = obs.capabilities.get(&entry.tool) else {
+                continue;
+            };
+            let handle = CompletionHandle {
+                ticket,
+                seq: unit.issued,
+                _reserved: 0,
+            };
+            unit.issued += 1;
+            // Never pends; an unserved book leaves the item unsighted, which `trust.serves` refuses.
+            let _ = services.trust_sight_item(handle, server, &entry.tool, digest);
+        }
     }
     plane.sightings.insert(server.to_string(), sighting);
     plane.checked.insert(server.to_string(), now_ms);
     Looked::Fresh
+}
+
+/// THE KERNEL'S APPROVE ON ONE TOOL, as the route leg asks it (ARCHITECT Q3; the kernel loop's
+/// Approve step): `trust.serves` over the tool's registration (the counterparty) and its trust key
+/// (the tool as `tools_allow` names it, the upstream's own spelling), at its last sighting. The door
+/// judges nothing: the one fact it renders on its own is that its last re-fetch of the server
+/// failed, which leaves nothing sighted to judge. A host that answers no trust service serves
+/// nothing (fail closed).
+fn trust_of(
+    plane: &McpDoor,
+    ticket: Ticket,
+    issued: &mut u32,
+    entry: &crate::catalogue::ToolEntry,
+) -> crate::call::Trust {
+    use crate::call::Trust;
+    if let Some(crate::trust::Sighting::Failed(reason)) = plane.sightings.get(&entry.server) {
+        return Trust::Unverified(reason);
+    }
+    let Some(services) = plane.services else {
+        return Trust::Unverified("the host lends this door no trust book".to_string());
+    };
+    let handle = CompletionHandle {
+        ticket,
+        seq: *issued,
+        _reserved: 0,
+    };
+    *issued += 1;
+    match services.trust_serves(handle, &entry.server, Some(&entry.tool), None) {
+        Ok(code) => Trust::Verdict(code),
+        Err(_) => Trust::Unverified("the kernel's trust book did not answer".to_string()),
+    }
+}
+
+/// Whether a verdict hides a tool from a listing: its server is quarantined, or the tool is offered
+/// at another digest than the one approved (the rug-pull). A tool waiting on the operator stays
+/// listed, so the caller can see what exists.
+fn hides(trust: &crate::call::Trust) -> bool {
+    use busbar_contract::abi::host::service::{DISTRUST_CHANGED, DISTRUST_QUARANTINED};
+    matches!(
+        trust,
+        crate::call::Trust::Verdict(DISTRUST_QUARANTINED | DISTRUST_CHANGED)
+    )
 }
 
 fn answer_body(
@@ -1518,6 +1576,41 @@ fn answer_body(
             }
         }
     }
+    // THE KERNEL'S APPROVE, asked on the route leg after the re-fetch (ARCHITECT Q3): the called
+    // tool's verdict, and on a listing every granted tool's, each its own `trust.serves`.
+    let verdict = named_tool.as_ref().and_then(|_| {
+        let entry = params
+            .as_ref()
+            .and_then(|p| p.get("name"))
+            .and_then(Value::as_str)
+            .and_then(|name| held.catalogue.tool(name))?;
+        Some((
+            entry.namespaced.clone(),
+            trust_of(plane, ticket, &mut unit.issued, entry),
+        ))
+    });
+    let listing = matches!(&disposition, Disposition::Request { row, .. }
+        if row.op == crate::tool_ops::OP_TOOLS_LIST);
+    let mut hidden = std::collections::BTreeSet::new();
+    if listing {
+        let entitled = |kind: &str, name: &str| {
+            unit.entitled
+                .get(&format!("{kind}:{name}"))
+                .copied()
+                .unwrap_or(false)
+        };
+        let listed: Vec<crate::catalogue::ToolEntry> = held
+            .catalogue
+            .tools_for(&entitled)
+            .into_iter()
+            .cloned()
+            .collect();
+        for entry in &listed {
+            if hides(&trust_of(plane, ticket, &mut unit.issued, entry)) {
+                hidden.insert(entry.namespaced.clone());
+            }
+        }
+    }
     let mut seal = services.map(|services| DoorSeal {
         services,
         ticket,
@@ -1557,10 +1650,10 @@ fn answer_body(
                 seal.as_mut(),
             )
         };
-        let refused_as = |entry: &crate::catalogue::ToolEntry| {
-            let def = held.section.servers.get(&entry.server)?;
-            let last = plane.sightings.get(&entry.server).unwrap_or_default();
-            crate::trust::refused_as(def, &last, &entry.tool)
+        let mut trust = |entry: &crate::catalogue::ToolEntry| match &verdict {
+            Some((item, trust)) if *item == entry.namespaced => trust.clone(),
+            // The catalogue resolved another entry than the one asked about: nothing serves it.
+            _ => crate::call::Trust::Verdict(busbar_contract::abi::host::service::DISTRUST_UNKNOWN),
         };
         let admission = crate::call::admit_trusted(
             &held.catalogue,
@@ -1568,7 +1661,7 @@ fn answer_body(
             params.as_ref(),
             &header,
             &admit,
-            &refused_as,
+            &mut trust,
             &|entry: &crate::catalogue::ToolEntry| {
                 held.section
                     .servers
@@ -1719,20 +1812,13 @@ fn answer_body(
             }
         });
     }
-    // A tool whose live sighting is quarantined is hidden from the listing.
-    let quarantined = |entry: &crate::catalogue::ToolEntry| {
-        held.section.servers.get(&entry.server).is_some_and(|def| {
-            let last = plane.sightings.get(&entry.server).unwrap_or_default();
-            matches!(last, crate::trust::Sighting::Seen(_))
-                && crate::trust::refused_as(def, &last, &entry.tool) == Some("quarantined")
-        })
-    };
+    // A tool the kernel's verdict hides ([`hides`]) is gone from the listing.
     let answer = crate::answer::answer(
         &disposition,
         params.as_ref(),
         &held.catalogue,
         &admit,
-        quarantined,
+        |entry: &crate::catalogue::ToolEntry| hidden.contains(&entry.namespaced),
     );
     // Busbar's ask of its caller for a prompt is audited (asked, or its answer refused).
     let mut audit = None;

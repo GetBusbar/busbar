@@ -120,13 +120,13 @@ pub fn completion(id: &Value) -> Vec<u8> {
 }
 
 /// ANSWER ONE ARRIVAL from what the plane holds. `params` is the request body's `params`;
-/// `quarantined` is the live trust verdict for a listed tool.
+/// `hidden` is the kernel's trust verdict for a listed tool: `true` hides it.
 pub fn answer(
     disposition: &Disposition,
     params: Option<&Value>,
     catalogue: &Catalogue,
     admit: &impl Fn(&str, &str) -> bool,
-    quarantined: impl Fn(&crate::catalogue::ToolEntry) -> bool,
+    hidden: impl Fn(&crate::catalogue::ToolEntry) -> bool,
 ) -> Answer {
     match disposition {
         Disposition::Refused(refusal) => Answer::refused(refusal),
@@ -137,7 +137,7 @@ pub fn answer(
         Disposition::Request { row, id, .. } => {
             let op = row.op;
             if op == OP_TOOLS_LIST {
-                Answer::ok(catalogue.tools_list(id, admit, quarantined))
+                Answer::ok(catalogue.tools_list(id, admit, hidden))
             } else if op == OP_PROMPTS_LIST {
                 Answer::ok(catalogue.prompts_list(id, admit))
             } else if op == OP_RESOURCES_LIST {

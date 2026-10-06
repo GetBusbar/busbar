@@ -2009,6 +2009,24 @@ mod both_ways {
         ) -> busbar_plugin_loader::dispatch::Ran {
             busbar_plugin_loader::dispatch::Ran::Now(Stored::refused(UNSERVED))
         }
+        /// The kernel's Approve as this section's approvals seed it: `read_file` approved at its
+        /// digest, `draft` allowed and pending (ARCHITECT Q3: the door renders the verdict).
+        fn trust_serves(
+            &self,
+            _: &Caller,
+            counterparty: &str,
+            item: Option<&str>,
+            _: Option<&str>,
+        ) -> Stored {
+            use busbar_contract::abi::host::service::{
+                DISTRUST_NONE, DISTRUST_NOT_APPROVED, DISTRUST_UNKNOWN_ITEM,
+            };
+            Stored::ready(match (counterparty, item) {
+                ("fs", Some("read_file")) => DISTRUST_NONE,
+                ("fs", Some("draft")) => DISTRUST_NOT_APPROVED,
+                _ => DISTRUST_UNKNOWN_ITEM,
+            })
+        }
         fn trust_due(&self, _: &Caller) -> Stored {
             Stored::refused(UNSERVED)
         }

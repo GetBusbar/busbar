@@ -383,25 +383,6 @@ pub fn health_view(name: &str, def: &McpServerDefCfg, sighting: &Sighting) -> St
     serde_json::to_string(&view).unwrap_or_default()
 }
 
-/// THE DISPATCH GATE'S QUESTION about one tool of a registration under its last sighting: `None`
-/// when it serves, else the state word it is refused as. A server that is not approved serves
-/// nothing; an approved one serves a tool only at its approved digest (the live one when sighted).
-#[must_use]
-pub fn refused_as(def: &McpServerDefCfg, sighting: &Sighting, tool: &str) -> Option<&'static str> {
-    let approval = Approval::of(def);
-    let derived = state(&approval, sighting);
-    if derived != State::Approved {
-        return Some(derived.word());
-    }
-    match sighting {
-        Sighting::Seen(obs) => {
-            let approved = approval.capabilities.get(tool)?;
-            (obs.capabilities.get(tool) != Some(approved)).then_some(State::Quarantined.word())
-        }
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 #[path = "tests/trust_tests.rs"]
 mod tests;

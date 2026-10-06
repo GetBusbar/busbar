@@ -337,6 +337,12 @@ impl Catalogue {
             .find(|t| t.server == server && t.tool == bare)
     }
 
+    /// Every tool registration `server` publishes, whoever asks, in published-name order: the items
+    /// a live re-fetch of that server sights on the kernel's trust book.
+    pub fn tools_of<'a>(&'a self, server: &'a str) -> impl Iterator<Item = &'a ToolEntry> + 'a {
+        self.tools.values().filter(move |t| t.server == server)
+    }
+
     /// The tools this caller may see, in published-name order.
     pub fn tools_for(&self, admit: &impl Fn(&str, &str) -> bool) -> Vec<&ToolEntry> {
         self.tools
@@ -431,17 +437,17 @@ impl Catalogue {
         }
     }
 
-    /// `tools/list`: the caller's tools, minus any whose live sighting is quarantined.
+    /// `tools/list`: the caller's tools, minus any the kernel's trust verdict hides (`hidden`).
     pub fn tools_list(
         &self,
         id: &Value,
         admit: &impl Fn(&str, &str) -> bool,
-        quarantined: impl Fn(&ToolEntry) -> bool,
+        hidden: impl Fn(&ToolEntry) -> bool,
     ) -> Vec<u8> {
         let tools: Vec<Value> = self
             .tools_for(admit)
             .into_iter()
-            .filter(|t| !quarantined(t))
+            .filter(|t| !hidden(t))
             .map(ToolEntry::render)
             .collect();
         complete(id, cache_hints(json!({ "tools": tools })))

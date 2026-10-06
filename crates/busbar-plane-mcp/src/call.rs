@@ -33,6 +33,10 @@ use crate::identity::{ServerId, ToolKey};
 use crate::jsonrpc::RESULT_TYPE_COMPLETE;
 use crate::tool_arrival::Refusal;
 use crate::tools_config::{McpServerDefCfg, TaskSupport, DEFAULT_MAX_INPUT_REQUIRED_ROUNDS};
+use busbar_contract::abi::host::service::{
+    DISTRUST_CHANGED, DISTRUST_NONE, DISTRUST_NOT_APPROVED, DISTRUST_QUARANTINED,
+    DISTRUST_UNKNOWN_ITEM, DISTRUST_UNSIGHTED,
+};
 use busbar_contract::vocab;
 
 /// The audit reason of a call whose arguments the argument guard refused.
@@ -406,16 +410,107 @@ pub fn admit_call(
         params,
         header,
         admit,
-        &|_| None,
+        &mut |_| Trust::Verdict(DISTRUST_NONE),
         &|_| false,
         ask,
     )
 }
 
-/// [`admit`], with THE TRUST GATE: `refused_as` answers, for the named tool, the trust state it is
-/// refused as (`crate::trust::refused_as` over its registration's last sighting), or `None` when it
-/// serves. Judged after the name, the grants and the approved digest, before the ask: a server that
-/// is not approved serves nothing, and a refused dispatch never reaches the wire.
+/// THE KERNEL'S TRUST VERDICT ON ONE TOOL, as the door read it on the route leg after its live
+/// re-fetch (ARCHITECT Q3: route, re-fetch and sight, the kernel's Approve, serve). The door states
+/// facts and judges none: the verdict is `trust.serves`'s, and the only answer the door renders on
+/// its own is the fact that its re-fetch failed, which leaves nothing to sight.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Trust {
+    /// `trust.serves`'s answer for the tool's registration and trust key: [`DISTRUST_NONE`] (it
+    /// serves) or the `DISTRUST_*` that refuses it.
+    Verdict(u64),
+    /// The live re-fetch failed, with the operator-visible reason: nothing was sighted.
+    Unverified(String),
+}
+
+/// The refusal reason of a tool whose server the kernel quarantined.
+pub const REASON_QUARANTINED: &str = "quarantined";
+/// The refusal reason of a tool the operator has not approved.
+pub const REASON_NOT_APPROVED: &str = "not_approved";
+/// The refusal reason of a tool whose server was never verified.
+pub const REASON_UNVERIFIED: &str = "pending";
+/// The refusal reason of a tool whose server's live re-fetch failed.
+pub const REASON_VERIFY_FAILED: &str = "error";
+/// The refusal reason of a tool the server does not offer (the catalogue's own word).
+pub const REASON_UNKNOWN_TOOL: &str = "unknown_tool";
+
+/// THE KERNEL'S VERDICT RENDERED in this dialect's words: `None` when it serves. An item the kernel
+/// never sighted is not found (`404`, as a name the catalogue does not carry); one it knows and the
+/// operator has not granted, and every other distrust, is refused (`403`).
+fn trust_refusal(
+    id: &Value,
+    name: &str,
+    entry: &ToolEntry,
+    trust: Trust,
+) -> Option<(Refusal, CallLine)> {
+    let server = &entry.server;
+    let refused = |message: String, reason: &str| {
+        (
+            catalogue_refusal(STATUS_FORBIDDEN, id, message, reason),
+            CallLine::resolved(entry, vocab::OUTCOME_REFUSED, reason),
+        )
+    };
+    let code = match trust {
+        Trust::Verdict(code) => code,
+        Trust::Unverified(reason) => {
+            return Some(refused(
+                format!(
+                    "MCP server `{server}` could not be verified ({reason}), so it serves nothing"
+                ),
+                REASON_VERIFY_FAILED,
+            ))
+        }
+    };
+    Some(match code {
+        DISTRUST_NONE => return None,
+        DISTRUST_UNKNOWN_ITEM => (
+            catalogue_refusal(STATUS_NOT_FOUND, id, not_exposed(name), REASON_UNKNOWN_TOOL),
+            CallLine::asked(name, REASON_UNKNOWN_TOOL),
+        ),
+        DISTRUST_NOT_APPROVED => (
+            catalogue_refusal(
+                STATUS_FORBIDDEN,
+                id,
+                format!("`{name}` is registered but has not been approved, so it does not serve"),
+                REASON_NOT_APPROVED,
+            ),
+            CallLine::asked(name, REASON_NOT_APPROVED),
+        ),
+        DISTRUST_CHANGED => refused(
+            format!(
+                "`{name}` is offered at another digest than the one approved, so it does not \
+                 serve; review its change and approve it again"
+            ),
+            vocab::REASON_ARTIFACT_DRIFTED,
+        ),
+        DISTRUST_QUARANTINED => refused(
+            format!(
+                "MCP server `{server}` is quarantined, so it serves nothing; review its changes \
+                 and approve it again"
+            ),
+            REASON_QUARANTINED,
+        ),
+        DISTRUST_UNSIGHTED => refused(
+            format!("MCP server `{server}` has not been verified yet, so it serves nothing"),
+            REASON_UNVERIFIED,
+        ),
+        _ => refused(
+            format!("MCP server `{server}` is not one this door may trust, so it serves nothing"),
+            vocab::REASON_NOT_SERVING,
+        ),
+    })
+}
+
+/// [`admit`], with THE KERNEL'S TRUST VERDICT: `trust` answers, for the named tool, what the
+/// kernel's Approve said of it ([`Trust`], `trust.serves` over the tool's registration and trust
+/// key after the door's re-fetch sighted it), rendered by [`trust_refusal`]. Asked after the name
+/// and the grants, before the header mirror and the ask: a refused dispatch never reaches the wire.
 ///
 /// THE ARGUMENT GUARD ([`crate::argguard`]) judges the arguments that go out (the caller's, with
 /// the operator-bounded answers merged) against the tool's approved input schema, under the
@@ -428,7 +523,7 @@ pub fn admit_trusted(
     params: Option<&Value>,
     header: &impl Fn(&str) -> Option<String>,
     admit: &impl Fn(&str, &str) -> bool,
-    refused_as: &dyn Fn(&ToolEntry) -> Option<&'static str>,
+    trust: &mut dyn FnMut(&ToolEntry) -> Trust,
     allow_private: &dyn Fn(&ToolEntry) -> bool,
     ask: &mut dyn FnMut(&ToolEntry, &Value) -> crate::ask::AskDecision,
 ) -> Admission {
@@ -469,8 +564,8 @@ pub fn admit_trusted(
     let sent_digest = crate::ask::digest_arguments(&arguments);
     let Some(entry) = catalogue.tool(name) else {
         return Admission::Refused(
-            catalogue_refusal(STATUS_NOT_FOUND, id, not_exposed(name), "unknown_tool"),
-            Some(CallLine::asked(name, "unknown_tool")),
+            catalogue_refusal(STATUS_NOT_FOUND, id, not_exposed(name), REASON_UNKNOWN_TOOL),
+            Some(CallLine::asked(name, REASON_UNKNOWN_TOOL)),
         );
     };
     if !granted(admit, &entry.server, &entry.namespaced) {
@@ -484,38 +579,10 @@ pub fn admit_trusted(
             Some(CallLine::asked(name, vocab::REASON_NOT_GRANTED)),
         );
     }
-    // PENDING DOES NOT SERVE: a tool no digest was approved for is refused before it is sent. The
-    // trust comparison proper (the approved digest against the live sighting, the pin) is the
-    // kernel's; the approved digest is this section's own, so its absence is judged here
-    // (QUESTIONS FOLD-MCP-2-1).
-    let Some(_approved) = &entry.schema_hash else {
-        return Admission::Refused(
-            catalogue_refusal(
-                STATUS_FORBIDDEN,
-                id,
-                format!(
-                    "`{name}` is registered but no schema hash has been approved for it, so it is \
-                     pending and does not serve"
-                ),
-                "not_approved",
-            ),
-            Some(CallLine::asked(name, "not_approved")),
-        );
-    };
-    if let Some(state) = refused_as(entry) {
-        return Admission::Refused(
-            catalogue_refusal(
-                STATUS_FORBIDDEN,
-                id,
-                format!(
-                    "MCP server `{}` is {state}, so it serves nothing; work its changes queue and \
-                     re-approve it",
-                    entry.server
-                ),
-                state,
-            ),
-            Some(CallLine::resolved(entry, vocab::OUTCOME_REFUSED, state)),
-        );
+    // THE KERNEL'S APPROVE, as the route leg asks it: the door states the tool's registration and
+    // trust key, and renders the verdict (ARCHITECT Q3).
+    if let Some((refusal, line)) = trust_refusal(id, name, entry, trust(entry)) {
+        return Admission::Refused(refusal, Some(line));
     }
 
     let line = |reason: &str| Some(CallLine::resolved(entry, vocab::OUTCOME_REFUSED, reason));
