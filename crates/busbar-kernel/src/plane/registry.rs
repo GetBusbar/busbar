@@ -858,6 +858,31 @@ pub type OpenapiSchemasHook = fn(
 #[cfg(not(feature = "openapi-schema"))]
 pub type OpenapiSchemasHook = fn(std::convert::Infallible);
 
+/// THE SCHEMAS HOOK OF THE DOOR PLANE AT `I` (ARCHITECT Q2): the `components.schemas` its admin
+/// OpenAPI blob states ([`crate::plane::door::stated_schemas`]), inserted into the generator's
+/// definitions as written. `None` in a build that generates no document.
+#[cfg(feature = "openapi-schema")]
+pub(crate) const fn stated_schemas_hook<const I: usize>() -> Option<OpenapiSchemasHook> {
+    Some(stated_schemas::<I>)
+}
+
+/// See the `openapi-schema` twin: no document is generated in this build.
+#[cfg(not(feature = "openapi-schema"))]
+pub(crate) const fn stated_schemas_hook<const I: usize>() -> Option<OpenapiSchemasHook> {
+    None
+}
+
+#[cfg(feature = "openapi-schema")]
+fn stated_schemas<const I: usize>(
+    schema_gen: &mut schemars::SchemaGenerator,
+    _req_gen: &mut schemars::SchemaGenerator,
+    _paths: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    if let Some(schemas) = crate::plane::door::stated_schemas::<I>() {
+        schema_gen.definitions_mut().extend(schemas);
+    }
+}
+
 impl std::ops::Deref for PlaneDecl {
     type Target = PlaneDeclaration;
     fn deref(&self) -> &PlaneDeclaration {

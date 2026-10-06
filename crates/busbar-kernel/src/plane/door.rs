@@ -724,7 +724,7 @@ fn openapi_blob<const I: usize>() -> serde_json::Map<String, serde_json::Value> 
 }
 
 /// The door's stated admin OpenAPI fragment, its paths keyed under the admin mount (its
-/// `components` key is no path; [`openapi_schemas`] inserts it).
+/// `components` key is no path; [`stated_schemas`] reads it).
 fn openapi<const I: usize>() -> serde_json::Value {
     serde_json::Value::Object(
         openapi_blob::<I>()
@@ -735,21 +735,18 @@ fn openapi<const I: usize>() -> serde_json::Value {
     )
 }
 
-/// The door's stated `components.schemas`, inserted into the admin document's
-/// `#/components/schemas` as written: the bodies its paths' `$ref`s name (the paths already carry
-/// those `$ref`s, as [`openapi`] keyed them).
-#[cfg(feature = "openapi-schema")]
-fn openapi_schemas<const I: usize>(
-    schema_gen: &mut schemars::SchemaGenerator,
-    _req_gen: &mut schemars::SchemaGenerator,
-    _paths: &mut serde_json::Map<String, serde_json::Value>,
-) {
-    let mut blob = openapi_blob::<I>();
-    let schemas = blob
+/// The door's stated `components.schemas`: the bodies its paths' `$ref`s name (the paths already
+/// carry those `$ref`s, as [`openapi`] keyed them). The admin document's generator inserts them
+/// ([`crate::plane::registry::stated_schemas_hook`]); a build that generates no document reads none.
+#[allow(dead_code)] // read only by the document generator's hook, which a non-generating build omits
+pub(crate) fn stated_schemas<const I: usize>() -> Option<serde_json::Map<String, serde_json::Value>>
+{
+    match openapi_blob::<I>()
         .remove(OPENAPI_COMPONENTS)
-        .and_then(|c| c.get("schemas").cloned());
-    if let Some(serde_json::Value::Object(schemas)) = schemas {
-        schema_gen.definitions_mut().extend(schemas);
+        .and_then(|c| c.get("schemas").cloned())
+    {
+        Some(serde_json::Value::Object(schemas)) => Some(schemas),
+        _ => None,
     }
 }
 
@@ -843,8 +840,7 @@ struct HookRow {
     default_section: fn() -> Box<dyn PlaneCfg>,
     admin_routes: fn(&dyn std::any::Any) -> Vec<crate::admin_verbs::AdminRouteSpec>,
     openapi: fn() -> serde_json::Value,
-    #[cfg(feature = "openapi-schema")]
-    openapi_schemas: crate::plane::registry::OpenapiSchemasHook,
+    openapi_schemas: Option<crate::plane::registry::OpenapiSchemasHook>,
     #[allow(clippy::type_complexity)]
     parse_endpoint:
         fn(&serde_yaml::Value) -> Result<Box<dyn crate::plane::config::PlaneEndpointCfg>, String>,
@@ -872,8 +868,7 @@ impl HookRow {
             lower_endpoint: lower_endpoint::<I>,
             admin_routes: admin_routes::<I>,
             openapi: openapi::<I>,
-            #[cfg(feature = "openapi-schema")]
-            openapi_schemas: openapi_schemas::<I>,
+            openapi_schemas: crate::plane::registry::stated_schemas_hook::<I>(),
         }
     }
 
@@ -895,10 +890,7 @@ impl HookRow {
             named_def_get: named.then_some(self.named_def_get),
             registry_contains: named.then_some(self.registry_contains),
             reresolve_gates: Some(self.reresolve_gates),
-            #[cfg(feature = "openapi-schema")]
-            openapi_schemas: admin.then_some(self.openapi_schemas),
-            #[cfg(not(feature = "openapi-schema"))]
-            openapi_schemas: None,
+            openapi_schemas: self.openapi_schemas.filter(|_| admin),
             on_swap: None,
             parse_section: Some(self.parse_section),
             parse_endpoint: owns.then_some(self.parse_endpoint),
