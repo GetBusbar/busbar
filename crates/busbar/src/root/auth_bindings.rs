@@ -1,23 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The three seams the authenticate unit is handed and cannot own.
+//! The two seams the authenticate unit is handed and cannot own.
 //!
 //! `busbar-unit-auth` depends on the capability crate and on nothing else — its own manifest states
 //! the rule and gives the reason: a unit that could name the kernel could reach past its token, and
 //! a unit that could name a transport would grow a second opinion about what a credential is. The
-//! price of that rule is that three things the chain genuinely needs arrive as traits the caller
+//! price of that rule is that two things the chain genuinely needs arrive as traits the caller
 //! implements:
 //!
-//! 1. **The credential digest.** The cache stores a digest of a credential and never the credential,
-//!    and the digest has to be the same one the rest of the node uses or two components disagree
-//!    about what one credential is.
-//! 2. **The key verifier.** The built-in signed-key arm resolves a whole enforced key, which is a
+//! 1. **The key verifier.** The built-in signed-key arm resolves a whole enforced key, which is a
 //!    thing the boxed-module answer type has no shape for. Resolving it means reading a signature, an
 //!    expiry, a denylist and a rotation generation — four facts that live with the governance state.
-//! 3. **The revocation set.** The gate that applies to a NEW unit, over the same denylist.
+//! 2. **The revocation set.** The gate that applies to a NEW unit, over the same denylist.
 //!
-//! This module is where the root holds all three, because the root is the only thing that sees both
+//! This module is where the root holds both, because the root is the only thing that sees both
 //! the unit and the state the answers come from.
 //!
 //! ## Why there is a port in the middle
@@ -36,19 +33,7 @@
 //! [`AuthBindings::without_directory`] is a real posture and not a placeholder: a node that resolves
 //! no busbar-minted keys has no verifier to bind, and the chain's own answer for that is already the
 //! right one — the signed-key arm denies, because a signed key cannot be verified without a verifier.
-//!
-//! ## Why no credential cache is bound here
-//!
-//! The node has one credential cache an operator can flush: the kernel's, on the app, which the
-//! admin cache-flush endpoint reaches. A second cache built here would be a second answer to "has
-//! this credential been seen" that no flush reaches — an operator who revoked a credential and
-//! flushed would leave this one serving the verdict the flush was meant to kill, for up to the
-//! module's cache lifetime. So the bindings hand the chain NO cache: every module is consulted on
-//! every unit, which is what the one chain installed here (the operator token, which declares
-//! itself uncacheable) already required, and what any later cacheable module gets until the chain
-//! is handed the node's one flushable cache.
 
-use busbar_kernel_identity::cache::CredentialCache;
 use busbar_kernel_identity::chain::{KeyVerifier, ResolvedKey, RevocationView};
 use std::sync::Arc;
 
@@ -133,9 +118,7 @@ impl RevocationView for DirectoryArm {
 
 /// Everything the authenticate step is handed beside the request itself.
 ///
-/// Built at boot and borrowed by every unit that authenticates. It carries NO credential cache:
-/// the node's one cache is the kernel's, which the admin flush reaches, and a second one here would
-/// keep serving a verdict that flush was meant to kill (see the module doc).
+/// Built at boot and borrowed by every unit that authenticates.
 pub struct AuthBindings {
     directory: Option<DirectoryArm>,
 }
@@ -158,13 +141,6 @@ impl AuthBindings {
     #[must_use]
     pub fn without_directory() -> Self {
         AuthBindings { directory: None }
-    }
-
-    /// The credential cache, as the unit takes it: none. The node's one flushable cache is the
-    /// kernel's, and a cache held here would be one the admin flush cannot reach.
-    #[must_use]
-    pub fn cache(&self) -> Option<&CredentialCache> {
-        None
     }
 
     /// The signed-key verifier, when a directory was bound.

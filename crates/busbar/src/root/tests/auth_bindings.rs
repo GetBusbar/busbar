@@ -3,7 +3,6 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_kernel_identity::module::AuthOutcome;
 use std::sync::Mutex;
 
 /// A directory a test can state the whole truth of in four lines.
@@ -43,67 +42,6 @@ fn a_directory() -> Arc<Directory> {
         revoked: vec!["vk_gone".to_string()],
         asked: Mutex::new(Vec::new()),
     })
-}
-
-/// NO SECOND CREDENTIAL CACHE (item 249): the bindings hand the chain none, so a verdict the
-/// operator's flush was meant to kill is never served from a cache the flush cannot reach.
-///
-/// The root used to build its own cache here, a port of the kernel's, while the admin flush
-/// endpoint reaches only the kernel's. Driven through the chain with a CACHEABLE module that
-/// identifies a credential and is then told the credential is revoked: with a cache held here the
-/// second run answered the first verdict out of it; with none, the module is asked again and its
-/// refusal stands.
-#[test]
-fn a_revoked_credential_is_never_answered_from_a_cache_no_flush_reaches() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    struct Revocable(Arc<AtomicBool>);
-    impl busbar_kernel_identity::module::AuthModule for Revocable {
-        fn name(&self) -> &'static str {
-            "revocable"
-        }
-        fn authenticate(&self, candidate: Option<&str>) -> AuthOutcome {
-            match candidate {
-                Some(_) if self.0.load(Ordering::SeqCst) => AuthOutcome::Reject,
-                Some(id) => {
-                    AuthOutcome::Identify(busbar_kernel_identity::principal::Principal::from_id(id))
-                }
-                None => AuthOutcome::Pass,
-            }
-        }
-        fn cacheable(&self) -> bool {
-            true
-        }
-    }
-
-    for bindings in [
-        AuthBindings::without_directory(),
-        AuthBindings::new(a_directory() as Arc<dyn VirtualKeyDirectory>),
-    ] {
-        assert!(
-            bindings.cache().is_none(),
-            "the bindings hold a credential cache the admin flush cannot reach"
-        );
-        let revoked = Arc::new(AtomicBool::new(false));
-        let chain = busbar_kernel_identity::AuthChain::new(
-            vec![busbar_kernel_identity::chain::ChainEntry {
-                provider: "revocable".to_string(),
-                module: Box::new(Revocable(Arc::clone(&revoked))),
-            }],
-            false,
-        );
-        let first = chain.run_chain_cached(Some("vk_live"), bindings.cache(), None, 10, None);
-        assert!(matches!(
-            first,
-            busbar_kernel_identity::chain::ChainVerdict::Identified { .. }
-        ));
-        revoked.store(true, Ordering::SeqCst);
-        let second = chain.run_chain_cached(Some("vk_live"), bindings.cache(), None, 11, None);
-        assert!(
-            matches!(second, busbar_kernel_identity::chain::ChainVerdict::Denied),
-            "the revoked credential was answered out of a cache: {second:?}"
-        );
-    }
 }
 
 /// The verifier the root binds resolves through the directory and hands back the unit's own
@@ -147,7 +85,6 @@ fn the_revocation_view_reads_the_same_directory() {
 #[test]
 fn an_unbound_node_binds_no_authority() {
     let bindings = AuthBindings::without_directory();
-    assert!(bindings.cache().is_none());
     assert!(bindings.keys().is_none());
     assert!(bindings.revocations().is_none());
 }

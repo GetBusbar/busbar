@@ -89,7 +89,7 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 busbar-contract = { path = "../busbar-contract" }
 # The seven kernel workflow crates (#36).
-busbar-kernel-identity = { path = "../busbar-kernel-identity", features = ["sha256"] }
+busbar-kernel-identity = { path = "../busbar-kernel-identity" }
 busbar-kernel-scope = { path = "../busbar-kernel-scope" }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }

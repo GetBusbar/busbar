@@ -5,7 +5,6 @@
 
 use busbar_contract::caps::{Authenticate, Authenticated, Pass, ReasonCode, Refusal, SeatVerdict};
 
-use crate::cache::CredentialCache;
 use crate::chain::{AuthChain, ChainVerdict, KeyVerifier, RevocationView};
 use crate::challenge::Challenge;
 use crate::principal::Principal;
@@ -67,7 +66,6 @@ impl Auth {
     pub fn resolve(
         &self,
         req: &AuthRequest<'_>,
-        cache: Option<&CredentialCache>,
         keys: Option<&dyn KeyVerifier>,
         revocations: Option<&dyn RevocationView>,
         pending: Option<Challenge>,
@@ -95,9 +93,9 @@ impl Auth {
         }
 
         // 3. The chain.
-        let verdict =
-            self.chain
-                .run_chain_cached(req.candidate, cache, keys, req.now, req.expected_aud);
+        let verdict = self
+            .chain
+            .run_chain_cached(req.candidate, keys, req.now, req.expected_aud);
 
         // 4. Revocation gates NEW units only, and only an identification. A revocation is a
         //    statement about a credential the chain resolved to somebody; applied to whatever

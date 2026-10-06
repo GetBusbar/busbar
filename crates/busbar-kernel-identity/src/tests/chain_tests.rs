@@ -3,8 +3,7 @@
 
 //! The chain walk: order, the open door, the fail-closed all-pass, and the keys arm.
 
-use super::{entry, Canned, DefaultCacheability, OneKey};
-use crate::cache::CredentialCache;
+use super::{entry, Canned, OneKey};
 use crate::chain::{AuthChain, ChainVerdict, ResolvedKey};
 use crate::module::AuthOutcome;
 use crate::principal::Principal;
@@ -148,7 +147,7 @@ fn test_keys_arm_runs_after_every_module_and_identifies() {
         )],
         true,
     );
-    match c.run_chain_cached(Some("vk-token"), None, Some(&verifier), 1000, None) {
+    match c.run_chain_cached(Some("vk-token"), Some(&verifier), 1000, None) {
         ChainVerdict::Identified {
             module,
             principal,
@@ -171,14 +170,13 @@ fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     };
     let c = chain(Vec::new(), true);
     assert_eq!(
-        c.run_chain_cached(Some("vk-token"), None, Some(&verifier), 1000, None),
+        c.run_chain_cached(Some("vk-token"), Some(&verifier), 1000, None),
         ChainVerdict::Denied,
         "a token carrying an audience is inadmissible where none is expected"
     );
     assert!(matches!(
         c.run_chain_cached(
             Some("vk-token"),
-            None,
             Some(&verifier),
             1000,
             Some("https://resource.example/")
@@ -195,7 +193,7 @@ fn test_governance_rejects_empty_token_even_if_a_verifier_exists() {
     };
     let c = chain(Vec::new(), true);
     assert_eq!(
-        c.run_chain_cached(Some(""), None, Some(&verifier), 1000, None),
+        c.run_chain_cached(Some(""), Some(&verifier), 1000, None),
         ChainVerdict::Denied,
         "an empty credential is no credential"
     );
@@ -205,81 +203,8 @@ fn test_governance_rejects_empty_token_even_if_a_verifier_exists() {
 fn test_keys_arm_with_no_verifier_denies() {
     let c = chain(Vec::new(), true);
     assert_eq!(
-        c.run_chain_cached(Some("vk-token"), None, None, 1000, None),
+        c.run_chain_cached(Some("vk-token"), None, 1000, None),
         ChainVerdict::Denied
-    );
-}
-
-#[test]
-fn test_1_5_2_keys_arm_is_cache_exempt() {
-    let cache = CredentialCache::new(super::test_digest);
-    let verifier = OneKey {
-        token: "vk-token",
-        aud: None,
-    };
-    let c = chain(Vec::new(), true);
-    for _ in 0..3 {
-        assert!(matches!(
-            c.run_chain_cached(Some("vk-token"), Some(&cache), Some(&verifier), 1000, None),
-            ChainVerdict::Identified { .. }
-        ));
-    }
-    assert!(
-        cache.is_empty(),
-        "the keys arm must never read or write the credential cache"
-    );
-}
-
-/// A boxed module's buffered `Pass` is real re-verification work already paid for. The rule that
-/// commits it on the chain's `Identified` return does not care which member produced that
-/// return — the keys arm identifying counts exactly the same as a boxed module identifying, so the
-/// earlier module's buffered verdict must land in the cache and be re-used on the next request
-/// instead of being re-verified for no reason.
-#[test]
-fn test_pending_pass_is_committed_when_the_keys_arm_identifies() {
-    let cache = CredentialCache::new(super::test_digest);
-    let verifier = OneKey {
-        token: "vk-token",
-        aud: None,
-    };
-    let passer = Canned::cacheable("passer", AuthOutcome::Pass);
-    let calls = passer.calls.clone();
-    let c = chain(vec![entry("passer", Box::new(passer))], true);
-
-    assert!(matches!(
-        c.run_chain_cached(Some("vk-token"), Some(&cache), Some(&verifier), 1000, None),
-        ChainVerdict::Identified { .. }
-    ));
-    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
-    assert!(
-        !cache.is_empty(),
-        "the buffered Pass must be committed once the chain identifies, keys arm included"
-    );
-
-    assert!(matches!(
-        c.run_chain_cached(Some("vk-token"), Some(&cache), Some(&verifier), 1000, None),
-        ChainVerdict::Identified { .. }
-    ));
-    assert_eq!(
-        calls.load(std::sync::atomic::Ordering::Relaxed),
-        1,
-        "the second run hits the cached Pass rather than re-verifying the module"
-    );
-}
-
-#[test]
-fn test_cacheable_defaults_to_false() {
-    let cache = CredentialCache::new(super::test_digest);
-    let c = chain(vec![entry("dflt", Box::new(DefaultCacheability))], false);
-    for _ in 0..3 {
-        assert!(matches!(
-            c.run_chain_cached(Some("cred"), Some(&cache), None, 1000, None),
-            ChainVerdict::Identified { .. }
-        ));
-    }
-    assert!(
-        cache.is_empty(),
-        "a module that never declares itself cacheable is re-verified every request"
     );
 }
 
@@ -372,7 +297,7 @@ fn keys_arm_verify_token_order_matches_pb_92_on_full_success() {
     let verifier = OrderRecordingVerifier::new(None);
     let c = chain(Vec::new(), true);
     assert!(matches!(
-        c.run_chain_cached(Some("tok"), None, Some(&verifier), 1000, None),
+        c.run_chain_cached(Some("tok"), Some(&verifier), 1000, None),
         ChainVerdict::Identified { .. }
     ));
     assert_eq!(
@@ -393,7 +318,7 @@ fn keys_arm_verify_token_short_circuits_at_the_failing_step() {
         let verifier = OrderRecordingVerifier::new(Some(fail_at));
         let c = chain(Vec::new(), true);
         assert_eq!(
-            c.run_chain_cached(Some("tok"), None, Some(&verifier), 1000, None),
+            c.run_chain_cached(Some("tok"), Some(&verifier), 1000, None),
             ChainVerdict::Denied,
             "a failure at {fail_at} denies"
         );
@@ -425,12 +350,12 @@ fn revocation_gates_new_units_only() {
     );
     // A new unit is gated.
     assert_eq!(
-        c.run_chain_for_new_unit(Some("cred"), None, None, 1000, None, Some(&AllRevoked)),
+        c.run_chain_for_new_unit(Some("cred"), None, 1000, None, Some(&AllRevoked)),
         ChainVerdict::Denied
     );
     // The same walk without the gate — the in-flight unit's path — still identifies.
     assert!(matches!(
-        c.run_chain_cached(Some("cred"), None, None, 1000, None),
+        c.run_chain_cached(Some("cred"), None, 1000, None),
         ChainVerdict::Identified { .. }
     ));
 }
@@ -453,14 +378,13 @@ fn an_open_door_is_not_revoked_by_a_colliding_string() {
     // The open front door: no boxed modules and no keys arm.
     let c = chain(Vec::new(), false);
     assert_eq!(
-        c.run_chain_cached(Some("some-header-value"), None, None, 1000, None),
+        c.run_chain_cached(Some("some-header-value"), None, 1000, None),
         ChainVerdict::Open,
         "the fixture must really be the open door, or the assertion below proves nothing"
     );
     assert_eq!(
         c.run_chain_for_new_unit(
             Some("some-header-value"),
-            None,
             None,
             1000,
             None,
@@ -493,7 +417,7 @@ fn revocation_is_asked_only_where_the_chain_identified() {
     );
     let asked = CountingRevocations(std::sync::atomic::AtomicUsize::new(0));
     assert_eq!(
-        denying.run_chain_for_new_unit(Some("cred"), None, None, 1000, None, Some(&asked)),
+        denying.run_chain_for_new_unit(Some("cred"), None, 1000, None, Some(&asked)),
         ChainVerdict::Denied
     );
     assert_eq!(
@@ -516,7 +440,7 @@ fn revocation_is_asked_only_where_the_chain_identified() {
     );
     let asked = CountingRevocations(std::sync::atomic::AtomicUsize::new(0));
     assert_eq!(
-        identifying.run_chain_for_new_unit(Some("cred"), None, None, 1000, None, Some(&asked)),
+        identifying.run_chain_for_new_unit(Some("cred"), None, 1000, None, Some(&asked)),
         ChainVerdict::Denied,
         "an identified credential on the revocation list is still withdrawn"
     );

@@ -814,7 +814,6 @@ dependencies = [
  "hex",
  "ring",
  "serde",
- "sha2",
  "tracing",
 ]
 
