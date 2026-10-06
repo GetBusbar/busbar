@@ -41,15 +41,13 @@ pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
     (!path.as_os_str().is_empty()).then_some(path)
 }
 
-type StoreOpen = fn(&str) -> Result<Box<dyn governance::RecordStore>, String>;
-/// A linked STORE's entry: `(name, ephemeral, open, door)` — the name `store.module` selects it by,
-/// whether what it holds is lost on restart, its in-process open, and its store v3 door (the door
-/// boot opens it through, on the root's [`RootInstall::store_axis`]). No row is a default: the store
-/// is the one config names (Q-STORE = (B)).
+/// A linked STORE's entry: `(name, ephemeral, door)` — the name `store.module` selects it by,
+/// whether what it holds is lost on restart, and its store v3 door (the door boot opens it through,
+/// on the root's [`RootInstall::store_axis`]). No row is a default: the store is the one config
+/// names (Q-STORE = (B)).
 pub type LinkedStore = (
     &'static str,
     bool,
-    StoreOpen,
     busbar_contract::abi::mechanism::door::DoorFn,
 );
 /// The root's store axis (WIRE-STORE Q8/Q9): every store boot opens is loaded through the root's
@@ -223,9 +221,7 @@ pub(crate) fn auth_axis(
 /// takes (DECISIONS #2 rule (1)).
 fn linked_rows() -> Vec<LinkedPlugin> {
     let RootInstall { stores, .. } = root_rows();
-    let store = |&(name, ephemeral, open, door): &LinkedStore| {
-        LinkedPlugin::store(name, open, ephemeral).with_store_door(door)
-    };
+    let store = |&(name, ephemeral, door): &LinkedStore| LinkedPlugin::store(name, door, ephemeral);
     let rows = stores.iter().map(store);
     let auths = busbar_kernel_identity::operator::linked().iter();
     rows.chain(auths.map(|&(name, door)| LinkedPlugin::auth_door(name, door)))
@@ -1046,9 +1042,8 @@ pub fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), Str
 
 /// Build the [`config::secret::SecretResolver`] the engine resolves every secret reference through:
 /// the built-in `env`/`file` modules inline, and any OTHER module name via a loaded `kind: secret`
-/// plugin from `registry` (opened per resolution; a secret module is off every hot path so the
-/// per-call open + resolve is fine). FAIL-CLOSED: `open_secret` errors surface as an unresolvable
-/// secret. When the plugin subsystem is off the registry is empty and every non-built-in reference
+/// plugin on the secret axis (opened once per resolver, over the one dispatcher). FAIL-CLOSED: a
+/// module no door answers is an unresolvable secret, refused in the registry's words. When the plugin subsystem is off the registry is empty and every non-built-in reference
 /// is a fail-closed error at resolve time.
 pub(crate) fn build_secret_resolver(
     registry: Arc<busbar_plugin_loader::PluginRegistry>,
@@ -1077,8 +1072,6 @@ pub(crate) fn build_secret_resolver(
     // module-level open config) — is a hard boot error: silently passing `{}` for a mis-typed module
     // is exactly the failure this closes. The `--validate` path applies the identical policy via the
     // shared `validate_secret_module`/`validate_secret_modules` helpers.
-    let mut open_config: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
     let mut raw_config: std::collections::BTreeMap<String, serde_json::Value> =
         std::collections::BTreeMap::new();
     // Which `secrets:` block key produced each canonical entry, so an ALIAS/CANONICAL collision can
@@ -1101,13 +1094,9 @@ pub(crate) fn build_secret_resolver(
                  One of the two blocks would be silently dropped; keep exactly one."
             ));
         }
-        let resolved = config::secret::resolve_settings(&mcfg.settings, &builtins)
+        config::secret::resolve_settings(&mcfg.settings, &builtins)
             .map_err(|e| format!("secrets.{module} settings: {e}"))?;
         claimed_by.insert(canonical.clone(), module.clone());
-        open_config.insert(
-            canonical.clone(),
-            serde_json::Value::Object(resolved).to_string(),
-        );
         raw_config.insert(canonical, serde_json::Value::Object(mcfg.settings.clone()));
     }
     // A dropped-in plugin that states a door opens through the root's secret axis, once per
@@ -1140,28 +1129,9 @@ pub(crate) fn build_secret_resolver(
                     .map(|m| m.expose_secret().clone())
                     .map_err(|r| r.text);
             }
-            // Canonicalize the referenced module the SAME way, so an alias-vs-name spelling difference
-            // between the `secrets:` block and this `SecretRef` still finds the configured open() JSON.
-            // A module that does not resolve falls through to `open_secret` below, which produces the
-            // authoritative "no such plugin" error.
-            let canonical = registry
-                .resolve(module)
-                .map(|p| p.manifest.name.as_str())
-                .unwrap_or(module);
-            // Deliver the module's configured open() JSON (default `{}` for an unconfigured module).
-            let open_cfg = open_config
-                .get(canonical)
-                .map(String::as_str)
-                .unwrap_or("{}");
-            let m = registry.open_secret(module, open_cfg)?;
-            // The decoder's own text is withheld (`json_err`): it can quote a settings value.
-            m.resolve(
-                &serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(settings)
-                    .map_err(crate::egress_auth::json_err(
-                        "secret settings are not a JSON object",
-                    ))?,
-            )
-            .map_err(|e| e.to_string())
+            // No door answers it: no such secret plugin, or a 1.5.5 JSON-contract one, which this
+            // host does not load (THE DESIGN §11.8). Refused in the registry's own words.
+            Err(registry.secret_refusal(module))
         },
     )))
 }

@@ -13,7 +13,7 @@ fn manifest() -> Manifest {
         kind: "store".into(),
         version: "1.5.0".into(),
         publisher: "busbar".into(),
-        abi_version: busbar_contract::abi::cold::ABI_VERSION,
+        abi_version: busbar_contract::abi::store::ABI_VERSION,
         sha256: String::new(),
         signature: String::new(),
         description: String::new(),

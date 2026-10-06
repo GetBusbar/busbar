@@ -219,9 +219,10 @@ fi
 # code compiles, and would have been GREEN on the broken 1.5.3 ARM artifact.
 PROBE_REPO="$(jq -er '.plugin_probe.repo' "$CONTRACT")"
 PROBE_TAG="$(jq -er '.plugin_probe.tag' "$CONTRACT")"
-PROBE_ALIAS="$(jq -er '.plugin_probe.alias' "$CONTRACT")"
-WANT_SIG="$(jq -er '.plugin_probe.expect_signature' "$CONTRACT")"
 WANT_STATUS="$(jq -er '.plugin_probe.expect_status' "$CONTRACT")"
+# `ready` names a signature; `refused` names the refusal strings instead (a 1.5.x JSON-contract
+# plugin is refused at boot naming the rebuild, THE DESIGN §11.8). See release-targets.json.
+WANT_SIG="$(jq -r '.plugin_probe.expect_signature // empty' "$CONTRACT")"
 
 if [ -z "$BIN" ]; then
   record "plugin:${TARGET}" FAIL "cannot load a plugin: ${EXE} was never extracted" "see extract:${TARGET}."
@@ -240,6 +241,7 @@ else
     # operator's first install does.
     cat > "${WORK}/config.yaml" <<YAML
 listen: "127.0.0.1:8080"
+store: { module: memory }
 providers_file: "${WORK}/providers.yaml"
 plugins:
   enabled: true
@@ -258,13 +260,41 @@ YAML
     out="$(BUSBAR_CONFIG="${WORK}/config.yaml" MOCK_KEY=unused "$BIN" --list-plugins 2>&1)"
     # `--list-plugins` prints one row per plugin with its signature verdict and load status, which
     # is a strictly stronger assertion than `--validate`'s "N validated" count: it names WHY.
-    row="$(printf '%s\n' "$out" | awk -v a="$PROBE_ALIAS" '$3==a{print; exit}')"
-    if printf '%s' "$row" | grep -qw "$WANT_SIG" && printf '%s' "$row" | grep -qw "$WANT_STATUS"; then
-      record "plugin:${TARGET}" PASS "real signed first-party plugin loads: ${WANT_SIG}/${WANT_STATUS}" ""
-    else
-      record "plugin:${TARGET}" FAIL "the shipped ${TARGET} binary REFUSES a correctly-signed first-party plugin (#52)" \
-        "expected signature '${WANT_SIG}' and status '${WANT_STATUS}' for alias '${PROBE_ALIAS}'; observed: $(printf '%s' "${row:-<no row for ${PROBE_ALIAS}>}" | sed 's/  */ /g'). Full output: $(printf '%s' "$out" | tr '\n' '|' | sed 's/  */ /g'). If the reason mentions 'embeds no busbar release key' this is #52 recurring on ${TARGET}. Fix: see pubkey:${TARGET}."
-    fi
+    # The row is found by its FILE column: a refused row carries no manifest, so its alias column
+    # is `-` and an alias match would find nothing.
+    row="$(printf '%s\n' "$out" | awk -v f="$PLUGIN_ASSET" '$1==f{print; exit}')"
+    case "$WANT_STATUS" in
+      ready)
+        if [ -n "$WANT_SIG" ] && printf '%s' "$row" | grep -qw "$WANT_SIG" && printf '%s' "$row" | grep -qw "$WANT_STATUS"; then
+          record "plugin:${TARGET}" PASS "real signed first-party plugin loads: ${WANT_SIG}/${WANT_STATUS}" ""
+        else
+          record "plugin:${TARGET}" FAIL "the shipped ${TARGET} binary REFUSES a correctly-signed first-party plugin (#52)" \
+            "expected signature '${WANT_SIG}' and status '${WANT_STATUS}' for ${PLUGIN_ASSET}; observed: $(printf '%s' "${row:-<no row for ${PLUGIN_ASSET}>}" | sed 's/  */ /g'). Full output: $(printf '%s' "$out" | tr '\n' '|' | sed 's/  */ /g'). If the reason mentions 'embeds no busbar release key' this is #52 recurring on ${TARGET}. Fix: see pubkey:${TARGET}."
+        fi
+        ;;
+      refused)
+        status="${row#* INVALID: }"
+        missing=""
+        if [ "$status" = "$row" ]; then
+          missing="an INVALID: status"
+        else
+          while IFS= read -r want; do
+            [ -n "$want" ] || continue
+            case "$status" in *"$want"*) ;; *) missing="${missing:+$missing; }$want" ;; esac
+          done < <(jq -r '.plugin_probe.expect_refusal[]?' "$CONTRACT")
+          [ -n "$(jq -r '.plugin_probe.expect_refusal[]?' "$CONTRACT")" ] || missing="a named refusal (expect_refusal is empty)"
+        fi
+        if [ -z "$missing" ]; then
+          record "plugin:${TARGET}" PASS "the 1.5.x first-party plugin is refused, naming the rebuild" ""
+        else
+          record "plugin:${TARGET}" FAIL "the shipped ${TARGET} binary did not give the named refusal of a 1.5.x plugin" \
+            "1.6.0 loads no legacy plugin (THE DESIGN §11.8). Missing: ${missing}. Observed: $(printf '%s' "${row:-<no row for ${PLUGIN_ASSET}>}" | sed 's/  */ /g')."
+        fi
+        ;;
+      *)
+        record "plugin:${TARGET}" FAIL "plugin_probe.expect_status is '${WANT_STATUS}'" "it must be 'ready' or 'refused'."
+        ;;
+    esac
   fi
 fi
 
