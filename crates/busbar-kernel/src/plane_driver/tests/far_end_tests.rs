@@ -22,6 +22,7 @@ use crate::proxy::egress_unit::{
     },
     Failover, Member, OnExhausted, Pool, WeightedFloor,
 };
+use busbar_contract::abi::transport::{FAULT_CALLER, FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT};
 use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::conn::{
@@ -759,6 +760,8 @@ async fn a_401_takes_the_member_down_and_is_relayed_to_the_plane() {
     assert!(!p.fail_over, "a hard-down is the plane's to render: {p:?}");
     assert_eq!(p.status, Some((401, 2)));
     assert_eq!(p.bytes, b"no", "the answer reaches the plane as it came");
+    // The plane read it and states no fault reading of its own: the transport's is recorded.
+    far.judged(&t, FAULT_NONE);
     assert_eq!(
         *r.book.observed.lock().unwrap(),
         vec![(DestinationId::new(1), Outcome::HardDown)]
@@ -1560,5 +1563,117 @@ async fn a_text_request_opens_bare_and_is_written_as_text() {
         r.table.written.lock().unwrap().len(),
         1,
         "no write of its own"
+    );
+}
+
+/// THE PLANE'S FAULT READING WINS WHERE IT STATES ONE (ARCHITECT 2026-10-05). A relayed answer is
+/// held unrecorded until the plane has read it: the plane's reading is recorded where it states
+/// one, the transport's otherwise. Upward: a 400 the transport reads as the caller's, which the
+/// plane reads as the destination's transient fault (an error map's rate limit), is recorded as a
+/// transient failure with the answer's stated wait.
+#[tokio::test]
+async fn the_planes_transient_reading_outranks_the_transports_callers_fault() {
+    let r = rig(
+        &[("a.test", Script::Answer(400, Some(9), vec![b"slow down"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    let p = far.next(&t).await.expect("a piece");
+    assert!(
+        !p.fail_over,
+        "the caller's fault is relayed to the plane: {p:?}"
+    );
+    assert!(
+        r.book.observed.lock().unwrap().is_empty(),
+        "nothing is recorded until the plane has read the answer"
+    );
+    far.judged(&t, FAULT_TRANSIENT);
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![(
+            DestinationId::new(1),
+            Outcome::Transient {
+                retry_after: Some(9)
+            }
+        )],
+        "the plane's reading is the one recorded"
+    );
+    // A second reading of the same answer records nothing more.
+    far.judged(&t, FAULT_HARD);
+    assert_eq!(r.book.observed.lock().unwrap().len(), 1);
+}
+
+/// Downward: a 401 the transport reads as a refused credential, which the plane reads as the
+/// caller's own fault, records nothing against the destination: the plane's reading wins here too.
+#[tokio::test]
+async fn the_planes_callers_reading_outranks_the_transports_hard_down() {
+    let r = rig(
+        &[("a.test", Script::Answer(401, None, vec![b"no"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    let _ = far.next(&t).await.expect("a piece");
+    far.judged(&t, FAULT_CALLER);
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![(DestinationId::new(1), Outcome::RecordNothing)],
+        "the plane said the caller's: nothing is held against the destination"
+    );
+}
+
+/// THE TRANSPORT'S READING STANDS WHERE THE PLANE STATES NONE, and where the plane never reads the
+/// answer at all: an attempt that settles with its relayed answer unread records the transport's
+/// reading, before its probe is given back.
+#[tokio::test]
+async fn an_answer_the_plane_never_reads_is_recorded_with_the_transports_reading() {
+    let r = rig(
+        &[("a.test", Script::Answer(403, None, vec![b"no"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    let _ = far.next(&t).await.expect("a piece");
+    drop(far);
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![(DestinationId::new(1), Outcome::HardDown)],
+        "the transport's reading, recorded as the attempt settled"
+    );
+}
+
+/// A transport answer that fails over is never read by the plane: its reading is recorded at once.
+#[tokio::test]
+async fn a_failed_over_answer_is_recorded_at_once_with_the_transports_reading() {
+    let r = rig(
+        &[
+            ("a.test", Script::Answer(503, None, vec![b"x"])),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    let p = far.next(&t).await.expect("a piece");
+    assert!(p.fail_over);
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![(
+            DestinationId::new(1),
+            Outcome::Transient { retry_after: None }
+        )]
     );
 }

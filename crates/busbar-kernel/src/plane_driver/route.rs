@@ -175,6 +175,12 @@ pub trait FarEnd: Sync {
     fn constrain(&self, token: &Pass<Route>, constraint: super::hooks::Constraint) {
         let _ = (token, constraint);
     }
+    /// THE PLANE'S FAULT READING of the far end's answer it was just handed: `fault` is the
+    /// plane's `OnPieceOut::fault` (`FAULT_NONE` when it states none). The breaker records the
+    /// plane's reading where it states one, the transport's otherwise. The default reads nothing.
+    fn judged(&self, token: &Pass<Route>, fault: u8) {
+        let _ = (token, fault);
+    }
     /// A HELD FAR END's next frame (a duplex session's: dialled once, by the [`FarEnd::send`] of its
     /// first turn, and held for the session): write `request`'s body, as one message, into the
     /// attempt that send opened and its far end answered. The verb, target and fields were the
@@ -1023,6 +1029,13 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 // still holds the unit's buffers. A retry after FAULT would have to lend fresh ones.
                 _ => return Step::End(End::Failed(ReasonCode::PlanePanic)),
             };
+            // THE PLANE'S FAULT READING of a far-end answer it was handed: recorded against the
+            // destination where it states one, the transport's reading otherwise (ARCHITECT
+            // 2026-10-05, plane first, then transport). Before the verdict acts, so a retry
+            // records the reading of the answer it leaves.
+            if piece.from == FROM_FAR_END {
+                self.far.judged(run.token, out.fault);
+            }
             let bufs = &run.bufs;
             let units = &bufs.units[..(out.units_written as usize).min(bufs.units.len())];
             let checkpoint = if units.is_empty() || !run.billed() {
