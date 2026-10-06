@@ -704,3 +704,30 @@ fn the_declares_file_is_found_beside_the_plugin_crate() {
     );
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// The host's secret lending, as the suite lends it: each secret-ref key (a dotted path) is taken
+/// out of the settings and its string lent, in the Statement's order; an absent key lends empty
+/// bytes; settings with no refs pass through byte for byte.
+#[test]
+fn the_suite_lends_the_statements_secret_refs_out_of_the_settings() {
+    use super::lend_secrets;
+    let refs = [
+        "token".to_owned(),
+        "auth.key".to_owned(),
+        "absent".to_owned(),
+    ];
+    let (settings, secrets) = lend_secrets(
+        &refs,
+        br#"{"addr":"https://localhost:1","token":"s.t","auth":{"key":"k","x":1}}"#,
+    );
+    let v: serde_json::Value = serde_json::from_slice(&settings).unwrap();
+    assert_eq!(
+        v,
+        serde_json::json!({"addr": "https://localhost:1", "auth": {"x": 1}})
+    );
+    assert_eq!(secrets, [b"s.t".to_vec(), b"k".to_vec(), Vec::new()]);
+    assert_eq!(
+        lend_secrets(&[], b"{ \"a\": 1 }"),
+        (b"{ \"a\": 1 }".to_vec(), Vec::new())
+    );
+}

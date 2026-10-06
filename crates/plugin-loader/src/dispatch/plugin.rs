@@ -333,6 +333,9 @@ pub(crate) struct Instance {
     /// Each whose `target_from` or `trust_from` names a config path is declared at every `open` and
     /// `refresh`, with what those paths resolve to in the settings it is handed.
     needs: Box<[ReadNeed]>,
+    /// The settings keys its Statement names as secret references (`Statement::secret_refs`), in
+    /// order: the host resolves each and lends the material in `open`/`refresh`'s `secrets`.
+    secret_refs: Box<[String]>,
     pub(crate) kind: KindCode,
     name: String,
     slots: Box<[Op]>,
@@ -1147,6 +1150,16 @@ impl<K: Kind> Plugin<K> {
         }));
         let name = str_bytes(st.name)
             .ok_or_else(|| LoadError::BadStatement("the name is NULL or over-long".into()))?;
+        let secret_refs: Box<[String]> = (0..st.secret_refs_len)
+            .map(|i| {
+                // SAFETY: `validate` ran `check_statement`, which refused a NULL list with a count;
+                // the list holds `secret_refs_len` `'static` strings.
+                let key = unsafe { st.secret_refs.add(i).read_unaligned() };
+                str_bytes(key)
+                    .map(|k| String::from_utf8_lossy(k).into_owned())
+                    .ok_or_else(|| LoadError::BadStatement("a secret ref is malformed".into()))
+            })
+            .collect::<Result<_, _>>()?;
         let _ = wake.caller.set(busbar_contract::services::Caller {
             instance: Arc::clone(&bind.instance),
             plugin: Arc::from(String::from_utf8_lossy(name).as_ref()),
@@ -1160,6 +1173,7 @@ impl<K: Kind> Plugin<K> {
             inner: Arc::new(Instance {
                 instance,
                 needs: declared_needs,
+                secret_refs,
                 kind: v.kind,
                 name: String::from_utf8_lossy(name).into_owned(),
                 slots: v.slots,
@@ -1216,6 +1230,12 @@ impl<K: Kind> Plugin<K> {
     /// The Statement's name.
     pub fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    /// The settings keys its Statement names as secret references, in the Statement's order.
+    #[must_use]
+    pub fn secret_refs(&self) -> &[String] {
+        &self.inner.secret_refs
     }
 
     /// The instance's identity on the host's connection table (minted at bind, one per instance).
