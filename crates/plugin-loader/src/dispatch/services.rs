@@ -857,13 +857,26 @@ extern "C" fn trust_sight(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
         |served, route, head, caller| {
             // SAFETY: the head covered a `TrustSightIn`.
             let i = unsafe { input.cast::<TrustSightIn>().read_unaligned() };
-            let (Some(counterparty), Some(hash)) = (
-                text_of(i.counterparty, "trust_sight.counterparty"),
-                text_of(i.catalogue_hash, "trust_sight.catalogue_hash"),
-            ) else {
+            let Some(counterparty) = text_of(i.counterparty, "trust_sight.counterparty") else {
                 return Answered::fault();
             };
             let provider = Arc::clone(&served.provider);
+            match i.outcome {
+                svc::TRUST_REACHED => {}
+                // Unreached: the last verdict, nothing sighted (the hash is unread).
+                svc::TRUST_UNREACHABLE => {
+                    // SAFETY: no buffer is named.
+                    return unsafe {
+                        pended(&served, &route, &head, None, |_| {
+                            Ran::Now(provider.trust_unreached(&caller, &counterparty))
+                        })
+                    };
+                }
+                _ => return Answered::fault(),
+            }
+            let Some(hash) = text_of(i.catalogue_hash, "trust_sight.catalogue_hash") else {
+                return Answered::fault();
+            };
             // SAFETY: no buffer is named.
             unsafe {
                 pended(&served, &route, &head, None, |later| {

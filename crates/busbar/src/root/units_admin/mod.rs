@@ -1039,6 +1039,8 @@ pub struct CoreGovernance {
     records: Option<PlaneRecordSink>,
     /// The node's `Idempotency-Key` replay cache for the two Q71(2) writes (contract D-3).
     replays: Arc<bound::ReplayCache>,
+    /// The kernel's trust book, for the three trust verbs. No keys until a root binds it.
+    trust: TrustDesk,
 }
 
 impl CoreGovernance {
@@ -1067,7 +1069,15 @@ impl CoreGovernance {
             planes: no_planes(),
             records: None,
             replays: Arc::new(bound::ReplayCache::new()),
+            trust: no_trust(),
         }
+    }
+
+    /// Bind the kernel's trust book (the three trust verbs).
+    #[must_use]
+    pub fn trusting(mut self, trust: TrustDesk) -> Self {
+        self.trust = trust;
+        self
     }
 
     /// Bind the node's `Idempotency-Key` replay cache (contract D-3).
@@ -1215,6 +1225,20 @@ impl busbar_core_admin::Governance for CoreGovernance {
             }
             KernelVerb::PlaneFacts => {
                 return bound::plane_facts_effect(&self.request.path, &*self.planes)
+                    .map(|a| a.pack());
+            }
+            // ARCHITECT 2026-10-06: the operator's trust decisions, on the kernel's trust book.
+            // Idempotent by their own rule (the same key twice is the same answer), so no replay.
+            KernelVerb::GetTrust => {
+                return bound::trust_list_effect(&self.trust).map(|a| a.pack());
+            }
+            KernelVerb::TrustApprove | KernelVerb::TrustRevoke => {
+                let decision = if verb == KernelVerb::TrustApprove {
+                    busbar_kernel::trust::book::Decision::Approve
+                } else {
+                    busbar_kernel::trust::book::Decision::Revoke
+                };
+                return bound::trust_decide_effect(request, decision, &self.trust)
                     .map(|a| a.pack());
             }
             // The two writes replay under contract D-3: a retry carrying the same `Idempotency-Key`
@@ -2669,6 +2693,9 @@ pub struct AdminBinding {
     /// Where `plane_record_write` lands a record: the plane-facing store seam. `None` until a root
     /// binds one, and the verb then refuses rather than accept a write nothing keeps.
     pub records: Option<PlaneRecordSink>,
+    /// The kernel's trust book the three trust verbs read and decide over (ARCHITECT 2026-10-06).
+    /// No keys until a root binds the kernel's composed services.
+    pub trust: TrustDesk,
     /// THE NODE'S `Idempotency-Key` REPLAY CACHE for `plane_record_write` and `commit_upgrade`
     /// (contract D-3). Node-level, because a unit's governance value lives for one request; built on
     /// first use over [`AdminBinding::claims`], so a durable node journals each claim exactly as the
@@ -2809,6 +2836,7 @@ impl AdminBinding {
             pools: no_pools(),
             planes: no_planes(),
             records: None,
+            trust: no_trust(),
             replays: Arc::new(std::sync::OnceLock::new()),
             units: AdminUnits::new(),
         }
@@ -3195,6 +3223,7 @@ pub(crate) fn route(
             .granted(granted)
             .pooled(Arc::clone(&binding.pools))
             .planed(Arc::clone(&binding.planes), binding.records.clone())
+            .trusting(Arc::clone(&binding.trust))
             .replaying(Arc::clone(binding.replays.get_or_init(|| {
                 Arc::new(match &binding.claims {
                     Some(journal) => bound::ReplayCache::with_journal(Arc::clone(journal)
@@ -3965,7 +3994,8 @@ mod adjust;
 pub use adjust::RecordedCounts;
 pub(crate) mod bound;
 pub use bound::{
-    live_admin_door, live_planes, live_records, no_planes, PlaneLookup, PlaneRecordSink,
+    live_admin_door, live_planes, live_records, no_planes, no_trust, PlaneLookup, PlaneRecordSink,
+    TrustDesk,
 };
 mod claims;
 pub use claims::RootClaimJournal;

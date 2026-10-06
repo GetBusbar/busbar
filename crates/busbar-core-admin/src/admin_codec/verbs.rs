@@ -1,4 +1,4 @@
-//! The closed 66+9+5+3 kernel-verb table, and the pure `(method, path) -> verb` match over it.
+//! The closed 66+12+5+3 kernel-verb table, and the pure `(method, path) -> verb` match over it.
 //!
 //! The 66 come from `generated::verb_table_1_5_5` — mechanically extracted from the pinned
 //! `openapi-1.5.5.json` fixture, treated as ground truth and never regenerated here. The 8 are the
@@ -53,9 +53,9 @@ const fn post_row(path: &'static str, verb: &'static str) -> VerbEntry {
     }
 }
 
-/// The 9 1.6.0-additive money-governance verbs. The first eight carry the synthetic HTTP
-/// binding flagged in the module doc; the ninth, `amend_rate_history`, carries the
-/// design's own binding under `/ledger/`.
+/// The 12 1.6.0-additive kernel verbs: the 9 money-governance verbs (the first eight carry the
+/// synthetic HTTP binding flagged in the module doc; the ninth, `amend_rate_history`, carries the
+/// design's own binding under `/ledger/`) and the three trust verbs, under the ruling's own paths.
 const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     // `GET`, not `POST`: BUSBAR-1.6.0.md (CG-56) binds the two read-only verbs as `GET`
     // (`docs/design/BUSBAR-1.6.0.md` THE DESIGN, section 1, "The verify GET-vs-POST resolution"). A `POST`
@@ -78,6 +78,11 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
         "/api/v1/admin/ledger/amend-rate-history",
         "amend_rate_history",
     ),
+    // The operator's trust decisions over the kernel's trust book (ARCHITECT 2026-10-06): one
+    // generic verb set, counterparty-phrased, its paths the ruling's own.
+    get_row("/api/v1/admin/trust", "get_trust"),
+    post_row("/api/v1/admin/trust/approve", "trust_approve"),
+    post_row("/api/v1/admin/trust/revoke", "trust_revoke"),
 ];
 
 /// The five 1.6.0 ledger views, mounted under one sub-prefix of the admin surface.
@@ -129,10 +134,10 @@ const AUDIT_VERBS_1_6_0: &[VerbEntry] = &[
     get_row("/api/v1/admin/audit/keys", "get_audit_keys"),
 ];
 
-/// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 9 1.6.0
-/// money-governance verbs (the eight plus `amend_rate_history`), the 5 1.6.0 ledger
-/// views, and the 3 audit-chain reads.
-pub(crate) const VERB_COUNT: usize = 66 + 9 + 5 + 3;
+/// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 12 1.6.0 kernel
+/// verbs (the nine money-governance verbs and the three trust verbs), the 5 1.6.0 ledger views,
+/// and the 3 audit-chain reads.
+pub(crate) const VERB_COUNT: usize = 66 + 12 + 5 + 3;
 
 // ── THE ROWS AND THEIR NAMES CANNOT DRIFT, AND THE COMPILER IS WHAT SAYS SO ────────────────────
 //

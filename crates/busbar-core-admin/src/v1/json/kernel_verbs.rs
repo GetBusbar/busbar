@@ -3,9 +3,9 @@
 
 //! THE 1.6.0 KERNEL VERBS, IN THE ONE DOCUMENT.
 //!
-//! The closed verb table (`admin_codec::verbs`) declares 17 operations 1.6.0 adds to the
-//! administrative surface: the 9 money-governance verbs ([`NEW_VERBS`]), the five ledger views
-//! ([`LEDGER_VERBS`]) and the three audit-chain reads ([`AUDIT_VERBS`]). The router in this crate
+//! The closed verb table (`admin_codec::verbs`) declares 20 operations 1.6.0 adds to the
+//! administrative surface: the 12 kernel verbs ([`NEW_VERBS`]: nine money-governance, three trust),
+//! the five ledger views ([`LEDGER_VERBS`]) and the three audit-chain reads ([`AUDIT_VERBS`]). The router in this crate
 //! mounts none of them. The node's administrative mount walks every row the table declares whose
 //! effect is bound through the kernel loop, and it is the composition root's route step that answers them — the ledger and
 //! audit reads render from the node's own book and chain, `adjust` and `amend_rate_history` land on
@@ -22,7 +22,8 @@
 //! node's mount hands it to the surface's own fallback, which answers the unmounted `404` — so this
 //! document does not describe it either: [`operations`] asks the same one question the mount asks.
 //! Since owner answer Q71(2) bound `verify`, `plane_facts`, `plane_record_write` and
-//! `commit_upgrade`, every one of the nine is bound.
+//! `commit_upgrade`, every one of the nine is bound; the three trust verbs are bound with them
+//! (ARCHITECT 2026-10-06).
 
 #[cfg(feature = "openapi-schema")]
 use crate::admin_codec::verbs::ResolvedVerb;
@@ -574,6 +575,48 @@ pub(crate) struct PlaneRecordWriteView {
     written_at: u64,
 }
 
+/// One trust key of the kernel's trust book and its state.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct TrustKeyView {
+    /// The key, `<instance>/<counterparty>[/<item>]`: what `POST /trust/approve` and `/revoke` name.
+    key: String,
+    /// The plane instance label.
+    instance: String,
+    /// The counterparty, as the instance's configuration names it.
+    counterparty: String,
+    /// The item at the counterparty, for an item key.
+    item: Option<String>,
+    /// `new` (sighted and never approved, or revoked: refused), `approved` (approved, not sighted
+    /// since), `same` (sighted as approved), `drifted` (sighted other than approved: refused until
+    /// re-approved) or `quarantined` (the counterparty's catalogue moved: refused until re-approved).
+    #[schemars(regex(pattern = r"^(new|approved|same|drifted|quarantined)$"))]
+    state: String,
+    /// What it is approved at: the catalogue hash, or the item's digest.
+    approved: Option<String>,
+    /// What it was last sighted at.
+    seen: Option<String>,
+}
+
+/// `GET /trust`: every trust key and its state.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct TrustListView {
+    /// Ordered by instance, counterparty and item, each counterparty before its items.
+    keys: Vec<TrustKeyView>,
+}
+
+/// `POST /trust/approve` and `/trust/revoke`: the trust key decided.
+#[cfg(feature = "openapi-schema")]
+#[derive(Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct TrustKeyReq {
+    /// `<instance>/<counterparty>[/<item>]`, as `GET /trust` lists it.
+    key: String,
+}
+
 /// `POST /commit-upgrade`: the release the fleet commits to.
 #[cfg(feature = "openapi-schema")]
 #[derive(Deserialize, JsonSchema)]
@@ -814,6 +857,79 @@ fn doc_for(
                 unavailable_503("the node could not take the unit"),
             ],
         },
+        KernelVerb::GetTrust => VerbDoc {
+            summary: "Every trust key of the kernel's trust book and its state",
+            description: "The counterparties every plane instance this node serves declares, and \
+                          the items sighted or approved at each: its key, state, what it is \
+                          approved at and what it was last sighted at. A read: it mutates nothing \
+                          and needs `read-only`."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<TrustListView>()),
+                "Every trust key and its state",
+            ),
+            request: None,
+            query: Vec::new(),
+            errors: vec![unavailable_503("the node could not take the unit")],
+        },
+        KernelVerb::TrustApprove | KernelVerb::TrustRevoke => {
+            let approve = verb == KernelVerb::TrustApprove;
+            VerbDoc {
+                summary: if approve {
+                    "Approve one trust key at what it was last sighted at"
+                } else {
+                    "Revoke one trust key"
+                },
+                description: if approve {
+                    "A counterparty is approved at the catalogue hash it last reported, which \
+                     clears its quarantine; an item at the digest it was last sighted at. The \
+                     decision is kept durably and outlives a restart. Idempotent: the same key \
+                     twice answers the same row."
+                } else {
+                    "Refused until approved again: a counterparty revoked refuses everything at \
+                     it, an item revoked refuses it over its configured approval. The decision \
+                     is kept durably and outlives a restart. Idempotent: the same key twice \
+                     answers the same row."
+                }
+                .to_string(),
+                success: Success::Json(
+                    schema_of(gen.subschema_for::<TrustKeyView>()),
+                    "The key, decided",
+                ),
+                request: Some(schema_of(req_gen.subschema_for::<TrustKeyReq>())),
+                query: Vec::new(),
+                errors: {
+                    let mut errors = vec![
+                        (
+                            "400",
+                            format!(
+                                "`invalid_request`: malformed body, `key is required`, or \
+                                 {BODY_UNREADABLE}"
+                            ),
+                        ),
+                        gated_403(),
+                        (
+                            "404",
+                            "`not_found`: ``trust key `<key>` not found`` — no plane instance \
+                             this node serves has the key"
+                                .to_string(),
+                        ),
+                    ];
+                    if approve {
+                        errors.push((
+                            "409",
+                            "`conflict`: ``trust key `<key>` was never sighted`` — nothing to \
+                             approve it at"
+                                .to_string(),
+                        ));
+                    }
+                    errors.push(unavailable_503(
+                        "the node could not take the unit, or could not keep the decision",
+                    ));
+                    errors
+                },
+            }
+        }
         KernelVerb::PlaneRecordWrite => VerbDoc {
             summary: "Upsert one record of a plane this node serves",
             description: "Upserted by `(kind, id)` through the plane-facing store the planes \

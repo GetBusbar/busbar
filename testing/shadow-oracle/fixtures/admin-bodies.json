@@ -1,6 +1,6 @@
 {
  "_comment": [
-  "Shadow-oracle request material for busbar's admin API: one entry per SERVED admin operation. 66 are the operationIds of fixtures/openapi-1.5.5.json (66 operations / 49 paths); 41 are 1.6.0 additions: the 15 plane-section operations (`tools:` / `agents:`, mounted only when the plane is configured) and the 26 kernel verbs of the closed verb table (18 money-governance verbs, 5 ledger views, 3 audit-chain reads). crates/busbar-core-admin's served-surface reconciliation test fails when a served operation has no entry here (or no admin.ops cell) and when an entry or cell names an operation the build does not serve.",
+  "Shadow-oracle request material for busbar's admin API: one entry per SERVED admin operation. 66 are the operationIds of fixtures/openapi-1.5.5.json (66 operations / 49 paths); 44 are 1.6.0 additions: the 15 plane-section operations (`tools:` / `agents:`, mounted only when the plane is configured) and the 29 kernel verbs of the closed verb table (18 money-governance verbs, 3 trust verbs, 5 ledger views, 3 audit-chain reads). crates/busbar-core-admin's served-surface reconciliation test fails when a served operation has no entry here (or no admin.ops cell) and when an entry or cell names an operation the build does not serve.",
   "Sources: openapi-1.5.5.json (schemas, x-busbar-required-scope, If-Match params), qa/evidence/inventory/1.5.5-routes-admin.md (ADM-001..066), qa/evidence/inventory/1.5.5-config.md section 2 (config shapes), testing/shadow-oracle/oracle-config.sh (what exists at record time).",
   "Auth: every request carries `Authorization: Bearer <ORACLE_ADMIN_TOKEN>` (the admin-tokens provider; x-admin-token is the equivalent header). Bodies are sent with Content-Type: application/json where `body` is non-null.",
   "Placeholders substituted by the recorder: {KEY_OK} {KEY_BROKE} {KEY_NOSCOPE} (minted key ids), {TMP} (a writable temp dir), {WORK} (the oracle work dir holding signing.key), {LISTEN_ADDR} / {ADMIN_LISTEN_ADDR} (the oracle's `127.0.0.1:<port>` listen strings), {MOCK_URL} (`http://127.0.0.1:<mock_port>`). {GROUP} {HOOK} {EXPORT} {IDP} {PLUGIN_FILE} {SECTION} {V} are resolved to concrete names here (oracle-added / none / oracle-log,metrics / oracle-idp2,admin-tokens / none / root / 0).",
@@ -1225,6 +1225,25 @@
    "notes": "x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ok: null until the recorder has a config variant that declares a `tools:` entry (the pinned engine's Variant set is baseline / queue-timeout / inbound-concurrency-2 / hooks). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
    "ok": null,
    "path": "/api/v1/admin/tools/{name}/health",
+   "restart": false,
+   "scope": "read-only"
+  },
+  "GetTrust": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "GET",
+   "mutating": false,
+   "not_found": null,
+   "notes": "Read-only new verb, never dual-controlled. Bound in 1.6.0 (ARCHITECT 2026-10-06): lists every trust key of the kernel's trust book (`<instance>/<counterparty>[/<item>]`) and its state (new, same, drifted, quarantined, approved); a node with no trusted plane configured answers an empty list. Baseline: [404]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     404
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/trust",
    "restart": false,
    "scope": "read-only"
   },
@@ -2721,6 +2740,44 @@
    "notes": "x-busbar-plane: tools. Mounted only on a node whose config carries a `tools:` block (Law 7); on a node without one the path answers the router's 404 not_found. ok: null until the recorder has a config variant that declares a `tools:` entry (the pinned engine's Variant set is baseline / queue-timeout / inbound-concurrency-2 / hooks). 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
    "ok": null,
    "path": "/api/v1/admin/tools/{name}/connect",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostTrustApprove": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "Not irreducible. Bound in 1.6.0 (ARCHITECT 2026-10-06): approves one trust key at what it was last sighted at (body `{\"key\": \"<instance>/<counterparty>[/<item>]\"}`), idempotent, audited; an unknown key answers 404 not_found. This cell sends no body, so an admitted call answers 400 invalid_request. Baseline: [404]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     404
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/trust/approve",
+   "restart": false,
+   "scope": "full"
+  },
+  "PostTrustRevoke": {
+   "bad_body": null,
+   "idempotent": false,
+   "if_match": false,
+   "method": "POST",
+   "mutating": true,
+   "not_found": null,
+   "notes": "Not irreducible. Bound in 1.6.0 (ARCHITECT 2026-10-06): revokes one trust key (body `{\"key\": \"<instance>/<counterparty>[/<item>]\"}`), idempotent, audited; an unknown key answers 404 not_found. This cell sends no body, so an admitted call answers 400 invalid_request. Baseline: [404]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
+   "ok": {
+    "body": null,
+    "expect": [
+     404
+    ],
+    "headers": {}
+   },
+   "path": "/api/v1/admin/trust/revoke",
    "restart": false,
    "scope": "full"
   },

@@ -282,7 +282,7 @@ pub enum KernelVerb {
     /// `POST /api/v1/admin/signing-key/rotate`
     PostSigningKeyRotate,
 
-    // ---- 1.6.0 new verbs (9) ----
+    // ---- 1.6.0 new verbs (12) ----
     /// Verify a claim/signature outside the normal request path.
     Verify,
     /// Read plane facts (a plane's own declared facts surface).
@@ -304,6 +304,13 @@ pub enum KernelVerb {
     /// the dated rate-card history (irreducible). It out-ranks the entry it corrects and rewrites
     /// nothing; recompute reprices the corrected window against the new entry.
     AmendRateHistory,
+    /// `GET /api/v1/admin/trust` — every trust key of the kernel's trust book (a counterparty of an
+    /// instance, or one item there) and its state.
+    GetTrust,
+    /// `POST /api/v1/admin/trust/approve` — approve one trust key at what it was last sighted at.
+    TrustApprove,
+    /// `POST /api/v1/admin/trust/revoke` — revoke one trust key: refused until approved again.
+    TrustRevoke,
 
     // ---- 1.6.0 ledger views (5) ----
     /// `GET /api/v1/admin/ledger/totals` — what the ledger posted, per bucket, day, lane and
@@ -664,8 +671,9 @@ pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
     ),
 ];
 
-/// The 9 new 1.6.0 verbs: the eight money-governance verbs, plus `amend_rate_history` — the
-/// signed, back-dated rate-card correction the dated-history design adds to the irreducible set.
+/// The 12 new 1.6.0 verbs: the eight money-governance verbs, plus `amend_rate_history` — the
+/// signed, back-dated rate-card correction the dated-history design adds to the irreducible set —
+/// and the three trust verbs over the kernel's trust book (ARCHITECT 2026-10-06).
 /// `set_operator_key`, `set_escrow`, `set_dual_control`, `export_keyset` and `approve` left 1.6.0
 /// by the owner's 2026-09-08 ruling (ARCHITECTURE section 4.7), and `set_overdraft_ceiling`,
 /// `set_dispute_max_age`, `resolve_dispute` and `resolve_slice` by #77(9) (owner answer Q71(1)):
@@ -680,6 +688,9 @@ pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::CommitUpgrade,
     KernelVerb::Adjust,
     KernelVerb::AmendRateHistory,
+    KernelVerb::GetTrust,
+    KernelVerb::TrustApprove,
+    KernelVerb::TrustRevoke,
 ];
 
 /// WHETHER THIS BUILD BINDS AN EFFECT TO `verb` — the one question the administrative mount asks
@@ -709,6 +720,9 @@ pub const fn effect_bound(verb: KernelVerb) -> bool {
         | KernelVerb::PlaneFacts
         | KernelVerb::PlaneRecordWrite
         | KernelVerb::CommitUpgrade => true,
+        // ARCHITECT 2026-10-06: the operator's trust decisions land on the kernel's trust book
+        // (the composition root's `execute_new_verb`).
+        KernelVerb::GetTrust | KernelVerb::TrustApprove | KernelVerb::TrustRevoke => true,
         // Any other new verb is unbound until an arm above says otherwise: a verb added to
         // `NEW_VERBS` is unserved by default, never served onto a surface with no handler for it.
         _ => !is_new_verb(verb),
@@ -737,7 +751,11 @@ const fn is_new_verb(verb: KernelVerb) -> bool {
 /// budget it does not draw, and the maker-checker step it has nothing to wait for. A read held
 /// behind an approval is not delayed, it is refused forever — nobody can approve a mutation that
 /// does not exist.
-pub const READ_ONLY_NEW_VERBS: &[KernelVerb] = &[KernelVerb::Verify, KernelVerb::PlaneFacts];
+pub const READ_ONLY_NEW_VERBS: &[KernelVerb] = &[
+    KernelVerb::Verify,
+    KernelVerb::PlaneFacts,
+    KernelVerb::GetTrust,
+];
 
 /// The five 1.6.0 ledger views, in the order the admin surface lists them.
 ///
@@ -837,6 +855,10 @@ pub const fn verb_name(verb: KernelVerb) -> Option<&'static str> {
         KernelVerb::CommitUpgrade => "commit_upgrade",
         KernelVerb::Adjust => "adjust",
         KernelVerb::AmendRateHistory => "amend_rate_history",
+        // The three trust verbs.
+        KernelVerb::GetTrust => "get_trust",
+        KernelVerb::TrustApprove => "trust_approve",
+        KernelVerb::TrustRevoke => "trust_revoke",
         // The 5 ledger views.
         KernelVerb::GetLedgerTotals => "get_ledger_totals",
         KernelVerb::GetLedgerCheckpoints => "get_ledger_checkpoints",

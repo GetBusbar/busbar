@@ -1949,6 +1949,35 @@ fn a_private_reach_key_carries_no_default_flags_or_mechanisms() {
     );
 }
 
+/// RED (ARCHITECT 2026-10-06): the configured item approvals name the field each item's digest is
+/// written under (`default`), and carry no flags and no mechanisms.
+#[test]
+fn an_item_approvals_key_names_its_digest_field() {
+    let approvals = duration_key(TRUST_ITEM_APPROVALS);
+    assert_eq!(check_trust_keys(&[pin_key(), approvals]), Ok(()));
+    assert_eq!(
+        check_trust_keys(&[TrustKey {
+            default: AbiStr {
+                ptr: null(),
+                len: 0,
+            },
+            ..approvals
+        }]),
+        f(Rule::Missing, "trust_key.approvals_field")
+    );
+    assert_eq!(
+        check_trust_keys(&[TrustKey {
+            flags: 1,
+            ..approvals
+        }]),
+        f(Rule::UnknownCode, "trust_key.duration_flags")
+    );
+    assert_eq!(
+        check_trust_keys(&[approvals, approvals]),
+        f(Rule::Contradiction, "trust_key.role_twice")
+    );
+}
+
 #[test]
 fn a_trust_key_is_named() {
     let mut k = pin_key();
@@ -1961,7 +1990,7 @@ fn a_trust_key_is_named() {
 
 #[test]
 fn a_trust_key_role_is_known() {
-    for role in [0, TRUST_PRIVATE_REACH + 1] {
+    for role in [0, TRUST_ITEM_APPROVALS + 1] {
         assert_eq!(
             check_trust_keys(&[duration_key(role)]),
             f(Rule::UnknownCode, "trust_key.role")

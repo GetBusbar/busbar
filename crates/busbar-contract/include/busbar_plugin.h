@@ -421,6 +421,7 @@ extern "C" {
 #define BB_PLANE_TRUST_REVERIFY_TTL UINT32_C(2) /* [`TrustKey::role`]: the key holds the longest a verification may be reused before the */
 #define BB_PLANE_TRUST_RECOVERY_BACKOFF UINT32_C(3) /* [`TrustKey::role`]: the key holds how long after a drift a clean answer is disbelieved, a */
 #define BB_PLANE_TRUST_PRIVATE_REACH UINT32_C(4) /* [`TrustKey::role`]: the key holds a boolean, the registration's PRIVATE REACH: `true` admits a */
+#define BB_PLANE_TRUST_ITEM_APPROVALS UINT32_C(5) /* [`TrustKey::role`]: the key holds the registration's CONFIGURED ITEM APPROVALS, a map of item to */
 #define BB_PLANE_PIN_FINGERPRINT UINT32_C(1) /* [`TrustKey::flags`], on a [`TRUST_PIN`] key only: the pin object may also carry `fingerprint`. */
 #define BB_PLANE_MECHANISM_ROOT UINT32_C(1) /* [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key */
 #define BB_PLANE_MECHANISM_PEER_KEY UINT32_C(2) /* [`PinMechanism::flags`], on a root only: the mechanism's key material is the FAR END'S KEY, a pin */
@@ -623,6 +624,8 @@ extern "C" {
 #define BB_HSVC_MAX_WORK_RECORD ((size_t)256) /* The most bytes a work handle's record carries (the body lives in the plugin's own records; the */
 #define BB_HSVC_WORK_LIVE UINT8_C(1) /* `work.find`'s state byte: the handle is live. */
 #define BB_HSVC_WORK_SETTLED UINT8_C(2) /* `work.find`'s state byte: the handle is settled. */
+#define BB_HSVC_TRUST_REACHED UINT32_C(0) /* [`TrustSightIn::outcome`]: the plane reached the counterparty and reports what it serves. */
+#define BB_HSVC_TRUST_UNREACHABLE UINT32_C(1) /* [`TrustSightIn::outcome`]: the plane could not reach the counterparty; nothing is sighted. */
 #define BB_HSVC_TRUST_NEW UINT64_C(1) /* `trust.sight` verdict: never seen before. */
 #define BB_HSVC_TRUST_SAME UINT64_C(2) /* `trust.sight` verdict: the pinned catalogue. */
 #define BB_HSVC_TRUST_DRIFTED UINT64_C(3) /* `trust.sight` verdict: the catalogue moved from its pin. */
@@ -3535,6 +3538,8 @@ struct bb_hsvc_TrustSightIn {
     bb_hsvc_ServiceHead head;
     bb_mech_AbiStr counterparty;
     bb_mech_AbiStr catalogue_hash;
+    uint32_t outcome;
+    uint32_t _outcome_reserved;
 };
 
 /* [`op::TRUST_DUE`]'s `in`: the counterparties the kernel's `tick` marked for re-verification, */
@@ -5640,11 +5645,13 @@ BB_ASSERT(BB_ALIGNOF(bb_hsvc_WorkResumeIn) == 8, "bb_hsvc_WorkResumeIn: alignmen
 BB_ASSERT(offsetof(bb_hsvc_WorkResumeIn, head) == 0, "bb_hsvc_WorkResumeIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_WorkResumeIn, handle) == 24, "bb_hsvc_WorkResumeIn.handle: offset");
 BB_ASSERT(offsetof(bb_hsvc_WorkResumeIn, into) == 32, "bb_hsvc_WorkResumeIn.into: offset");
-BB_ASSERT(sizeof(bb_hsvc_TrustSightIn) == 56, "bb_hsvc_TrustSightIn: size");
+BB_ASSERT(sizeof(bb_hsvc_TrustSightIn) == 64, "bb_hsvc_TrustSightIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustSightIn) == 8, "bb_hsvc_TrustSightIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_TrustSightIn, head) == 0, "bb_hsvc_TrustSightIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_TrustSightIn, counterparty) == 24, "bb_hsvc_TrustSightIn.counterparty: offset");
 BB_ASSERT(offsetof(bb_hsvc_TrustSightIn, catalogue_hash) == 40, "bb_hsvc_TrustSightIn.catalogue_hash: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustSightIn, outcome) == 56, "bb_hsvc_TrustSightIn.outcome: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustSightIn, _outcome_reserved) == 60, "bb_hsvc_TrustSightIn._outcome_reserved: offset");
 BB_ASSERT(sizeof(bb_hsvc_TrustDueIn) == 56, "bb_hsvc_TrustDueIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustDueIn) == 8, "bb_hsvc_TrustDueIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_TrustDueIn, head) == 0, "bb_hsvc_TrustDueIn.head: offset");

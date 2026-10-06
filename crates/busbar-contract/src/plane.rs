@@ -419,6 +419,9 @@ pub enum TrustRole {
     RecoveryBackoff,
     /// The registration's private reach, a boolean (`abi::plane::TRUST_PRIVATE_REACH`).
     PrivateReach,
+    /// The registration's configured item approvals, `{<item>: {<field>: "<digest>"}}`, the field
+    /// named by [`TrustKeyDecl::default`] (`abi::plane::TRUST_ITEM_APPROVALS`).
+    ItemApprovals,
 }
 
 /// One pin mechanism a [`TrustRole::Pin`] key accepts.
@@ -444,7 +447,8 @@ pub struct TrustKeyDecl {
     pub role: TrustRole,
     /// A pin only: the pin object may also carry `fingerprint`.
     pub fingerprint: bool,
-    /// A duration key's value when a registration writes none; `None` = zero. A pin has none.
+    /// A duration key's value when a registration writes none; `None` = zero. A pin has none. An
+    /// item-approvals key: the field of each item's object holding its approved digest.
     pub default: Option<&'static str>,
     /// A pin's mechanisms; `&[]` for a duration key.
     pub mechanisms: &'static [PinMechanismDecl],

@@ -85,6 +85,13 @@ pub trait HostServices: Send + Sync {
     /// state. READY with a `TRUST_*` verdict.
     fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran;
 
+    /// `trust.sight` with `TRUST_UNREACHABLE`: the plane could not reach `counterparty`. READY with
+    /// the LAST `TRUST_*` verdict, nothing changed. Never pends. Unserved by default.
+    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
+        let _ = (caller, counterparty);
+        Stored::refused(UNSERVED)
+    }
+
     /// `trust.sight_item`: record the digest `item` of `counterparty` is offered at now (the
     /// plane's live re-fetch), READY with a `TRUST_*` sighting verdict. Never pends. Unserved by
     /// default.

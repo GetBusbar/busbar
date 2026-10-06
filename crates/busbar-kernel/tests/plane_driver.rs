@@ -1484,12 +1484,23 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
     assert!(untrusted(&outcome), "{outcome:?}");
     assert_eq!(body, refused(2));
 
-    // Sighted (pinned on first sight): the counterparty as a whole is trusted.
+    // Sighted, it is NEW (a first sighting pins nothing) until the operator approves it
+    // (`POST /api/v1/admin/trust/approve`): then the counterparty as a whole is trusted.
     let sight = |hash: &'static str| {
         let later: busbar_contract::services::Later = Box::new(|_| {});
         let _ = services.trust_sight(&instance(), "peer", hash, later);
     };
+    let decide = |key: &str, decision| {
+        services
+            .trust_decide(key, decision)
+            .expect("an admitted key")
+    };
+    use busbar_kernel::trust::book::Decision;
     sight("h1");
+    let (outcome, body) = approved(&driver, "/trusted/peer").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(4), "sighted, never approved");
+    decide("inst/peer", Decision::Approve);
     let (outcome, _) = approved(&driver, "/trusted/peer").await;
     assert!(!untrusted(&outcome), "{outcome:?}");
 
@@ -1497,21 +1508,15 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
     let (outcome, body) = approved(&driver, "/trusted/peer/cap@d1").await;
     assert!(untrusted(&outcome), "{outcome:?}");
     assert_eq!(body, refused(4));
-    services
-        .trust_approve("inst", "peer", [("cap".to_string(), "d1".to_string())])
-        .expect("peer is declared");
+    let _ = services.trust_sight_item(&instance(), "peer", "cap", "d1");
+    decide("inst/peer/cap", Decision::Approve);
     let (outcome, _) = approved(&driver, "/trusted/peer/cap@d1").await;
     assert!(!untrusted(&outcome), "{outcome:?}");
     let (outcome, body) = approved(&driver, "/trusted/peer/cap@d2").await;
     assert!(untrusted(&outcome), "{outcome:?}");
     assert_eq!(body, refused(5));
-    let (outcome, body) = approved(&driver, "/trusted/peer/cap").await;
-    assert!(untrusted(&outcome), "{outcome:?}");
-    assert_eq!(
-        body,
-        refused(5),
-        "no digest observed is not the approved one"
-    );
+    let (outcome, _) = approved(&driver, "/trusted/peer/cap").await;
+    assert!(!untrusted(&outcome), "no digest stated: its last sighting");
 
     // An item stated with no digest: unknown until the plane's re-fetch sights it (6, a 404's
     // case), known and ungranted after (4, a 403's case), served once approved at its sighting,
@@ -1527,16 +1532,7 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
     let (outcome, body) = approved(&driver, "/trusted/peer/tool").await;
     assert!(untrusted(&outcome), "{outcome:?}");
     assert_eq!(body, refused(4));
-    services
-        .trust_approve(
-            "inst",
-            "peer",
-            [
-                ("cap".to_string(), "d1".to_string()),
-                ("tool".to_string(), "t1".to_string()),
-            ],
-        )
-        .expect("peer is declared");
+    decide("inst/peer/tool", Decision::Approve);
     let serves = |item: &str| {
         services
             .trust_serves(&instance(), "peer", Some(item), None)
@@ -1558,11 +1554,24 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
         busbar_contract::abi::host::service::DISTRUST_UNKNOWN_ITEM
     );
 
-    // RED: a sighting that drifts quarantines the counterparty, whatever was approved.
+    // RED: a sighting that drifts quarantines the counterparty, whatever was approved, until the
+    // operator approves it again; a revoke refuses it.
     sight("h2");
     let (outcome, body) = approved(&driver, "/trusted/peer/cap@d1").await;
     assert!(untrusted(&outcome), "{outcome:?}");
     assert_eq!(body, refused(3));
+    decide("inst/peer", Decision::Approve);
+    let (outcome, _) = approved(&driver, "/trusted/peer/cap@d1").await;
+    assert!(!untrusted(&outcome), "re-approved: {outcome:?}");
+    decide("inst/peer", Decision::Revoke);
+    let (outcome, body) = approved(&driver, "/trusted/peer/cap@d1").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(4), "revoked");
+    // Unknown keys are no keys.
+    assert_eq!(
+        services.trust_decide("inst/stranger", Decision::Approve),
+        Err(busbar_kernel::host_services::TrustRefused::NoSuchKey)
+    );
 }
 
 // ── the plane's own work bounds (its section's reserved `work:`) ────────────────────────────────

@@ -2114,7 +2114,17 @@ fn compute_layout() -> String {
     record!(s, hsvc::WorkFindIn, [head, reference, into]);
     record!(s, hsvc::WorkSettleIn, [head, handle, record]);
     record!(s, hsvc::WorkResumeIn, [head, handle, into]);
-    record!(s, hsvc::TrustSightIn, [head, counterparty, catalogue_hash]);
+    record!(
+        s,
+        hsvc::TrustSightIn,
+        [
+            head,
+            counterparty,
+            catalogue_hash,
+            outcome,
+            _outcome_reserved
+        ]
+    );
     record!(
         s,
         hsvc::TrustSightItemIn,
