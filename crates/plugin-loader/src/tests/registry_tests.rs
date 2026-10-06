@@ -904,10 +904,11 @@ fn linked_in(m: Manifest) -> PluginRegistry {
         .expect("the linked door admits the row")
 }
 
-/// THE RULING'S CASE: a 1.5.5-shaped config names the hook `busbar-webrequest` and the store
-/// `busbar-store-postgres-plugin` (the manifest names their 1.5.5-era releases carried); each
-/// resolves to the 1.6.0 plugin (`busbar-hook-webrequest`, `busbar-store-postgres`) of the kind the
-/// reference needs, DROPPED IN and LINKED alike — the resolution preflight's `require_plugin`, the
+/// THE RULING'S CASE: a 1.5.5-shaped config names a hook and a store by the manifest names their
+/// 1.5.5-era releases carried (`busbar-webrequest`; a store's `busbar-store-<name>-plugin`, here a
+/// neutral one — the fleet's real names are swept from plugins.yaml by
+/// [`every_former_name_plugins_yaml_declares_resolves_both_ways`]); each resolves to the 1.6.0 plugin
+/// of the kind the reference needs, DROPPED IN and LINKED alike — the resolution preflight's `require_plugin`, the
 /// store door and the auth and export axes all read. RED ARM, in the same test: the same plugins
 /// without their former names leave both references unresolved, which is the boot refusal 52 oracle
 /// cells hit ("no plugin matching the hook reference 'busbar-webrequest'").
@@ -922,9 +923,9 @@ fn a_1_5_5_name_resolves_to_the_1_6_0_plugin_dropped_in_and_linked() {
         ),
         (
             "store",
-            "busbar-store-postgres",
-            "postgres",
-            "busbar-store-postgres-plugin",
+            "busbar-store-alpha",
+            "alpha",
+            "busbar-store-alpha-plugin",
         ),
     ];
     for (kind, name, alias, old) in cases {
@@ -958,15 +959,15 @@ fn a_1_5_5_name_resolves_to_the_1_6_0_plugin_dropped_in_and_linked() {
     // The store door opens through the same resolution (the store axis's lookup by config name).
     let reg = linked_in(renamed(
         "store",
-        "busbar-store-postgres",
-        "postgres",
-        &["busbar-store-postgres-plugin"],
+        "busbar-store-alpha",
+        "alpha",
+        &["busbar-store-alpha-plugin"],
     ));
     let refusal = reg
-        .store_door("busbar-store-postgres-plugin")
+        .store_door("busbar-store-alpha-plugin")
         .expect_err("a door row of a store is not the store kind's linked row");
     assert!(
-        refusal.contains("busbar-store-postgres") && !refusal.contains("no plugin named"),
+        refusal.contains("busbar-store-alpha") && !refusal.contains("no plugin named"),
         "the former name resolved to the plugin: {refusal}"
     );
 }
@@ -1075,4 +1076,64 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
         .link(vec![LinkedPlugin::door(webrequest(), unopened_door)])
         .expect("the same plugin linked and dropped in is not a conflict");
     assert!(reg.resolve("busbar-webrequest").expect("resolves").linked());
+}
+
+/// The fleet's plugins.yaml entries, as `(repo, kind, alias, former_names)`: the four fields this
+/// sweep reads, off the registry's own flat shape (`  - repo:` opens an entry).
+fn fleet_entries(yaml: &str) -> Vec<(String, String, String, Vec<String>)> {
+    let mut out: Vec<(String, String, String, Vec<String>)> = Vec::new();
+    for line in yaml.lines() {
+        if let Some(repo) = line.strip_prefix("  - repo: ") {
+            out.push((repo.trim().into(), String::new(), String::new(), Vec::new()));
+            continue;
+        }
+        let Some(e) = out.last_mut() else { continue };
+        let Some(field) = line.strip_prefix("    ") else {
+            continue;
+        };
+        if let Some(v) = field.strip_prefix("kind: ") {
+            e.1 = v.trim().into();
+        } else if let Some(v) = field.strip_prefix("alias: ") {
+            e.2 = v.trim().into();
+        } else if let Some(v) = field.strip_prefix("former_names: ") {
+            e.3 = v
+                .trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split(',')
+                .map(|w| w.trim().to_string())
+                .filter(|w| !w.is_empty())
+                .collect();
+        }
+    }
+    out
+}
+
+/// EVERY former name the committed plugins.yaml declares (the measured 1.5.5 manifest names of the
+/// renamed fleet plugins) resolves to its 1.6.0 plugin, of its kind, dropped in and linked: the
+/// ruling's case over the real data a 1.5.5 config names (`busbar-webrequest` under hooks, a store's
+/// `busbar-store-<name>-plugin` under `store.module`). A kind the linked door does not serve is
+/// checked dropped in only.
+#[test]
+fn every_former_name_plugins_yaml_declares_resolves_both_ways() {
+    let entries = fleet_entries(include_str!("../../../../plugins.yaml"));
+    let renamed_entries: Vec<_> = entries.iter().filter(|e| !e.3.is_empty()).collect();
+    assert!(renamed_entries.len() >= 9, "{renamed_entries:?}");
+    for (repo, kind, alias, former) in renamed_entries {
+        let former: Vec<&str> = former.iter().map(String::as_str).collect();
+        let m = || renamed(kind, repo, alias, &former);
+        let mut ways = vec![("dropped in", dropped_in(&format!("sweep-{alias}"), m()))];
+        if LINKED_KINDS.contains(&kind.as_str()) {
+            ways.push(("linked", linked_in(m())));
+        }
+        for (way, reg) in ways {
+            for old in &former {
+                let p = reg
+                    .resolve(old)
+                    .unwrap_or_else(|| panic!("{way}: {repo}'s former name '{old}' resolves"));
+                assert_eq!(&p.manifest.name, repo, "{way}");
+                assert!(reg.answers(old, kind), "{way}: '{old}' answers as a {kind}");
+            }
+        }
+    }
 }

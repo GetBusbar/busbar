@@ -1412,19 +1412,19 @@ fn an_old_manifest_with_no_former_names_parses_and_verifies_unchanged() {
 fn former_names_are_covered_by_the_signature() {
     let key = test_key(9);
     let lib = b"lib";
-    let mut m = manifest("busbar-store-postgres", "postgres", "busbar");
-    m.former_names = vec!["busbar-store-postgres-plugin".into()];
+    let mut m = manifest("busbar-store-alpha", "alpha", "busbar");
+    m.former_names = vec!["busbar-store-alpha-plugin".into()];
     let signed = sign(&key, m, lib);
     assert!(String::from_utf8_lossy(&canonical_manifest_bytes(&signed))
-        .contains("\"former_names\":[\"busbar-store-postgres-plugin\"]"));
+        .contains("\"former_names\":[\"busbar-store-alpha-plugin\"]"));
     signature_ok(&signed, lib, &key.verifying_key()).expect("the signed list verifies");
     for tamper in [
         vec![],
         vec![
-            "busbar-store-postgres-plugin".to_string(),
-            "postgres-x".to_string(),
+            "busbar-store-alpha-plugin".to_string(),
+            "alpha-x".to_string(),
         ],
-        vec!["busbar-store-mysql-plugin".to_string()],
+        vec!["busbar-store-beta-plugin".to_string()],
     ] {
         let mut t = signed.clone();
         t.former_names = tamper.clone();

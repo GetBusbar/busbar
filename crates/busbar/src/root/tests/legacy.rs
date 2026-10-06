@@ -342,10 +342,6 @@ fn a_linked_plugin_reads_its_former_names_by_its_alias() {
         busbar_kernel::config::legacy::former_names("webrequest"),
         ["busbar-webrequest"]
     );
-    assert_eq!(
-        busbar_kernel::config::legacy::former_names("postgres"),
-        ["busbar-store-postgres-plugin"]
-    );
     assert!(busbar_kernel::config::legacy::former_names("env").is_empty());
 }
 
