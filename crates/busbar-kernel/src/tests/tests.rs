@@ -1021,8 +1021,8 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
 /// ARCHITECT Q-P4-13: the pre-flight resolves a hook reference against the SAME claim table boot
 /// opens hooks through — the LINKED hook rows (the hook axis: Statement name, aliases, former names,
 /// hook words) beside the plugins directory's — not the registry alone, which holds no linked hook.
-/// GREEN: a config naming this build's linked hook (`hooks-ranking`) passes, with the plugin
-/// subsystem off and on (RED before: "the hooks registry names plugin module(s) [hooks-ranking],
+/// GREEN: a config naming this build's linked hook (the stand-in hook door) passes, with the plugin
+/// subsystem off and on (RED before: "the hooks registry names plugin module(s) [<its name>],
 /// which require the plugin subsystem" / "no plugin matching the hook reference"). RED ARM: an
 /// unknown name is still refused in 1.5.5's BUSBAR-6009 words (golden BOOT-138c).
 #[cfg(feature = "hooks-ranking")]
@@ -1044,7 +1044,7 @@ fn a_linked_hook_named_in_config_passes_preflight_and_an_unknown_one_is_refused(
             &Default::default(),
         )
     };
-    let linked = busbar_hooks_ranking_name();
+    let linked = linked_hook_name();
     for enabled in [false, true] {
         run(linked, enabled).unwrap_or_else(|e| {
             panic!("the linked hook '{linked}' passes (plugins.enabled: {enabled}): {e}")
@@ -1063,9 +1063,9 @@ fn a_linked_hook_named_in_config_passes_preflight_and_an_unknown_one_is_refused(
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The linked ranking hook's Statement name, as this test build links it.
+/// The linked hook's Statement name, as this test build links it (the stand-in hook door).
 #[cfg(feature = "hooks-ranking")]
-fn busbar_hooks_ranking_name() -> &'static str {
+fn linked_hook_name() -> &'static str {
     fixture_hook::NAME
 }
 
