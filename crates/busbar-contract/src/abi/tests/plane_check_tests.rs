@@ -2791,7 +2791,7 @@ fn an_arrivals_trust_facts_are_bounded_ordered_and_an_admitted_units_own() {
         Ok(()),
         "a counterparty"
     );
-    o.trust_capability = s(b"cap-x");
+    o.trust_item = s(b"cap-x");
     o.trust_digest = s(b"d1");
     assert_eq!(
         check_arrive(Ready, &o, &[], 4, &bounds()),
@@ -2800,20 +2800,20 @@ fn an_arrivals_trust_facts_are_bounded_ordered_and_an_admitted_units_own() {
     );
 
     // RED: a digest with no capability; a capability with no counterparty.
-    o.trust_capability = z();
+    o.trust_item = z();
     assert_eq!(
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::Contradiction, "arrive.trust_digest")
     );
     o.trust_digest = z();
-    o.trust_capability = s(b"cap-x");
+    o.trust_item = s(b"cap-x");
     o.trust_counterparty = z();
     assert_eq!(
         check_arrive(Ready, &o, &[], 4, &bounds()),
-        f(Rule::Contradiction, "arrive.trust_capability")
+        f(Rule::Contradiction, "arrive.trust_item")
     );
     // RED: counted with no bytes; past the text bound.
-    o.trust_capability = z();
+    o.trust_item = z();
     o.trust_counterparty = AbiStr {
         ptr: std::ptr::null(),
         len: 2,

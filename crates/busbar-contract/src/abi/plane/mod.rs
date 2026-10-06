@@ -434,19 +434,6 @@ pub const ROUTE_SESSION: u8 = 2;
 /// not a refund (Part 2 #62). Unset, the answer is the caller's whole or not at all.
 pub const ROUTE_STREAM: u8 = 4;
 
-/// [`RefusalIn::trust`]: no trust judgment (the refusal is not [`RefusalCode::Untrusted`]).
-pub const TRUST_NONE: u32 = 0;
-/// [`RefusalIn::trust`]: the instance declares no such counterparty.
-pub const TRUST_UNKNOWN: u32 = 1;
-/// [`RefusalIn::trust`]: the counterparty was never sighted, so nothing is pinned to judge by.
-pub const TRUST_UNSIGHTED: u32 = 2;
-/// [`RefusalIn::trust`]: the counterparty is quarantined (its last sighting drifted from its pin).
-pub const TRUST_QUARANTINED: u32 = 3;
-/// [`RefusalIn::trust`]: the capability was never approved at this counterparty.
-pub const TRUST_NOT_APPROVED: u32 = 4;
-/// [`RefusalIn::trust`]: the capability is offered at another digest than the one approved.
-pub const TRUST_CHANGED: u32 = 5;
-
 /// [`OnPieceIn::from`]: the piece is the caller's.
 pub const FROM_CALLER: u32 = 0;
 /// [`OnPieceIn::from`]: the piece is the far end's.
@@ -1443,11 +1430,12 @@ pub struct ArriveOut {
     /// is judged; absent on every other outcome. Plane memory, valid until the instance's next
     /// call. A tail addition.
     pub trust_counterparty: AbiStr,
-    /// With `trust_counterparty`: the CAPABILITY the unit uses there, opaque to the kernel; the
-    /// kernel requires it approved at `trust_digest`. Absent = the counterparty as a whole.
-    pub trust_capability: AbiStr,
-    /// With `trust_capability`: the DIGEST the capability is offered at now, as the plane observed
-    /// it, opaque to the kernel. Absent = none observed (judged as not approved at any digest).
+    /// With `trust_counterparty`: the ITEM the unit uses there (a tool, a skill: the plane's own
+    /// per-item trust key), opaque to the kernel; the kernel requires it sighted and approved at
+    /// `trust_digest`. Absent = the counterparty as a whole.
+    pub trust_item: AbiStr,
+    /// With `trust_item`: the DIGEST the item is offered at now, as the plane observed it,
+    /// opaque to the kernel. Absent = the item's last sighting (`trust.sight_item`) stands.
     pub trust_digest: AbiStr,
 }
 
@@ -1649,8 +1637,9 @@ pub struct RefusalIn {
     /// every other refusal. A tail addition.
     pub hook: AbiStr,
     /// With [`RefusalCode::Untrusted`]: why the kernel's Approve did not trust the unit's stated
-    /// facts (`TRUST_*`), so the plane renders the words its dialect has for each; [`TRUST_NONE`]
-    /// on every other refusal. A tail addition.
+    /// facts (`abi::host::service::DISTRUST_*`, the one trust vocabulary, `trust.serves`'s too),
+    /// so the plane renders the words its dialect has for each (an unknown item as not found, a
+    /// known one ungranted as refused); `0` on every other refusal. A tail addition.
     pub trust: u32,
     /// Alignment padding.
     pub _trust_reserved: u32,

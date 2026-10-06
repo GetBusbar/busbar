@@ -611,7 +611,7 @@ impl PlaneCalls for Double {
                     Some(i) => (&cap[..i], Some(&cap[i + 1..])),
                     None => (cap, None),
                 };
-                out.trust_capability = leak(cap);
+                out.trust_item = leak(cap);
                 if let Some(d) = digest {
                     out.trust_digest = leak(d);
                 }
@@ -682,7 +682,7 @@ impl PlaneCalls for Double {
         let read = |s: AbiStr| (!s.ptr.is_null()).then(|| unsafe { text(s) }.to_vec());
         Some(ArrivedTrust {
             counterparty: read(out.trust_counterparty)?,
-            capability: read(out.trust_capability),
+            item: read(out.trust_item),
             digest: read(out.trust_digest),
         })
     }
@@ -1511,6 +1511,51 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
         body,
         refused(5),
         "no digest observed is not the approved one"
+    );
+
+    // An item stated with no digest: unknown until the plane's re-fetch sights it (6, a 404's
+    // case), known and ungranted after (4, a 403's case), served once approved at its sighting,
+    // and changed once a re-fetch sees another digest (5).
+    let (outcome, body) = approved(&driver, "/trusted/peer/tool").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(6));
+    let sighted = services.trust_sight_item(&instance(), "peer", "tool", "t1");
+    assert_eq!(
+        sighted.value,
+        busbar_contract::abi::host::service::TRUST_NEW
+    );
+    let (outcome, body) = approved(&driver, "/trusted/peer/tool").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(4));
+    services
+        .trust_approve(
+            "inst",
+            "peer",
+            [
+                ("cap".to_string(), "d1".to_string()),
+                ("tool".to_string(), "t1".to_string()),
+            ],
+        )
+        .expect("peer is declared");
+    let serves = |item: &str| {
+        services
+            .trust_serves(&instance(), "peer", Some(item), None)
+            .value
+    };
+    assert_eq!(
+        serves("tool"),
+        busbar_contract::abi::host::service::DISTRUST_NONE
+    );
+    let (outcome, _) = approved(&driver, "/trusted/peer/tool").await;
+    assert!(!untrusted(&outcome), "{outcome:?}");
+    let _ = services.trust_sight_item(&instance(), "peer", "tool", "t2");
+    assert_eq!(
+        serves("tool"),
+        busbar_contract::abi::host::service::DISTRUST_CHANGED
+    );
+    assert_eq!(
+        serves("never-seen"),
+        busbar_contract::abi::host::service::DISTRUST_UNKNOWN_ITEM
     );
 
     // RED: a sighting that drifts quarantines the counterparty, whatever was approved.

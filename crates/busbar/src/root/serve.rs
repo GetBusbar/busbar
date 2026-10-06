@@ -296,6 +296,32 @@ impl HostServices for LateServices {
         }
     }
 
+    fn trust_sight_item(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Stored {
+        match self.served() {
+            Ok(s) => s.trust_sight_item(caller, counterparty, item, digest),
+            Err(r) => r,
+        }
+    }
+
+    fn trust_serves(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        match self.served() {
+            Ok(s) => s.trust_serves(caller, counterparty, item, digest),
+            Err(r) => r,
+        }
+    }
+
     fn trust_due(&self, caller: &Caller) -> Stored {
         match self.served() {
             Ok(s) => s.trust_due(caller),

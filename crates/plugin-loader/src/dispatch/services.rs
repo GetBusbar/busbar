@@ -36,8 +36,9 @@ use busbar_contract::abi::host::service::{
     self as svc, check_bufs, check_head, check_random_fill_in, check_records_claim_in,
     check_work_record, may_pend, op, ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn,
     HostSlots, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn, RecordsSecretIn,
-    ServiceBufs, ServiceHead, ServiceOut, SignIn, TrustDueIn, TrustSightIn, TrustVerifyIn,
-    UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, SERVICES,
+    ServiceBufs, ServiceHead, ServiceOut, SignIn, TrustDueIn, TrustServesIn, TrustSightIn,
+    TrustSightItemIn, TrustVerifyIn, UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn,
+    WorkSettleIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
@@ -336,6 +337,8 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     need_admit: Some(need_admit),
     trust_verify: Some(trust_verify),
     records_secret: Some(records_secret),
+    trust_sight_item: Some(trust_sight_item),
+    trust_serves: Some(trust_serves),
 };
 
 /// The dispatcher an instance's context routes to, and what it serves.
@@ -774,6 +777,73 @@ extern "C" fn trust_sight(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             unsafe {
                 pended(&served, &route, &head, None, |later| {
                     provider.trust_sight(&caller, &counterparty, &hash, later)
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn trust_sight_item(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::TRUST_SIGHT_ITEM,
+        size_of::<TrustSightItemIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `TrustSightItemIn`.
+            let i = unsafe { input.cast::<TrustSightItemIn>().read_unaligned() };
+            let (Some(counterparty), Some(item), Some(digest)) = (
+                text_of(i.counterparty, "trust_sight_item.counterparty"),
+                text_of(i.item, "trust_sight_item.item"),
+                text_of(i.digest, "trust_sight_item.digest"),
+            ) else {
+                return Answered::fault();
+            };
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: no buffer is named.
+            unsafe {
+                serve(&served.store, &route, &head, None, |_| {
+                    Ran::Now(provider.trust_sight_item(&caller, &counterparty, &item, &digest))
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn trust_serves(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::TRUST_SERVES,
+        size_of::<TrustServesIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `TrustServesIn`.
+            let i = unsafe { input.cast::<TrustServesIn>().read_unaligned() };
+            let (Some(counterparty), Some(item), Some(digest)) = (
+                text_of(i.counterparty, "trust_serves.counterparty"),
+                text_of(i.item, "trust_serves.item"),
+                text_of(i.digest, "trust_serves.digest"),
+            ) else {
+                return Answered::fault();
+            };
+            let some = |s: String| (!s.is_empty()).then_some(s);
+            let (item, digest) = (some(item), some(digest));
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: no buffer is named.
+            unsafe {
+                serve(&served.store, &route, &head, None, |_| {
+                    Ran::Now(provider.trust_serves(
+                        &caller,
+                        &counterparty,
+                        item.as_deref(),
+                        digest.as_deref(),
+                    ))
                 })
             }
         },

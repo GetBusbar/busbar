@@ -150,10 +150,14 @@ pub mod op {
     pub const TRUST_VERIFY: u32 = 20;
     /// `records.secret`.
     pub const RECORDS_SECRET: u32 = 21;
+    /// `trust.sight_item`.
+    pub const TRUST_SIGHT_ITEM: u32 = 22;
+    /// `trust.serves`.
+    pub const TRUST_SERVES: u32 = 23;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 22;
+pub const SERVICES: u32 = 24;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
 /// an index past the table.
@@ -169,6 +173,8 @@ pub const fn may_pend(service: u32) -> bool {
             | op::RANDOM_FILL
             | op::NEED_ADMIT
             | op::TRUST_VERIFY
+            | op::TRUST_SIGHT_ITEM
+            | op::TRUST_SERVES
     ) && service < SERVICES
 }
 
@@ -495,6 +501,56 @@ pub const TRUST_DRIFTED: u64 = 3;
 /// `trust.sight` verdict: the counterparty is quarantined.
 pub const TRUST_QUARANTINED: u64 = 4;
 
+/// [`op::TRUST_SIGHT_ITEM`]'s `in`: report the digest ONE ITEM of a counterparty (a tool, a skill:
+/// the plane's own per-item trust key) is offered at now, from the plane's live re-fetch; the
+/// kernel records it and answers a `TRUST_*` sighting verdict (`TRUST_NEW` the first sighting,
+/// `TRUST_SAME` the same digest as the last, `TRUST_DRIFTED` another, `TRUST_QUARANTINED` when
+/// the counterparty is). Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TrustSightItemIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The counterparty.
+    pub counterparty: AbiStr,
+    /// The item, opaque to the kernel.
+    pub item: AbiStr,
+    /// Its digest now, opaque to the kernel.
+    pub digest: AbiStr,
+}
+
+/// [`op::TRUST_SERVES`]'s `in`: the KERNEL'S APPROVE as a query (ARCHITECT 2026-10-06: trust is
+/// the kernel's Approve step), for a plane's route leg after its live re-fetch: whether the
+/// counterparty serves `item` at `digest` (absent = the item's last sighting). `value` =
+/// [`DISTRUST_NONE`] (it serves) or the `DISTRUST_*` that refuses it. Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TrustServesIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The counterparty.
+    pub counterparty: AbiStr,
+    /// The item; absent = the counterparty as a whole.
+    pub item: AbiStr,
+    /// The digest it is offered at now; absent = its last sighting.
+    pub digest: AbiStr,
+}
+
+/// THE ONE TRUST VOCABULARY (`trust.serves`'s value, and `abi::plane::RefusalIn::trust`): it serves.
+pub const DISTRUST_NONE: u64 = 0;
+/// The instance declares no such counterparty.
+pub const DISTRUST_UNKNOWN: u64 = 1;
+/// The counterparty was never sighted: nothing is pinned to judge by.
+pub const DISTRUST_UNSIGHTED: u64 = 2;
+/// The counterparty is quarantined: its last sighting drifted from its pin.
+pub const DISTRUST_QUARANTINED: u64 = 3;
+/// The item is known (sighted) and was never approved: a known item ungranted (a 403's case).
+pub const DISTRUST_NOT_APPROVED: u64 = 4;
+/// The item is offered at another digest than the one approved (or at none).
+pub const DISTRUST_CHANGED: u64 = 5;
+/// The item was never sighted at this counterparty: an unknown item (a 404's case).
+pub const DISTRUST_UNKNOWN_ITEM: u64 = 6;
+
 /// [`op::TRUST_VERIFY`]'s `in`: verify a document's detached signatures against the root key the
 /// kernel holds for `counterparty` (the operator's out-of-band material its declared pin names).
 /// The key selects the algorithm; a signature's header is only checked against it. `value` = a
@@ -749,6 +805,10 @@ pub struct HostSlots {
     pub trust_verify: Option<ServiceFn>,
     /// [`op::RECORDS_SECRET`], in [`RecordsSecretIn`].
     pub records_secret: Option<ServiceFn>,
+    /// [`op::TRUST_SIGHT_ITEM`], in [`TrustSightItemIn`]. A tail addition.
+    pub trust_sight_item: Option<ServiceFn>,
+    /// [`op::TRUST_SERVES`], in [`TrustServesIn`]. A tail addition.
+    pub trust_serves: Option<ServiceFn>,
 }
 
 // ── the host's checks of an `in` ──────────────────────────────────────────────────────────────
@@ -1109,6 +1169,42 @@ pub fn check_trust_sight(
         &i.head,
         out,
         bare(op::TRUST_SIGHT, (TRUST_NEW, TRUST_QUARANTINED)),
+    )
+}
+
+/// `trust.sight_item`'s answer: a sighting verdict.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_trust_sight_item(
+    i: &TrustSightItemIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    answer(
+        ret,
+        &i.head,
+        out,
+        bare(op::TRUST_SIGHT_ITEM, (TRUST_NEW, TRUST_QUARANTINED)),
+    )
+}
+
+/// `trust.serves`'s answer: [`DISTRUST_NONE`] or a `DISTRUST_*`.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_trust_serves(
+    i: &TrustServesIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    answer(
+        ret,
+        &i.head,
+        out,
+        bare(op::TRUST_SERVES, (DISTRUST_NONE, DISTRUST_UNKNOWN_ITEM)),
     )
 }
 

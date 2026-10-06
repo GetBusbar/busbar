@@ -2616,7 +2616,7 @@ struct bb_plane_ArriveOut {
     uint8_t _route_reserved[6];
     bb_mech_AbiStr affinity;
     bb_mech_AbiStr trust_counterparty;
-    bb_mech_AbiStr trust_capability;
+    bb_mech_AbiStr trust_item;
     bb_mech_AbiStr trust_digest;
 };
 
@@ -4876,7 +4876,7 @@ BB_ASSERT(offsetof(bb_plane_ArriveOut, route_flags) == 161, "bb_plane_ArriveOut.
 BB_ASSERT(offsetof(bb_plane_ArriveOut, _route_reserved) == 162, "bb_plane_ArriveOut._route_reserved: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, affinity) == 168, "bb_plane_ArriveOut.affinity: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, trust_counterparty) == 184, "bb_plane_ArriveOut.trust_counterparty: offset");
-BB_ASSERT(offsetof(bb_plane_ArriveOut, trust_capability) == 200, "bb_plane_ArriveOut.trust_capability: offset");
+BB_ASSERT(offsetof(bb_plane_ArriveOut, trust_item) == 200, "bb_plane_ArriveOut.trust_item: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, trust_digest) == 216, "bb_plane_ArriveOut.trust_digest: offset");
 BB_ASSERT(sizeof(bb_plane_OnPieceIn) == 312, "bb_plane_OnPieceIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_OnPieceIn) == 8, "bb_plane_OnPieceIn: alignment");

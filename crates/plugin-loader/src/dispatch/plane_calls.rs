@@ -99,7 +99,7 @@ impl PlaneCalls for PlaneInstance {
         let counterparty = copy_str(out.trust_counterparty).filter(|c| !c.is_empty())?;
         Some(ArrivedTrust {
             counterparty,
-            capability: copy_str(out.trust_capability).filter(|c| !c.is_empty()),
+            item: copy_str(out.trust_item).filter(|c| !c.is_empty()),
             digest: copy_str(out.trust_digest).filter(|c| !c.is_empty()),
         })
     }

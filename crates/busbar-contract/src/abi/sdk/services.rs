@@ -21,12 +21,14 @@ use crate::abi::host::conn::connector::WITHIN_SEPARATOR;
 use crate::abi::host::service::{
     check_clock_now, check_dest_judge, check_entitlement_check, check_random_fill,
     check_random_fill_in, check_records_claim, check_records_claim_in, check_records_get,
-    check_records_list, check_sign, check_trust_due, check_trust_sight, check_trust_verify,
-    check_unit_nest, check_work_find, check_work_open, check_work_resume, check_work_settle, op,
-    ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn,
-    RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut,
-    SignIn, TrustDueIn, TrustSightIn, TrustVerifyIn, UnitNestIn, WorkFindIn, WorkOpenIn,
-    WorkResumeIn, WorkSettleIn, ABSENT, CLAIM_WON, DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND,
+    check_records_list, check_sign, check_trust_due, check_trust_serves, check_trust_sight,
+    check_trust_sight_item, check_trust_verify, check_unit_nest, check_work_find, check_work_open,
+    check_work_resume, check_work_settle, op, ClockNowIn, ClockReading, DestJudgeIn,
+    EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn, RecordsClaimIn, RecordsGetIn,
+    RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut, SignIn, TrustDueIn,
+    TrustServesIn, TrustSightIn, TrustSightItemIn, TrustVerifyIn, UnitNestIn, WorkFindIn,
+    WorkOpenIn, WorkResumeIn, WorkSettleIn, ABSENT, CLAIM_WON, DEST_ALLOWED, DEST_RESOLVE,
+    ENTITLED, FOUND,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
@@ -381,6 +383,65 @@ impl Services {
             &input,
             check_trust_sight,
         ))
+    }
+
+    /// `trust.sight_item`: report the digest ONE ITEM of `counterparty` is offered at now (the
+    /// plane's live re-fetch); the KERNEL records it. Ready: a `TRUST_*` sighting verdict. Never
+    /// pends.
+    ///
+    /// # Errors
+    ///
+    /// As every service: unserved, declined, or broken.
+    pub fn trust_sight_item(
+        &self,
+        handle: CompletionHandle,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Result<u64, ServiceError> {
+        let input = TrustSightItemIn {
+            head: head::<TrustSightItemIn>(op::TRUST_SIGHT_ITEM, handle),
+            counterparty: text(counterparty),
+            item: text(item),
+            digest: text(digest),
+        };
+        let crossed = self.cross(
+            op::TRUST_SIGHT_ITEM,
+            |t| t.trust_sight_item,
+            &input,
+            check_trust_sight_item,
+        )?;
+        Ok(ready(crossed)?.value)
+    }
+
+    /// `trust.serves`: THE KERNEL'S APPROVE as a query, for a route leg after its live re-fetch:
+    /// whether `counterparty` serves `item` (`None` = as a whole) at `digest` (`None` = its last
+    /// sighting). Ready: `DISTRUST_NONE`, or the `DISTRUST_*` that refuses it (an unknown item
+    /// apart from a known one ungranted). Never pends.
+    ///
+    /// # Errors
+    ///
+    /// As every service: unserved, declined, or broken.
+    pub fn trust_serves(
+        &self,
+        handle: CompletionHandle,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Result<u64, ServiceError> {
+        let input = TrustServesIn {
+            head: head::<TrustServesIn>(op::TRUST_SERVES, handle),
+            counterparty: text(counterparty),
+            item: text(item.unwrap_or("")),
+            digest: text(digest.unwrap_or("")),
+        };
+        let crossed = self.cross(
+            op::TRUST_SERVES,
+            |t| t.trust_serves,
+            &input,
+            check_trust_serves,
+        )?;
+        Ok(ready(crossed)?.value)
     }
 
     /// `trust.due`: the counterparties the kernel's `tick` marked for re-verification, written

@@ -253,15 +253,15 @@ pub struct InstanceDecl {
     pub record_chains: Vec<crate::abi::plane::RecordChain>,
 }
 
-/// The trust facts a READY `arrive` stated, owned (a counterparty, and optionally a capability and
+/// The trust facts a READY `arrive` stated, owned (a counterparty, and optionally an item and
 /// the digest it is offered at): what the kernel's Approve judges.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ArrivedTrust {
     /// The counterparty, a name among the instance's declared trust entries.
     pub counterparty: Vec<u8>,
-    /// The capability the unit uses there; `None` = the counterparty as a whole.
-    pub capability: Option<Vec<u8>>,
-    /// The digest the capability is offered at now; `None` = none observed.
+    /// The item the unit uses there; `None` = the counterparty as a whole.
+    pub item: Option<Vec<u8>>,
+    /// The digest the item is offered at now; `None` = none observed.
     pub digest: Option<Vec<u8>>,
 }
 
@@ -292,7 +292,7 @@ pub trait PlaneCalls: Send + Sync {
     }
 
     /// The trust facts a READY `arrive` stated ([`ArriveOut::trust_counterparty`],
-    /// [`ArriveOut::trust_capability`], [`ArriveOut::trust_digest`]), copied out of the plane's
+    /// [`ArriveOut::trust_item`], [`ArriveOut::trust_digest`]), copied out of the plane's
     /// memory while that answer is the instance's last: `None` when it stated no counterparty.
     /// Opaque: the kernel's Approve judges them against its trust book.
     fn arrived_trust(&self, out: &ArriveOut) -> Option<ArrivedTrust> {

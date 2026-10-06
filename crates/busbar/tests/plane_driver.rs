@@ -217,7 +217,7 @@ fn stats(plugin: &Plugin<Plane>) -> [u64; cases::stat::COUNT] {
                 ptr: std::ptr::null(),
                 len: 0,
             },
-            trust_capability: busbar_contract::abi::mechanism::call::AbiStr {
+            trust_item: busbar_contract::abi::mechanism::call::AbiStr {
                 ptr: std::ptr::null(),
                 len: 0,
             },
@@ -404,7 +404,7 @@ fn zero_arrive_out() -> ArriveOut {
             ptr: std::ptr::null(),
             len: 0,
         },
-        trust_capability: busbar_contract::abi::mechanism::call::AbiStr {
+        trust_item: busbar_contract::abi::mechanism::call::AbiStr {
             ptr: std::ptr::null(),
             len: 0,
         },

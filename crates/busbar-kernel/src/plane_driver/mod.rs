@@ -73,8 +73,6 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     reason_code, ArriveIn, ArriveOut, OutField, RefusalIn, RefusalOut, RefusalStatus, UnitCount,
     REFUSAL_ANY_DIALECT, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL, ROUTE_LOCAL, ROUTE_SESSION,
-    TRUST_CHANGED, TRUST_NONE, TRUST_NOT_APPROVED, TRUST_QUARANTINED, TRUST_UNKNOWN,
-    TRUST_UNSIGHTED,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
@@ -191,18 +189,6 @@ fn is_authentication(reason: ReasonCode) -> bool {
             | ReasonCode::SchemeNotDeclared
             | ReasonCode::SessionUnbound
     )
-}
-
-/// The `TRUST_*` code a [`Distrust`] crosses to the plane as ([`RefusalIn::trust`]).
-#[must_use]
-pub fn trust_code(why: Distrust) -> u32 {
-    match why {
-        Distrust::Unknown => TRUST_UNKNOWN,
-        Distrust::Unsighted => TRUST_UNSIGHTED,
-        Distrust::Quarantined => TRUST_QUARANTINED,
-        Distrust::NotApproved => TRUST_NOT_APPROVED,
-        Distrust::Changed => TRUST_CHANGED,
-    }
 }
 
 /// The status the kernel hands `refusal` for a reason, when the deployment states no other.
@@ -533,7 +519,7 @@ pub struct Decoded {
     pub route: u8,
     /// The `ROUTE_*` flag bits its `arrive` stated (`ROUTE_ONCE`, `ROUTE_SESSION`).
     pub route_flags: u8,
-    /// The trust facts its `arrive` stated (a counterparty, and a capability at a digest), which
+    /// The trust facts its `arrive` stated (a counterparty, and an item at a digest), which
     /// the kernel's Approve judges; `None` = the unit rests on no counterparty.
     pub trust: Option<busbar_contract::plane_calls::ArrivedTrust>,
 }
@@ -832,9 +818,11 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             records_buf: records.as_mut_ptr(),
             records_cap: records.len(),
             trust: if reason == ReasonCode::Untrusted {
-                self.lock().distrust.map_or(TRUST_NONE, trust_code)
+                self.lock().distrust.map_or(0, |why| {
+                    u32::try_from(crate::host_services::distrust_code(why)).unwrap_or(0)
+                })
             } else {
-                TRUST_NONE
+                0
             },
             ..blank_in()
         };
@@ -1109,14 +1097,14 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         let stated = self.lock().decoded.as_ref().and_then(|d| d.trust.clone());
         if let Some(t) = stated {
             let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
-            let (counterparty, capability, digest) = (
+            let (counterparty, item, digest) = (
                 text(&t.counterparty),
-                t.capability.as_deref().map(text),
+                t.item.as_deref().map(text),
                 t.digest.as_deref().map(text),
             );
             let facts = TrustFacts {
                 counterparty: &counterparty,
-                capability: capability.as_deref(),
+                item: item.as_deref(),
                 digest: digest.as_deref(),
             };
             if let Err(why) = self.driver.services.trust_judge(&self.driver.label, &facts) {

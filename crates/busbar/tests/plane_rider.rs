@@ -181,7 +181,7 @@ fn arrive(plugin: &Plugin<Plane>, target: &[u8]) -> (AbiOutcome, Vec<u64>) {
                 ptr: std::ptr::null(),
                 len: 0,
             },
-            trust_capability: AbiStr {
+            trust_item: AbiStr {
                 ptr: std::ptr::null(),
                 len: 0,
             },

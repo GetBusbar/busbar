@@ -156,6 +156,27 @@ impl HostServices for CredentialServices {
         self.inner.trust_due(caller)
     }
 
+    fn trust_sight_item(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Stored {
+        self.inner
+            .trust_sight_item(caller, counterparty, item, digest)
+    }
+
+    fn trust_serves(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        self.inner.trust_serves(caller, counterparty, item, digest)
+    }
+
     fn trust_verify(
         &self,
         caller: &Caller,

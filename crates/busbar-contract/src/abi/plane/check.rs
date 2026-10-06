@@ -271,13 +271,13 @@ pub fn check_arrive(
 }
 
 /// `arrive`'s TRUST FACTS (ARCHITECT 2026-10-06, the kernel's Approve): each a bounded text; a
-/// capability only with a counterparty, a digest only with a capability; and an answer that admits
+/// item only with a counterparty, a digest only with an item; and an answer that admits
 /// nothing states none.
 fn trust_facts(outcome: Outcome, out: &ArriveOut) -> Result<(), Fault> {
     let stated = |s: AbiStr| s.len != 0 || !s.ptr.is_null();
     let facts = [
         (out.trust_counterparty, "arrive.trust_counterparty"),
-        (out.trust_capability, "arrive.trust_capability"),
+        (out.trust_item, "arrive.trust_item"),
         (out.trust_digest, "arrive.trust_digest"),
     ];
     if outcome != Outcome::Ready {
@@ -292,10 +292,10 @@ fn trust_facts(outcome: Outcome, out: &ArriveOut) -> Result<(), Fault> {
             return Err(fault(Rule::OverMax, field));
         }
     }
-    if stated(out.trust_capability) && out.trust_counterparty.len == 0 {
-        return Err(fault(Rule::Contradiction, "arrive.trust_capability"));
+    if stated(out.trust_item) && out.trust_counterparty.len == 0 {
+        return Err(fault(Rule::Contradiction, "arrive.trust_item"));
     }
-    if stated(out.trust_digest) && out.trust_capability.len == 0 {
+    if stated(out.trust_digest) && out.trust_item.len == 0 {
         return Err(fault(Rule::Contradiction, "arrive.trust_digest"));
     }
     Ok(())

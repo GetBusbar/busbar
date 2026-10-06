@@ -1783,7 +1783,7 @@ fn compute_layout() -> String {
             _route_reserved,
             affinity,
             trust_counterparty,
-            trust_capability,
+            trust_item,
             trust_digest
         ]
     );
@@ -2115,6 +2115,12 @@ fn compute_layout() -> String {
     record!(s, hsvc::WorkSettleIn, [head, handle, record]);
     record!(s, hsvc::WorkResumeIn, [head, handle, into]);
     record!(s, hsvc::TrustSightIn, [head, counterparty, catalogue_hash]);
+    record!(
+        s,
+        hsvc::TrustSightItemIn,
+        [head, counterparty, item, digest]
+    );
+    record!(s, hsvc::TrustServesIn, [head, counterparty, item, digest]);
     record!(s, hsvc::TrustDueIn, [head, into]);
     record!(s, hsvc::VerifyLookupIn, [head, key, into]);
     record!(s, hsvc::VerifyStoreIn, [head, key, entry, ttl_ms]);
@@ -2149,7 +2155,9 @@ fn compute_layout() -> String {
             random_fill,
             need_admit,
             trust_verify,
-            records_secret
+            records_secret,
+            trust_sight_item,
+            trust_serves
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);

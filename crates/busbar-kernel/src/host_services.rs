@@ -820,7 +820,7 @@ impl KernelServices {
         self.trust.judge(instance, facts)
     }
 
-    /// Approve `counterparty` of `instance` for exactly `capabilities`, each at its digest
+    /// Approve `counterparty` of `instance` for exactly `items`, each at its digest
     /// ([`TrustBook::approve`]): the set the kernel's Approve judges a stated capability against.
     ///
     /// # Errors
@@ -830,9 +830,9 @@ impl KernelServices {
         &self,
         instance: &str,
         counterparty: &str,
-        capabilities: impl IntoIterator<Item = (String, String)>,
+        items: impl IntoIterator<Item = (String, String)>,
     ) -> Result<(), Unjudged> {
-        self.trust.approve(instance, counterparty, capabilities)
+        self.trust.approve(instance, counterparty, items)
     }
 
     /// The record of every unit in flight, which the unit's admission writes and its end removes.
@@ -1464,6 +1464,46 @@ impl HostServices for KernelServices {
         }
     }
 
+    fn trust_sight_item(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Stored {
+        match self
+            .trust
+            .sight_item(&caller.instance, counterparty, item, digest)
+        {
+            Ok(sight) => Stored::ready(match sight {
+                Sight::New => svc::TRUST_NEW,
+                Sight::Same => svc::TRUST_SAME,
+                Sight::Drifted => svc::TRUST_DRIFTED,
+                Sight::Quarantined => svc::TRUST_QUARANTINED,
+            }),
+            Err(Unjudged::UnknownInstance) => Stored::refused(NOT_ADMITTED),
+            Err(Unjudged::UnknownCounterparty) => Stored::refused(NOT_A_COUNTERPARTY),
+        }
+    }
+
+    fn trust_serves(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        let facts = TrustFacts {
+            counterparty,
+            item,
+            digest,
+        };
+        Stored::ready(match self.trust.judge(&caller.instance, &facts) {
+            Ok(()) => svc::DISTRUST_NONE,
+            Err(why) => distrust_code(why),
+        })
+    }
+
     fn trust_due(&self, caller: &Caller) -> Stored {
         let Some(names) = self.trust.due(&caller.instance) else {
             return Stored::refused(NOT_ADMITTED);
@@ -1792,3 +1832,17 @@ mod trust_verify_tests;
 #[cfg(test)]
 #[path = "tests/host_nest_tests.rs"]
 mod host_nest_tests;
+
+/// The `DISTRUST_*` code (the one trust vocabulary: `trust.serves`'s value and a refused unit's
+/// `RefusalIn::trust`) a [`Distrust`] is.
+#[must_use]
+pub fn distrust_code(why: Distrust) -> u64 {
+    match why {
+        Distrust::Unknown => svc::DISTRUST_UNKNOWN,
+        Distrust::Unsighted => svc::DISTRUST_UNSIGHTED,
+        Distrust::Quarantined => svc::DISTRUST_QUARANTINED,
+        Distrust::NotApproved => svc::DISTRUST_NOT_APPROVED,
+        Distrust::Changed => svc::DISTRUST_CHANGED,
+        Distrust::UnknownItem => svc::DISTRUST_UNKNOWN_ITEM,
+    }
+}
