@@ -1554,6 +1554,16 @@ impl Conns for Connector {
                         *held.redial.lock().expect("redial") = Some(redial);
                         return self.slab.insert(caller, need, held);
                     }
+                    // The attach wrote the opening and THEN found the line failed (the far end's
+                    // close met in the same drive that flushed it): a byte of the exchange left,
+                    // so it is never re-sent (Q-L18-RETRY). It holds the failed line and its read
+                    // answers the failure, as a failure met at the first read does; the line is
+                    // let go when it closes. Whether the failure is met here or at that read is
+                    // the far end's timing; the verdict is the socket's count either way.
+                    Err((stream, _)) if line.flushed() != redial.mark => {
+                        let held = Held::over(Some((line, stream)), None, pooled);
+                        return self.slab.insert(caller, need, held);
+                    }
                     // The lent line failed before the exchange left (ARCHITECT ruling
                     // Q-L18-RETRY): it is let go, and the exchange dials a fresh connection.
                     Err((stream, _)) => {
