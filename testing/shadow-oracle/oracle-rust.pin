@@ -265,8 +265,13 @@
 # a staging config that states its own plugins.trust keeps every word and the run's publisher joins its publishers
 # list (BOOT-W23 now validates the tampered plugin as UNVERIFIED, as 1.5.5 does).
 #
+# 2026-10-06: moved 5b89bdf67326 -> f0ca9f1f1a76, the merge of busbar-release #167 into dev (descends 5b89bdf67326,
+# so 0ede76aea9 too): recorder::plugin_build signs a source-built plugin with --former-name for each 1.5.5 manifest
+# name the tree under test's plugins.yaml (former_names) or the recipe states, so a renamed fleet plugin answers its
+# 1.5.5 name (busbar #508; the 52 webrequest cells re-record once both are in).
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=5b89bdf673269454a94d8c6eba9d031b9ae216ab
+release_ref=f0ca9f1f1a7682fcc7f30c30192ee2dbc1e28b3b
 crate=busbar-release-oracle
 bin=busbar-oracle
