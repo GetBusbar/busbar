@@ -234,6 +234,9 @@ pub enum Admission {
     Refused(Refusal, Option<CallLine>),
     /// Busbar asks its own caller first: the `input_required` answer and the call-log line.
     Asked(Vec<u8>, CallLine),
+    /// Answered here and never sent: the upstream-failure tool error of a call whose server the
+    /// door's live re-fetch could not reach (ARCHITECT Q3 (c)), and the call-log line.
+    Unreached(Vec<u8>, CallLine),
 }
 
 /// A JSON-RPC error answer.
@@ -425,8 +428,9 @@ pub enum Trust {
     /// `trust.serves`'s answer for the tool's registration and trust key: [`DISTRUST_NONE`] (it
     /// serves) or the `DISTRUST_*` that refuses it.
     Verdict(u64),
-    /// The live re-fetch failed, with the operator-visible reason: nothing was sighted.
-    Unverified(String),
+    /// The live re-fetch could not reach the server, with the reason: reported to the kernel as an
+    /// unreachable sighting (its last verdict stands), and the call fails as an upstream failure.
+    Unreached(String),
 }
 
 /// The refusal reason of a tool whose server the kernel quarantined.
@@ -435,20 +439,25 @@ pub const REASON_QUARANTINED: &str = "quarantined";
 pub const REASON_NOT_APPROVED: &str = "not_approved";
 /// The refusal reason of a tool whose server was never verified.
 pub const REASON_UNVERIFIED: &str = "pending";
-/// The refusal reason of a tool whose server's live re-fetch failed.
-pub const REASON_VERIFY_FAILED: &str = "error";
 /// The refusal reason of a tool the server does not offer (the catalogue's own word).
 pub const REASON_UNKNOWN_TOOL: &str = "unknown_tool";
 
 /// THE KERNEL'S VERDICT RENDERED in this dialect's words: `None` when it serves. An item the kernel
 /// never sighted is not found (`404`, as a name the catalogue does not carry); one it knows and the
-/// operator has not granted, and every other distrust, is refused (`403`).
+/// operator has not granted, and every other distrust, is refused (`403`). A server the re-fetch
+/// could not reach is no verdict at all: the call fails as an upstream failure, a tool error.
+fn trust_answer(id: &Value, name: &str, entry: &ToolEntry, trust: Trust) -> Option<Admission> {
+    trust_refusal(id, name, entry, trust)
+        .map(|either| either.unwrap_or_else(|(r, line)| Admission::Refused(r, Some(line))))
+}
+
+/// [`trust_answer`]'s two shapes: a refusal (`Err`) or the unreached call's answer (`Ok`).
 fn trust_refusal(
     id: &Value,
     name: &str,
     entry: &ToolEntry,
     trust: Trust,
-) -> Option<(Refusal, CallLine)> {
+) -> Option<Result<Admission, (Refusal, CallLine)>> {
     let server = &entry.server;
     let refused = |message: String, reason: &str| {
         (
@@ -458,16 +467,20 @@ fn trust_refusal(
     };
     let code = match trust {
         Trust::Verdict(code) => code,
-        Trust::Unverified(reason) => {
-            return Some(refused(
-                format!(
-                    "MCP server `{server}` could not be verified ({reason}), so it serves nothing"
+        Trust::Unreached(reason) => {
+            return Some(Ok(Admission::Unreached(
+                result(
+                    id,
+                    upstream_failure_result(
+                        server,
+                        &format!("busbar could not reach it to verify its tool list: {reason}"),
+                    ),
                 ),
-                REASON_VERIFY_FAILED,
-            ))
+                CallLine::resolved(entry, vocab::OUTCOME_REFUSED, vocab::REASON_UPSTREAM_FAILED),
+            )))
         }
     };
-    Some(match code {
+    Some(Err(match code {
         DISTRUST_NONE => return None,
         DISTRUST_UNKNOWN_ITEM => (
             catalogue_refusal(STATUS_NOT_FOUND, id, not_exposed(name), REASON_UNKNOWN_TOOL),
@@ -504,7 +517,7 @@ fn trust_refusal(
             format!("MCP server `{server}` is not one this door may trust, so it serves nothing"),
             vocab::REASON_NOT_SERVING,
         ),
-    })
+    }))
 }
 
 /// [`admit`], with THE KERNEL'S TRUST VERDICT: `trust` answers, for the named tool, what the
@@ -581,8 +594,8 @@ pub fn admit_trusted(
     }
     // THE KERNEL'S APPROVE, as the route leg asks it: the door states the tool's registration and
     // trust key, and renders the verdict (ARCHITECT Q3).
-    if let Some((refusal, line)) = trust_refusal(id, name, entry, trust(entry)) {
-        return Admission::Refused(refusal, Some(line));
+    if let Some(answer) = trust_answer(id, name, entry, trust(entry)) {
+        return answer;
     }
 
     let line = |reason: &str| Some(CallLine::resolved(entry, vocab::OUTCOME_REFUSED, reason));

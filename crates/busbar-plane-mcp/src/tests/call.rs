@@ -130,7 +130,8 @@ fn an_unknown_and_an_ungranted_tool_read_the_same_and_log_apart() {
 /// THE KERNEL'S VERDICT, RENDERED (ARCHITECT Q3): the door judges no trust; it renders what the
 /// kernel's Approve (`trust.serves`) answered for the called tool. An item never sighted is not
 /// found, as an unknown name is; a known one the operator has not approved is refused; every other
-/// distrust is refused under its own reason; a failed re-fetch is the one fact the door renders.
+/// distrust is refused under its own reason; a server the re-fetch could not reach fails the call
+/// as an upstream failure (a tool error), never sent.
 #[test]
 fn the_kernels_trust_verdict_is_rendered_and_never_judged_here() {
     use busbar_contract::abi::host::service as svc;
@@ -160,7 +161,10 @@ fn the_kernels_trust_verdict_is_rendered_and_never_judged_here() {
             Trust::Verdict(svc::DISTRUST_UNKNOWN),
             Some((403, "not_serving")),
         ),
-        (Trust::Unverified("down".to_string()), Some((403, "error"))),
+        (
+            Trust::Unreached("down".to_string()),
+            Some((200, "upstream_failed")),
+        ),
     ];
     for (trust, want) in cases {
         let mut asked = Vec::new();
@@ -186,6 +190,15 @@ fn the_kernels_trust_verdict_is_rendered_and_never_judged_here() {
             None => {
                 go(admission);
             }
+            Some((200, reason)) => match admission {
+                Admission::Unreached(body, line) => {
+                    let body: Value = serde_json::from_slice(&body).expect("json");
+                    assert_eq!(body["result"]["isError"], json!(true), "a tool error");
+                    assert_eq!(line.reason, reason);
+                    assert_eq!(line.outcome, "refused", "never sent");
+                }
+                other => panic!("the unreached call is a tool error: {other:?}"),
+            },
             Some((status, reason)) => {
                 let (r, line) = refused(admission);
                 assert_eq!(r.status, status, "{trust:?}");

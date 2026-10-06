@@ -1412,9 +1412,9 @@ fn verify_on_call(
 /// THE KERNEL'S APPROVE ON ONE TOOL, as the route leg asks it (ARCHITECT Q3; the kernel loop's
 /// Approve step): `trust.serves` over the tool's registration (the counterparty) and its trust key
 /// (the tool as `tools_allow` names it, the upstream's own spelling), at its last sighting. The door
-/// judges nothing: the one fact it renders on its own is that its last re-fetch of the server
-/// failed, which leaves nothing sighted to judge. A host that answers no trust service serves
-/// nothing (fail closed).
+/// judges nothing: the one fact it renders on its own is that its last re-fetch could not reach
+/// the server (the call then fails as an upstream failure). A host that answers no trust service
+/// serves nothing (fail closed).
 fn trust_of(
     plane: &McpDoor,
     ticket: Ticket,
@@ -1423,10 +1423,10 @@ fn trust_of(
 ) -> crate::call::Trust {
     use crate::call::Trust;
     if let Some(crate::trust::Sighting::Failed(reason)) = plane.sightings.get(&entry.server) {
-        return Trust::Unverified(reason);
+        return Trust::Unreached(reason);
     }
     let Some(services) = plane.services else {
-        return Trust::Unverified("the host lends this door no trust book".to_string());
+        return Trust::Verdict(busbar_contract::abi::host::service::DISTRUST_UNKNOWN);
     };
     let handle = CompletionHandle {
         ticket,
@@ -1436,7 +1436,8 @@ fn trust_of(
     *issued += 1;
     match services.trust_serves(handle, &entry.server, Some(&entry.tool), None) {
         Ok(code) => Trust::Verdict(code),
-        Err(_) => Trust::Unverified("the kernel's trust book did not answer".to_string()),
+        // A book that does not answer serves nothing (fail closed).
+        Err(_) => Trust::Verdict(busbar_contract::abi::host::service::DISTRUST_UNKNOWN),
     }
 }
 
@@ -1674,7 +1675,7 @@ fn answer_body(
             return Some(Step::Pending);
         }
         return Some(match admission {
-            Admission::Asked(body, line) => {
+            Admission::Asked(body, line) | Admission::Unreached(body, line) => {
                 unit.pending = Some(
                     Pending::answer(200, body, unit.framing.as_ref(), &[]).logged(
                         Some(&line),
