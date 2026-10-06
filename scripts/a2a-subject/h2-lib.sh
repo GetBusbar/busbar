@@ -290,16 +290,26 @@ print((d.get('total') or {}).get('$field', '-'))"
 # APPEND A DATED RATE CARD (#79) by applying live config. `RootHistory::apply`
 # (crates/busbar/src/root/kernel.rs:249-278) dates the entry at the instant the apply lands: the
 # FIRST card a node resolves is effective from 0 (`HistorySeq::OPENING`) and every later one from
-# `now_ms`, and neither closes the one before it. `rate_card: {}` rides along on purpose — the PUT
-# merges whole sections and dropping the key would leave billing on but the intent unreadable.
-# `per_request_fee` is the ONE pricing dimension of this card that both planes can actually move
-# (#44: a flat fee is a plane-agnostic rate-card dimension), which is what makes a dated-card
-# question askable on a plane whose declared classes no card can name.
+# `now_ms`, and neither closes the one before it.
+#
+# THE FEE THAT MOVES IS THE PLANE'S OWN (#47: rate_card and fees are per-plane reserved keys; this
+# plane's flat fee is `agents.fees.per_request`, #44). Root `per_request_fee:` is the POOLS plane's
+# fee and never priced an agent's call, so moving it asked nothing of this plane. The whole boot
+# config is re-applied through `POST /config/apply` with only that one key changed: apply takes
+# exactly the boot shape, plane sections included, and the plane is refreshed onto the new section
+# with no restart (ARCHITECT, FLIP-A2A). v1.5.5 shipped no agent plane (its boot refuses `agents:`),
+# so the spec decides this leg, not a 1.5.5 run.
 h2_put_fee() {
   local cents="$1"
-  curl -sS -m 15 -X PUT "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/config/settings" \
+  python3 - "${H2_WORKDIR}/config.yaml" "$cents" >"${H2_WORKDIR}/apply.json" <<'PYI'
+import json, sys, yaml
+c = yaml.safe_load(open(sys.argv[1]))
+c["agents"]["fees"]["per_request"] = int(sys.argv[2])
+print(json.dumps({"config": c, "providers": {}}))
+PYI
+  curl -sS -m 30 -X POST "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/config/apply" \
     -H "Authorization: Bearer $H2_ADMIN_TOKEN" -H 'content-type: application/json' \
-    -d "{\"per_request_fee\":${cents}}"
+    --data-binary @"${H2_WORKDIR}/apply.json"
 }
 
 # `--validate` THIS boot's own config with its `rate_card:` line replaced by <card-yaml>, and print
