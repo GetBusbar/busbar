@@ -84,6 +84,9 @@ pub mod test_support;
 pub mod transport;
 pub mod transport_adapter;
 
+/// THE REGISTRY AS THE KERNEL READS IT (the contract's `PluginRows`).
+pub mod rows;
+
 pub use auth::DynAuth;
 use busbar_contract::abi::cold::ColdEntry;
 pub use sign::EgressPolicy;

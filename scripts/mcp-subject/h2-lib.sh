@@ -103,6 +103,8 @@ YAML
   cat >"$dir/config.yaml" <<YAML
 listen: "127.0.0.1:${H2_DATA_PORT}"
 admin_listen: "127.0.0.1:${H2_ADMIN_PORT}"
+# A config names its store (Q-STORE = (B), THE DESIGN §4): the compiled-in RAM store.
+store: { module: memory }
 providers: {}
 models: {}
 pools: {}

@@ -773,6 +773,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
+ "tracing-log",
  "tracing-subscriber",
  "url",
  "zeroize",
