@@ -59,3 +59,4 @@ auth-oidc	src:9ff64ff4d74bdd4d043ed7200d8771389810d19b	build:busbar-auth-oidc	-	
 auth-github	src:96cf0d401dc7a70a235d5abdc5eec911cd2696ed	build:busbar-auth-github	-	1.6
 auth-ldap	src:00b2129497e7b07e0172ed466ed3a2802b3d66ea	build:busbar-auth-ldap	-	1.6
 webrequest-hook	src:97c0d9c2ad824bd6d67e9e5336d5d8be3800768d	build:busbar-hook-webrequest	-	1.6
+headroom-hook	src:4385464cbc80509e8cb7254c81e07a07ad319c55	build:busbar-hook-headroom	-	1.6
