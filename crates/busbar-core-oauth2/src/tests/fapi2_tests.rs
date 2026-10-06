@@ -434,9 +434,9 @@ fn authorize_url(s: &Subject, client_id: &str, request_uri: &str) -> String {
 }
 
 /// The browser half for a pushed request: `/authorize` sends it to the consent screen, the screen
-/// renders, the operator answers `decision`, and the replayed `/authorize` answers. Returns where
+/// renders, the operator answers `answer`, and the replayed `/authorize` answers. Returns where
 /// that last answer sends the browser.
-async fn consent(s: &Subject, jar: &mut Jar, authorize: &str, decision: &str) -> String {
+async fn consent(s: &Subject, jar: &mut Jar, authorize: &str, answer: &str) -> String {
     let (status, headers, body) = send(&s.client, jar, reqwest::Method::GET, authorize, None).await;
     assert_eq!(
         status, 302,
@@ -452,7 +452,7 @@ async fn consent(s: &Subject, jar: &mut Jar, authorize: &str, decision: &str) ->
         jar,
         reqwest::Method::POST,
         &format!("{}/consent", s.origin),
-        Some(&[("return", return_to.as_str()), ("decision", decision)]),
+        Some(&[("return", return_to.as_str()), ("answer", answer)]),
     )
     .await;
     assert_eq!(status, 302, "the answer redirects back: {body}");

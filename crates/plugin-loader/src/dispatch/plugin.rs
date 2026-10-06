@@ -148,6 +148,19 @@ impl EnvelopeSink for NoSink {
 /// The next instance identity bind mints; `0` is never minted.
 static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
+/// MINT ONE INSTANCE IDENTITY off `next`, never `0`: `0` is the composition root's own identity on
+/// the one connector (`busbar`'s `root::connector::ROOT_OWNER`, the authorization server's needs),
+/// so a plugin minted `0` would share that table's needs and connections. A counter that wraps
+/// past `u64::MAX` skips `0` rather than handing it out.
+fn mint_instance(next: &AtomicU64) -> InstanceId {
+    loop {
+        let id = next.fetch_add(1, Ordering::Relaxed);
+        if id != 0 {
+            return InstanceId(id);
+        }
+    }
+}
+
 /// What the host binds a loaded plugin to.
 #[derive(Clone)]
 pub struct Bind {
@@ -1026,7 +1039,7 @@ impl<K: Kind> Plugin<K> {
         let wake: &'static InstanceWake = Box::leak(Box::default());
         // THE CONNECTION TABLE: minted an identity and declared on the host's one table, need by
         // need under its Statement index, when the Statement declares a need; otherwise none.
-        let instance = InstanceId(NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed));
+        let instance = mint_instance(&NEXT_INSTANCE);
         let mut declared_needs: Box<[ReadNeed]> = Box::default();
         let conns: *const busbar_contract::abi::host::conn::connector::ConnectorSlots =
             match (&bind.conns, st.needs_len) {
@@ -1318,3 +1331,7 @@ pub(crate) fn resolve_target(settings: &serde_json::Value, path: &str) -> Option
         .filter(|t| !t.is_empty())
         .map(str::to_owned)
 }
+
+#[cfg(test)]
+#[path = "../tests/instance_id_tests.rs"]
+mod instance_id_tests;
