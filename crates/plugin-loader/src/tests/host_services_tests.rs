@@ -137,8 +137,13 @@ impl HostServices for Provider {
         Stored::ready(0)
     }
 
-    /// One item `t` approved at `d1`, sighted at `d2`: drifted; the counterparty the same.
+    /// One item `t` approved at `d1`, sighted at `d2`: drifted; the counterparty the same. No
+    /// counterparty named: refused.
     fn trust_state(&self, c: &Caller, counterparty: &str) -> Stored {
+        // The ticketless sweep's zeroed `in` names no counterparty: refused, as an unserved slot.
+        if counterparty.is_empty() {
+            return Stored::refused(UNIMPLEMENTED);
+        }
         self.saw(c, "trust.state", counterparty.as_bytes());
         let value = b"drifted\0d1\0d2";
         let mut stored = Stored::ready(svc::KEY_SAME);
