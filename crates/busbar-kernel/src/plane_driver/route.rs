@@ -469,6 +469,8 @@ struct Answer {
     units_written: u32,
     records_written: u32,
     verdict: u32,
+    /// The plane's breaker fault reading of a far-end answer (`FAULT_*`).
+    fault: u8,
     verb: Span,
     target: Span,
     need: u32,
@@ -493,6 +495,7 @@ impl Answer {
             units_written: o.units_written,
             records_written: o.records_written,
             verdict: o.verdict,
+            fault: o.fault,
             verb: o.verb,
             target: o.target,
             need: o.need,
