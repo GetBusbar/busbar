@@ -320,16 +320,30 @@ fn log_levels() -> (
     )
 }
 
+/// Make `tracing-log`'s `LogTracer` this process's `log` logger, so a `log` record becomes a
+/// `tracing` event. Called FIRST in the composition root, before any compiled-in plugin's door runs:
+/// a compiled-in plugin shares this image's `log` logger slot, and its door's call capture installs
+/// the same `LogTracer` best-effort on first use (`BUSBAR-1.6.0.md` decision #85, "the plugin image
+/// installs it, and so does the host"), so the host must take the slot first or find it taken. Open
+/// to every level: the capture keeps everything and the subscribers filter. An error means another
+/// `log` logger already holds the slot.
+pub fn init_log_bridge() -> Result<(), tracing_log::log::SetLoggerError> {
+    tracing_log::LogTracer::init()
+}
+
 /// Install the process-wide `tracing` subscriber once at startup: always a stderr `fmt` layer
 /// (level from `RUST_LOG`, default `info`) so spans/warnings are visible out of the box, plus the
 /// `traces` record producer ([`crate::export::traces`]) under the span floor (see [`log_levels`]).
+/// The `log` bridge is [`init_log_bridge`]'s, installed earlier, so this installs the subscriber
+/// alone; an error means a global subscriber is already installed.
 ///
 /// `stdout_reserved`: set by a caller whose transport uses this process's own stdout as its wire
 /// channel — the framed protocol on stdout forbids any byte that is not one of its own messages —
 /// so every log line moves to stderr instead, which is where such a transport's spec sends a
-/// server's diagnostics anyway. The listener modes keep stdout, unchanged. Returns whether the
-/// subscriber installed.
-pub fn init_logging(stdout_reserved: bool) -> bool {
+/// server's diagnostics anyway. The listener modes keep stdout, unchanged.
+pub fn init_logging(
+    stdout_reserved: bool,
+) -> Result<(), tracing::subscriber::SetGlobalDefaultError> {
     use tracing_subscriber::fmt::writer::BoxMakeWriter;
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::Layer as _;
@@ -343,34 +357,10 @@ pub fn init_logging(stdout_reserved: bool) -> bool {
         .with_writer(make_writer)
         .with_target(false)
         .with_filter(stderr_filter);
-    // `try_init` also makes `tracing-log`'s `LogTracer` this process's `log` logger. A compiled-in
-    // plugin's `log` records therefore become `tracing` events and reach its door's call capture,
-    // exactly as a dropped-in plugin's do through the `LogTracer` its own image installs
-    // (`BUSBAR-1.6.0.md` decision #85: every plugin logs to its own file, compiled in or dropped in).
-    //
-    // Installed in two steps, not `try_init`, because a compiled-in plugin called before this (its
-    // settings validated while the configuration resolved) has ALREADY made `LogTracer` the `log`
-    // logger: its door's capture installs it on first use when nothing has. `try_init` sets the
-    // global subscriber and then FAILS on that logger, which forwards to the same dispatcher, so
-    // the boot printed a false "already initialized" (1.5.5 printed nothing). The subscriber is
-    // what is installed; the logger is installed (at the subscriber's level) when nothing has.
-    let initialized = tracing::subscriber::set_global_default(
-        tracing_subscriber::registry()
-            .with(fmt_layer)
-            .with(crate::export::traces::layer(otlp_filter)),
-    )
-    .is_ok();
-    if initialized {
-        let _ = tracing_log::LogTracer::builder()
-            .with_max_level(tracing_log::AsLog::as_log(
-                &tracing_subscriber::filter::LevelFilter::current(),
-            ))
-            .init();
-    }
-    if !initialized {
-        eprintln!("busbar: tracing subscriber already initialized");
-    }
-    initialized
+    let subscriber = tracing_subscriber::registry()
+        .with(fmt_layer)
+        .with(crate::export::traces::layer(otlp_filter));
+    tracing::subscriber::set_global_default(subscriber)
 }
 
 #[cfg(test)]

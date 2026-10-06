@@ -140,6 +140,8 @@ metrics-util = { workspace = true, features = ["recency"] }
 http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# The `log` -> `tracing` bridge (`observability::init_log_bridge`), installed on its own so the
+# composition root takes the `log` slot before a compiled-in plugin's call capture can.
 tracing-log = { workspace = true }
 hex = { workspace = true }
 getrandom = { workspace = true }
