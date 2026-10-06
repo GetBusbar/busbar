@@ -222,8 +222,12 @@ fn install_auth_plugin(dir: &Path) -> bool {
     };
     let mut m = common::plugins::manifest("auth", "e2e-idp-module", "e2e");
     m.alias = "e2e-idp".into();
+    // One staging file per call: the scenarios of this binary run at once, and one must not unlink
+    // or overwrite the library another is mapping.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "busbar-stdio-idp-{}{}",
+        "busbar-stdio-idp-{}-{n}{}",
         std::process::id(),
         std::env::consts::DLL_SUFFIX
     ));
