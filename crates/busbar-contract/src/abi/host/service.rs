@@ -156,10 +156,12 @@ pub mod op {
     pub const TRUST_SIGHT_ITEM: u32 = 23;
     /// `trust.serves`.
     pub const TRUST_SERVES: u32 = 24;
+    /// `trust.state`.
+    pub const TRUST_STATE: u32 = 25;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 25;
+pub const SERVICES: u32 = 26;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
 /// an index past the table.
@@ -177,6 +179,7 @@ pub const fn may_pend(service: u32) -> bool {
             | op::TRUST_VERIFY
             | op::TRUST_SIGHT_ITEM
             | op::TRUST_SERVES
+            | op::TRUST_STATE
     ) && service < SERVICES
 }
 
@@ -564,6 +567,33 @@ pub const DISTRUST_CHANGED: u64 = 5;
 /// The item was never sighted at this counterparty: an unknown item (a 404's case).
 pub const DISTRUST_UNKNOWN_ITEM: u64 = 6;
 
+/// [`op::TRUST_STATE`]'s `in`: the KERNEL'S TRUST STATE of one counterparty and its items, as the
+/// core-admin `GET /api/v1/admin/trust` lists it, for a plane's own administrative views. `value` =
+/// the counterparty's `KEY_*` state; one span per item, in item order: key = the item, value =
+/// `<state word>\0<approved digest or empty>\0<last sighted digest or empty>`, the word one of
+/// `new`, `same`, `drifted`, `quarantined`, `approved`. Short-buffer rule. Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TrustStateIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The counterparty.
+    pub counterparty: AbiStr,
+    /// Where the items go.
+    pub into: ServiceBufs,
+}
+
+/// `trust.state`'s value: sighted (or declared) and never approved, or revoked: refused.
+pub const KEY_NEW: u64 = 1;
+/// `trust.state`'s value: approved, and its last sighting is what was approved.
+pub const KEY_SAME: u64 = 2;
+/// `trust.state`'s value: approved, and its last sighting moved from it: refused until re-approved.
+pub const KEY_DRIFTED: u64 = 3;
+/// `trust.state`'s value: quarantined: refused until re-approved (or its pin is seen again).
+pub const KEY_QUARANTINED: u64 = 4;
+/// `trust.state`'s value: approved, and not sighted since.
+pub const KEY_APPROVED: u64 = 5;
+
 /// [`op::TRUST_VERIFY`]'s `in`: verify a document's detached signatures against the root key the
 /// kernel holds for `counterparty` (the operator's out-of-band material its declared pin names).
 /// The key selects the algorithm; a signature's header is only checked against it. `value` = a
@@ -886,6 +916,8 @@ pub struct HostSlots {
     pub trust_sight_item: Option<ServiceFn>,
     /// [`op::TRUST_SERVES`], in [`TrustServesIn`]. A tail addition.
     pub trust_serves: Option<ServiceFn>,
+    /// [`op::TRUST_STATE`], in [`TrustStateIn`]. A tail addition.
+    pub trust_state: Option<ServiceFn>,
 }
 
 // ── the host's checks of an `in` ──────────────────────────────────────────────────────────────
@@ -1304,6 +1336,24 @@ pub fn check_trust_serves(
         &i.head,
         out,
         bare(op::TRUST_SERVES, (DISTRUST_NONE, DISTRUST_UNKNOWN_ITEM)),
+    )
+}
+
+/// `trust.state`'s answer: a `KEY_*` state, and the items into the caller's buffers.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_trust_state(
+    i: &TrustStateIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    answer(
+        ret,
+        &i.head,
+        out,
+        into(op::TRUST_STATE, i.into, (KEY_NEW, KEY_APPROVED)),
     )
 }
 

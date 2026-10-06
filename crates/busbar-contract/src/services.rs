@@ -106,6 +106,14 @@ pub trait HostServices: Send + Sync {
         Stored::refused(UNSERVED)
     }
 
+    /// `trust.state`: the kernel's trust state of `counterparty` and its items (a `KEY_*` value;
+    /// one span per item, its value `<word>\0<approved>\0<seen>`). Never pends. Unserved by
+    /// default.
+    fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
+        let _ = (caller, counterparty);
+        Stored::refused(UNSERVED)
+    }
+
     /// `trust.serves`: THE KERNEL'S APPROVE as a query: whether `counterparty` serves `item`
     /// (`None` = the counterparty as a whole) at `digest` (`None` = its last sighting). READY
     /// with `DISTRUST_NONE` or the `DISTRUST_*` that refuses it. Never pends. Unserved by default.

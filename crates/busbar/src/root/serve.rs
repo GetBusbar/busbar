@@ -303,6 +303,13 @@ impl HostServices for LateServices {
         }
     }
 
+    fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
+        match self.served() {
+            Ok(s) => s.trust_state(caller, counterparty),
+            Err(r) => r,
+        }
+    }
+
     fn trust_sight_item(
         &self,
         caller: &Caller,

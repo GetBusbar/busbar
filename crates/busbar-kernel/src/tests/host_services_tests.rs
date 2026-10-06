@@ -458,6 +458,57 @@ fn the_operators_trust_decisions_are_kept_and_replayed_at_a_restart() {
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
 }
 
+/// `trust.state` (the plane's administrative views): the counterparty's `KEY_*` state and one
+/// span per item, `<word>\0<approved>\0<seen>`, as `GET /api/v1/admin/trust` lists them; an
+/// undeclared counterparty is refused, as is an instance never admitted.
+#[test]
+fn trust_state_answers_the_counterparty_and_its_items_as_the_admin_list_does() {
+    use crate::trust::book::Decision;
+    let r = rig();
+    let me = caller("inst");
+    assert_eq!(
+        r.s.trust_state(&me, "cp").value,
+        svc::KEY_APPROVED,
+        "declared pin"
+    );
+    run(|l| r.s.trust_sight(&me, "cp", "fp", l));
+    assert_eq!(
+        r.s.trust_sight_item(&me, "cp", "t", "d1").value,
+        svc::TRUST_NEW
+    );
+    r.s.trust_decide("inst/cp/t", Decision::Approve).unwrap();
+    assert_eq!(
+        r.s.trust_sight_item(&me, "cp", "u", "e1").value,
+        svc::TRUST_NEW
+    );
+    let state = r.s.trust_state(&me, "cp");
+    assert_eq!(state.value, svc::KEY_SAME);
+    let items: Vec<(String, String)> = state
+        .spans
+        .iter()
+        .map(|s| {
+            let at = |sp: busbar_contract::abi::mechanism::call::Span| {
+                String::from_utf8(
+                    state.bytes[sp.offset as usize..(sp.offset + sp.len) as usize].to_vec(),
+                )
+                .unwrap()
+            };
+            (at(s.key), at(s.value))
+        })
+        .collect();
+    assert_eq!(
+        items,
+        vec![
+            ("t".to_string(), "same\0d1\0d1".to_string()),
+            ("u".to_string(), "new\0\0e1".to_string()),
+        ]
+    );
+    let s = r.s.trust_state(&me, "nobody");
+    assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_A_COUNTERPARTY));
+    let s = r.s.trust_state(&caller("nowhere"), "cp");
+    assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
+}
+
 #[test]
 fn a_durable_demotion_is_replayed_at_admit() {
     let r = rig();

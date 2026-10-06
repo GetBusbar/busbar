@@ -73,7 +73,7 @@ use crate::host_work::{
 };
 use crate::plane::quarantine::DemotionRecord;
 use crate::trust::book::{
-    Decision, Distrust, Effect, KeyRow, Sight, TrustBook, TrustFacts, Undecided, Unjudged,
+    Decision, Distrust, Effect, KeyRow, KeyState, Sight, TrustBook, TrustFacts, Undecided, Unjudged,
 };
 use crate::trust::section::TrustEntry;
 use crate::trust::signed;
@@ -1548,6 +1548,40 @@ impl HostServices for KernelServices {
         }
     }
 
+    fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
+        let rows: Vec<KeyRow> = self
+            .trust
+            .rows()
+            .into_iter()
+            .filter(|r| *r.instance == *caller.instance && r.counterparty == counterparty)
+            .collect();
+        let Some(whole) = rows.iter().find(|r| r.item.is_none()) else {
+            return Stored::refused(if self.facts(caller).is_some() {
+                NOT_A_COUNTERPARTY
+            } else {
+                NOT_ADMITTED
+            });
+        };
+        let mut stored = Stored::ready(key_code(whole.state));
+        let cap = usize::try_from(MAX_SPANS).unwrap_or(usize::MAX);
+        for row in rows.iter().filter(|r| r.item.is_some()).take(cap) {
+            let item = row.item.as_deref().unwrap_or_default();
+            let value = format!(
+                "{}\0{}\0{}",
+                row.state.word(),
+                row.approved.as_deref().unwrap_or_default(),
+                row.seen.as_deref().unwrap_or_default()
+            );
+            let off = stored.bytes.len();
+            stored.bytes.extend_from_slice(item.as_bytes());
+            stored.bytes.extend_from_slice(value.as_bytes());
+            stored
+                .spans
+                .push(span(off, item.len(), off + item.len(), value.len()));
+        }
+        stored
+    }
+
     fn trust_sight_item(
         &self,
         caller: &Caller,
@@ -1911,6 +1945,18 @@ mod trust_verify_tests;
 #[cfg(test)]
 #[path = "tests/host_nest_tests.rs"]
 mod host_nest_tests;
+
+/// The `KEY_*` value (`trust.state`) a [`KeyState`] is answered as.
+#[must_use]
+pub fn key_code(state: KeyState) -> u64 {
+    match state {
+        KeyState::New => svc::KEY_NEW,
+        KeyState::Same => svc::KEY_SAME,
+        KeyState::Drifted => svc::KEY_DRIFTED,
+        KeyState::Quarantined => svc::KEY_QUARANTINED,
+        KeyState::Approved => svc::KEY_APPROVED,
+    }
+}
 
 /// The `TRUST_*` sighting verdict a [`Sight`] is answered as.
 #[must_use]

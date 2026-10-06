@@ -38,8 +38,8 @@ use busbar_contract::abi::host::service::{
     check_records_claim_in, check_work_record, may_pend, op, ClockNowIn, ClockReading, DestJudgeIn,
     DiskAppendIn, DiskWritten, EntitlementCheckIn, HostSlots, RandomFillIn, RecordsClaimIn,
     RecordsGetIn, RecordsListIn, RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut, SignIn,
-    TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn, TrustVerifyIn, UnitNestIn,
-    WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, SERVICES,
+    TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn, TrustStateIn, TrustVerifyIn,
+    UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
@@ -344,6 +344,7 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     disk_append: Some(disk_append),
     trust_sight_item: Some(trust_sight_item),
     trust_serves: Some(trust_serves),
+    trust_state: Some(trust_state),
 };
 
 /// The dispatcher an instance's context routes to, and what it serves.
@@ -948,6 +949,33 @@ extern "C" fn trust_serves(ctx: HostCtx, input: *const c_void, out: *mut Service
                         item.as_deref(),
                         digest.as_deref(),
                     ))
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn trust_state(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::TRUST_STATE,
+        size_of::<TrustStateIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `TrustStateIn`.
+            let i = unsafe { input.cast::<TrustStateIn>().read_unaligned() };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            let Some(counterparty) = text_of(i.counterparty, "trust_state.counterparty") else {
+                return Answered::fault();
+            };
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers.
+            unsafe {
+                serve(&served.store, &route, &head, Some(&i.into), |_| {
+                    Ran::Now(provider.trust_state(&caller, &counterparty))
                 })
             }
         },

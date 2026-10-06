@@ -22,13 +22,13 @@ use crate::abi::host::service::{
     check_clock_now, check_dest_judge, check_entitlement_check, check_random_fill,
     check_random_fill_in, check_records_claim, check_records_claim_in, check_records_get,
     check_records_list, check_sign, check_trust_due, check_trust_serves, check_trust_sight,
-    check_trust_sight_item, check_trust_verify, check_unit_nest, check_work_find, check_work_open,
-    check_work_resume, check_work_settle, op, ClockNowIn, ClockReading, DestJudgeIn,
-    EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn, RecordsClaimIn, RecordsGetIn,
-    RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut, SignIn, TrustDueIn,
-    TrustServesIn, TrustSightIn, TrustSightItemIn, TrustVerifyIn, UnitNestIn, WorkFindIn,
-    WorkOpenIn, WorkResumeIn, WorkSettleIn, ABSENT, CLAIM_WON, DEST_ALLOWED, DEST_RESOLVE,
-    ENTITLED, FOUND, TRUST_REACHED, TRUST_UNREACHABLE,
+    check_trust_sight_item, check_trust_state, check_trust_verify, check_unit_nest,
+    check_work_find, check_work_open, check_work_resume, check_work_settle, op, ClockNowIn,
+    ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan, RandomFillIn,
+    RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut,
+    SignIn, TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn, TrustStateIn, TrustVerifyIn,
+    UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, ABSENT, CLAIM_WON,
+    DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND, TRUST_REACHED, TRUST_UNREACHABLE,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
@@ -163,6 +163,48 @@ impl<'b> Records<'b> {
     #[must_use]
     pub fn last_key(&self) -> Option<&'b [u8]> {
         present(self.bytes, self.spans.last()?.key)
+    }
+}
+
+/// `trust.state`'s answer: the counterparty's `KEY_*` state, and its items, in item order.
+#[derive(Debug, Clone, Copy)]
+pub struct TrustItems<'b> {
+    /// The counterparty's `KEY_*` state.
+    pub state: u64,
+    bytes: &'b [u8],
+    spans: &'b [ItemSpan],
+}
+
+/// One item of [`TrustItems`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrustItem<'b> {
+    /// The item.
+    pub item: &'b str,
+    /// Its state word: `new`, `same`, `drifted`, `quarantined` or `approved`.
+    pub state: &'b str,
+    /// The digest it is approved at; `None` = none.
+    pub approved: Option<&'b str>,
+    /// The digest it was last sighted at; `None` = never.
+    pub seen: Option<&'b str>,
+}
+
+impl<'b> TrustItems<'b> {
+    /// The items, in item order.
+    pub fn items(&self) -> impl Iterator<Item = TrustItem<'b>> + 'b {
+        let bytes = self.bytes;
+        self.spans.iter().filter_map(move |s| {
+            let item = name(bytes, s)?;
+            let value = std::str::from_utf8(present(bytes, s.value)?).ok()?;
+            let mut parts = value.splitn(3, '\0');
+            let (state, approved, seen) = (parts.next()?, parts.next()?, parts.next()?);
+            let some = |s: &'b str| (!s.is_empty()).then_some(s);
+            Some(TrustItem {
+                item,
+                state,
+                approved: some(approved),
+                seen: some(seen),
+            })
+        })
     }
 }
 
@@ -465,6 +507,44 @@ impl Services {
             check_trust_serves,
         )?;
         Ok(ready(crossed)?.value)
+    }
+
+    /// `trust.state`: the KERNEL'S TRUST STATE of `counterparty` and its items, as the core-admin
+    /// `GET /api/v1/admin/trust` lists them, for the plane's own administrative views; written into
+    /// the caller's preallocated `buf` and `spans`. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::Short`] when the buffers are short (re-call once, same handle); otherwise
+    /// as every service: unserved, declined (an undeclared counterparty), or broken.
+    pub fn trust_state<'b>(
+        &self,
+        handle: CompletionHandle,
+        counterparty: &str,
+        buf: &'b mut [u8],
+        spans: &'b mut [ItemSpan],
+    ) -> Result<TrustItems<'b>, ServiceError> {
+        let input = TrustStateIn {
+            head: head::<TrustStateIn>(op::TRUST_STATE, handle),
+            counterparty: text(counterparty),
+            into: bufs(buf, spans),
+        };
+        let crossed = self.cross(
+            op::TRUST_STATE,
+            |t| t.trust_state,
+            &input,
+            check_trust_state,
+        )?;
+        let out = ready(crossed)?;
+        let items = TrustItems {
+            state: out.value,
+            bytes: &buf[..out.len as usize],
+            spans: &spans[..out.items as usize],
+        };
+        if items.items().count() != items.spans.len() {
+            return Err(ServiceError::Broken);
+        }
+        Ok(items)
     }
 
     /// `trust.due`: the counterparties the kernel's `tick` marked for re-verification, written
