@@ -154,7 +154,7 @@ fn run_compiled_in() {
         let envelope = export_fixture::dispatch_compiled_in(handler.as_ref(), req);
         crate::observe::fold(
             COMPILED_IN,
-            busbar_contract::abi::cold::kind::EXPORT,
+            busbar_contract::abi::mechanism::kind::EXPORT,
             &envelope,
         );
     }
@@ -173,7 +173,7 @@ fn run_dropped_in() -> Option<()> {
         &bytes,
         FILE_CFG,
         DROPPED_IN,
-        busbar_contract::abi::cold::kind::EXPORT,
+        busbar_contract::abi::mechanism::kind::EXPORT,
     )
     .expect("load the export sink over the ABI");
     // `load_export_from_bytes` ALREADY ran `streams` and `routes` at load, so the script below is
@@ -254,7 +254,7 @@ fn the_reported_observations_are_the_ones_the_sink_produced() {
     let folds = compared(COMPILED_IN, crate::observe::testing::folds());
     assert_eq!(folds.len(), 2, "folds: {folds:?}");
     for (kind, metrics, diagnostics) in &folds {
-        assert_eq!(kind, busbar_contract::abi::cold::kind::EXPORT);
+        assert_eq!(kind, busbar_contract::abi::mechanism::kind::EXPORT);
         assert!(diagnostics.is_empty());
         assert_eq!(metrics.len(), 1);
         assert_eq!(metrics[0]["name"], export_fixture::ROTATED_TOTAL);
@@ -353,7 +353,7 @@ static PRE_ENVELOPE_PLUGIN_LOCAL: std::sync::Mutex<Vec<serde_json::Value>> =
 /// The pre-envelope build's op-dispatch: the SAME constructor's handler, reached through the SAME
 /// op-dispatch, set by the RED arm before its first call.
 type PreEnvelopeDispatch = Box<
-    dyn Fn(ExportRequest) -> busbar_contract::abi::cold::observe::Envelope<ExportResponse>
+    dyn Fn(ExportRequest) -> busbar_contract::abi::mechanism::observe::Envelope<ExportResponse>
         + Send
         + Sync,
 >;
@@ -443,8 +443,8 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
         lib,
         FILE_CFG,
         PRE_ENVELOPE.to_string(),
-        busbar_contract::abi::cold::kind::EXPORT,
-        busbar_contract::abi::cold::kind::EXPORT,
+        busbar_contract::abi::mechanism::kind::EXPORT,
+        busbar_contract::abi::mechanism::kind::EXPORT,
         Some(staged),
     )
     .expect("wire up the export sink");
@@ -555,7 +555,7 @@ const S1_HOST_SERIES: &str = "busbar_s1_host_owned_total";
 /// the open naming it.
 #[test]
 fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
-    use busbar_contract::abi::cold::observe::SeriesDecl;
+    use busbar_contract::abi::mechanism::observe::SeriesDecl;
     crate::observe::install_host_series(|name| name == S1_HOST_SERIES);
     let series = export_fixture::ROTATED_TOTAL;
     let declaring = |name: &str, series: &str| {

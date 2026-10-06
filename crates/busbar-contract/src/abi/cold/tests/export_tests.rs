@@ -165,7 +165,7 @@ fn response_json_roundtrip() {
 }
 
 /// The export payload schema is at v3 (DECISIONS #85: the response became
-/// [`crate::abi::cold::observe::Envelope`]`<ExportResponse>`, so a sink can report the metrics it
+/// [`crate::abi::mechanism::observe::Envelope`]`<ExportResponse>`, so a sink can report the metrics it
 /// produced and the diagnostics it raised) — pinned so the SDK's declared version, the loader's
 /// window and the wire cannot drift apart.
 ///
@@ -187,7 +187,7 @@ fn export_abi_minor_counts_the_host_seams() {
 /// S1's declaration wire: `{"name": …, "type": …}`, the same `type` token a reported metric carries.
 #[test]
 fn a_declared_series_wire_is_pinned() {
-    let d = crate::abi::cold::observe::SeriesDecl::new("busbar_x_total", "counter");
+    let d = crate::abi::mechanism::observe::SeriesDecl::new("busbar_x_total", "counter");
     assert_eq!(
         serde_json::to_value(&d).expect("encode"),
         serde_json::json!({"name": "busbar_x_total", "type": "counter"})
@@ -205,7 +205,7 @@ fn a_declared_series_wire_is_pinned() {
 /// language matches these three keys literally, so their spelling is a contract and not a detail.
 #[test]
 fn a_v3_export_response_rides_the_observability_envelope() {
-    use crate::abi::cold::observe::{Envelope, Observations, PluginMetric};
+    use crate::abi::mechanism::observe::{Envelope, Observations, PluginMetric};
     let enveloped = Observations::none()
         .metric(PluginMetric::counter("logs_rotated_total", 1.0))
         .into_envelope(ExportResponse::Delivered);
@@ -226,7 +226,7 @@ fn a_v3_export_response_rides_the_observability_envelope() {
 /// additive wire behind plugin route registration + dispatch.
 #[test]
 fn http_endpoint_ops_roundtrip_and_tags() {
-    use crate::abi::cold::endpoint::EndpointRequest;
+    use crate::abi::mechanism::endpoint::EndpointRequest;
     use crate::abi::mechanism::route::{RouteAuth, RouteMethod};
     let reqs = vec![
         ExportRequest::Routes,
@@ -352,12 +352,14 @@ fn a_declared_diagnostic_wire_is_pinned() {
         "code": 6990, "slug": "s", "title": "t", "severity": "actionable",
         "summary": "m", "action": "a", "since": "1.6.0"
     });
-    let d: crate::abi::cold::observe::DiagnosticDecl =
+    let d: crate::abi::mechanism::observe::DiagnosticDecl =
         serde_json::from_value(wire.clone()).expect("decode");
     assert_eq!(serde_json::to_value(&d).expect("encode"), wire);
     let mut extra = wire;
     extra["retired"] = serde_json::json!(true);
-    assert!(serde_json::from_value::<crate::abi::cold::observe::DiagnosticDecl>(extra).is_err());
+    assert!(
+        serde_json::from_value::<crate::abi::mechanism::observe::DiagnosticDecl>(extra).is_err()
+    );
 }
 
 /// S4's continuation wire: a delivery answered `{"Host":{"token":…,"ops":[…]}}` and resumed with

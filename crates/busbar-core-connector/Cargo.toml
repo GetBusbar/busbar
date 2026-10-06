@@ -97,9 +97,3 @@ rcgen = { workspace = true, features = ["pem"] }
 # brings it in.
 busbar-transport-tcp-plugin = { workspace = true }
 
-# THE UNIVERSAL-NEEDS FIXTURE: a secret-kind plugin that declares one outbound need and dials through
-# the connection table. A cargo example, built by `cargo test` as a cdylib — a fixture, never a
-# product plugin, and not a crate of its own.
-[[example]]
-name = "need_dialler"
-crate-type = ["cdylib"]

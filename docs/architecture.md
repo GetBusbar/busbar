@@ -476,7 +476,7 @@ different edition.
 All three planes are in the one binary. Serving MCP or fronting agents is a
 `tools:` or `agents:` block in the config, not another process to run.
 
-**1. One process, no store.** A binary and a config file. Virtual keys, budgets
+**1. One process, no database.** A binary and a config file (with `store: {module: memory}`, which 1.6.0 requires you to state). Virtual keys, budgets
 and breaker state live in memory. This is a complete, working deployment. It
 forgets accrued usage on restart, and nothing else. Suitable for a single node, a
 development environment, or an air-gapped box where a database is a liability
