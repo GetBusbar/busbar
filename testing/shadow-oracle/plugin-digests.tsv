@@ -47,11 +47,11 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar
 # floating builds: every row is an exact commit. auth-oidc is the rev busbar's Cargo.lock links. A store is
 # pinned to the newest dev commit whose declares.json speaks the store contract ABI busbar supports (v3):
 # store-sqlite e46e159 (2026-10-02; its dev moved to v4 at efb3d74), store-valkey 602a44f and store-mysql f8f6a2f
-# (dev heads 2026-10-06). store-postgres has NO dev commit at v3 (its declares went straight to v4), so its
-# row stays at its 2026-10-05 dev head and packs red until the store lane brings it to busbar's ABI. The rest
+# (dev heads 2026-10-06), and store-postgres 67e8c8d (its #22, 2026-10-06, the store lane bringing it to ABI v3).
+# The rest
 # are each repo's dev head on 2026-10-05.
 store-sqlite	src:e46e15931e37a59c6c1bbf2ec1cbfa58d9a364c4	build:busbar-store-sqlite	-	1.6
-store-postgres	src:43e14267d80f078969d5e7dcb52cc40776f23872	build:busbar-store-postgres	-	1.6
+store-postgres	src:67e8c8da48bb2e26babb9a3d57c59903387ca5a0	build:busbar-store-postgres	-	1.6
 store-valkey	src:602a44f13d780104b317dbf0306b888c721d0596	build:busbar-store-valkey	-	1.6
 store-mysql	src:f8f6a2f652f8a320243f98f0ffff720c10f37cdd	build:busbar-store-mysql	-	1.6
 hashicorp-vault	src:8b36c32e82e80cbe5f47b132f7feb5af4e888e30	build:busbar-secret-vault	-	1.6
