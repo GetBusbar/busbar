@@ -73,6 +73,7 @@ impl TaskUnit {
             end: None,
             at: None,
             answered: false,
+            far_bytes: 0,
         }))
     }
 }
@@ -126,6 +127,8 @@ pub(super) struct Run {
     at: Option<u64>,
     /// A far end answered one of its rounds: the tool call it reports.
     answered: bool,
+    /// The bytes of the documents its far ends answered with: the byte count it reports.
+    far_bytes: usize,
 }
 
 /// Where a continuation is.
@@ -575,17 +578,22 @@ pub(super) fn resume(
 /// THE FAR END ANSWERED THE CONTINUATION'S CALL (its rounds settled): the terminal state the served
 /// engine's runner settled — the tool's result as it came (`completed`, `isError` and all); an
 /// upstream failure or a refusal of an upstream's ask, `failed` — then the handle settled.
+/// `answered` is the length of the document a far end answered with (`None`: no far end answered),
+/// the tool call and the byte count the run reports.
 pub(super) fn continuation_answered(
     plane: &McpDoor,
     ticket: Ticket,
     principal: &str,
     unit: &mut CallUnit,
     leg: Leg,
-    answered: bool,
+    answered: Option<usize>,
     body: &[u8],
 ) -> Step {
     if let Some(TaskUnit::Run(run)) = unit.task.as_mut() {
-        run.answered |= answered;
+        if let Some(far) = answered {
+            run.answered = true;
+            run.far_bytes = run.far_bytes.saturating_add(far);
+        }
         run.end = Some(match leg {
             Leg::Done(value) => End::Completed(crate::sanitize::normalise_json(&value)),
             Leg::Failed(reason) => End::Failed(format!("the MCP upstream call failed: {reason}")),
@@ -628,7 +636,7 @@ fn reply(
     let mut pending = Pending::answer(200, body, None, &[]);
     pending.units.clear();
     if run.answered {
-        pending = pending.counted();
+        pending = pending.counted(run.far_bytes);
     }
     pending.records = chunks
         .into_iter()

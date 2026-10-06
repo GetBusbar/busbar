@@ -632,14 +632,22 @@ impl Pending {
         }
     }
 
-    /// Reporting the one tool call a server answered: the call is counted once the upstream has
-    /// answered the round, never for a refused, unreachable or failed leg (the class is a response
-    /// class: a call that never reached a server is not a call this node made).
-    fn counted(mut self) -> Self {
+    /// Reporting the one tool call a server answered, and the `answered` bytes of the document it
+    /// answered with: the call is counted once the upstream has answered the round, never for a
+    /// refused, unreachable or failed leg (both classes are response classes, `tool_meta.rs`: a call
+    /// that never reached a server is not a call this node made, and the byte class is "the length
+    /// of the document it just read back"). The plane states its counts; the kernel prices them
+    /// (THE DESIGN §7, "The plane reports; the kernel writes"; Law 6).
+    fn counted(mut self, answered: usize) -> Self {
         self.units.push(UnitCount {
             class: CLASS_TOOL_CALLS_INDEX,
             source: UNITS_REPORTED,
             amount: 1,
+        });
+        self.units.push(UnitCount {
+            class: CLASS_BYTES_INDEX,
+            source: UNITS_REPORTED,
+            amount: u64::try_from(answered).unwrap_or(u64::MAX),
         });
         self
     }
@@ -665,6 +673,9 @@ impl Pending {
 /// The tail index of the tool-call class ([`door::TAIL`]'s billable classes: tool calls, then
 /// bytes); a reported count names its class by it.
 const CLASS_TOOL_CALLS_INDEX: u32 = 0;
+
+/// The tail index of the byte class (the second of [`door::TAIL`]'s billable classes).
+const CLASS_BYTES_INDEX: u32 = 1;
 
 /// Keep `value` under `key` in `map`, dropping the smallest keys first past `cap`.
 fn keep<V>(map: &Keyed<u64, V>, cap: usize, key: u64, value: V) {
@@ -2065,7 +2076,7 @@ slot!(
                     if task_run {
                         let leg =
                             crate::call::leg_of(relay.status, &relay.far, relay.sse, relay.round);
-                        let answered = relay.status != 0;
+                        let answered = (relay.status != 0).then_some(relay.far.len());
                         return Some(door_tasks::continuation_answered(
                             plane, ticket, principal, unit, leg, answered, &body,
                         ));
@@ -2078,11 +2089,12 @@ slot!(
                     };
                     let generation = held.as_ref().map_or(0, |h| h.catalogue.generation());
                     let answered = relay.status != 0;
+                    let far_len = relay.far.len();
                     let ts = clock_s(plane.services, ticket, unit);
                     let pending = Pending::answer(status, body, framing.as_ref(), &progress)
                         .logged(Some(&line), scope, generation, ts);
                     unit.pending = Some(if answered {
-                        pending.counted()
+                        pending.counted(far_len)
                     } else {
                         pending
                     });

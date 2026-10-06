@@ -7,7 +7,8 @@
 #
 # Copied from the line-served plane's own sources: codec.rs (H_MCP_METHOD, H_MCP_NAME,
 # H_PROTOCOL_VERSION, PROTOCOL_VERSION), tools_config.rs (SECTION), tool_records.rs (KIND_CALL),
-# tool_meta.rs (CLASS_TOOL_CALLS); tool_digest is `trust::tool_digest` over the inputs above.
+# tool_meta.rs (CLASS_TOOL_CALLS, CLASS_BYTES); tool_digest is `trust::tool_digest` over the inputs
+# above.
 # write_digest and stat_digest are `trust::tool_digest` of `write_file` ("writes a file to disk") and
 # `stat` ("reads a file's metadata"), the same schema; scope_server and scope_tool are the two grant
 # kinds door.rs states (SCOPE, SCOPE_TOOL).
@@ -18,6 +19,7 @@ protocol_version = 2026-07-28
 section = tools
 record_kind_call = call
 class_tool_calls = tool_calls
+class_bytes = bytes
 tool_digest = sha256:6d51ebb1b3730422e414cf22c039874e7274e1103a22e6d5819abcfcab9e09cb
 # The subscription channel (subscribe.rs ACKNOWLEDGED, SUBSCRIPTION_ID; codec.rs
 # METHOD_SUBSCRIPTIONS_LISTEN; the list-changed notification of tools).

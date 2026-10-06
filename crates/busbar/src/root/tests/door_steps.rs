@@ -1730,6 +1730,13 @@ pub(crate) mod tool_door {
             Some(1),
             "the one tool call the plane reported: {counts:?}"
         );
+        // THE BYTE CLASS, STATED (THE DESIGN §7, "The plane reports; the kernel writes"; Law 6): the
+        // length of the document the server answered with, the plane's second declared class.
+        assert_eq!(
+            counts.classes.get(surface("class_bytes")).copied(),
+            Some(ANSWER.len() as u64),
+            "the bytes of the server's answer the plane reported: {counts:?}"
+        );
     }
 
     /// THE AUTHENTICATE STEP: an unkeyed caller on the door's endpoint (it takes a credential) is
