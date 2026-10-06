@@ -629,6 +629,7 @@ impl DoorAppliers {
                 &walked,
                 Some(egress),
                 next,
+                p.facts.bench_below_trip_threshold,
             ) {
                 Ok(mut live) => {
                     arm_probes(&p.driver, facts, &mut live, Some(egress), &p.probe_schedule);
@@ -928,6 +929,37 @@ pub fn compose_planes(
     egress: Option<&DoorEgress<'_>>,
     hooks: Option<&HookStage>,
 ) -> Result<Served, String> {
+    compose_planes_over(
+        &crate::LINKED,
+        doors,
+        dispatcher,
+        late,
+        sections,
+        public_url,
+        money,
+        egress,
+        hooks,
+    )
+}
+
+/// [`compose_planes`] over `linked`, the linked table each door plane's declared facts are read
+/// from beside the dropped-in manifests (its breaker fact, [`crate::root::linked::door_breaker`]).
+///
+/// # Errors
+///
+/// As [`compose_planes`]; and a door plane whose declared facts do not read.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compose_planes_over(
+    linked: &crate::root::linked::Linked,
+    doors: &[(String, DoorPlane)],
+    dispatcher: &Arc<Dispatcher>,
+    late: &LateServices,
+    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+    public_url: Option<&str>,
+    money: &dyn Fn() -> Arc<PlaneMoney>,
+    egress: Option<&DoorEgress<'_>>,
+    hooks: Option<&HookStage>,
+) -> Result<Served, String> {
     let mut served = Served::default();
     if doors.is_empty() {
         return Ok(served);
@@ -1052,6 +1084,15 @@ pub fn compose_planes(
                 ));
             }
         }
+        // THE PLANE'S BREAKER FACT, as it declares it (ARCHITECT Q4): read off its `declares`
+        // section, whichever plane it is; absent, its members' cells keep the default.
+        let bench = crate::root::linked::door_breaker(
+            linked,
+            crate::root::linked::dropped(),
+            plugin.name(),
+        )
+        .map_err(|e| format!("{instance}: {e}"))?
+        .map(|b| b.bench_below_trip_threshold);
         let mut live = seal_live(
             instance,
             plugin,
@@ -1060,6 +1101,7 @@ pub fn compose_planes(
             section,
             egress,
             1,
+            bench,
         )?;
         // The door's own requests to its members carry the members' bindings (ARCHITECT round 5
         // Q-L3B-DOOR-EXCHANGE), held on the connection table its need is declared on.
@@ -1140,6 +1182,7 @@ fn seal_live(
     section: &serde_yaml::Value,
     egress: Option<&DoorEgress<'_>>,
     generation: u64,
+    bench_below_trip_threshold: Option<bool>,
 ) -> Result<DoorLive, String> {
     let models_plane = served_facts.section == busbar_contract::section::RESERVED_POOLS_KEY;
     let card_plane = if models_plane { "" } else { plugin.name() };
@@ -1159,6 +1202,7 @@ fn seal_live(
             })
             .collect(),
     );
+    facts.bench_below_trip_threshold = bench_below_trip_threshold;
     if let Some(egress) = egress {
         facts.translations = (
             served_facts

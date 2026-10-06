@@ -393,6 +393,10 @@ pub struct DoorFacts {
     /// attempt whose far end speaks another dialect than the caller's is counted as a translation
     /// (`busbar_translations_total`), as the previous release counted it. Empty = none counted.
     pub translations: (Arc<[String]>, Arc<BTreeMap<String, String>>),
+    /// The plane's declared breaker fact (`declares.breaker`, ARCHITECT Q4): whether a transient
+    /// failure below the trip threshold benches a member's cell. `None`: it declares none, and
+    /// every cell keeps the host's default.
+    pub bench_below_trip_threshold: Option<bool>,
 }
 
 /// What one unit carries between its steps.
@@ -1038,6 +1042,7 @@ pub fn door_facts(
         audit_kind: OpClassId::new(audit_kind),
         keeps,
         translations: (Arc::from(Vec::new()), Arc::default()),
+        bench_below_trip_threshold: None,
     }
 }
 
@@ -1129,12 +1134,18 @@ pub fn compose_egress(
             Pool::new(member.name.clone(), vec![member.clone()]),
         );
     }
+    // Every cell of this plane's members under the default ladder, with the plane's declared
+    // breaker fact where it states one (ARCHITECT Q4); where it states none, the default holds.
+    let cell = || {
+        let mut cfg = busbar_kernel::store::pool_breaker_cfg(None);
+        if let Some(bench) = facts.bench_below_trip_threshold {
+            cfg.bench_below_trip_threshold = bench;
+        }
+        cfg
+    };
     let policy = built.keys().fold(
-        crate::root::adapters::BreakerPolicy::new()
-            .with_default_cell(busbar_kernel::store::pool_breaker_cfg(None)),
-        |policy, pool| {
-            policy.with_pool(pool.as_str(), busbar_kernel::store::pool_breaker_cfg(None))
-        },
+        crate::root::adapters::BreakerPolicy::new().with_default_cell(cell()),
+        |policy, pool| policy.with_pool(pool.as_str(), cell()),
     );
     Ok(busbar_kernel::plane_driver::Egress {
         caller,
