@@ -1299,6 +1299,9 @@ fn verify_on_call(
                 // The verify fetch carries the member's down-scope (token_exchange) or the caller's
                 // lent credential (passthrough) through the connector binding (Q-L3B-DOOR-EXCHANGE).
                 let url = def.url.clone();
+                // The fetch is bounded by the server's own `timeout:` (ARCHITECT timeout ruling):
+                // an upstream is not trusted to answer.
+                let timeout_ms = def.timeout_ms();
                 let scope = crate::tool_scope::exchanges(
                     def,
                     held.section.effective_upstream_credentials(server),
@@ -1317,7 +1320,7 @@ fn verify_on_call(
                             .map(|(n, v)| (n.as_bytes().to_vec(), v.as_bytes().to_vec()))
                             .collect(),
                         body: request.body,
-                        timeout_ms: CONNECT_TIMEOUT_MS,
+                        timeout_ms,
                     }
                 });
                 let std::task::Poll::Ready(answer) = answer else {
@@ -2909,10 +2912,6 @@ fn exchange_at(
 /// The JSON-RPC id a `connect`'s `tools/list` carries: one request, correlated by this id.
 const CONNECT_REQUEST_ID: u64 = 1;
 
-/// How long a `connect`'s fetch may take: an upstream is not trusted to answer, and an operator
-/// verb that hangs is one that gets killed and retried.
-const CONNECT_TIMEOUT_MS: u64 = 30_000;
-
 /// THE SIGHTING a `connect`'s exchange landed: the server's tool list re-hashed, or why the contact
 /// failed, in the served engine's words.
 fn sighting_of(
@@ -3064,7 +3063,10 @@ slot!(
                                 .map(|(n, v)| (n.as_bytes().to_vec(), v.as_bytes().to_vec()))
                                 .collect(),
                             body: request.body,
-                            timeout_ms: CONNECT_TIMEOUT_MS,
+                            // An upstream is not trusted to answer, and an operator verb that
+                            // hangs is one that gets killed and retried: the server's own
+                            // `timeout:` bounds the fetch.
+                            timeout_ms: def.timeout_ms(),
                         })
                         .map(|e| e.as_member(name.as_str()))
                     }

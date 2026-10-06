@@ -386,6 +386,9 @@ pub struct ProgramExchange {
     greeted: bool,
     answer: Option<Vec<u8>>,
     failed: Option<String>,
+    /// The bound the lease is opened under, milliseconds (`0` = the need's own): the host holds the
+    /// exchange to it until the child first answers.
+    timeout_ms: u32,
 }
 
 impl ProgramExchange {
@@ -415,7 +418,15 @@ impl ProgramExchange {
             greeted: false,
             answer: None,
             failed: None,
+            timeout_ms: 0,
         }
+    }
+
+    /// Opened under `timeout_ms`: the server's own `timeout:` (ARCHITECT timeout ruling).
+    #[must_use]
+    pub fn timed(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = u32::try_from(timeout_ms).unwrap_or(u32::MAX);
+        self
     }
 
     /// Write only to the child of `generation`: on another, nothing is sent.
@@ -455,15 +466,17 @@ impl ProgramExchange {
             }
             let mut c = host.connector_from(ticket, base.saturating_add(self.issued));
             match self.step.clone() {
-                Step::Establish => match c.establish(self.need, Some(&self.member), "") {
-                    Poll::Pending => return Poll::Pending,
-                    Poll::Ready(Ok(stream)) => {
-                        self.issued += 1;
-                        self.stream = stream;
-                        self.step = Step::Head;
+                Step::Establish => {
+                    match c.establish_timed(self.need, Some(&self.member), "", self.timeout_ms) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(Ok(stream)) => {
+                            self.issued += 1;
+                            self.stream = stream;
+                            self.step = Step::Head;
+                        }
+                        Poll::Ready(Err(e)) => return Poll::Ready(Err(e.to_string())),
                     }
-                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e.to_string())),
-                },
+                }
                 Step::Head => match c.read_reply(self.stream, &mut self.buf, &mut self.slot) {
                     Poll::Pending => return Poll::Pending,
                     Poll::Ready(Ok(got)) => {

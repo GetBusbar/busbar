@@ -218,7 +218,8 @@ pub(super) fn tools_listed(
             door::NEED_PROGRAM,
             vec![(list_request(id), Some(id))],
             true,
-        ),
+        )
+        .timed(def.timeout_ms()),
     };
     match exchange_child(plane, host, ticket, base, server, def, &mut exchange) {
         std::task::Poll::Pending => {
@@ -265,7 +266,8 @@ pub(super) fn connect_child(
             door::NEED_PROGRAM,
             vec![(list_request(id), Some(id))],
             true,
-        ),
+        )
+        .timed(def.timeout_ms()),
     };
     match exchange_child(plane, host, ticket, 0, server, def, &mut exchange) {
         std::task::Poll::Pending => {
