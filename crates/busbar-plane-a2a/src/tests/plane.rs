@@ -355,14 +355,6 @@ fn a_hop_goes_to_the_agent_the_request_named() {
         hop_to(beta),
         "dialled the named agent"
     );
-    assert_eq!(
-        plane.approve(&unit, &ctx).resources.as_slice(),
-        &[ResourceLocator {
-            kind: "agent",
-            name: "beta"
-        }],
-        "scoped against the named agent"
-    );
     let plan = plane.route(&unit, &ctx);
     let hop = plan.legs.as_slice().last().expect("a send hops");
     assert_eq!(
@@ -387,10 +379,6 @@ fn a_request_naming_no_carried_agent_reaches_none() {
             plane.verify(&unit, &ctx),
             A2aPlane::EMPTY.verify(&unit, &ctx),
             "{target}: no guessed agent, the same unreachable answer a plane with none gives"
-        );
-        assert!(
-            plane.approve(&unit, &ctx).resources.is_empty(),
-            "{target}: no guessed scope"
         );
     }
 

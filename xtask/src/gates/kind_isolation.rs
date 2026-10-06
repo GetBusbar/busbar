@@ -182,7 +182,7 @@ pub const ROW_FACES: &str = "kind-isolation:faces";
 /// THE LEGACY DRAIN'S EXPIRY. Ship-only: a `[[transitional]]` row exists because a 1.5.x crate is
 /// retiring, and the tag is where "it retired" is checked.
 pub const ROW_DRAIN: &str = "kind-isolation:legacy-drain";
-/// Every data plane runs the WHOLE strict step list.
+/// Every data plane runs its steps of the strict list, and none of the kernel's (Approve, Admit).
 pub const ROW_STEPS: &str = "kind-isolation:plane-steps";
 /// One wire, one registration.
 pub const ROW_WIRES: &str = "kind-isolation:transport-registration";
@@ -5055,10 +5055,12 @@ const EGRESS_HOME: &str = "busbar-core-connector";
 /// in-role vocabulary.
 const CONNECTOR_INROLE_WORDS: &[&str] = &["egress", "pool", "provider"];
 
-/// Every `fn <name>` in a crate's shipped source, with the file, line and the body's blanked text.
+/// Every `fn <name>` in a crate's shipped source, with the file, line, its signature's blanked
+/// text (the `fn` line up to the body's opening brace) and the body's.
 struct FnBody {
     file: String,
     line: usize,
+    sig: String,
     body: String,
 }
 
@@ -5091,6 +5093,22 @@ fn fn_bodies(cx: &Ctx, dir: &str) -> BTreeMap<String, Vec<FnBody>> {
             if name.is_empty() {
                 continue;
             }
+            let mut sig = String::new();
+            for l in &lines[i..] {
+                match l.find('{') {
+                    Some(at) => {
+                        sig.push_str(&l[..at]);
+                        break;
+                    }
+                    None => {
+                        sig.push_str(l);
+                        sig.push(' ');
+                    }
+                }
+                if l.trim_end().ends_with(';') {
+                    break;
+                }
+            }
             let mut depth = 0i32;
             let mut body = String::new();
             let mut started = false;
@@ -5116,6 +5134,7 @@ fn fn_bodies(cx: &Ctx, dir: &str) -> BTreeMap<String, Vec<FnBody>> {
             out.entry(name).or_default().push(FnBody {
                 file: rel.clone(),
                 line: i + 1,
+                sig,
                 body,
             });
         }
@@ -5127,6 +5146,25 @@ fn fn_bodies(cx: &Ctx, dir: &str) -> BTreeMap<String, Vec<FnBody>> {
 /// step is declared and not run — the compiler is satisfied, the trait is implemented, and the loop
 /// the plane is supposed to be running stops there.
 const SHORT_CIRCUITS: &[&str] = &["todo!", "unimplemented!", "unreachable!"];
+
+/// THE KERNEL'S OWN DECISIONS: `approve` and `admit` (ARCHITECT 2026-10-06: trust and admission
+/// are the kernel's Approve and Admit steps — "one uniform workflow, Authenticate·Verify·Approve·
+/// Admit"; a plane STATES its facts and decides neither). The plane trait declares neither, so they
+/// are not in [`plane_owned_steps`]; a plane that implements one anyway is a second decider beside
+/// the kernel's, and the finding is that it does.
+const KERNEL_DECIDED_STEPS: &[&str] = &["approve", "admit"];
+
+/// What makes a function an implementation of a STEP rather than a function that shares a step's
+/// name (a codec's `admit(stream_id)`): its signature names the step machinery — a unit, a stage
+/// pass or verdict, or the facts a step answers with.
+const STEP_SIGNATURE_WORDS: &[&str] = &[
+    "Unit<",
+    "Pass<",
+    "SeatVerdict<",
+    "StepAnswer<",
+    "ScopeFacts",
+    "AdmitFacts",
+];
 
 fn rule_steps(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     let steps = match plane_owned_steps(cx) {
@@ -5156,6 +5194,18 @@ fn rule_steps(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     let mut offenders: Vec<String> = Vec::new();
     for c in &planes {
         let bodies = fn_bodies(cx, &c.dir);
+        for step in KERNEL_DECIDED_STEPS {
+            for b in bodies.get(*step).into_iter().flatten() {
+                if STEP_SIGNATURE_WORDS.iter().any(|w| b.sig.contains(w)) {
+                    offenders.push(format!(
+                        "kernel-step\t{}:{}\t{} implements `{step}` — Approve and Admit are the \
+                         kernel's decisions over the facts a plane states, and a plane that runs \
+                         its own is a second decider the kernel's audit does not see",
+                        b.file, b.line, c.name
+                    ));
+                }
+            }
+        }
         for step in &steps {
             let Some(found) = bodies.get(step) else {
                 offenders.push(format!(
@@ -5182,18 +5232,20 @@ fn rule_steps(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     if offenders.is_empty() {
         return Row::pass(
             ROW_STEPS,
-            "every data plane implements the whole strict step list",
+            "every data plane implements its steps of the strict list and none of the kernel's",
             format!(
-                "{} plane(s) × {} step(s) read off {STEP_TABLE_FILE} and {PLANE_TRAIT_FILE}: {}",
+                "{} plane(s) × {} step(s) read off {STEP_TABLE_FILE} and {PLANE_TRAIT_FILE}: {} \
+                 (the kernel's own, implemented by no plane: {})",
                 planes.len(),
                 steps.len(),
-                steps.join(", ")
+                steps.join(", "),
+                KERNEL_DECIDED_STEPS.join(", ")
             ),
         );
     }
     Row::fail(
         ROW_STEPS,
-        "a data plane does not run the whole strict step list",
+        "a data plane does not run its steps of the strict list, or runs one of the kernel's",
         format!(
             "{} finding(s) over {} plane(s): {}",
             offenders.len(),
@@ -8913,6 +8965,41 @@ impl Gate for KindIsolationGate {
             &[ROW_STEPS],
             ov,
             &["missing-step", "busbar-plane-mcp"],
+        ));
+
+        // A PLANE THAT RUNS THE KERNEL'S DECISION, both ways the ruling names: an `approve` of its
+        // own, and an `admit` of its own, each with a step's signature. Planted in the a2a plane,
+        // which implements neither, so the only finding is the plant.
+        for step in KERNEL_DECIDED_STEPS {
+            let mut ov = Overlay::new();
+            ov.set(
+                "crates/busbar-plane-a2a/src/planted_decision.rs",
+                format!(
+                    "impl Foo {{\n    fn {step}<'u>(&self, u: &Unit<'u>) -> bool {{\n        \
+                     true\n    }}\n}}\n"
+                ),
+            );
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                format!("a plane implementing `{step}`, a step the kernel decides, is refused"),
+                &[ROW_STEPS],
+                ov,
+                &["kernel-step", step, "planted_decision.rs"],
+            ));
+        }
+        // …and NOT a function that only shares the name: a codec's `admit(id)` is no step.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-plane-a2a/src/planted_decision.rs",
+            "impl Foo {\n    fn admit(&self, id: &str) -> bool {\n        id.is_empty()\n    }\n}\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a plane function that only shares a kernel step's name is not that step",
+            &[ROW_STEPS],
+            ov,
         ));
 
         // A STEP THAT IS DECLARED AND NOT RUN. The compiler is satisfied and the loop stops there,

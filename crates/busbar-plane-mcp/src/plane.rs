@@ -20,8 +20,8 @@ use busbar_contract::plane::{
     Ingress, Plane, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
 use busbar_contract::unit::{
-    AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts,
-    Unit, UnitEnd, UsageLocator, UsageLocators,
+    AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts, Unit,
+    UnitEnd, UsageLocator, UsageLocators,
 };
 use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, TransportEnvelope};
 
@@ -870,45 +870,6 @@ impl Plane for McpPlane {
             },
             // Everything else is a hop to the server.
             _ => self.upstream_destination(),
-        }
-    }
-
-    fn approve<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> ScopeFacts {
-        let mut facts = ScopeFacts::default();
-        // The resource is the registered server, under the kind the codec already names it by. The
-        // plane says WHAT is being asked for; which scope that requires, and whether this principal
-        // holds it, is the scope unit's answer and never this plane's.
-        if let Some(server) = self.servers().first() {
-            let _ = facts.resources.push(ResourceLocator {
-                kind: RESOURCE_KIND_SERVER,
-                name: server.id,
-            });
-            // A call names a second resource: the tool itself. The tool's own name is on the
-            // request, which is not a name that outlives the unit, so what is offered here is the
-            // configured server's tool namespace and the scope unit reads the request for the rest.
-            if u.op() == ops::OP_TOOL_CALL {
-                let _ = facts.resources.push(ResourceLocator {
-                    kind: RESOURCE_KIND_TOOL,
-                    name: server.id,
-                });
-            }
-        }
-        facts
-    }
-
-    fn admit<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> AdmitFacts {
-        AdmitFacts {
-            // The lane is not in the request. It is a property of the server the operator
-            // configured, and the trust unit re-derives it against the allow-list.
-            lane_locator: None,
-            // This protocol gives a caller no way to declare a ceiling on the answer, so no
-            // place is named for one.
-            max_response_ptrs: BoundedVec::new(),
-            // The priced input is the whole request document.
-            input_span: Some(Span {
-                start: 0,
-                end: u.body().body().len(),
-            }),
         }
     }
 

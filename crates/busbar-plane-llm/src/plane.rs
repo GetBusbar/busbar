@@ -14,8 +14,8 @@ use busbar_contract::ids::{AdminVerbId, MeterClassId, OpClassId, SchemeAlt, Sche
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
 use busbar_contract::plane::{Ingress, Plane, PlaneSessionState, Progress, Response, UnitDraft};
 use busbar_contract::unit::{
-    AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts,
-    Unit, UnitEnd, UsageLocator, UsageLocators,
+    AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts, Unit,
+    UnitEnd, UsageLocator, UsageLocators,
 };
 use busbar_contract::wire::{Decode, Encode, EnvelopeField, Frame, FrameCursor, TransportEnvelope};
 
@@ -911,54 +911,6 @@ impl Plane for LlmPlane {
             None => DestinationFacts::KernelVerb {
                 verb: "unconfigured",
             },
-        }
-    }
-
-    fn approve<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> ScopeFacts {
-        let mut facts = ScopeFacts::default();
-        let _ = facts.resources.push(ResourceLocator {
-            kind: "operation",
-            name: u.op().as_str(),
-        });
-        facts
-    }
-
-    fn admit<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> AdmitFacts {
-        let Some(d) = unit_dialect(u) else {
-            return AdmitFacts::default();
-        };
-        let body = u.body().body();
-        // Which bytes are the priced input: the conversation the client sent, not the controls
-        // around it. A dialect whose container the scanner does not reach prices the whole body,
-        // which is the conservative reading.
-        // Read off the table the decode step resolved, never scanned a second time here: the
-        // whole point of the unit carrying its spans is that the answer is already in it.
-        let input_span = u
-            .body()
-            .pointers()
-            .find(|(ptr, _)| *ptr == d.input_pointer)
-            .map(|(_, span)| span)
-            .unwrap_or(Span {
-                start: 0,
-                end: body.len(),
-            });
-        AdmitFacts {
-            // The dialect's own table says where the model IS: a body pointer for the four that
-            // carry it in the body, a path segment for the two that carry it in the request target.
-            lane_locator: Some(d.model_location),
-            // Every place this dialect accepts the ceiling, in the dialect table's own order. The
-            // kernel takes the first that resolves, so a dialect with two spellings reads whichever
-            // the client actually sent.
-            max_response_ptrs: {
-                let mut ptrs = BoundedVec::new();
-                for ptr in d.max_response_pointers {
-                    let _ = ptrs.push(Location::Arrival(ArrivalLocation::FirstFrameJsonPointer(
-                        ptr,
-                    )));
-                }
-                ptrs
-            },
-            input_span: Some(input_span),
         }
     }
 

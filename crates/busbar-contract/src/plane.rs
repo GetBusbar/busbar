@@ -8,9 +8,7 @@ use crate::dest::{EgressBody, RoutePlan, VerifiedDestination};
 use crate::grammar::Claim;
 use crate::ids::{AdminVerbId, CorrelationRef, MeterClassDecl, OpClassId, RecordSchemaId};
 use crate::plugin::Plugin;
-use crate::unit::{
-    AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, ScopeFacts, Unit, UnitEnd, UsageLocators,
-};
+use crate::unit::{AuditFacts, Ctx, FinishClass, Refusal, Unit, UnitEnd, UsageLocators};
 use crate::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor};
 use std::any::Any;
 
@@ -269,11 +267,9 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     /// Say where this unit wants to go.
     fn verify<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> crate::dest::DestinationFacts;
 
-    /// Say what resources this unit touches.
-    fn approve<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> ScopeFacts;
-
-    /// Say where the lane name, the response ceiling and the priced input span are.
-    fn admit<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> AdmitFacts;
+    // NO `approve` AND NO `admit` (ARCHITECT 2026-10-06: trust and admission are the kernel's
+    // Approve and Admit steps; a plane STATES facts and decides neither). A plane's trust facts
+    // ride its arrival (`abi::plane::ArriveOut`'s `trust_*`), judged by the kernel's Approve.
 
     /// Say which legs this unit needs.
     fn route<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> RoutePlan;
