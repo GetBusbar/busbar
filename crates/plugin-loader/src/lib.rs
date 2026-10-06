@@ -970,8 +970,25 @@ fn wire_up(
     })
 }
 
-/// Read `busbar_plugin_kind()` from a mapped library into an owned `String`.
+/// Read the kind a mapped library states into an owned `String`. A memory-ABI image states it in
+/// its door's head ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`],
+/// [`dispatch::load::kind_of_door`]): the SDK's `busbar_plugin_kind` answers for no door it
+/// registered (a null kind). Any other image answers `busbar_plugin_kind()`.
 fn read_plugin_kind(lib: &Library, display: &str) -> Result<String, String> {
+    // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; the symbol is copied out as a plain
+    // fn pointer and `lib` outlives every use of it here.
+    let door = unsafe {
+        lib.get::<busbar_contract::abi::mechanism::door::DoorFn>(
+            busbar_contract::abi::mechanism::DOOR_SYMBOL,
+        )
+        .map(|s| *s)
+    };
+    if let Ok(door) = door {
+        // Guarded: the door function is plugin code; a panic fails the read CLOSED.
+        let kind = ffi_guard_confined(display, "door", || dispatch::load::kind_of_door(door))?
+            .map_err(|e| format!("plugin '{display}' states no kind the host has: {e}"))?;
+        return Ok(kind.word().to_string());
+    }
     let f = unsafe { lib.get::<PluginKindFn>(symbol::PLUGIN_KIND) }.map_err(|_| {
         format!("'{display}' is not a busbar plugin (no busbar_plugin_kind symbol)")
     })?;

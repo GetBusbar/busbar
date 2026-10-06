@@ -13,12 +13,16 @@ use busbar_contract::abi::cold::{
 /// at it to pin the schema-keyed shim rule.
 const PUBLISHED_STORE_SCHEMA: u32 = 2;
 
-/// The REAL JSON-lane plugin the loader-MECHANISM tests below dlopen (validation, inventory, the kind
-/// gates): the export row of `[package.metadata.busbar.both-ways]`, the request-log file sink's
-/// `cdylib`, one of the two sinks still on that lane (M6-COLD-DELETE residue). Under CI a missing
-/// cdylib is a hard failure ([`super::both_ways::cdylib`] asserts it), never a silent skip.
+/// The REAL plugin the loader-MECHANISM tests below dlopen (validation, inventory, the kind gates):
+/// the `auth` row of `[package.metadata.busbar.both-ways]`, the token-verifying OIDC module's
+/// dropped-in `cdylib`. It is on the auth kind's memory ABI (its row is a door row, and the table names
+/// its logic crate, so its cdylib is `<logic>_plugin`); every SDK-built library still answers the
+/// plugin-ABI handshake these tests drive (`busbar_abi`, `busbar_plugin_kind` and the four
+/// operational symbols), so it is the subject the cold auth cdylib was. Under CI a missing cdylib is
+/// a hard failure ([`super::both_ways::cdylib`] asserts it), never a silent skip.
 fn json_lane_plugin_path() -> Option<std::path::PathBuf> {
-    super::both_ways::cdylib(super::both_ways::fixture("auth").0)
+    let (logic, _) = super::both_ways::door_fixture("auth");
+    super::both_ways::cdylib(&format!("{logic}_plugin"))
 }
 
 /// `validate_plugin` accepts the real JSON-lane fixture cdylib (ABI v1) without constructing an

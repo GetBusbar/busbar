@@ -22,21 +22,9 @@
 
 use crate::sign::{sign, Manifest, SigningKey, TrustPolicy};
 use crate::PluginRegistry;
-use busbar_contract::abi::cold::ColdEntry;
 use std::path::PathBuf;
 
 include!(concat!(env!("OUT_DIR"), "/both_ways.rs"));
-
-/// The both-ways fixture of `kind`: its `cdylib`'s crate name and its linked entry.
-pub(crate) fn fixture(kind: &str) -> (&'static str, &'static ColdEntry) {
-    FIXTURES
-        .iter()
-        .find(|(k, ..)| *k == kind)
-        .map(|&(_, krate, entry)| (krate, entry))
-        .unwrap_or_else(|| {
-            panic!("no `{kind}` row in Cargo.toml's [package.metadata.busbar.both-ways]")
-        })
-}
 
 /// The memory-ABI both-ways fixture of `row`: its `cdylib`'s crate name and its linked door.
 pub(crate) fn door_fixture(
