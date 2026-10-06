@@ -1580,7 +1580,7 @@ fn money_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
                      verdict = \"double\"\nbecause = \"a planted reviewed double\"\n"
                 ),
             ),
-            Err(e) => r.note_infra_failure(&format!("qa/construction.toml unreadable: {e}")),
+            Err(e) => r.note_infra_failure(format!("qa/construction.toml unreadable: {e}")),
         },
     }
     // item 381 (Q11/Q32): `rules.legacy-reach.prefixes` struck the two dead prefixes
