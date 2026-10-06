@@ -38,8 +38,8 @@ use busbar_contract::abi::host::service::{
     check_records_claim_in, check_work_record, may_pend, op, ClockNowIn, ClockReading, DestJudgeIn,
     DiskAppendIn, DiskWritten, EntitlementCheckIn, HostSlots, RandomFillIn, RecordsClaimIn,
     RecordsGetIn, RecordsListIn, RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut, SignIn,
-    TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn, TrustVerifyIn, UnitNestIn,
-    WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, SERVICES,
+    TrustDecideIn, TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn, TrustVerifyIn,
+    UnitNestIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
@@ -344,6 +344,7 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     disk_append: Some(disk_append),
     trust_sight_item: Some(trust_sight_item),
     trust_serves: Some(trust_serves),
+    trust_decide: Some(trust_decide),
 };
 
 /// The dispatcher an instance's context routes to, and what it serves.
@@ -948,6 +949,45 @@ extern "C" fn trust_serves(ctx: HostCtx, input: *const c_void, out: *mut Service
                         item.as_deref(),
                         digest.as_deref(),
                     ))
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn trust_decide(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::TRUST_DECIDE,
+        size_of::<TrustDecideIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `TrustDecideIn`.
+            let i = unsafe { input.cast::<TrustDecideIn>().read_unaligned() };
+            let approve = match i.decision {
+                svc::TRUST_DECIDE_APPROVE => true,
+                svc::TRUST_DECIDE_REVOKE => false,
+                _ => return Answered::fault(),
+            };
+            let (Some(counterparty), Some(item), Some(expected)) = (
+                text_of(i.counterparty, "trust_decide.counterparty"),
+                text_of(i.item, "trust_decide.item"),
+                text_of(i.expected, "trust_decide.expected"),
+            ) else {
+                return Answered::fault();
+            };
+            let some = |s: String| (!s.is_empty()).then_some(s);
+            let (item, expected) = (some(item), some(expected));
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: no buffer is named.
+            unsafe {
+                serve(&served.store, &route, &head, None, |_| {
+                    let key = busbar_contract::services::TrustKeyRef {
+                        counterparty: &counterparty,
+                        item: item.as_deref(),
+                    };
+                    Ran::Now(provider.trust_decide(&caller, key, expected.as_deref(), approve))
                 })
             }
         },

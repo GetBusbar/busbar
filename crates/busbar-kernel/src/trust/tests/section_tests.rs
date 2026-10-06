@@ -291,3 +291,40 @@ fn configured_item_approvals_are_read_under_the_declared_field() {
     let none = parse_entry("`bays.dock`", &entry("permitted: [a, b]"), APPROVALS).expect("parses");
     assert!(none.approved.is_empty());
 }
+
+/// A REGISTRATION WITH NO AUTHENTICITY ROOT SEEDS NO APPROVAL: its configured digests approve
+/// nothing (as an unrooted registration never served), and a rooted one's do.
+#[test]
+fn a_rootless_registration_seeds_no_configured_approval() {
+    const ROOTED_APPROVALS: &[TrustKeyDecl] = &[
+        TrustKeyDecl {
+            key: "anchor",
+            role: TrustRole::Pin,
+            fingerprint: false,
+            default: None,
+            mechanisms: MECHANISMS,
+        },
+        TrustKeyDecl {
+            key: "permitted",
+            role: TrustRole::ItemApprovals,
+            fingerprint: false,
+            default: Some("digest"),
+            mechanisms: &[],
+        },
+    ];
+    let open = parse_entry(
+        "`bays.dock`",
+        &entry("anchor: { mechanism: open }\npermitted: { a: { digest: d1 } }"),
+        ROOTED_APPROVALS,
+    )
+    .expect("parses");
+    assert!(open.rootless());
+    assert!(open.approved.is_empty(), "no root, no approval");
+    let sealed = parse_entry(
+        "`bays.dock`",
+        &entry("anchor: { mechanism: sealed_key, key: k }\npermitted: { a: { digest: d1 } }"),
+        ROOTED_APPROVALS,
+    )
+    .expect("parses");
+    assert_eq!(sealed.approved.len(), 1);
+}

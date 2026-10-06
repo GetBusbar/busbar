@@ -242,7 +242,7 @@ impl KeyRow {
 
 /// What the operator decides about one trust key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Decision {
+pub enum Ruling {
     /// Approve it at what it was last sighted at (a counterparty: its last catalogue hash, which
     /// clears its quarantine; an item: its last digest).
     Approve,
@@ -258,12 +258,16 @@ pub enum Undecided {
     NoSuchKey,
     /// The key exists but nothing was ever sighted for it to be approved at.
     NothingSighted,
+    /// The counterparty declares no authenticity root: nothing at it can be approved.
+    Rootless,
+    /// The fingerprint the caller approves is not the key's current sighting.
+    Stale,
 }
 
 /// THE DURABLE FACT a decision leaves: what the operator decided about one key. Replayed at admit
 /// ([`TrustBook::admit_decided`]), so an approval or revocation outlives the process.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct DecisionRow {
+pub struct RulingRow {
     /// The instance label.
     pub instance: String,
     /// The counterparty.
@@ -447,23 +451,42 @@ impl TrustBook {
     /// # Errors
     ///
     /// [`Undecided::NoSuchKey`] for a key no admitted instance has; [`Undecided::NothingSighted`]
-    /// for an approval with nothing ever sighted (or declared) to approve at.
+    /// for an approval with nothing ever sighted (or declared) to approve at;
+    /// [`Undecided::Rootless`] for an approval at a counterparty with no authenticity root; and
+    /// [`Undecided::Stale`] for an approval whose `expected` fingerprint is not the current
+    /// sighting.
     pub fn decide(
         &self,
         instance: &str,
         counterparty: &str,
         item: Option<&str>,
-        decision: Decision,
-    ) -> Result<(KeyRow, DecisionRow), Undecided> {
+        decision: Ruling,
+        expected: Option<&str>,
+    ) -> Result<(KeyRow, RulingRow), Undecided> {
         let mut map = self.lock();
         let book = map.get_mut(instance).ok_or(Undecided::NoSuchKey)?;
         let entry = book.entries.get(counterparty).ok_or(Undecided::NoSuchKey)?;
+        if decision == Ruling::Approve && entry.rootless() {
+            return Err(Undecided::Rootless);
+        }
         let s = book
             .subjects
             .entry(counterparty.to_string())
             .or_insert_with(|| Subject::declared(entry));
+        // APPROVE WHAT YOU SAW: a stated fingerprint must be the key's current sighting.
+        if let (Ruling::Approve, Some(expected)) = (decision, expected) {
+            let current = match item {
+                None => s.last_seen.as_deref(),
+                Some(item) => s.items.get(item).map(String::as_str),
+            };
+            match current {
+                None => return Err(Undecided::NothingSighted),
+                Some(c) if c != expected => return Err(Undecided::Stale),
+                Some(_) => {}
+            }
+        }
         let approved = match (item, decision) {
-            (None, Decision::Approve) => {
+            (None, Ruling::Approve) => {
                 let at = s
                     .last_seen
                     .clone()
@@ -477,7 +500,7 @@ impl TrustBook {
                 s.ledger.last_drift_ms = None;
                 Some(at)
             }
-            (None, Decision::Revoke) => {
+            (None, Ruling::Revoke) => {
                 s.revoked = true;
                 s.confirmed = false;
                 None
@@ -490,7 +513,7 @@ impl TrustBook {
                     return Err(Undecided::NoSuchKey);
                 }
                 let at = match decision {
-                    Decision::Approve => Some(
+                    Ruling::Approve => Some(
                         s.items
                             .get(item)
                             .cloned()
@@ -498,14 +521,14 @@ impl TrustBook {
                             .or_else(|| entry.approved.get(item).cloned())
                             .ok_or(Undecided::NothingSighted)?,
                     ),
-                    Decision::Revoke => None,
+                    Ruling::Revoke => None,
                 };
                 s.granted.insert(item.to_string(), at.clone());
                 at
             }
         };
         let row = row_of(instance, counterparty, item, entry, s);
-        let fact = DecisionRow {
+        let fact = RulingRow {
             instance: instance.to_string(),
             counterparty: counterparty.to_string(),
             item: item.map(str::to_string),
@@ -514,14 +537,10 @@ impl TrustBook {
         Ok((row, fact))
     }
 
-    /// Replay the operator's durable decisions for `instance` (each [`DecisionRow`] naming it), in
+    /// Replay the operator's durable decisions for `instance` (each [`RulingRow`] naming it), in
     /// order, onto its state: what [`Self::decide`] did before the restart. A row for a
     /// counterparty the instance no longer declares is ignored.
-    pub fn admit_decided<'a>(
-        &self,
-        instance: &str,
-        rows: impl IntoIterator<Item = &'a DecisionRow>,
-    ) {
+    pub fn admit_decided<'a>(&self, instance: &str, rows: impl IntoIterator<Item = &'a RulingRow>) {
         let mut map = self.lock();
         let Some(book) = map.get_mut(instance) else {
             return;
