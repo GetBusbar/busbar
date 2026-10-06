@@ -96,7 +96,7 @@ pub trait HostServices: Send + Sync {
         digest: &str,
     ) -> Stored {
         let _ = (caller, counterparty, item, digest);
-        Stored::refused("trust.sight_item is not served")
+        Stored::refused(UNSERVED)
     }
 
     /// `trust.serves`: THE KERNEL'S APPROVE as a query: whether `counterparty` serves `item`
@@ -110,7 +110,7 @@ pub trait HostServices: Send + Sync {
         digest: Option<&str>,
     ) -> Stored {
         let _ = (caller, counterparty, item, digest);
-        Stored::refused("trust.serves is not served")
+        Stored::refused(UNSERVED)
     }
 
     /// `trust.due`: the counterparties of `caller` the kernel's tick marked for re-verification, one
