@@ -134,6 +134,9 @@ case "$PLUGIN_KIND" in
   secret) REF="" ;;
   *) echo "FAIL: unknown plugin kind '$PLUGIN_KIND'" >&2; exit 1 ;;
 esac
+# A config states its store (busbar refuses one without a `store:` block: t-config, #465). A store
+# plugin's invocation names the plugin under test; every other kind runs on the compiled-in RAM store.
+[ "$PLUGIN_KIND" = store ] || REF="${REF:+$REF$'\n'}"$'store:\n  module: memory'
 cat > "$WORK/config.yaml" <<EOF
 listen: "127.0.0.1:0"
 providers:
