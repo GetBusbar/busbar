@@ -259,11 +259,6 @@ item = "COMPOSED_GOVERNED_CALLS"
 
 [[finding]]
 rule = "door-only:static-seam"
-file = "crates/plugin-loader/src/host.rs"
-item = "CARRIER"
-
-[[finding]]
-rule = "door-only:static-seam"
 file = "crates/plugin-loader/src/observe.rs"
 item = "HOST_SERIES"
 
