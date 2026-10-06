@@ -1174,6 +1174,7 @@ pub(crate) fn compose_planes_over(
 /// # Errors
 ///
 /// A member whose route or credential binding cannot be resolved, named.
+#[allow(clippy::too_many_arguments)]
 fn seal_live(
     instance: &str,
     plugin: &DoorPlane,
