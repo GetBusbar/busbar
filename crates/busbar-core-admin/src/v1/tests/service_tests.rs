@@ -1734,6 +1734,7 @@ fn admin_usage_breakdown_json_is_byte_identical_flat_token_aliases() {
         tokens_cache_creation: 3,
         requests: 5,
         spend_micros: 12_345,
+        classes: Default::default(),
     };
     let json = serde_json::to_string(&b).unwrap();
     assert_eq!(
@@ -3903,6 +3904,15 @@ mod plane_fees_on_admin_usage {
         cost: fn() -> busbar_kernel::cost::CostModel,
         calls: &[Call],
     ) -> (i64, i64) {
+        let (book, view) = serve_calls_view(cost, calls).await;
+        (book, view.total.spend_micros)
+    }
+
+    /// [`serve_calls`], answering the whole `/admin/usage` view beside the budget book's figure.
+    async fn serve_calls_view(
+        cost: fn() -> busbar_kernel::cost::CostModel,
+        calls: &[Call],
+    ) -> (i64, busbar_kernel::admin::v1::contract::UsageView) {
         use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
         let gov = gov();
         let app = crate::new_test_app()
@@ -3982,7 +3992,7 @@ mod plane_fees_on_admin_usage {
             .get_usage(None, None)
             .await
             .expect("usage read");
-        (book, view.total.spend_micros)
+        (book, view)
     }
 
     /// (a) Two sessions at `fees.per_session: 40`: the budget book charges 80, and so does
@@ -4015,6 +4025,62 @@ mod plane_fees_on_admin_usage {
             30 * MICROS_PER_MINOR,
             "/admin/usage agrees (before: 9)"
         );
+    }
+
+    /// A PLANE'S CLASSES ON THE USAGE ROW (new in 1.6.0, FLIP-A2A ruling): three tool calls at
+    /// `tool_calls` 7 and the plane's fee 3 — the row and the total each carry `classes.tool_calls`
+    /// with its count 3 and its cost 21, the share of the row's 30 the class is (the fee is the
+    /// rest), never a second pricing added on top.
+    #[tokio::test]
+    async fn a_planes_class_rides_its_usage_row_with_its_count_and_its_cost() {
+        use busbar_kernel::admin::v1::contract::ClassUsage;
+        let calls = [Call::Tool, Call::Tool, Call::Tool];
+        let (_, view) = serve_calls_view(|| carded_cost(70_000, 3, 0), &calls).await;
+        let want = std::collections::BTreeMap::from([(
+            "tool_calls".to_string(),
+            ClassUsage {
+                count: 3,
+                cost: 21 * MICROS_PER_MINOR,
+            },
+        )]);
+        let row = view
+            .by_model
+            .iter()
+            .find(|r| r.provider == FEE_PLANE)
+            .expect("the plane's row");
+        assert_eq!(row.usage.classes, want, "the row carries its class");
+        assert_eq!(view.total.classes, want, "the total sums it");
+        assert_eq!(
+            view.total.spend_micros,
+            30 * MICROS_PER_MINOR,
+            "the class's cost is part of spend_micros, not added to it"
+        );
+        let wire = serde_json::to_value(row).expect("the row serializes");
+        assert_eq!(
+            wire["classes"]["tool_calls"],
+            serde_json::json!({"count": 3, "cost": 21 * MICROS_PER_MINOR}),
+            "the wire shape: classes keyed by class name, each {{count, cost}}"
+        );
+    }
+
+    /// THE RED ARM: a token-only pools row carries NO `classes` key — its tokens ride the token
+    /// columns, as on 1.5.5, whose usage rows had no such field.
+    #[tokio::test]
+    async fn a_token_only_row_carries_no_classes_key_as_on_1_5_5() {
+        let t = Call::Tokens {
+            input: 1_000_000,
+            output: 500_000,
+        };
+        let (_, view) = serve_calls_view(|| carded_cost(70_000, 3, 0), &[t]).await;
+        let row = view.by_model.first().expect("the pools row");
+        assert!(row.usage.classes.is_empty());
+        let wire = serde_json::to_value(row).expect("the row serializes");
+        assert!(
+            wire.get("classes").is_none(),
+            "a token-only row is 1.5.5's shape: {wire}"
+        );
+        let total = serde_json::to_value(&view.total).expect("the total serializes");
+        assert!(total.get("classes").is_none());
     }
 
     /// A rerank's search units — the pools plane's own open class — price on `/admin/usage` as the
