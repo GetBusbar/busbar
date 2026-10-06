@@ -156,7 +156,6 @@ fn admin_row(
         tokens_cache_creation: at(CACHE_WRITE),
         requests,
         spend_micros: 0,
-        classes: Default::default(),
     }
 }
 

@@ -204,34 +204,3 @@ fn usage_view_serializes_currency_from_const() {
         "the raw-split ledger breakdown must NOT carry a currency"
     );
 }
-
-/// THE `classes` CONTRACT (new in 1.6.0, FLIP-A2A ruling): a usage row's plane-declared classes
-/// serialize as an object keyed by class name, each `{count, cost}`, flattened onto a by-model row
-/// beside its token columns; a row with none carries no `classes` key at all (1.5.5's shape).
-#[test]
-fn a_usage_rows_classes_serialize_keyed_by_class_each_count_and_cost() {
-    let row = ModelUsageView {
-        model: "probe".to_string(),
-        provider: "agents".to_string(),
-        usage: UsageBreakdown {
-            requests: 1,
-            spend_micros: 70_000,
-            classes: std::collections::BTreeMap::from([(
-                "bytes".to_string(),
-                ClassUsage {
-                    count: 30,
-                    cost: 60_000,
-                },
-            )]),
-            ..Default::default()
-        },
-    };
-    let v = serde_json::to_value(&row).expect("serialize");
-    assert_eq!(
-        v["classes"],
-        serde_json::json!({"bytes": {"count": 30, "cost": 60_000}})
-    );
-    assert_eq!(v["spend_micros"], 70_000);
-    let bare = serde_json::to_value(UsageBreakdown::default()).expect("serialize");
-    assert!(bare.get("classes").is_none(), "no classes, no key: {bare}");
-}
