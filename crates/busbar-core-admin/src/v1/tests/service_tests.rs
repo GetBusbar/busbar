@@ -4033,7 +4033,7 @@ mod plane_fees_on_admin_usage {
         let row = view
             .by_model
             .iter()
-            .find(|r| r.provider == FEE_PLANE)
+            .find(|r| r.upstream == FEE_PLANE)
             .expect("the plane's row");
         assert_eq!(row.usage.classes, want, "the row carries its class");
         assert_eq!(view.total.classes, want, "the total sums it");
