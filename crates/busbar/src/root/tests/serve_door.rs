@@ -549,10 +549,13 @@ async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: 
         &composed_services(),
         &sections,
         &plane_money,
-        Some(&DoorEgress {
-            reach: &reach,
-            journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
-        }),
+        (
+            Some(&DoorEgress {
+                reach: &reach,
+                journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
+            }),
+            None,
+        ),
     )
     .expect("the door plane composes, its egress sealed");
     let _ = std::fs::remove_file(&key_file);

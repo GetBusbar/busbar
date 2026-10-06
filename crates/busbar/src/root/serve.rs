@@ -701,7 +701,7 @@ pub fn compose_planes(
         late,
         sections,
         money,
-        egress,
+        (egress, hooks),
     )
 }
 
@@ -718,7 +718,7 @@ pub(crate) fn compose_planes_over(
     late: &LateServices,
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
     money: &dyn Fn() -> Arc<PlaneMoney>,
-    egress: Option<&DoorEgress<'_>>,
+    (egress, hooks): (Option<&DoorEgress<'_>>, Option<&DoorHooks>),
 ) -> Result<Served, String> {
     let mut served = Served::default();
     if doors.is_empty() {
