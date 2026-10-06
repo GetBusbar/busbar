@@ -12,7 +12,6 @@
 
 use super::*;
 
-
 /// A `Library` handle that needs no file on disk: `libloading`'s "this process" handle. `dlclose`ing
 /// it is safe (it does not unmap the running program) and exercises exactly the same code path
 /// [`dlclose_on_worker`] takes for a real plugin, without depending on any example-plugin cdylib

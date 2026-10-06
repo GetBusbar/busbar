@@ -14,7 +14,6 @@
 // lanes; the SDK keeps the discipline it was written and reviewed under, unchanged by the merge.
 #![allow(unsafe_op_in_unsafe_fn)]
 
-
 pub mod boundary;
 pub use boundary::BoundaryOutcome;
 // THE URL AND HOST READER a plugin judges a destination with, the same one the host's guard reads
@@ -62,9 +61,7 @@ pub use publish::{Generations, Keyed};
 pub mod life;
 
 // The `#[macro_export]` export macros, named at this module's path too.
-pub use crate::{
-    export_carrier, export_framer, export_plane, export_plugin, export_transport,
-};
+pub use crate::{export_carrier, export_framer, export_plane, export_plugin, export_transport};
 
 /// The "decision observability" signal catalog: a plugin author references
 /// `busbar_contract::abi::sdk::Signal::CandidateBreakerState` (etc.) at compile time to declare which

@@ -29,7 +29,12 @@ unsafe fn dispatch(
     busbar_contract::abi::sdk::BoundaryOutcome::Unsupported("no request is served here".into())
 }
 
-busbar_contract::export_plugin!(kind = "auth", dispatch = dispatch, ctor = open, handle = Handle);
+busbar_contract::export_plugin!(
+    kind = "auth",
+    dispatch = dispatch,
+    ctor = open,
+    handle = Handle
+);
 
 #[test]
 fn the_frozen_symbols_answer_through_the_registered_plugin() {

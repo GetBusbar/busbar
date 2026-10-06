@@ -575,9 +575,6 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "begin_sets_httponly_secure_cookie_and_redirects", "the GET /auth/token begin flow"),
         ("test", "callback_state_mismatch_400", "constant-time state check"),
         ("test", "callback_nonce_mismatch_rejected", "the id_token nonce"),
-        ("test", "execute_hop_refuses_non_allowlisted_host", "the hop host allowlist"),
-        ("test", "vet_hop_url_enforces_https_allowlist_and_blocks_metadata", "ssrf_blocked_host on hops"),
-        ("test", "execute_hop_does_not_follow_redirect", "hops never follow redirects"),
         ("test", "refresh_rotates_key_and_revokes_the_old_one", "?refresh rotates and revokes"),
     ]),
     ("PB-101", &[

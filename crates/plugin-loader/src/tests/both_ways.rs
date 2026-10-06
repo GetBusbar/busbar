@@ -196,4 +196,3 @@ pub(crate) fn row(registry: &PluginRegistry, name: &str) -> String {
     };
     serde_json::json!({ "manifest": stated, "alias_resolves_to": by_alias }).to_string()
 }
-

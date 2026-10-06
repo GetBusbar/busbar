@@ -37,7 +37,12 @@ mod first {
         busbar_contract::abi::sdk::BoundaryOutcome::Unsupported("no request is served here".into())
     }
 
-    busbar_contract::export_plugin!(kind = "auth", dispatch = dispatch, ctor = open, handle = Handle);
+    busbar_contract::export_plugin!(
+        kind = "auth",
+        dispatch = dispatch,
+        ctor = open,
+        handle = Handle
+    );
 }
 
 mod second {
@@ -59,7 +64,12 @@ mod second {
         busbar_contract::abi::sdk::BoundaryOutcome::Unsupported("no request is served here".into())
     }
 
-    busbar_contract::export_plugin!(kind = "auth", dispatch = dispatch, ctor = open, handle = Handle);
+    busbar_contract::export_plugin!(
+        kind = "auth",
+        dispatch = dispatch,
+        ctor = open,
+        handle = Handle
+    );
 }
 
 /// A transport's door in the same link (#84 merge: the transport door is the shared one). Before
