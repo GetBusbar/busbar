@@ -171,8 +171,6 @@ YAML
 store: { module: memory }
 listen: "127.0.0.1:$data_port"
 admin_listen: "127.0.0.1:$admin_port"
-# A config names its store (Q-STORE = (B), THE DESIGN §4): the compiled-in RAM store.
-store: { module: memory }
 providers: {}
 models: {}
 pools: {}
