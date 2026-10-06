@@ -20,7 +20,7 @@ const PUBLISHED_STORE_SCHEMA: u32 = 2;
 /// `cdylib`, one of the two sinks still on that lane (M6-COLD-DELETE residue). Under CI a missing
 /// cdylib is a hard failure ([`super::both_ways::cdylib`] asserts it), never a silent skip.
 fn json_lane_plugin_path() -> Option<std::path::PathBuf> {
-    super::both_ways::cdylib(super::both_ways::fixture("export").0)
+    super::both_ways::cdylib(super::both_ways::fixture("auth").0)
 }
 
 /// `validate_plugin` accepts the real JSON-lane fixture cdylib (ABI v1) without constructing an
@@ -32,7 +32,7 @@ fn json_lane_plugin_path() -> Option<std::path::PathBuf> {
 #[test]
 fn validate_and_inventory() {
     let Some(path) = json_lane_plugin_path() else {
-        eprintln!("skip: the export sink cdylib is not built");
+        eprintln!("skip: the JSON-lane auth cdylib is not built");
         return;
     };
     assert_eq!(validate_plugin(&path).expect("validate"), TRANSPORT_VERSION);
@@ -200,7 +200,7 @@ fn the_library_extension_match_uses_this_filesystems_case_rule() {
 #[test]
 fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
     let Some(real_plugin) = json_lane_plugin_path() else {
-        eprintln!("skip: the export sink cdylib is not built");
+        eprintln!("skip: the JSON-lane auth cdylib is not built");
         return;
     };
     let dir = std::env::temp_dir().join(format!(
@@ -247,31 +247,39 @@ fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
 /// exports) are two different attacks and must not be conflatable into one check.
 #[test]
 fn wire_up_raw_rejects_a_kind_mismatch_against_the_seam_and_the_manifest() {
-    let Some(export_plugin) = json_lane_plugin_path() else {
-        eprintln!("skip: the export sink cdylib is not built");
+    let Some(auth_plugin) = json_lane_plugin_path() else {
+        eprintln!("skip: the JSON-lane auth cdylib is not built");
         return;
     };
-    let bytes = std::fs::read(&export_plugin).expect("read the JSON-lane fixture cdylib");
+    let bytes = std::fs::read(&auth_plugin).expect("read the JSON-lane fixture cdylib");
+    let export = busbar_contract::abi::mechanism::kind::EXPORT;
+    let auth = busbar_contract::abi::mechanism::kind::AUTH;
 
-    // Seam mismatch: a real EXPORT library loaded through the AUTH entry point (expected_kind =
-    // auth, exported_kind = export) must be refused, naming both kinds. Both kind-check guards run
-    // BEFORE `busbar_open`, so the empty config never reaches the sink.
-    let Err(err) = auth::load_login_image(
+    // Seam mismatch: a real AUTH library loaded as an EXPORT plugin (expected_kind = export,
+    // exported_kind = auth) must be refused, naming both kinds. Both kind-check guards run BEFORE
+    // `busbar_open`, so the empty config never reaches the plugin.
+    let Err(err) = load_image(
         Image::Bytes(&bytes),
         "{}",
         "kind-mismatch-seam",
-        busbar_contract::abi::mechanism::kind::EXPORT,
+        export,
+        export,
     ) else {
-        panic!("an export library must not load as an auth module");
+        panic!("an auth library must not load as an export plugin");
     };
-    assert!(err.contains("export"), "must name the exported kind: {err}");
-    assert!(err.contains("auth"), "must name the expected kind: {err}");
+    assert!(err.contains("export"), "must name the expected kind: {err}");
+    assert!(err.contains("auth"), "must name the exported kind: {err}");
 
-    // Manifest mismatch: expected_kind matches exported_kind (both export), but the signed
+    // Manifest mismatch: expected_kind matches exported_kind (both auth), but the signed
     // manifest_kind lies about it — must still be refused.
-    let Err(err) = export::load_export_from_bytes(&bytes, "{}", "kind-mismatch-manifest", "auth")
-    else {
-        panic!("an exported-export/manifest-auth disagreement must be refused");
+    let Err(err) = load_image(
+        Image::Bytes(&bytes),
+        "{}",
+        "kind-mismatch-manifest",
+        auth,
+        export,
+    ) else {
+        panic!("an exported-auth/manifest-export disagreement must be refused");
     };
     assert!(
         err.contains("kind mismatch"),
@@ -378,34 +386,6 @@ fn transport_error_classification() {
     assert!(m.contains("libstore.so") && m.contains("-1"), "{m}");
 }
 
-/// END-TO-END over the export kind's REAL sink `cdylib` (the export row of
-/// `[package.metadata.busbar.both-ways]` — the request-log file sink, built from its own repo): load
-/// it through the loader (which queries `Streams` once at load), assert it reports `[Logs]`, then
-/// `Deliver` a request-log line and assert the sink acks (an `Ok(())`). This is the exact seam the
-/// engine's observability export consumes: verified bytes in, a `DynExport` out. Under CI a missing
-/// cdylib is a hard failure ([`super::both_ways::cdylib`] asserts it), never a silent skip.
-#[test]
-fn load_and_exercise_export_plugin() {
-    use busbar_contract::abi::export::ExportStream;
-    let Some(path) = super::both_ways::cdylib(super::both_ways::fixture("export").0) else {
-        eprintln!("skip: the export sink cdylib is not built");
-        return;
-    };
-    let bytes = std::fs::read(&path).expect("read the export sink cdylib");
-    let sink = export::load_export_from_bytes(&bytes, "{}", "export-sink", "export")
-        .expect("load the export sink over the ABI");
-
-    // Streams was queried once at load and reports exactly [Logs].
-    assert_eq!(sink.streams(), &[ExportStream::Logs]);
-
-    // A delivery for the declared stream acks (Ok).
-    sink.deliver(
-        ExportStream::Logs,
-        &serde_json::json!({"status": 200, "model": "m"}),
-    )
-    .expect("deliver acks");
-}
-
 /// `validate_plugin` must UNLOAD on a plugin worker, not on the caller's thread.
 ///
 /// It `dlopen`s to run the ABI handshake and then has to unmap again. An implicit drop of the
@@ -423,7 +403,7 @@ fn load_and_exercise_export_plugin() {
 #[test]
 fn validate_plugin_unloads_on_a_worker_not_the_callers_thread() {
     let Some(path) = json_lane_plugin_path() else {
-        eprintln!("skip: the export sink cdylib is not built");
+        eprintln!("skip: the JSON-lane auth cdylib is not built");
         return;
     };
     let before = UNLOADS_ON_WORKER.with(std::cell::Cell::get);
