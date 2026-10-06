@@ -3956,6 +3956,9 @@ struct SourceIndex {
     conformance_dead: BTreeSet<String>,
 }
 
+/// The published conformance suite's macro, as a plugin's battery file invokes it.
+const SUITE_MACRO: &str = "conformance_suite!";
+
 /// `(live, ignored)` `#[test]` entries in a battery file.
 ///
 /// A BATTERY THAT DOES NOT RUN IS NOT A BATTERY. The rule keyed on the file EXISTING and on a
@@ -3967,14 +3970,27 @@ struct SourceIndex {
 /// Attributes are read off the BLANKED line, so `#[ignore]` inside a string in the file's own prose
 /// is not an attribute, and an entry's attribute block is the contiguous run of `#[…]` lines around
 /// it — which is where rustfmt puts `#[ignore]`, above or below the `#[test]`.
+///
+/// THE PUBLISHED SUITE IS A BATTERY. A plugin that runs busbar's published conformance suite
+/// invokes [`SUITE_MACRO`] (`busbar_plugin_loader::conformance_suite! { door, cdylib, inputs }`),
+/// which expands to the suite's `#[test]` entries — its both-ways arm and its RED arms, none of them
+/// ignorable from the plugin's side. Each invocation in code (not a comment, not a string) is a live
+/// entry; a file holding none and no live `#[test]` is still a file, not a battery.
 fn live_battery_entries(text: &str) -> (usize, usize) {
     let mut lex = scan::LexState::default();
     let lines: Vec<String> = text
         .lines()
-        .map(|l| scan::blank_code(l, &mut lex))
+        .map(|l| {
+            let (blanked, comment_at) = scan::blank_code_marking(l, &mut lex);
+            match comment_at {
+                Some(at) => blanked.chars().take(at).collect(),
+                None => blanked,
+            }
+        })
         .collect();
     let is_attr = |l: &String| l.trim_start().starts_with("#[");
     let (mut live, mut ignored) = (0usize, 0usize);
+    live += lines.iter().filter(|l| l.contains(SUITE_MACRO)).count();
     for (i, l) in lines.iter().enumerate() {
         if !l.trim_start().starts_with("#[test]") {
             continue;
@@ -11434,6 +11450,28 @@ mod plant_tests {
 #[cfg(test)]
 mod cold_witness_tests {
     use super::*;
+
+    /// THE PUBLISHED SUITE IS A LIVE BATTERY: a battery file that invokes the suite's macro runs its
+    /// entries; the same words in a comment or a string run nothing (RED), and an ignored entry
+    /// stays ignored beside it.
+    #[test]
+    fn a_published_suite_invocation_is_a_live_battery_entry() {
+        let suite = "busbar_plugin_loader::conformance_suite! {\n    door: d::door,\n    \
+                     cdylib: \"c\",\n    inputs: include_str!(\"conformance.json\"),\n}\n";
+        assert_eq!(live_battery_entries(suite), (1, 0));
+        assert_eq!(
+            live_battery_entries("// busbar_plugin_loader::conformance_suite! { }\n"),
+            (0, 0)
+        );
+        assert_eq!(
+            live_battery_entries("const S: &str = \"conformance_suite! {}\";\n"),
+            (0, 0)
+        );
+        assert_eq!(
+            live_battery_entries(&format!("{suite}#[test]\n#[ignore]\nfn owed() {{}}\n")),
+            (1, 1)
+        );
+    }
 
     /// A USER is code: a doc comment naming the crate path and a string spelling its artifact are
     /// not, and `resolve_store_fixture` does not name `store_fixture` — while an aliased `use` does.
