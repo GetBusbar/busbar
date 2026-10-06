@@ -262,7 +262,9 @@ plugins:
     description: "The AD/LDAP auth module as a droppable busbar plugin: a cdylib exporting the auth C ABI. Drop it in the plugins folder, define it once under identity-providers.<name> (module: ldap, settings: url, bind_dn_template, base_dn, group_attr) and reference that name from auth.chain."
     ci_service: "openldap"
     busbar_checkout: true
-    macos_test: "cargo test --workspace --locked --lib --test conformance"
+    # macOS runners have no OpenLDAP: the published suite's two arms that log in against the live
+    # directory (through the suite's StartTLS front) run on the linux leg, against the service.
+    macos_test: "cargo test --workspace --locked --lib --test conformance -- --skip the_linked_and_the_dropped_in_door_are_one_plugin --skip red_a_moved_crossing_count_is_refused"
     declares: "auth-ldap/declares.json"
   - repo: busbar-auth-admin-tokens
     kind: auth
