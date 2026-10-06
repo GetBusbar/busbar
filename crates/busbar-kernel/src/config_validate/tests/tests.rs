@@ -4931,7 +4931,7 @@ fn resolve_yaml(yaml: &str) -> Result<RootCfg, Vec<String>> {
 fn test_validate_runs_on_resolved_root_cfg_clean_config() {
     crate::test_support::register_neutral_test_plane();
     // The store the linked rows declare the default (the kernel names none).
-    let store = crate::preflight::root_rows().default_store_module;
+    let store = crate::config::MIGRATED_STORE_MODULE;
     let yaml = r#"
 listen: "0.0.0.0:8080"
 auth:

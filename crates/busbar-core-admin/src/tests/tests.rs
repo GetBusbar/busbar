@@ -15,7 +15,7 @@ const OAS_OPERATION_STATUSES: &str =
 /// The store a deployment that configures none runs on, as the linked store rows declare it: the
 /// compiled-in head of the store catalog. Admin names no store, and neither do its tests.
 fn default_store() -> &'static str {
-    busbar_kernel::preflight::root_rows().default_store_module
+    busbar_kernel::config::MIGRATED_STORE_MODULE
 }
 
 /// Build a `GovState` that CAN mint 1.5.0 signed-token keys: it carries a deterministic

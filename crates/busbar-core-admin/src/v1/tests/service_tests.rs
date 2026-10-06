@@ -574,7 +574,7 @@ fn install_catalog_remove_roundtrip() {
     let cat = svc.store_plugin_catalog();
     assert_eq!(
         cat[0].name,
-        busbar_kernel::preflight::root_rows().default_store_module
+        busbar_kernel::config::MIGRATED_STORE_MODULE
     );
     let dyn_row = cat
         .iter()
@@ -741,7 +741,7 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
     );
     assert_eq!(
         page.items[0].name,
-        busbar_kernel::preflight::root_rows().default_store_module
+        busbar_kernel::config::MIGRATED_STORE_MODULE
     );
     assert_eq!(page.items[0].loader, "compiled-in");
 }

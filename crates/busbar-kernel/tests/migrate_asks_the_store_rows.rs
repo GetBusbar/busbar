@@ -21,7 +21,7 @@ extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
     std::ptr::null()
 }
 
-/// Two store rows the kernel has never heard of: one volatile (and the default), one durable.
+/// Two store rows the kernel has never heard of: one volatile, one durable.
 const STORES: &[LinkedStore] = &[
     ("acme-volatile", true, true, never, no_door),
     ("acme-durable", false, false, never, no_door),
@@ -30,7 +30,6 @@ const STORES: &[LinkedStore] = &[
 fn install() {
     install_linked_rows(RootInstall {
         stores: STORES,
-        default_store_module: "acme-volatile",
         ..RootInstall::default()
     });
 }
