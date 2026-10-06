@@ -556,7 +556,7 @@ mod tools_door {
     use crate::root::door_steps::tests::hook_parity;
     use crate::root::door_steps::tests::tool_door::{
         protocol_version, rig_tools, send_as, send_headed, surface, three_tools, tool_digest,
-        tool_listing, tool_server, tool_server_listing, tool_server_replying, Footing, Rig,
+        tool_listing, tool_server, tool_server_listing, tool_server_replying, Footing, Rig, STALL,
         TOOL_DESCRIPTION,
     };
     use crate::root::serve::planes_tests::{Published, PUBLISHING};
@@ -943,6 +943,59 @@ mod tools_door {
         assert!(
             drain(&mut heard).contains(&"call"),
             "the next call reached the server"
+        );
+        assert!(rig.all_ended(), "every unit ended");
+    }
+
+    /// RED (ARCHITECT timeout ruling; SEAM.UPSTREAM-FAILURE-IS-TOOL-ERROR): a registration's
+    /// `timeout:` is its member's attempt bound. A server that takes the relayed `tools/call` and
+    /// never answers it is answered to the caller WITHIN that bound, as the call's failure (the
+    /// battery's two defensible shapes: an `isError` result or a JSON-RPC error, correlated) — not
+    /// at the walk's own budget, and not by a hung seam.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stalled_tool_server_is_answered_within_its_timeout() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-stall";
+        let _published = Published(instance);
+        let (port, mut heard) = tool_server_replying(Arc::new(|r: &str| {
+            if r.contains("\"tools/list\"") {
+                let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}});
+                (200, list.to_string())
+            } else {
+                (STALL, String::new())
+            }
+        }))
+        .await;
+        let rig = rig_tools(
+            instance,
+            port,
+            registration("stall", port, "  timeout: 2s\n"),
+            &|app| app,
+        );
+
+        let started = Instant::now();
+        let (status, answer) = tokio::time::timeout(
+            Duration::from_secs(20),
+            call(&rig, &rig.token, "stall_read_file", serde_json::json!({})),
+        )
+        .await
+        .expect("the stalled call was answered: no hung seam");
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_secs(2) && took < Duration::from_secs(6),
+            "answered at the registration's 2s bound, not the walk's: {took:?} {answer}"
+        );
+        assert!(
+            drain(&mut heard).contains(&"call"),
+            "the call reached the stalled server"
+        );
+        assert_eq!(
+            answer["id"], 41,
+            "the caller's own call is answered: {status} {answer}"
+        );
+        assert!(
+            answer["result"]["isError"] == true || answer["error"].is_object(),
+            "the stall is the call's failure: {status} {answer}"
         );
         assert!(rig.all_ended(), "every unit ended");
     }

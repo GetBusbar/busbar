@@ -44,6 +44,24 @@ fn a_pool_route_walks_its_named_pools_members_under_its_label() {
     assert_eq!(routed(&p, ROUTE_POOL, None), None, "none named");
 }
 
+/// RED (ARCHITECT timeout ruling; R2-G "per-member ... timeout"): an entry's reserved `timeout:` is
+/// its member's attempt bound, read for every entry alike — a section's own entries and a
+/// model-serving section's `models` entries; an entry that writes none has no bound of its own.
+#[test]
+fn an_entrys_timeout_is_its_members_attempt_bound() {
+    let p = pools("a: { timeout: 10s }\nb: {}\npools:\n  both:\n    members: [a, b]");
+    assert_eq!(p.timeout_ms("a"), Some(10_000));
+    assert_eq!(
+        p.timeout_ms("b"),
+        None,
+        "none written: the walk's own budget"
+    );
+    assert_eq!(p.timeout_ms("both"), None, "a pool is no entry");
+    let m = pools("models:\n  m1: { provider: p, timeout: 2m }\n  m2: { provider: p }");
+    assert_eq!(m.timeout_ms("m1"), Some(120_000));
+    assert_eq!(m.timeout_ms("m2"), None);
+}
+
 #[test]
 fn a_direct_route_walks_its_entry_alone_under_the_empty_label() {
     let p = pools(SECTION);
@@ -1080,8 +1098,12 @@ pub(crate) mod tool_door {
         tool_server_replying(Arc::new(move |request: &str| (200, answer(request)))).await
     }
 
-    /// What a test server answers a request with: its status and body.
+    /// What a test server answers a request with: its status and body. Status [`STALL`] answers
+    /// nothing: the request is taken and the connection held open, unanswered.
     pub(crate) type Replies = Arc<dyn Fn(&str) -> (u16, String) + Send + Sync>;
+
+    /// The status a [`Replies`] answers with to take a request and never answer it: a stalled server.
+    pub(crate) const STALL: u16 = 0;
 
     /// A tool server on loopback answering each request with the status and body `answer` makes of
     /// it; every request is heard.
@@ -1127,6 +1149,11 @@ pub(crate) mod tool_door {
                         }
                     }
                     let (status, answer) = answer(&String::from_utf8_lossy(&got));
+                    if status == STALL {
+                        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+                        drop(socket);
+                        return;
+                    }
                     let reply = format!(
                         "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
                          connection: close\r\n\r\n{answer}",

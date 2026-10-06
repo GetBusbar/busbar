@@ -714,6 +714,10 @@ pub const TRUST_KEYS: &[TrustKeyDecl] = &[
 /// is off on every registration whose author did not know to switch it on.
 pub const DEFAULT_MCP_VERIFY_TTL: &str = "5s";
 
+/// THE DEFAULT BUDGET of a fetch this door makes of a server that writes no `timeout:` (30 s,
+/// `docs/mcp.md`'s `timeout` row).
+pub const DEFAULT_UPSTREAM_TIMEOUT_MS: u64 = 30_000;
+
 /// One entry in the top-level `tools:` NAMED-DEFINITION map — one registered external MCP server.
 ///
 /// Operator INTENT only (owner ruling 3). Everything that ACCUMULATES — every observed tool list,
@@ -776,10 +780,10 @@ pub struct McpServerDefCfg {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_ttl: Option<String>,
     /// `<n><s|m|h|d>` — the wall-clock budget for ONE outbound leg to THIS server: the tool call,
-    /// and separately the RFC 8693 token exchange. Absent ⇒
-    /// the engine's `super::upstream::DEFAULT_UPSTREAM_TIMEOUT`,
-    /// which is the value every registration used before this key existed, so nothing that exists
-    /// today changes.
+    /// and separately its tool-list fetches. KERNEL-OWNED (`busbar_contract::section::ENTRY_TIMEOUT_KEY`,
+    /// ARCHITECT timeout ruling): the kernel judges it and holds every relayed call's attempt to it
+    /// (the member's attempt bound); this door reads it only for the fetches it makes itself
+    /// ([`Self::timeout_ms`], absent ⇒ [`DEFAULT_UPSTREAM_TIMEOUT_MS`], `docs/mcp.md`).
     ///
     /// ## Why it is per SERVER and not one constant
     ///
@@ -1220,6 +1224,19 @@ fn refuse_unknown_ask_methods(
     Ok(())
 }
 
+impl McpServerDefCfg {
+    /// The budget of one fetch this door makes of the server, milliseconds: its `timeout:` as the
+    /// kernel judged it (the one reading, `busbar_contract::section::entry_timeout_ms`), else
+    /// [`DEFAULT_UPSTREAM_TIMEOUT_MS`].
+    #[must_use]
+    pub fn timeout_ms(&self) -> u64 {
+        self.timeout
+            .as_deref()
+            .and_then(|t| busbar_contract::section::entry_timeout_ms(t).ok())
+            .unwrap_or(DEFAULT_UPSTREAM_TIMEOUT_MS)
+    }
+}
+
 /// THE VALUE-LEVEL RULES for one `tools:` entry.
 ///
 /// Split out as a free function on purpose: `serde` types check SHAPE, and every rule below is about
@@ -1261,22 +1278,9 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
     // THE PIN and the `verify_ttl:` bound are not judged here: they are the kernel's trust keys
     // ([`TRUST_KEYS`]), judged by the kernel before the section reaches this validator.
 
-    // The DEADLINE is parsed at boot for the same reason, and `0` is refused rather than accepted
-    // as "no deadline": a zero-second budget would refuse every call to this server on the first
-    // dispatch, and an operator who meant "unlimited" would get the exact opposite of what they
-    // wrote. There is deliberately no spelling for "unlimited" — a leg with no deadline holds a
-    // concurrency slot for as long as the upstream chooses.
-    if let Some(t) = def.timeout.as_deref() {
-        let secs = busbar_contract::duration::parse_duration_secs(t)
-            .map_err(|e| format!("{at}: `timeout:` {e}"))?;
-        if secs == 0 {
-            return Err(format!(
-                "{at}: `timeout: {t}` is zero, which would refuse every call to this server before \
-                 it was sent. There is no spelling for an unlimited deadline: a leg that cannot \
-                 time out holds a concurrency slot for as long as the upstream chooses."
-            ));
-        }
-    }
+    // THE DEADLINE (`timeout:`) is not judged here either: it is the kernel's reserved per-entry key
+    // (`busbar_contract::section::ENTRY_TIMEOUT_KEY`), judged by the kernel before the section
+    // reaches this validator, and read through the one reading it judged ([`McpServerDefCfg::timeout_ms`]).
 
     for (tool, allow) in &def.tools_allow {
         validate_capability_name(&at, "tools_allow", tool)?;

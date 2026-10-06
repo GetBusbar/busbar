@@ -484,3 +484,42 @@ fn the_statement_names_the_grammars_section_noun_and_endpoint() {
     );
     assert_eq!(crate::door::TAIL.dialects_len, 1, "one wire dialect");
 }
+
+/// RED (ARCHITECT timeout ruling): a server's `timeout:` is the kernel's reserved per-entry key, and
+/// the door reads it — through the kernel's one reading — as the budget of the tool-list fetches it
+/// makes itself: `10s` is 10 000 ms; a server that writes none gets the documented `30s`
+/// (`docs/mcp.md`). One owner judges it: the door does not refuse a value the kernel refuses (a
+/// zero), it never sees one at load.
+#[test]
+fn a_servers_timeout_bounds_the_doors_own_fetches_and_the_kernel_owns_its_judgement() {
+    let server = |extra: Value| {
+        let mut s = json!({
+            "url": "https://tools.internal/fs",
+            "pin": { "mechanism": "cert_spki", "key": "sha256/PIN==" },
+            "tools_allow": { "read_file": {} },
+        });
+        if let (Some(s), Some(extra)) = (s.as_object_mut(), extra.as_object()) {
+            s.extend(extra.clone());
+        }
+        s
+    };
+    let cfg = grammar(json!({
+        "timed": server(json!({ "timeout": "10s" })),
+        "untimed": server(json!({})),
+    }))
+    .expect("both read");
+    assert_eq!(cfg.servers["timed"].timeout_ms(), 10_000);
+    assert_eq!(
+        cfg.servers["untimed"].timeout_ms(),
+        super::DEFAULT_UPSTREAM_TIMEOUT_MS
+    );
+    assert_eq!(
+        super::DEFAULT_UPSTREAM_TIMEOUT_MS,
+        30_000,
+        "docs/mcp.md's default"
+    );
+    assert!(
+        door_validate(&json!({ "zero": server(json!({ "timeout": "0s" })) })).is_ok(),
+        "the zero timeout is the kernel's to refuse, not the door's"
+    );
+}

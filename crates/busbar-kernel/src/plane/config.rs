@@ -410,6 +410,15 @@ pub fn validate_plane_section(
     for (name, entry) in crate::trust::section::registrations(value) {
         validate_plane_entry(section, name, entry, trust_keys, sections)?;
     }
+    let models = value
+        .get(busbar_contract::section::RESERVED_MODELS_KEY)
+        .and_then(serde_yaml::Value::as_mapping);
+    for (name, entry) in models.into_iter().flatten() {
+        if let Some(name) = name.as_str() {
+            let models = busbar_contract::section::RESERVED_MODELS_KEY;
+            judge_entry_timeout(&format!("`{section}.{models}.{name}`"), entry)?;
+        }
+    }
     refuse_forwarded_caller_credential(value, caller_credential_refusal)
 }
 
@@ -461,6 +470,13 @@ pub fn validate_plane_entry(
 ) -> Result<(), String> {
     let at = format!("`{section}.{name}`");
     crate::trust::section::judge_entry(&at, entry, trust_keys)?;
+    // The reserved maps are not entries: a model-serving section's entries are its `models` map's,
+    // judged by [`validate_plane_section`]; a pool's member is judged as the entry it names.
+    if name != busbar_contract::section::RESERVED_MODELS_KEY
+        && name != busbar_contract::section::RESERVED_POOLS_KEY
+    {
+        judge_entry_timeout(&at, entry)?;
+    }
     let hooks = entry
         .as_mapping()
         .and_then(|m| m.get(Kind::Hook.root()))
@@ -471,6 +487,32 @@ pub fn validate_plane_entry(
         }
     }
     Ok(())
+}
+
+/// THE KERNEL'S JUDGEMENT OF AN ENTRY'S RESERVED `timeout:`
+/// (`busbar_contract::section::ENTRY_TIMEOUT_KEY`): absent is no bound of its own; written, it is
+/// the one reading [`busbar_contract::section::entry_timeout_ms`] makes, or the load is refused.
+///
+/// # Errors
+///
+/// The sentence an operator reads, worded at `at`.
+pub fn judge_entry_timeout(at: &str, entry: &serde_yaml::Value) -> Result<(), String> {
+    use busbar_contract::section::{entry_timeout_ms, ENTRY_TIMEOUT_KEY};
+    let Some(written) = entry
+        .as_mapping()
+        .and_then(|m| m.get(ENTRY_TIMEOUT_KEY))
+        .filter(|v| !v.is_null())
+    else {
+        return Ok(());
+    };
+    let Some(text) = written.as_str() else {
+        return Err(format!(
+            "{at}: `{ENTRY_TIMEOUT_KEY}:` must be a duration `<n><s|m|h|d>`, e.g. `30s`"
+        ));
+    };
+    entry_timeout_ms(text)
+        .map(|_| ())
+        .map_err(|reason| format!("{at}: {reason}"))
 }
 
 /// A whole attach list, judged by the same rule one entry is — the SECTION-level `hooks:` list has
