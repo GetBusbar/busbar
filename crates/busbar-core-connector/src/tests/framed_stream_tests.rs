@@ -30,7 +30,7 @@ type Finish = (u32, Vec<u8>, Vec<u8>);
 /// The neutral framer.
 struct LengthDoor {
     facts: DoorFacts,
-    streams: Mutex<HashMap<u64, Stream>>,
+    framings: Mutex<HashMap<u64, Stream>>,
     next: AtomicU64,
     finishes: Mutex<Vec<Finish>>,
 }
@@ -43,7 +43,7 @@ fn door() -> Arc<LengthDoor> {
             composes_over: Vec::new(),
             status_rows: vec![(1, 0, 9)],
         },
-        streams: Mutex::new(HashMap::new()),
+        framings: Mutex::new(HashMap::new()),
         next: AtomicU64::new(1),
         finishes: Mutex::new(Vec::new()),
     })
@@ -74,11 +74,11 @@ impl FramerDoor for LengthDoor {
             outcome: Outcome::Ready,
             error: None,
         };
-        let mut streams = self.streams.lock().unwrap();
+        let mut framings = self.framings.lock().unwrap();
         match call {
             Call::Begin(i, o) => {
                 let token = self.next.fetch_add(1, Ordering::Relaxed);
-                streams.insert(
+                framings.insert(
                     token,
                     Stream {
                         sides: i.side,
@@ -89,7 +89,7 @@ impl FramerDoor for LengthDoor {
                 ok
             }
             Call::Ingest(i, o) => {
-                let st = streams.get_mut(&i.framing).unwrap();
+                let st = framings.get_mut(&i.framing).unwrap();
                 st.inbound.extend_from_slice(raw(i.bytes, i.len));
                 let (mut at, mut n) = (0usize, 0usize);
                 while let Some(&len) = st.inbound.first() {
@@ -153,7 +153,7 @@ impl FramerDoor for LengthDoor {
                     String::from_utf8_lossy(&message)
                 );
                 wire(&i.sink, o, block.as_bytes());
-                streams.remove(&i.framing);
+                framings.remove(&i.framing);
                 ok
             }
             _ => Crossed {
@@ -182,7 +182,7 @@ fn a_stream_is_framed_by_its_claims_framer_and_closed_with_the_units_final_statu
     )
     .expect("open");
     assert_eq!(
-        d.streams.lock().unwrap().values().next().map(|s| s.sides),
+        d.framings.lock().unwrap().values().next().map(|s| s.sides),
         Some(SIDE_ACCEPT_STREAM)
     );
     // Body in, messages out, a message split across two reads included.
