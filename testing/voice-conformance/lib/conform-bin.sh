@@ -6,8 +6,8 @@
 #
 # SHARED HELPER for the voice-conformance legs — NOT a leg (it lives outside legs/, so the runner's
 # `legs/*.sh` glob never discovers it). Sourced by each `legs/<name>.sh` to locate the REAL Rust
-# conformance harness the legs shell out to: `busbar-plane-streaming`'s dev-only `voice_conform`
-# example, which drives the streaming plane's DOOR both ways through the loader — the linked door and
+# conformance harness the legs shell out to: the `voice_conform` binary of the testkit crate
+# `testing/voice-conformance/harness`, which drives the streaming plane's DOOR both ways through the loader — the linked door and
 # the `streaming_door` example cdylib, dlopened (ARCHITECT Q6). The legs reuse the plane's own door
 # and codecs through this harness; they never reimplement a codec — or a door — in shell.
 
@@ -28,6 +28,7 @@ _vc_harness_trees() {
   printf '%s\n' \
     "$VC_ROOT/crates/busbar-plane-streaming/src" \
     "$VC_ROOT/crates/busbar-plane-streaming/examples" \
+    "$VC_DIR/harness/src" \
     "$VC_ROOT/crates/plugin-loader/src" \
     "$VC_ROOT/crates/busbar-contract/src" \
     "$VC_DIR/legs" \
@@ -78,9 +79,11 @@ voice_conform_bin() {
     printf '%s' "$VOICE_CONFORM_BIN"
     return 0
   fi
-  local bin="${CARGO_TARGET_DIR:-$VC_ROOT/target}/debug/examples/voice_conform"
+  local bin="${CARGO_TARGET_DIR:-$VC_ROOT/target}/debug/voice_conform"
+  cargo build -q --manifest-path "$VC_ROOT/Cargo.toml" -p voice-conformance-harness \
+    --bin voice_conform >&2 || return 1
   cargo build -q --manifest-path "$VC_ROOT/Cargo.toml" -p busbar-plane-streaming \
-    --example voice_conform --example streaming_door >&2 || return 1
+    --example streaming_door >&2 || return 1
   [ -x "$bin" ] || return 1
   printf '%s' "$bin"
 }

@@ -89,7 +89,7 @@
 #
 # ARMING
 #   MCP_SUBJECT_BUSBAR_BIN / A2A_SUBJECT_BUSBAR_BIN are set from --bin for the MCP and A2A legs. The
-#   voice battery arms itself (it drives its OWN `voice_conform` harness (busbar-plane-streaming example) from this tree,
+#   voice battery arms itself (it drives its OWN `voice_conform` harness (testing/voice-conformance/harness) from this tree,
 #   never busbar's server binary — see testing/voice-conformance/lib/conform-bin.sh), so --bin plays
 #   no part in that leg; it is still required, so a run cannot silently skip the two legs that do need
 #   it by never providing one.

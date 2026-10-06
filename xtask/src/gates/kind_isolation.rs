@@ -491,6 +491,17 @@ const OFF_TREE_MANIFESTS: &[(&str, &str)] = &[
          never builds it, and it carries no kind and no plane or transport instance of its own. It \
          is an input to the conformance leg, never a crate a rule here is written about.",
     ),
+    (
+        "testing/voice-conformance/harness/Cargo.toml",
+        "the voice (streaming-plane) conformance HARNESS: a testkit binary the \
+         `testing/voice-conformance/` legs shell out to, which loads the streaming plane's door both \
+         ways through the loader (ARCHITECT Q6). It is a workspace member so \
+         `testing/voice-conformance/lib/conform-bin.sh` can build it with \
+         `-p voice-conformance-harness`, and it is not a crate of the product tree: it ships in no \
+         artifact, `cargo build --bin busbar` never builds it, and it carries no kind. It lives \
+         outside the plane crate so the plane's one user of the loader is its own both-ways witness. \
+         It is an input to the conformance leg, never a crate a rule here is written about.",
+    ),
 ];
 
 /// `qa/construction.toml`'s `[gate.plugin_kinds]` keys, each mapped onto the kind it names here.

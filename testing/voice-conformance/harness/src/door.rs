@@ -134,8 +134,9 @@ pub struct Rig {
     stated: Vec<u8>,
 }
 
-/// Where the dropped-in door is: `VOICE_CONFORM_DOOR`, else the `streaming_door` library beside
-/// this harness (`cargo build --example` puts both in the profile's `examples/`).
+/// Where the dropped-in door is: `VOICE_CONFORM_DOOR`, else the plane's `streaming_door` example
+/// library in the profile's `examples/` beside this harness's binary (`cargo build -p
+/// busbar-plane-streaming --example streaming_door` puts it there).
 fn dropped_path() -> Result<PathBuf, String> {
     if let Some(p) = std::env::var_os(DOOR_ENV) {
         let p = PathBuf::from(p);
@@ -154,7 +155,7 @@ fn dropped_path() -> Result<PathBuf, String> {
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     );
-    let path = dir.join(name);
+    let path = dir.join("examples").join(name);
     if path.is_file() {
         Ok(path)
     } else {

@@ -5,7 +5,7 @@
 //! the streaming plane's DOOR (ARCHITECT Q6: the streaming plane's conformance MUST-set, built
 //! against `busbar-plane-streaming`, linked and dlopened, RED arm kept).
 //!
-//! A dev-only example: never shipped, no production dependency. Every assertion drives the door
+//! A dev-only testkit binary: never shipped, no production dependency. Every assertion drives the door
 //! through `busbar-plugin-loader` BOTH ways — the LINKED door (`busbar_plane_streaming::door::door`)
 //! and the DROPPED door (the `streaming_door` example `cdylib`, dlopened) — and requires both to
 //! answer identically, then judges the answer, then requires the leg's planted wrong answer to be

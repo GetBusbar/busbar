@@ -73,10 +73,6 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 name = "streaming_door"
 crate-type = ["cdylib"]
 
-# THE VOICE CONFORMANCE HARNESS (`testing/voice-conformance/`, ARCHITECT Q6): a dev-only binary
-# that drives the door above BOTH ways — linked, and the `streaming_door` cdylib dlopened — through
-# the loader, over the dev-dependencies only. Never shipped; `cargo build --example voice_conform
-# --example streaming_door` builds the pair the rig's legs run.
-[[example]]
-name = "voice_conform"
-path = "examples/voice_conform/main.rs"
+# THE VOICE CONFORMANCE HARNESS that drives the door above both ways (`testing/voice-conformance/`,
+# ARCHITECT Q6) is its own testkit crate, `testing/voice-conformance/harness`: this crate's one
+# user of the loader stays its own both-ways witness, `tests/conformance.rs`.
