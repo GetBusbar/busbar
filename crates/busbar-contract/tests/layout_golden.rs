@@ -2126,7 +2126,8 @@ fn compute_layout() -> String {
             random_fill,
             need_admit,
             trust_verify,
-            records_secret
+            records_secret,
+            disk_append
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
@@ -2136,6 +2137,12 @@ fn compute_layout() -> String {
         [head, counterparty, payload, signatures, into]
     );
     record!(s, hsvc::RecordsSecretIn, [head, kind, id, into]);
+    record!(s, hsvc::DiskAppendIn, [head, dest_key, bytes, result]);
+    record!(
+        s,
+        hsvc::DiskWritten,
+        [size, rotated, faults, _reserved, written]
+    );
 
     // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
     record!(s, SecretOps, [head, resolve]);

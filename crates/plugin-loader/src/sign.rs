@@ -279,6 +279,23 @@ pub struct Declares {
     /// and keep their canonical bytes (the field is left off the wire when absent).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contract_abi: Option<ContractAbiRange>,
+    /// The plane's BREAKER FACTS (ARCHITECT Q4): how its members' breaker cells treat a transient
+    /// failure that does not trip them — see [`BreakerDecl`]. Absent, the host's default posture
+    /// holds; left off the wire when absent, so every manifest packed before the field existed
+    /// keeps its canonical bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub breaker: Option<BreakerDecl>,
+}
+
+/// A plane's declared BREAKER FACTS (`declares.breaker`, ARCHITECT Q4): per-plane facts about the
+/// breaker cells of its members, which the host reads and applies to that plane's cells alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BreakerDecl {
+    /// Whether a transient failure BELOW the trip threshold still benches the member's cell for a
+    /// cooldown. `false`: a cell refuses only on a TRIP (the host's trip thresholds), an upstream
+    /// `Retry-After` still honoured.
+    pub bench_below_trip_threshold: bool,
 }
 
 /// An inclusive `min..=max` range of contract-ABI (payload-schema) versions, as a plugin declares it
@@ -329,6 +346,7 @@ impl Declares {
             && self.destinations.is_empty()
             && self.egress.is_default()
             && self.contract_abi.is_none()
+            && self.breaker.is_none()
     }
 }
 
@@ -606,6 +624,56 @@ pub enum RejectKind {
     Tampered,
     /// Validly signed but by a publisher NOT in the allowlist, and `allow_third_party` is off.
     UnknownPublisher,
+    /// Admitted on trust, but NOT first-party, and its Statement declares a connection need in an
+    /// egress class the host grants to a first-party plugin only ([`egress_grant`]).
+    EgressGrant,
+}
+
+/// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: every
+/// class that relaxes the open web's rule — a provider's allow-list and metadata hosts, the
+/// operator infrastructure's private and plaintext targets, a collector's loopback plaintext.
+/// The connector's default class and the open web are any trusted plugin's (ARCHITECT ruling
+/// EGRESS-GRANT 2026-10-03; the cold lane's `declares.egress` grant, on the door's needs).
+pub const FIRST_PARTY_EGRESS: [(u32, &str); 3] = [
+    (
+        busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
+        "provider",
+    ),
+    (
+        busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE,
+        "operator-infrastructure",
+    ),
+    (
+        busbar_contract::abi::host::conn::connector::EGRESS_LOOPBACK_ALLOWED,
+        "loopback-allowed",
+    ),
+];
+
+/// THE EGRESS-CLASS GRANT on a door plugin's needs: `Err` naming the first need of `manifest`'s
+/// stated Statement whose egress class is a first-party grant ([`FIRST_PARTY_EGRESS`]). Asked of a
+/// plugin that is not first-party; a manifest that states no Statement (a cold plugin) declares no
+/// need here.
+///
+/// # Errors
+///
+/// The refusal, naming the plugin and the class.
+pub fn egress_grant(manifest: &Manifest) -> Result<(), String> {
+    let Some(stated) = manifest.stated()? else {
+        return Ok(());
+    };
+    for need in &stated.needs {
+        if let Some((_, class)) = FIRST_PARTY_EGRESS
+            .iter()
+            .find(|(c, _)| *c == need.egress_class)
+        {
+            return Err(format!(
+                "plugin '{}' declares a `{}` need in the `{class}` egress class, which the host \
+                 grants to a first-party plugin only",
+                manifest.name, need.transport
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Trust failure. The posture forbids loading this plugin; the message is safe to surface. `kind` is

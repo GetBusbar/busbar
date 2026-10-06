@@ -206,13 +206,6 @@ fn a_body_over_a_mebibyte_with_the_lane_key_last_still_resolves() {
     }
 }
 
-/// The scanner's budget is under a microsecond per kibibyte of body scanned. This times a scan of
-/// a body whose one interesting key is last — the case where the whole body is walked — and prints
-/// what it measured.
-///
-/// Measured on the machine this landed on: 359 ns per KiB in a release build (2.65 GiB/s), which is
-/// inside the budget with room to spare, and 4,267 ns per KiB in a debug build, which is not — the
-/// number that counts is the release one, and `cargo test --release` is how to see it.
 /// The calling thread's CPU time so far.
 fn thread_cpu() -> std::time::Duration {
     let mut ts = libc::timespec {
@@ -228,44 +221,116 @@ fn thread_cpu() -> std::time::Duration {
     )
 }
 
-#[test]
-fn the_scanner_meets_its_budget_on_a_mebibyte() {
-    let body = big_body(1 << 20);
-    let kib = body.len() as f64 / 1024.0;
+/// The cost of each of `runs`: the fewest nanoseconds of this thread's CPU time any one of
+/// `rounds` rounds took, the runs INTERLEAVED round by round, so every run is measured on the same
+/// machine at the same moments and a burst of contention lands on all of them alike.
+fn costs(rounds: usize, runs: &mut [&mut dyn FnMut()]) -> Vec<f64> {
+    let mut best = vec![std::time::Duration::MAX; runs.len()];
+    for _ in 0..rounds {
+        for (run, best) in runs.iter_mut().zip(best.iter_mut()) {
+            let started = thread_cpu();
+            run();
+            *best = (*best).min(thread_cpu().saturating_sub(started));
+        }
+    }
+    best.iter().map(|d| d.as_nanos().max(1) as f64).collect()
+}
 
-    // A warm pass, then the measured ones.
+/// The bodies a scan is judged on: the same shape at an eighth of a mebibyte and at a mebibyte.
+const SMALL: usize = 1 << 17;
+const LARGE: usize = 1 << 20;
+
+/// A full walk of `body` by a production JSON reader (serde_json, every value read and ignored):
+/// the reference the scanner's cost is measured against, in the same build on the same machine.
+fn reference_walk(body: &[u8]) {
+    let walked: serde::de::IgnoredAny =
+        serde_json::from_slice(std::hint::black_box(body)).expect("the body is JSON");
+    std::hint::black_box(walked);
+}
+
+/// THE SCANNER'S BUDGET, judged as ratios a loaded machine cannot move. A wall clock on a shared
+/// CI machine measures how many other tests held the cores; even the scanning thread's own CPU time
+/// moves with them (a sibling hyperthread, a shared cache, a hypervisor's stolen time), so no fixed
+/// nanosecond count is a verdict. What the budget MEANS is two things, and each is measured against
+/// something that slows down exactly as the scan does:
+///
+/// * LINEAR: walking a body costs the same per byte at any size, so a body eight times longer
+///   costs at most `3 x 8` times as much (a quadratic walk costs `8 x 8`).
+/// * WITHIN AN ORDER OF MAGNITUDE of a full walk of the same bytes by serde_json: the scanner skips
+///   values it does not need and is designed to be faster than a reader that visits every one, so a
+///   scan costing ten such walks is a regression of an order of magnitude.
+///
+/// `scan` answers one body; the verdict says which bound broke, with what it measured.
+fn judge(scan: &dyn Fn(&[u8])) -> Result<String, String> {
+    let (small, large) = (big_body(SMALL), big_body(LARGE));
+    // A warm pass of each, then the measured rounds.
+    scan(&small);
+    scan(&large);
+    reference_walk(&large);
+    let (mut on_small, mut on_large) = (|| scan(&small), || scan(&large));
+    let mut walk = || reference_walk(&large);
+    let measured = costs(15, &mut [&mut on_small, &mut on_large, &mut walk]);
+    let (small_ns, large_ns, walk_ns) = (measured[0], measured[1], measured[2]);
+    let size_ratio = large.len() as f64 / small.len() as f64;
+    let growth = large_ns / small_ns;
+    let against_walk = large_ns / walk_ns;
+    let seen = format!(
+        "{} bytes in {large_ns:.0} ns of CPU ({:.1} ns per KiB), {} bytes in {small_ns:.0} ns: \
+         {growth:.2}x the cost for {size_ratio:.2}x the bytes; {against_walk:.3}x a full serde_json \
+         walk of the same bytes",
+        large.len(),
+        large_ns / (large.len() as f64 / 1024.0),
+        small.len(),
+    );
+    if growth >= 3.0 * size_ratio {
+        return Err(format!("not linear: {seen}"));
+    }
+    if against_walk >= 10.0 {
+        return Err(format!("an order of magnitude over a full walk: {seen}"));
+    }
+    Ok(seen)
+}
+
+/// The scan the budget is about: a body whose one interesting key is last, so the whole body is
+/// walked before the answer exists.
+fn scan_for_the_last_key(body: &[u8]) {
     assert!(matches!(
-        resolve_pointer(&body, "/lane"),
+        resolve_pointer(std::hint::black_box(body), "/lane"),
         Resolved::Found(_)
     ));
-    // The scanner's cost is the CPU time of the thread that scans, not the wall clock: on a shared
-    // CI machine running the workspace's tests side by side, a wall-clock round measures how many
-    // other tests held the cores, not the scanner. The fastest of the rounds is its cost.
-    let rounds = 20;
-    let mut elapsed = std::time::Duration::MAX;
-    for _ in 0..rounds {
-        let started = thread_cpu();
-        assert!(matches!(
-            resolve_pointer(&body, "/lane"),
-            Resolved::Found(_)
-        ));
-        elapsed = elapsed.min(thread_cpu().saturating_sub(started));
+}
+
+/// The scanner's budget is under a microsecond per kibibyte of body scanned in a release build
+/// (measured where it landed: 359 ns per KiB, 2.65 GiB/s; 4,267 ns per KiB in a debug build, and
+/// `cargo test --release` is how to see the number that counts). The gate judges it by [`judge`]:
+/// linear in the body, and within an order of magnitude of a full walk of the same bytes.
+#[test]
+fn the_scanner_meets_its_budget_on_a_mebibyte() {
+    match judge(&scan_for_the_last_key) {
+        Ok(seen) => println!("json span scanner: {seen}"),
+        Err(broke) => panic!("the json span scanner broke its budget: {broke}"),
     }
-    let per_kib_ns = elapsed.as_nanos() as f64 / kib;
-    println!(
-        "json span scanner: {} bytes scanned in {:?} — {:.1} ns per KiB ({:.2} GiB/s)",
-        body.len(),
-        elapsed,
-        per_kib_ns,
-        (body.len() as f64 / (1 << 30) as f64) / elapsed.as_secs_f64(),
-    );
-    // The budget is 1 microsecond per kibibyte. The assertion is generous on purpose — a debug
-    // build measured on a shared machine is not the gate — but a regression of an order of
-    // magnitude fails here rather than in production.
-    assert!(
-        per_kib_ns < 10_000.0,
-        "{per_kib_ns:.0} ns per KiB is ten times the budget"
-    );
+}
+
+/// THE BUDGET'S RED ARM: a planted QUADRATIC scanner fails [`judge`]. It is the regression the
+/// budget exists to catch, a reader that re-scans the body from its first byte each time another
+/// sixteen kibibytes arrive (the shape a streaming caller that forgot where it stopped has); every
+/// pass is the real scanner, so only the shape of the work differs.
+#[test]
+fn a_quadratic_scanner_fails_the_budget() {
+    fn rescanning(body: &[u8]) {
+        const ARRIVAL: usize = 16 << 10;
+        let mut seen = 0;
+        while seen < body.len() {
+            seen = (seen + ARRIVAL).min(body.len());
+            let arrived = std::hint::black_box(&body[..seen]);
+            std::hint::black_box(resolve_pointer(arrived, "/lane"));
+        }
+    }
+    match judge(&rescanning) {
+        Err(broke) => println!("the planted quadratic scanner is refused: {broke}"),
+        Ok(seen) => panic!("a quadratic scanner met the budget: {seen}"),
+    }
 }
 
 #[test]
