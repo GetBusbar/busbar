@@ -902,7 +902,12 @@ impl Runner {
                             let venv_py = self.cache.join("oidf/venv/bin/python");
                             let py = venv_py.to_string_lossy().into_owned();
                             let cfg = config.to_string_lossy().into_owned();
-                            let export = pdir.join("export").to_string_lossy().into_owned();
+                            // The runner writes the plan export INTO this directory and does not
+                            // create it: with it absent, every module ran and the script then died
+                            // on the export (FileNotFoundError) before printing one result.
+                            let export_dir = pdir.join("export");
+                            let _ = std::fs::create_dir_all(&export_dir);
+                            let export = export_dir.to_string_lossy().into_owned();
                             let leg = format!("run-{}", plan.suite);
                             run.exit = self.leg(
                                 rig,
