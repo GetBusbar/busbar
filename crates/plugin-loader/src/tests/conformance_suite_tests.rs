@@ -716,18 +716,20 @@ fn the_suite_lends_the_statements_secret_refs_out_of_the_settings() {
         "auth.key".to_owned(),
         "absent".to_owned(),
     ];
-    let (settings, secrets) = lend_secrets(
-        &refs,
-        br#"{"addr":"https://localhost:1","token":"s.t","auth":{"key":"k","x":1}}"#,
-    );
+    let raw = br#"{"addr":"https://localhost:1","token":"s.t","auth":{"key":"k","x":1}}"#;
+    let (settings, secrets) = lend_secrets(&refs, raw, false);
     let v: serde_json::Value = serde_json::from_slice(&settings).unwrap();
     assert_eq!(
         v,
         serde_json::json!({"addr": "https://localhost:1", "auth": {"x": 1}})
     );
     assert_eq!(secrets, [b"s.t".to_vec(), b"k".to_vec(), Vec::new()]);
+    // The secret kind's host leaves the keys in the settings, and lends the same material.
+    let (kept, lent) = lend_secrets(&refs, raw, true);
+    assert_eq!(kept, raw.to_vec());
+    assert_eq!(lent, secrets);
     assert_eq!(
-        lend_secrets(&[], b"{ \"a\": 1 }"),
+        lend_secrets(&[], b"{ \"a\": 1 }", false),
         (b"{ \"a\": 1 }".to_vec(), Vec::new())
     );
 }

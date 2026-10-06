@@ -766,13 +766,15 @@ pub fn called(c: &Called) -> String {
 }
 
 /// THE HOST'S SECRET LENDING, as the suite's host does it: each key the plugin's Statement names as a
-/// secret reference (`Plugin::secret_refs`, a `.`-separated settings path) is taken out of
-/// `settings`, and its value lent in `open`/`refresh`'s `secrets`, in the Statement's order: a
-/// string's bytes (the suite's test material stands in for the material the kernel would resolve
-/// the reference to); an absent or non-string value lends empty bytes, which the plugin refuses.
-/// Settings with no such key pass through unchanged.
+/// secret reference (`Plugin::secret_refs`, a `.`-separated settings path) has its value lent in
+/// `open`/`refresh`'s `secrets`, in the Statement's order: a string's bytes (the suite's test
+/// material stands in for the material the kernel would resolve the reference to); an absent or
+/// non-string value lends empty bytes, which the plugin refuses. `keep`: the key stays in the
+/// settings, as the secret kind's host (`secret_calls`) leaves it; otherwise it is taken out, as
+/// the boot's and the auth axis's hosts take it (`boot::resolve_secrets`,
+/// `auth_door::split_secrets`). Settings with no such key pass through unchanged.
 #[must_use]
-pub fn lend_secrets(refs: &[String], settings: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
+pub fn lend_secrets(refs: &[String], settings: &[u8], keep: bool) -> (Vec<u8>, Vec<Vec<u8>>) {
     if refs.is_empty() {
         return (settings.to_vec(), Vec::new());
     }
@@ -786,15 +788,21 @@ pub fn lend_secrets(refs: &[String], settings: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>)
                 Some((head, last)) => (head.split('.').try_fold(&mut v, |v, k| v.get_mut(k)), last),
                 None => (Some(&mut v), path.as_str()),
             };
-            match parent
-                .and_then(serde_json::Value::as_object_mut)
-                .and_then(|o| o.remove(last))
-            {
+            let object = parent.and_then(serde_json::Value::as_object_mut);
+            let value = if keep {
+                object.and_then(|o| o.get(last).cloned())
+            } else {
+                object.and_then(|o| o.remove(last))
+            };
+            match value {
                 Some(serde_json::Value::String(s)) => s.into_bytes(),
                 _ => Vec::new(),
             }
         })
         .collect();
+    if keep {
+        return (settings.to_vec(), secrets);
+    }
     (v.to_string().into_bytes(), secrets)
 }
 
@@ -830,7 +838,7 @@ pub fn validate<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
 /// The keys the Statement names as secret references are taken out of the settings and their
 /// material lent in `secrets` ([`lend_secrets`]), as the host lends them.
 pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
-    let (settings, secrets) = lend_secrets(p.secret_refs(), settings);
+    let (settings, secrets) = lend_secrets(p.secret_refs(), settings, K::CODE == KindCode::Secret);
     let blobs = secret_blobs(&secrets);
     if K::CODE == KindCode::Plane {
         let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
@@ -853,7 +861,7 @@ pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
 /// it answers; the frame [`open`]'s.
 pub fn open_resumed<K: Kind>(p: &Plugin<K>, d: &Dispatcher, settings: &[u8]) -> Called {
     let deadline = crate::dispatch::now_ns().saturating_add(OPEN_DEADLINE.as_nanos() as u64);
-    let (settings, secrets) = lend_secrets(p.secret_refs(), settings);
+    let (settings, secrets) = lend_secrets(p.secret_refs(), settings, K::CODE == KindCode::Secret);
     let blobs = secret_blobs(&secrets);
     if K::CODE == KindCode::Plane {
         let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
@@ -920,7 +928,7 @@ const OPEN_DEADLINE: Duration = Duration::from_secs(30);
 
 /// `refresh` over `settings`, generation 2.
 pub fn refresh<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
-    let (settings, secrets) = lend_secrets(p.secret_refs(), settings);
+    let (settings, secrets) = lend_secrets(p.secret_refs(), settings, K::CODE == KindCode::Secret);
     let blobs = secret_blobs(&secrets);
     let mut f: Frame<RefreshIn, OutHead> = Frame::new(input(), output());
     f.input.settings = json(&settings);
