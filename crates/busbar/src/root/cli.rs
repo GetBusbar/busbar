@@ -378,8 +378,12 @@ fn validate_config_command() -> i32 {
                 s.manifest.name, s.file, s.reason
             );
         }
+        // The stage report (each dropped-in plugin's stated facts and selection, each plugin
+        // listener) is debug logging, never stdout: `--validate`'s stdout is 1.5.5's bytes
+        // (ARCHITECT 2026-10-06; oracle `plugins.store-persist|store-sqlite` read a
+        // `plugin: … — selected as store` line 1.5.5 never printed). The refusals above stand.
         for line in stages.lines() {
-            println!("{line}");
+            tracing::debug!(target: "busbar::validate", "{}", line.trim_start());
         }
     } else {
         println!("  plugins:   disabled (plugins.enabled is false; no plugin will load)");
