@@ -1274,13 +1274,15 @@ pub struct DoorRequest {
 }
 
 /// THE AUTH ON A DOOR CLAIM'S GUEST-LIST LINE (THE DESIGN §6, "Auth points and guest lists"): the
-/// operator's data chain (`auth.chain`) is the auth of every data-listener line; only where it gives
-/// the line none does the claim's own declared default inbound style apply. `CLAIM_OPEN` declares
-/// none; any other claim takes a credential, verified by the deployment's (empty) chain.
+/// operator's data chain (`auth.chain`) is the auth of every data-listener line a credential is owed
+/// on. A `CLAIM_OPEN` line owes none, WHATEVER THE CHAIN (ARCHITECT, FLIP-A2A): a plane's discovery
+/// documents (its protected-resource metadata, its own card) are what a caller reads BEFORE it holds
+/// a credential, and they answer the same with a chain configured as without one. Every other claim
+/// takes a credential, verified by the deployment's chain (an empty chain admits none).
 #[cfg(linked_axis_node)]
 fn line_auth(flags: u32, data_chain: &[String]) -> busbar_kernel::guest::LineAuth {
     use busbar_kernel::guest::LineAuth;
-    if data_chain.is_empty() && flags & CLAIM_OPEN != 0 {
+    if flags & CLAIM_OPEN != 0 {
         LineAuth::None
     } else {
         LineAuth::Chain(data_chain.to_vec())
