@@ -234,7 +234,12 @@ fn cleared(latch: &std::sync::atomic::AtomicBool) {
 /// 4005: a data-plane verifier is saturated (no admission slot within the wait, or the door's own
 /// `max_inflight` full). 1.5.5's text, byte for byte.
 fn auth_saturated() {
-    if tripped(&AUTH_SATURATED_WARNED) {
+    auth_saturated_on(&AUTH_SATURATED_WARNED);
+}
+
+/// [`auth_saturated`] on `latch`.
+fn auth_saturated_on(latch: &std::sync::atomic::AtomicBool) {
+    if tripped(latch) {
         diag_warn!(
             AUTH_OFFLOAD_SATURATED,
             "auth chain offload could not be started within {AUTH_ADMISSION_WAIT:?} \
@@ -254,8 +259,13 @@ fn auth_saturated() {
 /// 4006: a data-plane verify FAULTED (the plugin broke its contract: a caught panic, a malformed
 /// answer). 1.5.5's text, byte for byte.
 fn auth_faulted() {
+    auth_faulted_on(&AUTH_FAULTED_WARNED);
+}
+
+/// [`auth_faulted`] on `latch`.
+fn auth_faulted_on(latch: &std::sync::atomic::AtomicBool) {
     let error = "the auth plugin faulted";
-    if tripped(&AUTH_FAULTED_WARNED) {
+    if tripped(latch) {
         diag_warn!(AUTH_CHAIN_PANICKED, error = %error, "auth chain panicked; denying (fail-closed)");
     } else {
         diag_debug!(AUTH_CHAIN_PANICKED, error = %error, "auth chain panicked; denying (fail-closed)");
@@ -265,7 +275,12 @@ fn auth_faulted() {
 /// 4008: an admin verifier is saturated (no admission slot within the wait, or the door's own
 /// `max_inflight` full). 1.5.5's text, byte for byte.
 fn admin_saturated() {
-    if tripped(&ADMIN_SATURATED_WARNED) {
+    admin_saturated_on(&ADMIN_SATURATED_WARNED);
+}
+
+/// [`admin_saturated`] on `latch`.
+fn admin_saturated_on(latch: &std::sync::atomic::AtomicBool) {
+    if tripped(latch) {
         diag_warn!(
             ADMIN_OFFLOAD_SATURATED,
             "admin auth chain offload could not be started within {ADMIN_ADMISSION_WAIT:?} \
@@ -285,7 +300,12 @@ fn admin_saturated() {
 /// 4009: an admitted admin verify did not answer within the wait, or FAULTED. 1.5.5's text, byte
 /// for byte.
 fn admin_stalled() {
-    if tripped(&ADMIN_STALLED_WARNED) {
+    admin_stalled_on(&ADMIN_STALLED_WARNED);
+}
+
+/// [`admin_stalled`] on `latch`.
+fn admin_stalled_on(latch: &std::sync::atomic::AtomicBool) {
+    if tripped(latch) {
         diag_warn!(
             ADMIN_CHAIN_STALLED,
             "admin auth chain did not complete within {ADMIN_ADMISSION_WAIT:?} (or panicked); \
@@ -1195,10 +1215,8 @@ impl AuthModule for TestIdpModule {
     }
 }
 
-/// One admin chain's answer: the chain verdict and the identifying module's scope ceiling, or the
-/// chain could not be judged.
-type AdminChainAnswer =
-    Result<(ChainVerdict, Option<busbar_contract::authz::Scope>), AdminUnavailable>;
+/// One admin chain's answer: the chain verdict and the identifying module's scope ceiling.
+type AdminChainAnswer = (ChainVerdict, Option<busbar_contract::authz::Scope>);
 
 /// Execute the ADMIN auth chain (`admin_auth:`) over one request (`method`, `target`, `headers`).
 /// Mirrors `AuthMiddleware::run_chain` (first Identify admits, Reject denies, all-Pass denies, empty
@@ -1216,7 +1234,7 @@ async fn run_admin_chain(
     probe: bool,
 ) -> AdminChainAnswer {
     if app.admin_chain.is_empty() {
-        return Ok((ChainVerdict::Open, None));
+        return (ChainVerdict::Open, None);
     }
     let carriers = admin_carriers(headers);
     let (bearer, header) = (carriers.0.as_deref(), carriers.1.as_deref());
@@ -1242,7 +1260,8 @@ async fn run_admin_chain(
             ),
             // The operator credential (its row, opened through the auth axis by the provider key),
             // judged on the request's head through its door: an overloaded verifier or one that
-            // answered no verdict means the chain cannot be judged.
+            // answered no verdict is denied, as 1.5.5 refused (its 401) — the admin-door 503 is not
+            // a signed accepted difference.
             _ if operator => {
                 let operator = &app.admin_modules.operator;
                 let mut head = admin_head(method, target, headers, now);
@@ -1254,7 +1273,7 @@ async fn run_admin_chain(
                     true => operator.probe(&head),
                     false => operator.judge(head).await,
                 };
-                judged.map(|j| j.verdict()).transpose()?
+                judged.map(|j| j.verdict().unwrap_or(AuthVerdict::Reject))
             }
             // An EXTERNAL `kind: auth` admin plugin, resolved at load into `app.admin_modules`
             // (keyed by config name — the same `name` this loop iterates).
@@ -1285,20 +1304,20 @@ async fn run_admin_chain(
                 // module's admin-scope ceiling for the authorization step. There is no per-module
                 // role filter: the nested bindings table IS the allowlist.
                 let cap = module_admin_scope_cap(app, name);
-                return Ok((
+                return (
                     ChainVerdict::Identified {
                         module: name.clone(),
                         principal,
                         resolved: None,
                     },
                     cap,
-                ));
+                );
             }
-            AuthVerdict::Reject => return Ok((ChainVerdict::Denied, None)),
+            AuthVerdict::Reject => return (ChainVerdict::Denied, None),
             AuthVerdict::Pass => {}
         }
     }
-    Ok((ChainVerdict::Denied, None))
+    (ChainVerdict::Denied, None)
 }
 
 /// One EXTERNAL admin module's verdict over `request` (its candidate lent); `None` when no module is
@@ -1320,7 +1339,9 @@ async fn external_admin_module(
             module
                 .calls
                 .verify_now(&request)
-                .map_or(AuthVerdict::Reject, |answer| admin_verdict_of(answer, false)),
+                .map_or(AuthVerdict::Reject, |answer| {
+                    admin_verdict_of(answer, false)
+                }),
         );
     }
     // Admitted on the admin budget (a slot that does not come free within the wait is a saturated
@@ -1342,13 +1363,6 @@ async fn external_admin_module(
             AuthVerdict::Reject
         }
     })
-}
-
-/// The 503 an admin chain that could not be judged answers, in the frozen v1 envelope
-/// (`{error:{code:"unavailable"}}`).
-fn admin_unavailable_response(why: AdminUnavailable) -> Response {
-    let e = crate::admin::v1::contract::AdminError::Unavailable(why.message().to_string());
-    crate::admin::v1::json::err_json(&e)
 }
 
 /// The ADMIN-SCOPE CEILING for an identifying module (`max_admin_scope:`): the operator credential
@@ -1457,16 +1471,16 @@ fn admin_head(
 }
 
 /// THE ADMIN DOOR'S VERDICT of one request (`method`, `target`, `headers`) on `app`'s live admin
-/// chain, or the chain could not be judged. `probe`: see [`run_admin_chain`].
+/// chain. `probe`: see [`run_admin_chain`].
 async fn judge_admin_door(
     app: &App,
     method: &str,
     target: &str,
     headers: &HeaderMap,
     probe: bool,
-) -> Result<AdminDoor, AdminUnavailable> {
-    let (verdict, cap) = run_admin_chain(app, method, target, headers, probe).await?;
-    Ok(match verdict {
+) -> AdminDoor {
+    let (verdict, cap) = run_admin_chain(app, method, target, headers, probe).await;
+    match verdict {
         ChainVerdict::Open => AdminDoor::Open,
         ChainVerdict::Denied => AdminDoor::Denied,
         ChainVerdict::Identified {
@@ -1475,7 +1489,7 @@ async fn judge_admin_door(
             let grants = admin_scope_for(app, Some(&module), Some(&principal));
             AdminDoor::Identified(principal, cap.map_or(grants, |c| grants.capped_by(c)))
         }
-    })
+    }
 }
 
 /// Judge one request (`method`, `target`, `headers`) on `app`'s live admin chain, SYNCHRONOUSLY: the
@@ -1486,9 +1500,9 @@ pub fn admin_door(app: &App, method: &str, target: &str, headers: &HeaderMap) ->
     let judged = std::pin::pin!(judge_admin_door(app, method, target, headers, true));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     match std::future::Future::poll(judged, &mut cx) {
-        std::task::Poll::Ready(Ok(door)) => door,
+        std::task::Poll::Ready(door) => door,
         // Never pending: the probe crosses on the spot and an in-process stand-in runs inline.
-        std::task::Poll::Ready(Err(_)) | std::task::Poll::Pending => AdminDoor::Denied,
+        std::task::Poll::Pending => AdminDoor::Denied,
     }
 }
 
@@ -1807,13 +1821,9 @@ pub(crate) async fn auth_middleware(
     if is_admin {
         let target = req.uri().path_and_query().map_or("/", |t| t.as_str());
         let judged = judge_admin_door(&app, req.method().as_str(), target, req.headers(), false);
-        // The admin door AWAITS a pending verify; it never answers 503 for pending I/O. An
-        // overloaded verifier or one that answered no verdict is 503 `unavailable`, never a bad
-        // credential's 401 (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1).
-        let door = match judged.await {
-            Ok(door) => door,
-            Err(why) => return Err(admin_unavailable_response(why)),
-        };
+        // The admin door AWAITS a pending verify. An overloaded verifier or one that answered no
+        // verdict is denied, 1.5.5's 401: the admin-door 503 is not a signed accepted difference.
+        let door = judged.await;
         req.extensions_mut().insert(consumed);
         // AUTHORIZATION rides the door's verdict: the principal's admin scope (module-intrinsic for
         // the operator token; `role_bindings:` for group-carrying principals, unmapped groups grant

@@ -191,6 +191,299 @@ fn admin_module_unresolved_diag_fires_and_falls_through_to_pass() {
     );
 }
 
+// ─────────────── 1b. the saturation / fault diagnostics on the door path (TRIGGERED) ───────────
+//
+// 1.5.5 emitted 4005/4006 on the data plane and 4008/4009 on the admin plane around its offloaded
+// auth calls. The door path keeps each at the analogous trigger — a saturated admission budget or a
+// door's own `max_inflight` full (4005/4008), a FAULTED verify (4006/4009), an admitted admin verify
+// that does not answer within the wait (4009) — with 1.5.5's text byte for byte at the default
+// budgets (64 data / 16 admin in flight, a 5s wait), and each one denies. RED arms: the same deny
+// from a verifier that merely refused says nothing.
+
+/// How a [`FakeDoor`] answers each `verify`.
+#[derive(Clone)]
+enum DoorAnswer {
+    /// Answers this verdict.
+    Verdict(Box<busbar_contract::auth_calls::Verified>),
+    /// FAULTS (the plugin broke its contract), answered as a failed verify that says so.
+    Fault,
+    /// Never answers.
+    Never,
+}
+
+impl DoorAnswer {
+    /// Answers `verified`.
+    fn verdict(verified: busbar_contract::auth_calls::Verified) -> Self {
+        Self::Verdict(Box::new(verified))
+    }
+}
+
+/// An emitter of one of the four, on a latch.
+type Emitter = fn(&std::sync::atomic::AtomicBool);
+
+/// A door stand-in that never answers on the spot, so every `verify` is submitted and awaited.
+struct FakeDoor(DoorAnswer);
+
+/// One submitted `verify` of a [`FakeDoor`].
+struct FakeCall(DoorAnswer);
+
+impl std::future::Future for FakeCall {
+    type Output = busbar_contract::auth_calls::VerifyAnswer;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        use busbar_contract::auth_calls::Verified;
+        match &self.0 {
+            DoorAnswer::Verdict(v) => std::task::Poll::Ready((**v).clone().into()),
+            DoorAnswer::Fault => std::task::Poll::Ready(Verified::Failed.into()),
+            DoorAnswer::Never => std::task::Poll::Pending,
+        }
+    }
+}
+
+impl busbar_contract::auth_calls::Verifying for FakeCall {
+    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        None
+    }
+    fn faulted(&self) -> bool {
+        matches!(self.0, DoorAnswer::Fault)
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for FakeDoor {
+    fn name(&self) -> &str {
+        "fake-door"
+    }
+    fn facts(&self) -> u32 {
+        0
+    }
+    fn verify_now(
+        &self,
+        _: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        None
+    }
+    fn verify(
+        &self,
+        _: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        Box::new(FakeCall(self.0.clone()))
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+
+/// Run `f` on a current-thread runtime whose clock is paused (a wait elapses the moment the runtime
+/// is idle), inside the log capture. A latch another test tripped turns a warning into a debug line,
+/// so the capture must see DEBUG: the [`WarnCapture`] gate held across it keeps every callsite's
+/// interest live (and serializes with the other capturing tests).
+///
+/// [`WarnCapture`]: crate::test_support::warn_capture::WarnCapture
+fn captured_on_paused_clock<T>(f: impl std::future::Future<Output = T>) -> (T, Buf) {
+    let _gate = crate::test_support::warn_capture::WarnCapture::capturing_debug();
+    capture(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .expect("runtime")
+            .block_on(f)
+    })
+}
+
+/// The data-plane chain `[door]` over `answer`, walked on the request path.
+async fn data_door(answer: DoorAnswer) -> ChainVerdict {
+    let auth = Arc::new(AuthMiddleware::from_doors_for_test(vec![(
+        "door".to_string(),
+        Arc::new(FakeDoor(answer)) as Arc<dyn AuthCalls>,
+    )]));
+    AuthMiddleware::run_chain_on_request_path(
+        &auth,
+        Some("cred".into()),
+        ChainHead::default(),
+        None,
+        None,
+    )
+    .await
+}
+
+/// The admin chain `[ext]`, `ext` an external admin door over `answer`, walked awaited.
+async fn admin_door_walk(answer: DoorAnswer) -> ChainVerdict {
+    let app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["ext".to_string()])
+        .admin_door("ext", Arc::new(FakeDoor(answer)))
+        .build();
+    let mut headers = HeaderMap::new();
+    headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer cred"));
+    run_admin_chain(&app, "GET", "/", &headers, false).await.0
+}
+
+/// 4005's text at the default budget: 1.5.5's, byte for byte.
+const AUTH_SATURATED_TEXT: &str =
+    "auth chain offload could not be started within 5s (64 already in \
+     flight); an auth plugin is not returning. Denying (fail-closed) rather than admitting \
+     unverified.";
+/// 4006's text: 1.5.5's.
+const AUTH_PANICKED_TEXT: &str = "auth chain panicked; denying (fail-closed)";
+/// 4008's text at the default budget: 1.5.5's, byte for byte.
+const ADMIN_SATURATED_TEXT: &str = "admin auth chain offload could not be started within 5s (16 \
+     already in flight); an admin auth plugin is not returning. Denying (fail-closed) rather than \
+     admitting unverified.";
+/// 4009's text at the default wait: 1.5.5's, byte for byte.
+const ADMIN_STALLED_TEXT: &str =
+    "admin auth chain did not complete within 5s (or panicked); denying (fail-closed).";
+
+/// 4005: a data-plane door whose own `max_inflight` is full, and a data-plane admission budget with
+/// no slot free within the wait, each deny with 1.5.5's saturation text. RED: a door that refused
+/// denies too, and says nothing of saturation.
+#[test]
+fn a_saturated_data_plane_verifier_says_4005_in_1_5_5_words_and_denies() {
+    use busbar_contract::auth_calls::Verified;
+    let (verdict, said) =
+        captured_on_paused_clock(data_door(DoorAnswer::verdict(Verified::Overloaded)));
+    assert_eq!(verdict, ChainVerdict::Denied);
+    let text = said.text();
+    assert!(text.contains("diag=BUSBAR-4005"), "{text:?}");
+    assert!(text.contains(AUTH_SATURATED_TEXT), "1.5.5's text: {text:?}");
+
+    // The budget itself: every slot held, the wait elapses, the request is denied unverified.
+    let (verdict, said) = captured_on_paused_clock(async {
+        let held = AUTH_ADMISSION_PERMITS
+            .acquire_many(AUTH_ADMISSION_MAX_INFLIGHT as u32)
+            .await
+            .expect("the budget");
+        let verdict = data_door(DoorAnswer::verdict(Verified::Pass)).await;
+        drop(held);
+        verdict
+    });
+    assert_eq!(
+        verdict,
+        ChainVerdict::Denied,
+        "denied, never admitted unverified"
+    );
+    assert!(
+        said.text().contains(AUTH_SATURATED_TEXT),
+        "{:?}",
+        said.text()
+    );
+
+    // RED: a refusal is a deny with no saturation said.
+    let (verdict, said) =
+        captured_on_paused_clock(data_door(DoorAnswer::verdict(Verified::Reject)));
+    assert_eq!(verdict, ChainVerdict::Denied);
+    assert!(!said.text().contains("BUSBAR-4005"), "{:?}", said.text());
+}
+
+/// 4006: a data-plane door whose verify FAULTED denies with 1.5.5's panic text. RED: the same failed
+/// verify that did not fault denies and says nothing of a panic.
+#[test]
+fn a_faulted_data_plane_verify_says_4006_in_1_5_5_words_and_denies() {
+    use busbar_contract::auth_calls::Verified;
+    let (verdict, said) = captured_on_paused_clock(data_door(DoorAnswer::Fault));
+    assert_eq!(verdict, ChainVerdict::Denied);
+    let text = said.text();
+    assert!(text.contains("diag=BUSBAR-4006"), "{text:?}");
+    assert!(text.contains(AUTH_PANICKED_TEXT), "1.5.5's text: {text:?}");
+
+    let (verdict, said) =
+        captured_on_paused_clock(data_door(DoorAnswer::verdict(Verified::Failed)));
+    assert_eq!(verdict, ChainVerdict::Denied);
+    assert!(!said.text().contains("BUSBAR-4006"), "{:?}", said.text());
+}
+
+/// 4008: an external admin door whose own `max_inflight` is full, and an admin admission budget
+/// with no slot free within the wait, each deny with 1.5.5's admin saturation text. RED: a door that
+/// refused denies and says nothing.
+#[test]
+fn a_saturated_admin_verifier_says_4008_in_1_5_5_words_and_denies() {
+    use busbar_contract::auth_calls::Verified;
+    let (verdict, said) =
+        captured_on_paused_clock(admin_door_walk(DoorAnswer::verdict(Verified::Overloaded)));
+    assert_eq!(verdict, ChainVerdict::Denied);
+    let text = said.text();
+    assert!(text.contains("diag=BUSBAR-4008"), "{text:?}");
+    assert!(
+        text.contains(ADMIN_SATURATED_TEXT),
+        "1.5.5's text: {text:?}"
+    );
+
+    let (verdict, said) = captured_on_paused_clock(async {
+        let held = ADMIN_ADMISSION_PERMITS
+            .acquire_many(ADMIN_ADMISSION_MAX_INFLIGHT as u32)
+            .await
+            .expect("the budget");
+        let verdict = admin_door_walk(DoorAnswer::verdict(Verified::Pass)).await;
+        drop(held);
+        verdict
+    });
+    assert_eq!(verdict, ChainVerdict::Denied);
+    assert!(
+        said.text().contains(ADMIN_SATURATED_TEXT),
+        "{:?}",
+        said.text()
+    );
+
+    let (verdict, said) =
+        captured_on_paused_clock(admin_door_walk(DoorAnswer::verdict(Verified::Reject)));
+    assert_eq!(verdict, ChainVerdict::Denied);
+    assert!(!said.text().contains("BUSBAR-4008"), "{:?}", said.text());
+}
+
+/// 4009: an admitted admin verify that does not answer within the wait, and one that FAULTED, each
+/// deny with 1.5.5's stalled text. RED: a failed verify that did not fault denies and says nothing.
+#[test]
+fn a_stalled_or_faulted_admin_verify_says_4009_in_1_5_5_words_and_denies() {
+    use busbar_contract::auth_calls::Verified;
+    for answer in [DoorAnswer::Never, DoorAnswer::Fault] {
+        let (verdict, said) = captured_on_paused_clock(admin_door_walk(answer));
+        assert_eq!(verdict, ChainVerdict::Denied);
+        let text = said.text();
+        assert!(text.contains("diag=BUSBAR-4009"), "{text:?}");
+        assert!(text.contains(ADMIN_STALLED_TEXT), "1.5.5's text: {text:?}");
+    }
+    let (verdict, said) =
+        captured_on_paused_clock(admin_door_walk(DoorAnswer::verdict(Verified::Failed)));
+    assert_eq!(verdict, ChainVerdict::Denied);
+    assert!(!said.text().contains("BUSBAR-4009"), "{:?}", said.text());
+}
+
+/// Each of the four keeps 1.5.5's WARN-ONCE latch: the transition into the state warns, a
+/// recurrence logs at debug, and once the state clears the next transition warns again.
+#[test]
+fn the_door_path_diagnostics_warn_once_then_debug_as_1_5_5() {
+    let _gate = crate::test_support::warn_capture::WarnCapture::capturing_debug();
+    let emitters: [(&str, Emitter); 4] = [
+        ("BUSBAR-4005", auth_saturated_on),
+        ("BUSBAR-4006", auth_faulted_on),
+        ("BUSBAR-4008", admin_saturated_on),
+        ("BUSBAR-4009", admin_stalled_on),
+    ];
+    for (code, emit) in emitters {
+        let latch = std::sync::atomic::AtomicBool::new(false);
+        let levels: Vec<String> = [false, false, true]
+            .into_iter()
+            .map(|clear_first| {
+                if clear_first {
+                    cleared(&latch);
+                }
+                let ((), said) = capture(|| emit(&latch));
+                let text = said.text();
+                assert!(text.contains(code), "{code}: {text:?}");
+                if text.contains(" WARN ") {
+                    "WARN".to_string()
+                } else if text.contains("DEBUG") {
+                    "DEBUG".to_string()
+                } else {
+                    text
+                }
+            })
+            .collect();
+        assert_eq!(levels, ["WARN", "DEBUG", "WARN"], "{code}");
+    }
+}
+
 // ───────────────────────── 2. pre-mint READY-with-zero-fields -> no auth header ───────────────
 
 /// **Public entry point, not the unit**: `egress_auth::resolve()` — the SAME function the boot path

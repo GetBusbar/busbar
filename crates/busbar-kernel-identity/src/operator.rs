@@ -195,8 +195,8 @@ impl Judgement {
 }
 
 /// The admin chain could not be judged: the operator credential's verifier is overloaded or
-/// answered no verdict. The request is answered 503 `unavailable`, never refused as a bad
-/// credential (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1; THE DESIGN's overloaded-verifier ruling).
+/// answered no verdict. The kernel's admin door denies it as 1.5.5 did (its 401): the admin-door 503
+/// (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1) is not a signed accepted difference (Q134).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdminUnavailable {
     /// The verifier's `max_inflight` is full; the call was not queued.

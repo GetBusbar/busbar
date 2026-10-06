@@ -2244,7 +2244,7 @@ pub(super) fn admin_headers(bearer: Option<&str>, header: Option<&str>) -> Heade
 }
 
 /// TEST-ONLY: the admin chain as the synchronous probe walks it (the sync [`admin_door`]'s walk),
-/// over the two admin carriers. A chain that cannot be judged on the spot reads `Denied`.
+/// over the two admin carriers.
 pub(super) fn run_admin_chain_on(
     app: &crate::state::App,
     bearer: Option<&str>,
@@ -2254,8 +2254,8 @@ pub(super) fn run_admin_chain_on(
     let walk = std::pin::pin!(run_admin_chain(app, "GET", "/", &headers, true));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     match std::future::Future::poll(walk, &mut cx) {
-        std::task::Poll::Ready(Ok(answer)) => answer,
-        std::task::Poll::Ready(Err(_)) | std::task::Poll::Pending => (ChainVerdict::Denied, None),
+        std::task::Poll::Ready(answer) => answer,
+        std::task::Poll::Pending => (ChainVerdict::Denied, None),
     }
 }
 
@@ -2337,13 +2337,13 @@ async fn walk(verified: busbar_contract::auth_calls::Verified) -> AdminChainAnsw
     run_admin_chain(&app, "GET", "/", &headers, false).await
 }
 
-/// THE ADMIN DOOR ON THE OPERATOR'S DOOR (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1): the operator
-/// credential's verify is AWAITED, and its answer is read apart — an identity admits, a bad
-/// credential is the 1.5.5 refusal (Denied, 401), and an overloaded verifier or one that answered no
-/// verdict is 503 `unavailable`, never a 401. RED: were an overloaded or failed verify folded into a
-/// bad credential (as the cold lane did), the two `Err` arms below would read `Ok(Denied)`.
+/// THE ADMIN DOOR ON THE OPERATOR'S DOOR: the operator credential's verify is AWAITED, and an
+/// identity admits while a bad credential, a pass, an overloaded verifier and one that answered no
+/// verdict are each 1.5.5's refusal (Denied, the 401). The admin-door 503 (Q134) is not a signed
+/// accepted difference, so 1.5.5's answer stands. RED: an overloaded or failed verify read as a
+/// pass would admit through a later module; read as an outage it would be a new status.
 #[tokio::test]
-async fn the_operator_door_is_awaited_and_its_outage_is_not_a_bad_credential() {
+async fn the_operator_door_is_awaited_and_an_unjudged_verify_is_the_1_5_5_refusal() {
     use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
     let identity = Verified::Identity(VerifiedIdentity {
         subject: "admin".into(),
@@ -2351,44 +2351,50 @@ async fn the_operator_door_is_awaited_and_its_outage_is_not_a_bad_credential() {
     });
     assert!(matches!(
         walk(identity).await,
-        Ok((ChainVerdict::Identified { .. }, _))
+        (ChainVerdict::Identified { .. }, _)
     ));
-    assert!(matches!(
-        walk(Verified::Reject).await,
-        Ok((ChainVerdict::Denied, None))
-    ));
-    assert!(matches!(
-        walk(Verified::Pass).await,
-        Ok((ChainVerdict::Denied, None))
-    ));
-    assert_eq!(
-        walk(Verified::Overloaded).await.err(),
-        Some(AdminUnavailable::Overloaded)
-    );
-    assert_eq!(
-        walk(Verified::Failed).await.err(),
-        Some(AdminUnavailable::Outage)
-    );
+    for refused in [
+        Verified::Reject,
+        Verified::Pass,
+        Verified::Overloaded,
+        Verified::Failed,
+    ] {
+        assert_eq!(
+            walk(refused.clone()).await,
+            (ChainVerdict::Denied, None),
+            "{refused:?}: 1.5.5's refusal"
+        );
+    }
 }
 
-/// The 503 an admin chain that could not be judged answers: the frozen v1 envelope's `unavailable`.
+/// On the wire: an operator-credential door that is overloaded, or answered no verdict, is answered
+/// 1.5.5's admin 401, byte for byte the refusal a bad credential earns — no 503.
 #[tokio::test]
-async fn an_unjudged_admin_chain_answers_503_unavailable() {
-    let mut bodies = Vec::new();
-    for why in [AdminUnavailable::Overloaded, AdminUnavailable::Outage] {
-        let resp = admin_unavailable_response(why);
-        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+async fn an_unjudged_operator_door_answers_the_1_5_5_admin_401() {
+    use busbar_contract::auth_calls::Verified;
+    crate::metrics::init();
+    let mut answers = Vec::new();
+    for verified in [Verified::Reject, Verified::Overloaded, Verified::Failed] {
+        let (base, handle) = serve_app(operator_app(verified)).await;
+        let r = reqwest::Client::new()
+            .get(format!("{base}/api/v1/admin/keys"))
+            .bearer_auth("tok")
+            .send()
             .await
-            .expect("body");
-        bodies.push(body);
+            .unwrap();
+        let status = r.status().as_u16();
+        answers.push((status, r.text().await.unwrap()));
+        handle.abort();
     }
+    assert_eq!(answers[0].0, 401, "a bad credential is the admin 401");
     assert_eq!(
-        bodies[0], bodies[1],
-        "an outage answers the overloaded verifier's bytes: no new customer string"
+        answers[1], answers[0],
+        "an overloaded verifier: the same bytes"
     );
-    let v: serde_json::Value = serde_json::from_slice(&bodies[0]).expect("json");
-    assert_eq!(v["error"]["code"], "unavailable");
+    assert_eq!(
+        answers[2], answers[0],
+        "a verdict-less verifier: the same bytes"
+    );
 }
 
 /// The synchronous admin door (the dry run, the root's admin unit) PROBES the operator credential
@@ -2429,7 +2435,7 @@ fn the_admin_head_hands_the_request_through_as_presented() {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // L2-AUTH-1 (ARCHITECT ruling 2026-10-03): a data-plane door that answers no verdict, or whose
 // `max_inflight` is full, is a REJECT on the data plane — 1.5.5's 401, never a pass to the next
-// position and never a new status. (The admin chain keeps its ruled 503.)
+// position and never a new status. (The admin chain answers 1.5.5's 401 the same way.)
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// A kind-neutral double of one opened auth instance that answers every `verify` with `verified`
@@ -2573,7 +2579,7 @@ async fn a_data_plane_door_overloaded_or_without_a_verdict_answers_the_1_5_5_401
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // L2-AUTH-4 (ARCHITECT ruling 2026-10-03): admin_auth's EXTERNAL modules open on the auth axis.
 // A door among them is awaited, lent the request's head and 1.5.5's candidate (`bearer.or(header)`),
-// never cached by the kernel, and an overloaded or verdict-less door is the ruled 503.
+// never cached by the kernel, and an overloaded or verdict-less door is 1.5.5's refusal (401).
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// An external admin door that identifies `ext:<who>` only when the lent credential is `tok`, and
@@ -2647,9 +2653,12 @@ fn external_door_app(
 
 /// The external admin door judges the candidate it is lent — the Bearer, else the admin header, as
 /// 1.5.5 handed an external module `bearer.or(header)` — awaited and on the spot (the kernel keeps
-/// no verdict: R3, a door caches inside itself); an overloaded door and one with no verdict are the ruled 503, a reject and a pass the 1.5.5 401.
+/// no verdict: R3, a door caches inside itself); a reject, a pass, an overloaded door and one with no
+/// verdict are each 1.5.5's refusal (the 401: the admin-door 503 is not a signed accepted
+/// difference).
 #[tokio::test]
-async fn an_external_admin_door_is_lent_the_candidate_and_its_outage_is_the_ruled_503() {
+async fn an_external_admin_door_is_lent_the_candidate_and_an_unjudged_verify_is_the_1_5_5_refusal()
+{
     use busbar_contract::auth_calls::Verified;
     for headers in [
         admin_headers(Some("tok"), None),
@@ -2658,7 +2667,7 @@ async fn an_external_admin_door_is_lent_the_candidate_and_its_outage_is_the_rule
         let app = external_door_app(Verified::Reject);
         assert!(matches!(
             run_admin_chain(&app, "GET", "/", &headers, false).await,
-            Ok((ChainVerdict::Identified { ref module, .. }, _)) if module == "ext-door"
+            (ChainVerdict::Identified { ref module, .. }, _) if module == "ext-door"
         ));
         assert!(matches!(
             admin_door(&app, "GET", "/", &headers),
@@ -2666,20 +2675,17 @@ async fn an_external_admin_door_is_lent_the_candidate_and_its_outage_is_the_rule
         ));
     }
     let wrong = admin_headers(Some("not-tok"), None);
-    for (otherwise, want) in [
-        (Verified::Reject, Ok(())),
-        (Verified::Pass, Ok(())),
-        (Verified::Overloaded, Err(AdminUnavailable::Overloaded)),
-        (Verified::Failed, Err(AdminUnavailable::Outage)),
+    for otherwise in [
+        Verified::Reject,
+        Verified::Pass,
+        Verified::Overloaded,
+        Verified::Failed,
     ] {
         let app = external_door_app(otherwise.clone());
-        let got = run_admin_chain(&app, "GET", "/", &wrong, false).await;
-        match want {
-            Ok(()) => assert!(
-                matches!(got, Ok((ChainVerdict::Denied, None))),
-                "{otherwise:?}: the 1.5.5 refusal"
-            ),
-            Err(why) => assert_eq!(got.err(), Some(why), "{otherwise:?}: the ruled 503"),
-        }
+        assert_eq!(
+            run_admin_chain(&app, "GET", "/", &wrong, false).await,
+            (ChainVerdict::Denied, None),
+            "{otherwise:?}: the 1.5.5 refusal"
+        );
     }
 }
