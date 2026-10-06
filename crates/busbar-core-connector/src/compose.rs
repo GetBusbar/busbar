@@ -161,6 +161,9 @@ pub struct Connection {
     early: Vec<(u64, Vec<u8>, bool, bool)>,
     /// Every byte the socket has taken, for the life of the connection.
     flushed: u64,
+    /// The far side ENDED its stream (a read answered end of file) and the framer was told, once.
+    /// Nothing more can be read: the socket is never read again, and its end is not news again.
+    read_end: bool,
     open_deadline: Option<Instant>,
     framer_deadline: Option<Instant>,
     sleep: Option<(Instant, Pin<Box<tokio::time::Sleep>>)>,
@@ -425,6 +428,7 @@ impl Connection {
             head_words: dial.head_words,
             early: Vec::new(),
             flushed: 0,
+            read_end: false,
             open_deadline: Some(Instant::now() + dial.open_timeout),
             framer_deadline: None,
             sleep: None,
@@ -502,6 +506,7 @@ impl Connection {
             head_words: dial.head_words,
             early: Vec::new(),
             flushed: 0,
+            read_end: false,
             open_deadline: None,
             framer_deadline: None,
             sleep: None,
@@ -569,6 +574,7 @@ impl Connection {
             head_words: HeadWords::default(),
             early: Vec::new(),
             flushed: 0,
+            read_end: false,
             open_deadline: Some(Instant::now() + accept.handshake_timeout),
             framer_deadline: None,
             sleep: None,
@@ -621,6 +627,7 @@ impl Connection {
         self.dialled()
             && self.framing.is_some()
             && matches!(self.phase, Phase::Open)
+            && !self.read_end
             && self.inbox.is_empty()
             && self.early.is_empty()
     }
@@ -824,6 +831,10 @@ impl Connection {
             }
             match self.drive(cx) {
                 Ok(true) => {}
+                // The far side ended and the framer answered all it had: nothing more can arrive.
+                Ok(false) if self.read_end && self.inbox.is_empty() => {
+                    return Poll::Ready(Ok(None))
+                }
                 Ok(false) => return Poll::Pending,
                 Err(f) => self.phase = Phase::Failed(f),
             }
@@ -838,6 +849,7 @@ impl Connection {
             }
             match self.drive(cx) {
                 Ok(true) => {}
+                Ok(false) if self.read_end => return Poll::Ready(()),
                 Ok(false) => return Poll::Pending,
                 Err(f) => self.phase = Phase::Failed(f),
             }
@@ -980,6 +992,14 @@ impl Connection {
 
     /// Read what the socket has, and hand it on.
     fn read(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
+        // THE FAR SIDE'S END IS NEWS ONCE. A socket that answered end of file answers it to every
+        // later read, so re-reading it would hand the framer the same end again and report it as
+        // movement every pass: a framer that does not end the connection on it (an idle HTTP/1.1
+        // line whose far end closed) would then keep `fresh` and every reader's drive loop
+        // spinning inside one crossing, until the dispatcher's watchdog faults the caller.
+        if self.read_end {
+            return Ok(false);
+        }
         let mut buf = [0_u8; READ_CHUNK];
         let read = match &mut self.wire {
             Wire::Socket(sock) => sock.poll_io(Direction::Read, cx, |mut s| s.read(&mut buf)),
@@ -991,6 +1011,7 @@ impl Connection {
         };
         match read {
             Poll::Ready(Ok(0)) => {
+                self.read_end = true;
                 self.feed(&[], true)?;
                 Ok(true)
             }
