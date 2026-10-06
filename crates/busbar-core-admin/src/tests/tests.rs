@@ -3806,6 +3806,97 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
     handle.abort();
 }
 
+/// ARCHITECT RULING (card-epoch): `POST /config/apply` accepts EXACTLY the shape boot config
+/// accepts, PLANE SECTIONS INCLUDED — no `unknown field`. A plane's fee is that plane's own reserved
+/// key (#47: `<section>.fees`, lifted off the section by the 1.6.0 pre-pass), so a live fee change
+/// is an apply carrying the plane section, and the applied App must price that plane at the new fee.
+///
+/// RED before the fix: `ApplyConfigReq` derived `Deserialize` straight onto the frozen
+/// `deny_unknown_fields` `DeployCfg`, skipping the pre-pass, so the plane section was refused
+/// (`400 malformed config body: unknown field ...`) while the identical document boots clean.
+/// The control half: a key NO registered plane declares is still refused, so apply is exactly
+/// boot's shape and not a looser one.
+#[tokio::test]
+async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
+    use http_body_util::BodyExt;
+    busbar_kernel::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let overlay = std::env::temp_dir().join(format!(
+        "busbar-apply-plane-fee-{}-{}.json",
+        std::process::id(),
+        busbar_kernel::store::now()
+    ));
+    let _ = std::fs::remove_file(&overlay);
+    let app = crate::new_test_app()
+        .governance(gov)
+        .overlay_path(overlay.clone())
+        .build();
+    // The plane the registry says owns the `tools:` section, so the test names no plane crate.
+    let section = "tools";
+    let plane = busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+        .expect("a plane is registered to own the `tools:` section");
+    let fee_lane = busbar_kernel_ledger::cost::plane_fee_lane(plane.key);
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
+    let fee =
+        |h: &busbar_kernel::state::AppHandle| h.load().cost.card().plane_lane(&fee_lane).0.fee();
+    assert_eq!(fee(&handle), 0, "the test App configures no plane fee");
+
+    let apply = |config: serde_json::Value| {
+        let handle = handle.clone();
+        async move {
+            let body = axum::body::Bytes::from(
+                serde_json::json!({ "config": config, "providers": {} }).to_string(),
+            );
+            let resp = crate::v1::json::apply_config(
+                axum::extract::State(handle),
+                axum::Extension(busbar_kernel::auth::AuthPrincipal(None)),
+                axum::http::HeaderMap::new(),
+                body,
+            )
+            .await;
+            let status = resp.status().as_u16();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            (status, String::from_utf8_lossy(&bytes).into_owned())
+        }
+    };
+    let base = || {
+        serde_json::json!({
+            "providers": {},
+            "models": {},
+            "store": {"module": "memory"}
+        })
+    };
+
+    let mut with_plane = base();
+    with_plane[section] = serde_json::json!({ "fees": { "per_request": 7 } });
+    let (status, body) = apply(with_plane).await;
+    assert_eq!(
+        status, 200,
+        "a document carrying a plane section (as boot accepts it) must apply: {body}"
+    );
+    assert_eq!(
+        fee(&handle),
+        7,
+        "the applied App prices the plane's requests at the plane's own applied fee (#47)"
+    );
+
+    let mut unknown = base();
+    unknown["no_plane_declares_this"] = serde_json::json!({});
+    let (status, body) = apply(unknown).await;
+    assert_eq!(
+        status, 400,
+        "a key no registered plane declares is still refused, as boot refuses it: {body}"
+    );
+    assert!(
+        body.contains("unknown field"),
+        "named as boot names it: {body}"
+    );
+    assert_eq!(fee(&handle), 7, "a refused apply changes nothing");
+
+    let _ = std::fs::remove_file(&overlay);
+}
+
 /// Key mutations are audited too: minting a key records
 /// `key.create` / `applied` with the new key's id.
 #[tokio::test]

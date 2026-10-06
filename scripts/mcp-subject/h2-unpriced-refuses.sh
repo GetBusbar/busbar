@@ -8,10 +8,13 @@
 # THE RULE, in the decision's own words: "rate_card PRESENT ⇒ billed: a hit class not priced ⇒
 # REFUSE (money-sacred, never a silent 0) ... A cost request returns: the price if billing-on &
 # priced; FAILS if billing-on & unpriced; 0 if billing-off. A silent 0 is ONLY ever returned when
-# rate_card is absent." #77(5) says where the refusal may land: "Unpriced class = BOOT REFUSAL when
-# billing is on; free is an EXPLICIT zero row, never silent." So EITHER the node refuses to boot, OR
-# the call is refused -- both are refusals and this leg accepts either. What it does not accept is a
-# 200 that quietly charges nothing for the classes it hit.
+# rate_card is absent." #77(5) says where the refusal lands: "Unpriced class = BOOT REFUSAL when
+# billing is on; free is an EXPLICIT zero row, never silent." So a billing-ON config that leaves a declared class unpriced never serves anything, because it never
+# boots. ARCHITECT ruling (unpriced-refuses): "Arm 2 uses a card that truly leaves a declared class
+# unpriced and asserts the named boot refusal (#77(5)). Q25b's named 409 applies to usage reads over
+# an unpriced class." So the 409 of OWNER RULING Q25b (`unpriced_class`, naming lane + class) is a
+# USAGE READ's answer, not this leg's: a node that booted with an unpriced declared class has already
+# failed #77(5), whatever its calls or reads say afterwards.
 #
 # THIS LEG IS A PAIR, AND THE PAIR IS THE POINT. A leg that only asserted "refuse" could be passed by
 # a node that refuses everything, and a leg that only asserted "serve" could be passed by a node that
@@ -35,12 +38,19 @@
 #            the tree ships rather than picking a side, so a change in EITHER direction is visible
 #            here instead of silent.
 #
-#   ARM 2 -- BILLING ON with a card that prices neither class the call hits. This plane declares
-#            `tool_calls` and `bytes` (`crates/busbar-plane-mcp/src/tool_meta.rs:33-52`) and the card
-#            carries an entry for neither -- it cannot, since `rate_card:` keys are validated against
-#            `models:` (see h2-class-price.sh). So EVERY served mcp call on a billing-ON node hits
-#            unpriced classes, and #42 says every one of them must be refused rather than billed zero
-#            for what it moved.
+#   ARM 2 -- BILLING ON with a card that TRULY leaves a declared class unpriced. This plane declares
+#            `tool_calls` and `bytes` (`crates/busbar-plane-mcp/src/tool_meta.rs`), and the plane's
+#            own card (`tools.rate_card`, #47) configures `tool_calls` and omits `bytes`. The node
+#            MUST refuse to boot, and must say why in the named words of the config validator
+#            (`crates/busbar-kernel/src/config_validate/mod.rs`): "tools.rate_card does not configure
+#            billable unit(s) bytes declared by this plane". Any other outcome is a failure: a node
+#            that boots and serves 200 bills `bytes` at a zero nobody configured; a node that boots
+#            and refuses the call has moved the refusal off the boot #77(5) puts it on; a boot that
+#            fails for some other reason is not evidence of this refusal at all.
+#
+#            THE CARD THE LIB BOOTS BY DEFAULT IS NOT THIS ARM'S, and that is why this arm writes its
+#            own: `tool_calls: 0, bytes: 0` configures BOTH classes -- an explicit 0 is #77(5)'s
+#            "free is an EXPLICIT zero row" -- so its 200 is correct and asks nothing of #42.
 #
 # WHY THIS IS NOT THE REFUSAL h2-admit-refusal.sh ALREADY PROVES. That leg refuses a caller who is
 # over a `requests: 1/day` COUNT budget -- a quantity the node HAS and has exhausted. This one
@@ -73,32 +83,38 @@ arm_off="$(
   ' _ "$here" "${WORK_ROOT}/off"
 )"
 
-# ── ARM 2: BILLING ON, classes unpriced ───────────────────────────────────────────────────────────
+# ── ARM 2: BILLING ON, a declared class (`bytes`) unpriced ────────────────────────────────────────
+# The card configures `tool_calls` and leaves `bytes` out: present, so billing is ON (#42), and silent
+# about a class the plane declares, so #77(5) refuses the boot.
+ARM2_CARD='  rate_card:
+    probe_ping: { units: { tool_calls: 0 } }'
+# The validator's named refusal, its stable part: the section, the rule, and the class it names.
+ARM2_REFUSAL='tools.rate_card does not configure billable unit(s) bytes declared by this plane'
 arm_on="$(
-  bash -c '
+  H2_RATE_CARD_YAML="$ARM2_CARD" bash -c '
     set -uo pipefail
-    here="$1"; work="$2"
+    here="$1"; work="$2"; refusal="$3"
     source "${here}/h2-lib.sh"
     trap "h2_stop" EXIT
     if ! h2_boot "$work" "groups:
   h2-oracle:
     limits:
       - { budget: 1000000, per: day }" >/dev/null 2>&1; then
-      # A boot refusal IS the #77(5) outcome, and it is reported as such rather than as a harness
-      # failure -- but only when the binary actually refused, which the log is asked about.
-      if grep -qi "unpriced\|no rate\|rate_card" "${work}/busbar.log" 2>/dev/null; then
+      # The boot refused. It counts only when the binary named THIS refusal; the log is asked, and
+      # a boot that died of something else is reported with the line that says what.
+      if grep -qF "$refusal" "${work}/busbar.log" 2>/dev/null; then
         echo "boot-refused-unpriced"
       else
-        echo "boot-failed"
+        echo "boot-failed-otherwise $(grep -v "^\s*$" "${work}/busbar.log" 2>/dev/null | tail -1 | tr -d "\t" | cut -c1-240)"
       fi
       exit 0
     fi
     read -r kid tok <<<"$(h2_mint h2-oracle)"
-    [ -n "$tok" ] || { echo "mint-failed"; exit 0; }
+    [ -n "$tok" ] || { echo "booted mint-failed"; exit 0; }
     bound="$(h2_bind "$tok")"
     read -r st _ <<<"$(h2_call "$bound" "billing-on-unpriced")"
-    printf "%s %s\n" "$st" "$(h2_usage_field "$kid" spend_cents)"
-  ' _ "$here" "${WORK_ROOT}/on"
+    printf "booted %s %s\n" "$st" "$(h2_usage_field "$kid" spend_cents)"
+  ' _ "$here" "${WORK_ROOT}/on" "$ARM2_REFUSAL"
 )"
 
 failures=0
@@ -114,32 +130,31 @@ elif [ "${off_spend:-x}" != "1" ]; then
   detail="${detail}arm 1 (billing OFF) billed spend_cents=${off_spend}(want exactly 1, the flat per_request_fee and nothing else); "
 fi
 
-# ARM 2 must REFUSE -- at boot or at the call, either is #42-compliant.
-read -r on_status on_spend <<<"$arm_on"
+# ARM 2 must REFUSE TO BOOT, naming the unpriced class (#77(5)).
 case "$arm_on" in
   boot-refused-unpriced)
-    : # #77(5): "Unpriced class = BOOT REFUSAL when billing is on". Compliant.
+    : # #77(5): "Unpriced class = BOOT REFUSAL when billing is on", in the validator's named words.
     ;;
-  boot-failed|mint-failed)
+  boot-failed-otherwise*)
     failures=$((failures+1))
-    detail="${detail}arm 2 (billing ON) could not be driven (${arm_on}); "
+    detail="${detail}arm 2 (billing ON, tools.rate_card silent about 'bytes') did not boot, but its log never names the #77(5) refusal (want \"${ARM2_REFUSAL}\"); last log line: ${arm_on#boot-failed-otherwise }; "
+    ;;
+  "booted 200 "*)
+    failures=$((failures+1))
+    detail="${detail}arm 2 (billing ON, tools.rate_card silent about declared class 'bytes') BOOTED and served 200, billing spend_cents=${arm_on##* } -- 'bytes' silently priced at zero. #77(5): an unpriced class is a BOOT REFUSAL when billing is on; #42: a silent 0 is only ever correct when rate_card is ABSENT; "
+    ;;
+  booted*)
+    failures=$((failures+1))
+    detail="${detail}arm 2 (billing ON, tools.rate_card silent about declared class 'bytes') BOOTED (${arm_on}); #77(5) puts the refusal at boot, so a node that boots this config has already failed it, whatever the call then answers; "
     ;;
   *)
-    if [ "$on_status" = "200" ]; then
-      failures=$((failures+1))
-      detail="${detail}arm 2 (billing ON, classes 'tool_calls'/'bytes' unpriced) was SERVED 200 and billed spend_cents=${on_spend} -- the flat fee alone, with both hit classes silently priced at zero. #42: a silent 0 is ONLY ever correct when rate_card is ABSENT, and here it is PRESENT; the call owed a refusal (or the node owed a boot refusal, #77(5)); "
-    elif ! [[ "$on_status" =~ ^4[0-9][0-9]$ ]]; then
-      # STRICT, like ARM 1: only a 4xx IS a call refusal. Anything else -- curl's 000 for "no
-      # connection", a 5xx node failure, any other 2xx/3xx -- is not evidence the node refused an
-      # unpriced class, and the permissive "anything but 200" let every one of them pass (item 500).
-      failures=$((failures+1))
-      detail="${detail}arm 2 (billing ON, classes unpriced) answered ${on_status}, which is neither a served 200 nor a refusal (want a 4xx call refusal or a boot refusal, #42/#77(5); 000 is no connection, 5xx is a node failure); "
-    fi
+    failures=$((failures+1))
+    detail="${detail}arm 2 could not be read (${arm_on:-empty}); "
     ;;
 esac
 
 if [ "$failures" -eq 0 ]; then
-  printf 'PASS\t%s\n' "billing OFF serves and bills the flat fee alone; billing ON with the declared classes unpriced refuses rather than billing them zero"
+  printf 'PASS\t%s\n' "billing OFF serves and bills the flat fee alone; billing ON with declared class bytes unpriced refuses to boot, named (#77(5))"
 else
   printf 'FAIL\t%s\n' "$detail"
   exit 1
