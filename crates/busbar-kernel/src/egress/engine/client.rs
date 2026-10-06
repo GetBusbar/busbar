@@ -225,7 +225,18 @@ async fn send_request(
                         // drained at head time), else the per-exchange watcher — hyper's h1
                         // `poll_ready` resolves only when the dispatcher finishes the exchange,
                         // which is gated on the caller draining `Incoming`.
-                        if sender.is_ready() {
+                        // A test's lag on this authority's return (see `RETURN_DELAY_FOR_TESTS`)
+                        // takes the watcher path even when the exchange already finished.
+                        #[cfg(test)]
+                        let lag = RETURN_DELAY_FOR_TESTS
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .as_ref()
+                            .filter(|(at, _)| *at == pool_key.1.as_str())
+                            .map(|(_, d)| *d);
+                        #[cfg(not(test))]
+                        let lag: Option<Duration> = None;
+                        if sender.is_ready() && lag.is_none() {
                             pool::return_h1_conn(&inner, &pool_key, sender, extras);
                         } else {
                             let weak = Arc::downgrade(&inner);
@@ -236,17 +247,8 @@ async fn send_request(
                             resp.extensions_mut().insert(ConnReturned(settled));
                             tokio::spawn(async move {
                                 let ready = std::future::poll_fn(|cx| sender.poll_ready(cx)).await;
-                                #[cfg(test)]
-                                {
-                                    let delay = RETURN_DELAY_FOR_TESTS
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                        .as_ref()
-                                        .filter(|(at, _)| *at == key.1.as_str())
-                                        .map(|(_, d)| *d);
-                                    if let Some(d) = delay {
-                                        tokio::time::sleep(d).await;
-                                    }
+                                if let Some(lag) = lag {
+                                    tokio::time::sleep(lag).await;
                                 }
                                 // An Err means the conn died during the body read: drop it —
                                 // never returned, nothing delivered, no counter touched.
