@@ -728,6 +728,9 @@ fn a_repeat_hop_reuses_the_connection_whose_return_lags_its_body() {
             "the one connection served both requests"
         );
     });
+    *crate::egress::engine::RETURN_DELAY_FOR_TESTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }
 
 /// FFI-F1 (SSRF pin bypass): a plane-supplied PINNED address gets NO trust — it is judged by the SAME
