@@ -5166,6 +5166,63 @@ const STEP_SIGNATURE_WORDS: &[&str] = &[
     "AdmitFacts",
 ];
 
+/// THE SLOTS A DOOR PLANE OWES: a plane served through its memory-ABI door (`abi::plane::Ops`)
+/// runs no step of the loop itself — the kernel's driver runs every step and asks the plane through
+/// these slots — so its door must name them in its `kind_ops` table.
+const DOOR_PLANE_SLOTS: &[&str] = &["arrive", "on_piece", "refusal"];
+
+/// What a plane crate serves through: the legacy `Plane` trait (an `impl … Plane for`), its
+/// memory-ABI door (a `plugin_door!` over `abi::plane::Ops`, with the `kind_ops` slots it names), or
+/// neither.
+struct PlaneFaces {
+    legacy: bool,
+    door_slots: Option<BTreeSet<String>>,
+}
+
+fn plane_faces(cx: &Ctx, dir: &str) -> PlaneFaces {
+    let mut faces = PlaneFaces {
+        legacy: false,
+        door_slots: None,
+    };
+    let Ok(files) = cx.walk(&WalkSpec::new([dir]).ext("rs")) else {
+        return faces;
+    };
+    for f in &files {
+        if !is_shipped_source(&f.rel_str()) {
+            continue;
+        }
+        let code: String = scan::production_lines(&f.text)
+            .into_iter()
+            .map(|(_, l)| l)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if code.split("impl").skip(1).any(|rest| {
+            rest.split('{')
+                .next()
+                .is_some_and(|h| h.contains("Plane for "))
+        }) {
+            faces.legacy = true;
+        }
+        if code.contains("abi::plane::Ops") {
+            if let Some(at) = code.find("kind_ops") {
+                let table = &code[at..];
+                let table = &table[..table.find('}').unwrap_or(table.len())];
+                let named: BTreeSet<String> = table
+                    .split(|c: char| c == ',' || c == '{')
+                    .filter_map(|e| e.split(':').next())
+                    .map(|n| n.trim().to_string())
+                    .filter(|n| !n.is_empty())
+                    .collect();
+                faces
+                    .door_slots
+                    .get_or_insert_with(BTreeSet::new)
+                    .extend(named);
+            }
+        }
+    }
+    faces
+}
+
 fn rule_steps(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     let steps = match plane_owned_steps(cx) {
         Ok(s) => s,
@@ -5205,6 +5262,23 @@ fn rule_steps(cx: &Ctx, crates: &[CrateInfo]) -> Row {
                     ));
                 }
             }
+        }
+        // A DOOR PLANE with no legacy face: the kernel's driver runs every step, and the plane owes
+        // the slots it is asked through. A plane with neither face owes the legacy steps (and
+        // reads as missing each).
+        let faces = plane_faces(cx, &c.dir);
+        if let (false, Some(slots)) = (faces.legacy, &faces.door_slots) {
+            for slot in DOOR_PLANE_SLOTS {
+                if !slots.contains(*slot) {
+                    offenders.push(format!(
+                        "missing-slot\t{}\t{} is a door plane and its door names no `{slot}` — \
+                         the kernel's driver runs every step and asks a door plane through its \
+                         slots, so one it does not name is a step nothing answers",
+                        c.dir, c.name
+                    ));
+                }
+            }
+            continue;
         }
         for step in &steps {
             let Some(found) = bodies.get(step) else {
@@ -9000,6 +9074,33 @@ impl Gate for KindIsolationGate {
             "a plane function that only shares a kernel step's name is not that step",
             &[ROW_STEPS],
             ov,
+        ));
+
+        // A DOOR PLANE: with its legacy face gone, the decisions plane is served through its door
+        // alone, and its steps are the kernel driver's — green — unless its door names no
+        // `on_piece`, a slot nothing answers — red.
+        let mut ov = Overlay::new();
+        ov.remove("crates/busbar-plane-decisions/src/plane.rs");
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a door plane with no legacy face runs its steps through the kernel's driver",
+            &[ROW_STEPS],
+            ov,
+        ));
+        let door = "crates/busbar-plane-decisions/src/plane_door.rs";
+        let mut ov = Overlay::new();
+        ov.remove("crates/busbar-plane-decisions/src/plane.rs");
+        if let Ok(text) = cx.read(door) {
+            ov.set(door, text.replace("on_piece: Safe<OnPiece>,", ""));
+        }
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a door plane whose door names no `on_piece` is a step nothing answers",
+            &[ROW_STEPS],
+            ov,
+            &["missing-slot", "busbar-plane-decisions", "on_piece"],
         ));
 
         // A STEP THAT IS DECLARED AND NOT RUN. The compiler is satisfied and the loop stops there,
