@@ -1031,10 +1031,11 @@ fn two_plugins_claiming_one_former_name_are_refused() {
     }
 }
 
-/// THE ONE-OWNER RULE ACROSS THE DOORS (ARCHITECT): a LINKED row and any other row of a DIFFERENT
-/// plugin claiming one name, alias or former name refuse the boot, naming both and the word — a
-/// legacy name never resolves ambiguously. A linked row and a dropped-in copy of the SAME plugin are
-/// not a conflict: the linked row answers ahead, as the design states (compiled in = dropped in).
+/// THE ONE-OWNER RULE ACROSS THE DOORS (ARCHITECT): a FORMER NAME a linked row and any other
+/// plugin both answer, or any word two linked plugins both claim, refuses the boot, naming both and
+/// the word — a legacy name never resolves ambiguously. What the design states on purpose stays: a
+/// linked row answers its own name and alias ahead of a DIFFERENT dropped-in plugin spelling it
+/// (K9e-2), and a linked row and a dropped-in copy of the SAME plugin are not a conflict.
 #[test]
 fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
     let webrequest = || {
@@ -1076,6 +1077,18 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
         .link(vec![LinkedPlugin::door(webrequest(), unopened_door)])
         .expect("the same plugin linked and dropped in is not a conflict");
     assert!(reg.resolve("busbar-webrequest").expect("resolves").linked());
+    // GREEN (the stated precedence): a different dropped-in plugin spelling the linked row's ALIAS;
+    // the linked row answers it.
+    let reg = dropped_in(
+        "cross-alias",
+        renamed("hook", "acme-hook-y", "webrequest", &[]),
+    )
+    .link(vec![LinkedPlugin::door(webrequest(), unopened_door)])
+    .expect("a linked row answers its alias ahead of a dropped-in spelling");
+    assert_eq!(
+        reg.resolve("webrequest").expect("resolves").manifest.name,
+        "busbar-hook-webrequest"
+    );
 }
 
 /// The fleet's plugins.yaml entries, as `(repo, kind, alias, former_names)`: the four fields this

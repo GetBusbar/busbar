@@ -27,6 +27,7 @@ fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&
         kind,
         name: name.into(),
         aliases: aliases.iter().map(|s| s.to_string()).collect(),
+        former: Vec::new(),
         sugar: sugar.iter().map(|s| s.to_string()).collect(),
         verbs: verbs.iter().map(|s| s.to_string()).collect(),
         schemes: Vec::new(),
