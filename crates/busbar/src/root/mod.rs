@@ -88,7 +88,6 @@ pub mod linked;
 pub(crate) mod loader;
 pub mod migration;
 pub mod observe;
-pub mod otlp;
 // The node a plane's units run through: compiled when a linked plane rides the `node` axis, read
 // off the same manifest table the root folds (the generated `linked_axis_node` cfg).
 #[cfg(linked_axis_node)]

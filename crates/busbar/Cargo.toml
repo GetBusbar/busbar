@@ -149,7 +149,7 @@ busbar-export-webhook = { workspace = true, optional = true }
 # own repo (GetBusbar/busbar-export-prometheus) and is pulled at a PINNED rev; the workspace `[patch]` points
 # the busbar crates it names back at this tree.
 busbar-export-prometheus = { workspace = true, optional = true }
-# THE OTLP TRACE SINK (`module: otlp`), a first-party EXPORT plugin linked through the `exports` axis
+# THE OTLP TRACE SINK (`module: otlp`), a first-party EXPORT plugin linked through the `export-doors` axis
 # (K9e-2; owner answer Q75: OTLP export never delivered in 1.5.5, and 1.6.0 fixes it) — the same row a
 # signed tarball of it registers when dropped in. It encodes each `traces` record as an OTLP/HTTP
 # protobuf request the host posts under the collector egress policy it declares. It lives in its own
@@ -185,9 +185,6 @@ axum = { workspace = true }
 # the same version axum is built on — this is the trait axum's own `Body` implements, not a second one.
 http-body = { workspace = true }
 tracing = { workspace = true }
-# THE COLLECTOR EGRESS POLICY (`root::otlp`, K9e-2): the OTLP endpoint guard, which the host's egress
-# carrier holds a sink that declares `collector` to, parses the target as a URL.
-url = { workspace = true }
 # Selects `idna`'s unicode-rs backend for every `url` in the binary (see the workspace row).
 idna_adapter = { workspace = true }
 metrics = { workspace = true }
@@ -388,8 +385,8 @@ proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams dia
 plane-mcp = "plane claims protocols diagnostics egress stdio-serve cli-help gauntlet-one-shot"
 plane-a2a = "plane claims diagnostics egress plane-sections admin-envelope gauntlet-one-shot"
 plane-streaming = "plane claims diagnostics ws-arrivals compose gauntlet-session"
-export-file = "exports"
-export-webhook = "exports"
+export-file = "export-doors"
+export-webhook = "export-doors"
 export-prometheus = "export-doors"
 export-otlp = "export-doors"
 auth-admin-tokens = "auths"
@@ -425,6 +422,9 @@ llm-on-driver = "busbar_plane_llm::plane_door"
 # A memory-ABI export sink's door is its logic crate's `door` module's (`plugin_door!`).
 busbar-export-prometheus = "busbar_export_prometheus::door"
 busbar-export-otlp = "busbar_export_otlp::door"
+# The file and webhook sinks' doors are at their logic crates' roots (`pub use table::door`).
+busbar-export-file = "busbar_export_file"
+busbar-export-webhook = "busbar_export_webhook"
 
 # The key an `auths` row answers on the auth axis — the name its signed tarball's manifest states.
 [package.metadata.busbar.linked-name]
@@ -508,7 +508,8 @@ busbar-plugin-example-plane = { path = "../plane-example" }
 # FILE sink's repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-file` edge
 # above, dropped into `plugins/` as the library a tarball of the sink carries. The sink's own
 # both-doors conformance lives in its repo (GetBusbar/busbar-export-file, `tests/conformance.rs`).
-busbar-export-file-plugin = { workspace = true }
+# Built with its `dropped-in` feature: only then does the cdylib export `busbar_plugin_door`.
+busbar-export-file-plugin = { workspace = true, features = ["dropped-in"] }
 # The dropped-in transport proofs (`tests/transport_dropped_in_serves.rs`, the tcp-less boot in
 # `tests/linked_export_sinks_boot_as_their_own_kind.rs`): the tcp transport repo's cdylib crate at the
 # SAME pinned rev as the linked `busbar-transport-tcp` edge above, found in this target dir under

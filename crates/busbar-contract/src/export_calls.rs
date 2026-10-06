@@ -8,6 +8,16 @@
 //! names this, and neither names the other. Nothing here crosses the plugin boundary: the export
 //! kind's ABI is `abi::export`, and the loader lowers these types to it.
 
+/// The settings key that states an export instance's in-flight bound: how many deliveries the host
+/// runs at once for that instance (the frozen 1.5.x request-log webhook sink's
+/// `max_inflight_deliveries`). The host bounds the instance by it, within the plugin's declared
+/// `max_inflight`; unset, the host's default bound applies ([`DEFAULT_INFLIGHT`]).
+pub const INFLIGHT_KEY: &str = "max_inflight_deliveries";
+
+/// The in-flight bound of an export instance whose settings state none: 1.5.5's default for its
+/// request-log sinks (the webhook's `max_inflight_deliveries`, the file sink's in-flight appends).
+pub const DEFAULT_INFLIGHT: u32 = 64;
+
 /// One metric family of a host recorder's snapshot, in the recorder's render order. The loader
 /// lowers it to [`crate::abi::export::ScrapeFamily`] for the `scrape` op.
 #[derive(Debug, Clone, PartialEq, Eq)]
