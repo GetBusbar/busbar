@@ -200,6 +200,7 @@ async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
         identity,
         Some(&base64::engine::general_purpose::STANDARD.encode(&der)),
         vec!["https://gw.example.com/rpc".to_string()],
+        crate::cimd::unconnected(),
     )
     .expect("the plane builds with an operator-supplied key");
 
