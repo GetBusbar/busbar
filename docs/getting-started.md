@@ -397,8 +397,9 @@ Prometheus scrape exposition. Like `/stats`, `/metrics` is subject to the auth m
 
 ### Durable store: giving persistence a writable volume
 
-**`store: { module: memory }` is in-memory.** With it, keys, usage counters, ledgers and the
-audit trail all live in RAM and are gone on restart — Busbar logs one WARN at boot saying so. The
+**A `store:` block is required in 1.6.0.** `busbar --validate` refuses a config without one, and
+`busbar --migrate-config` inserts `store: {module: memory}` into a config that lacks it. The `memory` store keeps keys, usage counters, ledgers and the
+audit trail in RAM, so they are gone on restart — Busbar logs one WARN at boot saying so. The
 admin-API config overlay (Step 1's `busbar-overlay.json`) is a *separate* thing and persists on its
 own writable path; it does not make keys/usage/ledgers durable.
 
@@ -407,7 +408,7 @@ A durable store ships as a **signed plugin**, not code baked into the binary or 
 (`GetBusbar/busbar-store-sqlite`, `GetBusbar/busbar-store-postgres`, `GetBusbar/busbar-store-mysql`,
 `GetBusbar/busbar-store-valkey` — the full list, with each plugin's alias and crate name, is
 [`plugins.yaml`](../plugins.yaml) at the repo root). "Give it a writable volume" is necessary but
-not sufficient; the complete recipe has **four** parts:
+not sufficient; the complete recipe has **four** parts. (Use the store plugin releases built for 1.6.0: a store plugin built for 1.5.5 is refused at boot, see [Plugins](plugins.md#plugins-and-160).)
 
 1. **`plugins.enabled: true`** — the plugin subsystem's master switch. Default is `false`, and with
    it off a tarball sitting in the plugins directory is inert: `store.module: sqlite` refuses boot

@@ -1,33 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Runtime loading of a durable-store backend from a **dynamic library** (`.so`/`.dll`/`.dylib`) over
-//! the busbar store C ABI ([`busbar_contract::abi::cold`]).
+//! THE PLUGIN LOADER: discovery, trust and the registry ([`registry`], [`sign`], [`tarball`]); the
+//! ONE loading path and the ONE dispatcher of the memory ABI ([`dispatch`]: `load_linked` /
+//! `load_dropped`), through which every store, secret, auth, hook and export plugin loads,
+//! compiled in or dropped in (`BUSBAR-1.6.0.md` THE DESIGN §11); and the HOT lane the planes and
+//! transports that have not moved to their door still ride ([`plane`], [`transport`]).
 //!
-//! This is the engine side of "drop a plugin in the folder and it works": [`load_store`] opens a
-//! library with `libloading` (portable `dlopen`/`LoadLibrary`), checks the ABI-version handshake,
-//! calls the plugin's `open` with the JSON config, and returns a [`DynStore`] — a `Box<dyn Store>` any
-//! governance code can use exactly like the compiled-in `busbar_store_memory::MemoryStore`. Every
-//! `Store` call is serialized to JSON and shipped across the C boundary; because the store is
-//! write-behind (off the request hot path), that serialize never touches request latency.
-//!
-//! The loaded library is kept alive inside the `DynStore` for as long as the store lives — unloading
-//! it while the handle is in use would dangle — and the handle is `close`d before the library drops.
-//!
-//! For the TRUSTED load path, [`load_store_from_bytes`] takes the already-verified library BYTES (not
-//! a path) so the bytes that were hash/signature-checked are byte-for-byte the bytes loaded — closing
-//! the time-of-check/time-of-use gap a `verify(path)` + `dlopen(path)` pair would leave open.
+//! M6-COLD-DELETE residue: the raw JSON-lane load below ([`Image`], `RawPlugin`) serves only the
+//! `kind: auth` plugin still built on it ([`auth`]: its verify and its hosted login), until that
+//! plugin's door re-pin, and the request-log file and webhook sinks ([`export`]), until their door
+//! re-pins land. No store, secret or hook plugin loads through it.
 
 use busbar_contract::abi::cold::{
-    kind as abi_kind, symbol, CallFn, CloseFn, FreeFn, PluginKindFn, StoreRequest, StoreResponse,
-    MAX_PLUGIN_RESPONSE_LEN, STATUS_ERR, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL,
-    STATUS_UNSUPPORTED, TRANSPORT_VERSION,
+    symbol, CallFn, CloseFn, FreeFn, MAX_PLUGIN_RESPONSE_LEN, STATUS_ERR, STATUS_OK, STATUS_PANIC,
+    STATUS_PROTOCOL, STATUS_UNSUPPORTED,
 };
-use busbar_contract::records::{
-    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
-    PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta, UsageLedger,
-    VirtualKey,
-};
+use busbar_contract::abi::cold::{PluginKindFn, TRANSPORT_VERSION};
 use libloading::Library;
 use std::os::raw::c_void;
 use std::path::Path;
@@ -59,7 +48,6 @@ mod host;
 /// publishes (fetched artifacts, the high-water marks, plugin log directories) goes through it.
 pub(crate) use busbar_kernel_wal::durable;
 mod hostlog;
-mod legacy_usage;
 pub mod observe;
 pub mod plane;
 pub mod registry;
@@ -98,33 +86,34 @@ pub use export::{load_export_from_bytes, load_export_image, DynExport};
 pub use sign::EgressPolicy;
 
 impl LinkedPlugin {
-    /// A FIRST-PARTY cold plugin a build links: `name` aliased `alias`, of `kind`, at the newest
-    /// payload schema this loader speaks for the kind, published by busbar — the manifest its release
-    /// tarball states — over `entry`, the boundary its `cdylib` exports under the frozen symbols.
+    /// M6-COLD-DELETE residue: a FIRST-PARTY JSON-lane export sink a build links, as
+    /// [`LinkedPlugin::first_party_door`] states it, over `entry`, the boundary its `cdylib` exports.
     pub fn first_party(kind: &str, name: &str, alias: &str, entry: &'static ColdEntry) -> Self {
-        Self::first_party_on(kind, name, alias, LinkedEntry::Boundary(entry))
+        let mut row = LinkedPlugin::door_of_kind(kind, name, no_door);
+        row.manifest.alias = alias.into();
+        row.entry = LinkedEntry::Boundary(entry);
+        row
     }
 
-    /// A FIRST-PARTY memory-ABI plugin a build links, as [`LinkedPlugin::first_party`] states it,
-    /// over its `door` (`plugin_door!`): the same door its `cdylib` exports.
+    /// A FIRST-PARTY memory-ABI plugin a build links: `name` aliased `alias`, of `kind`, at this
+    /// loader's one version of the kind, published by busbar — the manifest its release tarball
+    /// states — over its `door` (`plugin_door!`): the same door its `cdylib` exports.
     pub fn first_party_door(
         kind: &str,
         name: &str,
         alias: &str,
         door: busbar_contract::abi::mechanism::door::DoorFn,
     ) -> Self {
-        Self::first_party_on(kind, name, alias, LinkedEntry::Door(door))
-    }
-
-    fn first_party_on(kind: &str, name: &str, alias: &str, entry: LinkedEntry) -> Self {
-        let mut row = LinkedPlugin::store(name, |_| Err(String::new()), false);
+        let mut row = LinkedPlugin::door_of_kind(kind, name, door);
         row.manifest.alias = alias.into();
-        row.manifest.kind = kind.into();
-        row.manifest.abi_version = supported_abi(kind).iter().copied().max().unwrap_or(0);
-        row.entry = entry;
         row
     }
 }
+/// The placeholder a JSON-lane row's entry replaces before it is ever read.
+extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
+    std::ptr::null()
+}
+
 pub use carrier::{HotReply, ReplyStream, RequestHead, MAX_PLANE_REPLY_LEN};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
@@ -304,8 +293,8 @@ pub(crate) fn abi_symbol(
         .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))
 }
 
-/// THE PLUGIN-ABI HANDSHAKE, one home for every load path. The cold kinds, the upload vet, the
-/// plane loader and the transport loader each spelled it: four copies. Calls `busbar_abi()` under
+/// THE PLUGIN-ABI HANDSHAKE, one home for every load path that still answers it: the JSON lane's
+/// residue, the upload vet, the HOT plane loader and the HOT transport loader. Calls `busbar_abi()` under
 /// the ffi guard (it runs plugin code, so a panic fails the load closed) and refuses a plugin whose
 /// plugin-ABI version is not the engine's, answering the version it verified. `noun` is how the
 /// refusal names it (`plugin`, `plane`, `transport`), so each path's text is unchanged byte for
@@ -373,7 +362,7 @@ fn reclaim_failed_open(
 
 /// The resolved core C fn pointers + the opaque handle + the mapped library + staging backing, shared
 /// by every kind's typed wrapper. The KIND is bound at construction (cross-checked against the signed
-/// manifest) and then carried by the typed `DynStore`/`DynSecret`/`DynAuth`.
+/// manifest) and then carried by the typed `DynAuth` / `DynExport` (the JSON lane's residue).
 struct RawPlugin {
     handle: *mut c_void,
     call: CallFn,
@@ -386,7 +375,7 @@ struct RawPlugin {
     /// Held so the ONE generic wire call can tell the host's observer which kind reported, WITHOUT
     /// the plugin ever sending it: a kind on the wire would be a kind a plugin could claim, and
     /// [`crate::observe::PluginObserver`] applies per-kind policy. `&'static str` because it is
-    /// always one of `busbar_contract::abi::cold::kind`'s constants.
+    /// always one of `busbar_contract::abi::mechanism::kind`'s constants.
     kind: &'static str,
     /// Which response shape THIS plugin speaks — see [`response_shape`] and
     /// [`RawPlugin::decode_response`]. Latched on the first successful decode and never revisited.
@@ -523,7 +512,7 @@ impl RawPlugin {
             // back would mean a plugin that answered an envelope once and something else later, and
             // reading that as "the old shape" would hide a genuinely broken peer.
             response_shape::ENVELOPE => {
-                let envelope: busbar_contract::abi::cold::observe::Envelope<Resp> =
+                let envelope: busbar_contract::abi::mechanism::observe::Envelope<Resp> =
                     serde_json::from_slice(bytes).map_err(decode_err)?;
                 observe::fold(&self.path, self.kind, &envelope);
                 Ok(envelope.result)
@@ -536,9 +525,10 @@ impl RawPlugin {
             // current SDK is the case an operator is far more likely to be debugging and the bare
             // arm's "unknown variant `result`" would send them the wrong way.
             _ => {
-                match serde_json::from_slice::<busbar_contract::abi::cold::observe::Envelope<Resp>>(
-                    bytes,
-                ) {
+                match serde_json::from_slice::<
+                    busbar_contract::abi::mechanism::observe::Envelope<Resp>,
+                >(bytes)
+                {
                     Ok(envelope) => {
                         self.shape.store(response_shape::ENVELOPE, Relaxed);
                         observe::fold(&self.path, self.kind, &envelope);
@@ -1044,121 +1034,6 @@ unsafe fn kind_from_ptr(ptr: *const u8, display: &str) -> Result<String, String>
         .map_err(|_| format!("plugin '{display}' kind string is not valid UTF-8"))
 }
 
-/// A `Store` backend loaded from a dynamic library over the kind-neutral ABI. Wraps a [`RawPlugin`]
-/// whose kind was bound to `store` at load, so every `Store` method is a typed `transport_call`.
-///
-/// It is also the per-kind ADAPTER: `abi_version` is the payload schema the loaded plugin was built
-/// against (its signed manifest's), and the usage-ledger ops encode/decode at THAT schema. The
-/// engine keeps one internal row shape; a published 1.5.x store keeps seeing the shape it can
-/// decode. See [`legacy_usage`].
-pub struct DynStore {
-    raw: RawPlugin,
-    /// The loaded plugin's manifest `abi_version`. A bare path load has no manifest to read it
-    /// from, so it assumes the current schema — the trust-verified registry load, which is how a
-    /// real deployment loads a store, passes the manifest's value.
-    abi_version: u32,
-    /// Latch so the "this store has no column for that unit" notice is said ONCE per store, not
-    /// once per flush tick.
-    dropped_units_warned: std::sync::atomic::AtomicBool,
-}
-
-impl DynStore {
-    /// Bind a loaded plugin to the payload schema its manifest declares.
-    fn new(raw: RawPlugin, abi_version: u32) -> Self {
-        Self {
-            raw,
-            abi_version,
-            dropped_units_warned: std::sync::atomic::AtomicBool::new(false),
-        }
-    }
-
-    /// TEST-ONLY: the private staging file backing THIS instance, or `None` when the load touched no
-    /// disk (Linux memfd, or a path load with no staging at all). Lets the staging-lifecycle tests
-    /// assert on their own artifact instead of counting process-wide staging entries — see
-    /// [`stage::Staged::temp_path`] for why the count was the wrong instrument.
-    #[cfg(test)]
-    pub(crate) fn staged_path(&self) -> Option<&std::path::Path> {
-        self.raw
-            ._backing
-            .as_ref()
-            .and_then(stage::Staged::temp_path)
-    }
-
-    /// Serialize a request, ship it across the kind-neutral C ABI, decode the response. A THIN wrapper
-    /// over [`Self::call_raw_status`] (there is ONE transport path; a status-blind variant can't be
-    /// accidentally used): it just discards the semantic kind and surfaces the message as a `StoreError`.
-    fn call_raw(&self, req: StoreRequest) -> RecordStoreResult<StoreResponse> {
-        self.call_raw_status(req)
-            .map_err(|e| RecordStoreError(e.message))
-    }
-
-    /// The status-preserving transport primitive: on failure returns a [`TransportError`] whose
-    /// semantic [`TransportErrorKind`] a caller keys on (e.g. `is_unsupported()` for the denylist /
-    /// audit-tail / append-audit safe-default fallbacks). Never keys on plugin-controlled body text.
-    fn call_raw_status(&self, req: StoreRequest) -> Result<StoreResponse, TransportError> {
-        self.raw
-            .transport_call_status::<StoreRequest, StoreResponse>(&req)
-    }
-
-    /// Does this store need the 1.5.5 four-tier usage shape instead of the unit map?
-    fn legacy_usage_wire(&self) -> bool {
-        legacy_usage::needs_legacy_usage_wire(self.abi_version)
-    }
-
-    /// Ship one usage request already encoded at the 1.5.5 schema.
-    fn call_legacy_usage(
-        &self,
-        req: legacy_usage::LegacyStoreRequest,
-    ) -> RecordStoreResult<legacy_usage::LegacyStoreResponse> {
-        self.raw
-            .transport_call_status::<_, legacy_usage::LegacyStoreResponse>(&req)
-            .map_err(|e| RecordStoreError(e.message))
-    }
-
-    /// Say ONCE that this store has no column for some unit names, so the drop is never silent and
-    /// never a per-tick log flood. Only ever called with a non-empty list.
-    fn note_dropped_units(&self, dropped: &[String]) {
-        if dropped.is_empty()
-            || self
-                .dropped_units_warned
-                .swap(true, std::sync::atomic::Ordering::Relaxed)
-        {
-            return;
-        }
-        let mut names: Vec<&str> = dropped.iter().map(String::as_str).collect();
-        names.sort_unstable();
-        names.dedup();
-        tracing::warn!(
-            store = %self.raw.path,
-            units = %names.join(","),
-            "this store plugin predates open usage units and has no column for them; those counts \
-             are not persisted (the four priced token tiers are). Upgrade the store plugin to \
-             persist them."
-        );
-    }
-
-    /// THE ONE PLACE a store op is allowed a safe default when the plugin is too OLD to know the
-    /// request variant. `extract` names the response variant the op expects; `on_unsupported` supplies
-    /// the default for the [`TransportErrorKind::Unsupported`] case and NOTHING ELSE.
-    ///
-    /// Every op that tolerates an old plugin routes through here, so the fail-open surface is one
-    /// function instead of four hand-written `match` arms — a fifth op cannot re-introduce the class by
-    /// writing `Err(_) => <default>` (which would swallow a real backend error, a caught PANIC, and a
-    /// caller-protocol violation, hydrating an empty denylist and re-accepting revoked tokens).
-    fn call_with_legacy_default<T>(
-        &self,
-        req: StoreRequest,
-        extract: impl FnOnce(StoreResponse) -> RecordStoreResult<T>,
-        on_unsupported: impl FnOnce() -> RecordStoreResult<T>,
-    ) -> RecordStoreResult<T> {
-        match self.call_raw_status(req) {
-            Ok(resp) => extract(resp),
-            Err(e) if e.is_unsupported() => on_unsupported(),
-            Err(e) => Err(RecordStoreError(e.message)),
-        }
-    }
-}
-
 /// Enforce [`MAX_PLUGIN_RESPONSE_LEN`] on a plugin-declared response length before the engine
 /// allocates a buffer for it. Pure so the bound is unit-testable without a live plugin.
 fn response_len_ok(out_len: usize, path: &str) -> Result<(), String> {
@@ -1179,775 +1054,6 @@ fn response_len_ok(out_len: usize, path: &str) -> Result<(), String> {
 /// historically skipped the cap `busbar_call` already applies before its own `from_raw_parts`.
 fn open_err_is_readable(err_is_null: bool, err_len: usize) -> bool {
     !err_is_null && err_len > 0 && err_len <= MAX_PLUGIN_RESPONSE_LEN
-}
-
-/// The plugin returned a response variant that doesn't match the request — a contract violation.
-fn unexpected(resp: StoreResponse) -> RecordStoreError {
-    RecordStoreError(format!("plugin returned an unexpected response: {resp:?}"))
-}
-
-impl RecordStore for DynStore {
-    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
-        match self.call_raw(StoreRequest::PutKey(key.clone()))? {
-            StoreResponse::Unit => Ok(()),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        match self.call_raw(StoreRequest::GetKey(id.to_string()))? {
-            StoreResponse::Key(k) => Ok(k),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        match self.call_raw(StoreRequest::ListKeys)? {
-            StoreResponse::Keys(k) => Ok(k),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        match self.call_raw(StoreRequest::DeleteKey(id.to_string()))? {
-            StoreResponse::Unit => Ok(()),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn scrub_key(&self, id: &str) -> RecordStoreResult<()> {
-        match self.call_raw(StoreRequest::ScrubKey(id.to_string()))? {
-            StoreResponse::Unit => Ok(()),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
-        match self.call_raw(StoreRequest::ListKeysSince(since))? {
-            StoreResponse::Keys(k) => Ok(k),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
-        if self.legacy_usage_wire() {
-            // The REQUEST side of `GetUsage` never changed shape, only the ledger coming back, so
-            // the current request rides the wire and only the response is decoded at the older
-            // schema. Decoding it as the current shape would silently yield an empty unit map — a
-            // restart would hydrate zero tokens from a store holding the real counts.
-            let req = StoreRequest::GetUsage {
-                bucket_id: bucket_id.to_string(),
-                window_start,
-            };
-            return match self
-                .raw
-                .transport_call_status::<_, legacy_usage::LegacyStoreResponse>(&req)
-                .map_err(|e| RecordStoreError(e.message))?
-            {
-                legacy_usage::LegacyStoreResponse::Usage(l) => {
-                    Ok(legacy_usage::ledger_from_legacy(l))
-                }
-                legacy_usage::LegacyStoreResponse::Unit => Err(RecordStoreError(
-                    "plugin returned an unexpected response: Unit".to_string(),
-                )),
-            };
-        }
-        match self.call_raw(StoreRequest::GetUsage {
-            bucket_id: bucket_id.to_string(),
-            window_start,
-        })? {
-            StoreResponse::Usage(u) => Ok(u),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &UsageLedger,
-    ) -> RecordStoreResult<()> {
-        if self.legacy_usage_wire() {
-            let (legacy, dropped) = legacy_usage::ledger_to_legacy(ledger);
-            self.note_dropped_units(&dropped);
-            return match self.call_legacy_usage(legacy_usage::LegacyStoreRequest::PutUsage {
-                bucket_id: bucket_id.to_string(),
-                window_start,
-                ledger: legacy,
-            })? {
-                legacy_usage::LegacyStoreResponse::Unit => Ok(()),
-                legacy_usage::LegacyStoreResponse::Usage(_) => Err(RecordStoreError(
-                    "plugin returned an unexpected response: Usage".to_string(),
-                )),
-            };
-        }
-        match self.call_raw(StoreRequest::PutUsage {
-            bucket_id: bucket_id.to_string(),
-            window_start,
-            ledger: ledger.clone(),
-        })? {
-            StoreResponse::Unit => Ok(()),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn add_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        delta: &UsageDelta,
-    ) -> RecordStoreResult<()> {
-        // `AddUsage` is part of the base wire (every plugin at this ABI knows it - there is no
-        // "older SDK never learned this variant" fallback), so an error here is a REAL store error
-        // and propagates: silently degrading the fleet-additive accumulate to a read-modify-write
-        // against a live shared backend would be a correctness downgrade (lost updates), not a
-        // compatibility bridge.
-        if self.legacy_usage_wire() {
-            // THE MONEY PATH on a published 1.5.x store: sending the unit map here is what made the
-            // flush fail with `missing field 'tokens'` on every tick, so no usage was persisted at
-            // all. Encode the four priced tiers the way that plugin was built to read them.
-            let (legacy, dropped) = legacy_usage::delta_to_legacy(delta);
-            self.note_dropped_units(&dropped);
-            return match self.call_legacy_usage(legacy_usage::LegacyStoreRequest::AddUsage {
-                bucket_id: bucket_id.to_string(),
-                window_start,
-                delta: legacy,
-            })? {
-                legacy_usage::LegacyStoreResponse::Unit => Ok(()),
-                legacy_usage::LegacyStoreResponse::Usage(_) => Err(RecordStoreError(
-                    "plugin returned an unexpected response: Usage".to_string(),
-                )),
-            };
-        }
-        match self.call_raw(StoreRequest::AddUsage {
-            bucket_id: bucket_id.to_string(),
-            window_start,
-            delta: delta.clone(),
-        })? {
-            StoreResponse::Unit => Ok(()),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
-        // THE MONEY PATH's second half on a published 1.5.x store: `priced_from_ms` is part of the
-        // accrual key and that store has no column for it, so it would merge a rate-card-split day
-        // back into one row. Carry the era in a column it keys on (see `legacy_usage`).
-        let delta = if legacy_usage::needs_legacy_metering_wire(self.abi_version) {
-            // A 1.5.x store has no column for a class outside the token split (`usage_units`): the
-            // counts are dropped on the way out, SAID once, exactly as the usage ledger's are — and a
-            // delta that carried nothing else is not sent at all, so no empty row appears.
-            let dropped: Vec<String> = delta.usage_units.keys().cloned().collect();
-            self.note_dropped_units(&dropped);
-            let legacy = legacy_usage::metering_delta_to_legacy(delta);
-            if legacy_usage::metering_delta_is_empty(&legacy) {
-                return Ok(());
-            }
-            legacy
-        } else {
-            delta.clone()
-        };
-        match self.call_raw(StoreRequest::AddMetering(delta))? {
-            StoreResponse::Unit => Ok(()),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        match self.call_raw(StoreRequest::ListMetering(bucket))? {
-            StoreResponse::Metering(m)
-                if legacy_usage::needs_legacy_metering_wire(self.abi_version) =>
-            {
-                Ok(m.into_iter()
-                    .map(legacy_usage::metering_row_from_legacy)
-                    .collect())
-            }
-            StoreResponse::Metering(m) => Ok(m),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn purge_windows_before(&self, before: u64) -> RecordStoreResult<u64> {
-        match self.call_raw(StoreRequest::PurgeWindowsBefore(before))? {
-            StoreResponse::Purged(n) => Ok(n),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn purge_metering_before(&self, bucket: &str) -> RecordStoreResult<u64> {
-        match self.call_raw(StoreRequest::PurgeMeteringBefore(bucket.to_string()))? {
-            StoreResponse::Purged(n) => Ok(n),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn put_credential(&self, secret: &CredentialSecret) -> RecordStoreResult<()> {
-        match self.call_raw(StoreRequest::PutCredential(secret.clone()))? {
-            StoreResponse::Unit => Ok(()),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn put_key_with_credential(
-        &self,
-        key: &VirtualKey,
-        secret: &CredentialSecret,
-    ) -> RecordStoreResult<()> {
-        match self.call_raw(StoreRequest::PutKeyWithCredential {
-            key: key.clone(),
-            secret: secret.clone(),
-        })? {
-            StoreResponse::Unit => Ok(()),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn list_credentials(&self, key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
-        match self.call_raw(StoreRequest::ListCredentials(key_id.to_string()))? {
-            StoreResponse::Credentials(c) => Ok(c),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn lookup_credential_secret(
-        &self,
-        kind: &str,
-        public_id: &str,
-    ) -> RecordStoreResult<Option<CredentialSecret>> {
-        match self.call_raw(StoreRequest::LookupCredentialSecret {
-            kind: kind.to_string(),
-            public_id: public_id.to_string(),
-        })? {
-            StoreResponse::CredentialSecret(c) => Ok(c),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
-        match self.call_raw(StoreRequest::RevokeCredential {
-            id: id.to_string(),
-            reason: reason.to_string(),
-        })? {
-            StoreResponse::Unit => Ok(()),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn list_credentials_since(&self, since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
-        match self.call_raw(StoreRequest::ListCredentialsSince(since))? {
-            StoreResponse::CredentialSecrets(c) => Ok(c),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn append_audit(&self, entry: &AuditRecord) -> RecordStoreResult<()> {
-        // A store predating this request variant means "this store has no durable audit". Audit
-        // write-through is best-effort (the RAM ring still holds the entry), so for THAT case ONLY the
-        // choke point returns `Ok(())` silently; every other failure propagates.
-        self.call_with_legacy_default(
-            StoreRequest::AppendAudit(entry.clone()),
-            |r| match r {
-                StoreResponse::Unit => Ok(()),
-                other => Err(unexpected(other)),
-            },
-            || Ok(()),
-        )
-    }
-
-    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
-        // Routed through the same choke point as its three siblings. This op used the status-BLIND
-        // `call_raw`, so a store predating the durable-audit variant failed the whole restore instead
-        // of reporting "no durable audit" — the mirror image of the `append_audit` asymmetry.
-        self.call_with_legacy_default(
-            StoreRequest::ListAudit,
-            |r| match r {
-                StoreResponse::Audit(a) => Ok(a),
-                other => Err(unexpected(other)),
-            },
-            || Ok(Vec::new()),
-        )
-    }
-
-    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
-        // A store predating this variant falls back to the trait default (`list_audit` +
-        // tail-truncation) so restore still works: it just materializes the full list once before
-        // truncating rather than bounding at the source. The fallback re-issues `list_audit`, which is
-        // now itself status-aware — so a fault on the SECOND call surfaces too, instead of being
-        // flattened into a bare `StoreError` by the status-blind path.
-        self.call_with_legacy_default(
-            StoreRequest::ListAuditTail(limit),
-            |r| match r {
-                StoreResponse::Audit(a) => Ok(a),
-                other => Err(unexpected(other)),
-            },
-            || {
-                let mut all = self.list_audit()?;
-                let limit = limit as usize;
-                if all.len() > limit {
-                    all.drain(0..all.len() - limit);
-                }
-                Ok(all)
-            },
-        )
-    }
-
-    fn add_denylist(&self, sub: &str, reason: &str) -> RecordStoreResult<()> {
-        match self.call_raw(StoreRequest::AddDenylist {
-            sub: sub.to_string(),
-            reason: reason.to_string(),
-        })? {
-            StoreResponse::Unit => Ok(()),
-            other => Err(unexpected(other)),
-        }
-    }
-
-    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
-        // Revocation fail-open closure. A store that cannot DECODE the `ListDenylist` request
-        // variant hydrates an empty denylist rather than failing boot. Every OTHER failure — a real
-        // backend error, a caught PANIC, a caller-protocol violation, an unexpected response variant —
-        // PROPAGATES, so boot fails CLOSED rather than accepting previously-revoked signed tokens.
-        //
-        // The class rests entirely on `TransportError::from_status`: a current-SDK panic is
-        // STATUS_PANIC (Fault) and a v1-SDK panic is a BARE STATUS_PROTOCOL (Protocol). Neither is
-        // Unsupported, so no crash can reach this fallback.
-        self.call_with_legacy_default(
-            StoreRequest::ListDenylist,
-            |r| match r {
-                StoreResponse::Denylist(d) => Ok(d),
-                other => Err(unexpected(other)),
-            },
-            || Ok(Vec::new()),
-        )
-    }
-
-    // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD SURFACE (1.6.0) ─────────────────────────────────
-    //
-    // THE EIGHT DURABLE-PLANE OVERRIDES, and now the ONLY ones — the fourteen protocol-named
-    // overrides they replaced are deleted and `ABI_VERSION` is 4.
-    // Without these overrides `DynStore` would answer the neutral verbs from `Store`'s defaults, so a
-    // store plugin that implements them would have its every write DISCARDED here while the call
-    // reported success. Each routes through `call_with_legacy_default`, the one choke point, so a
-    // real backend error, a caught panic and a caller-protocol violation all propagate rather than
-    // collapsing to an empty read. The `STATUS_UNSUPPORTED` arm answers a store that does not
-    // implement one of these variants with the inert default: no durable plane, nothing else
-    // changed.
-    //
-    // The two WRITE verbs send the whole typed sidecar of [`PlaneRecord`], because the plugin on the
-    // far side reconstitutes its envelope from the request and nothing else — anything left off here
-    // is unrecoverable there, and `ts`/`disposition` are precisely what a retention sweep reads. The
-    // read/purge/delete verbs send only what they route on; they reconstitute no envelope.
-
-    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        self.call_with_legacy_default(
-            StoreRequest::UpsertPlaneRecord {
-                kind: record.kind.to_string(),
-                id: record.id.to_string(),
-                ts: record.ts,
-                disposition: record.disposition,
-                body: record.body.to_vec(),
-            },
-            |r| match r {
-                StoreResponse::Unit => Ok(()),
-                other => Err(unexpected(other)),
-            },
-            || Ok(()),
-        )
-    }
-
-    fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
-        self.call_with_legacy_default(
-            StoreRequest::GetPlaneRecord {
-                kind: kind.to_string(),
-                id: id.to_string(),
-            },
-            |r| match r {
-                StoreResponse::PlaneRecord(b) => Ok(b),
-                other => Err(unexpected(other)),
-            },
-            || Ok(None),
-        )
-    }
-
-    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        self.call_with_legacy_default(
-            StoreRequest::AppendPlaneRecord {
-                kind: record.kind.to_string(),
-                id: record.id.to_string(),
-                parent: record.parent.unwrap_or_default().to_string(),
-                seq: record.seq,
-                ts: record.ts,
-                disposition: record.disposition,
-                body: record.body.to_vec(),
-            },
-            |r| match r {
-                StoreResponse::Unit => Ok(()),
-                other => Err(unexpected(other)),
-            },
-            || Ok(()),
-        )
-    }
-
-    fn list_plane_records(
-        &self,
-        kind: &str,
-        selector: &PlaneSelector<'_>,
-    ) -> RecordStoreResult<Vec<Vec<u8>>> {
-        self.call_with_legacy_default(
-            StoreRequest::ListPlaneRecords {
-                kind: kind.to_string(),
-                selector: selector.to_static(),
-            },
-            |r| match r {
-                StoreResponse::PlaneRecords(b) => Ok(b),
-                other => Err(unexpected(other)),
-            },
-            || Ok(Vec::new()),
-        )
-    }
-
-    fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>> {
-        self.call_with_legacy_default(
-            StoreRequest::ListPlaneRecordParents {
-                kind: kind.to_string(),
-            },
-            |r| match r {
-                StoreResponse::PlaneRecordParents(p) => Ok(p),
-                other => Err(unexpected(other)),
-            },
-            || Ok(Vec::new()),
-        )
-    }
-
-    fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
-        self.call_with_legacy_default(
-            StoreRequest::PurgePlaneRecordsBefore {
-                kind: kind.to_string(),
-                before,
-            },
-            |r| match r {
-                StoreResponse::Purged(n) => Ok(n),
-                other => Err(unexpected(other)),
-            },
-            || Ok(0),
-        )
-    }
-
-    fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {
-        self.call_with_legacy_default(
-            StoreRequest::DeletePlaneRecord {
-                kind: kind.to_string(),
-                id: id.to_string(),
-            },
-            |r| match r {
-                StoreResponse::Unit => Ok(()),
-                other => Err(unexpected(other)),
-            },
-            || Ok(()),
-        )
-    }
-
-    fn redeem_plane_token(
-        &self,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> RecordStoreResult<bool> {
-        // DELIBERATELY NOT `call_with_legacy_default`: this is the ONE neutral verb whose safe
-        // default is FAIL-CLOSED, not fail-open. The others (`list_denylist`, the audit tail, the
-        // plane-record reads) tolerate an old plugin by returning an empty/`Ok` default; anti-replay
-        // is the opposite — a store too OLD to implement the single-use test-and-set must NOT be read
-        // as "fresh = true" (`|| Ok(true)`), because that silently restores confirm-once /
-        // execute-many replay across the fleet the instant a legacy store is paired with a plane that
-        // mints single-use approval tokens. So the unsupported case fails CLOSED and LOUD: an `Err`
-        // that the approvals gate reads as REFUSE (see `plane::approvals::spend`), with a boot-visible
-        // error naming the plugin so an operator upgrades it rather than losing anti-replay silently.
-        match self.call_raw_status(StoreRequest::RedeemPlaneToken {
-            kind: kind.to_string(),
-            token: token.to_string(),
-            expires_at,
-            now,
-        }) {
-            Ok(StoreResponse::Redeemed(fresh)) => Ok(fresh),
-            Ok(other) => Err(unexpected(other)),
-            Err(e) if e.is_unsupported() => {
-                tracing::error!(
-                    store = %self.raw.path,
-                    "store plugin does not implement redeem_plane_token (single-use anti-replay); \
-                     REFUSING the redemption rather than failing open — a store that cannot say \
-                     whether a token was already spent must not be read as saying it was not. \
-                     Upgrade the store plugin to a build that persists the single-use token ledger."
-                );
-                Err(RecordStoreError(
-                    "store plugin does not support redeem_plane_token (single-use anti-replay); \
-                     refusing to fail open"
-                        .to_string(),
-                ))
-            }
-            Err(e) => Err(RecordStoreError(e.message)),
-        }
-    }
-
-    fn plane_token_live(
-        &self,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> RecordStoreResult<bool> {
-        // FAIL-CLOSED for the same reason `redeem_plane_token` above is, and it is worth saying
-        // separately because the question is the opposite one. That verb asks "has nobody spent this
-        // yet"; this one asks "is this capability still live". A store too OLD to answer must not be
-        // read as answering YES: this token is the credential on Busbar's own `/a2a/push` callback,
-        // and reading an unimplemented verb as "still live" restores exactly the replay this verb was
-        // added to close — a backend that captured a token keeps moving a finished task with it.
-        match self.call_raw_status(StoreRequest::PlaneTokenLive {
-            kind: kind.to_string(),
-            token: token.to_string(),
-            expires_at,
-            now,
-        }) {
-            Ok(StoreResponse::TokenLive(live)) => Ok(live),
-            Ok(other) => Err(unexpected(other)),
-            Err(e) if e.is_unsupported() => {
-                tracing::error!(
-                    store = %self.raw.path,
-                    "store plugin does not implement plane_token_live (multi-use capability check); \
-                     REFUSING the callback rather than failing open — a store that cannot say whether \
-                     a token is still live must not be read as saying it is. Upgrade the store plugin \
-                     to a build that persists the plane-record disposition."
-                );
-                Err(RecordStoreError(
-                    "store plugin does not support plane_token_live (multi-use capability check); \
-                     refusing to fail open"
-                        .to_string(),
-                ))
-            }
-            Err(e) => Err(RecordStoreError(e.message)),
-        }
-    }
-}
-
-impl std::fmt::Debug for DynStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DynStore")
-            .field("path", &self.raw.path)
-            .finish()
-    }
-}
-
-// ── SECRET plugins (`kind: secret`) ─────────────────────────────────────────────────────────────
-
-/// A [`busbar_contract::secret::SecretModule`] loaded from a dynamic library over the kind-neutral ABI. Wraps a
-/// [`RawPlugin`] whose kind was bound to `secret` at load.
-pub struct DynSecret {
-    raw: RawPlugin,
-}
-
-impl busbar_contract::secret::SecretModule for DynSecret {
-    fn resolve(
-        &self,
-        settings: &serde_json::Map<String, serde_json::Value>,
-    ) -> busbar_contract::secret::SecretResult<Vec<u8>> {
-        self.resolve_with_deadline(settings, None)
-    }
-
-    /// The ONE host-side producer of `SecretRequest::Resolve`, so it is where the caller's advisory
-    /// deadline is written onto the wire. The SDK dispatcher hands it to the module's own
-    /// `resolve_with_deadline`; a module that cannot bound itself ignores it (the trait default).
-    fn resolve_with_deadline(
-        &self,
-        settings: &serde_json::Map<String, serde_json::Value>,
-        deadline_ms: Option<u64>,
-    ) -> busbar_contract::secret::SecretResult<Vec<u8>> {
-        let req = busbar_contract::abi::cold::SecretRequest::Resolve {
-            settings: settings.clone(),
-            deadline_ms,
-        };
-        match self
-            .raw
-            .transport_call::<_, busbar_contract::abi::cold::SecretResponse>(&req)
-            .map_err(busbar_contract::secret::SecretModuleError::internal)?
-        {
-            busbar_contract::abi::cold::SecretResponse::Bytes(b) => Ok(b),
-            busbar_contract::abi::cold::SecretResponse::Error { kind, message } => Err(
-                busbar_contract::secret::SecretModuleError::new(kind, message),
-            ),
-        }
-    }
-}
-
-impl std::fmt::Debug for DynSecret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DynSecret")
-            .field("path", &self.raw.path)
-            .finish()
-    }
-}
-
-/// Load a SECRET module from EXACTLY the verified library `bytes` (the TOCTOU-safe entrypoint;
-/// see [`load_store_from_bytes`] for the staging contract). `manifest_kind` is the trust-verified
-/// signed-manifest `kind`, cross-checked against the library's exported `busbar_plugin_kind()`.
-pub fn load_secret_from_bytes(
-    bytes: &[u8],
-    cfg_json: &str,
-    display: &str,
-    manifest_kind: &str,
-) -> Result<Box<dyn busbar_contract::secret::SecretModule>, String> {
-    load_secret_image(Image::Bytes(bytes), cfg_json, display, manifest_kind)
-}
-
-/// Load a SECRET module over either door's [`Image`] — the one load [`load_secret_from_bytes`] runs.
-pub fn load_secret_image(
-    image: Image<'_>,
-    cfg_json: &str,
-    display: &str,
-    manifest_kind: &str,
-) -> Result<Box<dyn busbar_contract::secret::SecretModule>, String> {
-    let raw = load_image(image, cfg_json, display, abi_kind::SECRET, manifest_kind)?;
-    Ok(Box::new(DynSecret { raw }))
-}
-
-/// Load a store backend from the dynamic library at `lib_path`, passing `cfg_json` to its `open`.
-///
-/// Validates the ABI-version handshake before calling anything else (a library that isn't a busbar
-/// store plugin, or targets a different ABI, is refused, never mis-called). Returns a ready
-/// `Box<dyn Store>` or a human-readable error naming the failure.
-#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
-#[inline(never)]
-pub fn load_store(lib_path: &Path, cfg_json: &str) -> Result<Box<dyn RecordStore>, String> {
-    let display = lib_path.display().to_string();
-    // SAFETY: loading an operator-placed library is inherently trusted (its init code runs), exactly
-    // like the SQLite this replaces was trusted when compiled in. The path comes from config/the
-    // plugins dir, not the request path.
-    let lib = dlopen_on_worker(lib_path.as_os_str())
-        .map_err(|e| format!("failed to load plugin '{display}': {e}"))?;
-    // A bare path load has no signed manifest to cross-check; the seam's expected kind (`store`) is
-    // the authority, so pass it as the manifest kind too (the exported-kind == expected-kind gate
-    // still enforces the library is a store). The trust-verified from-bytes path is the real gate.
-    let raw = wire_up_raw(
-        lib,
-        cfg_json,
-        display,
-        abi_kind::STORE,
-        abi_kind::STORE,
-        None,
-    )?;
-    Ok(Box::new(DynStore::new(
-        raw,
-        busbar_contract::abi::cold::ABI_VERSION,
-    )))
-}
-
-/// Load a store backend from EXACTLY the library `bytes` supplied — the TOCTOU-safe entrypoint.
-///
-/// The plugin pipeline verifies a plugin's hash/signature over the in-memory bytes it unpacked from
-/// the signed tarball, then must load THOSE SAME bytes. Handing `load_store` a path would re-open a
-/// file, leaving a window in which an attacker with write access could swap it between the
-/// verify-read and the `dlopen` (a classic time-of-check/time-of-use gap). This function closes that
-/// gap: the caller verifies the bytes ONCE and passes them here; the loader maps EXACTLY those bytes.
-///
-/// - **Linux**: `memfd_create` + `dlopen("/proc/self/fd/N")` — ZERO disk files, no path an attacker
-///   could ever race.
-/// - **macOS / Windows**: the verified bytes are written to a fresh `create_new` file inside a
-///   per-process PRIVATE `0700` staging directory (`busbar-plugins-<pid>-<random>`) and loaded from
-///   there. The staged file is throwaway output regenerated from the verified bytes on every load —
-///   a pre-existing on-disk file is NEVER loaded. On clean shutdown the library is unloaded FIRST,
-///   then the staged file removed; a crash's leftovers are removed by [`sweep_dead_staging`] at the
-///   next boot. Residual (do not overstate): on these platforms the load is by PATH inside the
-///   owner-created private dir, so only an attacker who already owns that dir (i.e. the same user)
-///   could interfere; a hostile `TMPDIR` base remains the operator's responsibility.
-///
-/// `display` is a human label for diagnostics (typically the plugin's canonical name); `manifest_kind`
-/// is the trust-verified signed-manifest `kind`, cross-checked against `busbar_plugin_kind()`.
-pub fn load_store_from_bytes(
-    bytes: &[u8],
-    cfg_json: &str,
-    display: &str,
-    manifest_kind: &str,
-) -> Result<Box<dyn RecordStore>, String> {
-    load_store_from_bytes_at_abi(
-        bytes,
-        cfg_json,
-        display,
-        manifest_kind,
-        busbar_contract::abi::cold::ABI_VERSION,
-    )
-}
-
-/// [`load_store_from_bytes`] told which PAYLOAD schema the plugin's signed manifest declares, so
-/// the returned store adapts the ops whose shape changed since (see [`legacy_usage`]). This is the
-/// entry point the registry uses — it is the only caller that has read the manifest.
-pub fn load_store_from_bytes_at_abi(
-    bytes: &[u8],
-    cfg_json: &str,
-    display: &str,
-    manifest_kind: &str,
-    abi_version: u32,
-) -> Result<Box<dyn RecordStore>, String> {
-    load_dyn_store_from_bytes_at_abi(bytes, cfg_json, display, manifest_kind, abi_version)
-        .map(|s| Box::new(s) as _)
-}
-
-/// [`load_store_from_bytes`] before the trait object boxes it away. Split out so the staging
-/// lifecycle tests can reach `DynStore::staged_path` and assert on their OWN artifact; the public
-/// entry point is this plus a `Box`.
-#[cfg(test)]
-fn load_dyn_store_from_bytes(
-    bytes: &[u8],
-    cfg_json: &str,
-    display: &str,
-    manifest_kind: &str,
-) -> Result<DynStore, String> {
-    load_dyn_store_from_bytes_at_abi(
-        bytes,
-        cfg_json,
-        display,
-        manifest_kind,
-        busbar_contract::abi::cold::ABI_VERSION,
-    )
-}
-
-/// [`load_dyn_store_from_bytes`] at a named payload schema.
-fn load_dyn_store_from_bytes_at_abi(
-    bytes: &[u8],
-    cfg_json: &str,
-    display: &str,
-    manifest_kind: &str,
-    abi_version: u32,
-) -> Result<DynStore, String> {
-    load_dyn_store_image(
-        Image::Bytes(bytes),
-        cfg_json,
-        display,
-        manifest_kind,
-        abi_version,
-    )
-}
-
-/// Load a STORE over either door's [`Image`], adapting at the row's payload schema — the one load
-/// [`load_store_from_bytes_at_abi`] runs.
-pub fn load_store_image(
-    image: Image<'_>,
-    cfg_json: &str,
-    display: &str,
-    manifest_kind: &str,
-    abi_version: u32,
-) -> Result<Box<dyn RecordStore>, String> {
-    load_dyn_store_image(image, cfg_json, display, manifest_kind, abi_version)
-        .map(|s| Box::new(s) as _)
-}
-
-/// [`load_store_image`] before the trait object boxes it away.
-fn load_dyn_store_image(
-    image: Image<'_>,
-    cfg_json: &str,
-    display: &str,
-    manifest_kind: &str,
-    abi_version: u32,
-) -> Result<DynStore, String> {
-    let raw = load_image(image, cfg_json, display, abi_kind::STORE, manifest_kind)?;
-    Ok(DynStore::new(raw, abi_version))
 }
 
 /// The platform-native filename for a store plugin built from `crate_name` (e.g. `store_sqlite_plugin`
@@ -2144,13 +1250,6 @@ mod loader_seam_tests;
 #[path = "tests/export_conformance_tests.rs"]
 mod export_conformance_tests;
 
-/// DECISIONS #11 for `kind: store`: the store both-ways proof, LINKED and `dlopen`ed, must hand back
-/// a key carrying a plane scope grant byte-identically — the scope-kind vocabulary must not depend
-/// on which process registered it (1.6.0 SDK-SCOPEKINDS).
-#[cfg(test)]
-#[path = "tests/store_scope_kind_conformance_tests.rs"]
-mod store_scope_kind_conformance_tests;
-
 /// The cold kinds' both-ways harness (DECISIONS #2 rule (1)): one plugin registered through the
 /// linked door and the dropped-in door, its rows and its opened instance compared.
 #[cfg(test)]
@@ -2161,18 +1260,6 @@ mod both_ways;
 #[cfg(test)]
 #[path = "tests/door_symbol_tests.rs"]
 mod door_symbol_tests;
-
-/// `kind: store` through both doors: one row, one store, one fold over every store operation.
-#[cfg(test)]
-#[path = "tests/store_conformance_tests.rs"]
-mod store_conformance_tests;
-
-/// `kind: secret` and `kind: auth` proven by the REAL plugin repos (GetBusbar/busbar-secret-vault,
-/// GetBusbar/busbar-auth-github): their built cdylibs, dlopened from `BUSBAR_PLUGIN_PROOF_DIR` (the removed ci.yml's
-/// `plugin-proofs` job). `#[ignore]`d without that directory.
-#[cfg(test)]
-#[path = "tests/plugin_proof_tests.rs"]
-mod plugin_proof_tests;
 
 /// `kind: auth` through both doors — the auth kind's first both-ways witness (#2, steps (1)-(5)): the
 /// compiled-in twin and the `cdylib`'s `busbar_call` put one wire, and the linked and dropped-in rows
