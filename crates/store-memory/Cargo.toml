@@ -19,10 +19,6 @@ crate-type = ["rlib", "cdylib"]
 # (the compiled-in row holds the same `door`); the dropped-in artifact is built on its own:
 # `cargo build -p busbar-store-memory --release --features dropped-in`.
 dropped-in = []
-# M6: THE LEGACY COLD DOOR (`exports`), the cold store ABI's frozen symbols through
-# `export_store_plugin!`. Kept only as the in-tree subject of the legacy store adapter's tests until
-# M6 deletes the cold ABI; production never loads it.
-cold-dropped-in = []
 
 [dependencies]
 # The record half of the store protocol. `busbar_contract::abi::sdk::store::StoreSlots` declares `record_put`,

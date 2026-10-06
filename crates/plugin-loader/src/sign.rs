@@ -60,14 +60,11 @@ use std::collections::BTreeMap;
 /// cannot (and need not) allowlist a key named `busbar`.
 pub const FIRST_PARTY_PUBLISHER: &str = "busbar";
 
-/// The plugin kinds this binary understands. ONE plugin subsystem: `kind` only selects which C ABI
-/// the cdylib exports and which engine subsystem consumes it; discovery/trust/validation are shared.
-/// `plane` is the SIXTH kind (1.6.0 S4): a protocol plane delivered as a `cdylib`, sharing this exact
-/// discovery/trust/validation pipeline but driven over the HOT-tier `#[repr(C)]` `PlaneDecl` vtable
-/// (`busbar_contract::abi::hot`) rather than the five cold kinds' six-symbol JSON `call` wire. Its
-/// `abi_version` axis is the airlock minor; this crate's own `supported_abi("plane")` gates it.
-/// `transport` is the SEVENTH (#3, OWNER-LOCKED: a kind is swappable, compiled in OR dropped in): the
-/// second HOT kind (#30), driven over the `#[repr(C)]` `TransportDecl` the same way.
+/// The plugin kinds this binary understands. ONE plugin subsystem: `kind` only selects which kind's
+/// table the door answers and which engine subsystem consumes it; discovery/trust/validation are
+/// shared. Each kind's manifest `abi_version` is that kind's one version (`supported_abi`, THE DESIGN
+/// §11.2). `plane` and `transport` images that have not moved to their door still ride the HOT-tier
+/// `#[repr(C)]` decls (`busbar_contract::abi::hot`), whose airlock is checked at load, apart.
 // One line, as it always was: the kind list is one statement, not seven.
 #[rustfmt::skip]
 pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", "plane", "transport"];
@@ -248,7 +245,7 @@ impl Manifest {
 
 /// The declaration shapes a manifest's `declares` section carries, named here so a packer or a
 /// host reaches them beside [`Manifest`].
-pub use busbar_contract::abi::cold::observe::{DiagnosticDecl, SeriesDecl};
+pub use busbar_contract::abi::mechanism::observe::{DiagnosticDecl, SeriesDecl};
 
 /// A manifest's `declares` section — the statements a plugin makes ABOUT ITSELF that the host
 /// grants or refuses at open, never trusts as-is (the export ABI's minor, `EXPORT_ABI_MINOR`).
@@ -256,13 +253,13 @@ pub use busbar_contract::abi::cold::observe::{DiagnosticDecl, SeriesDecl};
 #[serde(deny_unknown_fields, default)]
 pub struct Declares {
     /// The metric series the plugin emits (S1, the first-party metric namespace): granted to a
-    /// first-party plugin only — see [`busbar_contract::abi::cold::observe::SeriesDecl`].
+    /// first-party plugin only — see [`busbar_contract::abi::mechanism::observe::SeriesDecl`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub metrics: Vec<busbar_contract::abi::cold::observe::SeriesDecl>,
+    pub metrics: Vec<busbar_contract::abi::mechanism::observe::SeriesDecl>,
     /// The `BUSBAR-NNNN` diagnostics the plugin raises: registered into the host's catalogue
-    /// for a first-party plugin — see [`busbar_contract::abi::cold::observe::DiagnosticDecl`].
+    /// for a first-party plugin — see [`busbar_contract::abi::mechanism::observe::DiagnosticDecl`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub diagnostics: Vec<busbar_contract::abi::cold::observe::DiagnosticDecl>,
+    pub diagnostics: Vec<busbar_contract::abi::mechanism::observe::DiagnosticDecl>,
     /// The SETTINGS KEYS that name a destination the host opens for the plugin (S4, the
     /// destination handle): the host resolves each against the operator's settings at open, and
     /// the plugin's host ops name the key, never a path.
@@ -282,6 +279,23 @@ pub struct Declares {
     /// and keep their canonical bytes (the field is left off the wire when absent).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contract_abi: Option<ContractAbiRange>,
+    /// The plane's BREAKER FACTS (ARCHITECT Q4): how its members' breaker cells treat a transient
+    /// failure that does not trip them — see [`BreakerDecl`]. Absent, the host's default posture
+    /// holds; left off the wire when absent, so every manifest packed before the field existed
+    /// keeps its canonical bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub breaker: Option<BreakerDecl>,
+}
+
+/// A plane's declared BREAKER FACTS (`declares.breaker`, ARCHITECT Q4): per-plane facts about the
+/// breaker cells of its members, which the host reads and applies to that plane's cells alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BreakerDecl {
+    /// Whether a transient failure BELOW the trip threshold still benches the member's cell for a
+    /// cooldown. `false`: a cell refuses only on a TRIP (the host's trip thresholds), an upstream
+    /// `Retry-After` still honoured.
+    pub bench_below_trip_threshold: bool,
 }
 
 /// An inclusive `min..=max` range of contract-ABI (payload-schema) versions, as a plugin declares it
@@ -332,6 +346,7 @@ impl Declares {
             && self.destinations.is_empty()
             && self.egress.is_default()
             && self.contract_abi.is_none()
+            && self.breaker.is_none()
     }
 }
 
@@ -609,6 +624,56 @@ pub enum RejectKind {
     Tampered,
     /// Validly signed but by a publisher NOT in the allowlist, and `allow_third_party` is off.
     UnknownPublisher,
+    /// Admitted on trust, but NOT first-party, and its Statement declares a connection need in an
+    /// egress class the host grants to a first-party plugin only ([`egress_grant`]).
+    EgressGrant,
+}
+
+/// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: every
+/// class that relaxes the open web's rule — a provider's allow-list and metadata hosts, the
+/// operator infrastructure's private and plaintext targets, a collector's loopback plaintext.
+/// The connector's default class and the open web are any trusted plugin's (ARCHITECT ruling
+/// EGRESS-GRANT 2026-10-03; the cold lane's `declares.egress` grant, on the door's needs).
+pub const FIRST_PARTY_EGRESS: [(u32, &str); 3] = [
+    (
+        busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
+        "provider",
+    ),
+    (
+        busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE,
+        "operator-infrastructure",
+    ),
+    (
+        busbar_contract::abi::host::conn::connector::EGRESS_LOOPBACK_ALLOWED,
+        "loopback-allowed",
+    ),
+];
+
+/// THE EGRESS-CLASS GRANT on a door plugin's needs: `Err` naming the first need of `manifest`'s
+/// stated Statement whose egress class is a first-party grant ([`FIRST_PARTY_EGRESS`]). Asked of a
+/// plugin that is not first-party; a manifest that states no Statement (a cold plugin) declares no
+/// need here.
+///
+/// # Errors
+///
+/// The refusal, naming the plugin and the class.
+pub fn egress_grant(manifest: &Manifest) -> Result<(), String> {
+    let Some(stated) = manifest.stated()? else {
+        return Ok(());
+    };
+    for need in &stated.needs {
+        if let Some((_, class)) = FIRST_PARTY_EGRESS
+            .iter()
+            .find(|(c, _)| *c == need.egress_class)
+        {
+            return Err(format!(
+                "plugin '{}' declares a `{}` need in the `{class}` egress class, which the host \
+                 grants to a first-party plugin only",
+                manifest.name, need.transport
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Trust failure. The posture forbids loading this plugin; the message is safe to surface. `kind` is

@@ -277,31 +277,33 @@ fn manifest(kind: &str) -> Manifest {
             kind,
             "my-transport",
             "my-transport",
-            busbar_contract::abi::ABI_MINOR,
+            busbar_contract::abi::transport::ABI_VERSION,
         )
     }
 }
 
-/// A `kind: transport` manifest passes the structural gate on the airlock-minor axis, floored at the
-/// first minor with the carrier/framer decl; an unknown kind is still refused with the established
-/// prefix.
+/// A `kind: transport` manifest passes the structural gate at the transport kind's one version
+/// (THE DESIGN §11.2, A.9: no range); an older or a newer one is refused, and an unknown kind is
+/// still refused with the established prefix.
 #[test]
-fn a_transport_manifest_is_admitted_on_the_airlock_axis() {
+fn a_transport_manifest_is_admitted_at_the_kinds_one_version() {
     assert_eq!(
         crate::supported_abi("transport"),
-        &[
-            busbar_contract::abi::hot::TRANSPORT_DECL_MINOR,
-            busbar_contract::abi::ABI_MINOR
-        ]
+        &[busbar_contract::abi::transport::ABI_VERSION]
     );
     validate_structure(&manifest("transport"), b"lib", &crate::supported_abi, "")
         .expect("a transport is a kind the loader admits");
-    let mut old = manifest("transport");
-    old.abi_version = busbar_contract::abi::hot::TRANSPORT_DECL_MINOR - 1;
-    assert!(
-        validate_structure(&old, b"lib", &crate::supported_abi, "").is_err(),
-        "a minor with the retired byte-stream decl has no carrier or framer to speak"
-    );
+    for other in [
+        busbar_contract::abi::transport::ABI_VERSION - 1,
+        busbar_contract::abi::transport::ABI_VERSION + 1,
+    ] {
+        let mut m = manifest("transport");
+        m.abi_version = other;
+        assert!(
+            validate_structure(&m, b"lib", &crate::supported_abi, "").is_err(),
+            "a transport at version {other} is refused"
+        );
+    }
     let err = validate_structure(&manifest("gizmo"), b"lib", &crate::supported_abi, "")
         .expect_err("an unknown kind is refused");
     assert!(
