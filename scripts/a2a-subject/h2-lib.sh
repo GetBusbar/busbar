@@ -418,7 +418,7 @@ h2_stop() { :; }
 h2_approve_agent() { return 0; }
 h2_mint() { echo "kid-selftest tok-selftest"; }
 h2_bind() { echo "bound-selftest"; }
-h2_call() { if [ -n "${H2_RATE_CARD_YAML+x}" ]; then echo "200 {}"; else echo "${H2_ST_CALL:-200} {}"; fi; }
+h2_call() { if [ "${H2_RATE_CARD_YAML-unset}" = " " ]; then echo "200 {}"; else echo "${H2_ST_CALL:-200} {}"; fi; }
 h2_usage_field() { _st_next usage "${H2_ST_USAGE:-1}"; }
 h2_put_fee() { echo '{"applied":true}'; }
 h2_admin_usage_total() { echo 80000; }
