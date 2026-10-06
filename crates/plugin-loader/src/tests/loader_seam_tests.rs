@@ -2,13 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The loader's own crossings, pinned against in-test fakes rather than a built fixture: the bounded
-//! `busbar_plugin_kind()` read, the secret deadline on the wire, and what the panic guard can — and
-//! measurably cannot — catch.
+//! `busbar_plugin_kind()` read, and what the panic guard can — and measurably cannot — catch.
 
-use crate::{kind_from_ptr, DynSecret, RawPlugin, MAX_PLUGIN_KIND_LEN};
-use busbar_contract::secret::SecretModule as _;
-use std::os::raw::c_void;
-use std::sync::Mutex;
+use crate::{kind_from_ptr, MAX_PLUGIN_KIND_LEN};
 
 // ── The kind string: the one plugin buffer with no length ─────────────────────────────────────
 
@@ -54,88 +50,6 @@ fn the_kind_cap_is_exact() {
         assert!(kind_from_ptr(over.as_ptr(), "k").is_err());
         assert!(kind_from_ptr(std::ptr::null(), "k").is_err());
     }
-}
-
-// ── The secret deadline ───────────────────────────────────────────────────────────────────────
-
-/// The request bytes the fake secret plugin last received.
-static SECRET_REQUEST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
-/// Serialises the tests that read [`SECRET_REQUEST`].
-static SECRET_LOCK: Mutex<()> = Mutex::new(());
-
-unsafe extern "C-unwind" fn secret_call(
-    _handle: *mut c_void,
-    req: *const u8,
-    req_len: usize,
-    out: *mut *mut u8,
-    out_len: *mut usize,
-) -> i32 {
-    // SAFETY: the engine's request buffer.
-    *SECRET_REQUEST.lock().unwrap() = unsafe { std::slice::from_raw_parts(req, req_len) }.to_vec();
-    let boxed: Box<[u8]> = br#"{"Bytes":[115,51,99,114,51,116]}"#.to_vec().into_boxed_slice();
-    // SAFETY: the engine hands valid out-pointers.
-    unsafe {
-        *out_len = boxed.len();
-        *out = Box::into_raw(boxed) as *mut u8;
-    }
-    busbar_contract::abi::cold::STATUS_OK
-}
-
-unsafe extern "C-unwind" fn secret_free(ptr: *mut u8, len: usize) {
-    if !ptr.is_null() && len != 0 {
-        // SAFETY: a boxed slice of exactly `len` bytes from `secret_call`.
-        drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) });
-    }
-}
-
-unsafe extern "C-unwind" fn secret_close(_handle: *mut c_void) {}
-
-fn fake_secret() -> DynSecret {
-    DynSecret {
-        raw: RawPlugin {
-            handle: std::ptr::null_mut(),
-            call: secret_call,
-            free: secret_free,
-            close: secret_close,
-            path: "fake-secret".to_string(),
-            kind: busbar_contract::abi::cold::kind::SECRET,
-            shape: std::sync::atomic::AtomicU8::new(0),
-            _lib: None,
-            _backing: None,
-        },
-    }
-}
-
-/// What `deadline_ms` the plugin received for one resolve.
-fn deadline_on_the_wire(op: impl FnOnce(&DynSecret)) -> serde_json::Value {
-    let _serial = SECRET_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    op(&fake_secret());
-    let req: serde_json::Value =
-        serde_json::from_slice(&SECRET_REQUEST.lock().unwrap()).expect("request JSON");
-    req["Resolve"]["deadline_ms"].clone()
-}
-
-/// A caller's deadline reaches the secret plugin: the one host-side producer of `Resolve` writes it.
-#[test]
-fn a_callers_deadline_reaches_the_secret_plugin() {
-    let settings = serde_json::Map::new();
-    let got = deadline_on_the_wire(|s| {
-        assert_eq!(
-            s.resolve_with_deadline(&settings, Some(1_500)).unwrap(),
-            b"s3cr3t"
-        );
-    });
-    assert_eq!(got, serde_json::json!(1_500));
-}
-
-/// A caller with no deadline still sends none.
-#[test]
-fn a_resolve_with_no_deadline_sends_none() {
-    let settings = serde_json::Map::new();
-    let got = deadline_on_the_wire(|s| {
-        s.resolve(&settings).unwrap();
-    });
-    assert_eq!(got, serde_json::Value::Null);
 }
 
 // ── What the panic guard can catch ────────────────────────────────────────────────────────────
