@@ -513,8 +513,10 @@ fn the_shipped_transport_stack_composes() {
     // The transport whose `new()` yields something that refuses every connection is the one that
     // must be built through `over`, and the rows say it was. `grpc` is a door that frames the
     // host's socket: it is built over nothing.
+    // `ws` is a framer door too (transport-ws#13, ARCHITECT Q8): it states an empty composes_over
+    // and takes the upgraded connection by adopt, so it is built over nothing.
     if ws_linked() {
-        assert_eq!(composed_over("ws"), Some("http"));
+        assert_eq!(composed_over("ws"), None);
     }
     assert_eq!(composed_over("grpc"), None);
     assert_eq!(composed_over("sse"), Some("http"));
