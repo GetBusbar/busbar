@@ -501,6 +501,10 @@ struct Relay {
     asked: Option<(Value, u32, crate::ask::ChildLeg)>,
     /// The handle number that opening was issued under.
     work_slot: Option<u32>,
+    /// When the round's request was handed to the kernel's walk, on the kernel's monotonic clock
+    /// (ms): what tells a walk that spent the server's `timeout:` on a dispatched call from one
+    /// that dispatched nothing ([`timed_out`]).
+    dispatched_ms: Option<u64>,
 }
 
 /// The most progress frames one request relays: a progress stream is untrusted upstream input,
@@ -550,6 +554,46 @@ fn clock_s(services: Option<Services>, ticket: Ticket, unit: &mut CallUnit) -> O
         .clock_now(handle)
         .ok()
         .map(|r| r.wall_ns / 1_000_000_000)
+}
+
+/// The kernel's monotonic clock (`clock.now`), whole milliseconds, on a fresh handle of the unit's
+/// ticket; `None` when the host serves no clock.
+fn mono_ms(services: Option<Services>, ticket: Ticket, unit: &mut CallUnit) -> Option<u64> {
+    let services = services?;
+    let handle = CompletionHandle {
+        ticket,
+        seq: unit.issued,
+        _reserved: 0,
+    };
+    unit.issued += 1;
+    services
+        .clock_now(handle)
+        .ok()
+        .map(|r| r.mono_ns / 1_000_000)
+}
+
+/// WHETHER THE WALK SPENT THE SERVER'S `timeout:` ON A DISPATCHED CALL (ARCHITECT ruling on the
+/// timed-out answer): the unit handed its relayed request to the walk, and at least the server's
+/// own attempt bound has passed since — the member was dialled and did not answer within it. A walk
+/// that refused at its first pick dispatched nothing (no request was handed over), and a dial that
+/// failed fails at once, well inside the bound: both keep the not-dispatched words.
+fn timed_out(services: Option<Services>, ticket: Ticket, unit: &mut CallUnit) -> bool {
+    let Some((sent, server)) = unit
+        .relay
+        .as_ref()
+        .and_then(|r| Some((r.dispatched_ms?, r.admitted.entry.server.clone())))
+    else {
+        return false;
+    };
+    let Some(bound) = unit
+        .held
+        .as_ref()
+        .and_then(|h| h.section.servers.get(&server))
+        .map(crate::tools_config::McpServerDefCfg::timeout_ms)
+    else {
+        return false;
+    };
+    mono_ms(services, ticket, unit).is_some_and(|now| now.saturating_sub(sent) >= bound)
 }
 
 /// THE CALL LOG RECORD of one call, as it is written to the host's record seam: the call kind,
@@ -1668,6 +1712,7 @@ fn answer_body(
                         exchange_scope(services, ticket, unit, &held, &member, &relay.admitted);
                     scoped(&mut outbound.fields, relay.scope.as_deref());
                 }
+                relay.dispatched_ms = mono_ms(services, ticket, unit);
                 unit.pending = Some(Pending::far(outbound).laned(&relay.admitted.entry.namespaced));
                 unit.relay = Some(relay);
                 Step::Write
@@ -2119,6 +2164,7 @@ impl Relay {
             scope: None,
             asked: None,
             work_slot: None,
+            dispatched_ms: None,
         }
     }
 }
@@ -2727,15 +2773,33 @@ slot!(
                 // engine's `503`, `-32030`, its sentence and data, and the wait the kernel's cell
                 // knows as `Retry-After`.
                 retry_after = Some(given.retry_after_s);
+                // The same `-32030` either way; only the account of what happened differs: a call
+                // that WAS dispatched and spent the server's `timeout:` says so, and "did not
+                // dispatch" stays the words of the paths that dispatched nothing.
+                let expired = instance.get().is_some_and(|plane| {
+                    plane.units.with(&given.unit, |unit| {
+                        unit.is_some_and(|unit| timed_out(plane.services, given.head.ticket, unit))
+                    })
+                });
+                let message = if expired {
+                    format!(
+                        "MCP server `{server}` is unavailable: it did not answer this call within \
+                         the server's timeout; busbar dispatched it and stopped waiting. Retry after \
+                         {}s.",
+                        given.retry_after_s
+                    )
+                } else {
+                    format!(
+                        "MCP server `{server}` is unavailable: its circuit breaker is open after \
+                         repeated failures; busbar did not dispatch this call. Retry after {}s.",
+                        given.retry_after_s
+                    )
+                };
                 let refusal = crate::tool_arrival::Refusal {
                     status: STATUS_UNAVAILABLE_UPSTREAM,
                     id: unit_id.clone(),
                     code: crate::codec::CODE_UPSTREAM_UNAVAILABLE,
-                    message: format!(
-                        "MCP server `{server}` is unavailable: its circuit breaker is open after \
-                         repeated failures; busbar did not dispatch this call. Retry after {}s.",
-                        given.retry_after_s
-                    ),
+                    message,
                     data: Some(serde_json::json!({
                         "reason": "upstream_unavailable",
                         "server": server,

@@ -993,9 +993,98 @@ mod tools_door {
             answer["id"], 41,
             "the caller's own call is answered: {status} {answer}"
         );
+        // ARCHITECT ruling on the answer: the `-32030 upstream_unavailable` shape is kept, and its
+        // account says the call WAS dispatched and the server's timeout ran out on it.
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{answer}");
+        assert_eq!(answer["error"]["code"], -32030, "{answer}");
+        assert_eq!(
+            answer["error"]["data"]["reason"], "upstream_unavailable",
+            "{answer}"
+        );
+        let message = answer["error"]["message"].as_str().unwrap_or_default();
         assert!(
-            answer["result"]["isError"] == true || answer["error"].is_object(),
-            "the stall is the call's failure: {status} {answer}"
+            message.contains("did not answer this call within the server's timeout")
+                && !message.contains("did not dispatch"),
+            "the timed-out words, never the not-dispatched ones: {message}"
+        );
+        assert!(rig.all_ended(), "every unit ended");
+    }
+
+    /// RED's control (ARCHITECT ruling on the timed-out answer): a dial that FAILS — the server
+    /// answered its tool list, then stopped listening — keeps the not-dispatched words; only a
+    /// dispatched call whose timeout ran out says it was dispatched.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_dial_keeps_the_not_dispatched_words() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-dial-failed";
+        let _published = Published(instance);
+        // One connection served (the verification's tool list), then the port is closed.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let port = listener.local_addr().expect("its address").port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            drop(listener);
+            let mut got = Vec::new();
+            let mut buf = vec![0u8; 16 * 1024];
+            loop {
+                let Ok(n) = socket.read(&mut buf).await else {
+                    return;
+                };
+                if n == 0 {
+                    return;
+                }
+                got.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&got).to_string();
+                if let Some(at) = text.find("\r\n\r\n") {
+                    let length = text[..at]
+                        .lines()
+                        .find_map(|l| {
+                            let (name, value) = l.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if got.len() >= at + 4 + length {
+                        break;
+                    }
+                }
+            }
+            let list =
+                serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}})
+                    .to_string();
+            let reply = format!(
+                "HTTP/1.1 200 X\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+                 connection: close\r\n\r\n{list}",
+                list.len()
+            );
+            let _ = socket.write_all(reply.as_bytes()).await;
+            let _ = socket.shutdown().await;
+        });
+        let rig = rig_tools(
+            instance,
+            port,
+            registration("gone", port, "  timeout: 2s\n"),
+            &|app| app,
+        );
+
+        let (status, answer) = tokio::time::timeout(
+            Duration::from_secs(20),
+            call(&rig, &rig.token, "gone_read_file", serde_json::json!({})),
+        )
+        .await
+        .expect("answered");
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{answer}");
+        assert_eq!(answer["error"]["code"], -32030, "{answer}");
+        let message = answer["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("did not dispatch this call") && !message.contains("timeout"),
+            "a failed dial keeps the not-dispatched words: {message}"
         );
         assert!(rig.all_ended(), "every unit ended");
     }
