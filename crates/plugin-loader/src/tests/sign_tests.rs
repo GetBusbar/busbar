@@ -1263,6 +1263,78 @@ fn the_declared_contract_abi_range_is_signed_and_absent_by_default() {
     );
 }
 
+/// THE BREAKER FACT A PLANE DECLARES (`declares.breaker`, ARCHITECT Q4) is spelled
+/// `{"breaker": {"bench_below_trip_threshold": ..}}` in a declares file, reads back as stated and is
+/// signed like every other `declares` statement. A manifest that states none carries no `breaker`
+/// key at all: its wire bytes and its signed bytes are exactly the ones it had before the field
+/// existed, so every manifest already packed keeps its signature.
+#[test]
+fn a_declared_breaker_fact_round_trips_and_a_manifest_without_one_keeps_its_bytes() {
+    // ABSENT: no `breaker` key on the wire or under the signature, and the bytes survive a read.
+    let key = test_key(12);
+    let mut quiet = manifest("busbar-plane-quiet", "quiet", FIRST_PARTY_PUBLISHER);
+    quiet.kind = "plane".to_string();
+    quiet.declares.contract_abi = Some(ContractAbiRange { min: 1, max: 2 });
+    let quiet = sign(&key, quiet, b"door");
+    let wire = serde_json::to_vec(&quiet).expect("encodes");
+    assert!(
+        !String::from_utf8_lossy(&wire).contains("breaker"),
+        "an absent fact is left off the wire"
+    );
+    assert!(!String::from_utf8_lossy(&canonical_manifest_bytes(&quiet)).contains("breaker"));
+    let read: Manifest = serde_json::from_slice(&wire).expect("reads");
+    assert_eq!(read.declares.breaker, None);
+    assert_eq!(
+        serde_json::to_vec(&read).expect("encodes"),
+        wire,
+        "a manifest that states no breaker fact keeps its exact bytes"
+    );
+    assert_eq!(
+        canonical_manifest_bytes(&read),
+        canonical_manifest_bytes(&quiet),
+        "and the bytes its signature covers"
+    );
+    assert!(Declares::default().is_empty());
+
+    // STATED: it reads as stated, round-trips, and refuses a word it does not know.
+    let stated = r#"{"breaker":{"bench_below_trip_threshold":false}}"#;
+    let d: Declares = serde_json::from_str(stated).expect("parses");
+    assert_eq!(
+        d.breaker,
+        Some(BreakerDecl {
+            bench_below_trip_threshold: false
+        })
+    );
+    assert!(!d.is_empty(), "a stated fact is a declaration");
+    assert_eq!(serde_json::to_string(&d).expect("encodes"), stated);
+    assert!(serde_json::from_str::<Declares>(
+        r#"{"breaker":{"bench_below_trip_threshold":false,"x":1}}"#
+    )
+    .is_err());
+    assert!(serde_json::from_str::<Declares>(r#"{"breaker":{}}"#).is_err());
+
+    let mut m = quiet.clone();
+    m.declares.breaker = d.breaker;
+    let m = sign(&key, m, b"door");
+    let back: Manifest =
+        serde_json::from_slice(&serde_json::to_vec(&m).expect("encodes")).expect("reads");
+    assert_eq!(back, m, "a stated fact round-trips whole");
+    let mut flipped = m.clone();
+    flipped.declares.breaker = Some(BreakerDecl {
+        bench_below_trip_threshold: true,
+    });
+    assert_ne!(
+        canonical_manifest_bytes(&m),
+        canonical_manifest_bytes(&flipped),
+        "the fact is covered by the signature"
+    );
+    assert_ne!(
+        canonical_manifest_bytes(&m),
+        canonical_manifest_bytes(&quiet),
+        "stating it changes the signed bytes"
+    );
+}
+
 /// THE STATEMENT A MANIFEST CARRIES is signed: a tampered rendering fails the signature, a
 /// rendering that is not one whole Statement is a structural refusal, and a manifest with none keeps
 /// the canonical bytes (and so the signature) it had before the field existed.
