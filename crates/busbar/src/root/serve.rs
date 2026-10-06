@@ -2090,11 +2090,9 @@ impl DataRoutes {
             .claims
             .get(claim as usize)
             .map(|c| c.carrier.clone());
-        // The root's own line carrier (a process's stdin/stdout, [`lines`]) frames its lines
-        // itself: each arrives already one unit, never a stream for a framer to frame.
-        if let Some((door, carrier)) = carrier.filter(|c| !is_line_carrier(c)).and_then(|c| {
-            serve_framed::stream_framer(&c, DATA_CARRIER, |s| self.framer_for(s)).map(|d| (d, c))
-        }) {
+        if let Some((door, carrier)) =
+            carrier.and_then(|c| framed_by(&c, |s| self.framer_for(s)).map(|d| (d, c)))
+        {
             let head: Vec<(String, Vec<u8>)> = arrival
                 .fields
                 .iter()
@@ -2839,9 +2837,19 @@ impl http_body::Body for ReplyBody {
     }
 }
 
-/// Whether `carrier` is the root's line carrier ([`lines::LINE_CARRIER`]).
-fn is_line_carrier(carrier: &str) -> bool {
-    carrier == lines::LINE_CARRIER
+/// THE FRAMER THAT FRAMES A CLAIM'S STREAM, when another framer than the data listener's own
+/// answers its carrier (ARCHITECT 4l). The root's own line carrier (a process's stdin/stdout,
+/// [`lines`]) frames its lines itself: each arrives already one unit, so it is never handed to a
+/// framer, even one that claims its carrier's name (the stdio transport's). Handing it over stalled
+/// every line served on the carrier.
+fn framed_by(
+    carrier: &str,
+    framer_for: impl Fn(&str) -> Option<Arc<dyn busbar_core_connector::framer::FramerDoor>>,
+) -> Option<Arc<dyn busbar_core_connector::framer::FramerDoor>> {
+    if carrier == lines::LINE_CARRIER {
+        return None;
+    }
+    serve_framed::stream_framer(carrier, DATA_CARRIER, framer_for)
 }
 
 /// THE LINE CARRIER: a process's own stdin/stdout, one carrier session, one unit per line (SEAM-S1).

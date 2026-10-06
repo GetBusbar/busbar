@@ -2262,7 +2262,10 @@ pub(crate) mod tool_door {
         let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
         assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&body));
         let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
-        assert_eq!(body["result"]["isError"], true, "an upstream failure: {body}");
+        assert_eq!(
+            body["result"]["isError"], true,
+            "an upstream failure: {body}"
+        );
         assert!(rig.all_ended(), "the refused unit ended");
     }
 
