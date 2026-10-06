@@ -289,6 +289,8 @@ fn a_ready_value_outside_the_service_range_is_fault() {
         head: head(op::TRUST_SIGHT, TICKET, 0),
         counterparty: none(),
         catalogue_hash: none(),
+        outcome: TRUST_REACHED,
+        _outcome_reserved: 0,
     };
     o.value = TRUST_QUARANTINED + 1;
     assert_eq!(
