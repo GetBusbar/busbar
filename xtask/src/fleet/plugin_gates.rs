@@ -660,30 +660,6 @@ fn const_value(src: &str, name: &str) -> Option<u64> {
     None
 }
 
-/// The `&[...]` body of the `supported_abi` arm keyed `key =>`, if any. A key followed by
-/// anything but an arrow (e.g. `kind::STORE,` in another list) is skipped.
-fn arm_body(reg: &str, key: &str) -> Option<String> {
-    let mut from = 0;
-    while let Some(off) = reg[from..].find(key) {
-        let at = from + off;
-        from = at + 1;
-        while !reg.is_char_boundary(from) {
-            from += 1;
-        }
-        let r = reg[at + key.len()..].trim_start();
-        let Some(r) = r.strip_prefix("=>") else {
-            continue;
-        };
-        let Some(r) = r.trim_start().strip_prefix("&[") else {
-            continue;
-        };
-        if let Some(end) = r.find(']') {
-            return Some(r[..end].to_string());
-        }
-    }
-    None
-}
-
 /// The current contract-ABI version of `kind` in the busbar tree at `root`: the top of the loader's
 /// `supported_abi(kind)`, resolved through busbar-contract's constants.
 pub fn kind_abi(root: &Path, kind: &str) -> Res<u64> {
@@ -713,11 +689,18 @@ pub fn kind_abi(root: &Path, kind: &str) -> Res<u64> {
         }
     }
     let reg = reg.ok_or("no plugin-loader registry.rs in the busbar tree")?;
-    // An arm is keyed by the kind's string (`"store" =>`) or, since the loader keys its arms by the
-    // kind constants, by `kind::STORE =>`.
-    let quoted = format!("\"{kind}\"");
-    let constant = format!("kind::{}", kind.to_ascii_uppercase());
-    let body = arm_body(&reg, &quoted).or_else(|| arm_body(&reg, &constant));
+    // An arm is keyed by the kind's word (`"export" =>`) or by its constant (`kind::EXPORT =>`).
+    let words = [
+        format!("\"{kind}\""),
+        format!("kind::{}", kind.to_ascii_uppercase()),
+    ];
+    let mut body = None;
+    for key in &words {
+        body = arm(&reg, key);
+        if body.is_some() {
+            break;
+        }
+    }
     let body = body.ok_or_else(|| format!("supported_abi has no arm for kind `{kind}`"))?;
     let top = body
         .split(',')
@@ -749,6 +732,29 @@ pub fn kind_abi(root: &Path, kind: &str) -> Res<u64> {
         }
     }
     Err(format!("cannot resolve `{top}` in busbar-contract"))
+}
+
+/// The body of the `supported_abi` arm `key =>` in `reg`: what its `&[...]` lists.
+fn arm(reg: &str, key: &str) -> Option<String> {
+    let mut from = 0;
+    while let Some(off) = reg[from..].find(key) {
+        let at = from + off;
+        from = at + 1;
+        while !reg.is_char_boundary(from) {
+            from += 1;
+        }
+        let r = reg[at + key.len()..].trim_start();
+        let Some(r) = r.strip_prefix("=>") else {
+            continue;
+        };
+        let Some(r) = r.trim_start().strip_prefix("&[") else {
+            continue;
+        };
+        if let Some(end) = r.find(']') {
+            return Some(r[..end].to_string());
+        }
+    }
+    None
 }
 
 /// Python `got == {"min": want, "max": want}` (`True == 1`, `3.0 == 3`).
@@ -1604,6 +1610,29 @@ mod tests {
     }
 
     #[test]
+    fn declares_reads_an_arm_keyed_by_the_kind_constant() {
+        let tmp = TempDir::new();
+        let d = &tmp.0;
+        std::fs::create_dir_all(d.join("crates/plugin-loader/src")).unwrap();
+        std::fs::create_dir_all(d.join("crates/busbar-contract/src/abi/export")).unwrap();
+        std::fs::write(
+            d.join("crates/plugin-loader/src/registry.rs"),
+            "kind::EXPORT => &[busbar_contract::abi::export::ABI_VERSION],",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("crates/busbar-contract/src/abi/export/mod.rs"),
+            "pub const ABI_VERSION: u32 = 4;",
+        )
+        .unwrap();
+        assert_eq!(kind_abi(d, "export"), Ok(4));
+        assert!(
+            kind_abi(d, "store").is_err(),
+            "no arm for a kind the registry does not key"
+        );
+    }
+
+    #[test]
     fn declares_repr_forms() {
         let tmp = TempDir::new();
         let d = &tmp.0;
@@ -1688,11 +1717,6 @@ mod tests {
             let v = kind_abi(&root, kind).unwrap_or_else(|e| panic!("{kind}: {e}"));
             assert!(v >= 1, "{kind}: {v}");
         }
-        assert_eq!(
-            arm_body("kind::STORE => &[a::B],", "kind::STORE").as_deref(),
-            Some("a::B")
-        );
-        assert_eq!(arm_body("[kind::STORE, kind::AUTH]", "kind::STORE"), None);
     }
 
     #[test]
