@@ -22,6 +22,11 @@
 //!   short answer and is answered until the plane re-sights the counterparty.
 //! * **Durability.** Demotion and clearing are effects the caller writes through the durable
 //!   demotion record; [`TrustBook::admit`] replays the demotions it was handed.
+//! * **Approve.** The kernel's Approve step judges the trust facts a plane STATES for a unit
+//!   ([`TrustFacts`]: a counterparty, and an item there at the digest it is offered at) by
+//!   [`TrustBook::judge`]; a plane judges none (ARCHITECT 2026-10-06: trust is the kernel's Approve
+//!   step). The items a counterparty is approved for, each at a digest, are set by
+//!   [`TrustBook::approve`], which adopts exactly the set it is handed; a pin change clears them.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -69,6 +74,39 @@ struct Subject {
     quarantined: bool,
     ledger: Ledger,
     due: bool,
+    /// The items approved at this counterparty, each at the digest it was approved at.
+    approved: BTreeMap<String, String>,
+    /// Each item's last SIGHTING: the digest the plane's live re-fetch reported it offered at.
+    items: BTreeMap<String, String>,
+}
+
+/// THE TRUST FACTS a plane states for one unit, as the kernel's Approve reads them: neutral words
+/// only, opaque to the kernel beyond equality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrustFacts<'a> {
+    /// The counterparty the unit rests on: a name among the instance's declared trust entries.
+    pub counterparty: &'a str,
+    /// The item the unit uses there; `None` = the counterparty as a whole.
+    pub item: Option<&'a str>,
+    /// The digest the item is offered at now; `None` = none observed.
+    pub digest: Option<&'a str>,
+}
+
+/// Why the kernel's Approve does not trust a unit's stated facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Distrust {
+    /// The instance declares no such counterparty (or was never admitted).
+    Unknown,
+    /// The counterparty was never sighted: nothing is pinned to judge by.
+    Unsighted,
+    /// The counterparty is quarantined: its last sighting drifted from its pin.
+    Quarantined,
+    /// The item was never approved at this counterparty.
+    NotApproved,
+    /// The item is offered at another digest than the one approved (or at none).
+    Changed,
+    /// The item was never sighted at this counterparty: an unknown item.
+    UnknownItem,
 }
 
 impl Subject {
@@ -211,6 +249,105 @@ impl TrustBook {
             .as_ref()
             .filter(|p| p.root)
             .and_then(|p| p.key.clone()))
+    }
+
+    /// APPROVE `counterparty` of `instance` for exactly `items`, each at its digest: the set
+    /// handed REPLACES the approved set (an item no longer handed is no longer approved).
+    ///
+    /// # Errors
+    ///
+    /// [`Unjudged`] for an instance never admitted or a counterparty it does not declare.
+    pub fn approve(
+        &self,
+        instance: &str,
+        counterparty: &str,
+        items: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<(), Unjudged> {
+        let mut map = self.lock();
+        let book = map.get_mut(instance).ok_or(Unjudged::UnknownInstance)?;
+        let entry = book
+            .entries
+            .get(counterparty)
+            .ok_or(Unjudged::UnknownCounterparty)?;
+        let s = book
+            .subjects
+            .entry(counterparty.to_string())
+            .or_insert_with(|| Subject::declared(entry));
+        s.approved = items.into_iter().collect();
+        Ok(())
+    }
+
+    /// Record the digest one ITEM of `counterparty` is offered at now, from the plane's live
+    /// re-fetch: the per-item sighting the kernel judges drift by. [`Sight::New`] the first,
+    /// [`Sight::Same`] the last one's digest, [`Sight::Drifted`] another, [`Sight::Quarantined`]
+    /// when the counterparty is (the sighting is still recorded).
+    ///
+    /// # Errors
+    ///
+    /// [`Unjudged`] for an instance never admitted or a counterparty it does not declare.
+    pub fn sight_item(
+        &self,
+        instance: &str,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Result<Sight, Unjudged> {
+        let mut map = self.lock();
+        let book = map.get_mut(instance).ok_or(Unjudged::UnknownInstance)?;
+        let entry = book
+            .entries
+            .get(counterparty)
+            .ok_or(Unjudged::UnknownCounterparty)?;
+        let s = book
+            .subjects
+            .entry(counterparty.to_string())
+            .or_insert_with(|| Subject::declared(entry));
+        let before = s.items.insert(item.to_string(), digest.to_string());
+        Ok(if s.quarantined {
+            Sight::Quarantined
+        } else {
+            match before {
+                None => Sight::New,
+                Some(d) if d == digest => Sight::Same,
+                Some(_) => Sight::Drifted,
+            }
+        })
+    }
+
+    /// THE KERNEL'S APPROVE over the trust facts a plane stated for a unit of `instance`: the
+    /// counterparty is declared, sighted (pinned) and not quarantined, and a named item is
+    /// approved there at exactly the digest it is offered at.
+    ///
+    /// # Errors
+    ///
+    /// The [`Distrust`] that refuses the unit.
+    pub fn judge(&self, instance: &str, facts: &TrustFacts<'_>) -> Result<(), Distrust> {
+        let map = self.lock();
+        let book = map.get(instance).ok_or(Distrust::Unknown)?;
+        if !book.entries.contains_key(facts.counterparty) {
+            return Err(Distrust::Unknown);
+        }
+        let s = book.subjects.get(facts.counterparty);
+        if s.is_some_and(|s| s.quarantined) {
+            return Err(Distrust::Quarantined);
+        }
+        let s = s
+            .filter(|s| s.pinned.is_some())
+            .ok_or(Distrust::Unsighted)?;
+        let Some(item) = facts.item else {
+            return Ok(());
+        };
+        let offered = facts
+            .digest
+            .or_else(|| s.items.get(item).map(String::as_str));
+        match s.approved.get(item) {
+            None if facts.digest.is_none() && !s.items.contains_key(item) => {
+                Err(Distrust::UnknownItem)
+            }
+            None => Err(Distrust::NotApproved),
+            Some(at) if Some(at.as_str()) == offered => Ok(()),
+            Some(_) => Err(Distrust::Changed),
+        }
     }
 
     /// The kernel tick: mark every counterparty whose declared cadence says it is due at `now_ms`.

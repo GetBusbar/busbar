@@ -14,7 +14,7 @@ use crate::abi::host::conn::connector::{
 };
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
-use crate::abi::mechanism::call::{AbiStr, Blob};
+use crate::abi::mechanism::call::{AbiStr, Blob, MAX_TEXT};
 use crate::abi::mechanism::check::{check_needs, fault};
 use crate::abi::mechanism::door::{Section, SECTION_DECLARING, SECTION_REQUIRED};
 use crate::abi::plane::*;
@@ -1616,6 +1616,40 @@ fn a_verdict_is_known() {
     );
 }
 
+/// THE BREAKER FAULT READING (ARCHITECT 2026-10-05): one vocabulary with the transport's
+/// (`FAULT_*`), separate from the verdict. RED arms: past `FAULT_HARD`, on an answer that is not
+/// READY, and its padding not zero.
+#[test]
+fn a_fault_reading_is_the_transports_vocabulary_on_a_ready_answer() {
+    use crate::abi::transport::{FAULT_CALLER, FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT};
+    let mut o: OnPieceOut = z();
+    for reading in [FAULT_NONE, FAULT_CALLER, FAULT_TRANSIENT, FAULT_HARD] {
+        o.fault = reading;
+        assert_eq!(piece(&o, &[], &[], &[]), Ok(()), "{reading}");
+    }
+    // Separate from the verdict: a retried answer that is the caller's own fault.
+    o.verdict = VERDICT_RETRY;
+    o.fault = FAULT_CALLER;
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    o.verdict = 0;
+    o.fault = FAULT_HARD + 1;
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::UnknownCode, "on_piece.fault")
+    );
+    o.fault = FAULT_TRANSIENT;
+    assert_eq!(
+        check_on_piece(Pending, &o, (&[], &[], &[]), &caps(), &bounds()),
+        f(Rule::Contradiction, "on_piece.fault_not_ready")
+    );
+    o.fault = FAULT_NONE;
+    o._fault_reserved = [0, 1, 0];
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.fault_reserved")
+    );
+}
+
 #[test]
 fn a_verdict_rides_only_a_ready_answer() {
     let mut o: OnPieceOut = z();
@@ -2179,6 +2213,7 @@ const PINNED: &[(u32, RefusalCode, &str)] = &[
     (39, RefusalCode::Superseded, "superseded"),
     (40, RefusalCode::ClientGone, "client_gone"),
     (41, RefusalCode::DeadlineExceeded, "deadline_exceeded"),
+    (42, RefusalCode::Untrusted, "untrusted"),
 ];
 
 #[test]
@@ -2702,7 +2737,14 @@ fn a_plane_naming_a_kernel_money_verdict_is_malformed_not_the_verdict() {
 /// contract does not define is FAULT, and an answer that admits nothing states none.
 #[test]
 fn an_arrivals_route_flags_are_once_and_session() {
-    for flags in [ROUTE_ONCE, ROUTE_SESSION, ROUTE_ONCE | ROUTE_SESSION] {
+    for flags in [
+        ROUTE_ONCE,
+        ROUTE_SESSION,
+        ROUTE_STREAM,
+        ROUTE_ONCE | ROUTE_SESSION,
+        ROUTE_ONCE | ROUTE_STREAM,
+        ROUTE_ONCE | ROUTE_SESSION | ROUTE_STREAM,
+    ] {
         let mut o: ArriveOut = z();
         o.route = ROUTE_LOCAL;
         o.route_flags = flags;
@@ -2714,7 +2756,7 @@ fn an_arrivals_route_flags_are_once_and_session() {
     }
     let mut o: ArriveOut = z();
     o.route = ROUTE_LOCAL;
-    o.route_flags = ROUTE_SESSION << 1;
+    o.route_flags = ROUTE_STREAM << 1;
     assert_eq!(
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::UnknownCode, "arrive.route_flags")
@@ -2727,6 +2769,134 @@ fn an_arrivals_route_flags_are_once_and_session() {
         check_arrive(Refused, &o, &[], 4, &bounds()),
         f(Rule::Contradiction, "arrive.pool"),
         "a refused arrival opens no session"
+    );
+}
+
+/// THE TRUST FACTS (ARCHITECT 2026-10-06, the kernel's Approve): a READY arrival may state a
+/// counterparty, a capability there and the digest it is offered at, each a bounded text. RED arms:
+/// a capability with no counterparty, a digest with no capability, a fact counted with no bytes, a
+/// fact past the text bound, and any fact on an answer that admits nothing.
+#[test]
+fn an_arrivals_trust_facts_are_bounded_ordered_and_an_admitted_units_own() {
+    let s = |b: &'static [u8]| AbiStr {
+        ptr: b.as_ptr(),
+        len: b.len(),
+    };
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_LOCAL;
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "none");
+    o.trust_counterparty = s(b"peer-a");
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        Ok(()),
+        "a counterparty"
+    );
+    o.trust_item = s(b"cap-x");
+    o.trust_digest = s(b"d1");
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        Ok(()),
+        "all three"
+    );
+
+    // RED: a digest with no capability; a capability with no counterparty.
+    o.trust_item = z();
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.trust_digest")
+    );
+    o.trust_digest = z();
+    o.trust_item = s(b"cap-x");
+    o.trust_counterparty = z();
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.trust_item")
+    );
+    // RED: counted with no bytes; past the text bound.
+    o.trust_item = z();
+    o.trust_counterparty = AbiStr {
+        ptr: std::ptr::null(),
+        len: 2,
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::NullWithCount, "arrive.trust_counterparty")
+    );
+    let long = vec![b'p'; MAX_TEXT + 1];
+    o.trust_counterparty = AbiStr {
+        ptr: long.as_ptr(),
+        len: long.len(),
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::OverMax, "arrive.trust_counterparty")
+    );
+    // RED: an answer that admits nothing states no trust fact.
+    let mut o: ArriveOut = z();
+    o.refusal = 3;
+    o.refusal_status = 404;
+    o.trust_counterparty = s(b"peer-a");
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.trust")
+    );
+}
+
+/// THE STICKY-ROUTING KEY (ARCHITECT Q1 ArriveOut, 2026-10-05): a READY arrival may state an
+/// opaque key, bounded like every plane text; a key counted with no bytes is FAULT, and an answer
+/// that admits nothing states none (RED arms).
+#[test]
+fn an_arrivals_affinity_is_an_admitted_units_own_bounded_key() {
+    let key = b"session-7";
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_LOCAL;
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "none");
+    o.affinity = AbiStr {
+        ptr: key.as_ptr(),
+        len: key.len(),
+    };
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "a key");
+    o.affinity = AbiStr {
+        ptr: std::ptr::null(),
+        len: 3,
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::NullWithCount, "arrive.affinity")
+    );
+    let long = vec![b'k'; MAX_TEXT + 1];
+    o.affinity = AbiStr {
+        ptr: long.as_ptr(),
+        len: long.len(),
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::OverMax, "arrive.affinity")
+    );
+    for outcome in [Pending, Failed] {
+        let mut o: ArriveOut = z();
+        o.units_needed = u32::from(outcome == Failed);
+        o.affinity = AbiStr {
+            ptr: key.as_ptr(),
+            len: key.len(),
+        };
+        assert_eq!(
+            check_arrive(outcome, &o, &[], 0, &bounds()),
+            f(Rule::Contradiction, "arrive.affinity"),
+            "{outcome:?}"
+        );
+    }
+    let mut o: ArriveOut = z();
+    o.refusal = 3;
+    o.refusal_status = 404;
+    o.affinity = AbiStr {
+        ptr: key.as_ptr(),
+        len: key.len(),
+    };
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.affinity"),
+        "a refused arrival routes nowhere"
     );
 }
 

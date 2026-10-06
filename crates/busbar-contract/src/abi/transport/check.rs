@@ -13,8 +13,8 @@
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{
-    AcceptOut, ArrivalOut, Claim, ConnFacts, FramePiece, FrameSpan, FramerOut, HeadSlots, IoOut,
-    ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail, CANCEL_COMPLETED,
+    AcceptOut, ArrivalOut, Claim, ConnFacts, FinishIn, FramePiece, FrameSpan, FramerOut, HeadSlots,
+    IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail, CANCEL_COMPLETED,
     CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH, FRAMING_DATAGRAM,
     FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
     PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, ROLE_CARRIER, ROLE_FRAMER,
@@ -489,6 +489,41 @@ pub fn check_status_rows(rows: &[StatusRow], claims_len: u64) -> Result<(), Faul
             u64::from(STATUS_OTHER),
             "status_row.class",
         )?;
+    }
+    Ok(())
+}
+
+/// A stream's FINAL STATUS on its close ([`FinishIn`], ARCHITECT 4l): `final_status` is a number the
+/// status rows of `claim` (the claim the stream arrived on) cover, or `0` on a claim stating no
+/// numbering; `final_message` and `final_details` lie inside `final_bytes` (or are empty), and a
+/// stated byte range has the bytes behind it. The host judges its own close before the crossing:
+/// a status the claim's numbering does not have is never handed to the framer.
+///
+/// # Errors
+///
+/// The rule the close breaks.
+pub fn check_final_status(i: &FinishIn, rows: &[StatusRow], claim: u32) -> Result<(), Fault> {
+    let mut numbered = rows.iter().filter(|r| r.claim == claim).peekable();
+    let covered = if numbered.peek().is_none() {
+        i.final_status == 0
+    } else {
+        numbered.any(|r| (r.lo..=r.hi).contains(&i.final_status))
+    };
+    if !covered {
+        return Err(fault(Rule::UnknownCode, "finish.final_status"));
+    }
+    if i.final_bytes.is_null() && i.final_bytes_len != 0 {
+        return Err(fault(Rule::NullWithCount, "finish.final_bytes"));
+    }
+    let bound = i.final_bytes_len as u64;
+    for (s, field) in [
+        (i.final_message, "finish.final_message"),
+        (i.final_details, "finish.final_details"),
+    ] {
+        if s.len == 0 {
+            continue;
+        }
+        range(u64::from(s.offset), u64::from(s.len), bound, field)?;
     }
     Ok(())
 }

@@ -31,8 +31,8 @@ use busbar_contract::transport::{
     Carrier, FrameStream, Framer, Fut, Transport, TransportConfigView, TransportMeta,
 };
 use busbar_contract::unit::{
-    AdmitFacts, AuditFacts, Clock, ConfigView, Ctx, FinishClass, Refusal, ScopeFacts, SessionView,
-    TransportView, Unit, UnitEnd, UsageLocators,
+    AuditFacts, Clock, ConfigView, Ctx, FinishClass, Refusal, SessionView, TransportView, Unit,
+    UnitEnd, UsageLocators,
 };
 use busbar_contract::wire::{
     ArrivalRecord, CloseReason, Conn, Decode, DiscardCode, Encode, Frame, FrameCursor, Listener,
@@ -250,14 +250,6 @@ impl Plane for FixturePlane {
             address: busbar_contract::UpstreamAddress::socket("example"),
             lane: LaneId::new("fixture-lane"),
         }
-    }
-
-    fn approve<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> ScopeFacts {
-        ScopeFacts::default()
-    }
-
-    fn admit<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> AdmitFacts {
-        AdmitFacts::default()
     }
 
     fn route<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> RoutePlan {

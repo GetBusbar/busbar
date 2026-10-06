@@ -264,6 +264,25 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
         let flags = self.get().route_flags | crate::abi::plane::ROUTE_SESSION;
         self.set(|o| &o.route_flags, flags);
     }
+
+    /// THE CALLER ASKED FOR ITS ANSWER STREAMED ([`crate::abi::plane::ROUTE_STREAM`]): the kernel
+    /// bounds the send by the stream ceiling, and a cut after the first byte is not a refund.
+    pub fn stream(&mut self) {
+        let flags = self.get().route_flags | crate::abi::plane::ROUTE_STREAM;
+        self.set(|o| &o.route_flags, flags);
+    }
+
+    /// THE UNIT'S STICKY-ROUTING KEY ([`crate::abi::plane::ArriveOut::affinity`]), opaque to the
+    /// kernel and kept until the instance's next call. An empty key states none.
+    pub fn affinity(&mut self, key: &str) {
+        if key.is_empty() {
+            return;
+        }
+        if let Some(kept) = self.kept {
+            let key = kept.text(key.to_string());
+            self.put(|o| &o.affinity, key);
+        }
+    }
 }
 
 impl Out<'_, crate::abi::plane::ServeOut> {

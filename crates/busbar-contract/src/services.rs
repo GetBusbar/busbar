@@ -85,6 +85,34 @@ pub trait HostServices: Send + Sync {
     /// state. READY with a `TRUST_*` verdict.
     fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran;
 
+    /// `trust.sight_item`: record the digest `item` of `counterparty` is offered at now (the
+    /// plane's live re-fetch), READY with a `TRUST_*` sighting verdict. Never pends. Unserved by
+    /// default.
+    fn trust_sight_item(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Stored {
+        let _ = (caller, counterparty, item, digest);
+        Stored::refused("trust.sight_item is not served")
+    }
+
+    /// `trust.serves`: THE KERNEL'S APPROVE as a query: whether `counterparty` serves `item`
+    /// (`None` = the counterparty as a whole) at `digest` (`None` = its last sighting). READY
+    /// with `DISTRUST_NONE` or the `DISTRUST_*` that refuses it. Never pends. Unserved by default.
+    fn trust_serves(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        let _ = (caller, counterparty, item, digest);
+        Stored::refused("trust.serves is not served")
+    }
+
     /// `trust.due`: the counterparties of `caller` the kernel's tick marked for re-verification, one
     /// span each (key = the counterparty), drained. Never pends.
     fn trust_due(&self, caller: &Caller) -> Stored;

@@ -194,3 +194,82 @@ fn a_replayed_demotion_with_no_declared_pin_stays_until_one_is_declared() {
         Ok((Sight::Same, Effect::None))
     );
 }
+
+/// THE KERNEL'S APPROVE (ARCHITECT 2026-10-06): a unit's stated trust facts are judged here, never
+/// by the plane. RED arms, one per refusal: an undeclared counterparty, one never sighted, one
+/// quarantined, an item never sighted (unknown: a 404's case) apart from one sighted and never
+/// approved (known, ungranted: a 403's case), and one offered at another digest than approved.
+#[test]
+fn the_kernels_approve_judges_counterparty_and_item_by_sighting_and_approval() {
+    let (b, i) = book(entry(None, 0, 0));
+    let facts = |item: Option<&'static str>, digest: Option<&'static str>| TrustFacts {
+        counterparty: "cp",
+        item,
+        digest,
+    };
+    let other = TrustFacts {
+        counterparty: "other",
+        item: None,
+        digest: None,
+    };
+    assert_eq!(b.judge(&i, &other), Err(Distrust::Unknown));
+    assert_eq!(
+        b.judge("nowhere", &facts(None, None)),
+        Err(Distrust::Unknown)
+    );
+    assert_eq!(b.judge(&i, &facts(None, None)), Err(Distrust::Unsighted));
+    b.sight(&i, "cp", "h1", 1).expect("judged");
+    assert_eq!(
+        b.judge(&i, &facts(None, None)),
+        Ok(()),
+        "pinned: trusted whole"
+    );
+
+    // An unknown item, then known and ungranted, then granted at its digest alone.
+    assert_eq!(
+        b.judge(&i, &facts(Some("t"), None)),
+        Err(Distrust::UnknownItem)
+    );
+    assert_eq!(b.sight_item(&i, "cp", "t", "d1"), Ok(Sight::New));
+    assert_eq!(
+        b.judge(&i, &facts(Some("t"), None)),
+        Err(Distrust::NotApproved)
+    );
+    b.approve(&i, "cp", [("t".to_string(), "d1".to_string())])
+        .expect("declared");
+    assert_eq!(
+        b.judge(&i, &facts(Some("t"), None)),
+        Ok(()),
+        "its last sighting"
+    );
+    assert_eq!(b.judge(&i, &facts(Some("t"), Some("d1"))), Ok(()));
+    assert_eq!(
+        b.judge(&i, &facts(Some("t"), Some("d2"))),
+        Err(Distrust::Changed)
+    );
+    // A re-fetch that sees it drift: the last sighting no longer matches what was approved.
+    assert_eq!(b.sight_item(&i, "cp", "t", "d2"), Ok(Sight::Drifted));
+    assert_eq!(b.sight_item(&i, "cp", "t", "d2"), Ok(Sight::Same));
+    assert_eq!(b.judge(&i, &facts(Some("t"), None)), Err(Distrust::Changed));
+    // Approval replaces the set: an item no longer handed is no longer approved.
+    b.approve(&i, "cp", []).expect("declared");
+    assert_eq!(
+        b.judge(&i, &facts(Some("t"), None)),
+        Err(Distrust::NotApproved)
+    );
+
+    // The counterparty drifts: quarantined, whatever was approved.
+    b.approve(&i, "cp", [("t".to_string(), "d2".to_string())])
+        .expect("declared");
+    assert_eq!(b.judge(&i, &facts(Some("t"), None)), Ok(()));
+    b.sight(&i, "cp", "h2", 2).expect("judged");
+    assert_eq!(
+        b.judge(&i, &facts(Some("t"), None)),
+        Err(Distrust::Quarantined)
+    );
+    assert_eq!(b.sight_item(&i, "cp", "t", "d2"), Ok(Sight::Quarantined));
+    assert_eq!(
+        b.sight_item(&i, "other", "t", "d2"),
+        Err(Unjudged::UnknownCounterparty)
+    );
+}

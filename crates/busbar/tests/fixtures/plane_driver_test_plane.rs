@@ -63,10 +63,11 @@ use busbar_contract::abi::plane::{
     OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneSnapshot, PlaneTail,
     RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut, UnitCount, AUDIT_APPLIED, AUDIT_NONE,
     AUDIT_REJECTED, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_OPEN,
-    EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION,
-    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_POOL,
-    ROUTE_PUBLIC, SHAPE_WHOLE, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
+    FROM_KERNEL, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
+    PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL,
+    REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_POOL, ROUTE_PUBLIC, SHAPE_WHOLE, UNITS_ESTIMATED,
+    UNITS_REPORTED, VERDICT_RETRY,
 };
 
 /// The plane's own refusal code and the status `/clock` refuses with when the host will not read
@@ -380,9 +381,10 @@ static DOOR: Shared<Door> = Shared(Door {
     ready: None,
 });
 
-/// The claims: every path under `/call` for POST, and `/open`, a claim that takes no inbound
-/// credential (an anonymous unit, never billed).
-static CLAIMS: Shared<[Claim; 2]> = Shared([
+/// The claims: every path under `/call` for POST, `/open`, a claim that takes no inbound
+/// credential (an anonymous unit, never billed), and every path under `/framed`, an open claim
+/// over the neutral `frame` claim, whose streams that claim's framer frames (ARCHITECT 4l).
+static CLAIMS: Shared<[Claim; 3]> = Shared([
     Claim {
         verb: s(b"POST"),
         target: s(b"/call"),
@@ -396,6 +398,14 @@ static CLAIMS: Shared<[Claim; 2]> = Shared([
         target: s(b"/open"),
         carrier: s(b"inbound"),
         flags: CLAIM_OPEN | CLAIM_EXACT,
+        refusal_dialect: 0,
+        _pad: 0,
+    },
+    Claim {
+        verb: s(b"POST"),
+        target: s(b"/framed"),
+        carrier: s(b"frame"),
+        flags: CLAIM_OPEN,
         refusal_dialect: 0,
         _pad: 0,
     },
@@ -551,7 +561,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             _reserved: 0,
             generation: i.open.generation,
             claims: &CLAIMS.0 as *const Claim,
-            claims_len: 2,
+            claims_len: 3,
             admin_routes: ADMIN_ROUTES.0.as_ptr(),
             admin_routes_len: ADMIN_ROUTES.0.len(),
             openapi: NO_BLOB,
@@ -760,8 +770,14 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 };
                 vec![estimate(0, i.body.len as u64)]
             }
-            b"/open" => {
-                // The open claim routes directly over the section's `m`.
+            b"/framed/refuse" => {
+                // A framed stream the plane refuses: its code, and the 4xx it wears.
+                o.refusal = 7;
+                o.refusal_status = 404;
+                return say(out, Outcome::Refused);
+            }
+            t if t == b"/open" || t.starts_with(b"/framed") => {
+                // The open claims route directly over the section's `m`.
                 o.route = ROUTE_DIRECT;
                 o.pool = AbiStr {
                     ptr: b"m".as_ptr(),
@@ -878,6 +894,30 @@ extern "C" fn on_piece(
                     std::ptr::copy_nonoverlapping(reply.as_ptr(), i.reply_buf, n);
                     o.emitted = n as u64;
                     o.flags = EMIT_DONE;
+                    return say(out, Outcome::Ready);
+                }
+                if head.starts_with(b"/framed") {
+                    // A FRAMED STREAM'S ANSWER (ARCHITECT 4l): the caller's messages echoed as
+                    // ONE message, its end marked; `/framed/status` closes it with a final status
+                    // the plane states, in the claim's numbering, with a message and details.
+                    o.reply_status = 200;
+                    let n = u.body.len().min(i.reply_cap);
+                    std::ptr::copy_nonoverlapping(u.body.as_ptr(), i.reply_buf, n);
+                    o.emitted = n as u64;
+                    o.flags = EMIT_DONE | EMIT_MESSAGE_END;
+                    if head.as_slice() == b"/framed/status" || head.as_slice() == b"/framed/wild" {
+                        // `/framed/wild` states a status the claim's numbering does not have.
+                        let mut at = 0;
+                        o.final_status = if head.as_slice() == b"/framed/wild" {
+                            42
+                        } else {
+                            5
+                        };
+                        o.final_message = put(i, &mut at, b"not here");
+                        o.final_details = put(i, &mut at, &[0xde, 0xad]);
+                        o.arena_written = at as u64;
+                        o.flags |= EMIT_FINAL_STATUS;
+                    }
                     return say(out, Outcome::Ready);
                 }
                 if head.as_slice() == b"/local" || head.as_slice() == b"/call/local" {
