@@ -733,3 +733,27 @@ fn the_suite_lends_the_statements_secret_refs_out_of_the_settings() {
         (b"{ \"a\": 1 }".to_vec(), Vec::new())
     );
 }
+
+/// RED (store-mysql #16): the store script meters only keys it has put, so a store whose metering
+/// rows reference its keys (MySQL's fk_metering_key) holds every metering write: no `meter(..)` call
+/// in the script names a literal key id.
+#[test]
+fn red_the_store_script_meters_only_keys_it_has_put() {
+    let script = include_str!("../conformance/store.rs");
+    let literal = regex_lite_meter(script);
+    assert!(
+        literal.is_empty(),
+        "metering names keys it never put: {literal:?}"
+    );
+}
+
+/// Every `meter("<literal>", ..)` call in `script`.
+fn regex_lite_meter(script: &str) -> Vec<String> {
+    script
+        .match_indices("meter(\"")
+        .map(|(at, _)| {
+            let rest = &script[at + 7..];
+            rest[..rest.find('"').unwrap_or(0)].to_owned()
+        })
+        .collect()
+}
