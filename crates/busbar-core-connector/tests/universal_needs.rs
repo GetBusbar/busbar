@@ -196,6 +196,7 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
                     Vec::new(),
                 )),
                 head_words: Default::default(),
+                anchors: None,
             },
         )
         .expect("the connector dials through the http door");
@@ -269,6 +270,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
                 open_timeout: std::time::Duration::from_secs(5),
                 opening: Some((Vec::new(), b"opening;".to_vec())),
                 head_words: Default::default(),
+                anchors: None,
             },
         )
         .expect("the connector dials through the door");

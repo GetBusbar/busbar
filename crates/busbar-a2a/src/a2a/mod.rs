@@ -102,6 +102,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // The pin and the cadence are the kernel's to parse and judge; declared here by key.
         trust_keys: crate::a2a::config::TRUST_KEYS,
         served_op_classes: &[],
+        caller_credential_refusal: None,
     };
 
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE

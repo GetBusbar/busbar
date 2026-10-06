@@ -256,6 +256,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
                 arrived: 0,
                 records: Some(std::sync::Arc::clone(&records)),
                 depth: 0,
+                credential: None,
             },
         )
     };
@@ -305,10 +306,31 @@ fn provider(protocol: &str, style: Option<&str>) -> super::ProviderRoute {
     }
 }
 
-/// The routes `section`'s members resolve to over `providers`, or why the load is refused.
-fn resolve(
+/// The routes `section`'s members resolve to over `providers` for a plane stating `facts`, or why
+/// the load is refused.
+fn resolve_for(
+    facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     section: &str,
     providers: &[(&str, super::ProviderRoute)],
+) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
+    resolve_over(section, providers, facts)
+}
+
+/// [`resolve`], over the plane facts `served`.
+fn resolve_over(
+    section: &str,
+    providers: &[(&str, super::ProviderRoute)],
+    served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
+    resolve_upgrading(section, providers, served, Vec::new())
+}
+
+/// [`resolve_over`], with `upgrades` the linked framers composed over the data carrier.
+fn resolve_upgrading(
+    section: &str,
+    providers: &[(&str, super::ProviderRoute)],
+    served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+    upgrades: Vec<&'static str>,
 ) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
     let section: serde_yaml::Value = serde_yaml::from_str(section).expect("yaml");
     let providers = providers
@@ -330,11 +352,113 @@ fn resolve(
     let reach = super::DoorReach {
         providers: &providers,
         secrets: &secrets,
-        auths: &auths,
+        auths: std::sync::Arc::new(auths),
         conns,
         stream_ceiling_secs: 1,
+        upgrades,
     };
-    super::member_routes(&section, &DoorPools::of(&section), &styled(), &reach)
+    super::member_routes(&section, &DoorPools::of(&section), served, &reach)
+}
+
+/// SEAM-L(n), `spelled_for`: a need over a framer composed over the base URL's carrier dials the
+/// same authority and path in that framer's scheme, its secured form for a secured base; a need
+/// over any other transport, or a base in no upgradable scheme, dials the base as written.
+#[test]
+fn a_need_over_an_upgrade_framer_spells_the_base_url_in_its_scheme() {
+    let upgrades = ["ws"];
+    assert_eq!(
+        super::spelled_for("https://api.example/v1", "ws", &upgrades).as_deref(),
+        Some("wss://api.example/v1")
+    );
+    assert_eq!(
+        super::spelled_for("http://127.0.0.1:9/v1", "ws", &upgrades).as_deref(),
+        Some("ws://127.0.0.1:9/v1")
+    );
+    assert_eq!(
+        super::spelled_for("https://api.example", "http", &upgrades),
+        None
+    );
+    assert_eq!(super::spelled_for("https://api.example", "ws", &[]), None);
+    assert_eq!(super::spelled_for("unix:///sock", "ws", &upgrades), None);
+}
+
+/// SEAM-L(n), THE MEMBER'S ROUTE: a member bound over an upgrade framer's need dials that need at
+/// its base URL in the framer's scheme, its own (http) need at the base as written. RED: the route
+/// carried the provider's base URL alone, so the framer's need dialled https. The bearer style is the
+/// linked header auth plugin's, so the leg runs where it is linked.
+#[cfg(feature = "auth-header")]
+#[test]
+fn a_member_bound_over_an_upgrade_need_dials_its_spelled_base() {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    let served = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        need_auths: vec![
+            (DIRECTION_OUTBOUND, "bearer"),
+            (DIRECTION_OUTBOUND, "bearer"),
+        ],
+        need_transports: vec!["http", "ws"],
+        ..styled()
+    };
+    let routes = resolve_upgrading(
+        "models: {m: {provider: p}}",
+        &[("p", provider("d", None))],
+        &served,
+        vec!["ws"],
+    )
+    .expect("the member resolves");
+    let route = &routes["m"];
+    let base = route.base_url.clone();
+    let spelled = base.replacen("http://", "ws://", 1);
+    assert!(base.starts_with("http://"), "{base}");
+    assert_eq!(route.ride(0).map(|r| r.base_url), Some(base.as_str()));
+    assert_eq!(route.ride(2).map(|r| r.base_url), Some(spelled.as_str()));
+}
+
+/// MULTI-NEED (ARCHITECT Q-L5B-NEEDS 2026-10-03): a member binds EVERY outbound need its style
+/// names, one per transport, the first as its own and the rest riding beside it, each opened when
+/// a far request names it. The bearer style is the linked header auth plugin's, so the leg runs
+/// where it is linked (single-plane rows link none).
+#[cfg(feature = "auth-header")]
+#[test]
+fn a_member_binds_every_need_its_style_names_one_per_transport() {
+    use busbar_contract::abi::host::conn::connector::{DIRECTION_INBOUND, DIRECTION_OUTBOUND};
+    let served = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        need_auths: vec![
+            (DIRECTION_INBOUND, "bearer"),
+            (DIRECTION_OUTBOUND, "bearer"),
+            (DIRECTION_OUTBOUND, "bearer"),
+            (DIRECTION_OUTBOUND, "api-key"),
+        ],
+        need_transports: vec!["ws", "ws", "http", "ws"],
+        ..styled()
+    };
+    let routes = resolve_over(
+        "models: {m: {provider: p}}",
+        &[("p", provider("d", None))],
+        &served,
+    )
+    .expect("the member resolves");
+    let route = &routes["m"];
+    assert_eq!(route.need.0, 1, "its first bound need is its own");
+    let rides: Vec<u32> = route.rides.iter().map(|(n, _)| n.0).collect();
+    assert_eq!(
+        rides,
+        [2],
+        "the http need rides beside it; the api-key need is not its style"
+    );
+    assert_eq!(route.ride(3).map(|r| r.need.0), Some(2));
+    assert_eq!(route.ride(0).map(|r| r.need.0), Some(1));
+    assert!(
+        route.ride(4).is_none(),
+        "a need its style does not name is no ride"
+    );
+}
+
+/// The routes `section`'s members resolve to over `providers`, or why the load is refused.
+fn resolve(
+    section: &str,
+    providers: &[(&str, super::ProviderRoute)],
+) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
+    resolve_for(&styled(), section, providers)
 }
 
 // The positive binding proof needs a bearer-serving auth plugin LINKED (the default distribution's
@@ -396,6 +520,9 @@ struct TokenEndpoint {
     declared: std::sync::Mutex<Vec<(u32, u32, Option<String>)>>,
     opened: std::sync::Mutex<Vec<Opened>>,
     replies: std::sync::Mutex<Replies>,
+    /// The reply body to a request body, when the endpoint answers by what it was asked (an RFC
+    /// 8693 exchange's token names its scope); `None` = the minted replies above.
+    answer: Option<fn(&str) -> String>,
 }
 
 /// What one open carried: the need, the target, the head target, the body.
@@ -477,10 +604,13 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
             String::from_utf8_lossy(desc.body).into_owned(),
         ));
         let n = opened.len();
-        let body = format!(
-            r#"{{"access_token":"oracle-minted-{n}","expires_in":{}}}"#,
-            if n == 1 { 2 } else { 3600 }
-        );
+        let body = match self.answer {
+            Some(answer) => answer(&opened[n - 1].3),
+            None => format!(
+                r#"{{"access_token":"oracle-minted-{n}","expires_in":{}}}"#,
+                if n == 1 { 2 } else { 3600 }
+            ),
+        };
         let id = self.slab.insert(caller, need, ())?;
         self.replies.lock().unwrap().insert(
             id,
@@ -558,14 +688,16 @@ fn presented(answer: Option<&busbar_contract::auth_calls::Fields>) -> Option<Str
 
 /// THE MEMBER UNDER `auth: oauth-client-credentials`, BOUND BY THE COMPOSITION (THE DESIGN §6 steps
 /// 2-3, §5, §6.5): the auth plugin serving the style is opened over the provider's own settings,
-/// so its `open-web` need is declared pinned to the provider's `token_url`; its tick schedule runs
+/// so its `loopback-allowed` mint need is declared pinned to the provider's `token_url`; its tick schedule runs
 /// without anyone driving it; the member's binding presents nothing until the first mint lands,
 /// then the minted bearer, then the refreshed one ahead of the first token's expiry (the oracle
 /// cell `egress.auth|oauth-cc|mint-refresh`: the second upstream request carries the refreshed
 /// authorization).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer() {
-    use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_OPEN_WEB};
+    use busbar_contract::abi::host::conn::connector::{
+        DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED,
+    };
     use busbar_contract::auth_calls::FieldsRequest;
     const TOKEN_URL: &str = "https://login.example.com/tenant/oauth2/v2.0/token";
     let key_file =
@@ -605,9 +737,10 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
     let reach = super::DoorReach {
         providers: &providers,
         secrets: &secrets,
-        auths: &auths,
+        auths: std::sync::Arc::new(auths),
         conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,
+        upgrades: Vec::new(),
     };
     let section: serde_yaml::Value =
         serde_yaml::from_str("models: {m: {provider: p}}").expect("yaml");
@@ -621,12 +754,12 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
     let _ = std::fs::remove_file(&key_file);
     let binding = routes["m"].auth.clone().expect("its credential is bound");
     assert!(
-        table
-            .declared
-            .lock()
-            .unwrap()
-            .contains(&(0, EGRESS_OPEN_WEB, Some(TOKEN_URL.to_string()))),
-        "the plugin's open-web need, pinned to the provider's token_url: {:?}",
+        table.declared.lock().unwrap().contains(&(
+            0,
+            EGRESS_LOOPBACK_ALLOWED,
+            Some(TOKEN_URL.to_string())
+        )),
+        "the plugin's mint need, pinned to the provider's token_url: {:?}",
         table.declared.lock().unwrap()
     );
 
@@ -667,4 +800,37 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         "grant_type=client_credentials&client_id=oracle-client-0001&client_secret=\
          oracle%3Asecret%3Awith%3Acolons&scope=https%3A%2F%2Fcognitiveservices.azure.com%2F.default"
     );
+}
+
+/// A REGISTRATION SECTION'S MEMBERS (ARCHITECT Q-L3B-ROUTES): where the plane's need states a
+/// member-target path (`settings.*.<key>`), each registration is a member reached at its own
+/// `<key>` on that need, its metering rows naming the registration, with no provider and no auth
+/// binding. A registration that states no target has no route; the reserved words are no member.
+#[test]
+fn a_registration_member_is_reached_at_its_own_target() {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        need_auths: vec![(DIRECTION_OUTBOUND, "")],
+        need_targets: vec!["settings.*.url"],
+        ..Default::default()
+    };
+    let routes = resolve_for(
+        &facts,
+        "fs: {url: \"http://127.0.0.1:7/rpc\"}\nlocal: {command: run}\nhooks: [h]\n",
+        &[],
+    )
+    .expect("the registrations resolve");
+    assert_eq!(routes.keys().collect::<Vec<_>>(), ["fs"]);
+    let fs = &routes["fs"];
+    assert_eq!(fs.need.0, 0);
+    assert_eq!(
+        fs.base_url, "http://127.0.0.1:7",
+        "its URL's origin; the plane spells the path"
+    );
+    assert_eq!(fs.provider, "fs");
+    assert!(fs.auth.is_none());
+    // A plane whose need states no member target reaches no registration.
+    let none = resolve_for(&styled(), "fs: {url: \"http://127.0.0.1:7/rpc\"}\n", &[])
+        .expect("nothing to resolve");
+    assert!(none.is_empty());
 }

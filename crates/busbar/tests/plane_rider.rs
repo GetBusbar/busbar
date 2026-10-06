@@ -110,6 +110,7 @@ fn opened(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
                 ptr: std::ptr::null(),
                 len: 0,
             },
+            owned: NO_BLOB,
         },
         PlaneOpenOut {
             open: OpenOut {
@@ -171,7 +172,8 @@ fn arrive(plugin: &Plugin<Plane>, target: &[u8]) -> (AbiOutcome, Vec<u64>) {
                 len: 0,
             },
             route: 0,
-            _route_reserved: [0; 7],
+            route_flags: 0,
+            _route_reserved: [0; 6],
         },
     );
     let outcome = plugin.call(slot::ARRIVE, &mut frame).outcome;

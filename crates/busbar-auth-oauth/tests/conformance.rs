@@ -513,7 +513,9 @@ mod mint_door {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_OPEN_WEB};
+    use busbar_contract::abi::host::conn::connector::{
+        DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED,
+    };
     use busbar_contract::abi::mechanism::rendering::ReadNeed;
     use busbar_contract::auth_calls::{Fields, FieldsRequest, OutboundAuth};
     use busbar_contract::conn::{
@@ -704,7 +706,8 @@ mod mint_door {
         );
 
         // THE INSTANCE, OPENED OVER THE BINDING'S SETTINGS: its token_url need is declared pinned to
-        // the binding's endpoint, `open-web`, over the http transport.
+        // the binding's endpoint, `loopback-allowed` (https or loopback plaintext, as 1.5.5
+        // validated a mint endpoint), over the http transport.
         let settings = serde_json::json!({ "token_url": TOKEN_URL, "scope": SCOPE });
         let instance = Arc::new(
             OutboundInstance::open_with(
@@ -722,7 +725,7 @@ mod mint_door {
                 .find(|(need, _, _)| *need == 0)
                 .expect("the token_url need is declared");
             assert_eq!(token_url.1.direction, DIRECTION_OUTBOUND);
-            assert_eq!(token_url.1.egress_class, EGRESS_OPEN_WEB);
+            assert_eq!(token_url.1.egress_class, EGRESS_LOOPBACK_ALLOWED);
             assert_eq!(token_url.1.transport, "http");
             assert_eq!(token_url.1.target_from, "settings.token_url");
             assert_eq!(token_url.2.as_deref(), Some(TOKEN_URL), "pinned to it");
@@ -796,10 +799,13 @@ mod mint_door {
                     TOKEN_URL.to_string(),
                     "POST".to_string(),
                     "/tenant/oauth2/v2.0/token".to_string(),
-                    vec![(
-                        "content-type".to_string(),
-                        "application/x-www-form-urlencoded".to_string()
-                    )],
+                    vec![
+                        (
+                            "content-type".to_string(),
+                            "application/x-www-form-urlencoded".to_string()
+                        ),
+                        ("accept".to_string(), "*/*".to_string())
+                    ],
                     form.to_string(),
                 )
             );

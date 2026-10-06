@@ -193,7 +193,7 @@ def render_root(doc):
     lines.append("  per leg: " + ", ".join(per_leg))
     lines.append(
         "  (run them: scripts/capability-equality-summary.py --root-legs -- builds the binary "
-        "crate with all five legs on and executes every named loop cell)"
+        "crate with every leg on and executes every named loop cell)"
     )
     return "\n".join(lines)
 
