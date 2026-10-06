@@ -201,6 +201,7 @@ pub(super) fn begin(shared: &Arc<Shared>, request: BeginLogin) -> Box<dyn LoginC
         _held: held,
         reply: Some(reply),
         answer: None,
+        faulted: false,
     })
 }
 
@@ -211,6 +212,8 @@ struct Begin {
     _held: Arc<BeginHeld>,
     reply: Option<Reply<BeginLoginIn, BeginLoginOut>>,
     answer: Option<LoginOutcome>,
+    /// The step answered FAULT ([`LoginCall::faulted`]).
+    faulted: bool,
 }
 
 impl Begin {
@@ -226,6 +229,7 @@ impl Begin {
             Poll::Pending => return Poll::Pending,
         };
         self.reply = None;
+        self.faulted = done.outcome == Outcome::Fault;
         let answer = match (done.outcome, done.frame.as_ref()) {
             (Outcome::Ready, Some(f)) => begun(&f.out).unwrap_or(LoginOutcome::Reject),
             _ => LoginOutcome::Reject,
@@ -250,6 +254,10 @@ impl LoginCall for Begin {
             Poll::Ready(a) => Some(a),
             Poll::Pending => None,
         }
+    }
+
+    fn faulted(&self) -> bool {
+        self.faulted
     }
 }
 
@@ -387,6 +395,7 @@ pub(super) fn complete(shared: &Arc<Shared>, request: LoginCallback) -> Box<dyn 
         reply: Some(reply),
         recalled: false,
         answer: None,
+        faulted: false,
     })
 }
 
@@ -416,6 +425,8 @@ struct Complete {
     reply: Option<Reply<CompleteLoginIn, IdentifyOut>>,
     recalled: bool,
     answer: Option<LoginOutcome>,
+    /// A step of it (the answer or the short re-call) answered FAULT ([`LoginCall::faulted`]).
+    faulted: bool,
 }
 
 impl Complete {
@@ -432,6 +443,7 @@ impl Complete {
                 Poll::Pending => return Poll::Pending,
             };
             self.reply = None;
+            self.faulted |= done.outcome == Outcome::Fault;
             let out = done.frame.as_ref().map(|f| f.out);
             if done.short && !self.recalled {
                 self.recalled = true;
@@ -465,6 +477,10 @@ impl LoginCall for Complete {
             Poll::Ready(a) => Some(a),
             Poll::Pending => None,
         }
+    }
+
+    fn faulted(&self) -> bool {
+        self.faulted
     }
 }
 
