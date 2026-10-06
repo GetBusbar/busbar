@@ -370,6 +370,59 @@ async fn a_slow_hook_is_cut_off_at_its_budget_through_the_axis() {
     );
 }
 
+/// PB-81, THE QUARANTINE RACE: a call refused at the saturated cap whose wedged instance the
+/// watchdog faults before the refusal is looked at (the order a loaded host gave
+/// [`the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the_axis`] by chance: its
+/// freed-slot call answered `broken (hook ... answered Refused)` at 1.00 s). That call was never
+/// made — a refusal is no crossing — so it waits for the trial window within its own budget, as a
+/// call meeting the fault before it was submitted does, and is answered by the fresh instance.
+/// The refused call here is held until the watchdog has faulted the instance, so the order is met
+/// every time.
+#[tokio::test]
+async fn a_call_refused_at_the_cap_as_the_watchdog_faults_the_instance_waits_for_its_trial() {
+    let axis = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked).expect("linked");
+    // `sleep_ms` past the Call class budget: the watchdog faults the wedged crossings; the odd
+    // figure marks this instance's settings for the hold.
+    let wedged: Arc<dyn busbar_contract::hook_calls::HookCalls> = axis
+        .open(
+            NAME,
+            "hooks.wedged-race",
+            &json!({"reject_over_messages": 3, "sleep_ms": 1_501}),
+            BUDGET,
+        )
+        .expect("the wedged gate opens");
+    *crate::hook_door::HOLD_REFUSED_UNTIL_FAULTED_FOR_TESTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(b"\"sleep_ms\":1501".to_vec());
+    let mut inflight = Vec::with_capacity(MAX_INFLIGHT as usize);
+    for _ in 0..MAX_INFLIGHT {
+        let wedged = Arc::clone(&wedged);
+        inflight.push(tokio::spawn(async move {
+            let _ = wedged.decide(frame(2), Duration::from_millis(50)).await;
+        }));
+    }
+    for h in inflight {
+        let _ = h.await;
+    }
+    // Every unit is held by a wedged crossing (the callers gave up; the crossings run on), so this
+    // call is refused at the cap, held until the watchdog faults the instance, then judged.
+    let answered = wedged.decide(frame(2), BUDGET).await;
+    *crate::hook_door::HOLD_REFUSED_UNTIL_FAULTED_FOR_TESTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    assert!(
+        matches!(
+            answered,
+            Answered::Answer {
+                outcome: busbar_contract::abi::mechanism::call::Outcome::Ready,
+                ..
+            }
+        ),
+        "a call the cap refused as the instance was quarantined waits for its trial: {}",
+        decided(2, &answered)
+    );
+}
+
 /// PB-81 (`max_inflight` per loaded hook; 1.5.5 pinned `MAX_INFLIGHT_HOOK_CALLS = 64`, a 1.6.0 hook
 /// states its own in its Statement): one hook is saturated with `max_inflight` calls that never
 /// return inside the test's budget. A further call must fail CLOSED on the caller's own deadline —
