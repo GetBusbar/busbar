@@ -763,6 +763,27 @@
         ],
         "type": "object"
       },
+      "ClassUsage": {
+        "description": "One plane-declared class's consumption on a usage row: its raw count and its cost.\n\nNEW IN 1.6.0 (1.5.5's usage rows carried the token split alone, and 1.5.5 served no plane that\ndeclares a class of its own): ledgered by the FLIP-A2A ruling. `cost` is in the same MICRO-units\nas [`UsageBreakdown::spend_micros`], priced by the same card in force at the row's instant, and is\npart of that row's `spend_micros`, never added to it a second time.",
+        "properties": {
+          "cost": {
+            "description": "What the card in force priced that count at, in micro-units.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "count": {
+            "description": "The raw count the plane's ledger lines recorded under the class.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count",
+          "cost"
+        ],
+        "type": "object"
+      },
       "CommitUpgradeReq": {
         "description": "`POST /commit-upgrade`: the release the fleet commits to.",
         "properties": {
@@ -2005,6 +2026,13 @@
       "KeyUsageView": {
         "description": "One key's row of the per-key aggregation: the key id/name (never the secret) + its counts.",
         "properties": {
+          "classes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ClassUsage"
+            },
+            "description": "THE PLANE-DECLARED CLASSES the row's ledger lines counted outside the token split, keyed by\nthe class name the plane declares (new in 1.6.0, [`ClassUsage`]). Absent when the row carries\nnone, so a token-only row reads exactly as 1.5.5's.",
+            "type": "object"
+          },
           "id": {
             "type": "string"
           },
@@ -2730,6 +2758,13 @@
       "ModelUsageView": {
         "description": "One (model, provider) row of the per-model aggregation.",
         "properties": {
+          "classes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ClassUsage"
+            },
+            "description": "THE PLANE-DECLARED CLASSES the row's ledger lines counted outside the token split, keyed by\nthe class name the plane declares (new in 1.6.0, [`ClassUsage`]). Absent when the row carries\nnone, so a token-only row reads exactly as 1.5.5's.",
+            "type": "object"
+          },
           "model": {
             "type": "string"
           },
@@ -3986,6 +4021,13 @@
       "UsageBreakdown": {
         "description": "The raw consumption counts + the derived spend estimate: the one shape shared by `total`,\n`by_model` rows, and `by_key` rows, so a consumer writes ONE aggregation reader.",
         "properties": {
+          "classes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ClassUsage"
+            },
+            "description": "THE PLANE-DECLARED CLASSES the row's ledger lines counted outside the token split, keyed by\nthe class name the plane declares (new in 1.6.0, [`ClassUsage`]). Absent when the row carries\nnone, so a token-only row reads exactly as 1.5.5's.",
+            "type": "object"
+          },
           "requests": {
             "format": "uint64",
             "minimum": 0,
