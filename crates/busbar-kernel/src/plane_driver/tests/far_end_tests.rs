@@ -833,6 +833,8 @@ async fn a_caller_fault_is_relayed_as_it_came() {
     assert!(!p.fail_over);
     assert_eq!(p.status, Some((400, 2)));
     assert_eq!(p.bytes, b"bad request");
+    // The plane read it and states no reading of its own: the transport's is recorded.
+    far.judged(&t, FAULT_NONE);
     assert_eq!(
         *r.book.observed.lock().unwrap(),
         vec![(DestinationId::new(1), Outcome::RecordNothing)]
