@@ -1244,7 +1244,11 @@ pub fn data_mounts(
             core,
             upgrades,
         )
-        .map(|m| (m.routes, m.sessions, m.refusals))
+        .and_then(|m| {
+            // THE ROUTES AND THEIR REFUSALS PAIR, or the boot is refused (ARCHITECT 2026-10-06).
+            busbar_kernel::plane_routes::pair_door_refusals(&m.routes, &m.sessions, &m.refusals)?;
+            Ok((m.routes, m.sessions, m.refusals))
+        })
     }
     #[cfg(not(linked_axis_node))]
     {
@@ -1582,6 +1586,7 @@ pub fn door_mounts(
             runtime,
         }));
     }
+    let mut session_mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
     let mut sessions = Vec::new();
     let mut requests = Vec::new();
     for mount in mounts {
@@ -1594,6 +1599,7 @@ pub fn door_mounts(
         if method != RouteMethod::Get {
             continue;
         }
+        session_mounts.push((path.clone(), RouteMethod::Get, auth, door));
         let routes = Arc::clone(&routes);
         let (plane, claim) = door;
         sessions.push(busbar_kernel::plane_routes::PlaneSessionSpec {
@@ -1619,14 +1625,18 @@ pub fn door_mounts(
     // "Refusals"): each route that takes a credential, at its own path and method, words the `401`
     // the kernel's auth decides there through its plane's `refusal`, in the claim's refusal dialect,
     // for the request target. The decision stays the kernel's; no unit opens, nothing is charged.
+    // Keyed by the door route's own identity (`DoorRouteId`), request and session routes alike.
     let refusals: Vec<PlaneRefusalSpec> = requests
         .iter()
+        .chain(&session_mounts)
         .filter(|(_, _, auth, _)| matches!(auth, RouteAuth::Key))
         .map(|(path, method, _, (plane, claim))| {
             let (routes, plane, claim) = (Arc::clone(&routes), *plane, *claim);
             PlaneRefusalSpec {
-                path: path.clone(),
-                method: *method,
+                route: busbar_kernel::plane_routes::DoorRouteId {
+                    path: path.clone(),
+                    method: *method,
+                },
                 refuse: Arc::new(move |reason: ReasonCode, target: &str| {
                     let served = &routes.served.planes[plane];
                     let dialect = served

@@ -118,7 +118,7 @@ impl CoreRouteTable {
         let rm = route_method_of(method)?;
         self.door_refusals
             .iter()
-            .find(|r| r.method == rm && route_matches(&r.path, path))
+            .find(|r| r.route.method == rm && route_matches(&r.route.path, path))
             .map(|r| &r.refuse)
     }
 
