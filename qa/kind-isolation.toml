@@ -443,33 +443,6 @@ kind = "plane"
 crate = "busbar-llm"
 kind = "transport"
 
-
-
-
-[[cell]]
-crate = "busbar-mcp"
-kind = "cleanliness"
-
-[[cell]]
-crate = "busbar-mcp"
-kind = "hooks"
-
-[[cell]]
-crate = "busbar-mcp"
-kind = "legacy"
-
-[[cell]]
-crate = "busbar-mcp"
-kind = "plane"
-
-[[cell]]
-crate = "busbar-mcp"
-kind = "plugin-tooling"
-
-[[cell]]
-crate = "busbar-mcp"
-kind = "transport"
-
 [[cell]]
 crate = "busbar-plane-a2a"
 kind = "legacy"
@@ -529,9 +502,6 @@ kind = "store"
 [[cell]]
 crate = "busbar-store-memory"
 kind = "plane"
-
-
-
 
 [[cell]]
 crate = "busbar-transport-stdio"
