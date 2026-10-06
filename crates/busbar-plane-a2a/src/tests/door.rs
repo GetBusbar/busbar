@@ -217,14 +217,7 @@ fn the_openapi_fragment_keys_its_paths_under_the_prefix_given() {
     let doc = openapi_fragment("/api/v1/admin");
     let mut keys: Vec<&String> = doc.as_object().expect("an object").keys().collect();
     keys.sort();
-    assert_eq!(
-        keys,
-        [
-            "/api/v1/admin/agents/{name}/approve",
-            "/api/v1/admin/agents/{name}/connect",
-            "components"
-        ]
-    );
+    assert_eq!(keys, ["/api/v1/admin/agents/{name}/connect", "components"]);
 }
 
 /// THE ADMIN OPENAPI BLOB CARRIES ITS OWN BODIES (ARCHITECT Q2): every trust verb's `200` names a

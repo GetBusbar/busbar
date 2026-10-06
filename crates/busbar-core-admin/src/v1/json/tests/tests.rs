@@ -751,10 +751,9 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         // that would change what it does, so documenting one would describe a parameter that does
         // not exist.
         ("post", "/api/v1/admin/tools/{name}/connect"),
-        // The `agents:` section's PREVIEW trust verb, bodyless for the same reason: the entry to
-        // look at rides the path, and there is nothing a caller could put in a body that would
-        // change what it does. Its sibling `POST /agents/{name}/approve` is NOT here — that one
-        // carries the fingerprint the operator is attesting they saw, which is the whole trust root.
+        // The `agents:` section's trust verb, bodyless for the same reason: the entry to look at
+        // rides the path, and there is nothing a caller could put in a body that would change what
+        // it does. Approving is the operator's act on the generic `/trust`.
         ("post", "/api/v1/admin/agents/{name}/connect"),
         // The 1.6.0 kernel verbs whose body the node's administrative loop never reads: the two
         // recovery verbs are pure commands (the effect is the store's; the verb IS the argument).

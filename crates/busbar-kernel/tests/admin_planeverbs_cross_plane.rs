@@ -83,12 +83,11 @@ fn the_admin_route_table_method_path_scope_is_byte_identical() {
     register_planes();
 
     // The FROZEN rows the tool plane's verbs and the `agents:` door row's stated verbs mount at, with
-    // the scope the middleware enforces. Reads are `read-only`; both `connect`s and `approve` are
-    // mutations at `full`. The door row's PUBLIC route is not a row: the fold keeps it off.
+    // the scope the middleware enforces. Reads are `read-only`; both `connect`s are mutations at
+    // `full`. The door row's PUBLIC route is not a row: the fold keeps it off.
     let expected: Vec<(&str, &str, &str)> = vec![
         ("GET", "/api/v1/admin/tools/{name}/changes", "ReadOnly"),
         ("GET", "/api/v1/admin/tools/{name}/health", "ReadOnly"),
-        ("POST", "/api/v1/admin/agents/{name}/approve", "Full"),
         ("POST", "/api/v1/admin/agents/{name}/connect", "Full"),
         ("POST", "/api/v1/admin/tools/{name}/connect", "Full"),
     ];

@@ -210,7 +210,6 @@ fn the_reported_numbers_belong_to_the_signal_that_tripped() {
     assert!(!trip.reason().contains("error_rate"));
 }
 
-// THE LOAD-BEARING INTEGRATION of a trip with `Approval::suspend` and the identity pin lives in
-// the ENGINE's own `pin_tests.rs`, not here: this crate carries the anomaly grammar alone and has no
-// dependency on `busbar_kernel::trust` or the A2A pin, both of which belong to the plane half.
-// See `a_trip_suspends_an_otherwise_perfectly_healthy_registration` there.
+// THE LOAD-BEARING INTEGRATION of a trip with the registration's suspension lives in the plane's
+// `trust_tests.rs` (`the_anomaly_breaker_trips_only_on_configured_thresholds_and_never_lifts`):
+// this module carries the anomaly grammar alone.

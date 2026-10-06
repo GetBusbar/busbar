@@ -2047,6 +2047,37 @@ mod agent_door {
 
     /// One admin request on `s`'s admin router: `POST /api/v1/admin{path}` with `body` (JSON): its
     /// status and JSON body.
+    /// A GET of `path` on the admin router, under the operator credential: its status and body.
+    async fn admin_get(s: &Served, path: &str) -> (StatusCode, serde_json::Value) {
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri(format!("/api/v1/admin{path}"))
+            .header("x-admin-token", ADMIN_TOKEN)
+            .body(axum::body::Body::empty())
+            .expect("a request");
+        let (status, text) = answered(&s.admin, req).await;
+        let body = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
+        (status, body)
+    }
+
+    /// Agent `name`'s trust key on the kernel's trust book, as `GET /trust` lists it
+    /// (`<instance>/<agent>`), and its state.
+    async fn trust_key(s: &Served, name: &str) -> (String, String) {
+        let (status, book) = admin_get(s, "/trust").await;
+        assert_eq!(status, StatusCode::OK, "{book}");
+        let row = book["keys"]
+            .as_array()
+            .and_then(|keys| {
+                keys.iter()
+                    .find(|k| k["counterparty"] == name && k["item"].is_null())
+            })
+            .unwrap_or_else(|| panic!("the trust book lists no key for `{name}`: {book}"));
+        (
+            row["key"].as_str().unwrap_or_default().to_string(),
+            row["state"].as_str().unwrap_or_default().to_string(),
+        )
+    }
+
     async fn admin(s: &Served, path: &str, body: &str) -> (StatusCode, serde_json::Value) {
         let req = axum::http::Request::builder()
             .method("POST")
@@ -2391,46 +2422,52 @@ mod agent_door {
         );
     }
 
-    /// THE OPERATOR'S CEREMONY for agent `name` (ARCHITECT Q-L3B-VERBS): `connect` to see its card,
-    /// `approve` the fingerprint seen. Its standing is then `approved`.
+    /// THE OPERATOR'S CEREMONY for agent `name` (ARCHITECT FLIP-A2A): `connect` to look at its card
+    /// (the look sights its fingerprint on the kernel's trust book), then approve its trust key on
+    /// the generic `/trust`. The key then serves.
     async fn approve(s: &Served, name: &str) {
         let (status, preview) = admin(s, &format!("/agents/{name}/connect"), "").await;
         assert_eq!(status, StatusCode::OK, "{preview}");
-        let fingerprint = preview["fingerprint"]
-            .as_str()
-            .unwrap_or_else(|| panic!("connect reported no fingerprint: {preview}"))
-            .to_string();
-        let (status, approved) = admin(
-            s,
-            &format!("/agents/{name}/approve"),
-            &format!(r#"{{"fingerprint": "{fingerprint}"}}"#),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{approved}");
-        assert_eq!(approved["state"], "approved", "{approved}");
+        assert!(
+            preview["fingerprint"].is_string(),
+            "connect reported no fingerprint: {preview}"
+        );
+        approve_key(s, name).await;
     }
 
-    /// The root cells `trust-pinning × a2a-client` and `trust-pinning × a2a-server`: the door's
-    /// trust verbs, served by its `serve` op over the admin router (ARCHITECT Q-L3B-VERBS), pin an
-    /// agent's card identity, and the relay serves only the identity pinned, re-verified on call.
+    /// Approve agent `name`'s trust key on the generic `/trust`, at what it was last sighted at.
+    async fn approve_key(s: &Served, name: &str) -> (StatusCode, serde_json::Value) {
+        let (key, _) = trust_key(s, name).await;
+        let body = serde_json::json!({ "key": key }).to_string();
+        let (status, decided) = admin(s, "/trust/approve", &body).await;
+        if name != "scout" {
+            assert_eq!(status, StatusCode::OK, "{decided}");
+        }
+        (status, decided)
+    }
+
+    /// The root cells `trust-pinning × a2a-client` and `trust-pinning × a2a-server`, on the KERNEL'S
+    /// trust book (ARCHITECT FLIP-A2A: the plane sights, the kernel pins and demotes, the operator
+    /// approves on the generic `/trust`):
     ///
-    /// * an agent registered with an out-of-band issuer key and nothing approved is refused at
-    ///   admission (`503`, `-32004`, "fronted agent `planner` is not serving (Pending)") and never
-    ///   dialled;
+    /// * an agent registered with an out-of-band issuer key and nothing approved is refused
+    ///   (`403`, `-32004`, "fronted agent `planner` is not serving (Pending)") and never dialled;
     /// * `connect` fetches the card at the agent origin's well-known path, has the kernel verify
-    ///   its signature against the pinned key, and previews it: `pending`, the fingerprint a human
-    ///   is asked to approve; it grants nothing, so the relay is still refused;
-    /// * `approve` naming that fingerprint locks it: `approved`, and the relay is served;
+    ///   its signature against the pinned key and SIGHTS its fingerprint: `pending`, the fingerprint
+    ///   the key is approved at; it grants nothing, so the relay is still refused, and `/trust`
+    ///   lists the key `new`;
+    /// * approving the key on `/trust` serves it;
     /// * the card is re-issued under the right key with a skill the operator never read (the
-    ///   rug-pull): the next relay re-verifies the card on call (`reverify_ttl: 0s`), finds it
-    ///   drifted, and is refused at the hop's gate (`503`, "this agent is not currently serving",
-    ///   naming its task) without dialling; restoring the approved card does not lift it (the
-    ///   admission refuses on what is recorded: "... is not serving (Quarantined)"); `connect`
-    ///   reports the drift `quarantined`; an `approve` of the old fingerprint is refused (`400`);
-    /// * an `unpinned` registration is captured by `connect` with no fingerprint, refused approval,
-    ///   and never served; an unregistered name is `404`.
+    ///   rug-pull): the next relay re-verifies the card on call (`reverify_ttl: 0s`), the kernel
+    ///   quarantines the moved catalogue, and the hop's gate refuses (`503`, "this agent is not
+    ///   currently serving", naming its task) without dialling; restoring the approved card does
+    ///   not lift it ("... is not serving (Quarantined)"); `connect` reports `quarantined`;
+    ///   approving the key again pins what it now presents and serves it;
+    /// * an `unpinned` registration is captured by `connect` with no fingerprint, so nothing is
+    ///   sighted: its key cannot be approved (`409`) and it is never served; an unregistered name is
+    ///   `404`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_trust_verbs_pin_an_agent_card_and_the_relay_serves_only_the_approved_one() {
+    async fn the_kernel_trust_book_pins_an_agent_card_and_the_relay_serves_only_the_approved_one() {
         // A build that links no agent door has nothing for this cell to drive.
         if linked_door().is_none() {
             return;
@@ -2448,8 +2485,8 @@ mod agent_door {
         );
         let s = served(instance, &section, false, None);
         let send = |to: &str| rpc(to, "message/send", SEND, Some(&s.token));
-        let unadmitted = |status: StatusCode, body: &str, agent: &str, state: &str| {
-            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        let untrusted = |status: StatusCode, body: &str, agent: &str, state: &str| {
+            assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
             let doc: serde_json::Value = serde_json::from_str(body).expect("an envelope");
             assert_eq!(doc["error"]["code"], -32004, "{body}");
             assert_eq!(
@@ -2460,37 +2497,30 @@ mod agent_door {
         };
 
         let (status, body) = answered(&s.router, send("planner")).await;
-        unadmitted(status, &body, "planner", "Pending");
+        untrusted(status, &body, "planner", "Pending");
         assert!(!agent.relayed(), "a refused unit is never dialled");
 
         let (status, preview) = admin(&s, "/agents/planner/connect", "").await;
         assert_eq!(status, StatusCode::OK, "{preview}");
         assert_eq!(
             preview["state"], "pending",
-            "a preview grants nothing: {preview}"
+            "a look grants nothing: {preview}"
         );
         assert_eq!(preview["pin_mechanism"], "jws_issuer_key", "{preview}");
         assert_eq!(preview["fingerprint"], fingerprint.as_str(), "{preview}");
-        assert_eq!(preview["added"], serde_json::json!(["plan"]), "{preview}");
         assert_eq!(preview["failure"], serde_json::Value::Null, "{preview}");
         assert_eq!(
             agent.fetches(),
             1,
             "the card was fetched at the well-known path"
         );
+        let (_, state) = trust_key(&s, "planner").await;
+        assert_eq!(state, "new", "the sighting is new until approved");
         let (status, body) = answered(&s.router, send("planner")).await;
-        unadmitted(status, &body, "planner", "Pending");
+        untrusted(status, &body, "planner", "Pending");
         assert!(!agent.relayed(), "a refused unit is never dialled");
 
-        let (status, approved) = admin(
-            &s,
-            "/agents/planner/approve",
-            &format!(r#"{{"fingerprint": "{fingerprint}"}}"#),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{approved}");
-        assert_eq!(approved["state"], "approved", "{approved}");
-        assert_eq!(approved["fingerprint"], fingerprint.as_str(), "{approved}");
+        approve_key(&s, "planner").await;
         let fetched = agent.fetches();
         let (status, body) = answered(&s.router, send("planner")).await;
         assert_eq!(
@@ -2527,28 +2557,24 @@ mod agent_door {
             "the drift was found by a live re-fetch"
         );
         assert!(!agent.relayed(), "a demoted agent is never dialled");
-        // Restored, the agent stays out of service: admission refuses on what is recorded.
+        // Restored, the agent stays out of service: the kernel's quarantine holds.
         agent.reissue("plans the work");
         let (status, body) = answered(&s.router, send("planner")).await;
-        unadmitted(status, &body, "planner", "Quarantined");
+        untrusted(status, &body, "planner", "Quarantined");
         assert!(!agent.relayed(), "a quarantined agent is never dialled");
         agent.reissue("plans the work and forwards it on");
         let (status, drifted) = admin(&s, "/agents/planner/connect", "").await;
         assert_eq!(status, StatusCode::OK, "{drifted}");
         assert_eq!(drifted["state"], "quarantined", "{drifted}");
-        assert_eq!(drifted["pin_changed"], true, "{drifted}");
-        assert_eq!(drifted["changed"], serde_json::json!(["plan"]), "{drifted}");
         assert_ne!(drifted["fingerprint"], fingerprint.as_str(), "{drifted}");
-        let (status, stale) = admin(
-            &s,
-            "/agents/planner/approve",
-            &format!(r#"{{"fingerprint": "{fingerprint}"}}"#),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{stale}");
-        assert_eq!(stale["error"]["code"], "invalid_request", "{stale}");
+        let (_, state) = trust_key(&s, "planner").await;
+        assert_eq!(state, "quarantined", "the book holds the quarantine");
+        // The operator approves what it presents now: the quarantine clears and it is served.
+        approve_key(&s, "planner").await;
+        let (status, body) = answered(&s.router, send("planner")).await;
+        assert_eq!(status, StatusCode::OK, "re-approved, it is served: {body}");
 
-        // AN UNPINNED REGISTRATION: captured, never approved, never served.
+        // AN UNPINNED REGISTRATION: captured, nothing sighted, never approved, never served.
         let (status, captured) = admin(&s, "/agents/scout/connect", "").await;
         assert_eq!(status, StatusCode::OK, "{captured}");
         assert_eq!(captured["state"], "pending", "{captured}");
@@ -2558,22 +2584,10 @@ mod agent_door {
             serde_json::Value::Null,
             "{captured}"
         );
-        let (status, capped) = admin(
-            &s,
-            "/agents/scout/approve",
-            r#"{"fingerprint": "sha256:any"}"#,
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{capped}");
-        assert!(
-            capped["error"]["message"]
-                .as_str()
-                .is_some_and(|m| m.contains("no authenticity root")),
-            "{capped}"
-        );
+        let (status, capped) = approve_key(&s, "scout").await;
+        assert_eq!(status, StatusCode::CONFLICT, "never sighted: {capped}");
         let (status, body) = answered(&s.router, send("scout")).await;
-        unadmitted(status, &body, "scout", "Pending");
-        assert!(!agent.relayed(), "an unpinned agent is never dialled");
+        untrusted(status, &body, "scout", "Pending");
 
         let (status, unknown) = admin(&s, "/agents/nobody/connect", "").await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{unknown}");
@@ -2672,7 +2686,8 @@ mod agent_door {
 
     /// THE CHECK ORDER, as 1.5.5's admission kept it: the caller's grant, then the agent's trust,
     /// then its card's fit. A request naming a skill the card does not declare is refused as
-    /// not-serving while the agent is unapproved, and by the catalogue (`403`,
+    /// not-serving (`403`, the kernel's trust refusal) while the agent is unapproved, and by the
+    /// catalogue (`403`,
     /// `SkillNotDeclared("fly")`) once it is approved — never dialled either way.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_request_the_card_does_not_fit_is_judged_after_the_trust_gate() {
@@ -2688,10 +2703,10 @@ mod agent_door {
         let fly = r#"{"message":{"kind":"message","messageId":"m-2","role":"user","parts":[{"kind":"text","text":"go"}]},"metadata":{"skill":"fly"}}"#;
         let send = || rpc("planner", "message/send", fly, Some(&s.token));
         let (status, body) = answered(&s.router, send()).await;
-        assert_eq!(
-            status,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "trust first: {body}"
+        assert_eq!(status, StatusCode::FORBIDDEN, "trust first: {body}");
+        assert!(
+            body.contains("is not serving (Pending)"),
+            "the trust refusal, not the card's fit: {body}"
         );
         approve(&s, "planner").await;
         let (status, body) = answered(&s.router, send()).await;
@@ -2708,8 +2723,9 @@ mod agent_door {
 
     /// THE GATE (ARCHITECT Q-DEL-A2A-GATE: refused -> audits the refusal; nothing was charged): a
     /// unit addressed to an agent that is not serving is judged by the caller's grant first (`403`
-    /// for a caller the agent is not granted to), then refused in predev's admission words (`503`,
-    /// "fronted agent `planner` is not serving (Pending)") — a relayed call and a locally answered
+    /// for a caller the agent is not granted to), then refused in predev's admission words at the
+    /// kernel's trust status (`403`, "fronted agent `planner` is not serving (Pending)") — a relayed
+    /// call and a locally answered
     /// one alike — and the key is charged for neither.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_unit_to_an_agent_that_is_not_serving_is_refused_after_its_grant_and_charges_nothing()
@@ -2726,7 +2742,7 @@ mod agent_door {
         for (method, params) in [("message/send", SEND), ("tasks/list", "{}")] {
             let (status, body) =
                 answered(&s.router, rpc("planner", method, params, Some(&s.token))).await;
-            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{method}: {body}");
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method}: {body}");
             let doc: serde_json::Value = serde_json::from_str(&body).expect("an envelope");
             assert_eq!(doc["error"]["code"], -32004, "{body}");
             assert_eq!(
@@ -2793,12 +2809,12 @@ mod agent_door {
         assert!(agent.relayed(), "the approved agent was dialled");
     }
 
-    /// A CONFIG APPLY (ARCHITECT Q-DEL-A2A-APPLY): an apply bumps the door's refresh generation;
-    /// the door re-reads its section and every approval resets, exactly as predev rebuilt the
-    /// agents plane on every apply — an approved agent is refused again after it ("... is not
-    /// serving (Pending)") until it is re-approved.
+    /// A CONFIG APPLY (ARCHITECT Q-DEL-A2A-APPLY) bumps the door's refresh generation and the door
+    /// re-reads its section, but the operator's approval is the KERNEL'S trust book's (ARCHITECT
+    /// FLIP-A2A: pinning is kernel state, an operator's decision is durable): a registration the
+    /// apply keeps under the same pin keeps its approval, and the approved agent is still served.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_config_apply_resets_every_approval() {
+    async fn a_config_apply_keeps_the_operators_approval() {
         // A build that links no agent door has nothing for this cell to drive.
         if linked_door().is_none() {
             return;
@@ -2806,7 +2822,7 @@ mod agent_door {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-apply";
         let _published = Published(instance);
-        let mut agent = Agent::start(200, ANSWER).await;
+        let agent = Agent::start(200, ANSWER).await;
         let s = served(instance, &agent.entry("planner", "1h"), false, None);
         approve(&s, "planner").await;
         let send = || rpc("planner", "message/send", SEND, Some(&s.token));
@@ -2818,17 +2834,9 @@ mod agent_door {
         let (status, body) = answered(&s.router, send()).await;
         assert_eq!(
             status,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "the apply reset it: {body}"
+            StatusCode::OK,
+            "the approval outlives the apply: {body}"
         );
-        assert!(
-            body.contains("fronted agent `planner` is not serving (Pending)"),
-            "{body}"
-        );
-        assert!(!agent.relayed(), "never dialled");
-        approve(&s, "planner").await;
-        let (status, body) = answered(&s.router, send()).await;
-        assert_eq!(status, StatusCode::OK, "re-approved, served: {body}");
     }
 
     /// THE CARD FETCH'S GUARD WORDS, as 1.5.5 printed them (ARCHITECT Q-DEL-A2A-GUARD-WORDS): a

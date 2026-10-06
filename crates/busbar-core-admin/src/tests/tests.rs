@@ -15098,17 +15098,11 @@ async fn door_refusal(
     body
 }
 
-/// THE DOOR PLANE'S TRUST VERBS' DECLARED ERRORS, produced through the admin router by the door's
+/// THE DOOR PLANE'S TRUST VERB'S DECLARED ERROR, produced through the admin router by the door's
 /// own `serve` op (ARCHITECT Q-L3B-VERBS): the `agents:` owner's instance, opened over the same
 /// `base-agent` registration the named-map fixture boots with and published as the root publishes
-/// it. The deleted engine's error-surface driver witnessed these; now the door does:
-/// * an unregistered name is `404 not_found` on `connect` and `approve` (before anything is read);
-/// * `approve` whose body is not the one-field `{"fingerprint": …}` document (an unknown field
-///   beside it) is `400 invalid_request` under the MALFORMED-BODY condition, audited nowhere;
-/// * `approve` naming a fingerprint the endpoint does not serve is `400 invalid_request` under the
-///   INVALID-CONFIG condition: the instance is published with no host (no connector), so its card
-///   fetch cannot complete and the look reports the card unauthenticated, which no approval can
-///   agree with.
+/// it. An unregistered name is `404 not_found` on `connect` (before anything is read). Approving is
+/// the operator's act on the generic `/trust`; the door serves no approve verb.
 async fn drive_door_verb_errors() {
     let _published = publish_door(
         "agents",
@@ -15116,46 +15110,15 @@ async fn drive_door_verb_errors() {
     );
     let (_dir, _overlay, addr, handle) = named_map_app("door-verbs", false).await;
     let client = reqwest::Client::new();
-    let send = |path: &str, body: &str| {
-        client
-            .post(format!("http://{addr}/api/v1/admin{path}"))
-            .header("x-admin-token", "admintok")
-            .header("content-type", "application/json")
-            .body(body.to_string())
-            .send()
-    };
-    for path in ["/agents/nope/connect", "/agents/nope/approve"] {
-        let r = send(path, r#"{"fingerprint": "sha256:aa"}"#).await.unwrap();
-        door_refusal(r, 404, "not_found", path).await;
-    }
-    let r = send(
-        "/agents/base-agent/approve",
-        r#"{"fingerprint": "sha256:aa", "and": "more"}"#,
-    )
-    .await
-    .unwrap();
-    let body = door_refusal(
-        r,
-        400,
-        "invalid_request",
-        "approve with an unknown body field",
-    )
-    .await;
-    assert!(
-        body.to_string().contains("fingerprint"),
-        "the malformed-body refusal names the one field the body may carry: {body}"
-    );
-    let r = send(
-        "/agents/base-agent/approve",
-        r#"{"fingerprint": "sha256:aa"}"#,
-    )
-    .await
-    .unwrap();
-    let body = door_refusal(r, 400, "invalid_request", "approve of an unverified card").await;
-    assert!(
-        body.to_string().contains("nothing to approve"),
-        "the invalid-config refusal says the card could not be authenticated: {body}"
-    );
+    let r = client
+        .post(format!("http://{addr}/api/v1/admin/agents/nope/connect"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    door_refusal(r, 404, "not_found", "/agents/nope/connect").await;
     handle.abort();
 }
 

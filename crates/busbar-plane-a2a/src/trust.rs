@@ -19,13 +19,16 @@
 //!   [`Handshake`]): a matching key is observed and approvable, none is refused as not observed,
 //!   another as a mismatch, and `mtls` over a hop that presented no client identity of busbar's as
 //!   one-way; `unpinned` has no root and no fingerprint.
-//! * **The approval** is the identity a human locked against a fingerprint they saw: `connect`
-//!   previews and never grants ([`preview_view`]), `approve` re-fetches, re-verifies, compares
-//!   against what the operator names ([`agrees`]) and locks it ([`Approval::approve`]). An
-//!   `unpinned` registration is capped: it can be captured and inspected, never approved.
-//! * **The state** is derived on every read, never stored: a failed contact is `error`; nothing
-//!   locked is `pending`; a sighting that differs from the lock is `quarantined`; otherwise
-//!   `approved`.
+//! * **The decision is the KERNEL's** (ARCHITECT, FLIP-A2A; THE DESIGN: trust is the kernel's
+//!   Approve step, pinning and demotion are kernel state): the plane SIGHTS each agent's verified
+//!   card fingerprint on the kernel's trust book (`trust.sight`, counterparty = the agent, the
+//!   fingerprint as its catalogue hash; an unreachable card is `trust.unreachable`, the last
+//!   verdict kept) and READS the book's verdict (`trust.serves`). A first sighting is refused until
+//!   the operator approves the key on the generic core-admin `/admin/trust`; a changed card is
+//!   quarantined. The plane holds no approval of its own.
+//! * **The state** an operator reads off `connect` is the kernel's verdict in words ([`state_of`]);
+//!   an anomaly suspension, the one thing the plane still takes out of service on its own
+//!   observations, is `suspended`; a failed contact is `error`.
 
 use std::collections::BTreeMap;
 
@@ -161,191 +164,53 @@ impl State {
     }
 }
 
-/// What a sighting changed relative to the lock.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Drift {
-    /// The presented identity is not the locked one.
-    pub pin_changed: bool,
-    /// Offered now, never ruled on.
-    pub added: Vec<String>,
-    /// Approved, but offered at another digest: the rug-pull row.
-    pub changed: Vec<String>,
-    /// Approved, and no longer offered.
-    pub removed: Vec<String>,
-}
-
-impl Drift {
-    /// Nothing moved.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        !self.pin_changed
-            && self.added.is_empty()
-            && self.changed.is_empty()
-            && self.removed.is_empty()
-    }
-}
-
-/// The operator's standing decision about one registration: the locked identity and the skills
-/// locked with it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Approval {
-    pin: Option<CardPin>,
-    skills: BTreeMap<String, String>,
-    suspension: Option<String>,
-}
-
-impl Approval {
-    /// The locked identity.
-    #[must_use]
-    pub fn pin(&self) -> Option<&CardPin> {
-        self.pin.as_ref()
-    }
-
-    /// Why it is suspended, when it is.
-    #[must_use]
-    pub fn suspension(&self) -> Option<&str> {
-        self.suspension.as_deref()
-    }
-
-    /// Take it out of service for `reason`, whatever its card.
-    pub fn suspend(&mut self, reason: &str) {
-        self.suspension = Some(reason.to_string());
-    }
-
-    /// The derived state of this lock under `sighting`. Order is precedence: a suspension is
-    /// independent of the card; a failed contact is never reported as trust; nothing locked is
-    /// pending whatever else is true.
-    #[must_use]
-    pub fn state(&self, sighting: &Sighting) -> State {
-        if self.suspension.is_some() {
-            return State::Suspended;
-        }
-        if sighting.failure().is_some() {
-            return State::Error;
-        }
-        // This lock is the one owner of the answer (the plane's `Approval`, as the kernel's
-        // `Approval::serves` was predev's): nothing locked is pending.
-        match &self.pin {
-            None => State::Pending,
-            Some(_) if self.drift(sighting).is_empty() => State::Approved,
-            Some(_) => State::Quarantined,
-        }
-    }
-
-    /// What `sighting` changed relative to this lock; nothing for a sighting that saw nothing.
-    #[must_use]
-    pub fn drift(&self, sighting: &Sighting) -> Drift {
-        let Some(seen) = sighting.seen() else {
-            return Drift::default();
-        };
-        let mut drift = Drift {
-            pin_changed: self.pin.as_ref().is_some_and(|p| *p != seen.pin),
-            ..Drift::default()
-        };
-        for (id, digest) in &seen.skills {
-            match self.skills.get(id) {
-                None => drift.added.push(id.clone()),
-                Some(locked) if locked != digest => drift.changed.push(id.clone()),
-                Some(_) => {}
-            }
-        }
-        drift.removed = self
-            .skills
-            .keys()
-            .filter(|id| !seen.skills.contains_key(*id))
-            .cloned()
-            .collect();
-        drift
-    }
-
-    /// LOCK what `sighting` presented: its identity and its skills. An `unpinned` identity is
-    /// refused (the cap is this plane's ruling about what its artifact means), and so is a
-    /// sighting that presented none.
-    ///
-    /// # Errors
-    ///
-    /// The refusal, in the served engine's words.
-    pub fn approve(&mut self, sighting: &Sighting) -> Result<(), String> {
-        let Some(seen) = sighting.seen() else {
-            return Err(
-                "cannot approve: no identity pin was supplied and none was observed".to_string(),
-            );
-        };
-        if seen.pin == CardPin::Unpinned {
-            return Err(
-                "cannot approve: this registration has no authenticity root (unpinned). Supply an \
-                 issuer key out of band, or pin the endpoint at the transport layer."
-                    .to_string(),
-            );
-        }
-        self.pin = Some(seen.pin.clone());
-        self.skills.clone_from(&seen.skills);
-        Ok(())
-    }
-}
-
-/// ONE REGISTRATION'S TRUST, as the plane holds it in memory: the lock, the pin it was locked
-/// under, the last sighting, and the re-verification ledger verify-on-call keeps.
+/// ONE REGISTRATION'S TRUST, as the plane holds it in memory: the last sighting, the
+/// re-verification ledger verify-on-call keeps, and the anomaly breaker's window and suspension.
+/// What the registration is trusted to SERVE is not here: it is the kernel's trust book.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Standing {
-    /// The lock.
-    pub approval: Approval,
-    /// The registration's `pin:` when the lock was taken; a lock taken under another pin is not
-    /// the operator's decision about this one.
-    pub locked_under: Option<AgentPinCfg>,
     /// The last sighting.
     pub sighting: Sighting,
-    /// When verify-on-call last looked, and when it last saw drift.
+    /// When verify-on-call last looked.
     pub ledger: Ledger,
     /// The anomaly breaker's observation window.
     pub window: crate::a2a::anomaly::Window,
     /// The anomaly breaker's trip points; none configured trips nothing.
     pub thresholds: crate::a2a::anomaly::Thresholds,
+    /// Why the anomaly breaker took it out of service, when it did; resuming is an operator's act.
+    pub suspension: Option<String>,
 }
 
 /// THE RE-VERIFICATION LEDGER of one registration (the served engine's `reverify::Ledger`): when
-/// verify-on-call last looked, and when, and how often, it saw drift.
+/// verify-on-call last looked. Drift and its recovery backoff are the kernel's trust book's.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Ledger {
     /// The last look, milliseconds on the host's wall clock; `None` = never.
     pub last_checked_ms: Option<u64>,
-    /// The last look that saw drift.
-    pub last_drift_ms: Option<u64>,
-    /// How many looks saw drift.
-    pub drift_observations: u64,
 }
 
-/// A registration's re-verification cadence (`reverify_ttl`, `recovery_backoff`), milliseconds.
+/// A registration's re-verification cadence (`reverify_ttl`), milliseconds. Its
+/// `recovery_backoff` is the kernel's trust book's to apply (a declared trust key).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cadence {
     /// The longest a verification is reused before the card is re-fetched; `0` is strict-live.
     pub ttl_ms: u64,
-    /// How long after a drift a clean answer is disbelieved.
-    pub recovery_backoff_ms: u64,
 }
 
 impl Cadence {
-    /// The cadence `def` spells, its absent keys at their declared defaults. The kernel judged
-    /// both keys at parse, so a duration that does not read here reads as its default.
+    /// The cadence `def` spells, its absent key at its declared default. The kernel judged the key
+    /// at parse, so a duration that does not read here reads as its default.
     #[must_use]
     pub fn of(def: &AgentDefCfg) -> Self {
-        let ms = |given: Option<&str>, default: &str| {
-            let secs = |text: &str| busbar_contract::duration::parse_duration_secs(text).ok();
-            given
-                .and_then(secs)
-                .or_else(|| secs(default))
-                .unwrap_or(0)
-                .saturating_mul(1_000)
-        };
+        let secs = |text: &str| busbar_contract::duration::parse_duration_secs(text).ok();
         Self {
-            ttl_ms: ms(
-                def.reverify_ttl.as_deref(),
-                crate::a2a::config::DEFAULT_REVERIFY_TTL,
-            ),
-            recovery_backoff_ms: ms(
-                def.recovery_backoff.as_deref(),
-                crate::door::DEFAULT_RECOVERY_BACKOFF,
-            ),
+            ttl_ms: def
+                .reverify_ttl
+                .as_deref()
+                .and_then(secs)
+                .or_else(|| secs(crate::a2a::config::DEFAULT_REVERIFY_TTL))
+                .unwrap_or(0)
+                .saturating_mul(1_000),
         }
     }
 
@@ -358,38 +223,12 @@ impl Cadence {
             .is_none_or(|last| now_ms < last || now_ms - last >= self.ttl_ms)
     }
 
-    /// FOLD what one look `observed` into what is recorded (the served engine's
-    /// `reverify::settle`): a failed contact is recorded, never read as "unchanged"; drift is
-    /// recorded at once and stamps the drift clock; a clean answer within `recovery_backoff_ms` of
-    /// the last drift is disbelieved and the recorded sighting kept. Detection is never held.
-    pub fn settle(
-        &self,
-        approval: &Approval,
-        recorded: &Sighting,
-        observed: Sighting,
-        ledger: &mut Ledger,
-        now_ms: u64,
-    ) -> Sighting {
+    /// RECORD one look: stamped on the ledger, and what it `observed` is the sighting now (a
+    /// failed contact is recorded as failed, never read as "unchanged"; what it means for serving
+    /// is the kernel's verdict, which an unreachable card leaves where it was).
+    pub fn settle(&self, observed: Sighting, ledger: &mut Ledger, now_ms: u64) -> Sighting {
         ledger.last_checked_ms = Some(now_ms);
-        match &observed {
-            Sighting::Failed(_) => observed,
-            Sighting::Never => recorded.clone(),
-            Sighting::Seen(_) => {
-                if !approval.drift(&observed).is_empty() {
-                    ledger.drift_observations += 1;
-                    ledger.last_drift_ms = Some(now_ms);
-                    return observed;
-                }
-                let held = ledger.last_drift_ms.is_some_and(|drifted| {
-                    now_ms < drifted || now_ms - drifted < self.recovery_backoff_ms
-                });
-                if held {
-                    recorded.clone()
-                } else {
-                    observed
-                }
-            }
-        }
+        observed
     }
 }
 
@@ -399,58 +238,57 @@ impl Standing {
     /// the registration with the trip's reason. It never lifts a suspension: resuming is an
     /// operator's act. The trip applied, if any.
     pub fn apply_anomaly_breaker(&mut self) -> Option<crate::a2a::anomaly::Trip> {
-        if self.approval.suspension().is_some() {
+        if self.suspension.is_some() {
             return None;
         }
         let trip = crate::a2a::anomaly::evaluate(&self.window, &self.thresholds)?;
-        self.approval.suspend(&trip.reason());
+        self.suspension = Some(trip.reason());
         Some(trip)
     }
+}
 
-    /// The lock that holds under the registration's `pin` now: none when the pin moved since.
-    #[must_use]
-    pub fn approval_under(&self, pin: &AgentPinCfg) -> Approval {
-        if self.locked_under.as_ref() == Some(pin) {
-            self.approval.clone()
-        } else {
-            Approval::default()
-        }
+/// THE KERNEL'S VERDICT IN THE ADMISSION'S WORDS: a `trust.serves` answer (`DISTRUST_*`, the one
+/// trust vocabulary, also `RefusalIn.trust`) as the state an operator and a refused caller read.
+/// Serving is `approved`; a key never sighted or never approved is `pending`; a quarantined key,
+/// or one offered at another digest than approved, is `quarantined`.
+#[must_use]
+pub fn state_of(distrust: u64) -> State {
+    match distrust {
+        svc::DISTRUST_NONE => State::Approved,
+        svc::DISTRUST_QUARANTINED | svc::DISTRUST_CHANGED => State::Quarantined,
+        _ => State::Pending,
     }
 }
 
-/// THE ADMISSION GATE'S QUESTION about one registration (the served engine's ordered gate, its
-/// artifact step): its derived state from what is recorded. Only `Approved` serves; a
-/// registration nothing was ever locked for is `Pending`, an `unpinned` one among them, for it can
-/// never be approved.
-#[must_use]
-pub fn state_of(standing: Option<&Standing>, def: &AgentDefCfg) -> State {
-    standing.map_or(State::Pending, |s| {
-        s.approval_under(&def.pin).state(&s.sighting)
-    })
-}
-
-/// THE REFUSAL OF A UNIT WHOSE AGENT IS NOT SERVING, in the served engine's words: addressed to
-/// the agent (`addressed`), its admission refusal (`503`, `-32004`, `fronted agent `<id>` is not
-/// serving (<state>)[: <suspension>]`); routed by the caller's scope, the catalogue's (an agent that is not
-/// serving is in no caller's catalogue, so none reaches: `400`, `-32004`).
+/// THE REFUSAL OF A UNIT WHOSE AGENT IS NOT SERVING, in the served engine's words, at `status`:
+/// addressed to the agent (`addressed`), its admission refusal (`-32004`, `fronted agent `<id>` is
+/// not serving (<state>)[: <suspension>]`); routed by the caller's scope, the catalogue's (an agent
+/// that is not serving is in no caller's catalogue, so none reaches: `400`, `-32004`). The kernel's
+/// trust refusal is [`UNTRUSTED_STATUS`]; the plane's own anomaly suspension is
+/// [`NOT_SERVING_STATUS`].
 #[must_use]
 pub fn not_serving(
     addressed: Option<&str>,
     state: State,
     reason: Option<&str>,
+    status: u32,
 ) -> crate::arrival::Refusal {
     match (addressed, reason) {
         (Some(agent), Some(reason)) => crate::arrival::kernel_refusal(
-            NOT_SERVING_STATUS,
+            status,
             &format!("fronted agent `{agent}` is not serving ({state:?}): {reason}"),
         ),
         (Some(agent), None) => crate::arrival::kernel_refusal(
-            NOT_SERVING_STATUS,
+            status,
             &format!("fronted agent `{agent}` is not serving ({state:?})"),
         ),
         (None, _) => crate::arrival::scope_refusal(""),
     }
 }
+
+/// The status a unit is refused with when the kernel's trust book does not trust its agent
+/// (`untrusted`: never approved, or quarantined).
+pub const UNTRUSTED_STATUS: u32 = 403;
 
 /// The status a unit addressed to an agent that is not serving is refused with.
 pub const NOT_SERVING_STATUS: u32 = 503;
@@ -894,193 +732,37 @@ pub fn verify(
 
 // ── THE VERBS' ANSWERS ───────────────────────────────────────────────────────────────────────────
 
-/// THE TRUST VIEW of one registered agent, field for field the served engine's: what both verbs
-/// answer with.
+/// THE TRUST VIEW of one registered agent: what `connect` answers with. Its state is the kernel's
+/// verdict on the agent's key ([`state_of`]), or the plane's own `suspended`/`error`.
 #[derive(serde::Serialize)]
 struct TrustView<'a> {
     name: &'a str,
     state: &'static str,
     pin_mechanism: &'static str,
     fingerprint: Option<&'a str>,
-    pin_changed: bool,
-    added: Vec<String>,
-    changed: Vec<String>,
-    removed: Vec<String>,
     observed_skills: usize,
     failure: Option<&'a str>,
 }
 
-fn view(
-    name: &str,
-    state: State,
-    fingerprint: Option<&str>,
-    approval: &Approval,
-    sighting: &Sighting,
-) -> String {
-    let d = approval.drift(sighting);
+/// `connect`'s answer: what the card presented (`sighting`, which this look reported to the
+/// kernel's trust book) and the state the agent's key stands in now (`state`). A first sighting is
+/// `pending` until the operator approves the key `<instance>/<agent>` on `/admin/trust`.
+#[must_use]
+pub fn connect_view(name: &str, state: State, sighting: &Sighting) -> String {
+    let state = if sighting.failure().is_some() && state != State::Suspended {
+        State::Error
+    } else {
+        state
+    };
     serde_json::to_string(&TrustView {
         name,
         state: state.word(),
         pin_mechanism: sighting.mechanism(),
-        fingerprint,
-        pin_changed: d.pin_changed,
-        added: d.added,
-        changed: d.changed,
-        removed: d.removed,
+        fingerprint: sighting.seen().and_then(|o| o.pin.fingerprint()),
         observed_skills: sighting.skill_count(),
         failure: sighting.failure(),
     })
     .unwrap_or_default()
-}
-
-/// `connect`'s answer: a PREVIEW of `sighting` against `approval`. It never reports `approved` —
-/// a match against an existing lock is reported `pending`, so the preview cannot be read as the
-/// grant — and it surfaces the fingerprint the operator is being asked to approve.
-#[must_use]
-pub fn preview_view(name: &str, approval: &Approval, sighting: &Sighting) -> String {
-    let state = match approval.state(sighting) {
-        State::Approved => State::Pending,
-        other => other,
-    };
-    let fingerprint = sighting.seen().and_then(|o| o.pin.fingerprint());
-    view(name, state, fingerprint, approval, sighting)
-}
-
-/// `approve`'s answer: the registration as it now stands, its fingerprint the locked one.
-#[must_use]
-pub fn registration_view(name: &str, approval: &Approval, sighting: &Sighting) -> String {
-    let fingerprint = approval.pin().and_then(CardPin::fingerprint);
-    view(
-        name,
-        approval.state(sighting),
-        fingerprint,
-        approval,
-        sighting,
-    )
-}
-
-/// DOES WHAT THE ENDPOINT SERVES NOW AGREE WITH WHAT THE OPERATOR SAYS THEY APPROVED? Every arm
-/// is a refusal but the one where the observed fingerprint is the one `claimed` names.
-///
-/// # Errors
-///
-/// The refusal, in the served engine's words.
-pub fn agrees(sighting: &Sighting, claimed: &str) -> Result<(), String> {
-    if claimed.is_empty() {
-        return Err(
-            "`fingerprint` must name the canonical card fingerprint `connect` reported. An \
-             approval with nothing to compare is trust-on-first-use with a button on it."
-                .to_string(),
-        );
-    }
-    if let Some(reason) = sighting.failure() {
-        return Err(format!(
-            "the agent's card could not be authenticated, so there is nothing to approve: {reason}"
-        ));
-    }
-    match sighting.seen().and_then(|o| o.pin.fingerprint()) {
-        None => Err(
-            "this registration has no authenticity root (`pin.mechanism: unpinned`), so the card \
-             it serves has no fingerprint to approve. Supply an issuer key or a certificate SPKI \
-             out of band and name it in `pin:`."
-                .to_string(),
-        ),
-        Some(observed) if observed == claimed => Ok(()),
-        Some(observed) => Err(format!(
-            "the endpoint is serving fingerprint `{observed}` and the approval names `{claimed}`. \
-             The card moved between the preview and the approval, or the approval is for a \
-             different agent; re-run `connect` and read the new fingerprint before approving."
-        )),
-    }
-}
-
-/// THE `approve` BODY, `{"fingerprint": "…"}`, read as the served engine's JSON extractor read it:
-/// a JSON media type first, then the one field and no other. The fingerprint, or the refusal.
-///
-/// # Errors
-///
-/// The refusal, naming what the body must be.
-pub fn approve_body(content_type: Option<&str>, body: &[u8]) -> Result<String, String> {
-    let refused = |e: String| {
-        format!(
-            "the approve body must be `{{\"fingerprint\": \"…\"}}` naming the fingerprint \
-             `connect` reported: {e}"
-        )
-    };
-    if !content_type.is_some_and(is_json_media_type) {
-        return Err(refused(
-            "Expected request with `Content-Type: application/json`".to_string(),
-        ));
-    }
-    let mut inside = None;
-    let mut reader = serde_json::Deserializer::from_slice(body);
-    let fingerprint =
-        serde::de::DeserializeSeed::deserialize(ApproveSeed(&mut inside), &mut reader)
-            // Trailing bytes after the one document are a syntax refusal with no field to name.
-            .and_then(|fp| reader.end().map(|()| fp));
-    fingerprint.map_err(|e| {
-        let at = inside.map(|seg| format!("{seg}: ")).unwrap_or_default();
-        refused(match e.classify() {
-            serde_json::error::Category::Data => {
-                format!("Failed to deserialize the JSON body into the target type: {at}{e}")
-            }
-            _ => format!("Failed to parse the request body as JSON: {at}{e}"),
-        })
-    })
-}
-
-/// `application/json`, or any `application/*+json`, parameters aside.
-fn is_json_media_type(value: &str) -> bool {
-    let essence = value.split(';').next().unwrap_or_default().trim();
-    let Some((kind, sub)) = essence.split_once('/') else {
-        return false;
-    };
-    kind.eq_ignore_ascii_case("application")
-        && (sub.eq_ignore_ascii_case("json") || sub.to_ascii_lowercase().ends_with("+json"))
-}
-
-/// The one field of the `approve` body, read with the path the reader was at when it failed
-/// recorded in `.0` (the field's name, or `[0]` for the array spelling).
-struct ApproveSeed<'a>(&'a mut Option<&'static str>);
-
-impl<'de> serde::de::DeserializeSeed<'de> for ApproveSeed<'_> {
-    type Value = String;
-
-    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<String, D::Error> {
-        d.deserialize_struct("ApproveReq", &["fingerprint"], self)
-    }
-}
-
-impl<'de> serde::de::Visitor<'de> for ApproveSeed<'_> {
-    type Value = String;
-
-    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("struct ApproveReq")
-    }
-
-    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<String, A::Error> {
-        *self.0 = Some("[0]");
-        let fingerprint = seq.next_element::<String>()?;
-        *self.0 = None;
-        fingerprint
-            .ok_or_else(|| serde::de::Error::invalid_length(0, &"struct ApproveReq with 1 element"))
-    }
-
-    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<String, A::Error> {
-        let mut fingerprint = None;
-        while let Some(key) = map.next_key::<String>()? {
-            if key != "fingerprint" {
-                return Err(serde::de::Error::unknown_field(&key, &["fingerprint"]));
-            }
-            if fingerprint.is_some() {
-                return Err(serde::de::Error::duplicate_field("fingerprint"));
-            }
-            *self.0 = Some("fingerprint");
-            fingerprint = Some(map.next_value::<String>()?);
-            *self.0 = None;
-        }
-        fingerprint.ok_or_else(|| serde::de::Error::missing_field("fingerprint"))
-    }
 }
 
 #[cfg(test)]

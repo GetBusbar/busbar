@@ -1252,27 +1252,57 @@ fn settle_task(
     Ok(())
 }
 
+/// THE KERNEL'S VERDICT ON `agent` (`trust.serves`: the kernel's Approve as a query, ARCHITECT
+/// FLIP-A2A; it never pends, so it rides no ticket): [`svc::DISTRUST_NONE`] serves, any other
+/// `DISTRUST_*` refuses. An instance opened without host services, or a service that does not
+/// answer, is trusted with nothing.
+pub(crate) fn verdict(plane: &A2aDoor, agent: &str) -> u64 {
+    use busbar_contract::abi::host::service as svc;
+    let Some(services) = plane.services else {
+        return svc::DISTRUST_UNKNOWN;
+    };
+    let handle = CompletionHandle {
+        ticket: Ticket::NONE,
+        seq: 0,
+        _reserved: 0,
+    };
+    services
+        .trust_serves(handle, agent, None, None)
+        .unwrap_or(svc::DISTRUST_UNKNOWN)
+}
+
 /// THE ADMISSION AND THE CATALOGUE (the engine's `receive::admit`, after the kernel's identity and
-/// grant), for a unit routed to `member` (`def`): an agent that is not `approved` is refused in the
-/// admission's words ([`crate::trust::not_serving`]); one with no held card, or whose held card
-/// the request's shape (`envelope`) does not fit, is excluded from the catalogue — addressed, the
-/// catalogue's refusal naming the exclusion (`403`, [`crate::skill::refusal`]), routed by scope,
-/// the none-refusal. The skill the card matched.
+/// grant), for a unit routed to `member` (`def`): an agent the anomaly breaker suspended, or one
+/// the KERNEL'S TRUST BOOK does not serve ([`verdict`]: never approved, or quarantined), is refused
+/// in the admission's words ([`crate::trust::not_serving`]); one with no held card, or whose held
+/// card the request's shape (`envelope`) does not fit, is excluded from the catalogue — addressed,
+/// the catalogue's refusal naming the exclusion (`403`, [`crate::skill::refusal`]), routed by
+/// scope, the none-refusal. The skill the card matched.
 pub(crate) fn admit_unit(
     plane: &A2aDoor,
-    (member, def): (&str, &crate::a2a::config::AgentDefCfg),
+    (member, _def): (&str, &crate::a2a::config::AgentDefCfg),
     addressed: Option<&str>,
     generation: u64,
     envelope: Option<&serde_json::Value>,
 ) -> Result<Option<String>, arrival::Refusal> {
+    use crate::trust::{not_serving, state_of, State, NOT_SERVING_STATUS, UNTRUSTED_STATUS};
     let standing = plane.trust.get(&member.to_string());
-    let state = crate::trust::state_of(standing.as_ref(), def);
-    if state != crate::trust::State::Approved {
-        let approval = standing.as_ref().map(|s| s.approval_under(&def.pin));
-        let reason = approval
-            .as_ref()
-            .and_then(crate::trust::Approval::suspension);
-        return Err(crate::trust::not_serving(addressed, state, reason));
+    if let Some(reason) = standing.as_ref().and_then(|s| s.suspension.as_deref()) {
+        return Err(not_serving(
+            addressed,
+            State::Suspended,
+            Some(reason),
+            NOT_SERVING_STATUS,
+        ));
+    }
+    let distrust = verdict(plane, member);
+    if distrust != busbar_contract::abi::host::service::DISTRUST_NONE {
+        return Err(not_serving(
+            addressed,
+            state_of(distrust),
+            None,
+            UNTRUSTED_STATUS,
+        ));
     }
     let excluded = |unfit: crate::skill::Unfit| match addressed {
         Some(_) => crate::skill::refusal(&unfit),
@@ -1709,7 +1739,8 @@ slot!(
 );
 
 /// THE AGENTS OF `reachable` (the kernel's list for a unit routed by scope) IN THE CALLER'S
-/// CATALOGUE: the engine chose among those, and an agent that is not `approved`, holds no card, or
+/// CATALOGUE: the engine chose among those, and an agent the kernel's trust book does not serve,
+/// holds no card, or
 /// whose card the unit's request does not fit, is in no catalogue ([`admit_unit`]). Where exactly
 /// one of them is, the kernel's list stands: the engine would have chosen that one, and a refusal
 /// naming it alone would name no choice.
@@ -1782,7 +1813,28 @@ slot!(
             })
         })
         .flatten();
+        // A unit whose agent the KERNEL'S TRUST BOOK does not serve (its Approve refused the trust
+        // facts the arrival stated: never approved, or quarantined): the admission's words for an
+        // agent that is not serving, at the kernel's status, its state the book's verdict.
+        let untrusted = (given.reason
+            == busbar_contract::abi::plane::RefusalCode::Untrusted.code())
+        .then(|| {
+            instance.get().and_then(|plane| {
+                plane.units.with(&given.unit, |u| {
+                    let agent = u?.agent.clone()?;
+                    Some(crate::trust::not_serving(
+                        Some(&agent),
+                        crate::trust::state_of(u64::from(given.trust)),
+                        None,
+                        given.status,
+                    ))
+                })
+            })
+        })
+        .flatten();
         let rendered = if let Some(refusal) = &tripped {
+            arrival::render(dialect, refusal, true)
+        } else if let Some(refusal) = &untrusted {
             arrival::render(dialect, refusal, true)
         } else if scoped {
             let reachable = std::str::from_utf8(text).unwrap_or_default();
@@ -2274,6 +2326,10 @@ fn signed_by_root(
     }
 }
 
+/// THE CATALOGUE HASH a card that failed its verification is sighted under: no fingerprint is ever
+/// this, so a pinned (approved) agent sighted under it has drifted, and the kernel quarantines it.
+const UNVERIFIED_CARD: &str = "unverified";
+
 /// THE LOOK every trust read shares (`connect`, `approve` and verify-on-call), so no two of them
 /// judge a card differently: fetch the card, verify it against the registration's pin, and record
 /// the verified fingerprint on the kernel's trust book (`trust.sight`, which stamps the agent's
@@ -2295,7 +2351,12 @@ fn look(
     let (card, hop, issued) = fetch_card(at, name, def, resumed)?;
     let (verify_seq, sight_seq) = (issued, issued + 1);
     // A fetch the connector refused for the agent's pinned key reads as the pin's own refusal.
+    let refused_hop = card.as_ref().err().map(|_| ());
     let card = card.map_err(|e| crate::trust::hop_refusal(&def.pin, &hop, &def.url).unwrap_or(e));
+    // A fetch that brought no document back reached nothing: the kernel keeps its last verdict.
+    // A pinned key the connector refused is the card failing its pin, not the agent unreachable.
+    let unreachable =
+        refused_hop.is_some() && crate::trust::hop_refusal(&def.pin, &hop, &def.url).is_none();
     let looked = match card.and_then(|card| {
         crate::trust::verify(&def.pin, &card, &hop, || {
             signed_by_root(at, verify_seq, name, &card)
@@ -2312,17 +2373,30 @@ fn look(
         },
     };
     let issued = sight_seq + 1;
-    let fingerprint = match &looked.sighting {
-        Sighting::Seen(seen) => seen.pin.fingerprint(),
-        _ => None,
+    // THE SIGHTING ON THE KERNEL'S TRUST BOOK (ARCHITECT FLIP-A2A: the plane reports, the kernel
+    // pins and demotes): the verified fingerprint as the agent's catalogue hash; a card that did
+    // not verify against its pin as [`UNVERIFIED_CARD`], which is never an approved catalogue, so
+    // an approved agent whose card stopped verifying is quarantined; an agent that could not be
+    // reached at all as `trust.unreachable`, its last verdict kept. An `unpinned` card has no
+    // fingerprint and is sighted never (it can never be approved).
+    let Some(services) = at.plane.services else {
+        return Ok((looked, issued));
     };
-    if let (Some(fingerprint), Some(services)) = (fingerprint, at.plane.services) {
-        if services
-            .trust_sight(at.handle(sight_seq), name, fingerprint)
-            .is_pending()
-        {
-            return Err(LookParked::Sighted(looked, issued));
+    let sighted = match &looked.sighting {
+        Sighting::Seen(seen) => seen
+            .pin
+            .fingerprint()
+            .map(|fp| services.trust_sight(at.handle(sight_seq), name, fp)),
+        Sighting::Failed(_) if unreachable => {
+            Some(services.trust_unreachable(at.handle(sight_seq), name))
         }
+        Sighting::Failed(_) => {
+            Some(services.trust_sight(at.handle(sight_seq), name, UNVERIFIED_CARD))
+        }
+        Sighting::Never => None,
+    };
+    if sighted.is_some_and(|s| s.is_pending()) {
+        return Err(LookParked::Sighted(looked, issued));
     }
     Ok((looked, issued))
 }
@@ -2347,8 +2421,10 @@ fn verify_on_call(
     let Some(now_ms) = reach.now_ms() else {
         return Poll::Ready(false);
     };
+    // SERVING is the kernel's verdict on the agent's key, and not a suspension of the plane's.
     let serves = |standing: &crate::trust::Standing| {
-        crate::trust::state_of(Some(standing), def) == crate::trust::State::Approved
+        standing.suspension.is_none()
+            && verdict(plane, member) == busbar_contract::abi::host::service::DISTRUST_NONE
     };
     // A UNIT WAITING ON ANOTHER'S LOOK takes its verdict, never a look of its own — unless that
     // look was abandoned before it landed, when the waiter looks again (the engine's gate,
@@ -2390,15 +2466,7 @@ fn verify_on_call(
     pass.issued = issued;
     // RE-READ: another unit may have moved the standing while this look was in flight.
     let mut standing = plane.trust.get(&key).unwrap_or_default();
-    let approval = standing.approval_under(&def.pin);
-    let recorded = standing.sighting.clone();
-    standing.sighting = cadence.settle(
-        &approval,
-        &recorded,
-        looked.sighting,
-        &mut standing.ledger,
-        now_ms,
-    );
+    standing.sighting = cadence.settle(looked.sighting, &mut standing.ledger, now_ms);
     if let Some(card) = looked.card {
         plane.cards.hold(member, generation, card);
     }
@@ -2527,25 +2595,18 @@ fn verb_refused(
 }
 
 slot!(
-    /// `serve`: the trust verbs over the section's registrations (ARCHITECT Q-L3B-VERBS), in the
-    /// served engine's order and words:
+    /// `serve`: the trust verb over the section's registrations (ARCHITECT Q-L3B-VERBS), in the
+    /// served engine's order and words. There is ONE: `connect`. Approving is the operator's act on
+    /// the kernel's trust book, the generic core-admin `/admin/trust` (ARCHITECT FLIP-A2A); the
+    /// plane holds no approval and serves no approve verb.
     ///
     /// * an unregistered name is `404` before anything else, audited nowhere;
-    /// * `approve` reads its body (`{"fingerprint": "…"}`) next, and a malformed one is `400`
-    ///   (the malformed-body condition), audited nowhere;
-    /// * both then LOOK ([`look`]): the card fetched over the agent's own connection need and
-    ///   verified against its pin;
-    /// * `connect` answers its preview and writes nothing — it never grants;
-    /// * `approve` compares what the endpoint serves now against the fingerprint the operator
-    ///   names and refuses any disagreement `400` (the invalid-config condition), audited
-    ///   rejected; otherwise it locks the identity and the skills seen, holds the verified card for
-    ///   the relay, and answers the registration as it now stands.
+    /// * `connect` LOOKS ([`look`]): the card fetched over the agent's own connection need,
+    ///   verified against its pin and SIGHTED on the kernel's trust book; it holds the verified card
+    ///   for the relay and answers what the card presented and the state the agent's key stands in
+    ///   ([`crate::trust::connect_view`]): a first sighting is `pending` until approved.
     Serve, ServeIn, ServeOut, |instance, input, mut out| {
-        use busbar_contract::abi::plane::{AUDIT_APPLIED, AUDIT_NONE, AUDIT_REJECTED};
-        use busbar_contract::plane::{
-            ADMIN_CONDITION_INVALID_CONFIG as INVALID_CONFIG,
-            ADMIN_CONDITION_MALFORMED_BODY as MALFORMED_BODY,
-        };
+        use busbar_contract::abi::plane::{AUDIT_APPLIED, AUDIT_NONE};
         let Some(plane) = instance.get() else {
             return Outcome::Failed;
         };
@@ -2555,7 +2616,6 @@ slot!(
         let Some((_, route)) = door::ADMIN_VERBS.get(input.get().route as usize) else {
             return verb_refused(&input, &mut out, STATUS_NOT_FOUND, "", None, AUDIT_NONE);
         };
-        let approving = route.ends_with("/approve");
         let registered = |name: &str| {
             plane
                 .generations
@@ -2566,26 +2626,6 @@ slot!(
             .and_then(|name| registered(&name).map(|def| (name, def)));
         let Some((name, def)) = found else {
             return verb_refused(&input, &mut out, STATUS_NOT_FOUND, "", None, AUDIT_NONE);
-        };
-        let claimed = if approving {
-            let fields = input.fields();
-            let content_type = fields
-                .iter()
-                .find(|f| {
-                    f.field(|f| &f.name)
-                        .as_str()
-                        .is_ok_and(|n| n.eq_ignore_ascii_case(relay::H_CONTENT_TYPE))
-                })
-                .and_then(|f| f.field(|f| &f.value).as_str().ok());
-            match crate::trust::approve_body(content_type, input.field(|i| &i.body).bytes()) {
-                Ok(fingerprint) => Some(fingerprint),
-                Err(refusal) => {
-                    let condition = Some(MALFORMED_BODY);
-                    return verb_refused(&input, &mut out, 400, &refusal, condition, AUDIT_NONE);
-                }
-            }
-        } else {
-            None
         };
         let at = LookAt {
             plane,
@@ -2599,42 +2639,20 @@ slot!(
                 return Outcome::Pending;
             }
         };
-        let standing = plane.trust.get(&name).unwrap_or_default();
-        let approval = standing.approval_under(&def.pin);
-        let Some(claimed) = claimed else {
-            // A PREVIEW WRITES NOTHING: what the registration stands on is untouched.
-            let view = crate::trust::preview_view(&name, &approval, &looked.sighting);
-            return out.answer(&input, 200, VIEW_FIELDS, view.as_bytes(), AUDIT_APPLIED);
-        };
-        if let Err(refusal) = crate::trust::agrees(&looked.sighting, claimed.trim()) {
-            let condition = Some(INVALID_CONFIG);
-            return verb_refused(&input, &mut out, 400, &refusal, condition, AUDIT_REJECTED);
-        }
-        // RE-FOUND, NOT ASSUMED: a refresh may have dropped the registration or moved its pin
-        // while the card was fetched, and an approval is the operator's decision about the
-        // registration as it stands.
-        if registered(&name).is_none_or(|now| now.pin != def.pin) {
-            return verb_refused(&input, &mut out, STATUS_NOT_FOUND, "", None, AUDIT_REJECTED);
-        }
-        let mut approval = approval;
-        if let Err(refusal) = approval.approve(&looked.sighting) {
-            return verb_refused(&input, &mut out, 400, &refusal, None, AUDIT_REJECTED);
-        }
-        // THE SERVED CARD, warmed from the document this approval just verified: the relay reads
-        // the agent's binding and skills off it.
+        // THE SERVED CARD, warmed from the document this look just verified: the relay reads the
+        // agent's binding and skills off it once the key is approved.
         if let Some(card) = looked.card {
             plane.cards.hold(&name, plane.newest(), card);
         }
-        let view = crate::trust::registration_view(&name, &approval, &looked.sighting);
-        plane.trust.insert(
-            name,
-            crate::trust::Standing {
-                approval,
-                locked_under: Some(def.pin.clone()),
-                sighting: looked.sighting,
-                ..standing
-            },
-        );
+        let mut standing = plane.trust.get(&name).unwrap_or_default();
+        let state = if standing.suspension.is_some() {
+            crate::trust::State::Suspended
+        } else {
+            crate::trust::state_of(verdict(plane, &name))
+        };
+        let view = crate::trust::connect_view(&name, state, &looked.sighting);
+        standing.sighting = looked.sighting;
+        plane.trust.insert(name, standing);
         out.answer(&input, 200, VIEW_FIELDS, view.as_bytes(), AUDIT_APPLIED)
     }
 );

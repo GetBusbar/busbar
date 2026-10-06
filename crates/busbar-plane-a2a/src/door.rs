@@ -475,23 +475,21 @@ pub fn line_of(route: &Route) -> Line {
     Line::Target
 }
 
-/// The trust verbs the plane serves on the kernel's admin mount, relative to it: `(verb, target)`;
+/// The trust verb the plane serves on the kernel's admin mount, relative to it: `(verb, target)`
+/// (`connect`; approving is the operator's act on the generic `/admin/trust`, ARCHITECT FLIP-A2A);
 /// then busbar's own push callback, a PUBLIC route ([`PUSH_ROUTE`]).
-pub const ADMIN_VERBS: &[(&str, &str)] = &[
-    ("POST", "/agents/{name}/connect"),
-    ("POST", "/agents/{name}/approve"),
-    ("POST", "/a2a/push"),
-];
+pub const ADMIN_VERBS: &[(&str, &str)] =
+    &[("POST", "/agents/{name}/connect"), ("POST", "/a2a/push")];
 
 /// BUSBAR'S OWN PUSH CALLBACK's index in [`ADMIN_VERBS`]: `POST /a2a/push`, a PUBLIC route
 /// (`ROUTE_PUBLIC`) on the data listener's mount beside the plane's claims, served by `serve` to
 /// an agent that holds no busbar key (ARCHITECT ruling Q3c, 2026-10-04; its kernel path is
 /// SEAM-4o's). It is not a claim: the plane is not a second claimant of the path.
-pub const PUSH_ROUTE: usize = 2;
+pub const PUSH_ROUTE: usize = 1;
 
-/// The word the kernel's audit row names each [`ADMIN_VERBS`] request by: the engine's audit verbs
-/// (the shared `connect`, and `approve`); the push callback is never audited (the engine's was not).
-pub const ADMIN_AUDIT_VERBS: [&str; 3] = ["connect", "approve", ""];
+/// The word the kernel's audit row names each [`ADMIN_VERBS`] request by: the engine's audit verb
+/// (the shared `connect`); the push callback is never audited (the engine's was not).
+pub const ADMIN_AUDIT_VERBS: [&str; 2] = ["connect", ""];
 
 const fn admin_route(i: usize, flags: u32) -> AdminRoute {
     AdminRoute {
@@ -506,20 +504,17 @@ const fn admin_route(i: usize, flags: u32) -> AdminRoute {
 /// [`ADMIN_VERBS`] in the ABI's spelling.
 pub const ADMIN_ROUTES: &[AdminRoute] = &[
     admin_route(0, 0),
-    admin_route(1, 0),
     admin_route(PUSH_ROUTE, busbar_contract::abi::plane::ROUTE_PUBLIC),
 ];
 
 /// THE TRUST VERBS' OpenAPI FRAGMENT, each path relative to the admin mount (the kernel keys it
-/// under the mount): the served engine's text. Each verb's `200` names its typed body by `$ref`,
-/// `approve` names its required request body (`ApproveReq`, the one-field `{"fingerprint": …}`
-/// document) the same way, and the neutral `components.schemas` key carries both bodies
-/// (`A2aTrustView`, `ApproveReq`) as data, since a door links no schema generator; the kernel's
+/// under the mount): the served engine's text. The verb's `200` names its typed body by `$ref`,
+/// and the neutral `components.schemas` key carries it (`A2aTrustView`) as data, since a door links no schema generator; the kernel's
 /// fold inserts them into the admin document's `#/components/schemas` (ARCHITECT Q2). It is the
 /// committed admin `openapi.json`'s entry verbatim (the scope, security, operation id, plane mark
 /// and error statuses are the admin generator's own stamps), which the admin crate's drift test
 /// holds.
-pub const ADMIN_OPENAPI: &str = r##"{"/agents/{name}/connect":{"post":{"summary":"Fetch a registered agent's card, verify it against the operator's out-of-band root, and report the fingerprint. Approves nothing and writes nothing","security":[{"adminToken":[]}],"parameters":[{"name":"name","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"OK (the derived trust state and the fingerprint a human is being asked to approve; a card that could not be authenticated is still a 200 — the reason is in `failure` and the state is `error`)","content":{"application/json":{"schema":{"$ref":"#/components/schemas/A2aTrustView"}}}}}}},"/agents/{name}/approve":{"post":{"summary":"Lock a registered agent to the card fingerprint the operator has SEEN. The card is re-fetched and re-verified, and an approval naming any other fingerprint is refused","security":[{"adminToken":[]}],"parameters":[{"name":"name","in":"path","required":true,"schema":{"type":"string"}}],"requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ApproveReq"}}},"required":true},"responses":{"200":{"description":"OK (the registration's state AFTER the approval, read off the live registry)","content":{"application/json":{"schema":{"$ref":"#/components/schemas/A2aTrustView"}}}}}}},"components":{"schemas":{"A2aTrustView":{"description":"THE TRUST VIEW of one registered agent — what both verbs answer with.\n\nThe sibling of the tool-serving plane's trust view and shaped like it on purpose: an\noperator console rendering both planes should be rendering one component. It is NOT the same\ntype, because the two planes' capability vocabularies differ (a `tools:` entry has an approved\ndigest per tool; an `agents:` entry has a skill set on a card) and merging them would mean one\nof the planes filling in fields that mean nothing to it.","properties":{"added":{"description":"Offered now, never ruled on.","items":{"type":"string"},"type":"array"},"changed":{"description":"Approved, but offered at a DIFFERENT digest. THIS IS THE RUG-PULL ROW.","items":{"type":"string"},"type":"array"},"failure":{"description":"Why the contact failed, when it did.","type":["string","null"]},"fingerprint":{"description":"THE CANONICAL CARD FINGERPRINT AN OPERATOR IS BEING ASKED TO APPROVE. Surfaced explicitly\nrather than left for a caller to dig out, because this is the one string that goes in front\nof the human and `approve` refuses anything else.","type":["string","null"]},"name":{"type":"string"},"observed_skills":{"description":"How many skills the observation carried.","format":"uint","minimum":0,"type":"integer"},"pin_changed":{"description":"The presented identity is not the locked one. Its own axis: adopting a new identity is a\ndifferent act from adopting new content.","type":"boolean"},"pin_mechanism":{"description":"The operator's word for the authenticity root, as the OBSERVED pin names it. Never\ninterpreted by the machine.","type":"string"},"removed":{"description":"Approved, and no longer offered.","items":{"type":"string"},"type":"array"},"state":{"description":"`pending`, `approved`, `quarantined`, `suspended` or `error`. DERIVED on every read from the\nstanding approval and the sighting, so there is no stored state to go stale.","type":"string"}},"required":["name","state","pin_mechanism","fingerprint","pin_changed","added","changed","removed","observed_skills","failure"],"type":"object"},"ApproveReq":{"additionalProperties":false,"description":"The `approve` request body. ONE required field, and it is required because it is the operator's\nevidence that they looked.","properties":{"fingerprint":{"description":"The canonical card fingerprint EXACTLY as `connect` reported it.","type":"string"}},"required":["fingerprint"],"type":"object"}}}}"##;
+pub const ADMIN_OPENAPI: &str = r##"{"/agents/{name}/connect":{"post":{"summary":"Fetch a registered agent's card, verify it against the operator's out-of-band root, and report what it presented and the state its trust key stands in. Approves nothing: approving is the operator's act on /admin/trust","security":[{"adminToken":[]}],"parameters":[{"name":"name","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"OK (the agent's key's state on the kernel's trust book and the fingerprint the card presented, which this look sighted; a first sighting is `pending` until the operator approves `<instance>/<agent>` on `/admin/trust`; a card that could not be authenticated is still a 200 — the reason is in `failure` and the state is `error`)","content":{"application/json":{"schema":{"$ref":"#/components/schemas/A2aTrustView"}}}}}}},"components":{"schemas":{"A2aTrustView":{"description":"THE TRUST VIEW of one registered agent: what `connect` answers with.\n\nIts state is the kernel's verdict on the agent's trust key (approving is the operator's act on\nthe generic `/admin/trust`), or the plane's own `suspended`/`error`.","properties":{"failure":{"description":"Why the contact failed, when it did.","type":["string","null"]},"fingerprint":{"description":"THE CANONICAL CARD FINGERPRINT the card presented: what this look sighted on the kernel's\ntrust book, and so what an approval of the agent's key approves.","type":["string","null"]},"name":{"type":"string"},"observed_skills":{"description":"How many skills the observation carried.","format":"uint","minimum":0,"type":"integer"},"pin_mechanism":{"description":"The operator's word for the authenticity root, as the OBSERVED pin names it. Never\ninterpreted by the machine.","type":"string"},"state":{"description":"`pending`, `approved`, `quarantined`, `suspended` or `error`: the kernel's verdict on the\nagent's trust key, the plane's own anomaly suspension, or a failed contact.","type":"string"}},"required":["name","state","pin_mechanism","fingerprint","observed_skills","failure"],"type":"object"}}}}"##;
 
 /// THE TRUST VERBS' OpenAPI FRAGMENT ([`ADMIN_OPENAPI`]), each path keyed under `admin_prefix`
 /// (the door's snapshot passes none and states the paths relative to the admin mount).

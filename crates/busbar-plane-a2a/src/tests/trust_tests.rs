@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The trust surface's decisions, against the served engine's words: the card fetch's refusals,
-//! the verification per mechanism, the approval and its cap, the derived state, the two views and
-//! the `approve` body.
+//! The trust surface, plane side, against the served engine's words: the card fetch's refusals,
+//! the verification per mechanism, the kernel's verdict in the admission's words, the `connect`
+//! view, the cadence and the anomaly suspension. The DECISION (approval, quarantine) is the
+//! kernel's trust book's, tested there and end to end on the root's agent door.
 
 use serde_json::json;
 
@@ -159,26 +160,54 @@ fn the_kernel_s_signature_verdicts_are_worded_as_the_engine_worded_them() {
 }
 
 #[test]
-fn approval_locks_what_was_seen_and_drift_quarantines_it() {
-    let first = seen(&card("plans"));
-    let mut approval = Approval::default();
-    assert_eq!(approval.state(&first), State::Pending);
-    approval.approve(&first).unwrap();
-    assert_eq!(approval.state(&first), State::Approved);
-    assert_eq!(approval.state(&Sighting::Never), State::Approved);
-    let moved = seen(&card("plans, and forwards your text"));
-    assert_eq!(approval.state(&moved), State::Quarantined);
-    let d = approval.drift(&moved);
-    assert!(d.pin_changed, "the fingerprint moved");
-    assert_eq!(d.changed, vec!["plan".to_string()]);
-    assert_eq!(
-        approval.state(&Sighting::Failed("down".to_string())),
-        State::Error
-    );
+fn the_kernel_s_verdict_reads_as_the_admission_s_state() {
+    assert_eq!(state_of(svc::DISTRUST_NONE), State::Approved);
+    for pending in [
+        svc::DISTRUST_UNKNOWN,
+        svc::DISTRUST_UNSIGHTED,
+        svc::DISTRUST_NOT_APPROVED,
+        svc::DISTRUST_UNKNOWN_ITEM,
+    ] {
+        assert_eq!(state_of(pending), State::Pending, "{pending}");
+    }
+    for quarantined in [svc::DISTRUST_QUARANTINED, svc::DISTRUST_CHANGED] {
+        assert_eq!(state_of(quarantined), State::Quarantined, "{quarantined}");
+    }
 }
 
 #[test]
-fn an_unpinned_registration_is_captured_and_never_approved() {
+fn the_connect_view_is_what_the_card_presented_and_the_key_s_state() {
+    let s = seen(&card("plans"));
+    let fp = card::fingerprint(&card("plans")).unwrap();
+    assert_eq!(
+        connect_view("planner", State::Pending, &s),
+        format!(
+            r#"{{"name":"planner","state":"pending","pin_mechanism":"jws_issuer_key","fingerprint":"{fp}","observed_skills":1,"failure":null}}"#
+        )
+    );
+    let approved: Value =
+        serde_json::from_str(&connect_view("planner", State::Approved, &s)).unwrap();
+    assert_eq!(approved["state"], "approved");
+    let failed: Value = serde_json::from_str(&connect_view(
+        "planner",
+        State::Approved,
+        &Sighting::Failed("down".to_string()),
+    ))
+    .unwrap();
+    assert_eq!(failed["state"], "error", "a failed contact reads as error");
+    assert_eq!(failed["failure"], "down");
+    assert_eq!(failed["fingerprint"], Value::Null);
+    let suspended: Value = serde_json::from_str(&connect_view(
+        "planner",
+        State::Suspended,
+        &Sighting::Failed("down".to_string()),
+    ))
+    .unwrap();
+    assert_eq!(suspended["state"], "suspended", "a suspension outranks it");
+}
+
+#[test]
+fn an_unpinned_registration_presents_no_fingerprint_to_sight() {
     let c = card("plans");
     let unpinned = Sighting::Seen(
         verify(
@@ -189,107 +218,10 @@ fn an_unpinned_registration_is_captured_and_never_approved() {
         )
         .unwrap(),
     );
-    assert!(Approval::default()
-        .approve(&unpinned)
-        .unwrap_err()
-        .contains("no authenticity root (unpinned)"));
-    assert!(agrees(&unpinned, "sha256:x")
-        .unwrap_err()
-        .contains("`pin.mechanism: unpinned`"));
-    let preview: Value =
-        serde_json::from_str(&preview_view("a", &Approval::default(), &unpinned)).unwrap();
-    assert_eq!(preview["state"], "pending");
-    assert_eq!(preview["fingerprint"], Value::Null);
-    assert_eq!(preview["pin_mechanism"], "unpinned");
-}
-
-#[test]
-fn the_preview_never_reports_approved_and_names_the_fingerprint() {
-    let s = seen(&card("plans"));
-    let mut approval = Approval::default();
-    approval.approve(&s).unwrap();
-    let fp = card::fingerprint(&card("plans")).unwrap();
-    assert_eq!(
-        preview_view("planner", &approval, &s),
-        format!(
-            r#"{{"name":"planner","state":"pending","pin_mechanism":"jws_issuer_key","fingerprint":"{fp}","pin_changed":false,"added":[],"changed":[],"removed":[],"observed_skills":1,"failure":null}}"#
-        )
-    );
-    let view: Value = serde_json::from_str(&registration_view("planner", &approval, &s)).unwrap();
-    assert_eq!(view["state"], "approved");
-    assert_eq!(view["fingerprint"], fp.as_str());
-}
-
-#[test]
-fn agreement_refuses_every_arm_but_the_named_fingerprint() {
-    let s = seen(&card("plans"));
-    let fp = card::fingerprint(&card("plans")).unwrap();
-    assert_eq!(agrees(&s, &fp), Ok(()));
-    assert!(agrees(&s, "")
-        .unwrap_err()
-        .starts_with("`fingerprint` must name"));
-    assert!(agrees(&s, "sha256:other")
-        .unwrap_err()
-        .contains("The card moved between the preview and the approval"));
-    assert!(agrees(&Sighting::Failed("down".to_string()), &fp)
-        .unwrap_err()
-        .ends_with("nothing to approve: down"));
-}
-
-#[test]
-fn a_lock_taken_under_another_pin_does_not_hold() {
-    let s = seen(&card("plans"));
-    let mut approval = Approval::default();
-    approval.approve(&s).unwrap();
-    let standing = Standing {
-        approval,
-        locked_under: Some(signed_root()),
-        sighting: s,
-        ..Standing::default()
-    };
-    assert_eq!(standing.approval_under(&signed_root()), standing.approval);
-    let moved = pin(PinMechanism::JwsIssuerKey, Some("other"));
-    assert_eq!(standing.approval_under(&moved), Approval::default());
-}
-
-#[test]
-fn the_approve_body_is_read_as_the_engine_s_extractor_read_it() {
-    let json = Some("application/json");
-    assert_eq!(
-        approve_body(json, br#"{"fingerprint":"sha256:a"}"#),
-        Ok("sha256:a".to_string())
-    );
-    assert_eq!(
-        approve_body(
-            Some("application/merge+json; charset=utf-8"),
-            br#"{"fingerprint":"f"}"#
-        ),
-        Ok("f".to_string())
-    );
-    let prefix =
-        "the approve body must be `{\"fingerprint\": \"…\"}` naming the fingerprint `connect` reported: ";
-    assert_eq!(
-        approve_body(None, b"{}").unwrap_err(),
-        format!("{prefix}Expected request with `Content-Type: application/json`")
-    );
-    assert_eq!(
-        approve_body(json, b"{").unwrap_err(),
-        format!("{prefix}Failed to parse the request body as JSON: EOF while parsing an object at line 1 column 1")
-    );
-    assert_eq!(
-        approve_body(json, b"{}").unwrap_err(),
-        format!("{prefix}Failed to deserialize the JSON body into the target type: missing field `fingerprint` at line 1 column 2")
-    );
-    assert_eq!(
-        approve_body(json, br#"{"fingerprint":5}"#).unwrap_err(),
-        format!("{prefix}Failed to deserialize the JSON body into the target type: fingerprint: invalid type: integer `5`, expected a string at line 1 column 16")
-    );
-    assert!(approve_body(json, br#"{"x":1}"#)
-        .unwrap_err()
-        .contains("unknown field `x`, expected `fingerprint`"));
-    assert!(approve_body(json, br#"{"fingerprint":"a"} x"#)
-        .unwrap_err()
-        .contains("Failed to parse the request body as JSON: trailing characters"));
+    let view: Value = serde_json::from_str(&connect_view("a", State::Pending, &unpinned)).unwrap();
+    assert_eq!(view["state"], "pending");
+    assert_eq!(view["fingerprint"], Value::Null);
+    assert_eq!(view["pin_mechanism"], "unpinned");
 }
 
 fn def_of(pin: AgentPinCfg, cadence: serde_json::Value) -> AgentDefCfg {
@@ -301,36 +233,16 @@ fn def_of(pin: AgentPinCfg, cadence: serde_json::Value) -> AgentDefCfg {
 }
 
 #[test]
-fn only_an_approved_registration_serves_and_an_unpinned_one_never_does() {
-    let unpinned = def_of(pin(PinMechanism::Unpinned, None), json!({}));
-    assert_eq!(state_of(None, &unpinned), State::Pending);
-    let rooted = def_of(signed_root(), json!({}));
-    assert_eq!(state_of(None, &rooted), State::Pending);
-    let s = seen(&card("plans"));
-    let mut approval = Approval::default();
-    approval.approve(&s).unwrap();
-    let mut standing = Standing {
-        approval,
-        locked_under: Some(signed_root()),
-        sighting: s,
-        ..Standing::default()
-    };
-    assert_eq!(state_of(Some(&standing), &rooted), State::Approved);
-    standing.sighting = seen(&card("moved"));
-    assert_eq!(state_of(Some(&standing), &rooted), State::Quarantined);
-}
-
-#[test]
 fn a_unit_whose_agent_is_not_serving_is_refused_in_the_engine_s_words() {
-    let addressed = not_serving(Some("planner"), State::Pending, None);
-    assert_eq!(addressed.status, 503);
+    let addressed = not_serving(Some("planner"), State::Pending, None, UNTRUSTED_STATUS);
+    assert_eq!(addressed.status, 403, "the kernel's trust refusal");
     assert_eq!(
         serde_json::to_value(addressed.envelope()).unwrap()["error"]["message"],
         "fronted agent `planner` is not serving (Pending)"
     );
     assert_eq!(addressed.envelope()["id"], Value::Null);
     assert_eq!(addressed.envelope()["error"]["code"], -32004);
-    let scoped = not_serving(None, State::Quarantined, None);
+    let scoped = not_serving(None, State::Quarantined, None, UNTRUSTED_STATUS);
     assert_eq!(scoped.status, 400);
     assert_eq!(
         scoped.envelope()["error"]["message"],
@@ -342,13 +254,11 @@ fn a_unit_whose_agent_is_not_serving_is_refused_in_the_engine_s_words() {
 fn the_cadence_reads_the_registration_and_its_defaults() {
     let defaults = Cadence::of(&def_of(signed_root(), json!({})));
     assert_eq!(defaults.ttl_ms, 5_000);
-    assert_eq!(defaults.recovery_backoff_ms, 15 * 60 * 1_000);
     let spelled = Cadence::of(&def_of(
         signed_root(),
         json!({"reverify_ttl": "0s", "recovery_backoff": "1m"}),
     ));
     assert_eq!(spelled.ttl_ms, 0);
-    assert_eq!(spelled.recovery_backoff_ms, 60_000);
     let mut ledger = Ledger::default();
     assert!(defaults.due(&ledger, 1), "never looked is due");
     ledger.last_checked_ms = Some(1_000);
@@ -362,35 +272,15 @@ fn the_cadence_reads_the_registration_and_its_defaults() {
 }
 
 #[test]
-fn settling_records_drift_at_once_and_holds_recovery_for_the_backoff() {
-    let cadence = Cadence {
-        ttl_ms: 0,
-        recovery_backoff_ms: 1_000,
-    };
-    let approved = seen(&card("plans"));
-    let mut approval = Approval::default();
-    approval.approve(&approved).unwrap();
+fn settling_stamps_the_look_and_records_what_it_observed() {
+    let cadence = Cadence { ttl_ms: 0 };
     let mut ledger = Ledger::default();
     let drifted = seen(&card("moved"));
-    let recorded = cadence.settle(&approval, &approved, drifted.clone(), &mut ledger, 10);
-    assert_eq!(recorded, drifted, "detection is never held");
-    assert_eq!(
-        (ledger.last_drift_ms, ledger.drift_observations),
-        (Some(10), 1)
-    );
-    let held = cadence.settle(&approval, &recorded, approved.clone(), &mut ledger, 500);
-    assert_eq!(
-        held, drifted,
-        "a clean answer inside the backoff is disbelieved"
-    );
-    let cleared = cadence.settle(&approval, &held, approved.clone(), &mut ledger, 1_010);
-    assert_eq!(
-        cleared, approved,
-        "after the backoff the clean answer is recorded"
-    );
+    assert_eq!(cadence.settle(drifted.clone(), &mut ledger, 10), drifted);
+    assert_eq!(ledger.last_checked_ms, Some(10));
     let failed = Sighting::Failed("down".to_string());
     assert_eq!(
-        cadence.settle(&approval, &cleared, failed.clone(), &mut ledger, 2_000),
+        cadence.settle(failed.clone(), &mut ledger, 2_000),
         failed,
         "a failed contact is recorded, never read as unchanged"
     );
@@ -398,40 +288,25 @@ fn settling_records_drift_at_once_and_holds_recovery_for_the_backoff() {
 }
 
 #[test]
-fn a_suspension_refuses_whatever_the_card_and_names_its_reason() {
-    let s = seen(&card("plans"));
-    let mut approval = Approval::default();
-    approval.approve(&s).unwrap();
-    approval.suspend("vendor breach notice");
-    assert_eq!(approval.state(&s), State::Suspended);
-    assert_eq!(
-        approval.state(&Sighting::Failed("down".into())),
-        State::Suspended
+fn a_suspension_refuses_in_the_admission_s_words_naming_its_reason() {
+    let refusal = not_serving(
+        Some("planner"),
+        State::Suspended,
+        Some("vendor breach notice"),
+        NOT_SERVING_STATUS,
     );
-    let refusal = not_serving(Some("planner"), State::Suspended, approval.suspension());
+    assert_eq!(refusal.status, 503);
     assert_eq!(
         refusal.envelope()["error"]["message"],
         "fronted agent `planner` is not serving (Suspended): vendor breach notice"
-    );
-    let mut relocked = approval.clone();
-    relocked.approve(&s).unwrap();
-    assert_eq!(
-        relocked.state(&s),
-        State::Suspended,
-        "an approval does not lift it"
     );
 }
 
 #[test]
 fn the_anomaly_breaker_trips_only_on_configured_thresholds_and_never_lifts() {
     use crate::a2a::anomaly::{Thresholds, Window};
-    let s = seen(&card("plans"));
-    let mut approval = Approval::default();
-    approval.approve(&s).unwrap();
     let mut standing = Standing {
-        approval,
-        locked_under: Some(signed_root()),
-        sighting: s,
+        sighting: seen(&card("plans")),
         ..Standing::default()
     };
     standing.window = Window {
@@ -452,17 +327,10 @@ fn the_anomaly_breaker_trips_only_on_configured_thresholds_and_never_lifts() {
     let trip = standing
         .apply_anomaly_breaker()
         .expect("a configured threshold trips");
-    assert_eq!(standing.approval.suspension(), Some(trip.reason().as_str()));
-    assert_eq!(
-        state_of(Some(&standing), &def_of(signed_root(), json!({}))),
-        State::Suspended
-    );
+    assert_eq!(standing.suspension.as_deref(), Some(trip.reason().as_str()));
     standing.window = Window::default();
     assert_eq!(standing.apply_anomaly_breaker(), None);
-    assert!(
-        standing.approval.suspension().is_some(),
-        "the breaker never lifts it"
-    );
+    assert!(standing.suspension.is_some(), "the breaker never lifts it");
 }
 
 #[test]
@@ -636,9 +504,10 @@ fn a_transport_pin_is_observed_approvable_and_enforced_as_the_engine_judged_it()
             fingerprint: card::fingerprint(&c).unwrap(),
         }
     );
-    let mut lock = Approval::default();
-    lock.approve(&Sighting::Seen(seen))
-        .expect("an observed key is approvable");
+    assert!(
+        seen.pin.fingerprint().is_some(),
+        "an observed key is sighted by its fingerprint"
+    );
 
     assert_eq!(
         verify(&spki, &c, &hop(None, false), || Ok(())).unwrap_err(),

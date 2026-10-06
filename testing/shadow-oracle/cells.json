@@ -55,16 +55,16 @@
     }
   ],
   "counts": {
-    "total": 2512,
+    "total": 2510,
     "by_plane": {
       "a2a": 468,
-      "core": 983,
+      "core": 981,
       "llm": 149,
       "mcp": 912
     },
     "by_family": {
       "a2a": 469,
-      "admin.ops": 329,
+      "admin.ops": 327,
       "admin.plugins": 7,
       "auth.lifecycle": 3,
       "billing": 15,
@@ -176,16 +176,13 @@
               ]
             },
             "record": false,
-            "expect": 200,
-            "save": {
-              "FP": "fingerprint"
-            }
+            "expect": 200
           },
           {
             "request": {
               "listener": "admin",
               "method": "POST",
-              "path": "/api/v1/admin/agents/probe/approve",
+              "path": "/api/v1/admin/trust/approve",
               "auth": "admin",
               "headers": [
                 [
@@ -193,7 +190,7 @@
                   "application/json"
                 ]
               ],
-              "body": "{\"fingerprint\":\"{FP}\"}"
+              "body": "{\"key\":\"agents/probe\"}"
             },
             "record": false,
             "expect": 200
@@ -9026,39 +9023,6 @@
           "Content-Type": "application/json"
         },
         "body": "{\"amends\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"now\":{\"input_tokens\":\"1\"},\"reason\":\"oracle count correction\"}",
-        "auth": "none",
-        "listener": "admin"
-      },
-      "why": "no credential -> 401 envelope"
-    },
-    {
-      "id": "admin.ops|PostAgentsNameApprove|ok",
-      "plane": "core",
-      "family": "admin.ops",
-      "driver": "http",
-      "outcome": "ok",
-      "request": {
-        "method": "POST",
-        "path": "/api/v1/admin/agents/{name}/approve",
-        "headers": {},
-        "body": null,
-        "auth": "admin",
-        "listener": "admin"
-      },
-      "why": "needs fixture: x-busbar-plane: agents. Mounted only on a node whose config carries a `agents:` block (Law 7); on a node without one the path answers the router's 404 not_found",
-      "needs_fixture": true
-    },
-    {
-      "id": "admin.ops|PostAgentsNameApprove|unauth",
-      "plane": "core",
-      "family": "admin.ops",
-      "driver": "http",
-      "outcome": "ok",
-      "request": {
-        "method": "POST",
-        "path": "/api/v1/admin/agents/{name}/approve",
-        "headers": {},
-        "body": null,
         "auth": "none",
         "listener": "admin"
       },

@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 const ADMIN_TOKEN: &str = "law7-served-surface-admin";
 
-/// The eleven plane-owned admin paths (method, path under `/api/v1/admin`).
+/// The ten plane-owned admin paths (method, path under `/api/v1/admin`).
 const PLANE_ADMIN_PATHS: &[(&str, &str)] = &[
     ("GET", "/tools"),
     ("GET", "/tools/x"),
@@ -35,7 +35,6 @@ const PLANE_ADMIN_PATHS: &[(&str, &str)] = &[
     ("GET", "/agents/x"),
     ("PATCH", "/agents/x/settings"),
     ("POST", "/agents/x/connect"),
-    ("POST", "/agents/x/approve"),
 ];
 
 /// The plane sections a configured deployment adds (plus `public_url`, which a 1.5.5 config may

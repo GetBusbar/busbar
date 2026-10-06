@@ -450,24 +450,44 @@ agents:
         .json()
         .await
         .expect("connect answers JSON");
-    let fingerprint = preview["fingerprint"]
-        .as_str()
-        .unwrap_or_else(|| panic!("connect reported no fingerprint: {preview}\n{}", node.log()))
-        .to_string();
-    let approved: Value = client()
-        .post(node.admin("/api/v1/admin/agents/probe/approve"))
+    assert!(
+        preview["fingerprint"].is_string(),
+        "connect reported no fingerprint: {preview}\n{}",
+        node.log()
+    );
+    // THE AGENT'S TRUST KEY, approved on the kernel's trust book through the generic
+    // `/admin/trust` at what `connect` sighted (ARCHITECT FLIP-A2A).
+    let book: Value = client()
+        .get(node.admin("/api/v1/admin/trust"))
         .bearer_auth(&node.admin_token)
-        .json(&json!({ "fingerprint": fingerprint }))
         .send()
         .await
-        .expect("POST approve")
+        .expect("GET trust")
         .json()
         .await
-        .expect("approve answers JSON");
-    assert_eq!(
-        approved["state"],
-        "approved",
-        "approve left `probe` unapproved: {approved}\n{}",
+        .expect("the trust book answers JSON");
+    let key = book["keys"]
+        .as_array()
+        .and_then(|keys| {
+            keys.iter()
+                .find(|k| k["counterparty"] == "probe" && k["item"].is_null())
+        })
+        .and_then(|k| k["key"].as_str())
+        .unwrap_or_else(|| panic!("the trust book lists no key for `probe`: {book}"))
+        .to_string();
+    let approved: Value = client()
+        .post(node.admin("/api/v1/admin/trust/approve"))
+        .bearer_auth(&node.admin_token)
+        .json(&json!({ "key": key }))
+        .send()
+        .await
+        .expect("POST trust/approve")
+        .json()
+        .await
+        .expect("trust/approve answers JSON");
+    assert!(
+        matches!(approved["state"].as_str(), Some("approved" | "same")),
+        "approving `{key}` left it unapproved: {approved}\n{}",
         node.log()
     );
     node
