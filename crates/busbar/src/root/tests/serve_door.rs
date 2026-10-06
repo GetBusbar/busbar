@@ -535,9 +535,10 @@ async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: 
     let reach = DoorReach {
         providers: &providers,
         secrets: &secrets,
-        auths: &auths,
+        auths: Arc::new(auths),
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
         stream_ceiling_secs: 600,
+        upgrades: Vec::new(),
     };
     let mut sections = BTreeMap::new();
     sections.insert(
@@ -550,11 +551,13 @@ async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: 
         &dispatcher,
         &composed_services(),
         &sections,
+        None,
         &plane_money,
         Some(&DoorEgress {
             reach: &reach,
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         }),
+        None,
     )
     .expect("the door plane composes, its egress sealed");
     let _ = std::fs::remove_file(&key_file);
