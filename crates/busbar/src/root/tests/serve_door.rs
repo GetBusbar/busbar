@@ -3230,6 +3230,24 @@ mod agent_door {
         req.body(axum::body::Body::empty()).expect("a request")
     }
 
+    /// THE AGENT DOOR'S BREAKER FACT (ARCHITECT Q4): its linked row's `declares` states that one
+    /// transient failure below the trip threshold benches nothing, and the root reads it by the
+    /// door's Statement name, so an agent's cell refuses on a trip and nothing less.
+    #[test]
+    fn the_agent_door_states_a_cell_refuses_on_a_trip_and_nothing_less() {
+        // A build that links no agent door has nothing for this cell to read.
+        let Some(door) = linked_door() else {
+            return;
+        };
+        let row = LinkedRow::of(door).expect("the door states its Statement");
+        let name = busbar_contract::abi::mechanism::rendering::read(&row.statement)
+            .expect("its Statement reads")
+            .name;
+        let stated = crate::root::linked::door_breaker(&crate::LINKED, None, &name)
+            .expect("its declares section reads");
+        assert_eq!(stated.map(|b| b.bench_below_trip_threshold), Some(false));
+    }
+
     /// BUSBAR'S OWN CARD at the well-known path: unauthenticated, cacheable for an hour, describing
     /// busbar (every binding it serves, no fronted agent enumerated) and signed with busbar's key.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
