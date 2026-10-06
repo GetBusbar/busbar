@@ -2676,7 +2676,7 @@
     },
     "type AdminChainAnswer": {
       "kind": "alias",
-      "target": "Result<(ChainVerdict, Option<busbar_contract::authz::Scope>), AdminUnavailable>"
+      "target": "(ChainVerdict, Option<busbar_contract::authz::Scope>)"
     },
     "type Answer": {
       "kind": "alias",
