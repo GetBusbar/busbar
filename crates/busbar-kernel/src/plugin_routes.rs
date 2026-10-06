@@ -88,7 +88,7 @@ pub enum RouteKind {
 
 /// A plugin that can serve a dispatched inbound HTTP request. Object-safe so the live table can hold
 /// `Arc<dyn PluginHttpDispatch>` and resolve it at request time from the App snapshot. The production
-/// implementor wraps a loader `DynExport`/hook handle; tests supply a fake.
+/// implementor wraps an export or hook door instance; tests supply a fake.
 pub trait PluginHttpDispatch: Send + Sync {
     /// Serve one inbound request the engine already auth-gated + matched to this plugin's route.
     fn handle_http(&self, req: &EndpointRequest) -> EndpointResponse;

@@ -73,6 +73,15 @@ pub struct Linked {
     /// The secret axis: each linked secret plugin's door, loaded through the one loader when a
     /// reference first names it (see [`secret_rows`]).
     pub secrets: &'static [busbar_contract::abi::mechanism::door::DoorFn],
+    /// Each linked plane door's DECLARED METADATA, `(row, door, declares)`: its manifest `declares`
+    /// section as JSON (the crate's `declares.json`, named by `[package.metadata.busbar.linked-declares]`),
+    /// read as every default-linked plugin's is, beside the door it belongs to. A linked door is
+    /// first-party.
+    pub plane_door_declares: &'static [(
+        &'static str,
+        busbar_contract::abi::mechanism::door::DoorFn,
+        &'static str,
+    )],
     /// Protocol declarations, appended to the installed protocol set in this order.
     pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
     /// URL-model arrivals, by protocol name.
@@ -95,9 +104,6 @@ pub struct Linked {
     pub stdio_serve: &'static [StdioServe],
     /// The CLI-help axis: each linked plane's rows of `busbar --help` (see [`CliHelpRow`]).
     pub cli_help: &'static [&'static [CliHelpRow]],
-    /// The export axis, M6-COLD-DELETE (TRANSITIONAL, drained by the request-log sinks' door
-    /// re-pins): each linked COLD export sink's statement and boundary (see [`LinkedExport`]).
-    pub exports: &'static [LinkedExport],
     /// The export axis on the memory ABI: each linked export sink's statement and door (see
     /// [`LinkedDoorExport`]).
     pub export_doors: &'static [LinkedDoorExport],
@@ -194,15 +200,6 @@ pub struct LinkedClaims {
     pub claims: &'static [busbar_contract::grammar::Claim],
 }
 
-/// A linked EXPORT sink's entry (K9b): `(name, alias, declares, boundary)` — what its signed tarball
-/// states (the manifest `declares` section as JSON) and the boundary the one cold load runs over.
-pub type LinkedExport = (
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static busbar_contract::abi::cold::ColdEntry,
-);
-
 /// A linked export sink on the export kind's MEMORY ABI: what its signed tarball states (its name,
 /// its alias, the manifest `declares` section as JSON) and its door (`plugin_door!`), the same door
 /// its `cdylib` exports.
@@ -228,7 +225,6 @@ fn export_abi() -> u32 {
 /// binary's payload schema, exactly what a release-signed tarball of each carries but `sha256` and
 /// `signature`, which describe a file a linked row does not have.
 pub fn linked_exports(
-    exports: &[LinkedExport],
     doors: &[LinkedDoorExport],
 ) -> Result<Vec<crate::root::loader::LinkedPlugin>, String> {
     let manifest = |name: &str, alias: &str, declares: &str| {
@@ -254,15 +250,13 @@ pub fn linked_exports(
             statement: None,
         })
     };
-    let doors = doors.iter().map(|d| {
-        manifest(d.name, d.alias, d.declares)
-            .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
-    });
-    let cold = exports.iter().map(|&(name, alias, declares, entry)| {
-        manifest(name, alias, declares)
-            .map(|m| crate::root::loader::LinkedPlugin::boundary(m, entry))
-    });
-    doors.chain(cold).collect()
+    doors
+        .iter()
+        .map(|d| {
+            manifest(d.name, d.alias, d.declares)
+                .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
+        })
+        .collect()
 }
 
 /// What the composition root wires for one of its own unit modules — the kernel-loop half of a plane
@@ -967,9 +961,6 @@ pub const HOT_PLANE_HOOKS: PlaneHooks = PlaneHooks {
 /// ahead of any dropped-in row spelling it.
 pub fn register_exports(dropped: Option<&'static crate::root::loader::PluginRegistry>) {
     crate::root::loader::observe::install_host_series(host_series);
-    // The host's egress, which every cold sink's outbound request rides (K9a S5) — whatever else
-    // this build links (M6-COLD-DELETE, with the cold export lane).
-    crate::root::loader::install_egress_carrier(&crate::root::boot::HostEgressCarrier);
     if let Some(registry) = dropped {
         let _ = DROPPED.set(registry);
     }
@@ -978,6 +969,60 @@ pub fn register_exports(dropped: Option<&'static crate::root::loader::PluginRegi
 /// The registry [`register_exports`] kept; `None` before it ran, or with nothing to keep.
 pub(crate) fn dropped() -> Option<&'static crate::root::loader::PluginRegistry> {
     DROPPED.get().copied()
+}
+
+/// THE BREAKER FACTS A DOOR PLANE DECLARES (`declares.breaker`, ARCHITECT Q4), found by the plane's
+/// Statement name: a linked door's in its row's `declares.json` ([`Linked::plane_door_declares`]),
+/// a dropped-in plane's in its signed manifest (`dropped`). `None`: it declares none, and its
+/// members' cells keep the host's default posture. The root names no plane: whichever plane states
+/// the fact, it reads it.
+///
+/// # Errors
+///
+/// A linked door whose Statement or `declares` section does not read, or a dropped-in manifest
+/// whose Statement does not read.
+pub fn door_breaker(
+    linked: &Linked,
+    dropped: Option<&crate::root::loader::PluginRegistry>,
+    plane: &str,
+) -> Result<Option<crate::root::loader::sign::BreakerDecl>, String> {
+    for (row, door, json) in linked.plane_door_declares {
+        let stated = crate::root::loader::dispatch::LinkedRow::of(*door)
+            .map_err(|e| format!("plugin '{row}': {e}"))?;
+        let name = busbar_contract::abi::mechanism::rendering::read(&stated.statement)
+            .map_err(|e| {
+                format!(
+                    "plugin '{row}': its Statement rendering does not read back at byte {}",
+                    e.at
+                )
+            })?
+            .name;
+        if name != plane {
+            continue;
+        }
+        let declares: crate::root::loader::sign::Declares =
+            serde_json::from_str(json).map_err(|e| {
+                format!("plugin '{row}' states a `declares` section that does not read: {e}")
+            })?;
+        return Ok(declares.breaker);
+    }
+    let Some(registry) = dropped else {
+        return Ok(None);
+    };
+    let planes = registry.loadable().iter();
+    for p in planes.filter(|p| p.manifest.kind == busbar_contract::abi::mechanism::kind::PLANE) {
+        let Some(stated) = p
+            .manifest
+            .stated()
+            .map_err(|e| format!("plugin '{}': {e}", p.manifest.name))?
+        else {
+            continue;
+        };
+        if stated.name == plane {
+            return Ok(p.manifest.declares.breaker);
+        }
+    }
+    Ok(None)
 }
 
 /// The configured `plugins.logs`, or its defaults: where every opened plugin instance logs.
@@ -994,6 +1039,7 @@ pub const HOST_SERIES: &[&str] = &[
     busbar_kernel::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
     busbar_kernel::metrics::HOOK_CONTENT_TRUNCATED_TOTAL,
     busbar_kernel::metrics::BILLING_TRUNCATED_TOTAL,
+    busbar_kernel::metrics::PLUGIN_OBSERVATIONS_DROPPED_TOTAL,
     busbar_kernel::metrics::JOURNAL_QUARANTINED_TOTAL,
     busbar_kernel::metrics::REQUESTS_TOTAL,
     busbar_kernel::metrics::BREAKER_TRIPS_TOTAL,
