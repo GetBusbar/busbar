@@ -62,8 +62,8 @@ members = [
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "648b6683d0b9274c02a20f6da17146ba1b85f74c" }
 busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b" }
 busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b" }
-busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "795eadb866e5f9a98bc854b9697ae42a28a51e92" }
-busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "795eadb866e5f9a98bc854b9697ae42a28a51e92" }
+busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "c0a2d690b281ec96ef5d904981f73e2b2a0b11c2" }
+busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "c0a2d690b281ec96ef5d904981f73e2b2a0b11c2" }
 busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "b10cd35eaec72969ac2b40dea379194d655daca9" }
 busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "b10cd35eaec72969ac2b40dea379194d655daca9" }
 busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "1df4b10d12764fef89966b9c9bd007f5d481f6ed" }
@@ -82,7 +82,7 @@ fixture-secret-file = { package = "busbar-secret-file", git = "https://github.co
 # THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.
-busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
+busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
 # THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
 busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "fc91230af97997994e9206124ee7414f3aec6eee" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
@@ -91,7 +91,7 @@ busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-g
 # THE WS TRANSPORT: the websocket framer door (kind: transport), pulled at a pinned rev; the logic
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
 busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "1c6a67f010728c96fe9041e41817fb69c8e4fd05" }
-busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
+busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
 busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "86987e4030e6ed3ccae51f547964e4e94ff902c2" }
