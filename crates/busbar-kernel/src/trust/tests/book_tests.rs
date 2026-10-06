@@ -481,3 +481,29 @@ fn a_rootless_registration_approves_nothing() {
         Err(Distrust::NotApproved)
     );
 }
+
+/// AN APPROVED ITEM NEVER SIGHTED IS PENDING (ARCHITECT 2026-10-06): a configured approval exists
+/// before the plane's first re-fetch, and has nothing to be compared against: unsighted, not
+/// changed and not serving. The first sighting compares: a match serves, a mismatch is changed
+/// (the item's quarantine, until re-approved).
+#[test]
+fn an_approved_item_never_sighted_is_pending_until_its_first_sighting_compares() {
+    let mut e = entry(None, 0, 0);
+    e.approved.insert("t".to_string(), "d1".to_string());
+    let at = |item| TrustFacts {
+        counterparty: "cp",
+        item: Some(item),
+        digest: None,
+    };
+    let (b, i) = book(e.clone());
+    assert_eq!(b.judge(&i, &at("t")), Err(Distrust::Unsighted));
+    b.sight_item(&i, "cp", "t", "d1").unwrap();
+    assert_eq!(b.judge(&i, &at("t")), Ok(()), "a matching sighting serves");
+    let (b, i) = book(e);
+    b.sight_item(&i, "cp", "t", "d9").unwrap();
+    assert_eq!(
+        b.judge(&i, &at("t")),
+        Err(Distrust::Changed),
+        "a mismatching first sighting is refused until re-approved"
+    );
+}

@@ -683,6 +683,10 @@ impl TrustBook {
                 Err(Distrust::UnknownItem)
             }
             None => Err(Distrust::NotApproved),
+            // APPROVED AND NEVER SIGHTED (a configured approval before the plane's first
+            // re-fetch): nothing to compare the approval against, so pending, never changed and
+            // never serving. The first sighting then compares: match serves, mismatch is changed.
+            Some(_) if offered.is_none() => Err(Distrust::Unsighted),
             Some(at) if Some(at) == offered => Ok(()),
             Some(_) => Err(Distrust::Changed),
         }
