@@ -254,8 +254,11 @@ impl LoginMethods {
                 Some(a) => a.clone(),
                 None => axis
                     .insert(
-                        open_axis()
-                            .ok_or_else(|| refused(super::auth_refusal(registry, &mc.module)))?,
+                        // No auth axis at all: 1.5.5's words, never the registry's (they stay
+                        // internal to the loader).
+                        open_axis().ok_or_else(|| {
+                            refused(format!("no `kind: auth` plugin answers to '{}'", mc.module))
+                        })?,
                     )
                     .clone(),
             };

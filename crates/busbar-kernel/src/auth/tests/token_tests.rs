@@ -1788,3 +1788,36 @@ async fn the_client_secret_is_lent_at_open_and_rides_nothing_the_host_makes() {
     );
     assert!(!page.contains(SECRET), "not on the key-issued page");
 }
+
+/// NO AUTH AXIS AT ALL: a hosted-login method is refused in 1.5.5's words, byte for byte — "no
+/// `kind: auth` plugin answers to '<module>'" — never the loader registry's refusal (which stays
+/// internal). RED: the registry's words ("no plugin named or aliased …") reach the operator.
+#[test]
+fn a_login_method_with_no_auth_axis_is_refused_in_1_5_5_words() {
+    let mut cfg = crate::config::AuthCfg::default_none();
+    cfg.methods.insert(
+        "idp".into(),
+        crate::config::AuthMethodCfg {
+            module: "idp-plugin".into(),
+            browser_login: None,
+            settings: serde_json::Map::new(),
+        },
+    );
+    let Err(refusal) = LoginMethods::build_on(
+        &cfg,
+        &busbar_plugin_loader::PluginRegistry::empty(),
+        &crate::config::secret::SecretResolver::builtins_only(),
+        || None,
+    ) else {
+        panic!("no axis answers the method");
+    };
+    assert_eq!(
+        refusal,
+        "identity-providers.idp (module 'idp-plugin') could not be loaded as a `kind: auth` login \
+         plugin: no `kind: auth` plugin answers to 'idp-plugin'"
+    );
+    assert!(
+        !refusal.contains("no plugin named or aliased"),
+        "the registry's words stay internal: {refusal}"
+    );
+}
