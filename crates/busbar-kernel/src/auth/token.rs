@@ -235,9 +235,8 @@ impl LoginMethods {
                 Some(a) => a.clone(),
                 None => axis
                     .insert(
-                        crate::preflight::auth_axis(registry.clone()).ok_or_else(|| {
-                            refused(super::auth_refusal(registry, &mc.module))
-                        })?,
+                        crate::preflight::auth_axis(registry.clone())
+                            .ok_or_else(|| refused(super::auth_refusal(registry, &mc.module)))?,
                     )
                     .clone(),
             };

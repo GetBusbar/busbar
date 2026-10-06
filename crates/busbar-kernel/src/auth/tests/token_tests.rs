@@ -126,7 +126,12 @@ fn alice() -> LoginOutcome {
 fn test_app_with_methods(methods: Vec<(&str, bool)>) -> std::sync::Arc<crate::state::App> {
     let mut b = crate::test_support::TestApp::new().public_url("https://busbar.example.com");
     for (name, has_button) in methods {
-        b = b.login_method_door(name, DoorLogin::new(alice()), LoginKind::Redirect, has_button);
+        b = b.login_method_door(
+            name,
+            DoorLogin::new(alice()),
+            LoginKind::Redirect,
+            has_button,
+        );
     }
     b.build()
 }
@@ -148,13 +153,11 @@ fn chooser_renders_0_1_n_buttons() {
     assert!(body1.contains("/auth/token?method=microsoft"));
 
     // N buttons — plus a GUI-OFF method (has_button=false) that is ABSENT from the chooser.
-    let appn = test_app_with_methods(
-        vec![
-            ("microsoft", true),
-            ("github", true),
-            ("headless-only", false),
-        ],
-    );
+    let appn = test_app_with_methods(vec![
+        ("microsoft", true),
+        ("github", true),
+        ("headless-only", false),
+    ]);
     let bodyn = body_of(chooser(&appn));
     assert_eq!(
         bodyn.matches("class=\"provider\"").count(),
