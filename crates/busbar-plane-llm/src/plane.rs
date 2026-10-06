@@ -5,17 +5,15 @@
 //! asks for. The interesting reading is in the codec crate; the interesting decisions are in the
 //! units. What is here is the wiring, and it is meant to stay boring enough to check by eye.
 
-use busbar_contract::bounded::{
-    BoundedVec, FactValue, Facts, Ir, ScratchBytes, Span, MAX_RESPONSE_PTRS,
-};
+use busbar_contract::bounded::{FactValue, Facts, Ir, ScratchBytes, MAX_RESPONSE_PTRS};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::grammar::{ArrivalLocation, Location};
 use busbar_contract::ids::{AdminVerbId, MeterClassId, OpClassId, SchemeAlt, SchemeKey};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
 use busbar_contract::plane::{Ingress, Plane, PlaneSessionState, Progress, Response, UnitDraft};
 use busbar_contract::unit::{
-    AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts, Unit,
-    UnitEnd, UsageLocator, UsageLocators,
+    AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, Unit, UnitEnd, UsageLocator,
+    UsageLocators,
 };
 use busbar_contract::wire::{Decode, Encode, EnvelopeField, Frame, FrameCursor, TransportEnvelope};
 

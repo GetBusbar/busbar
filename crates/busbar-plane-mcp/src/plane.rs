@@ -12,7 +12,7 @@
 //! so every draft below hands the loop a body the kernel does not have to re-walk. The plane once
 //! handed back an empty table because the arena could not allocate one; it can, and this does.
 
-use busbar_contract::bounded::{BoundedVec, FactValue, Facts, Ir, ScratchBytes, Span};
+use busbar_contract::bounded::{FactValue, Facts, Ir, ScratchBytes};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::ids::{AdminVerbId, LaneId, SchemeAlt};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
@@ -20,8 +20,8 @@ use busbar_contract::plane::{
     Ingress, Plane, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
 use busbar_contract::unit::{
-    AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts, Unit,
-    UnitEnd, UsageLocator, UsageLocators,
+    AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, Unit, UnitEnd, UsageLocator,
+    UsageLocators,
 };
 use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, TransportEnvelope};
 
@@ -72,12 +72,6 @@ const SUBJECT_FACT_TRANSPORT: &str = "transport";
 
 /// The fact key the per-name projection reports a locally launched registration under.
 const SUBJECT_FACT_LOCAL: &str = "local";
-
-/// The kind of resource a registered server is, in this plane's own vocabulary.
-const RESOURCE_KIND_SERVER: &str = "mcp_server";
-
-/// The kind of resource one tool is, in this plane's own vocabulary.
-const RESOURCE_KIND_TOOL: &str = "mcp_tool";
 
 impl McpPlane {
     /// A leg reaching one of this plane's own records.

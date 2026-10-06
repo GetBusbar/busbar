@@ -74,8 +74,7 @@ use busbar_contract::plane::{
     Ingress, Plane, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
 use busbar_contract::unit::{
-    AuditFacts, Ctx, FinishClass, Refusal, ResourceLocator, Unit, UnitEnd, UsageLocator,
-    UsageLocators,
+    AuditFacts, Ctx, FinishClass, Refusal, Unit, UnitEnd, UsageLocator, UsageLocators,
 };
 use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, TransportEnvelope};
 

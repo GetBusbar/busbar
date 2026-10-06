@@ -275,7 +275,7 @@ use crate::{A2aPlane, Agent};
 use busbar_contract::dest::DestinationFacts;
 use busbar_contract::ids::LaneId;
 use busbar_contract::plane::{Ingress, Plane};
-use busbar_contract::unit::{ResourceLocator, Unit};
+use busbar_contract::unit::Unit;
 
 /// Two agents on two lanes, so "the first one" and "the named one" are different answers.
 static TWO_AGENTS: &[Agent] = &[
