@@ -48,6 +48,42 @@ pub enum WireStatusClass {
     Other,
 }
 
+/// The transport's reading of what an answer means to the BREAKER — the fault, where the answer
+/// was one, and whose.
+///
+/// A separate fact from [`WireStatusClass`], on purpose: that class is the fee decision's leg and
+/// is read by the ledger; this one is read by the breaker, and the two disagree where the money and
+/// the destination's health do (a request the far end throttled is not billed to the destination,
+/// yet it is the destination that is busy). The transport states each from its own declared table
+/// of its own numbering, so no reader above it ever reads a code band.
+///
+/// `None` on a piece (no reading stated) is read as the caller's: the breaker records nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum WireFault {
+    /// The caller's own fault: the destination is healthy and nothing is recorded against it.
+    Caller,
+    /// A transient fault of the destination: it counts toward a trip, the stated wait floors the
+    /// cooldown.
+    Transient,
+    /// The destination is down for every caller (a refused credential or account): every pool's
+    /// cell for it trips.
+    Hard,
+}
+
+impl WireFault {
+    /// The reading a piece's `FAULT_*` byte states; `None` for `FAULT_NONE` or a byte no reading
+    /// names (the piece checker refuses the latter before this reads it).
+    #[must_use]
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            crate::abi::transport::FAULT_CALLER => Some(Self::Caller),
+            crate::abi::transport::FAULT_TRANSIENT => Some(Self::Transient),
+            crate::abi::transport::FAULT_HARD => Some(Self::Hard),
+            _ => None,
+        }
+    }
+}
+
 /// Which frame carries a transport's status class.
 ///
 /// A transport that reports its status on the first response frame decides the fee at that frame.

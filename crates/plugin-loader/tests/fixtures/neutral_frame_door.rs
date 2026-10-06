@@ -124,6 +124,8 @@ const TAIL: TransportTail = TransportTail {
     status_rows_len: STATUS_ROWS.len(),
     settings: std::ptr::null(),
     settings_len: 0,
+    fault_rows: std::ptr::null(),
+    fault_rows_len: 0,
 };
 
 /// The door's Statement: the identity framer.
@@ -597,7 +599,7 @@ impl Framing {
                     code: 0,
                     status_class: 0,
                     flags,
-                    _reserved: 0,
+                    fault: 0,
                     retry_after_secs: 0,
                 });
             }

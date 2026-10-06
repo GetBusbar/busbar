@@ -119,7 +119,7 @@ impl Sink {
             len: 0,
             code: 0,
             status_class: 0,
-            _reserved: 0,
+            fault: 0,
             flags: 0,
             retry_after_secs: 0,
         };

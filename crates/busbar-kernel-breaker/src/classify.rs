@@ -1,324 +1,54 @@
-//! The protocol-agnostic disposition classifier — Stage 2 of the two-stage pipeline that turns an
-//! upstream error into the fact the breaker state machine acts on.
-//!
-//! Moved byte-identical from `busbar-substrate::breaker` (1.5.5's
-//! `crates/busbar-substrate/src/breaker.rs`). Stage 1 (per-protocol extraction of a
-//! [`RawUpstreamError`] from a response) stays with the plane's wire/dialect code; this module
-//! starts from the already-extracted raw error.
-//!
-//! One call-site adaptation from the source, which does not change the classification arithmetic
-//! itself:
-//! - the "operator `error_map` points at an unrecognized class" diagnostic is delivered through an
-//!   injectable [`Diagnostics`] sink rather than `tracing::warn!`, since this crate takes no
-//!   logging dependency. `// contract:` — a caller wires a real sink (or the kernel's diagnostics
-//!   seam, once one exists) in; [`NoopDiagnostics`] preserves today's "silently ignored" behavior
-//!   for the return value, which is what the state machine's byte-identical requirement is about.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
 
-/// Anthropic's non-standard 529 overload status — not in the IANA registry, but documented by
-/// Anthropic as their server-overloaded signal, distinct from 503.
-const HTTP_OVERLOADED: u16 = 529;
+//! The breaker's reading of one answer, and the disposition it carries.
+//!
+//! THE BREAKER READS FACTS, NEVER A WIRE. What an answer means to the destination's health is the
+//! transport's to state: a framer reads its own numbering against its own declared fault table and
+//! puts the reading on the answer's frame (`FramePiece::fault`, read up as
+//! [`WireFault`]). The kernel adds the one fact only it holds — that no answer came at all. This
+//! module turns those two into the contract's [`Disposition`]; it holds no code band, no numbering
+//! and no vendor's spelling, and it reads no body. What a body means (an operator's error map, a
+//! request too large for the window) is the plane's verdict, and reaches the unit as the
+//! [`crate::Outcome`] its caller observes.
+//!
+//! The four readings carry 1.5.5's four arms exactly: a hard reading is the old `HardDown` (every
+//! pool's cell trips), a transient one the old `TransientUpstream` (the stated wait floors the
+//! cooldown), a caller's or an unstated one the old `ClientFault` (nothing recorded), and no answer
+//! at all the old network failure, which is transient.
 
-/// The status class and the disposition, as the contract owns them.
-///
-/// This unit used to declare both, byte-for-byte the substrate's, and keep the metric labels in
-/// step with the egress unit's by hand. The rows live in `busbar_contract::upstream` now — the one
-/// crate this unit and the planes whose dialects read the class can both name — and this module
-/// keeps its historical paths as re-exports so every caller matching on `classify::StatusClass`
-/// still does.
+/// The transport's fault reading, as the contract owns it.
+pub use busbar_contract::transport::wire::WireFault;
+
+/// The status class and the disposition, as the contract owns them. The class is kept here under
+/// its historical path for the callers that name it beside the disposition.
 pub use busbar_contract::upstream::{Disposition, StatusClass};
 
-/// Convert a wire token to a [`StatusClass`]. `None` for anything unrecognized (e.g. a typo'd
-/// operator `error_map` entry).
+/// Convert an operator's class token to a [`StatusClass`]. `None` for anything unrecognized.
 pub fn status_class_from_str(s: &str) -> Option<StatusClass> {
     StatusClass::parse(s)
 }
 
-/// A sink for the one diagnostic this module raises: an operator `error_map` entry names a string
-/// that is not a recognized [`StatusClass`]. `// contract:` a real deployment wires this to its own
-/// logging/metrics seam; [`NoopDiagnostics`] is the default and matches 1.5.5's behavior for the
-/// classification RESULT (the mapping is still silently ignored either way — only the side-channel
-/// warning is pluggable here instead of a hardwired `tracing::warn!`).
-pub trait Diagnostics {
-    /// Called at most once per distinct unrecognized value in a process's lifetime (dedup is the
-    /// caller's job in the reference `WarnOnceDiagnostics`, mirroring 1.5.5's warn-once-per-value).
-    fn unrecognized_error_map_value(&self, value: &str);
+/// What the breaker knows about one attempt's answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reading {
+    /// No answer came: the destination refused or reset the connection, or the attempt ended with
+    /// nothing read. The kernel's own fact, and a failure OF the destination.
+    NoAnswer,
+    /// An answer came, and the transport read it so (`None`: it stated no reading).
+    Answered(Option<WireFault>),
 }
 
-/// A [`Diagnostics`] sink that does nothing. The default when a caller has not wired one in.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoopDiagnostics;
-
-impl Diagnostics for NoopDiagnostics {
-    fn unrecognized_error_map_value(&self, _value: &str) {}
-}
-
-/// A [`Diagnostics`] adapter that forwards each distinct unrecognized value to an inner sink AT
-/// MOST ONCE per process lifetime, deduplicating repeat calls for the same value itself so the
-/// inner sink (e.g. a real `tracing::warn!`-backed one the composition root binds) never has to.
-/// An unrecognized value is warned about once and then ignored: the classification RESULT is
-/// unaffected either way (the mapping is still silently ignored) — only how many times the
-/// side-channel warning fires.
-pub struct WarnOnceDiagnostics<S: Diagnostics> {
-    seen: std::sync::Mutex<std::collections::HashSet<String>>,
-    inner: S,
-}
-
-impl<S: Diagnostics> WarnOnceDiagnostics<S> {
-    /// Wrap `inner`, deduplicating by the exact unrecognized string.
-    pub fn new(inner: S) -> Self {
-        Self {
-            seen: std::sync::Mutex::new(std::collections::HashSet::new()),
-            inner,
-        }
-    }
-}
-
-impl<S: Diagnostics> Diagnostics for WarnOnceDiagnostics<S> {
-    fn unrecognized_error_map_value(&self, value: &str) {
-        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
-        if seen.insert(value.to_string()) {
-            drop(seen);
-            self.inner.unrecognized_error_map_value(value);
-        }
-    }
-}
-
-/// A shared [`Diagnostics`] sink is still one: this is what lets a caller keep a handle on the
-/// concrete sink (e.g. to assert on it in a test, or to fan it out elsewhere) while also handing
-/// an owned value to [`crate::port::classify_upstream`].
-impl<S: Diagnostics + ?Sized> Diagnostics for std::sync::Arc<S> {
-    fn unrecognized_error_map_value(&self, value: &str) {
-        (**self).unrecognized_error_map_value(value);
-    }
-}
-
-/// Classify a [`CanonicalSignal`] into a [`Disposition`]: the disposition column of the contract's
-/// table, read for the signal's class.
-pub fn classify(sig: &CanonicalSignal) -> Disposition {
-    sig.class.disposition()
-}
-
-/// Every `grpc-status` code paired with the [`StatusClass`] this unit reads it as, as data.
+/// The disposition one [`Reading`] carries.
 ///
-/// gRPC's numbering is its own: nothing here is derived from an HTTP status, and the two tables
-/// disagree on purpose where the protocols do. Three groupings carry the money decisions:
-///
-/// - `RESOURCE_EXHAUSTED` is the upstream's quota, not the caller's mistake, so it is a rate limit
-///   (transient, and the upstream's own wait is the cooldown floor) — the same reading 1.5.5 gave
-///   HTTP `429`. The transport's coarse class calls it a client error because the coarse class has
-///   only three buckets; this table is what the breaker acts on.
-/// - `UNAUTHENTICATED` and `PERMISSION_DENIED` are a withdrawn or rejected credential, which takes
-///   every sibling lane naming this destination down with it — hard down, exactly as 1.5.5 read
-///   HTTP `401`/`403`.
-/// - `INVALID_ARGUMENT`, `NOT_FOUND` and their neighbours are the caller's own request being wrong,
-///   so the destination is healthy and nothing is recorded against it.
-///
-/// `OK` has a row too, for the same reason the HTTP fallback has a non-error arm: an answer that
-/// classified as a failure but carries `OK` is not evidence against the destination, so it records
-/// nothing rather than being counted as an outage.
-pub const GRPC_STATUS_TABLE: &[(u8, StatusClass)] = &[
-    (GRPC_OK, StatusClass::ClientError),
-    (GRPC_CANCELLED, StatusClass::ClientError),
-    (GRPC_UNKNOWN, StatusClass::ServerError),
-    (GRPC_INVALID_ARGUMENT, StatusClass::ClientError),
-    (GRPC_DEADLINE_EXCEEDED, StatusClass::Timeout),
-    (GRPC_NOT_FOUND, StatusClass::ClientError),
-    (GRPC_ALREADY_EXISTS, StatusClass::ClientError),
-    (GRPC_PERMISSION_DENIED, StatusClass::Auth),
-    (GRPC_RESOURCE_EXHAUSTED, StatusClass::RateLimit),
-    (GRPC_FAILED_PRECONDITION, StatusClass::ClientError),
-    (GRPC_ABORTED, StatusClass::ServerError),
-    (GRPC_OUT_OF_RANGE, StatusClass::ClientError),
-    (GRPC_UNIMPLEMENTED, StatusClass::ClientError),
-    (GRPC_INTERNAL, StatusClass::ServerError),
-    (GRPC_UNAVAILABLE, StatusClass::ServerError),
-    (GRPC_DATA_LOSS, StatusClass::ServerError),
-    (GRPC_UNAUTHENTICATED, StatusClass::Auth),
-];
-
-/// `grpc-status: 0` — the call succeeded.
-pub const GRPC_OK: u8 = 0;
-/// `grpc-status: 1` — the call was cancelled, usually by the caller itself.
-pub const GRPC_CANCELLED: u8 = 1;
-/// `grpc-status: 2` — an upstream failure it could not attribute.
-pub const GRPC_UNKNOWN: u8 = 2;
-/// `grpc-status: 3` — the caller's argument was wrong.
-pub const GRPC_INVALID_ARGUMENT: u8 = 3;
-/// `grpc-status: 4` — the upstream did not answer in time.
-pub const GRPC_DEADLINE_EXCEEDED: u8 = 4;
-/// `grpc-status: 5` — the entity the caller named does not exist.
-pub const GRPC_NOT_FOUND: u8 = 5;
-/// `grpc-status: 6` — the entity the caller asked to create already exists.
-pub const GRPC_ALREADY_EXISTS: u8 = 6;
-/// `grpc-status: 7` — the credential is not allowed to do this.
-pub const GRPC_PERMISSION_DENIED: u8 = 7;
-/// `grpc-status: 8` — a quota or per-upstream resource is spent.
-pub const GRPC_RESOURCE_EXHAUSTED: u8 = 8;
-/// `grpc-status: 9` — the upstream's state rejects the operation.
-pub const GRPC_FAILED_PRECONDITION: u8 = 9;
-/// `grpc-status: 10` — the upstream aborted the call over its own concurrency.
-pub const GRPC_ABORTED: u8 = 10;
-/// `grpc-status: 11` — the caller read or wrote past a valid range.
-pub const GRPC_OUT_OF_RANGE: u8 = 11;
-/// `grpc-status: 12` — the method the caller asked for is not implemented.
-pub const GRPC_UNIMPLEMENTED: u8 = 12;
-/// `grpc-status: 13` — the upstream broke an invariant of its own.
-pub const GRPC_INTERNAL: u8 = 13;
-/// `grpc-status: 14` — the upstream is not available right now.
-pub const GRPC_UNAVAILABLE: u8 = 14;
-/// `grpc-status: 15` — unrecoverable data loss or corruption at the upstream.
-pub const GRPC_DATA_LOSS: u8 = 15;
-/// `grpc-status: 16` — the credential is missing or was not accepted.
-pub const GRPC_UNAUTHENTICATED: u8 = 16;
-
-/// Read one `grpc-status` code as a [`StatusClass`], through [`GRPC_STATUS_TABLE`] and nothing else.
-///
-/// A code gRPC has not defined is not evidence about the destination in either direction, so it
-/// takes the same answer an unexpected status does on the HTTP side: the caller's fault, recorded
-/// against nobody. Inventing an outage from a number no specification names would trip a live lane
-/// on a typo.
+/// An answer the transport stated no reading for is the caller's: inventing an outage from an
+/// answer nobody read would trip a live destination on a framer that declares no fault table.
 #[must_use]
-pub fn grpc_status_class(code: u8) -> StatusClass {
-    let mut i = 0;
-    while i < GRPC_STATUS_TABLE.len() {
-        let (row, class) = GRPC_STATUS_TABLE[i];
-        if row == code {
-            return class;
-        }
-        i += 1;
+pub const fn classify(reading: Reading) -> Disposition {
+    match reading {
+        Reading::NoAnswer => StatusClass::Network.disposition(),
+        Reading::Answered(Some(WireFault::Hard)) => Disposition::HardDown,
+        Reading::Answered(Some(WireFault::Transient)) => Disposition::TransientUpstream,
+        Reading::Answered(Some(WireFault::Caller) | None) => Disposition::ClientFault,
     }
-    StatusClass::ClientError
-}
-
-/// The raw upstream error extracted from a response by the (out-of-scope) per-protocol Stage 1.
-#[derive(Debug, Clone)]
-pub struct RawUpstreamError {
-    /// The HTTP status the upstream returned.
-    pub http_status: u16,
-    /// A provider-specific error CODE (e.g. a numeric `code` field), checked against `error_map`.
-    pub provider_code: Option<String>,
-    /// A provider-specific structured error TYPE (e.g. `error.type`), checked against `error_map`
-    /// as a second signal when the code doesn't match.
-    pub structured_type: Option<String>,
-    /// The upstream `Retry-After` value in whole seconds, when present and already parsed by the
-    /// caller (see [`crate::normalize::parse_retry_after`]).
-    pub retry_after_secs: Option<u64>,
-}
-
-/// The wire literal upstream APIs recognize for a context-length rejection.
-/// Kept here (not owned by a wire/dialect crate) because [`normalize_raw_error`]'s built-in
-/// recognition names it directly; a dialect crate importing this constant, rather than
-/// hand-copying the literal, is how the spelling stays single-sourced.
-pub const PROVIDER_CODE_CONTEXT_LENGTH: &str = "context_length_exceeded";
-
-/// Classify a raw upstream error into a [`CanonicalSignal`] using an operator `error_map`. Stage 1b
-/// (the provider normalizer): data-driven mapping from raw errors to [`StatusClass`], with a
-/// built-in fallback to HTTP-status classification.
-pub fn normalize_raw_error(
-    raw: &RawUpstreamError,
-    error_map: &std::collections::HashMap<String, String>,
-    diagnostics: &dyn Diagnostics,
-) -> CanonicalSignal {
-    // Step 1: a provider error code mapped in error_map refines (overrides) the HTTP-status default.
-    let provider_signal = if let Some(ref code) = raw.provider_code {
-        if let Some(mapped_class) = error_map.get(code) {
-            if let Some(class) = status_class_from_str(mapped_class) {
-                // CLASS guard: a mapping to `context_length` on a 5xx must never mask a real
-                // upstream outage — suppress the early return and fall through to HTTP
-                // classification so the lane is penalized; every other mapped class returns early.
-                if !(class == StatusClass::ContextLength && (500..600).contains(&raw.http_status)) {
-                    return CanonicalSignal {
-                        class,
-                        provider_signal: Some(code.clone()),
-                        retry_after: raw.retry_after_secs,
-                    };
-                }
-            } else {
-                diagnostics.unrecognized_error_map_value(mapped_class);
-            }
-        }
-        // The built-in canonical context-length code, recognized ONLY on the precise
-        // oversized-request statuses (400 Bad Request / 413 Payload Too Large) — never a 5xx (an
-        // upstream server failure) or any other status that happens to carry the code.
-        if code == PROVIDER_CODE_CONTEXT_LENGTH
-            && (raw.http_status == 400 || raw.http_status == 413)
-        {
-            return CanonicalSignal {
-                class: StatusClass::ContextLength,
-                provider_signal: Some(code.clone()),
-                retry_after: raw.retry_after_secs,
-            };
-        }
-        Some(code.clone())
-    } else {
-        None
-    };
-
-    // Step 1b: the provider's structured error TYPE is a second data-driven signal — the explicit
-    // code (above) wins; this refines when the code didn't match.
-    if let Some(ref ty) = raw.structured_type {
-        let mapped = error_map.get(ty).and_then(|m| {
-            let class = status_class_from_str(m);
-            if class.is_none() {
-                diagnostics.unrecognized_error_map_value(m);
-            }
-            class
-        });
-        if let Some(class) = mapped {
-            // Same CLASS guard as the code path.
-            if !(class == StatusClass::ContextLength && (500..600).contains(&raw.http_status)) {
-                return CanonicalSignal {
-                    class,
-                    provider_signal: provider_signal.or_else(|| Some(ty.clone())),
-                    retry_after: raw.retry_after_secs,
-                };
-            }
-        }
-    }
-
-    // Step 2: classify by HTTP status (universal spec fallback; exhaustive).
-    let http_status = raw.http_status;
-    let class = if http_status == 401 || http_status == 403 {
-        StatusClass::Auth
-    } else if http_status == 429 {
-        StatusClass::RateLimit
-    } else if http_status == 408 {
-        StatusClass::Timeout
-    } else if http_status == HTTP_OVERLOADED {
-        StatusClass::Overloaded
-    } else if (500..600).contains(&http_status) {
-        StatusClass::ServerError
-    } else if (400..500).contains(&http_status) {
-        // True 4xx (other than 401/403/408/429 above) — the caller's fault.
-        StatusClass::ClientError
-    } else if http_status == 0 {
-        // No status at all: the upstream never answered (connection refused/reset, transport
-        // error, timeout with no response) — a failure OF the destination, which is what
-        // `StatusClass::Network` (a transient upstream failure that trips the cell) exists for.
-        // 1.5.5 mapped this (`a2a::relay::classify_hop`'s Transport arm) to Network; before this
-        // arm it fell to the 2xx/3xx arm below as `ClientFault`/RecordNothing and never tripped.
-        StatusClass::Network
-    } else {
-        // An unexpected non-error status (2xx/3xx) reaching the error path — the destination is not
-        // at fault, so record nothing and relay as-is (the closest available disposition).
-        StatusClass::ClientError
-    };
-
-    CanonicalSignal {
-        class,
-        provider_signal,
-        retry_after: raw.retry_after_secs,
-    }
-}
-
-/// The canonical signal Stage 1 (out of scope here) hands to [`classify`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct CanonicalSignal {
-    /// The normalized status class.
-    pub class: StatusClass,
-    /// The provider code or structured type that drove the classification, if any (diagnostic
-    /// only — never read by `classify`).
-    pub provider_signal: Option<String>,
-    /// The upstream's requested Retry-After, in seconds, if any.
-    pub retry_after: Option<u64>,
 }

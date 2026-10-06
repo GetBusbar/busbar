@@ -1041,7 +1041,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-grpc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=5607182ed5d28da20a6e1699aad512909d24142e#5607182ed5d28da20a6e1699aad512909d24142e"
+source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=9c7bda86c06b0bdedc6952f07899c3455714fb98#9c7bda86c06b0bdedc6952f07899c3455714fb98"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -1054,7 +1054,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=9e0d6fee15e14d9a4b6af1f0e1b9f0e95655f03a#9e0d6fee15e14d9a4b6af1f0e1b9f0e95655f03a"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=22c441f74fe57d4ec469ca4febadbcdd8c9338fc#22c441f74fe57d4ec469ca4febadbcdd8c9338fc"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -1083,7 +1083,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-tcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=89d08ebcb91e5b2d4001b667fba151d9bc09d22d#89d08ebcb91e5b2d4001b667fba151d9bc09d22d"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=cd3fdccfacfb074f5869434c7bcb5c0678f5b707#cd3fdccfacfb074f5869434c7bcb5c0678f5b707"
 dependencies = [
  "busbar-contract",
 ]
@@ -1091,7 +1091,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-tcp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=89d08ebcb91e5b2d4001b667fba151d9bc09d22d#89d08ebcb91e5b2d4001b667fba151d9bc09d22d"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=cd3fdccfacfb074f5869434c7bcb5c0678f5b707#cd3fdccfacfb074f5869434c7bcb5c0678f5b707"
 dependencies = [
  "busbar-contract",
  "busbar-transport-tcp",
@@ -1100,7 +1100,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=1c6a67f010728c96fe9041e41817fb69c8e4fd05#1c6a67f010728c96fe9041e41817fb69c8e4fd05"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=77289f64bfdde1c012611e05361dc429aee267af#77289f64bfdde1c012611e05361dc429aee267af"
 dependencies = [
  "busbar-contract",
  "futures",
