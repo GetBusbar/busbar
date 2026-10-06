@@ -566,6 +566,57 @@ fn a_plugin_named_need_to_the_metadata_address_is_refused() {
     });
 }
 
+/// RED (ARCHITECT rule 15.3: ports `execute_hop_does_not_follow_redirect`, deleted with the
+/// core-run login hop): THE CONNECTOR NEVER FOLLOWS AN ANSWER. A far end answering a `302` whose
+/// `Location` names another listener hands that answer to the need's owner through the table, byte
+/// for byte, and the connector dials nothing the answer names: the listener it points at never sees
+/// a connection, so nothing the request carried (a token exchange's client secret) is re-sent there.
+#[test]
+fn an_answer_naming_another_place_is_handed_up_and_never_dialled() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        let elsewhere = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let answer = format!(
+            "HTTP/1.1 302 Found\r\nlocation: http://{}/steal\r\ncontent-length: 0\r\n\r\n",
+            elsewhere.local_addr().unwrap()
+        );
+        let sent = answer.clone().into_bytes();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut buf = [0_u8; 5];
+            s.read_exact(&mut buf).await.unwrap();
+            s.write_all(&sent).await.unwrap();
+        });
+        let c = serving(Arc::new(AtomicU64::new(0)));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"token",
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut got = Vec::new();
+        let mut buf = [0_u8; 256];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while got.len() < answer.len() {
+            assert!(std::time::Instant::now() < deadline, "the answer arrives");
+            match c.read(OWNER, id, 7, &mut buf) {
+                Err(ConnError::Pending) => tokio::task::yield_now().await,
+                Ok(piece) => got.extend_from_slice(&buf[..piece.len]),
+                Err(e) => panic!("the exchange failed: {e:?}"),
+            }
+        }
+        assert_eq!(got, answer.as_bytes(), "the redirect is the answer");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let dialled =
+            tokio::time::timeout(std::time::Duration::from_millis(50), elsewhere.accept()).await;
+        assert!(dialled.is_err(), "the location was never dialled");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
 /// A HOST-SIDE READER awaits a connection through `poll_read`: nothing ready is `Pending` with the
 /// reader's own waker registered, the far end's bytes wake THAT waker (the task finishes without
 /// being re-polled by anything else), and no plugin ticket is ever woken.

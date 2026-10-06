@@ -254,3 +254,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/dest_judge_tests.rs"]
 mod dest_judge_tests;
+
+#[cfg(test)]
+#[path = "tests/collector_class_tests.rs"]
+mod collector_class_tests;
