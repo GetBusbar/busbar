@@ -31,6 +31,8 @@ fn text(a: AbiStr) -> String {
         "pin",
         "verify_ttl",
         "allow_private",
+        crate::tools_config::TOOL_APPROVALS_KEY,
+        crate::tools_config::TOOL_APPROVAL_FIELD,
         crate::tools_config::DEFAULT_MCP_VERIFY_TTL,
         "pinned_pubkey",
         "cert_spki",

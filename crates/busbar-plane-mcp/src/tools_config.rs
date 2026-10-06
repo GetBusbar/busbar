@@ -643,12 +643,18 @@ pub const DEFAULT_MAX_INPUT_REQUIRED_ROUNDS: u32 = 3;
 /// whatever this says.
 pub const DEFAULT_MAX_CALLER_ASK_ROUNDS: u32 = 3;
 
+/// The registration key holding its tool approvals (`tools_allow:`), declared to the kernel as its
+/// item-approvals trust key.
+pub const TOOL_APPROVALS_KEY: &str = "tools_allow";
+/// The field of each `tools_allow` entry holding the digest the operator approved the tool at.
+pub const TOOL_APPROVAL_FIELD: &str = "schema_hash";
+
 /// THE KERNEL-OWNED TRUST KEYS of one registration, declared for the kernel to parse and judge:
 /// the `pin:` object over the four mechanisms above (no fingerprint: a server here offers none an
 /// operator could approve out of band), the `verify_ttl:` bound with its default, and the
 /// registration's private reach, `allow_private:` (the connector admits that server's own private
-/// address for its need, never a metadata one). There is no recovery-backoff key; the kernel reads
-/// its absence as zero.
+/// address for its need, never a metadata one), and its tool approvals, `tools_allow:`'s
+/// `schema_hash`. There is no recovery-backoff key; the kernel reads its absence as zero.
 pub const TRUST_KEYS: &[TrustKeyDecl] = &[
     TrustKeyDecl {
         key: "pin",
@@ -690,6 +696,18 @@ pub const TRUST_KEYS: &[TrustKeyDecl] = &[
         role: TrustRole::PrivateReach,
         fingerprint: false,
         default: None,
+        mechanisms: &[],
+    },
+    // THE CONFIGURED TOOL APPROVALS (ARCHITECT Q3): `tools_allow.<tool>.schema_hash`, the digest
+    // the operator approved each tool at. The kernel seeds the registration's approved items from
+    // it (the trust key `<tool>`, the upstream's own spelling) and judges every call against it; a
+    // tool written without one is allowed but approved at none, and the core-admin trust verbs
+    // approve and revoke on top of it. The plane keeps reading the map for its catalogue.
+    TrustKeyDecl {
+        key: TOOL_APPROVALS_KEY,
+        role: TrustRole::ItemApprovals,
+        fingerprint: false,
+        default: Some(TOOL_APPROVAL_FIELD),
         mechanisms: &[],
     },
 ];

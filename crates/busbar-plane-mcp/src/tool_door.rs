@@ -1403,6 +1403,19 @@ fn verify_on_call(
             // Never pends; an unserved book leaves the item unsighted, which `trust.serves` refuses.
             let _ = services.trust_sight_item(handle, server, &entry.tool, digest);
         }
+    } else if matches!(sighting, Sighting::Failed(_)) {
+        // AN UNREACHABLE RE-FETCH (ARCHITECT Q3 (c)): reported to the kernel as such; the kernel
+        // keeps its last verdict and changes nothing (no drift, no quarantine from unreachability),
+        // and the call fails as an upstream failure (`trust_of`).
+        let handle = CompletionHandle {
+            ticket,
+            seq: SIGHT_SEQ,
+            _reserved: 0,
+        };
+        if services.trust_unreachable(handle, server).is_pending() {
+            unit.verified = Some(sighting);
+            return Looked::Pending;
+        }
     }
     plane.sightings.insert(server.to_string(), sighting);
     plane.checked.insert(server.to_string(), now_ms);

@@ -282,6 +282,14 @@ const TRUST_KEYS: &[TrustKey] = &[
         mechanisms: std::ptr::null(),
         mechanisms_len: 0,
     },
+    TrustKey {
+        key: abi_str(crate::tools_config::TOOL_APPROVALS_KEY),
+        role: busbar_contract::abi::plane::TRUST_ITEM_APPROVALS,
+        flags: 0,
+        default: abi_str(crate::tools_config::TOOL_APPROVAL_FIELD),
+        mechanisms: std::ptr::null(),
+        mechanisms_len: 0,
+    },
 ];
 
 const fn op_class(i: usize) -> OpClass {
