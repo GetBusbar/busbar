@@ -640,35 +640,32 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     // THREE PLANTS, ONE RUN, EVERY ONE NAMED (items 184, 223, 224). Each is a duplicate the old
     // two-plane scan could not see:
     //
-    // * A PAIR THE OLD SCAN NEVER LOADED — llm and mcp. The scan compared mcp with a2a and nothing
-    //   else, so a copy between any other pair (the shape of voice's `absolute`, "the A2A
-    //   `serve::absolute` discipline, kept local") was structurally invisible. (The pair was voice
-    //   and a2a until FLIP-A2A deleted `busbar-a2a`; llm and mcp are the same "never loaded" pair.)
+    // * A PAIR THE OLD SCAN NEVER LOADED — llm and a planted plane. The scan compared mcp with a2a
+    //   and nothing else, so a copy between any other pair (the shape of voice's `absolute`, "the
+    //   A2A `serve::absolute` discipline, kept local") was structurally invisible. (The pair was
+    //   voice and a2a until FLIP-A2A deleted `busbar-a2a`. It is not mcp: the debt-free base below
+    //   hides every file the standing unledgered findings name, mcp's declaring `mod.rs` among
+    //   them, so under it mcp has no home and a plant there sits in no plane.)
     // * A PLANE NO ROSTER NAMES — it declares itself, so it is compared the day it lands, without
     //   anybody remembering to add it to a constant.
     // * A THIRD COPY OF A LEDGERED NAME — a ledger row signs for the planes it was argued for; a copy
     //   in a plane the claim was never signed for is a file nobody read, and matching the row by
     //   name alone absorbed it. The real ledger holds no symbol row since FLIP-A2A struck the mcp+a2a
-    //   claims, so the signed row is PLANTED in the table (llm+mcp) and the third copy is laid in the
-    //   planted plane: the shipped runner, over the real tree, with one signed claim added.
+    //   claims, so the signed row is PLANTED in the table (llm+planted) and the third copy is laid in
+    //   a second planted plane: the shipped runner, over the real tree, with one signed claim added.
     let llm = addresses.plane("llm");
-    let mcp = addresses.plane("mcp");
     const SIGNED: &str = "planted_signed_helper";
     let mut signed_tables = t.clone();
     signed_tables.plane_ledger.push(plane_dups::LedgerRow {
         name: SIGNED.to_string(),
         class: plane_dups::Class::Distinct,
         concern: String::new(),
-        note: "a claim signed for llm and mcp only".to_string(),
-        planes: vec!["llm".to_string(), "mcp".to_string()],
+        note: "a claim signed for llm and planted only".to_string(),
+        planes: vec!["llm".to_string(), "planted".to_string()],
     });
     let mut ov = Overlay::new();
     ov.set(
         format!("{llm}/planted_shared_concern.rs"),
-        format!("pub fn planted_shared_concern() {{}}\npub fn {SIGNED}() {{}}\n"),
-    );
-    ov.set(
-        format!("{mcp}/planted_shared_concern.rs"),
         format!(
             "pub fn planted_shared_concern() {{}}\npub fn planted_derived_plane_helper() {{}}\n\
              pub fn {SIGNED}() {{}}\n"
@@ -678,7 +675,16 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         "crates/busbar-planted/src/lib.rs",
         format!(
             "{} : busbar_kernel::plane::registry::PlaneDecl = PLANTED;\n\
+             pub fn planted_shared_concern() {{}}\n\
              pub fn planted_derived_plane_helper() {{}}\n\
+             pub fn {SIGNED}() {{}}\n",
+            crate::planes::PLANE_GRAMMAR
+        ),
+    );
+    ov.set(
+        "crates/busbar-planted-third/src/lib.rs",
+        format!(
+            "{} : busbar_kernel::plane::registry::PlaneDecl = PLANTED;\n\
              pub fn {SIGNED}() {{}}\n",
             crate::planes::PLANE_GRAMMAR
         ),
@@ -686,11 +692,11 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     let naming = [
         "PLANE-DUPLICATE (symbol): `planted_shared_concern`".to_string(),
         format!("llm:{llm}/planted_shared_concern.rs"),
-        format!("mcp:{mcp}/planted_shared_concern.rs"),
+        "planted:crates/busbar-planted/src/lib.rs:2".to_string(),
         "PLANE-DUPLICATE (symbol): `planted_derived_plane_helper`".to_string(),
-        "planted:crates/busbar-planted/src/lib.rs".to_string(),
-        format!("PLANE-DUPLICATE (symbol): `{SIGNED}`"),
         "planted:crates/busbar-planted/src/lib.rs:3".to_string(),
+        format!("PLANE-DUPLICATE (symbol): `{SIGNED}`"),
+        "planted-third:crates/busbar-planted-third/src/lib.rs:2".to_string(),
         "signs for".to_string(),
     ];
     let naming: Vec<&str> = naming.iter().map(String::as_str).collect();

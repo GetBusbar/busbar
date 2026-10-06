@@ -9652,15 +9652,17 @@ impl Gate for KindIsolationGate {
             &["no-exemplar", "busbar-plane-a2a"],
         ));
 
-        // THE EXEMPLAR STATES NO SINGLE ENTRY. A second `impl Plane for …` in the canonical plane
-        // makes the kind's entry count TWO, and `entry-count` — the rule that holds every other
+        // THE EXEMPLAR STATES NO SINGLE ENTRY. Two `impl Plane for …` blocks in the canonical
+        // plane make the kind's entry count TWO, and `entry-count` — the rule that holds every other
         // plane to exactly one — is guarded on the exemplar stating exactly one, so it goes quiet
         // for the whole kind. The finding is that the spec stopped saying anything, and it is a
-        // finding rather than a silence.
+        // finding rather than a silence. TWO impls, not one: a plane's door is built over its own
+        // impl and the two read as ONE entry ([`door_or_impls`]), and since FLIP-A2A the exemplar is
+        // a door with no `impl` of its own, so a single planted impl is that same one entry.
         let mut ov = Overlay::new();
         ov.set(
             "crates/busbar-plane-a2a/src/planted_second_entry.rs",
-            "pub struct Second;\nimpl Plane for Second {}\n",
+            "pub struct First;\nimpl Plane for First {}\npub struct Second;\nimpl Plane for Second {}\n",
         );
         report.push(prove_rows_red(
             cx,
