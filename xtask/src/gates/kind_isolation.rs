@@ -182,7 +182,7 @@ pub const ROW_FACES: &str = "kind-isolation:faces";
 /// THE LEGACY DRAIN'S EXPIRY. Ship-only: a `[[transitional]]` row exists because a 1.5.x crate is
 /// retiring, and the tag is where "it retired" is checked.
 pub const ROW_DRAIN: &str = "kind-isolation:legacy-drain";
-/// Every data plane runs its steps of the strict list, and none of the kernel's (Approve, Admit).
+/// Every data plane runs the WHOLE strict step list.
 pub const ROW_STEPS: &str = "kind-isolation:plane-steps";
 /// One wire, one registration.
 pub const ROW_WIRES: &str = "kind-isolation:transport-registration";
@@ -5128,14 +5128,6 @@ fn fn_bodies(cx: &Ctx, dir: &str) -> BTreeMap<String, Vec<FnBody>> {
 /// the plane is supposed to be running stops there.
 const SHORT_CIRCUITS: &[&str] = &["todo!", "unimplemented!", "unreachable!"];
 
-/// THE KERNEL'S OWN DECISIONS: `approve` and `admit` (ARCHITECT, FLIP-A2A: the trust and the
-/// admission decision are the kernel's Approve and Admit steps — "one uniform workflow,
-/// Authenticate·Verify·Approve·Admit"; a plane STATES its facts and runs no approval or admission
-/// of its own). Of the step list read off the kernel's table these two are owed by NO plane: a
-/// plane that implements one is a second decider beside the kernel's, and the finding is that it
-/// does, never that it does not.
-const KERNEL_DECIDED_STEPS: &[&str] = &["approve", "admit"];
-
 fn rule_steps(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     let steps = match plane_owned_steps(cx) {
         Ok(s) => s,
@@ -5165,17 +5157,6 @@ fn rule_steps(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     for c in &planes {
         let bodies = fn_bodies(cx, &c.dir);
         for step in &steps {
-            if KERNEL_DECIDED_STEPS.contains(&step.as_str()) {
-                for b in bodies.get(step).into_iter().flatten() {
-                    offenders.push(format!(
-                        "kernel-step\t{}:{}\t{} implements `{step}` — Approve and Admit are the \
-                         kernel's decisions over the facts a plane states, and a plane that runs \
-                         its own is a second decider the kernel's audit does not see",
-                        b.file, b.line, c.name
-                    ));
-                }
-                continue;
-            }
             let Some(found) = bodies.get(step) else {
                 offenders.push(format!(
                     "missing-step\t{}\t{} is a data plane and implements no `{step}` — the strict \
@@ -5201,20 +5182,18 @@ fn rule_steps(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     if offenders.is_empty() {
         return Row::pass(
             ROW_STEPS,
-            "every data plane implements its steps of the strict list and none of the kernel's",
+            "every data plane implements the whole strict step list",
             format!(
-                "{} plane(s) × {} step(s) read off {STEP_TABLE_FILE} and {PLANE_TRAIT_FILE}: {} \
-                 (the kernel's own, implemented by no plane: {})",
+                "{} plane(s) × {} step(s) read off {STEP_TABLE_FILE} and {PLANE_TRAIT_FILE}: {}",
                 planes.len(),
                 steps.len(),
-                steps.join(", "),
-                KERNEL_DECIDED_STEPS.join(", ")
+                steps.join(", ")
             ),
         );
     }
     Row::fail(
         ROW_STEPS,
-        "a data plane does not run its steps of the strict list, or runs one of the kernel's",
+        "a data plane does not run the whole strict step list",
         format!(
             "{} finding(s) over {} plane(s): {}",
             offenders.len(),
@@ -6387,10 +6366,10 @@ impl Gate for KindIsolationGate {
         // On the ship twin the rows red BY DESIGN leave this arm too (`:deps`, `:shape`, `:testkit`
         // carry the transitional/ship criteria whose whole claim is about the ship SHA).
         let unplanted: &[&str] = if self.ship {
-            &[ROW_NAME, ROW_VOCAB, ROW_WIRES]
+            &[ROW_NAME, ROW_VOCAB, ROW_STEPS, ROW_WIRES]
         } else {
             &[
-                ROW_NAME, ROW_INPUTS, ROW_VOCAB, ROW_WIRES, ROW_TRUTHS, ROW_FACES,
+                ROW_NAME, ROW_INPUTS, ROW_VOCAB, ROW_STEPS, ROW_WIRES, ROW_TRUTHS, ROW_FACES,
             ]
         };
         debug_assert!(unplanted.iter().all(|r| !STANDING_DEBT_ROWS.contains(r)));
@@ -8940,25 +8919,6 @@ impl Gate for KindIsolationGate {
             &["missing-step", "busbar-plane-mcp"],
         ));
 
-        // A PLANE THAT RUNS THE KERNEL'S DECISION, both ways the ruling names: an `approve` of its
-        // own, and an `admit` of its own. Planted in the a2a plane, whose door states facts and
-        // implements neither, so the only finding is the plant.
-        for step in KERNEL_DECIDED_STEPS {
-            let mut ov = Overlay::new();
-            ov.set(
-                "crates/busbar-plane-a2a/src/planted_decision.rs",
-                format!("impl Foo {{\n    fn {step}(&self) -> bool {{\n        true\n    }}\n}}\n"),
-            );
-            report.push(prove_rows_red(
-                cx,
-                subject,
-                format!("a plane implementing `{step}`, a step the kernel decides, is refused"),
-                &[ROW_STEPS],
-                ov,
-                &["kernel-step", step, "planted_decision.rs"],
-            ));
-        }
-
         // A STEP THAT IS DECLARED AND NOT RUN. The compiler is satisfied and the loop stops there,
         // which is the case the presence check alone cannot see.
         let mut ov = Overlay::new();
@@ -9820,19 +9780,12 @@ impl Gate for KindIsolationGate {
 /// green arm (item 89). This is not an exemption: every one of them is RED on `gate kind-isolation`,
 /// and every one of them is proven RED-able by planted cases run against the debt-free subject.
 /// When Phase 4 drains a row it comes off this list and back into the green arm.
-///
-/// `:plane-steps` joined the list with the ARCHITECT's FLIP-A2A ruling (Approve and Admit are the
-/// kernel's; a plane implements neither): the planes still served through the legacy `Plane` trait
-/// implement its `approve`/`admit`, which drains as each flips onto its door and its `plane.rs` goes,
-/// and a door plane implements none of the trait's methods at all, which drains when the row reads a
-/// door plane's steps off its slots rather than off the legacy trait.
 const STANDING_DEBT_ROWS: &[&str] = &[
     ROW_DEPS,
     ROW_TEST_DEPS,
     ROW_CLOSURE,
     ROW_REGISTRY,
     ROW_MATRIX,
-    ROW_STEPS,
 ];
 
 /// A planted [`REGISTRY_FILE`], holding `rows` and nothing else. The real file's comments carry the
