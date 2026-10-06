@@ -792,5 +792,20 @@ fn the_jev_subject_declares_its_loopback_far_end_as_an_allowed_destination() {
     assert_eq!(
         doc["auth"]["signing_key"]["file"].as_str(),
         Some("/tmp/signing.key")
-    );
+    ); // A config names its store (Q-STORE = (B), #465): without it the subject refuses to boot.
+    assert_eq!(doc["store"]["module"].as_str(), Some("memory"));
+}
+
+/// The config the plain subjects boot on (the h2, tls and oidf rigs) names its store: a config with
+/// no `store:` block is refused at boot (Q-STORE = (B), #465, BUSBAR-9007), so a rig that omits it
+/// measures a refusal instead of the subject.
+#[test]
+fn the_plain_subject_config_names_its_store() {
+    let doc: serde_yaml::Value = serde_yaml::from_str(&xtask::conformance_record::base_config(
+        "127.0.0.1:41000",
+        41001,
+    ))
+    .expect("the config is YAML");
+    assert_eq!(doc["store"]["module"].as_str(), Some("memory"));
+    assert_eq!(doc["listen"].as_str(), Some("127.0.0.1:41000"));
 }
