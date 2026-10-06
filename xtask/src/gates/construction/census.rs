@@ -383,7 +383,7 @@ fn deleted_ledger_findings(
 /// `reason` (ARCHITECT 2026-10-03, Q-L7B2-CENSUS). Answers the rows as `from -> to`, and one census
 /// problem per row that is not a whole row: a field missing or empty, `from` equal to `to`, a
 /// `from` written twice, or a `commit` that does not resolve. A broken row excuses nothing.
-fn renames(cx: &Ctx, doc: &Document) -> (BTreeMap<String, String>, Vec<String>) {
+pub(crate) fn renames(cx: &Ctx, doc: &Document) -> (BTreeMap<String, String>, Vec<String>) {
     let mut out = BTreeMap::new();
     let mut problems = Vec::new();
     for (i, row) in doc.array_of_tables(RENAMED).into_iter().enumerate() {

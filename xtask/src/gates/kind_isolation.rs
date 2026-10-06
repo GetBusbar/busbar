@@ -2660,6 +2660,21 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
         Half::Test => cold_witness_edges(cx, crates),
         Half::Shipped => BTreeSet::new(),
     };
+    // A REVIEWED RENAME IS THE EDGE IT RENAMES. A plugin crate that left the tree under a new name
+    // (P5: `busbar-hooks-ranking` -> `busbar-hook-ranking`) is the same crate only through a row of
+    // the construction census's rename ledger (`[[gate.census.renamed]]`, ARCHITECT 2026-10-03
+    // Q-L7B2-CENSUS (A)): a whole row whose commit resolves, which that gate holds. An edge to the
+    // NEW name pre-exists exactly when the base had it under the OLD one. A rename with no row is a
+    // new edge, as before; a broken row renames nothing (the construction gate reds it).
+    let renamed_from: BTreeMap<String, String> = cx
+        .read(crate::gates::construction::CEILINGS)
+        .ok()
+        .and_then(|t| crate::toml_doc::parse_str(&t).ok())
+        .map(|doc| crate::gates::construction::census::renames(cx, &doc).0)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(old, new)| (new, old))
+        .collect();
     match base::read(cx) {
         Ok(base) => {
             for e in &measured {
@@ -2667,7 +2682,11 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
                 if implied == "allowed" || implied == "tcb" {
                     continue;
                 }
-                if base.has_edge(&e.from, &e.to, half.word()) {
+                if base.has_edge(&e.from, &e.to, half.word())
+                    || renamed_from
+                        .get(e.to.as_str())
+                        .is_some_and(|old| base.has_edge(&e.from, old, half.word()))
+                {
                     continue;
                 }
                 if witness.contains(&(e.from.clone(), e.to.clone())) {
