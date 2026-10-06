@@ -80,6 +80,35 @@ pub fn entries(
         .collect()
 }
 
+/// THE CONNECTOR'S ENTRIES IN DECLARED ORDER (ARCHITECT, p2-transport-carrier): the build's linked
+/// rows in the order the build declares them, then every door dropped into `plugins.dir` in the
+/// directory's sorted order (`busbar_plugin_loader::list_plugin_files`), each the one instance the
+/// legacy seam serves too. The order is the declaration's, never the order things loaded in, so the
+/// ADDRESS carrier (`Transports::address_carrier`: the first carrier whose claim serves a port) is
+/// the same carrier on every boot of one deployment.
+///
+/// # Errors
+///
+/// Never; the shape is the boot step's.
+pub fn declared(
+    mut linked: Vec<Entry>,
+    dropped: &[crate::root::registry::DroppedDoor],
+) -> Result<Vec<Entry>, String> {
+    linked.extend(dropped.iter().map(|d| Entry {
+        door: Arc::clone(&d.door),
+        alpn: Vec::new(),
+    }));
+    Ok(linked)
+}
+
+/// The claim of the carrier a root listener accepts through, for its boot line; `host` when the
+/// connector serves no address carrier (the host's own listener).
+#[must_use]
+pub fn carrier_name(via: Option<&busbar_core_connector::compose::Via>) -> &'static str {
+    via.and_then(|v| v.door.facts().claims.first().copied())
+        .unwrap_or("host")
+}
+
 /// THE DEPLOYMENT'S ONE DESTINATION GUARD (OWNER ruling DESTINATION GUARD), built at boot from
 /// `cfg`'s `advanced` keys and the 1.5.5 keys that still load. Once [`install_egress_trust`] puts
 /// it behind the egress-trust capability it hears every config commit: its metadata lists
@@ -143,7 +172,12 @@ pub fn boot(
     // be driven while it waits.
     busbar_core_connector::io::install_process_reactor(io_reactor());
     let built = process::build(
-        || entries(doors, settings),
+        || {
+            declared(
+                entries(doors, settings)?,
+                crate::root::boot::dropped_transports(settings).doors,
+            )
+        },
         dest,
         &process::own_ports(listens),
         // A plugin reading a connection through a ticket (an export sink's delivery parked on its

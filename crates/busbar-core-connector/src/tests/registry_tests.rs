@@ -62,3 +62,38 @@ fn a_layer_nobody_serves_and_an_entry_with_no_claim_are_refused() {
     let r = Transports::new(vec![entry("empty", &[], &[])]);
     assert!(matches!(r, Err(ViewRefusal::NoClaim { .. })));
 }
+
+fn door(d: TestDoor) -> Entry {
+    Entry {
+        door: Arc::new(d),
+        alpn: Vec::new(),
+    }
+}
+
+/// THE ADDRESS CARRIER IS THE DECLARATION'S (ARCHITECT, p2-transport-carrier): the first CARRIER, in
+/// the order the entries are declared, whose claim serves a port. Never a framer (even one whose
+/// claim reads a port), never a carrier that serves no port, never the one that happened to load
+/// first: the same entries declared in the other order answer the other carrier.
+#[test]
+fn the_address_carrier_is_the_first_declared_carrier_serving_a_port() {
+    use busbar_contract::abi::transport::ROLE_FRAMER;
+    let framer = || door(TestDoor::identity("framed").with_role(ROLE_FRAMER));
+    let pathed = || door(TestDoor::identity("pathed").unported());
+    let (a, b) = (|| door(TestDoor::identity("a")), || door(TestDoor::identity("b")));
+    let first = Transports::new(vec![framer(), pathed(), a(), b()]).unwrap();
+    assert_eq!(
+        first.address_carrier().map(|e| e.door.facts().name.clone()),
+        Some("a".to_owned())
+    );
+    let swapped = Transports::new(vec![framer(), pathed(), b(), a()]).unwrap();
+    assert_eq!(
+        swapped.address_carrier().map(|e| e.door.facts().name.clone()),
+        Some("b".to_owned())
+    );
+    // RED: a framer that states a port, and a carrier serving none, are never the address carrier.
+    let ported_framer = TestDoor::identity("framed")
+        .with_role(ROLE_FRAMER)
+        .with_port();
+    let none = Transports::new(vec![door(ported_framer), pathed()]).unwrap();
+    assert!(none.address_carrier().is_none());
+}

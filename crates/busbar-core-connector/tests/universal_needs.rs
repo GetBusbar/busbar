@@ -647,7 +647,7 @@ async fn serve_once(
 /// RED: A FRAMED REQUEST'S HEAD WORDS GO OUT THROUGH THE CONNECTION TABLE. An open whose
 /// descriptor states head words sends them as the opening message's own request line, byte for
 /// byte; an open that names no target dials the need's declared one. The table reports the
-/// composing door's need framed and the socket framer's raw.
+/// composing door's need framed and the carrier's raw.
 #[test]
 fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
     use busbar_contract::conn::{Conns, DeclaredConns, InstanceId, NeedId, OpenDesc};
@@ -656,12 +656,12 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
 
     let door = composing_door();
     let scheme = door.facts().claims[0];
-    let plain = socket_framer_door().expect("a carrier door is built beside the test");
-    let raw = plain.facts().claims[0];
-    // The framer rides the connector's ADDRESS carrier (the first carrier serving a port): the test
-    // carrier over the process's host I/O, served first. The neutral door's claim stays a raw stream.
+    // The framer rides the connector's ADDRESS carrier (the first carrier in declared order whose
+    // claim serves a port): the test carrier over the process's host I/O. A need over the carrier's
+    // own claim is a raw stream.
     let layer: std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> =
         std::sync::Arc::new(support::TestDoor::identity("test-carrier"));
+    let raw = layer.facts().claims[0];
     let judge = |dest: &str, _: u32, _: Judged| {
         Some(dest.parse::<std::net::SocketAddr>().map_err(|_| 1_u64))
     };
@@ -673,10 +673,6 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
             },
             Entry {
                 door: layer,
-                alpn: Vec::new(),
-            },
-            Entry {
-                door: plain,
                 alpn: Vec::new(),
             },
         ])

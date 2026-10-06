@@ -664,12 +664,13 @@ pub fn dropped_transports(
                         let key = facts.claims.first().copied().unwrap_or_default();
                         let claims = facts.claims;
                         let composes_over = facts.composes_over;
-                        let wire = crate::root::doors::host_wire(plugin, settings)?;
+                        let (door, wire) = crate::root::doors::served(plugin, settings)?;
                         Ok(crate::root::registry::DroppedDoor {
                             key,
                             claims,
                             composes_over,
                             wire,
+                            door,
                         })
                     })
                     .collect::<Result<Vec<_>, String>>()?;

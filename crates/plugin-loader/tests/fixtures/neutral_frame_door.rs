@@ -14,7 +14,8 @@
 //! handed to `emit`/`refuse` are the wire bytes, `encode` renders an envelope as its body alone
 //! (fields are refused), `detach`/`adopt` hand unconsumed bytes across, and `locate` reads
 //! `host:port` (or `frame://host:port`). No op pends or asks for a deadline; a full sink is
-//! back-pressure (`YIELD_MORE`). Every carrier op is refused: the socket is the host's.
+//! back-pressure (`YIELD_MORE`). It states the FRAMER role and every carrier op is refused: it
+//! rides whatever carrier the connector dials or accepts with, and is never one.
 
 #![allow(unsafe_code)]
 
@@ -35,7 +36,7 @@ use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn, ConnOut, DialIn,
     EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
     ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, ShutIn, TransportTail,
-    WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM, PIECE_END_OF_FRAME, ROLE_CARRIER,
+    WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM, PIECE_END_OF_FRAME, ROLE_FRAMER,
     UNIT0_FIRST_BYTES, YIELD_ENDED, YIELD_MORE,
 };
 use busbar_contract::transport::registry::facts as tfacts;
@@ -82,9 +83,10 @@ const TAIL: TransportTail = TransportTail {
         size: std::mem::size_of::<TransportTail>() as u32,
         _reserved: 0,
     },
-    // A byte stream carried as itself: the CARRIER role, as the tcp twin states it (ARCHITECT ruling
-    // Q128 U7: the role is stated, never derived from composes_over).
-    role: ROLE_CARRIER,
+    // An identity FRAMER (ARCHITECT ruling Q128 U7: the role is stated, never derived from
+    // composes_over). It answers no carrier op, so it states no carrier: a door stated a carrier is
+    // one the connector may pick as its address carrier, and this one would refuse every dial.
+    role: ROLE_FRAMER,
     framing: FRAMING_STREAM,
     facts: 0,
     handshake_max_steps: 0,

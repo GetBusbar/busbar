@@ -260,6 +260,9 @@ pub struct DroppedDoor {
     pub composes_over: Vec<&'static str>,
     /// The entry, served.
     pub wire: Arc<dyn Transport>,
+    /// The opened door the wire serves: the entry the connector serves for it, after the linked
+    /// rows (`crate::root::connector::boot`).
+    pub door: Arc<dyn busbar_core_connector::framer::FramerDoor>,
 }
 
 /// The transports a plugins directory contributes, by the lane each image speaks.

@@ -409,8 +409,22 @@ pub fn host_wire(
     plugin: Plugin<TransportKind>,
     settings: &busbar_contract::transport::TransportSettings,
 ) -> Result<Arc<dyn busbar_contract::Transport>, String> {
-    let door = Dispatched::open(plugin, settings)?;
-    Ok(Arc::new(RootWire::new(HostWire::new(Arc::new(door))?)))
+    served(plugin, settings).map(|(_, wire)| wire)
+}
+
+/// [`host_wire`], and the opened door itself: the one instance the connector serves as an entry and
+/// the legacy seam presents (a dropped-in door is opened once).
+///
+/// # Errors
+///
+/// As [`host_wire`].
+pub fn served(
+    plugin: Plugin<TransportKind>,
+    settings: &busbar_contract::transport::TransportSettings,
+) -> Result<(Arc<dyn FramerDoor>, Arc<dyn busbar_contract::Transport>), String> {
+    let door: Arc<dyn FramerDoor> = Arc::new(Dispatched::open(plugin, settings)?);
+    let wire = Arc::new(RootWire::new(HostWire::new(Arc::clone(&door))?));
+    Ok((door, wire))
 }
 
 /// A linked row's build: its door admitted through the one validation, bound under the row's name

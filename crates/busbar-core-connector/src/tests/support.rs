@@ -132,6 +132,21 @@ impl TestDoor {
         self
     }
 
+    /// The same entry, its claim serving no port (a carrier reached by a path or a program).
+    #[must_use]
+    pub fn unported(mut self) -> Self {
+        self.facts.ported = false;
+        self
+    }
+
+    /// The same entry, its claim reading a port whatever its role (a framer stating one is still no
+    /// carrier).
+    #[must_use]
+    pub fn with_port(mut self) -> Self {
+        self.facts.ported = true;
+        self
+    }
+
     /// An identity entry over the host's socket, claiming `scheme`.
     pub fn identity(scheme: &'static str) -> Self {
         Self::new(scheme, &[scheme], &[], Knobs::default())

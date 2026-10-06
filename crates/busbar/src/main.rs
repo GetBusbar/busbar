@@ -1267,7 +1267,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         let admin_via = root::connector::the().address_via();
         let admin_listener = Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS)
             .unwrap_or_else(|e| die(format!("cannot bind listen address '{admin_listen}': {e}")));
-        tracing::debug!(listen = %admin_listen, "admin listening through the connector");
+        tracing::debug!(
+            listen = %admin_listen,
+            carrier = %root::connector::carrier_name(admin_via.as_ref()),
+            "admin listening through the connector"
+        );
         serve_listener(
             admin_listener,
             admin_router,
@@ -1479,7 +1483,11 @@ fn serve_thread_per_core(
                              runtime {i}): {e}"
                             ))
                         });
-                    tracing::debug!(listen = %listen, "data door listening through the connector");
+                    tracing::debug!(
+                        listen = %listen,
+                        carrier = %crate::root::connector::carrier_name(via.as_ref()),
+                        "data door listening through the connector"
+                    );
                     serve_listener(
                         listener,
                         router,
