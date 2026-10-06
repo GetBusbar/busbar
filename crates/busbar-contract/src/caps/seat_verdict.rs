@@ -44,7 +44,7 @@
 //!         | StaleSlice | DurabilityUnavailable | TierMismatch | Replayed | InFlight
 //!         | DestinationBudgetExhausted | BreakerOpen | DestinationUnreachable | MeterDisputed
 //!         | HandoffMismatch | PlanePanic | TaskLost | Stalled | SecretPlaceholder | Drain
-//!         | Superseded | ClientGone | DeadlineExceeded => false,
+//!         | Superseded | ClientGone | DeadlineExceeded | Untrusted => false,
 //!     }
 //! }
 //! assert!(is_the_callers_money(ReasonCode::OverBudget));
