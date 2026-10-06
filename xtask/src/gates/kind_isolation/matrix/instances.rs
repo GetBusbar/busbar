@@ -964,6 +964,7 @@ pub fn selftest<'a>(
             format!("{CORE}/src/planted-schema.snapshot.json"),
             schema.to_string(),
         );
+        // qa-names: crates/busbar-auth-header/Cargo.toml -- xtask/src/gates/kind_isolation/matrix/instances.rs -- the header auth plugin's manifest at its census mount: the crate left for GetBusbar/busbar-auth-header (P5) and is read from its pinned checkout, so the plant writes the manifest into the virtual tree only when nothing is there
         const AUTH_HEADER: &str = "crates/busbar-auth-header/Cargo.toml";
         if !cx.exists(AUTH_HEADER) {
             ov.set(
