@@ -1303,15 +1303,32 @@ impl TestApp {
     }
 
     /// Inject a resolved external admin auth module under `name` (the config module name that both
-    /// `admin_chain` and `role_bindings.<name>` key off): an in-process stand-in the admin auth
-    /// middleware OFFLOADS off the reactor — the seam the 1.5.2 admin-plane offload test drives.
+    /// `admin_chain` and `role_bindings.<name>` key off): an in-process stand-in, answered on the
+    /// spot.
     pub fn admin_module(mut self, name: &str, module: Box<dyn crate::auth::AuthModule>) -> Self {
+        let chain = self
+            .admin_modules
+            .get_or_insert_with(crate::auth::AdminAuthChain::empty);
+        chain.modules.insert(
+            name.to_string(),
+            crate::auth::AdminModule::in_process(module),
+        );
+        self
+    }
+
+    /// Inject an external admin auth module under `name` ON THE AUTH KIND'S DOOR: `calls` (a test
+    /// stand-in for an opened door instance) answers its `verify`, submitted and awaited.
+    pub fn admin_door(
+        mut self,
+        name: &str,
+        calls: std::sync::Arc<dyn busbar_contract::auth_calls::AuthCalls>,
+    ) -> Self {
         let chain = self
             .admin_modules
             .get_or_insert_with(crate::auth::AdminAuthChain::empty);
         chain
             .modules
-            .insert(name.to_string(), crate::auth::AdminModule::cold(module));
+            .insert(name.to_string(), crate::auth::AdminModule { calls });
         self
     }
 
@@ -1971,7 +1988,6 @@ impl TestApp {
             plane_sections: self.plane_sections,
             spent_token_ledger: Default::default(),
             demotion_record: Default::default(),
-            credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),
             auth_scope_caps: std::collections::HashMap::new(),
             role_bindings: self.role_bindings.unwrap_or_default(),
             config_path: self.disk_paths.as_ref().map(|(c, _)| c.clone()),

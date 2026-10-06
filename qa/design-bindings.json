@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 65,
    "oracle-family": 5,
-   "test": 452
+   "test": 448
   }
  },
  "dropped_since_last_write": [],
@@ -1778,34 +1778,6 @@
     },
     {
      "kind": "test",
-     "ref": "verdict_rules_and_expiry",
-     "proves": "Identify TTL clamp, Pass TTL, Reject never cached",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "bounded_eviction",
-     "proves": "the MAX_ENTRIES cap",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "module_partitions_and_flush",
-     "proves": "the cache is keyed per module and flush counts",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "crates/busbar-kernel/src/auth/tests/plugin_chain_tests.rs::an_unauthenticated_chain_admits_nothing_to_the_cache",
-     "proves": "run_chain_cached caches nothing for a denied chain",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
      "ref": "test_admin_v1_credential_cache_and_flush_endpoint",
      "proves": "POST /auth/cache/flush returns a real flushed count",
      "source": "curated",
@@ -1813,7 +1785,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:http.crosscut|bearer-and-x-api-key, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_empty_chain_is_open_front_door, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_nonempty_chain_fails_closed_on_all_pass, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_keys_in_chain_sets_flag_not_module, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_chain_identifies_with_module_and_principal, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_precedence_is_authorization_first, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key, test:verdict_rules_and_expiry, test:bounded_eviction, test:module_partitions_and_flush, test:crates/busbar-kernel/src/auth/tests/plugin_chain_tests.rs::an_unauthenticated_chain_admits_nothing_to_the_cache, test:test_admin_v1_credential_cache_and_flush_endpoint"
+   "verdict_detail": "oracle-cell:http.crosscut|bearer-and-x-api-key, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_empty_chain_is_open_front_door, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_nonempty_chain_fails_closed_on_all_pass, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_keys_in_chain_sets_flag_not_module, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_chain_identifies_with_module_and_principal, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_precedence_is_authorization_first, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key, test:test_admin_v1_credential_cache_and_flush_endpoint"
   },
   {
    "id": "PB-36",

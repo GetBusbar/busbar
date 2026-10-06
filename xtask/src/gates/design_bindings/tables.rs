@@ -229,10 +229,6 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_precedence_is_authorization_first", "carrier precedence: Authorization first"),
         ("test", "crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key", "a non-Bearer Authorization falls through to x-api-key"),
         ("test", "crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key", "a non-Bearer Authorization falls through to x-goog-api-key"),
-        ("test", "verdict_rules_and_expiry", "Identify TTL clamp, Pass TTL, Reject never cached"),
-        ("test", "bounded_eviction", "the MAX_ENTRIES cap"),
-        ("test", "module_partitions_and_flush", "the cache is keyed per module and flush counts"),
-        ("test", "crates/busbar-kernel/src/auth/tests/plugin_chain_tests.rs::an_unauthenticated_chain_admits_nothing_to_the_cache", "run_chain_cached caches nothing for a denied chain"),
         ("test", "test_admin_v1_credential_cache_and_flush_endpoint", "POST /auth/cache/flush returns a real flushed count"),
     ]),
     ("PB-36", &[

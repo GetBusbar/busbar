@@ -36,7 +36,7 @@ use busbar_contract::auth_calls::{AuthCalls, LoginCallback};
 use super::self_keys::{issue_key, resolve_exchange, DeterministicEd25519Keys, HandleProvisioner};
 use super::ChainVerdict;
 use crate::config::AuthCfg;
-use crate::diagnostics::{diag_debug, diag_warn, LOGIN_OFFLOAD_SATURATED};
+use crate::diagnostics::{diag_debug, diag_warn, LOGIN_OFFLOAD_SATURATED, LOGIN_PLUGIN_PANICKED};
 use crate::state::{App, AppHandle};
 
 /// The login-state cookie name. Scoped to `/auth/token` (Path), HttpOnly + Secure + SameSite=Lax.
@@ -162,7 +162,9 @@ fn submit_door(
 /// ONE LOGIN STEP ON THE DOOR: submitted on the one dispatcher ([`submit_door`]) and its answer
 /// awaited, so no thread is parked; it holds a slot of the anonymous-flood budget
 /// ([`login_permit`]), released when the step answers. A step that answered no verdict
-/// is [`LoginOutcome::Reject`] (the loader's door, fail-closed).
+/// is [`LoginOutcome::Reject`] (the loader's door, fail-closed). A step the plugin FAULTED (a caught
+/// panic, a malformed answer: [`busbar_contract::auth_calls::LoginCall::faulted`]) is a Reject too,
+/// and says so as 1.5.5 said a panicked login plugin call ([`LOGIN_PLUGIN_PANICKED`]).
 async fn door_login_call(
     method: &str,
     op: &'static str,
@@ -172,8 +174,13 @@ async fn door_login_call(
     let Some(permit) = login_permit(method, op).await else {
         return LoginOutcome::Reject;
     };
-    let outcome = submit_door(&*calls, step).await;
+    let mut call = submit_door(&*calls, step);
+    let outcome = (&mut call).await;
     drop(permit);
+    if call.faulted() {
+        diag_warn!(LOGIN_PLUGIN_PANICKED, method = %method, op, error = "the login plugin faulted", "login plugin call panicked; rejecting (fail-closed)");
+        return LoginOutcome::Reject;
+    }
     outcome
 }
 
@@ -206,6 +213,18 @@ impl LoginMethods {
         registry: &Arc<busbar_plugin_loader::PluginRegistry>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
+        Self::build_on(cfg, registry, secret_resolver, || {
+            crate::preflight::auth_axis(registry.clone())
+        })
+    }
+
+    /// [`Self::build`] over the auth axis `open_axis` answers (opened on first use).
+    fn build_on(
+        cfg: &AuthCfg,
+        registry: &busbar_plugin_loader::PluginRegistry,
+        secret_resolver: &crate::config::secret::SecretResolver,
+        open_axis: impl Fn() -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>>,
+    ) -> Result<Self, String> {
         let mut methods = IndexMap::new();
         // The build's auth axis, opened on first use: every method's plugin opens there (the
         // chain's own rows, the same dispatcher and connection table).
@@ -235,7 +254,7 @@ impl LoginMethods {
                 Some(a) => a.clone(),
                 None => axis
                     .insert(
-                        crate::preflight::auth_axis(registry.clone())
+                        open_axis()
                             .ok_or_else(|| refused(super::auth_refusal(registry, &mc.module)))?,
                     )
                     .clone(),

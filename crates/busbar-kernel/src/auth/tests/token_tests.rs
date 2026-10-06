@@ -17,12 +17,14 @@ use busbar_contract::auth_calls::{LoginCall, LoginCallback, LoginSettled};
 /// A door stand-in: an opened `kind: auth` instance answering `begin_login`/`complete_login` (the
 /// plugin on the auth kind's door), recording every `complete_login` it was handed. `park` holds
 /// each answer back that long on a thread of its own — the dispatcher worker the plugin runs on —
-/// never on the caller's.
+/// never on the caller's. `faults`: every step FAULTS (the plugin broke its contract, a caught
+/// panic), answered as the loader answers one: a Reject that says it faulted.
 struct DoorLogin {
     kind: LoginKind,
     begin: LoginOutcome,
     complete: Box<dyn Fn(&LoginCallback) -> LoginOutcome + Send + Sync>,
     park: Option<std::time::Duration>,
+    faults: bool,
     seen: std::sync::Mutex<Vec<LoginCallback>>,
 }
 
@@ -37,6 +39,7 @@ impl DoorLogin {
             begin: LoginOutcome::Authorize("https://idp.example.com/authorize?x=1".into()),
             complete: Box::new(complete),
             park: None,
+            faults: false,
             seen: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -48,6 +51,9 @@ impl DoorLogin {
 
     /// The step's answer: on the spot, or after `park` from the plugin's own thread.
     fn answer(&self, outcome: LoginOutcome) -> Box<dyn LoginCall> {
+        if self.faults {
+            return Box::new(Faulted);
+        }
         let Some(park) = self.park else {
             return Box::new(LoginSettled(Some(outcome)));
         };
@@ -57,6 +63,28 @@ impl DoorLogin {
             let _ = tx.send(outcome);
         });
         Box::new(Parked(rx))
+    }
+}
+
+/// A login step the plugin FAULTED: answered as a Reject, saying it faulted.
+struct Faulted;
+
+impl std::future::Future for Faulted {
+    type Output = LoginOutcome;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<LoginOutcome> {
+        std::task::Poll::Ready(LoginOutcome::Reject)
+    }
+}
+
+impl LoginCall for Faulted {
+    fn settled(&mut self) -> Option<LoginOutcome> {
+        Some(LoginOutcome::Reject)
+    }
+    fn faulted(&self) -> bool {
+        true
     }
 }
 
@@ -1517,4 +1545,246 @@ async fn a_door_callback_renders_each_answer_on_its_page() {
     let page = provider_unreachable();
     assert_eq!(unreachable.status(), page.status());
     assert_eq!(body_of(unreachable), body_of(page));
+}
+
+/// A login plugin that FAULTS (its SDK shim caught a panic and answered FAULT) on begin, on the
+/// redirect callback and on the credential POST: each fails closed as the decline renders it, and
+/// says so as 1.5.5 said a panicked login plugin call (4003 `login-plugin-panicked`, "login plugin
+/// call panicked; rejecting (fail-closed)", naming the method and the op). RED arm: the SAME
+/// outcome answered by a plugin that merely DECLINED says nothing — 4003 is the fault's, not the
+/// Reject's.
+#[test]
+fn a_faulting_login_plugin_is_rejected_and_says_it_panicked_and_a_declining_one_says_nothing() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let run = |faults: bool| {
+        let door = |kind: LoginKind| {
+            std::sync::Arc::new(DoorLogin {
+                kind,
+                faults,
+                ..DoorLogin::answering(|_| LoginOutcome::Reject)
+            })
+        };
+        let cap = crate::test_support::warn_capture::WarnCapture::default();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let statuses = tracing::subscriber::with_default(subscriber, || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            rt.block_on(async {
+                let app = crate::test_support::TestApp::new()
+                    .public_url("https://busbar.example.com")
+                    .login_method_door("idp", door(LoginKind::Redirect), LoginKind::Redirect, true)
+                    .login_method_door(
+                        "test-login-double",
+                        door(LoginKind::Credential),
+                        LoginKind::Credential,
+                        true,
+                    )
+                    .build();
+                let handle = cred_handle(&app);
+                let begun = begin(&app, "idp", false).await.status().as_u16();
+                let called = callback(
+                    &app,
+                    &handle,
+                    Some(door_cookie().encode()),
+                    "the-code".into(),
+                    Some("st".into()),
+                )
+                .await
+                .status()
+                .as_u16();
+                let form = vec![
+                    (FORM_STATE_FIELD.to_string(), "csrf-1".to_string()),
+                    ("password".to_string(), "pw".to_string()),
+                ];
+                let submitted =
+                    credential_submit(&app, &handle, cred_cookie("csrf-1", false), form)
+                        .await
+                        .status()
+                        .as_u16();
+                (begun, called, submitted)
+            })
+        });
+        (statuses, cap.messages())
+    };
+
+    let (faulted, said) = run(true);
+    assert_eq!(
+        faulted,
+        (502, 401, 401),
+        "a faulting step fails closed as a decline renders it (begin, callback, credential POST)"
+    );
+    let panicked: Vec<_> = said
+        .iter()
+        .filter(|m| m.contains("login plugin call panicked; rejecting (fail-closed)"))
+        .collect();
+    assert_eq!(panicked.len(), 3, "one 4003 per faulted step: {said:?}");
+    for op in ["op=\"begin_login\"", "op=\"complete_login\""] {
+        assert!(
+            panicked
+                .iter()
+                .any(|m| m.contains(op) || m.contains(&op.replace('"', ""))),
+            "4003 names the op {op}: {said:?}"
+        );
+    }
+    assert!(
+        panicked.iter().any(|m| m.contains("idp"))
+            && panicked.iter().any(|m| m.contains("test-login-double")),
+        "4003 names the method: {said:?}"
+    );
+
+    // RED: the same answers from a plugin that DECLINED say nothing about a panic.
+    let (declined, said) = run(false);
+    assert_eq!(declined.1, faulted.1, "a decline renders as the fault does");
+    assert_eq!(declined.2, faulted.2, "a decline renders as the fault does");
+    assert!(
+        !said
+            .iter()
+            .any(|m| m.contains("login plugin call panicked")),
+        "a declining plugin emits no 4003: {said:?}"
+    );
+}
+
+/// THE CLIENT SECRET IS THE PLUGIN'S, LENT AT `open` AND HELD NOWHERE ELSE (THE DESIGN 6.7). The
+/// host resolves `browser_login.client_secret` and hands it to the plugin's `open` beside the
+/// public `client_id` (the plugin makes its own token exchange with it); after that it rides
+/// NOTHING the host makes: not the login cookie, not the authorize redirect, not the
+/// `complete_login` the callback hands the plugin, not the pages it renders. (Where the secret may
+/// be SENT — the operator's own IdP hosts only — is the plugin's to enforce, ruling R8.)
+#[tokio::test]
+async fn the_client_secret_is_lent_at_open_and_rides_nothing_the_host_makes() {
+    const SECRET: &str = "REAL-SECRET-XYZ";
+    struct Recording {
+        opened: std::sync::Mutex<Vec<(String, String, serde_json::Value)>>,
+        door: std::sync::Arc<DoorLogin>,
+    }
+    impl busbar_contract::auth_calls::AuthAxis for Recording {
+        fn linked_names(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn answers(&self, module: &str) -> bool {
+            module == "idp-plugin"
+        }
+        fn linked(&self, _: &str) -> bool {
+            false
+        }
+        fn operator(&self) -> Option<(String, String)> {
+            None
+        }
+        fn open(
+            &self,
+            module: &str,
+            label: &str,
+            settings: &serde_json::Value,
+        ) -> Result<std::sync::Arc<dyn AuthCalls>, String> {
+            self.opened.lock().unwrap().push((
+                module.to_string(),
+                label.to_string(),
+                settings.clone(),
+            ));
+            Ok(self.door.clone())
+        }
+    }
+    let axis = std::sync::Arc::new(Recording {
+        opened: std::sync::Mutex::new(Vec::new()),
+        door: DoorLogin::new(alice()),
+    });
+    std::env::set_var("BUSBAR_TEST_LOGIN_SECRET_LENT", SECRET);
+    let mut cfg = crate::config::AuthCfg::default_none();
+    cfg.methods.insert(
+        "idp".into(),
+        crate::config::AuthMethodCfg {
+            module: "idp-plugin".into(),
+            browser_login: Some(crate::config::BrowserLoginCfg {
+                client_secret: Some(crate::config::SecretRef::env(
+                    "BUSBAR_TEST_LOGIN_SECRET_LENT",
+                )),
+                client_id: Some("client-abc".into()),
+            }),
+            settings: serde_json::Map::new(),
+        },
+    );
+    let methods = LoginMethods::build_on(
+        &cfg,
+        &busbar_plugin_loader::PluginRegistry::empty(),
+        &crate::config::secret::SecretResolver::builtins_only(),
+        || Some(axis.clone() as std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>),
+    )
+    .expect("the method opens on the door");
+
+    // LENT AT OPEN: the plugin's instance is opened over the resolved secret and the public id.
+    let opened = axis.opened.lock().unwrap().clone();
+    assert_eq!(opened.len(), 1, "one instance opened: {opened:?}");
+    assert_eq!(opened[0].0, "idp-plugin");
+    assert_eq!(opened[0].1, "idp#login");
+    assert_eq!(
+        opened[0].2["client_secret"], SECRET,
+        "the secret is lent at open"
+    );
+    assert_eq!(opened[0].2["client_id"], "client-abc");
+
+    // HELD NOWHERE ELSE: drive the whole redirect login over the method the build opened.
+    let method = methods.methods.get("idp").expect("the method");
+    let app = crate::test_support::TestApp::new()
+        .public_url("https://busbar.example.com")
+        .login_method_door(
+            "idp",
+            method.module.clone(),
+            method.login_kind,
+            method.has_button,
+        )
+        .build();
+    let begun = begin(&app, "idp", false).await;
+    assert_eq!(begun.status().as_u16(), 302);
+    let location = begun
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(!location.contains(SECRET), "not on the authorize redirect");
+    let set = begun
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let raw = set
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix(&format!("{LOGIN_COOKIE}="))
+        .unwrap();
+    let decoded = String::from_utf8(B64.decode(raw).unwrap()).unwrap();
+    assert!(
+        !decoded.contains(SECRET) && !set.contains(SECRET),
+        "not in the login cookie: {decoded}"
+    );
+    let cookie = LoginCookie::decode(raw).expect("the cookie");
+    let called = callback(
+        &app,
+        &cred_handle(&app),
+        Some(cookie.encode()),
+        "the-code".into(),
+        Some(cookie.state.clone()),
+    )
+    .await;
+    let seen = format!("{:?}", axis.door.seen.lock().unwrap());
+    assert!(
+        !seen.contains(SECRET),
+        "not in the complete_login the plugin is handed: {seen}"
+    );
+    assert!(
+        !body_of(called).contains(SECRET),
+        "not on the page rendered"
+    );
+    let page = render_key_issued(
+        "alice",
+        "user:alice",
+        "bb_live_abc",
+        "https://busbar.example.com",
+        "idp",
+    );
+    assert!(!page.contains(SECRET), "not on the key-issued page");
 }

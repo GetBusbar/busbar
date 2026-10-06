@@ -2154,8 +2154,8 @@ pub(crate) async fn put_auth(
 }
 
 /// `POST /api/v1/admin/auth/cache/flush` — INSTANT REVOCATION of the credential cache's
-/// cached-allow window. Body `{"module": "<name>"}` flushes one module's
-/// partition; no/empty body flushes everything. The deny path never needed this (`Reject` is
+/// cached-allow window (each auth plugin's own, [`busbar_kernel::auth::flush_inbound_caches`]).
+/// Body `{"module": "<name>"}` flushes one module's partition; no/empty body flushes everything. The deny path never needed this (`Reject` is
 /// never cached); this closes the Identify window when a directory changes NOW.
 pub(crate) async fn flush_credential_cache(
     State(handle): State<Arc<AppHandle>>,
@@ -2176,10 +2176,7 @@ pub(crate) async fn flush_credential_cache(
                 )),
             }
         };
-    let flushed = match module.as_deref() {
-        Some(m) => app.credential_cache.flush_module(m),
-        None => app.credential_cache.flush_all(),
-    };
+    let flushed = busbar_kernel::auth::flush_inbound_caches(&app, module.as_deref());
     audit::AUDIT.record_by(
         "auth.cache_flush",
         module.as_deref().unwrap_or("*"),

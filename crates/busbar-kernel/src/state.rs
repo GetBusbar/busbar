@@ -393,9 +393,6 @@ pub struct App {
     /// LAW 7 — this generation's configured plane sections (`RootCfg::plane_sections`). `None` only on
     /// a test fixture that states none, where every linked plane counts as configured.
     pub plane_sections: Option<std::collections::BTreeSet<&'static str>>,
-    /// The credential cache — Arc-shared ACROSS config swaps (like the
-    /// mutation limiter): an apply/reload must not silently re-open every cached-allow window.
-    pub credential_cache: Arc<crate::auth_cache::CredentialCache>,
     /// Per-module `max_admin_scope:` ceilings (from the auth chain entries) - consulted at admin
     /// scope resolution.
     pub auth_scope_caps: std::collections::HashMap<String, String>,

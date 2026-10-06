@@ -634,7 +634,7 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
         named.admin_modules = Arc::new(AdminAuthChain {
             modules: HashMap::from([(
                 op.to_string(),
-                busbar_kernel::auth::AdminModule::cold(Box::new(AnyCredential)),
+                busbar_kernel::auth::AdminModule::in_process(Box::new(AnyCredential)),
             )]),
             operator,
         });
@@ -866,18 +866,15 @@ async fn a_door_on_the_data_plane_chain_judges_the_request_it_is_lent() {
         "data-door".to_string(),
         door,
     )]));
-    let cache = Arc::new(busbar_kernel::auth_cache::CredentialCache::new());
     let judged = |token: Option<&str>, head: bool| {
         let headers = token.map(bearer).unwrap_or_default();
         let head = match head {
             true => ChainHead::of_parts("POST", "/v1/chat/completions", &headers),
             false => ChainHead::default(),
         };
-        let (auth, cache) = (auth.clone(), cache.clone());
+        let auth = auth.clone();
         let token = token.map(str::to_string);
-        async move {
-            AuthMiddleware::run_chain_on_request_path(&auth, &cache, token, head, None, None).await
-        }
+        async move { AuthMiddleware::run_chain_on_request_path(&auth, token, head, None, None).await }
     };
     match judged(Some(TOKEN), true).await {
         ChainVerdict::Identified { module, .. } => assert_eq!(module, "data-door"),

@@ -198,7 +198,6 @@ pub mod audit;
 /// admin HTTP API. Runs on the append-only chain mechanism in [`audit`] above.
 pub mod audit_ring;
 pub mod auth;
-pub mod auth_cache;
 pub mod billing;
 /// THE BOOT SEAM: one entry point per boot action, so the internals each action composes stay
 /// crate-private. See the module header.

@@ -19,9 +19,8 @@
 //!    the boot path actually calls.
 //!
 //! Every test here goes through a public (or `pub(crate)`, crate-internal-but-not-implementation-
-//! private) entry point, never a cache/store internal type — matching the owner ruling that the
-//! inbound cache's home moving into the plugins is a M4b non-concern; only its OBSERVABLE behaviour
-//! (already pinned by `tests/auth_cache_tests.rs`, ported from 1.5.5 `auth_cache.rs`) matters here.
+//! private) entry point, never a store internal type. The inbound credential cache lives in the
+//! plugins (THE DESIGN 11.11 R3); the kernel keeps none.
 
 use super::*;
 use crate::diagnostics::{
