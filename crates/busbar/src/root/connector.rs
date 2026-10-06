@@ -82,7 +82,7 @@ pub fn entries(
 
 /// THE CONNECTOR'S ENTRIES IN DECLARED ORDER (ARCHITECT, p2-transport-carrier): the build's linked
 /// rows in the order the build declares them, then every door dropped into `plugins.dir` in the
-/// directory's sorted order (`busbar_plugin_loader::list_plugin_files`), each the one instance the
+/// directory's sorted order (the loader's plugin file listing), each the one instance the
 /// legacy seam serves too. The order is the declaration's, never the order things loaded in, so the
 /// ADDRESS carrier (`Transports::address_carrier`: the first carrier whose claim serves a port) is
 /// the same carrier on every boot of one deployment.

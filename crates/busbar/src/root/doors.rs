@@ -412,6 +412,9 @@ pub fn host_wire(
     served(plugin, settings).map(|(_, wire)| wire)
 }
 
+/// An opened door and the wire the legacy seam presents over it.
+pub type Served = (Arc<dyn FramerDoor>, Arc<dyn busbar_contract::Transport>);
+
 /// [`host_wire`], and the opened door itself: the one instance the connector serves as an entry and
 /// the legacy seam presents (a dropped-in door is opened once).
 ///
@@ -421,7 +424,7 @@ pub fn host_wire(
 pub fn served(
     plugin: Plugin<TransportKind>,
     settings: &busbar_contract::transport::TransportSettings,
-) -> Result<(Arc<dyn FramerDoor>, Arc<dyn busbar_contract::Transport>), String> {
+) -> Result<Served, String> {
     let door: Arc<dyn FramerDoor> = Arc::new(Dispatched::open(plugin, settings)?);
     let wire = Arc::new(RootWire::new(HostWire::new(Arc::clone(&door))?));
     Ok((door, wire))
