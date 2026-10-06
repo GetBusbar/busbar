@@ -43,6 +43,7 @@ static PROBE: PlaneDecl = PlaneDecl {
         required_config_sections: &[],
         trust_keys: &[],
         served_op_classes: &[],
+        caller_credential_refusal: None,
     },
     wire_format_names: || &["law7probe"],
     claims: |_| Vec::new(),

@@ -92,6 +92,7 @@
 
 pub mod approvals;
 pub mod config;
+pub mod door;
 pub mod observe;
 pub(crate) mod quarantine;
 /// The durable demotion record, which the root attaches to the kernel's host services.
@@ -821,6 +822,7 @@ const fn neutral_sibling_decl(
             required_config_sections: &[],
             trust_keys: &[],
             served_op_classes: &[],
+            caller_credential_refusal: None,
         },
         wire_format_names: || &[],
         claims: |_| Vec::new(),

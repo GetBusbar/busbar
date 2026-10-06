@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use super::*;
 use crate::abi::host::conn::connector::{
-    service, ConnectorSlots, IoIn, ReplyIn, RequestIn, SERVICES,
+    service, ConnectorSlots, FactsIn, IoIn, ReplyIn, RequestIn, StreamFacts, SERVICES,
 };
 use crate::abi::host::service::{ServiceHead, ServiceOut};
 use crate::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
@@ -53,6 +53,8 @@ struct Script {
     reply: Vec<Scripted>,
     framed: Framed,
     unframed: bool,
+    /// The registration each ESTABLISH named, in order (`None` = an absent member).
+    members: Vec<Option<Vec<u8>>>,
 }
 
 static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
@@ -135,7 +137,15 @@ fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     }
     *s.runs.entry(seq).or_default() += 1;
     let (value, len) = match op {
-        service::ESTABLISH => (7, 0),
+        service::ESTABLISH => {
+            // SAFETY: an `EstablishIn` (the SDK states its whole size).
+            let i = unsafe { *input.cast::<crate::abi::host::conn::connector::EstablishIn>() };
+            s.members.push((!i.member.ptr.is_null()).then(|| {
+                // SAFETY: the SDK's own string, live for the call.
+                unsafe { std::slice::from_raw_parts(i.member.ptr, i.member.len) }.to_vec()
+            }));
+            (7, 0)
+        }
         service::WRITE => {
             // SAFETY: an `IoIn`.
             let io = unsafe { *input.cast::<IoIn>() };
@@ -176,6 +186,52 @@ slot!(write_request, service::WRITE_REQUEST);
 slot!(read_reply, service::READ_REPLY);
 slot!(close, service::CLOSE);
 
+/// The far end's key pin the scripted host's `FACTS` reports.
+const OBSERVED_PIN: &str = "c2NyaXB0ZWQga2V5";
+
+/// `FACTS`, as a connector host answers it on a stream already dialled: READY at once with the
+/// facts written on a handle's first issue; a re-issue answers the stored outcome and writes
+/// nothing (the replay rule).
+extern "C" fn facts(_: HostCtx, i: *const c_void, o: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: a `FactsIn`.
+    let io = unsafe { *i.cast::<FactsIn>() };
+    assert_eq!(io.head.op, service::FACTS);
+    let seq = io.head.handle.seq;
+    let mut g = SCRIPT.lock().unwrap();
+    let s = g.as_mut().expect("a script");
+    if s.stored.contains_key(&seq) {
+        return answer(o, Outcome::Ready, 0, 0);
+    }
+    *s.runs.entry(seq).or_default() += 1;
+    s.stored.insert(seq, (Outcome::Ready, 0, 0));
+    // SAFETY: the SDK's facts slot, live for the call.
+    unsafe {
+        io.facts.write(StreamFacts {
+            size: std::mem::size_of::<StreamFacts>() as u32,
+            secure: 1,
+            endpoint: AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            agreed_protocol: AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            peer_cert_hash: AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            peer_key_pin: AbiStr {
+                ptr: OBSERVED_PIN.as_ptr(),
+                len: OBSERVED_PIN.len(),
+            },
+            client_identity: 1,
+            _reserved: 0,
+        });
+    }
+    answer(o, Outcome::Ready, 0, 0)
+}
+
 static SLOTS: ConnectorSlots = ConnectorSlots {
     size: std::mem::size_of::<ConnectorSlots>() as u32,
     slots: SERVICES,
@@ -185,7 +241,7 @@ static SLOTS: ConnectorSlots = ConnectorSlots {
     read: None,
     write: Some(write),
     upgrade_secure: None,
-    facts: None,
+    facts: Some(facts),
     checkout: None,
     checkin: None,
     close: Some(close),
@@ -220,6 +276,10 @@ struct Run<T> {
     entries: u32,
     runs: HashMap<u32, u32>,
     framed: Framed,
+    /// The registration each ESTABLISH named.
+    members: Vec<Option<Vec<u8>>>,
+    /// The exchange's state once it completed.
+    state: Exchange,
 }
 
 /// Run the op to completion under `reply`: a fresh connector each entry, the same parked state.
@@ -255,6 +315,8 @@ fn run<T>(
         entries,
         runs: s.runs,
         framed: s.framed,
+        members: s.members,
+        state,
     }
 }
 
@@ -457,4 +519,69 @@ fn a_transport_that_never_acks_is_a_conformance_failure() {
         "{:?}",
         r.answered
     );
+}
+
+/// THE TRANSPORT PIN, PLUGIN SIDE (the transport pin, ARCHITECT 2026-10-03): an exchange that asks reads its stream's facts
+/// once the reply ended, before the close — the far end's key and whether busbar presented its
+/// client identity — and keeps them across the op's re-entries, whose replayed `FACTS` writes
+/// nothing; no service runs twice. An exchange that does not ask makes no `FACTS` at all.
+#[test]
+fn an_observing_exchange_reads_its_streams_facts_before_the_close() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        http_reply(),
+        false,
+        Exchange::request(post()).expect("a request").observing(),
+        None,
+        |c, st| exchange(c, st, 0, Some("https://far/hook")),
+    );
+    assert_eq!(r.answered.expect("the exchange completes").status, 200);
+    let observed = r.state.observed().expect("the facts were read");
+    assert_eq!(observed.peer_key_pin.as_deref(), Some(OBSERVED_PIN));
+    assert!(observed.client_identity && observed.secure);
+    // establish, head, body, end, four reads, facts, close: ten services, each run once.
+    assert_eq!(r.runs.len(), 10);
+    assert!(r.runs.values().all(|&n| n == 1), "{:?}", r.runs);
+
+    let plain = run(
+        http_reply(),
+        false,
+        Exchange::request(post()).expect("a request"),
+        None,
+        |c, st| exchange(c, st, 0, Some("https://far/hook")),
+    );
+    assert!(plain.state.observed().is_none());
+    assert_eq!(plain.runs.len(), 9, "no facts asked, none made");
+}
+
+/// RED (SEAM-4p): an exchange that names a REGISTRATION (`Exchange::as_member`) establishes its
+/// stream naming it (`EstablishIn::member`), so the host's per-registration private reach applies
+/// to its dial; one that names none establishes naming none.
+#[test]
+fn an_exchange_names_its_registration_on_its_establish() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let named = run(
+        http_reply(),
+        false,
+        Exchange::request(post())
+            .expect("a request")
+            .as_member("inside"),
+        None,
+        |c, st| exchange(c, st, 0, Some("https://far/hook")),
+    );
+    named.answered.expect("the exchange completes");
+    assert_eq!(named.members, vec![Some(b"inside".to_vec())]);
+    let plain = run(
+        http_reply(),
+        false,
+        Exchange::request(post()).expect("a request"),
+        None,
+        |c, st| exchange(c, st, 0, Some("https://far/hook")),
+    );
+    plain.answered.expect("the exchange completes");
+    assert_eq!(plain.members, vec![None], "no registration named");
 }
