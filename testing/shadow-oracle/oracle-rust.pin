@@ -256,8 +256,13 @@
 # generator gains ops.scrape|reload|sink-removed (cells.json 2509 -> 2510 in the same busbar commit range; its
 # golden recorded from the published 1.5.5 by golden-add).
 #
+# 2026-10-06 (ARCHITECT Q1; RELEASE_REF coordination: 0ede76aea9 or newer): moved edd17921e320 -> 2119a67a6fef,
+# the merge of busbar-release #164 into dev, which descends 0ede76aea9 (P5 #484's ref: #157 + #161). #164: an
+# unreleased line's plugins are built from the commit busbar pins (the `src:` rows in plugin-digests.tsv), signed
+# by a throwaway per-run oracle key and trusted only by the candidate configs that stage them.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=edd17921e320776532548e7e2103631399985079
+release_ref=2119a67a6fef3c6123627c3463527d3a74b3fd94
 crate=busbar-release-oracle
 bin=busbar-oracle
