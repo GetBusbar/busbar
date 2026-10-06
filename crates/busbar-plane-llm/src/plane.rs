@@ -194,7 +194,7 @@ fn refusal_shape(reason: RefusalReason) -> (u16, &'static str) {
         // joins the family it belongs to rather than acquiring a status of its own: a client learns
         // the shape of the refusal, never which of the node's ceilings it met.
         RefusalReason::ChallengeExhausted => (401, KIND_AUTHENTICATION),
-        RefusalReason::PoolNotPermitted => (403, KIND_PERMISSION),
+        RefusalReason::PoolNotPermitted | RefusalReason::Untrusted => (403, KIND_PERMISSION),
         RefusalReason::RateLimited | RefusalReason::InFlight => (429, KIND_RATE_LIMIT),
         RefusalReason::DecodeFailed
         | RefusalReason::NoRate

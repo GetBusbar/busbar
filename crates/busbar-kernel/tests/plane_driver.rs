@@ -37,7 +37,7 @@ use busbar_contract::abi::plane::{ServeIn, ServeOut};
 use busbar_contract::caps::OpClassId;
 use busbar_contract::plane::{TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::{
-    Answered, Grow, InstanceDecl, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
+    Answered, ArrivedTrust, Grow, InstanceDecl, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
 };
 use busbar_kernel::plane_driver::{refusal_status, BufferCaps, DriverConfig, PlaneDriver};
 
@@ -594,6 +594,29 @@ impl PlaneCalls for Double {
             source: UNITS_ESTIMATED,
             amount,
         };
+        // `/trusted/<counterparty>[/<capability>[@<digest>]]`: the unit states its trust facts,
+        // which the kernel's Approve judges (the plane judges none).
+        if let Some(rest) = target.strip_prefix(b"/trusted/") {
+            let leak = |b: &[u8]| -> AbiStr {
+                let kept: &'static [u8] = Box::leak(b.to_vec().into_boxed_slice());
+                AbiStr::over(kept)
+            };
+            let (cp, cap) = match rest.iter().position(|b| *b == b'/') {
+                Some(i) => (&rest[..i], Some(&rest[i + 1..])),
+                None => (rest, None),
+            };
+            out.trust_counterparty = leak(cp);
+            if let Some(cap) = cap {
+                let (cap, digest) = match cap.iter().position(|b| *b == b'@') {
+                    Some(i) => (&cap[..i], Some(&cap[i + 1..])),
+                    None => (cap, None),
+                };
+                out.trust_capability = leak(cap);
+                if let Some(d) = digest {
+                    out.trust_digest = leak(d);
+                }
+            }
+        }
         for call in 0..2 {
             let cap = input.units_cap;
             let wants: Vec<UnitCount> = match target.as_slice() {
@@ -655,6 +678,15 @@ impl PlaneCalls for Double {
         (!out.head.error.ptr.is_null()).then(|| unsafe { text(out.head.error) }.to_vec())
     }
 
+    fn arrived_trust(&self, out: &ArriveOut) -> Option<ArrivedTrust> {
+        let read = |s: AbiStr| (!s.ptr.is_null()).then(|| unsafe { text(s) }.to_vec());
+        Some(ArrivedTrust {
+            counterparty: read(out.trust_counterparty)?,
+            capability: read(out.trust_capability),
+            digest: read(out.trust_digest),
+        })
+    }
+
     fn refusal(
         &self,
         input: &mut RefusalIn,
@@ -694,6 +726,10 @@ impl PlaneCalls for Double {
         }
         if input.plane_code != 0 {
             body.extend_from_slice(format!(":{}@{}", input.plane_code, input.unit).as_bytes());
+        }
+        // Why the kernel's Approve did not trust the unit: this plane names the `TRUST_*` code.
+        if input.trust != 0 {
+            body.extend_from_slice(format!(":trust={}", input.trust).as_bytes());
         }
         // A HOOK VETO (SEAM-L(o), (p)): this plane names the vetoing hook and writes its audit row,
         // rejected, for the unit the kernel refused.
@@ -1387,6 +1423,101 @@ async fn a_due_subject_shows_in_trust_due_after_a_tick() {
         .await
         .expect("one tick");
     assert_eq!(due(&services), b"peer".to_vec(), "due after the tick");
+}
+
+// ── the kernel's Approve over the trust facts a plane states ────────────────────────────────────
+
+/// One unit at `target` through `driver`: its outcome and, when refused, the body the plane rendered.
+async fn approved(driver: &PlaneDriver, target: &str) -> (busbar_contract::caps::Outcome, String) {
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["ok"], cases::CHUNKS),
+        cases::Caller::default(),
+    );
+    let units = driver.unit(&steps, &far, &caller, cases::arrival(target, b"x"), 0);
+    let outcome = cases::drive(&units).await;
+    let body = units
+        .take_rendered()
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .unwrap_or_default();
+    (outcome, body)
+}
+
+/// Whether `outcome` is the kernel's Approve refusing the unit as untrusted.
+fn untrusted(outcome: &busbar_contract::caps::Outcome) -> bool {
+    matches!(
+        outcome,
+        busbar_contract::caps::Outcome::Refused(
+            busbar_contract::caps::StepName::Approve,
+            busbar_contract::caps::ReasonCode::Untrusted
+        )
+    )
+}
+
+/// TRUST IS THE KERNEL'S APPROVE STEP (ARCHITECT 2026-10-06): the plane STATES a counterparty, a
+/// capability there and the digest it is offered at; the kernel judges them against its trust book
+/// and refuses `untrusted` (the plane told why, `TRUST_*`) when they do not hold. RED arms: an
+/// undeclared counterparty (1), one never sighted (2), a quarantined one (3), a capability never
+/// approved (4), and one offered at another digest than the one approved (5). A unit stating no
+/// trust facts is judged on nothing.
+#[tokio::test]
+async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
+    use busbar_kernel::plane_driver::refusal_status;
+    let services = stored();
+    let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
+    let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section);
+    let refused = |code: u32| {
+        format!(
+            "refused:{}:untrusted:trust={code}",
+            refusal_status(busbar_contract::caps::ReasonCode::Untrusted)
+        )
+    };
+
+    // No trust facts: nothing judged.
+    let (outcome, _) = approved(&driver, "/call").await;
+    assert!(!untrusted(&outcome), "{outcome:?}");
+    // RED: an undeclared counterparty; one never sighted.
+    let (outcome, body) = approved(&driver, "/trusted/stranger").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(1));
+    let (outcome, body) = approved(&driver, "/trusted/peer").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(2));
+
+    // Sighted (pinned on first sight): the counterparty as a whole is trusted.
+    let sight = |hash: &'static str| {
+        let later: busbar_contract::services::Later = Box::new(|_| {});
+        let _ = services.trust_sight(&instance(), "peer", hash, later);
+    };
+    sight("h1");
+    let (outcome, _) = approved(&driver, "/trusted/peer").await;
+    assert!(!untrusted(&outcome), "{outcome:?}");
+
+    // RED: a capability never approved; approved, it serves at its digest alone.
+    let (outcome, body) = approved(&driver, "/trusted/peer/cap@d1").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(4));
+    services
+        .trust_approve("inst", "peer", [("cap".to_string(), "d1".to_string())])
+        .expect("peer is declared");
+    let (outcome, _) = approved(&driver, "/trusted/peer/cap@d1").await;
+    assert!(!untrusted(&outcome), "{outcome:?}");
+    let (outcome, body) = approved(&driver, "/trusted/peer/cap@d2").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(5));
+    let (outcome, body) = approved(&driver, "/trusted/peer/cap").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(
+        body,
+        refused(5),
+        "no digest observed is not the approved one"
+    );
+
+    // RED: a sighting that drifts quarantines the counterparty, whatever was approved.
+    sight("h2");
+    let (outcome, body) = approved(&driver, "/trusted/peer/cap@d1").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(3));
 }
 
 // ── the plane's own work bounds (its section's reserved `work:`) ────────────────────────────────

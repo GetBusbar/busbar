@@ -72,7 +72,7 @@ use crate::host_work::{
     WorkBook, WorkBounds, WORK_SCHEMA,
 };
 use crate::plane::quarantine::DemotionRecord;
-use crate::trust::book::{Effect, Sight, TrustBook, Unjudged};
+use crate::trust::book::{Distrust, Effect, Sight, TrustBook, TrustFacts, Unjudged};
 use crate::trust::section::TrustEntry;
 use crate::trust::signed;
 
@@ -808,6 +808,31 @@ impl KernelServices {
             .admit(&key, facts.trust.iter().cloned(), replayed);
         instances.insert(key, Arc::new(facts));
         Ok(())
+    }
+
+    /// THE KERNEL'S APPROVE over the trust facts a plane stated for a unit of `instance`
+    /// ([`TrustBook::judge`]; ARCHITECT 2026-10-06: trust is the kernel's Approve step).
+    ///
+    /// # Errors
+    ///
+    /// The [`Distrust`] that refuses the unit.
+    pub fn trust_judge(&self, instance: &str, facts: &TrustFacts<'_>) -> Result<(), Distrust> {
+        self.trust.judge(instance, facts)
+    }
+
+    /// Approve `counterparty` of `instance` for exactly `capabilities`, each at its digest
+    /// ([`TrustBook::approve`]): the set the kernel's Approve judges a stated capability against.
+    ///
+    /// # Errors
+    ///
+    /// [`Unjudged`] for an instance never admitted or a counterparty it does not declare.
+    pub fn trust_approve(
+        &self,
+        instance: &str,
+        counterparty: &str,
+        capabilities: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<(), Unjudged> {
+        self.trust.approve(instance, counterparty, capabilities)
     }
 
     /// The record of every unit in flight, which the unit's admission writes and its end removes.

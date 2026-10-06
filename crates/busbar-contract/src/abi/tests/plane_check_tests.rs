@@ -2213,6 +2213,7 @@ const PINNED: &[(u32, RefusalCode, &str)] = &[
     (39, RefusalCode::Superseded, "superseded"),
     (40, RefusalCode::ClientGone, "client_gone"),
     (41, RefusalCode::DeadlineExceeded, "deadline_exceeded"),
+    (42, RefusalCode::Untrusted, "untrusted"),
 ];
 
 #[test]
@@ -2768,6 +2769,76 @@ fn an_arrivals_route_flags_are_once_and_session() {
         check_arrive(Refused, &o, &[], 4, &bounds()),
         f(Rule::Contradiction, "arrive.pool"),
         "a refused arrival opens no session"
+    );
+}
+
+/// THE TRUST FACTS (ARCHITECT 2026-10-06, the kernel's Approve): a READY arrival may state a
+/// counterparty, a capability there and the digest it is offered at, each a bounded text. RED arms:
+/// a capability with no counterparty, a digest with no capability, a fact counted with no bytes, a
+/// fact past the text bound, and any fact on an answer that admits nothing.
+#[test]
+fn an_arrivals_trust_facts_are_bounded_ordered_and_an_admitted_units_own() {
+    let s = |b: &'static [u8]| AbiStr {
+        ptr: b.as_ptr(),
+        len: b.len(),
+    };
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_LOCAL;
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "none");
+    o.trust_counterparty = s(b"peer-a");
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        Ok(()),
+        "a counterparty"
+    );
+    o.trust_capability = s(b"cap-x");
+    o.trust_digest = s(b"d1");
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        Ok(()),
+        "all three"
+    );
+
+    // RED: a digest with no capability; a capability with no counterparty.
+    o.trust_capability = z();
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.trust_digest")
+    );
+    o.trust_digest = z();
+    o.trust_capability = s(b"cap-x");
+    o.trust_counterparty = z();
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.trust_capability")
+    );
+    // RED: counted with no bytes; past the text bound.
+    o.trust_capability = z();
+    o.trust_counterparty = AbiStr {
+        ptr: std::ptr::null(),
+        len: 2,
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::NullWithCount, "arrive.trust_counterparty")
+    );
+    let long = vec![b'p'; MAX_TEXT + 1];
+    o.trust_counterparty = AbiStr {
+        ptr: long.as_ptr(),
+        len: long.len(),
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::OverMax, "arrive.trust_counterparty")
+    );
+    // RED: an answer that admits nothing states no trust fact.
+    let mut o: ArriveOut = z();
+    o.refusal = 3;
+    o.refusal_status = 404;
+    o.trust_counterparty = s(b"peer-a");
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.trust")
     );
 }
 

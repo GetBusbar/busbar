@@ -13,7 +13,7 @@ use busbar_contract::unit::{AbortBy, FailureReason, RefusalReason, Step, UnitEnd
 /// this dialect answers it with. The list is exhaustive against `busbar_contract::unit::RefusalReason`
 /// (42 variants); `refusal_render`'s own match is `_`-free, so a reason absent here is one this test
 /// would silently skip — the two lists are kept in step on purpose.
-const ALL_REFUSAL_REASONS: [RefusalReason; 42] = [
+const ALL_REFUSAL_REASONS: [RefusalReason; 43] = [
     RefusalReason::InFlightCap,
     RefusalReason::CursorBudget,
     RefusalReason::CredentialBudget,
@@ -56,6 +56,7 @@ const ALL_REFUSAL_REASONS: [RefusalReason; 42] = [
     RefusalReason::Superseded,
     RefusalReason::ClientGone,
     RefusalReason::DeadlineExceeded,
+    RefusalReason::Untrusted,
 ];
 
 #[test]

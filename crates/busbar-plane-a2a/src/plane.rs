@@ -227,7 +227,8 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
         RefusalReason::ScopeMissing
         | RefusalReason::Vetoed
         | RefusalReason::Revoked
-        | RefusalReason::PoolNotPermitted => (
+        | RefusalReason::PoolNotPermitted
+        | RefusalReason::Untrusted => (
             jsonrpc::CODE_UNSUPPORTED_OPERATION,
             "the caller may not perform this operation",
         ),

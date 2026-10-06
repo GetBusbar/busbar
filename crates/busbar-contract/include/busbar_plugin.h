@@ -382,6 +382,12 @@ extern "C" {
 #define BB_PLANE_ROUTE_ONCE UINT8_C(1) /* [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE (ARCHITECT round 4 */
 #define BB_PLANE_ROUTE_SESSION UINT8_C(2) /* [`ArriveOut::route_flags`]: the unit is served as a DUPLEX SESSION (K6; ARCHITECT round 5 */
 #define BB_PLANE_ROUTE_STREAM UINT8_C(4) /* [`ArriveOut::route_flags`]: the caller asked for its answer STREAMED (ARCHITECT Q1 ArriveOut, */
+#define BB_PLANE_TRUST_NONE UINT32_C(0) /* [`RefusalIn::trust`]: no trust judgment (the refusal is not [`RefusalCode::Untrusted`]). */
+#define BB_PLANE_TRUST_UNKNOWN UINT32_C(1) /* [`RefusalIn::trust`]: the instance declares no such counterparty. */
+#define BB_PLANE_TRUST_UNSIGHTED UINT32_C(2) /* [`RefusalIn::trust`]: the counterparty was never sighted, so nothing is pinned to judge by. */
+#define BB_PLANE_TRUST_QUARANTINED UINT32_C(3) /* [`RefusalIn::trust`]: the counterparty is quarantined (its last sighting drifted from its pin). */
+#define BB_PLANE_TRUST_NOT_APPROVED UINT32_C(4) /* [`RefusalIn::trust`]: the capability was never approved at this counterparty. */
+#define BB_PLANE_TRUST_CHANGED UINT32_C(5) /* [`RefusalIn::trust`]: the capability is offered at another digest than the one approved. */
 #define BB_PLANE_FROM_CALLER UINT32_C(0) /* [`OnPieceIn::from`]: the piece is the caller's. */
 #define BB_PLANE_FROM_FAR_END UINT32_C(1) /* [`OnPieceIn::from`]: the piece is the far end's. */
 #define BB_PLANE_FROM_KERNEL UINT32_C(2) /* [`OnPieceIn::from`]: the piece is the kernel's. With [`OnPieceIn::attempt_no`] above `0` it */
@@ -727,6 +733,7 @@ typedef uint32_t bb_plane_RefusalCode;
 #define BB_PLANE_RefusalCode_Superseded ((bb_plane_RefusalCode)39)
 #define BB_PLANE_RefusalCode_ClientGone ((bb_plane_RefusalCode)40)
 #define BB_PLANE_RefusalCode_DeadlineExceeded ((bb_plane_RefusalCode)41)
+#define BB_PLANE_RefusalCode_Untrusted ((bb_plane_RefusalCode)42)
 
 /* ---- forward declarations ---- */
 typedef struct bb_mech_AbiStr bb_mech_AbiStr;
@@ -2608,6 +2615,9 @@ struct bb_plane_ArriveOut {
     uint8_t route_flags;
     uint8_t _route_reserved[6];
     bb_mech_AbiStr affinity;
+    bb_mech_AbiStr trust_counterparty;
+    bb_mech_AbiStr trust_capability;
+    bb_mech_AbiStr trust_digest;
 };
 
 /* `on_piece`'s `in`. */
@@ -2692,6 +2702,8 @@ struct bb_plane_RefusalIn {
     bb_plane_RecordWrite *records_buf;
     size_t records_cap;
     bb_mech_AbiStr hook;
+    uint32_t trust;
+    uint32_t _trust_reserved;
 };
 
 /* `refusal`'s `out`. */
@@ -4845,7 +4857,7 @@ BB_ASSERT(offsetof(bb_plane_ArriveIn, body) == 136, "bb_plane_ArriveIn.body: off
 BB_ASSERT(offsetof(bb_plane_ArriveIn, units_buf) == 160, "bb_plane_ArriveIn.units_buf: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveIn, units_cap) == 168, "bb_plane_ArriveIn.units_cap: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveIn, method) == 176, "bb_plane_ArriveIn.method: offset");
-BB_ASSERT(sizeof(bb_plane_ArriveOut) == 184, "bb_plane_ArriveOut: size");
+BB_ASSERT(sizeof(bb_plane_ArriveOut) == 232, "bb_plane_ArriveOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ArriveOut) == 8, "bb_plane_ArriveOut: alignment");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, head) == 0, "bb_plane_ArriveOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, op_class) == 96, "bb_plane_ArriveOut.op_class: offset");
@@ -4863,6 +4875,9 @@ BB_ASSERT(offsetof(bb_plane_ArriveOut, route) == 160, "bb_plane_ArriveOut.route:
 BB_ASSERT(offsetof(bb_plane_ArriveOut, route_flags) == 161, "bb_plane_ArriveOut.route_flags: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, _route_reserved) == 162, "bb_plane_ArriveOut._route_reserved: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, affinity) == 168, "bb_plane_ArriveOut.affinity: offset");
+BB_ASSERT(offsetof(bb_plane_ArriveOut, trust_counterparty) == 184, "bb_plane_ArriveOut.trust_counterparty: offset");
+BB_ASSERT(offsetof(bb_plane_ArriveOut, trust_capability) == 200, "bb_plane_ArriveOut.trust_capability: offset");
+BB_ASSERT(offsetof(bb_plane_ArriveOut, trust_digest) == 216, "bb_plane_ArriveOut.trust_digest: offset");
 BB_ASSERT(sizeof(bb_plane_OnPieceIn) == 312, "bb_plane_OnPieceIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_OnPieceIn) == 8, "bb_plane_OnPieceIn: alignment");
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, head) == 0, "bb_plane_OnPieceIn.head: offset");
@@ -4920,7 +4935,7 @@ BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_status) == 192, "bb_plane_OnPieceO
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, _final_reserved) == 196, "bb_plane_OnPieceOut._final_reserved: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_message) == 200, "bb_plane_OnPieceOut.final_message: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_details) == 208, "bb_plane_OnPieceOut.final_details: offset");
-BB_ASSERT(sizeof(bb_plane_RefusalIn) == 232, "bb_plane_RefusalIn: size");
+BB_ASSERT(sizeof(bb_plane_RefusalIn) == 240, "bb_plane_RefusalIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_RefusalIn) == 8, "bb_plane_RefusalIn: alignment");
 BB_ASSERT(offsetof(bb_plane_RefusalIn, head) == 0, "bb_plane_RefusalIn.head: offset");
 BB_ASSERT(offsetof(bb_plane_RefusalIn, cause) == 88, "bb_plane_RefusalIn.cause: offset");
@@ -4941,6 +4956,8 @@ BB_ASSERT(offsetof(bb_plane_RefusalIn, target) == 184, "bb_plane_RefusalIn.targe
 BB_ASSERT(offsetof(bb_plane_RefusalIn, records_buf) == 200, "bb_plane_RefusalIn.records_buf: offset");
 BB_ASSERT(offsetof(bb_plane_RefusalIn, records_cap) == 208, "bb_plane_RefusalIn.records_cap: offset");
 BB_ASSERT(offsetof(bb_plane_RefusalIn, hook) == 216, "bb_plane_RefusalIn.hook: offset");
+BB_ASSERT(offsetof(bb_plane_RefusalIn, trust) == 232, "bb_plane_RefusalIn.trust: offset");
+BB_ASSERT(offsetof(bb_plane_RefusalIn, _trust_reserved) == 236, "bb_plane_RefusalIn._trust_reserved: offset");
 BB_ASSERT(sizeof(bb_plane_RefusalOut) == 152, "bb_plane_RefusalOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_RefusalOut) == 8, "bb_plane_RefusalOut: alignment");
 BB_ASSERT(offsetof(bb_plane_RefusalOut, head) == 0, "bb_plane_RefusalOut.head: offset");

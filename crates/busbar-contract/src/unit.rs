@@ -179,6 +179,8 @@ pub enum RefusalReason {
     ClientGone,
     /// The unit ran past its maximum duration.
     DeadlineExceeded,
+    /// The counterparty or capability the unit rests on is not trusted (the kernel's Approve).
+    Untrusted,
 }
 
 /// The closed reason codes a failure may carry.

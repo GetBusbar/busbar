@@ -204,6 +204,10 @@ reasons! {
     ClientGone => "client_gone", ClientGone,
     /// The unit ran past its maximum duration.
     DeadlineExceeded => "deadline_exceeded", DeadlineExceeded,
+    /// The kernel's Approve step judged the trust facts the plane stated and does not trust the
+    /// counterparty or capability the unit rests on (ARCHITECT 2026-10-06: trust is the kernel's
+    /// Approve step; a plane only states facts).
+    Untrusted => "untrusted", Untrusted,
 }
 
 impl std::fmt::Display for ReasonCode {

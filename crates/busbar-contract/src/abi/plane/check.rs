@@ -260,11 +260,43 @@ pub fn check_arrive(
     if outcome != Outcome::Ready && (out.affinity.len != 0 || !out.affinity.ptr.is_null()) {
         return Err(fault(Rule::Contradiction, "arrive.affinity"));
     }
+    trust_facts(outcome, out)?;
     if outcome == Outcome::Refused {
         text(out.head.error, "arrive.refusal_text")?;
         if out.head.error.len as u64 > MAX_REFUSAL_TEXT {
             return Err(fault(Rule::OverMax, "arrive.refusal_text"));
         }
+    }
+    Ok(())
+}
+
+/// `arrive`'s TRUST FACTS (ARCHITECT 2026-10-06, the kernel's Approve): each a bounded text; a
+/// capability only with a counterparty, a digest only with a capability; and an answer that admits
+/// nothing states none.
+fn trust_facts(outcome: Outcome, out: &ArriveOut) -> Result<(), Fault> {
+    let stated = |s: AbiStr| s.len != 0 || !s.ptr.is_null();
+    let facts = [
+        (out.trust_counterparty, "arrive.trust_counterparty"),
+        (out.trust_capability, "arrive.trust_capability"),
+        (out.trust_digest, "arrive.trust_digest"),
+    ];
+    if outcome != Outcome::Ready {
+        if facts.iter().any(|(s, _)| stated(*s)) {
+            return Err(fault(Rule::Contradiction, "arrive.trust"));
+        }
+        return Ok(());
+    }
+    for (s, field) in facts {
+        text(s, field)?;
+        if s.len > MAX_TEXT {
+            return Err(fault(Rule::OverMax, field));
+        }
+    }
+    if stated(out.trust_capability) && out.trust_counterparty.len == 0 {
+        return Err(fault(Rule::Contradiction, "arrive.trust_capability"));
+    }
+    if stated(out.trust_digest) && out.trust_capability.len == 0 {
+        return Err(fault(Rule::Contradiction, "arrive.trust_digest"));
     }
     Ok(())
 }

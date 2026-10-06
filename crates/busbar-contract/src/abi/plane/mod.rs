@@ -434,6 +434,19 @@ pub const ROUTE_SESSION: u8 = 2;
 /// not a refund (Part 2 #62). Unset, the answer is the caller's whole or not at all.
 pub const ROUTE_STREAM: u8 = 4;
 
+/// [`RefusalIn::trust`]: no trust judgment (the refusal is not [`RefusalCode::Untrusted`]).
+pub const TRUST_NONE: u32 = 0;
+/// [`RefusalIn::trust`]: the instance declares no such counterparty.
+pub const TRUST_UNKNOWN: u32 = 1;
+/// [`RefusalIn::trust`]: the counterparty was never sighted, so nothing is pinned to judge by.
+pub const TRUST_UNSIGHTED: u32 = 2;
+/// [`RefusalIn::trust`]: the counterparty is quarantined (its last sighting drifted from its pin).
+pub const TRUST_QUARANTINED: u32 = 3;
+/// [`RefusalIn::trust`]: the capability was never approved at this counterparty.
+pub const TRUST_NOT_APPROVED: u32 = 4;
+/// [`RefusalIn::trust`]: the capability is offered at another digest than the one approved.
+pub const TRUST_CHANGED: u32 = 5;
+
 /// [`OnPieceIn::from`]: the piece is the caller's.
 pub const FROM_CALLER: u32 = 0;
 /// [`OnPieceIn::from`]: the piece is the far end's.
@@ -684,6 +697,8 @@ pub enum RefusalCode {
     ClientGone = 40,
     /// `DeadlineExceeded`.
     DeadlineExceeded = 41,
+    /// `Untrusted`.
+    Untrusted = 42,
 }
 
 impl RefusalCode {
@@ -731,6 +746,7 @@ impl RefusalCode {
         RefusalCode::Superseded,
         RefusalCode::ClientGone,
         RefusalCode::DeadlineExceeded,
+        RefusalCode::Untrusted,
     ];
 
     /// The number on the wire.
@@ -806,6 +822,7 @@ pub const fn wire_code(reason: ReasonCode) -> RefusalCode {
         ReasonCode::Superseded => RefusalCode::Superseded,
         ReasonCode::ClientGone => RefusalCode::ClientGone,
         ReasonCode::DeadlineExceeded => RefusalCode::DeadlineExceeded,
+        ReasonCode::Untrusted => RefusalCode::Untrusted,
     }
 }
 
@@ -860,6 +877,7 @@ pub const fn reason_of(code: u32) -> Option<ReasonCode> {
         RefusalCode::Superseded => ReasonCode::Superseded,
         RefusalCode::ClientGone => ReasonCode::ClientGone,
         RefusalCode::DeadlineExceeded => ReasonCode::DeadlineExceeded,
+        RefusalCode::Untrusted => ReasonCode::Untrusted,
     })
 }
 
@@ -1417,6 +1435,20 @@ pub struct ArriveOut {
     /// key, with no plane or protocol knowledge. Absent (NULL, `0`) = no affinity, and absent on
     /// every other outcome. Plane memory, valid until the instance's next call. A tail addition.
     pub affinity: AbiStr,
+    /// On READY: THE TRUST FACTS the unit rests on (ARCHITECT 2026-10-06: trust is the kernel's
+    /// Approve step, and a plane states facts and judges none): the COUNTERPARTY, a name among the
+    /// trust entries the plane's section declares (its trust keys). The kernel's Approve judges it
+    /// against its trust book (declared, sighted, not quarantined) and refuses the unit
+    /// [`RefusalCode::Untrusted`] otherwise. Absent = the unit rests on no counterparty, and nothing
+    /// is judged; absent on every other outcome. Plane memory, valid until the instance's next
+    /// call. A tail addition.
+    pub trust_counterparty: AbiStr,
+    /// With `trust_counterparty`: the CAPABILITY the unit uses there, opaque to the kernel; the
+    /// kernel requires it approved at `trust_digest`. Absent = the counterparty as a whole.
+    pub trust_capability: AbiStr,
+    /// With `trust_capability`: the DIGEST the capability is offered at now, as the plane observed
+    /// it, opaque to the kernel. Absent = none observed (judged as not approved at any digest).
+    pub trust_digest: AbiStr,
 }
 
 /// `on_piece`'s `in`.
@@ -1616,6 +1648,12 @@ pub struct RefusalIn {
     /// With [`REFUSAL_GATE`]: the name of the hook that vetoed the unit, opaque bytes; absent on
     /// every other refusal. A tail addition.
     pub hook: AbiStr,
+    /// With [`RefusalCode::Untrusted`]: why the kernel's Approve did not trust the unit's stated
+    /// facts (`TRUST_*`), so the plane renders the words its dialect has for each; [`TRUST_NONE`]
+    /// on every other refusal. A tail addition.
+    pub trust: u32,
+    /// Alignment padding.
+    pub _trust_reserved: u32,
 }
 
 /// `refusal`'s `out`.

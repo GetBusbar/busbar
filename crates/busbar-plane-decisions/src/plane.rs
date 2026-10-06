@@ -111,7 +111,8 @@ fn refusal_render(reason: RefusalReason) -> (&'static str, &'static str) {
         RefusalReason::ScopeMissing
         | RefusalReason::Vetoed
         | RefusalReason::Revoked
-        | RefusalReason::PoolNotPermitted => (
+        | RefusalReason::PoolNotPermitted
+        | RefusalReason::Untrusted => (
             "unsupported_operation",
             "the caller may not perform this operation",
         ),

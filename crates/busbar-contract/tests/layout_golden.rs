@@ -1781,7 +1781,10 @@ fn compute_layout() -> String {
             route,
             route_flags,
             _route_reserved,
-            affinity
+            affinity,
+            trust_counterparty,
+            trust_capability,
+            trust_digest
         ]
     );
     record!(
@@ -1871,7 +1874,9 @@ fn compute_layout() -> String {
             target,
             records_buf,
             records_cap,
-            hook
+            hook,
+            trust,
+            _trust_reserved
         ]
     );
     record!(

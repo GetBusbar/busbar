@@ -73,6 +73,8 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     reason_code, ArriveIn, ArriveOut, OutField, RefusalIn, RefusalOut, RefusalStatus, UnitCount,
     REFUSAL_ANY_DIALECT, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL, ROUTE_LOCAL, ROUTE_SESSION,
+    TRUST_CHANGED, TRUST_NONE, TRUST_NOT_APPROVED, TRUST_QUARANTINED, TRUST_UNKNOWN,
+    TRUST_UNSIGHTED,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
@@ -104,6 +106,7 @@ use crate::auth::CallerRefKey;
 use crate::host_services::{InstanceFacts, KernelServices, Signing};
 use crate::slice::GroupLeaseSlip;
 use crate::teller::{Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units};
+use crate::trust::book::{Distrust, TrustFacts};
 use crate::trust::section::parse_section;
 use busbar_contract::ids::RecordSchemaId;
 
@@ -190,12 +193,27 @@ fn is_authentication(reason: ReasonCode) -> bool {
     )
 }
 
+/// The `TRUST_*` code a [`Distrust`] crosses to the plane as ([`RefusalIn::trust`]).
+#[must_use]
+pub fn trust_code(why: Distrust) -> u32 {
+    match why {
+        Distrust::Unknown => TRUST_UNKNOWN,
+        Distrust::Unsighted => TRUST_UNSIGHTED,
+        Distrust::Quarantined => TRUST_QUARANTINED,
+        Distrust::NotApproved => TRUST_NOT_APPROVED,
+        Distrust::Changed => TRUST_CHANGED,
+    }
+}
+
 /// The status the kernel hands `refusal` for a reason, when the deployment states no other.
 pub fn refusal_status(reason: ReasonCode) -> u32 {
     match reason {
         ReasonCode::DecodeFailed | ReasonCode::SchemeNotDeclared => 400,
         ReasonCode::Unauthenticated | ReasonCode::Revoked | ReasonCode::SessionUnbound => 401,
-        ReasonCode::ScopeDenied | ReasonCode::PoolNotPermitted | ReasonCode::HookVeto => 403,
+        ReasonCode::ScopeDenied
+        | ReasonCode::PoolNotPermitted
+        | ReasonCode::HookVeto
+        | ReasonCode::Untrusted => 403,
         ReasonCode::BodyTooLarge => 413,
         ReasonCode::RateLimited | ReasonCode::OverBudget | ReasonCode::GroupFrozen => 429,
         ReasonCode::DestinationUnreachable | ReasonCode::PlanePanic => 502,
@@ -223,6 +241,8 @@ pub struct PlaneDriver {
     hooks: Option<Arc<dyn HookBinder>>,
     /// Where a unit's audit row (a `RECORD_AUDIT` write) is written: the kernel's own audit chain.
     audit: Arc<dyn AuditSink>,
+    /// The instance's label: what its trust entries are admitted and judged under.
+    label: Arc<str>,
 }
 
 /// WHERE A DOOR UNIT'S AUDIT ROW GOES (ARCHITECT SEAM-L(k)): a plane writes its unit's audit row
@@ -345,6 +365,7 @@ impl PlaneDriver {
             sessions: Mutex::default(),
             hooks: None,
             audit: Arc::new(CoreAudit),
+            label: Arc::clone(&d.label),
         })
     }
 
@@ -512,6 +533,9 @@ pub struct Decoded {
     pub route: u8,
     /// The `ROUTE_*` flag bits its `arrive` stated (`ROUTE_ONCE`, `ROUTE_SESSION`).
     pub route_flags: u8,
+    /// The trust facts its `arrive` stated (a counterparty, and a capability at a digest), which
+    /// the kernel's Approve judges; `None` = the unit rests on no counterparty.
+    pub trust: Option<busbar_contract::plane_calls::ArrivedTrust>,
 }
 
 /// THE KERNEL STEPS A PLANE'S UNIT IS SERVED UNDER ([`PlaneDriver::unit`]'s `steps`): the loop's
@@ -579,6 +603,8 @@ pub(crate) struct UnitState {
     hooked_pool: String,
     /// The hook that ordered or restricted the walk, for the opt-in transparency fields.
     route_policy: Option<&'static str>,
+    /// Why the kernel's Approve did not trust the unit's stated facts, for the plane's rendering.
+    distrust: Option<Distrust>,
 }
 
 /// ONE UNIT OF A PLANE, as the loop drives it.
@@ -724,6 +750,9 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             pool,
             route: o.route,
             route_flags: o.route_flags,
+            trust: (outcome == AbiOutcome::Ready)
+                .then(|| self.driver.calls.arrived_trust(&o))
+                .flatten(),
         })
     }
 }
@@ -802,6 +831,11 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             target: AbiStr::over(&self.arrival.target),
             records_buf: records.as_mut_ptr(),
             records_cap: records.len(),
+            trust: if reason == ReasonCode::Untrusted {
+                self.lock().distrust.map_or(TRUST_NONE, trust_code)
+            } else {
+                TRUST_NONE
+            },
             ..blank_in()
         };
         // The vetoing hook's name, on a gate refusal alone (absent = NULL otherwise).
@@ -1032,8 +1066,6 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     forward_to_steps! {
         arrival(token: &Pass<ArrivalStep>, ctx: &UnitCtx) -> StepAnswer<ArrivalStep>;
         authenticate(token: &Pass<Authenticate>, ctx: &UnitCtx) -> StepAnswer<Authenticate>;
-        approve(token: &Pass<Approve>, ctx: &UnitCtx, principal: &PrincipalId,
-            destinations: &[VerifiedDestination]) -> StepAnswer<Approve>;
         meter(token: &Pass<Meter>, usage: &Grant<Consumption>, ctx: &UnitCtx, provisional: &Outcome,
             destinations: &[VerifiedDestination]) -> StepAnswer<Meter>;
         audit(token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> StepAnswer<Audit>;
@@ -1060,6 +1092,39 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         }
         self.steps
             .admit(token, admit, ctx, principal, destinations, leases)
+    }
+
+    /// THE KERNEL'S APPROVE (ARCHITECT 2026-10-06: trust is the kernel's Approve step; a plane
+    /// states facts and judges none): the trust facts the plane's `arrive` stated are judged
+    /// against the kernel's trust book first, and a unit the book does not trust is refused
+    /// [`ReasonCode::Untrusted`] before the deployment's own Approve runs; a unit that states none
+    /// goes straight to it.
+    fn approve(
+        &self,
+        token: &Pass<Approve>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+    ) -> StepAnswer<Approve> {
+        let stated = self.lock().decoded.as_ref().and_then(|d| d.trust.clone());
+        if let Some(t) = stated {
+            let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+            let (counterparty, capability, digest) = (
+                text(&t.counterparty),
+                t.capability.as_deref().map(text),
+                t.digest.as_deref().map(text),
+            );
+            let facts = TrustFacts {
+                counterparty: &counterparty,
+                capability: capability.as_deref(),
+                digest: digest.as_deref(),
+            };
+            if let Err(why) = self.driver.services.trust_judge(&self.driver.label, &facts) {
+                self.lock().distrust = Some(why);
+                return StepAnswer::refuse(token, Refusal::new(ReasonCode::Untrusted));
+            }
+        }
+        self.steps.approve(token, ctx, principal, destinations)
     }
 
     /// The kernel's verify, after which the unit's caller reference is derived under the node's
