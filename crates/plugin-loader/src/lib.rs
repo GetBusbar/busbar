@@ -51,8 +51,6 @@ mod hostlog;
 pub mod observe;
 pub mod plane;
 pub mod registry;
-/// THE REGISTRY AS THE KERNEL READS IT (the contract's `PluginRows`).
-pub mod rows;
 pub mod scrape;
 /// THE SECRET AXIS over the one dispatcher: every admitted secret plugin, linked or dropped in.
 pub mod secret_calls;
@@ -60,6 +58,8 @@ pub mod secret_calls;
 // trust evaluation is the loader's OWN job, not a crate the loader reaches for. Pure data +
 // policy, no I/O -- the I/O that acts on its verdicts is `tarball`, `fetch` and `registry`.
 pub mod sign;
+/// THE REGISTRY AS THE KERNEL READS IT (the contract's `PluginRows`).
+pub mod rows;
 mod stage;
 pub mod store_adapter;
 pub mod store_v3;
