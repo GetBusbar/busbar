@@ -2413,10 +2413,18 @@ pub(crate) async fn restart(
 
 /// The `POST /api/v1/admin/config/apply` body: a full proposed config (validate's exact shape).
 /// Optimistic concurrency rides `If-Match`.
+///
+/// `config` is carried RAW and parsed in [`apply_config`] through the 1.6.0 pre-pass
+/// (`busbar_kernel::config::deploy_from_deserializer`), exactly as [`ValidateConfigReq`] is and as
+/// boot parses `config.yaml`. A plain-derived `DeployCfg` here skipped the lift, so the frozen
+/// `deny_unknown_fields` struct refused every plane section (`tools:`, `mcp:`, `agents:`, …) and
+/// every kernel 1.6.0 key as `unknown field` — a document that boots clean could not be applied,
+/// and a plane's own reserved keys (`tools.fees`, `tools.rate_card`, #47) could not be moved live at
+/// all. Apply accepts exactly the shape boot accepts (DECISIONS #52: one schema).
 #[derive(serde::Deserialize)]
 pub(crate) struct ApplyConfigReq {
-    /// The deploy config (operator-owned `config.yaml` shape).
-    config: busbar_kernel::config::DeployCfg,
+    /// The deploy config (operator-owned `config.yaml` shape), pre-lift.
+    config: serde_json::Value,
     /// The provider definitions (`providers.yaml` shape). Optional — empty validates/fails loudly
     /// on dangling references.
     #[serde(default)]
@@ -2442,6 +2450,17 @@ pub(crate) async fn apply_config(
     };
     let req: ApplyConfigReq = match serde_json::from_slice(&body) {
         Ok(r) => r,
+        Err(e) => {
+            return err_json(&AdminError::Validation(format!(
+                "malformed config body: {e}"
+            )))
+        }
+    };
+    // The lift boot runs before `DeployCfg` parses (see the struct doc): plane sections and their
+    // core-owned `rate_card`/`fees` land on their carriers instead of being refused as unknown.
+    let ApplyConfigReq { config, providers } = req;
+    let deploy = match busbar_kernel::config::deploy_from_deserializer(config) {
+        Ok(d) => d,
         Err(e) => {
             return err_json(&AdminError::Validation(format!(
                 "malformed config body: {e}"
@@ -2476,10 +2495,7 @@ pub(crate) async fn apply_config(
                 .overlay_path
                 .as_deref()
                 .and_then(busbar_kernel::config::overlay::read);
-            let ApplyConfigReq {
-                config: mut deploy,
-                providers,
-            } = req;
+            let mut deploy = deploy;
             if let Some(doc) = overlay_doc.as_ref() {
                 busbar_kernel::config::overlay::apply_root_to_deploy(&mut deploy, doc);
                 // Without this an apply re-validates against the BASE floors and silently reverts a
