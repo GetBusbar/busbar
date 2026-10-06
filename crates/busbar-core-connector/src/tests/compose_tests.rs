@@ -432,3 +432,48 @@ fn a_far_end_that_never_reads_fills_the_buffer_and_writes_are_refused_room() {
         c.close();
     });
 }
+
+/// RED (ARCHITECT, the stream-end ruling): an EMPTY message, binary or text, is relayed as a
+/// message, its text bit kept; the stream ends only on the framer's `PIECE_END`, never on an empty
+/// piece.
+#[test]
+fn empty_messages_relay_and_the_stream_ends_only_on_its_flag() {
+    worker().block_on(async {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            s.write_all(b"btxe").await.unwrap();
+            let mut hold = [0_u8; 1];
+            let _ = s.read(&mut hold).await;
+        });
+        let door = Arc::new(TestDoor::new(
+            "messages",
+            &["messages"],
+            &[],
+            Knobs {
+                messages: Some(0),
+                ..Knobs::default()
+            },
+        ));
+        let mut c = Connection::dial(door, dial(&far)).unwrap();
+        let mut got = Vec::new();
+        while got.len() < 4 {
+            got.push(next(&mut c).await.expect("a piece").expect("not ended"));
+        }
+        let seen: Vec<_> = got
+            .iter()
+            .map(|g| (g.bytes.as_slice(), g.text, g.end_of_frame, g.ends_stream()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (&b""[..], false, true, false),
+                (&b""[..], true, true, false),
+                (&b"x"[..], false, true, false),
+                (&b""[..], false, true, true),
+            ],
+            "an empty binary and an empty text message are messages; the end is the flag"
+        );
+    });
+}

@@ -44,7 +44,7 @@ macro_rules! hyper_io {
             use $crate::abi::sdk::{HostBuf, Lent, Out};
             use $crate::abi::transport::{
                 FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, PIECE_CONTINUED,
-                PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER,
+                PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER,
                 PIECE_STREAM_FAILED, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
             };
 
@@ -432,7 +432,7 @@ macro_rules! hyper_io {
             pub struct Piece {
                 /// The stream.
                 pub stream: u64,
-                /// The frame bytes (empty with nothing else set: the stream's frames are over).
+                /// The frame bytes (empty: an empty frame, unless `end` says the stream is over).
                 pub bytes: Buf,
                 /// The status code the piece states, in the claim's own numbering.
                 pub status: Option<u16>,
@@ -446,6 +446,8 @@ macro_rules! hyper_io {
                 pub continued: bool,
                 /// The stream's head words, handed with its head's first piece.
                 pub head: Option<HeadWords>,
+                /// The stream's frames are over (`PIECE_END`): its last piece, with no bytes.
+                pub end: bool,
             }
 
             impl Piece {
@@ -461,6 +463,15 @@ macro_rules! hyper_io {
                         fields: false,
                         continued: false,
                         head: None,
+                        end: false,
+                    }
+                }
+                /// `stream`'s frames are over: it ends whole (`PIECE_END`).
+                #[must_use]
+                pub fn end(stream: u64) -> Self {
+                    Self {
+                        end: true,
+                        ..Self::data(stream, Buf::default())
                     }
                 }
                 /// A field block on `stream`.
@@ -575,6 +586,10 @@ macro_rules! hyper_io {
                     // stream failed.
                     if piece.failed && whole {
                         flags |= PIECE_STREAM_FAILED;
+                    }
+                    // The stream's end is said, never inferred from an empty piece.
+                    if piece.end {
+                        flags |= PIECE_END;
                     }
                     if piece.fields {
                         flags |= PIECE_FIELDS;

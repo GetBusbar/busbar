@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::transport::{
-    FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, EMIT_TEXT, PIECE_END_OF_FRAME,
-    PIECE_TEXT, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, EMIT_TEXT, PIECE_END,
+    PIECE_END_OF_FRAME, PIECE_TEXT, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 
 use super::framer::{Call, Crossed, DoorFacts, FramerDoor};
@@ -36,6 +36,10 @@ pub struct Knobs {
     pub text: bool,
     /// `locate` answers this protocol offer (ProtocolNameList bytes).
     pub offer: Option<&'static [u8]>,
+    /// The far end's bytes are SCRIPTED messages on this stream, one piece per byte: `b` an empty
+    /// binary message, `t` an empty text message, `e` the stream's end (`PIECE_END`), any other
+    /// byte a one-byte binary message.
+    pub messages: Option<u64>,
 }
 
 #[derive(Default)]
@@ -46,6 +50,7 @@ struct State {
     heard: bool,
     deadline_ns: u64,
     text: bool,
+    messages: Option<u64>,
 }
 
 /// The test entry.
@@ -122,7 +127,42 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
     let w = st.outbound.len().min(sink.wire_cap);
     put(sink.wire, &mut st.outbound, w);
     y.wire_len = w as u64;
-    if !st.inbound.is_empty() && sink.pieces_cap > 0 {
+    if let Some(stream) = st.messages {
+        let mut frame_len = 0;
+        let mut n = 0;
+        while n < sink.pieces_cap && frame_len < sink.frame_cap {
+            let Some(b) = st.inbound.pop_front() else {
+                break;
+            };
+            let (len, flags) = match b {
+                b'b' => (0, PIECE_END_OF_FRAME),
+                b't' => (0, PIECE_TEXT | PIECE_END_OF_FRAME),
+                b'e' => (0, PIECE_END | PIECE_END_OF_FRAME),
+                other => {
+                    // SAFETY: `frame_len < frame_cap`.
+                    unsafe { sink.frame.add(frame_len).write(other) };
+                    (1, PIECE_END_OF_FRAME)
+                }
+            };
+            // SAFETY: `n < pieces_cap`.
+            unsafe {
+                sink.pieces.add(n).write(FramePiece {
+                    stream,
+                    offset: frame_len as u64,
+                    len,
+                    code: 0,
+                    status_class: 0,
+                    flags,
+                    _reserved: 0,
+                    retry_after_secs: 0,
+                });
+            }
+            frame_len += len as usize;
+            n += 1;
+        }
+        y.frame_len = frame_len as u64;
+        y.pieces_len = n as u32;
+    } else if !st.inbound.is_empty() && sink.pieces_cap > 0 {
         let n = st.inbound.len().min(sink.frame_cap);
         put(sink.frame, &mut st.inbound, n);
         let flags = if st.inbound.is_empty() {
@@ -221,6 +261,7 @@ impl FramerDoor for TestDoor {
                 let token = self.next.fetch_add(1, Ordering::Relaxed);
                 let mut st = State {
                     text: self.knobs.text,
+                    messages: self.knobs.messages,
                     ..State::default()
                 };
                 answer(&mut st, &i.sink, o, silence);

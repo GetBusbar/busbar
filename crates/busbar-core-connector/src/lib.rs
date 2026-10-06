@@ -824,7 +824,7 @@ impl Connector {
                 *held.redial.lock().expect("redial") = None;
                 if dialled && got.stream == stream && got.ends_stream() {
                     // A DIALLED exchange's stream ending whole is the exchange's completion
-                    // (`busbar_contract::abi::transport`, "streams end by piece"): the caller
+                    // (`busbar_contract::abi::transport`, "streams end by flag"): the caller
                     // has the whole answer, and the line may carry the next one.
                     rest.2 = true;
                     held.whole.store(true, Ordering::Release);

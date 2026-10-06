@@ -1007,3 +1007,72 @@ fn a_program_need_is_refused_unless_the_operator_declared_it_as_written() {
         );
     });
 }
+
+/// RED (ARCHITECT, the stream-end ruling): a dialled exchange's EMPTY answers, binary and text,
+/// reach the caller as body pieces; the exchange completes only on the framer's `PIECE_END`, never
+/// on an empty piece.
+#[test]
+fn a_dialled_exchange_relays_empty_messages_and_completes_only_on_the_end_flag() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut buf = [0_u8; 3];
+            s.read_exact(&mut buf).await.unwrap();
+            s.write_all(b"btxe").await.unwrap();
+            let mut hold = [0_u8; 1];
+            let _ = s.read(&mut hold).await;
+        });
+        let view = Transports::new(vec![Entry {
+            door: Arc::new(TestDoor::new(
+                "messages",
+                &["messages"],
+                &[],
+                crate::support::Knobs {
+                    messages: Some(crate::compose::EXCHANGE_STREAM),
+                    ..crate::support::Knobs::default()
+                },
+            )),
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_| {}));
+        c.declare_over(OWNER, NeedId(0), "messages")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"ask",
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let mut seen = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            match c.read(OWNER, id, 7, &mut buf) {
+                Ok(p) => {
+                    seen.push((p.kind, buf[..p.len].to_vec()));
+                    if p.kind == PieceKind::Completion {
+                        break;
+                    }
+                }
+                Err(ConnError::Pending) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                Err(e) => panic!("the read failed: {e:?}"),
+            }
+        }
+        assert_eq!(
+            seen,
+            [
+                (PieceKind::Body, Vec::new()),
+                (PieceKind::Body, Vec::new()),
+                (PieceKind::Body, b"x".to_vec()),
+                (PieceKind::Completion, Vec::new()),
+            ],
+            "two empty messages and one byte, then the exchange's end"
+        );
+        c.close(OWNER, id).unwrap();
+    });
+}
