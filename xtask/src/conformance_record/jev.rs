@@ -261,6 +261,7 @@ pub fn jev_subject_config(data: u16, admin: u16, key_file: &Path) -> String {
     format!(
         "listen: \"127.0.0.1:{data}\"\n\
          admin_listen: \"127.0.0.1:{admin}\"\n\
+         store: {{ module: memory }}\n\
          providers:\n  {PROVIDER}:\n    api_key: {{ env: JEV_CONFORMANCE_PROVIDER_KEY }}\n\
          models: {{}}\n\
          identity-providers:\n  admin-tokens: {{ module: admin-tokens, token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
