@@ -13,5 +13,5 @@ crates/busbar-kernel/src/plugin_routes.rs 1
 crates/busbar-kernel/src/preflight.rs 1
 crates/busbar/src/linked_gen.rs 1
 crates/busbar/src/root/linked.rs 2
-crates/plugin-loader/src/registry.rs 4
+crates/plugin-loader/src/registry.rs 1
 crates/plugin-loader/src/sign.rs 3
