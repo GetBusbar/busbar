@@ -637,7 +637,7 @@ impl Pending {
     /// refused, unreachable or failed leg (both classes are response classes, `tool_meta.rs`: a call
     /// that never reached a server is not a call this node made, and the byte class is "the length
     /// of the document it just read back"). The plane states its counts; the kernel prices them
-    /// (THE DESIGN §7, "The plane reports; the kernel writes"; Law 6).
+    /// (the design's money section, "The plane reports; the kernel writes"; Law 6).
     fn counted(mut self, answered: usize) -> Self {
         self.units.push(UnitCount {
             class: CLASS_TOOL_CALLS_INDEX,

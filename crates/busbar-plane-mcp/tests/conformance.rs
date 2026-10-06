@@ -2396,12 +2396,18 @@ mod both_ways {
         );
         assert_eq!(ok.fields, vec![json_type(), length_of(&ok.reply)]);
         assert!(ok.detail.contains("done=true far=false"), "{}", ok.detail);
-        // THE METER: a call the server answered is counted, once, as one tool call (tail class 0),
-        // and the success earns its fee unit (tail class 2, `per_request`).
+        // THE METER: a call the server answered is counted, once, as one tool call (tail class 0)
+        // and the bytes of the document it answered with (tail class 1, a Response class: "the
+        // length of the document it just read back"), and the success earns its fee unit (tail
+        // class 2, `per_request`). The plane states its counts; the kernel prices them.
         assert_eq!(
             ok.units,
-            vec![(door::CLASS_FEE_INDEX, 1), (0, 1)],
-            "the one tool call the server answered, and its fee unit"
+            vec![
+                (door::CLASS_FEE_INDEX, 1),
+                (0, 1),
+                (1, u64::try_from(FAR_OK.len()).expect("a small answer"))
+            ],
+            "the one tool call the server answered, its answer's bytes, and its fee unit"
         );
         // THE CALL LOG (RULE-CHECK 2026-09-30): the answer carries the call's one chained record,
         // keyed by the caller's chain scope (no caller reference: the ungoverned scope), its suffix
