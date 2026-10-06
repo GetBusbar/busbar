@@ -222,12 +222,14 @@ fn bare_call(line: &str, name: &str) -> bool {
 /// of those is reached through a plugin handle whose method takes plugin arguments —
 /// `busbar_contract::auth::AuthModule::authenticate` takes `Option<&str>`, the presented credential, and
 /// nothing else. `busbar_kernel::teller::Units` is a DIFFERENT trait that happens to spell one of
-/// its steps `authenticate`, and the kernel calls it as `units.authenticate(&UnitToken::<
-/// Authenticate>::mint(seal), ctx)`. A `UnitToken` is a capability the kernel mints against its own
-/// `seal` for the length of one call; it is not a type a plugin's ABI can name, and `busbar-kernel`
-/// depends on `busbar-caps`, `busbar-contract` and `busbar-grammar` — it links no plugin loader and
-/// no async runtime at all, so there is no Tokio worker there to park. So the mint spelling is not
-/// "a call we have decided to trust": it is the one textual form a plugin call CANNOT take.
+/// its steps `authenticate`, and the kernel calls it as `units.authenticate(&Pass::<
+/// Authenticate>::mint(seal), ctx)`. A `Pass` (`busbar_contract::caps::Pass`, the stage-pass of
+/// #72, once spelled `UnitToken`) is a capability the kernel mints against its own `seal` for the
+/// length of one call; it is not a type a plugin's ABI can name, and no plugin can mint one. The
+/// step it opens states an identity: the async loop's implementors read one their door already
+/// resolved, and the one implementor whose step crosses a plugin (the admin chain's) is walked by
+/// the synchronous `run_unit` on the blocking pool. So the mint spelling is not "a call we have
+/// decided to trust": it is the one textual form a plugin call CANNOT take.
 ///
 /// It is recognised on the CALL LINE only, and requires the mint to open the argument list. Split
 /// the call across lines and the exemption stops applying — a false positive somebody must look at,
@@ -239,7 +241,7 @@ fn bare_call(line: &str, name: &str) -> bool {
 fn opens_with_capability_token(rest: &str) -> bool {
     let arg = rest.trim_start();
     let arg = arg.strip_prefix('&').unwrap_or(arg).trim_start();
-    arg.starts_with("UnitToken::<")
+    arg.starts_with("Pass::<")
 }
 
 /// `.name` followed by optional whitespace and `(`. The shell's `\.(a|b)[[:space:]]*\(`, plus the
@@ -806,7 +808,7 @@ impl Gate for BlockingFfiGate {
         ov.set(
             format!("{CORE}/planted_kernel_step.rs"),
             "pub async fn run_unit_async<U: Units>(units: &U, ctx: &UnitCtx) -> Ended {\n\
-             \x20   let opened = units.authenticate(&UnitToken::<Authenticate>::mint(seal), ctx);\n\
+             \x20   let opened = units.authenticate(&Pass::<Authenticate>::mint(seal), ctx);\n\
              \x20   let outcome = module.authenticate(bearer);\n\
              \x20   opened\n}\n",
         );
@@ -821,6 +823,38 @@ impl Gate for BlockingFfiGate {
                 "1 finding(s)",
                 "planted_kernel_step.rs:3",
                 "auth-plugin FFI",
+            ],
+        ));
+
+        // THE CARVE-OUT IS THE STAGE-PASS'S CURRENT SPELLING, ON THE CALL LINE, AND NOTHING WIDER.
+        // The retired `UnitToken` name is no capability any more (a type nobody mints proves no
+        // kernel step), a `Pass` mint split onto the next line is out of the call line's reach, and
+        // a plugin's own `authenticate` re-inlined into the async chain is the finding itself: all
+        // three are named, in the open-to-door shape the loop has.
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{CORE}/planted_step_spellings.rs"),
+            "async fn open_to_door<U: Units>(units: &U, ctx: &UnitCtx) -> Opened {\n\
+             \x20   let a = units.authenticate(&UnitToken::<Authenticate>::mint(seal), ctx);\n\
+             \x20   let b = units.authenticate(\n\
+             \x20       &Pass::<Authenticate>::mint(seal),\n\
+             \x20       ctx,\n\
+             \x20   );\n\
+             \x20   let c = module.authenticate(candidate.as_deref());\n\
+             \x20   a.or(b).or(c)\n}\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a retired token spelling, a mint split off the call line and a plugin verify re-inlined \
+             into the async chain are each flagged",
+            &[ROW_NO_INLINE],
+            ov,
+            &[
+                "3 finding(s)",
+                "planted_step_spellings.rs:2",
+                "planted_step_spellings.rs:3",
+                "planted_step_spellings.rs:7",
             ],
         ));
 
