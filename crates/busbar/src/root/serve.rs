@@ -2613,15 +2613,7 @@ mod tests;
 #[path = "tests/serve_planes.rs"]
 mod planes_tests;
 
-#[cfg(all(
-    test,
-    any(
-        feature = "plane-decisions",
-        feature = "plane-streaming",
-        feature = "plane-a2a"
-    ),
-    linked_axis_node
-))]
+#[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_door.rs"]
 mod door_tests;
 

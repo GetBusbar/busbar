@@ -504,7 +504,7 @@ mod decisions_door {
 /// through the loader's one load, opened with its `agents:` section and the deployment's public
 /// base URL, its claims mounted on the data router at its construction, a keyed caller's request
 /// admitted and charged by the door steps and answered by the door.
-#[cfg(linked_axis_node)]
+#[cfg(linked_axis_plane_sections)]
 mod agent_door {
     use std::collections::BTreeMap;
     use std::sync::Arc;

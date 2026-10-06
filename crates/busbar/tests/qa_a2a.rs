@@ -29,8 +29,8 @@
 //! the absence is the assertion that matters: the agent receives NO `message/send`
 //! for the refused call, and the refusal follows a live re-fetch of the card, not a stale memory.
 
-// The plane under test is served through its door (FLIP-A2A): its feature links the door row.
-#![cfg(all(feature = "plane-a2a", feature = "auth-admin-tokens"))]
+// The plane under test is served through its door (FLIP-A2A): the linked `plane-sections` axis is its row.
+#![cfg(all(linked_axis_plane_sections, feature = "auth-admin-tokens"))]
 
 mod common;
 
