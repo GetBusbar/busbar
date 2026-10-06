@@ -964,8 +964,7 @@ fn a_1_5_5_name_resolves_to_the_1_6_0_plugin_dropped_in_and_linked() {
     ));
     let refusal = reg
         .store_door("busbar-store-postgres-plugin")
-        .err()
-        .expect("a door row of a store is not the store kind's linked row");
+        .expect_err("a door row of a store is not the store kind's linked row");
     assert!(
         refusal.contains("busbar-store-postgres") && !refusal.contains("no plugin named"),
         "the former name resolved to the plugin: {refusal}"
@@ -1050,8 +1049,7 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
     let old = renamed("hook", "busbar-webrequest", "webrequest-1-5-5", &[]);
     let refused = dropped_in("cross-old", old)
         .link(vec![LinkedPlugin::door(webrequest(), unopened_door)])
-        .err()
-        .expect("a linked row and a dropped-in plugin claiming one name are refused");
+        .expect_err("a linked row and a dropped-in plugin claiming one name are refused");
     assert!(
         refused.contains("'busbar-webrequest'")
             && refused.contains("busbar-hook-webrequest")
@@ -1067,8 +1065,7 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
                 unopened_door,
             ),
         ])
-        .err()
-        .expect("two linked rows claiming one word are refused");
+        .expect_err("two linked rows claiming one word are refused");
     assert!(
         refused.contains("'busbar-webrequest'") && refused.contains("acme-hook-x"),
         "{refused}"

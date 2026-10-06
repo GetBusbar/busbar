@@ -512,8 +512,7 @@ fn a_former_name_two_hooks_claim_is_refused_on_the_axis() {
                 Vec::new()
             }
         })
-        .err()
-        .expect("a former name that is another hook's name is refused");
+        .expect_err("a former name that is another hook's name is refused");
     assert!(
         refused.contains(&format!("'{BROKEN_NAME}'")) && refused.contains(NAME),
         "{refused}"
