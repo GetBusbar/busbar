@@ -571,7 +571,8 @@ extern "C" {
 #define BB_HSVC_OP_NEED_ADMIT UINT32_C(19) /* `need.admit`. */
 #define BB_HSVC_OP_TRUST_VERIFY UINT32_C(20) /* `trust.verify`. */
 #define BB_HSVC_OP_RECORDS_SECRET UINT32_C(21) /* `records.secret`. */
-#define BB_HSVC_SERVICES UINT32_C(22) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_DISK_APPEND UINT32_C(22) /* `disk.append`. */
+#define BB_HSVC_SERVICES UINT32_C(23) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
 #define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
@@ -613,6 +614,13 @@ extern "C" {
 #define BB_HSVC_MAX_RANDOM_FILL UINT64_C(1024) /* The most bytes one `random.fill` answers. */
 #define BB_HSVC_CONTENT_PASS UINT64_C(0) /* `content.scan`: the content passes. */
 #define BB_HSVC_CONTENT_BLOCK UINT64_C(1) /* `content.scan`: the gate blocked it. */
+#define BB_HSVC_DISK_ROTATED UINT8_C(1) /* [`DiskWritten::rotated`]: the host rotated the file before appending. */
+#define BB_HSVC_DISK_RETENTION_FAILED UINT8_C(1) /* [`DiskWritten::faults`]: dropping the oldest archive failed (the archive series may exceed the */
+#define BB_HSVC_DISK_SHIFT_FAILED UINT8_C(2) /* [`DiskWritten::faults`]: shifting an archive up one slot failed (it was left in place). */
+#define BB_HSVC_DISK_RENAME_FAILED UINT8_C(4) /* [`DiskWritten::faults`]: renaming the live file to its first archive failed (the append went to */
+#define BB_HSVC_DISK_FAULTS UINT8_C(7) /* Every [`DiskWritten::faults`] bit. */
+#define BB_HSVC_DISK_OPEN_FAILED UINT64_C(1) /* A FAILED `disk.append`'s `ServiceOut::value`: the file could not be opened for the append. */
+#define BB_HSVC_DISK_APPEND_FAILED UINT64_C(2) /* A FAILED `disk.append`'s `ServiceOut::value`: the file opened, and writing the bytes failed. */
 
 /* ---- enumerations ---- */
 /* What an op answered. */
@@ -962,6 +970,8 @@ typedef struct bb_hsvc_RandomFillIn bb_hsvc_RandomFillIn;
 typedef struct bb_hsvc_ContentScanIn bb_hsvc_ContentScanIn;
 typedef struct bb_hsvc_HookCallIn bb_hsvc_HookCallIn;
 typedef struct bb_hsvc_NeedAdmitIn bb_hsvc_NeedAdmitIn;
+typedef struct bb_hsvc_DiskAppendIn bb_hsvc_DiskAppendIn;
+typedef struct bb_hsvc_DiskWritten bb_hsvc_DiskWritten;
 typedef struct bb_hsvc_HostSlots bb_hsvc_HostSlots;
 
 /* ---- scalar and function-pointer types ---- */
@@ -3489,6 +3499,23 @@ struct bb_hsvc_NeedAdmitIn {
     uint32_t _reserved;
 };
 
+/* [`op::DISK_APPEND`]'s `in`: append `bytes` to the local file the host maps the calling */
+struct bb_hsvc_DiskAppendIn {
+    bb_hsvc_ServiceHead head;
+    bb_mech_AbiStr dest_key;
+    bb_mech_Blob bytes;
+    bb_hsvc_DiskWritten *result;
+};
+
+/* `disk.append`'s result, written by the host into [`DiskAppendIn::result`] on READY and FAILED. */
+struct bb_hsvc_DiskWritten {
+    uint32_t size;
+    uint8_t rotated;
+    uint8_t faults;
+    uint8_t _reserved[2];
+    uint64_t written;
+};
+
 /* THE HOST SERVICES TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is a service */
 struct bb_hsvc_HostSlots {
     uint32_t size;
@@ -3515,9 +3542,10 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn need_admit;
     bb_hsvc_ServiceFn trust_verify;
     bb_hsvc_ServiceFn records_secret;
+    bb_hsvc_ServiceFn disk_append;
 };
 
-/* ---- layout proof: 260 of 263 structures are pinned by the golden ---- */
+/* ---- layout proof: 262 of 265 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -5487,7 +5515,20 @@ BB_ASSERT(BB_ALIGNOF(bb_hsvc_NeedAdmitIn) == 4, "bb_hsvc_NeedAdmitIn: alignment"
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, head) == 0, "bb_hsvc_NeedAdmitIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, need) == 24, "bb_hsvc_NeedAdmitIn.need: offset");
 BB_ASSERT(offsetof(bb_hsvc_NeedAdmitIn, _reserved) == 28, "bb_hsvc_NeedAdmitIn._reserved: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 184, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_DiskAppendIn) == 72, "bb_hsvc_DiskAppendIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_DiskAppendIn) == 8, "bb_hsvc_DiskAppendIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_DiskAppendIn, head) == 0, "bb_hsvc_DiskAppendIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_DiskAppendIn, dest_key) == 24, "bb_hsvc_DiskAppendIn.dest_key: offset");
+BB_ASSERT(offsetof(bb_hsvc_DiskAppendIn, bytes) == 40, "bb_hsvc_DiskAppendIn.bytes: offset");
+BB_ASSERT(offsetof(bb_hsvc_DiskAppendIn, result) == 64, "bb_hsvc_DiskAppendIn.result: offset");
+BB_ASSERT(sizeof(bb_hsvc_DiskWritten) == 16, "bb_hsvc_DiskWritten: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_DiskWritten) == 8, "bb_hsvc_DiskWritten: alignment");
+BB_ASSERT(offsetof(bb_hsvc_DiskWritten, size) == 0, "bb_hsvc_DiskWritten.size: offset");
+BB_ASSERT(offsetof(bb_hsvc_DiskWritten, rotated) == 4, "bb_hsvc_DiskWritten.rotated: offset");
+BB_ASSERT(offsetof(bb_hsvc_DiskWritten, faults) == 5, "bb_hsvc_DiskWritten.faults: offset");
+BB_ASSERT(offsetof(bb_hsvc_DiskWritten, _reserved) == 6, "bb_hsvc_DiskWritten._reserved: offset");
+BB_ASSERT(offsetof(bb_hsvc_DiskWritten, written) == 8, "bb_hsvc_DiskWritten.written: offset");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 192, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -5513,6 +5554,7 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, random_fill) == 152, "bb_hsvc_HostSlots.ra
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, need_admit) == 160, "bb_hsvc_HostSlots.need_admit: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_verify) == 168, "bb_hsvc_HostSlots.trust_verify: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, records_secret) == 176, "bb_hsvc_HostSlots.records_secret: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, disk_append) == 184, "bb_hsvc_HostSlots.disk_append: offset");
 #endif
 
 #ifdef __cplusplus
