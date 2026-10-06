@@ -137,7 +137,8 @@ impl HostServices for Provider {
         Stored::ready(0)
     }
 
-    /// Records `<counterparty>/<item>@<expected> <approve>`; answers serving.
+    /// Records `<counterparty>/<item>@<expected> <approve>`; answers serving. No counterparty
+    /// named: refused.
     fn trust_decide(
         &self,
         c: &Caller,
@@ -145,6 +146,10 @@ impl HostServices for Provider {
         expected: Option<&str>,
         approve: bool,
     ) -> Stored {
+        // The ticketless sweep's zeroed `in` names no counterparty: refused, as an unserved slot.
+        if key.counterparty.is_empty() {
+            return Stored::refused(UNIMPLEMENTED);
+        }
         let arg = format!(
             "{}/{}@{} {approve}",
             key.counterparty,
