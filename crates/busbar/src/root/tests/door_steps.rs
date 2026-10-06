@@ -1839,8 +1839,10 @@ pub(crate) mod tool_door {
         assert!(rig.all_ended(), "no unit left open");
     }
 
-    /// THE ROUTE STEP: a call whose server is down ends inside its own unit — answered, never a
-    /// served 200, every unit ended once.
+    /// THE ROUTE STEP: a call whose server is down ends inside its own unit — answered as an
+    /// upstream failure (ARCHITECT Q3 (c): the re-fetch that could not reach the server is reported
+    /// to the kernel as unreachable and the call fails as the tool error), never served, every unit
+    /// ended once.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tools_call_to_a_server_that_is_down_ends_inside_its_unit() {
         let _one = PUBLISHING.lock().await;
@@ -1850,7 +1852,12 @@ pub(crate) mod tool_door {
         let rig = Rig::new(instance, port, None);
 
         let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
-        assert_ne!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let answer: serde_json::Value = serde_json::from_slice(&body).expect("a JSON-RPC answer");
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        assert_eq!(
+            answer["result"]["isError"], true,
+            "an upstream failure: {answer}"
+        );
         assert!(rig.all_ended(), "the unit ended inside itself");
     }
 
@@ -2240,7 +2247,8 @@ pub(crate) mod tool_door {
         );
         drop(rig);
 
-        // ── FAIL CLOSED: the server cannot be reached at the fetch ────────────────────────────────
+        // ── FAIL CLOSED: the server cannot be reached at the fetch: reported to the kernel as
+        // unreachable, and the call fails as an upstream failure, never sent (ARCHITECT Q3 (c)) ──
         let port = down_port().await;
         let rig = Rig::with(
             instance,
@@ -2252,9 +2260,9 @@ pub(crate) mod tool_door {
             &|app| app,
         );
         let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
-        assert_eq!(status.as_u16(), 403, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&body));
         let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
-        assert_eq!(body["error"]["data"]["reason"], "error", "{body}");
+        assert_eq!(body["result"]["isError"], true, "an upstream failure: {body}");
         assert!(rig.all_ended(), "the refused unit ended");
     }
 

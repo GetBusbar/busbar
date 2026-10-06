@@ -1678,7 +1678,21 @@ fn answer_body(
             .cloned()
             .collect();
         for entry in &listed {
-            if hides(&trust_of(plane, ticket, &mut unit.issued, entry)) {
+            // A tool is judged changed only against a sighting: one its server was never seen to
+            // offer is listed (the caller sees what exists; a call is refused on its own verdict).
+            let sighted = matches!(
+                plane.sightings.get(&entry.server),
+                Some(crate::trust::Sighting::Seen(_))
+            );
+            let trust = trust_of(plane, ticket, &mut unit.issued, entry);
+            let changed_unsighted = !sighted
+                && matches!(
+                    trust,
+                    crate::call::Trust::Verdict(
+                        busbar_contract::abi::host::service::DISTRUST_CHANGED
+                    )
+                );
+            if hides(&trust) && !changed_unsighted {
                 hidden.insert(entry.namespaced.clone());
             }
         }

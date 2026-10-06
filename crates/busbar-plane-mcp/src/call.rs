@@ -495,14 +495,9 @@ fn trust_refusal(
             ),
             CallLine::asked(name, REASON_NOT_APPROVED),
         ),
-        DISTRUST_CHANGED => refused(
-            format!(
-                "`{name}` is offered at another digest than the one approved, so it does not \
-                 serve; review its change and approve it again"
-            ),
-            vocab::REASON_ARTIFACT_DRIFTED,
-        ),
-        DISTRUST_QUARANTINED => refused(
+        // A tool offered at another digest than the one approved is the rug-pull: its server is
+        // quarantined (ARCHITECT Q3: changed digest -> quarantined), the served engine's words.
+        DISTRUST_CHANGED | DISTRUST_QUARANTINED => refused(
             format!(
                 "MCP server `{server}` is quarantined, so it serves nothing; review its changes \
                  and approve it again"

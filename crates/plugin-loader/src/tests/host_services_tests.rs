@@ -495,6 +495,10 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
                 busbar_contract::conn::ConnError::UndeclaredNeed.text(),
                 "service {service}"
             );
+        } else if service == op::TRUST_STATE {
+            // A read names its buffers: an all-zero `in` names none, which the host faults before
+            // the provider.
+            assert_eq!(ret.outcome(), Outcome::Failed, "service {service}");
         } else if service == op::SESSION_EMIT {
             // An emit naming no session and nothing to write is refused before the provider.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");

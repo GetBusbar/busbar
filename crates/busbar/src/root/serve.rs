@@ -2090,7 +2090,9 @@ impl DataRoutes {
             .claims
             .get(claim as usize)
             .map(|c| c.carrier.clone());
-        if let Some((door, carrier)) = carrier.and_then(|c| {
+        // The root's own line carrier (a process's stdin/stdout, [`lines`]) frames its lines
+        // itself: each arrives already one unit, never a stream for a framer to frame.
+        if let Some((door, carrier)) = carrier.filter(|c| !is_line_carrier(c)).and_then(|c| {
             serve_framed::stream_framer(&c, DATA_CARRIER, |s| self.framer_for(s)).map(|d| (d, c))
         }) {
             let head: Vec<(String, Vec<u8>)> = arrival
@@ -2835,6 +2837,11 @@ impl http_body::Body for ReplyBody {
             }
         }
     }
+}
+
+/// Whether `carrier` is the root's line carrier ([`lines::LINE_CARRIER`]).
+fn is_line_carrier(carrier: &str) -> bool {
+    carrier == lines::LINE_CARRIER
 }
 
 /// THE LINE CARRIER: a process's own stdin/stdout, one carrier session, one unit per line (SEAM-S1).

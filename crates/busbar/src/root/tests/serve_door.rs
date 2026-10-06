@@ -1666,7 +1666,10 @@ mod tools_door {
         );
         let (status, answer) =
             call(&rig, &rig.token, "walled_read_file", serde_json::json!({})).await;
-        assert_ne!(status, StatusCode::OK, "{answer}");
+        // The guard refuses the verifying dial, so the server could not be reached: the call fails
+        // as an upstream failure (ARCHITECT Q3 (c)), never served.
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        assert_eq!(answer["result"]["isError"], true, "never served: {answer}");
         assert!(
             drain(&mut walled_heard).is_empty(),
             "the guard refused the dial: nothing reached the server"

@@ -147,7 +147,7 @@ fn the_kernels_trust_verdict_is_rendered_and_never_judged_here() {
         ),
         (
             Trust::Verdict(svc::DISTRUST_CHANGED),
-            Some((403, "artifact_drifted")),
+            Some((403, "quarantined")),
         ),
         (
             Trust::Verdict(svc::DISTRUST_QUARANTINED),
