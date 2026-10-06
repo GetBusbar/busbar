@@ -710,6 +710,31 @@ fn claims(c: &Candidate, word: &str) -> bool {
     })
 }
 
+/// Whether config naming `module` names the hook candidate `c`: its Statement name, an alias (a
+/// Statement alias, the manifest alias, a former name) or one of the hook words its Statement claims.
+/// The ONE rule [`HookRows`] finds a row by.
+fn answers(c: &Candidate, module: &str) -> bool {
+    c.name == module || c.aliases.iter().any(|a| a == module) || claims(c, module)
+}
+
+/// Whether a DROPPED-IN `kind: hook` row of `registry` answers `module` by the rule the hook axis
+/// opens it by ([`HookRows`]): read off each row's SIGNED manifest and Statement rendering only,
+/// nothing loaded. The pre-flight's half of the claim table boot uses (ARCHITECT Q-P4-13); the
+/// linked half is the root's hook axis.
+#[must_use]
+pub fn dropped_answers(registry: &PluginRegistry, module: &str) -> bool {
+    registry.dropped_hooks().any(|p| {
+        let Ok(Some(stated)) = p.manifest.stated_rendering() else {
+            return false;
+        };
+        let origin = Origin::Dropped {
+            file: p.file.clone(),
+            bytes: Arc::new(Vec::new()),
+        };
+        Candidate::from_manifest(stated, &p.manifest, origin).is_ok_and(|c| answers(&c, module))
+    })
+}
+
 // ── THE HOOK ROWS: the axis the composition root installs ─────────────────────────────────────
 
 /// THE PROCESS'S HOOK PLUGINS, by Statement name and alias: the compiled-in doors and the
@@ -846,9 +871,7 @@ impl HookRows {
     /// its Statement claims (`MARK_WORD_HOOK`: a pool strategy word names the ranking row), a
     /// linked row first.
     fn find(&self, module: &str) -> Option<&Candidate> {
-        self.candidates.iter().find(|c| {
-            c.name == module || c.aliases.iter().any(|a| a == module) || claims(c, module)
-        })
+        self.candidates.iter().find(|c| answers(c, module))
     }
 
     /// Bind `c` under `label`: an instance only probed binds with no log sink and no connection
