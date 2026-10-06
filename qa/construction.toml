@@ -1262,6 +1262,11 @@ known_sites = [
   # plane's registry row is a `&'static PlaneDecl` by the registry's type (rows live as long as the
   # process, as a linked plane's image does); one allocation per door, once, at boot.
   "crates/busbar-kernel/src/plane/door.rs::fold",
+  # REVIEWED 2026-10-05 (disk.append, ARCHITECT ruling Q-C1-FILE): a host service's error text is
+  # `'static` by the service's type (`DiskReport::error`), so the disk lane interns each distinct
+  # operating-system failure text ONCE and answers `OS_REFUSED` past `MAX_WORDS` of them — the
+  # leak-once intern shape of ids.rs `key` above, its allocation bounded by the cap.
+  "crates/busbar-kernel/src/host_disk.rs::os_words",
 ]
 
 # The escape list, mirroring crates/busbar-contract/src/caps/fixtures/lint_rules.rs HOLD_ESCAPES. A test in that

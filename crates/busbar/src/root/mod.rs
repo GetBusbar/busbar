@@ -94,7 +94,6 @@ pub(crate) mod loader;
 pub mod migration;
 pub mod model_egress;
 pub mod observe;
-pub mod otlp;
 #[cfg(feature = "plane-decisions")]
 pub mod plane_decisions;
 // The node a plane's units run through: compiled when a linked plane rides the `node` axis, read
