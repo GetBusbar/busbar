@@ -850,6 +850,7 @@ fn usage_row_micros(holder: &RootHistory, priced_from_ms: u64, input: u64) -> i6
             tokens_cache_creation: 0,
             requests: 0,
             spend_micros: 0,
+            classes: Default::default(),
         },
     )
     .expect("the row prices")

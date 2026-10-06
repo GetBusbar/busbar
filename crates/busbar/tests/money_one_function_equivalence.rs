@@ -153,6 +153,7 @@ fn admin_row(counts: &[(&'static str, u64)], requests: u64) -> admin::UsageBreak
         tokens_cache_creation: at(CACHE_WRITE),
         requests,
         spend_micros: 0,
+        classes: Default::default(),
     }
 }
 
