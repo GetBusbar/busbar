@@ -612,6 +612,155 @@ fn a_host_side_reader_is_woken_through_its_own_waker() {
     });
 }
 
+/// A far end that takes the opening and then holds the connection open, answering nothing, until
+/// `release` fires (or `answer` is written first, after `after`, then held again).
+fn stalled_far_end(
+    l: tokio::net::TcpListener,
+    answer: Option<(
+        std::time::Duration,
+        &'static [u8],
+        std::time::Duration,
+        &'static [u8],
+    )>,
+) {
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut s, _) = l.accept().await.unwrap();
+        let mut buf = [0_u8; 5];
+        s.read_exact(&mut buf).await.unwrap();
+        if let Some((after, first, then, second)) = answer {
+            tokio::time::sleep(after).await;
+            s.write_all(first).await.unwrap();
+            tokio::time::sleep(then).await;
+            s.write_all(second).await.unwrap();
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        drop(s);
+    });
+}
+
+/// RED (ARCHITECT timeout ruling, step 2; BUSBAR-1.6.0.md:4890): `timeout_ms` bounds the WHOLE
+/// request until its answer, not only the dial. A far end that connects, takes the request and
+/// never answers is a timeout once the bound passes: a host-side reader is woken with it, within
+/// the bound and not at the far end's leisure.
+#[test]
+fn a_request_bound_times_out_a_far_end_that_never_answers() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        stalled_far_end(l, None);
+        let c = serving(Arc::new(AtomicU64::new(0)));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"first",
+            timeout_ms: 300,
+            ..OpenDesc::default()
+        };
+        let started = std::time::Instant::now();
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            std::future::poll_fn(|cx| c.poll_read(OWNER, id, cx, &mut buf)),
+        )
+        .await
+        .expect("the bound woke the reader before the far end ever answered");
+        assert_eq!(read, Err(ConnError::Timeout));
+        let took = started.elapsed();
+        assert!(
+            took >= std::time::Duration::from_millis(300)
+                && took < std::time::Duration::from_secs(2),
+            "timed out at the bound, not before it and not long after: {took:?}"
+        );
+        assert_eq!(
+            c.read(OWNER, id, 7, &mut buf),
+            Err(ConnError::Timeout),
+            "a read after the bound stays a timeout"
+        );
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// RED: a plugin reader (a ticket, as WRITE_REQUEST's exchange reads) waiting on a request past
+/// its bound has its ticket woken, and its next read is the timeout.
+#[test]
+fn a_request_bound_wakes_a_plugin_ticket_with_the_timeout() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        stalled_far_end(l, None);
+        let wakes = Arc::new(AtomicU64::new(0));
+        let c = serving(wakes.clone());
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"first",
+            timeout_ms: 200,
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let started = std::time::Instant::now();
+        let read = loop {
+            match c.read(OWNER, id, 7, &mut buf) {
+                Err(ConnError::Pending) => {
+                    assert!(
+                        started.elapsed() < std::time::Duration::from_secs(5),
+                        "never timed out"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                other => break other,
+            }
+        };
+        assert_eq!(read, Err(ConnError::Timeout));
+        assert!(
+            wakes.load(Ordering::SeqCst) >= 1,
+            "the ticket was woken by the bound"
+        );
+        assert_eq!(
+            c.wait(OWNER, &[id], 7),
+            Ok(0),
+            "a request past its bound is ready to read"
+        );
+    });
+}
+
+/// The bound ends where the answer begins: an answer whose first piece arrived inside the bound is
+/// read to its end even when its later pieces arrive after it.
+#[test]
+fn a_request_bound_is_spent_once_the_answer_begins() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        let ms = std::time::Duration::from_millis;
+        stalled_far_end(l, Some((ms(20), b"head", ms(400), b"tail")));
+        let c = serving(Arc::new(AtomicU64::new(0)));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"first",
+            timeout_ms: 200,
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut got = Vec::new();
+        while got.len() < 8 {
+            let mut buf = [0_u8; 64];
+            let piece = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                std::future::poll_fn(|cx| c.poll_read(OWNER, id, cx, &mut buf)),
+            )
+            .await
+            .expect("the answer arrives")
+            .expect("an answer begun inside the bound is not cut by it");
+            got.extend_from_slice(&buf[..piece.len]);
+        }
+        assert_eq!(got, b"headtail");
+    });
+}
+
 // ── EGRESS: the scheme each egress class allows ──
 
 use busbar_contract::abi::host::conn::connector::{
