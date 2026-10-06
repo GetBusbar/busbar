@@ -237,8 +237,15 @@
 # (c7de1ab) lacks dev's engine fixes and is NOT pinned. promote.yml RELEASE_REF moves to the same sha in the
 # same commit, so CI and lane proofs run ONE engine.
 #
+# 2026-10-06 (busbar P3 FLIP-STREAMING / DEL-VOICE): moved 4a7a7bba2cef -> 30d072960aa1 (busbar-release
+# `p3-flip-streaming-plan`, PR #168 into dev, cut from 4a7a7bba2cef). One commit, no engine change: the
+# build-test plan's `voice runtime` row leaves with the deleted busbar-voice crate (plan-lint refuses a row
+# naming a package the tree lacks). The judge's code is 4a7a7bba2cef's byte for byte. promote.yml
+# RELEASE_REF moves to the same sha in the same commit. Feature branch head; re-pin to the merge commit
+# when it lands.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=4a7a7bba2cef472ab4078ab3b50afc5b99c2c4ac
+release_ref=30d072960aa13af8a2bb59fc87de4251c2238ba1
 crate=busbar-release-oracle
 bin=busbar-oracle
