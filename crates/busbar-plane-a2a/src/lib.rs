@@ -52,6 +52,12 @@ pub mod a2a {
     pub mod task;
 }
 
+/// THE PLANE'S DECLARED METADATA (`declares.json`): its manifest `declares` section, the static
+/// statement the root reads for this linked door as it reads every linked plane door's. It states the
+/// plane's breaker fact (ARCHITECT Q4): one transient failure below the trip threshold never benches
+/// an agent's cell — the cell refuses on a TRIP and nothing less, an upstream `Retry-After` still
+/// honoured (docs/a2a.md, "These cells refuse on a trip and nothing less").
+pub const DECLARES: &str = include_str!("../declares.json");
 pub mod arrival;
 pub mod binding;
 pub mod cards;

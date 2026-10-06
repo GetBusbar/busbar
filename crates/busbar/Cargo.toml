@@ -471,6 +471,7 @@ busbar-export-otlp = "busbar_export_otlp::door"
 # Each linked plane door's declared metadata (its manifest `declares` section, as JSON): the item that
 # holds it. A door row with no row here declares nothing.
 [package.metadata.busbar.linked-declares]
+plane-a2a-door = "busbar_plane_a2a::DECLARES"
 
 # The key an `auths` row answers on the auth axis — the name its signed tarball's manifest states.
 [package.metadata.busbar.linked-name]
