@@ -76,8 +76,9 @@ async fn echo(mut conn: Connection) {
     // A message keeps the type its first frame carried (text or binary); the echo answers in kind.
     let mut text = false;
     while let Ok(Some(piece)) = poll_fn(|cx| conn.poll_piece(cx)).await {
-        // A field block (a head) is the handshake's, not a message.
-        if piece.fields {
+        // A field block (a head) is the handshake's, not a message; the stream's end
+        // (`PIECE_END`) is none either. An EMPTY piece is an empty message, echoed in kind.
+        if piece.fields || piece.ends_stream() {
             continue;
         }
         if message.is_empty() {

@@ -334,6 +334,11 @@ impl HostWire {
             };
             loop {
                 if let Some(got) = c.ready.lock().expect("ready").pop_front() {
+                    // A stream's end (`PIECE_END`) is said, and is no frame: an empty frame is an
+                    // empty message, handed up as one.
+                    if got.ends_stream() {
+                        continue;
+                    }
                     let n = got.bytes.len() as u64;
                     let frame = Frame {
                         direction: FrameDirection::Inbound,
