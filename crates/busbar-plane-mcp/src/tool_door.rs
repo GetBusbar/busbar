@@ -1387,22 +1387,14 @@ fn verify_on_call(
             unit.verified = Some(sighting);
             return Looked::Pending;
         }
-        // EACH TOOL'S SIGHTING (ARCHITECT Q3): the digest the live list offers it at, under the
-        // registration and the tool's trust key (its `tools_allow` name), recorded by the kernel; a tool the list no longer
-        // offers has nothing to sight, and the catalogue's own drift is the server's sighting above.
-        for entry in held.catalogue.tools_of(server) {
-            let Some(digest) = obs.capabilities.get(&entry.tool) else {
-                continue;
-            };
-            let handle = CompletionHandle {
-                ticket,
-                seq: unit.issued,
-                _reserved: 0,
-            };
-            unit.issued += 1;
-            // Never pends; an unserved book leaves the item unsighted, which `trust.serves` refuses.
-            let _ = services.trust_sight_item(handle, server, &entry.tool, digest);
-        }
+        sight_items(
+            &services,
+            ticket,
+            &mut unit.issued,
+            &held.catalogue,
+            server,
+            obs,
+        );
     } else if matches!(sighting, Sighting::Failed(_)) {
         // AN UNREACHABLE RE-FETCH (ARCHITECT Q3 (c)): reported to the kernel as such; the kernel
         // keeps its last verdict and changes nothing (no drift, no quarantine from unreachability),
@@ -1420,6 +1412,72 @@ fn verify_on_call(
     plane.sightings.insert(server.to_string(), sighting);
     plane.checked.insert(server.to_string(), now_ms);
     Looked::Fresh
+}
+
+/// EACH TOOL'S SIGHTING (ARCHITECT Q3): the digest the live list offers each of `server`'s
+/// catalogue tools at, recorded by the kernel under the registration and the tool's trust key (its
+/// `tools_allow` name). Never pends; a tool the list no longer offers has nothing to sight.
+fn sight_items(
+    services: &busbar_contract::abi::sdk::services::Services,
+    ticket: Ticket,
+    seq: &mut u32,
+    catalogue: &crate::catalogue::Catalogue,
+    server: &str,
+    obs: &crate::trust::Observation,
+) {
+    for entry in catalogue.tools_of(server) {
+        let Some(digest) = obs.capabilities.get(&entry.tool) else {
+            continue;
+        };
+        let handle = CompletionHandle {
+            ticket,
+            seq: *seq,
+            _reserved: 0,
+        };
+        *seq = seq.wrapping_add(1);
+        // An unserved book leaves the item unsighted, which `trust.serves` refuses.
+        let _ = services.trust_sight_item(handle, server, &entry.tool, digest);
+    }
+}
+
+/// THE KERNEL'S TRUST STATE of registration `server` (`trust.state`), item by item, as the admin
+/// views render it. A host that answers no trust service holds nothing.
+fn kernel_items(plane: &McpDoor, ticket: Ticket, server: &str) -> Vec<crate::trust::KernelItem> {
+    use busbar_contract::abi::sdk::services::ServiceError;
+    let Some(services) = plane.services else {
+        return Vec::new();
+    };
+    let handle = CompletionHandle {
+        ticket,
+        seq: STATE_SEQ,
+        _reserved: 0,
+    };
+    let read = |bytes: usize, spans: usize| {
+        let mut buf = vec![0_u8; bytes];
+        let mut items = vec![door_tasks::blank(); spans];
+        services
+            .trust_state(handle, server, &mut buf, &mut items)
+            .map(|state| {
+                state
+                    .items()
+                    .map(|i| crate::trust::KernelItem {
+                        item: i.item.to_string(),
+                        word: i.state.to_string(),
+                        approved: i.approved.map(str::to_string),
+                    })
+                    .collect::<Vec<_>>()
+            })
+    };
+    match read(16 * 1024, 128) {
+        Ok(items) => items,
+        // The short-buffer rule: once more, at the size the host asked for.
+        Err(ServiceError::Short { bytes, items }) => read(
+            usize::try_from(bytes).unwrap_or(usize::MAX),
+            usize::try_from(items).unwrap_or(usize::MAX),
+        )
+        .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// THE KERNEL'S APPROVE ON ONE TOOL, as the route leg asks it (ARCHITECT Q3; the kernel loop's
@@ -3025,6 +3083,10 @@ const SIGHT_SEQ: u32 = 1 << 30;
 
 /// The completion handle a `connect`'s clock reading is issued on: past `trust.sight`'s.
 const CONNECT_CLOCK_SEQ: u32 = SIGHT_SEQ + 1;
+/// The handle seq an admin view reads the kernel's trust state on (`trust.state`).
+const STATE_SEQ: u32 = SIGHT_SEQ + 2;
+/// The first handle seq `connect`'s per-tool sightings (`trust.sight_item`) take.
+const ITEM_SEQ: u32 = SIGHT_SEQ + 3;
 
 /// The first handle verify-on-call's fetch numbers its connector services from on a unit's ticket:
 /// clear of the unit's own handles (counted from `0`) and of the further rounds'.
@@ -3156,11 +3218,13 @@ slot!(
         let last = plane.sightings.get(name).unwrap_or_default();
         match verb {
             "changes" => {
-                let view = crate::trust::trust_view(name, &def, &last);
+                let items = kernel_items(plane, instance.ticket(), name);
+                let view = crate::trust::trust_view(name, &def, &last, &items);
                 return served(&input, &mut out, 200, view.as_bytes(), JSON, 0);
             }
             "health" => {
-                let view = crate::trust::health_view(name, &def, &last);
+                let items = kernel_items(plane, instance.ticket(), name);
+                let view = crate::trust::health_view(name, &last, &items);
                 return served(&input, &mut out, 200, view.as_bytes(), JSON, 0);
             }
             "connect" => {}
@@ -3257,18 +3321,27 @@ slot!(
         };
         // THE KERNEL'S TRUST BOOK records the observed catalogue (it stamps the re-verification
         // clock); the answer is the plane's comparison, which is what the operator is looking at.
-        if let (Sighting::Seen(obs), Some(services)) = (&sighting, plane.services) {
+        if let Some(services) = plane.services {
             let handle = CompletionHandle {
                 ticket: instance.ticket(),
                 seq: SIGHT_SEQ,
                 _reserved: 0,
             };
-            if services
-                .trust_sight(handle, name, &crate::trust::catalogue_hash(obs))
-                .is_pending()
-            {
+            let sighted = match &sighting {
+                Sighting::Seen(obs) => {
+                    services.trust_sight(handle, name, &crate::trust::catalogue_hash(obs))
+                }
+                // An unreachable server is reported as such: the kernel keeps its last verdict.
+                Sighting::Failed(_) => services.trust_unreachable(handle, name),
+                Sighting::Never => std::task::Poll::Ready(Ok(0)),
+            };
+            if sighted.is_pending() {
                 instance.park(Sighted(sighting));
                 return Outcome::Pending;
+            }
+            if let Sighting::Seen(obs) = &sighting {
+                let mut seq = ITEM_SEQ;
+                sight_items(&services, instance.ticket(), &mut seq, &held.catalogue, name, obs);
             }
         }
         plane.sightings.insert(name.clone(), sighting.clone());
@@ -3285,7 +3358,8 @@ slot!(
                 plane.checked.insert(name.clone(), now.wall_ns / 1_000_000);
             }
         }
-        let view = crate::trust::trust_view(name, &def, &sighting);
+        let items = kernel_items(plane, instance.ticket(), name);
+        let view = crate::trust::trust_view(name, &def, &sighting, &items);
         served(&input, &mut out, 200, view.as_bytes(), JSON, AUDIT_APPLIED)
     }
 );

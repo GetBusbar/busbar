@@ -64,40 +64,52 @@ fn an_observation_is_read_strictly() {
     );
 }
 
-/// The state, in precedence order, and the changes queue on each axis.
+/// One kernel trust-state item, as `trust.state` answers it.
+fn item(name: &str, word: &str, approved: Option<&str>) -> KernelItem {
+    KernelItem {
+        item: name.to_string(),
+        word: word.to_string(),
+        approved: approved.map(str::to_string),
+    }
+}
+
+/// The view's state, in precedence order, and the changes queue on each axis, read off the
+/// KERNEL's trust state (ARCHITECT Q3): the plane derives no verdict of its own.
 #[test]
-fn the_state_is_derived_from_the_approval_and_the_last_sighting() {
+fn the_views_state_reads_the_kernels_trust_state_and_the_last_sighting() {
     let digest = tool_digest("read", "reads a file", &schema());
-    let def = rooted(&digest);
-    assert_eq!(
-        state(&Approval::of(&def), &Sighting::Never),
-        State::Approved
-    );
+    let approved = [item("read", "approved", Some(&digest))];
+    assert_eq!(state(&approved, &Sighting::Never), State::Approved);
     let good =
         seen(json!([{ "name": "read", "description": "reads a file", "inputSchema": schema() }]));
-    assert_eq!(state(&Approval::of(&def), &good), State::Approved);
+    let same = [item("read", "same", Some(&digest))];
+    assert_eq!(state(&same, &good), State::Approved);
     let pulled = seen(json!([
         { "name": "read", "description": "reads a file", "inputSchema": { "type": "object" } },
         { "name": "extra" }
     ]));
-    assert_eq!(state(&Approval::of(&def), &pulled), State::Quarantined);
-    let d = drift(&Approval::of(&def), &pulled);
+    // The kernel holds `read` drifted; `extra` is offered and approved at nothing.
+    let drifted = [item("read", "drifted", Some(&digest))];
+    assert_eq!(state(&drifted, &pulled), State::Quarantined);
+    let d = drift(&drifted, &pulled);
     assert_eq!(
         (d.changed, d.added, d.removed),
         (vec!["read".to_string()], vec!["extra".to_string()], vec![])
     );
+    // RED of the old comparison: a digest the plane alone sees differ, the kernel holding the tool
+    // `same`, is no drift here; the verdict is the kernel's word.
+    assert_eq!(
+        state(&same, &pulled),
+        State::Quarantined,
+        "`extra` is still added"
+    );
+    assert!(drift(&same, &pulled).changed.is_empty());
     let failed = Sighting::Failed("down".to_string());
-    assert_eq!(state(&Approval::of(&def), &failed), State::Error);
-    let unpinned = def_unpinned();
-    assert_eq!(state(&Approval::of(&unpinned), &good), State::Pending);
-}
-
-fn def_unpinned() -> McpServerDefCfg {
-    def(json!({
-        "url": "https://fs.example/rpc",
-        "pin": { "mechanism": "unpinned" },
-        "tools_allow": { "read": { "schema_hash": "sha256:aa" } }
-    }))
+    assert_eq!(state(&same, &failed), State::Error);
+    assert_eq!(state(&[], &good), State::Pending);
+    assert_eq!(state(&[item("read", "new", None)], &good), State::Pending);
+    let gone = seen(json!([]));
+    assert_eq!(drift(&same, &gone).removed, vec!["read".to_string()]);
 }
 
 /// The views name every field the served engine's did, in its order.
@@ -107,7 +119,8 @@ fn the_views_render_the_served_engines_fields_in_its_order() {
     let def = rooted(&digest);
     let good =
         seen(json!([{ "name": "read", "description": "reads a file", "inputSchema": schema() }]));
-    let view: Value = serde_json::from_str(&trust_view("fs", &def, &good)).unwrap();
+    let items = [item("read", "same", Some(&digest))];
+    let view: Value = serde_json::from_str(&trust_view("fs", &def, &good, &items)).unwrap();
     assert_eq!(
         view,
         json!({
@@ -120,8 +133,10 @@ fn the_views_render_the_served_engines_fields_in_its_order() {
             ]
         })
     );
-    assert!(trust_view("fs", &def, &good).starts_with(r#"{"name":"fs","state":"approved","#));
-    let health: Value = serde_json::from_str(&health_view("fs", &def, &Sighting::Never)).unwrap();
+    assert!(
+        trust_view("fs", &def, &good, &items).starts_with(r#"{"name":"fs","state":"approved","#)
+    );
+    let health: Value = serde_json::from_str(&health_view("fs", &Sighting::Never, &items)).unwrap();
     assert_eq!(
         health,
         json!({ "name": "fs", "state": "approved", "serving": true, "contacted": false,
