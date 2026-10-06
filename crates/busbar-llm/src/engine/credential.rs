@@ -36,6 +36,10 @@ fn presentation(p: CredentialHeader) -> Value {
 /// unpresentable credential's line names, as 1.5.5's did), a per-request signature on the `sigv4` style
 /// with its service, the region its host names (else its default) and its content type. The
 /// dialect's static fields (`decl`'s) follow the plugin's.
+///
+/// The region is read here SILENTLY: a dialect's `region_of_host` gives the operator its warning
+/// when a host names no region, and 1.5.5 gave it once per signature, at request time, never at
+/// boot. [`PerSignatureRegionRead`] keeps that line where 1.5.5 wrote it.
 #[must_use]
 pub(crate) fn declared_binding(
     decl: &'static ProtocolDecl,
@@ -78,7 +82,7 @@ pub(crate) fn declared_binding(
             "sigv4",
             json!({
                 "service": service,
-                "region": region_of_host(host).unwrap_or(default_region),
+                "region": silently(|| region_of_host(host)).unwrap_or(default_region),
                 "content_type": content_type,
             }),
         ),
@@ -89,6 +93,54 @@ pub(crate) fn declared_binding(
         uses_key: true,
         statics: decl.static_headers,
     }
+}
+
+/// `read`, with no line written: the binding's parameters are read once, at bind, and a warning the
+/// read gives belongs to the request it is about ([`PerSignatureRegionRead`]).
+fn silently<T>(read: impl FnOnce() -> T) -> T {
+    tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::default(), read)
+}
+
+/// A signing lane's bound credential, reading its host's region once per signature as 1.5.5's
+/// signer did, so the dialect's `region_of_host` writes its operator warning (a host that names no
+/// region signs for the default) on the request that signs, in 1.5.5's place in the log: after the
+/// request's own lines, before the signer's. 1.5.5 read it only for a credential that splits as
+/// `ACCESS_KEY_ID:SECRET[:SESSION_TOKEN]` (a misconfigured key signs nothing and reads nothing).
+/// The plugin's binding already carries the region; the read's answer is not used.
+struct PerSignatureRegionRead {
+    inner: Arc<dyn CredentialProvider>,
+    region_of_host: fn(&str) -> Option<&str>,
+}
+
+impl CredentialProvider for PerSignatureRegionRead {
+    fn headers_for(
+        &self,
+        key: &str,
+        ctx: &busbar_contract::protocol::SigningContext,
+    ) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+        if splits_as_signing_key(key) {
+            let _ = (self.region_of_host)(ctx.host);
+        }
+        self.inner.headers_for(key, ctx)
+    }
+    fn is_ready(&self) -> bool {
+        self.inner.is_ready()
+    }
+    fn is_lane_constant(&self) -> bool {
+        self.inner.is_lane_constant()
+    }
+    fn uses_key(&self) -> bool {
+        self.inner.uses_key()
+    }
+}
+
+/// Whether `key` names an access key id and a secret, both non-empty: the credential 1.5.5's signer
+/// signed with (anything else signs nothing).
+fn splits_as_signing_key(key: &str) -> bool {
+    let mut parts = key.splitn(3, ':');
+    let access = parts.next().unwrap_or_default();
+    let secret = parts.next().unwrap_or_default();
+    !access.is_empty() && !secret.is_empty()
 }
 
 /// THE `auth: api-key` OVERRIDE's binding: the credential verbatim in `api-key` whatever the
@@ -120,7 +172,8 @@ fn mint_params(mut params: Map<String, Value>) -> Value {
 
 /// The style and parameters `lane`'s credential is bound under, or the dialect's own builder.
 enum Binding {
-    Style(StyleBinding),
+    /// The style binding, and a signing scheme's per-signature region read.
+    Style(StyleBinding, Option<fn(&str) -> Option<&str>>),
     Builder(Arc<dyn CredentialProvider>),
 }
 
@@ -136,30 +189,42 @@ fn binding_for(protocol: &'static str, lane: &LaneInput, host: &str, api_key: &s
             text(&mut m, "scope", &lane.scope);
             text(&mut m, "subject", &lane.subject);
             text(&mut m, "token_uri", &token_uri(api_key));
-            Binding::Style(StyleBinding {
-                style: "jwt-bearer".to_string(),
-                params: mint_params(m),
-                uses_key: false,
-                statics: &[],
-            })
+            Binding::Style(
+                StyleBinding {
+                    style: "jwt-bearer".to_string(),
+                    params: mint_params(m),
+                    uses_key: false,
+                    statics: &[],
+                },
+                None,
+            )
         }
         AuthStyleInput::OAuthClientCredentials => {
             let mut m = Map::new();
             text(&mut m, "token_url", &lane.token_url);
             text(&mut m, "scope", &lane.scope);
-            Binding::Style(StyleBinding {
-                style: "oauth-client-credentials".to_string(),
-                params: mint_params(m),
-                uses_key: false,
-                statics: &[],
-            })
+            Binding::Style(
+                StyleBinding {
+                    style: "oauth-client-credentials".to_string(),
+                    params: mint_params(m),
+                    uses_key: false,
+                    statics: &[],
+                },
+                None,
+            )
         }
-        AuthStyleInput::ApiKey => Binding::Style(api_key_override_binding()),
+        AuthStyleInput::ApiKey => Binding::Style(api_key_override_binding(), None),
         // No override, or `auth: bearer`: the dialect's own declared scheme.
         AuthStyleInput::Default | AuthStyleInput::Bearer => {
             match busbar_kernel::proto::decl_for(protocol) {
                 Some(decl) => match (decl.egress_scheme, decl.egress_auth_headers) {
-                    (Some(scheme), _) => Binding::Style(declared_binding(decl, scheme, host)),
+                    (Some(scheme), _) => {
+                        let read = match scheme {
+                            EgressScheme::SigV4 { region_of_host, .. } => Some(region_of_host),
+                            EgressScheme::Static { .. } => None,
+                        };
+                        Binding::Style(declared_binding(decl, scheme, host), read)
+                    }
                     (None, Some(headers_for)) => Binding::Builder(Arc::new(DeclaredBuilder {
                         headers_for,
                         lane_constant: decl.egress_auth_lane_constant,
@@ -183,18 +248,27 @@ pub(crate) fn credential_for(
 ) -> Arc<dyn CredentialProvider> {
     match binding_for(protocol, lane, host, api_key) {
         Binding::Builder(built) => built,
-        Binding::Style(binding) => {
+        Binding::Style(binding, read) => {
             let Some(reach) = &input.auths else {
                 return Arc::new(NoCredential);
             };
-            bind(&*reach.0, &binding, api_key.as_bytes()).unwrap_or_else(|e| {
-                tracing::error!(
-                    lane = %lane.model,
-                    style = %binding.style,
-                    "the lane's credential is not bound, so its requests carry no credential: {e}"
-                );
-                Arc::new(NoCredential)
-            })
+            match bind(&*reach.0, &binding, api_key.as_bytes()) {
+                Ok(inner) => match read {
+                    Some(region_of_host) => Arc::new(PerSignatureRegionRead {
+                        inner,
+                        region_of_host,
+                    }),
+                    None => inner,
+                },
+                Err(e) => {
+                    tracing::error!(
+                        lane = %lane.model,
+                        style = %binding.style,
+                        "the lane's credential is not bound, so its requests carry no credential: {e}"
+                    );
+                    Arc::new(NoCredential)
+                }
+            }
         }
     }
 }
