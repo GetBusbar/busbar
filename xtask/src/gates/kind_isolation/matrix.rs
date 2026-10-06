@@ -3657,7 +3657,10 @@ pub fn selftest<'a>(
     // The subject is `busbar-core-connector`, the cleanliness crate whose `× plane` cell has NO
     // `[[cell]]` row: presence can only see this refusal where a row does not already list the cell.
     // `busbar-core-oauth2` names planes by design (a listed `× plane` cell, count→presence owner
-    // 2026-10-03), so the same plant there is green — a listed edge, not a refusal.
+    // 2026-10-03), so the same plant there is green — a listed edge, not a refusal. The plant names
+    // the a2a plane by a path into its crate: `mcp` is also the retiring engine's id, and a word two
+    // crates own counts only as a reference ([`mask_colliding_words`]), so the bare
+    // `busbar_plane_mcp` this used to plant read as no plane at all and the case went green.
     report.push(prove_rows_red(
         cx,
         gate,
@@ -3666,7 +3669,7 @@ pub fn selftest<'a>(
         plant(
             cx,
             "crates/busbar-core-connector/src/leak.rs",
-            "// busbar_plane_mcp is not this crate's to name.\n",
+            "// busbar_plane_a2a::meta is not this crate's to name.\n",
         ),
         &["unlisted-cell", "busbar-core-connector \u{d7} plane"],
     ));
