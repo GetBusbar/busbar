@@ -17,10 +17,10 @@ The three words are not interchangeable:
 ## Summary
 
 - bindings: **104**  (PB-0 master rule + 103 table rows)
-- mapped (proven): **103**
-- unproven (cited, but nothing compared): **1**
+- mapped (proven): **104**
+- unproven (cited, but nothing compared): **0**
 - unmapped (named gap): **0**
-- checks by kind (mapped bindings only): gate 9, lint 5, oracle-cell 71, oracle-family 5, test 428
+- checks by kind (mapped bindings only): gate 9, lint 5, oracle-cell 72, oracle-family 5, test 435
 
 ## Bindings
 
@@ -124,20 +124,12 @@ The three words are not interchangeable:
 | PB-95 | migrated tap stages | mapped | PASS |  | test: `attempt_tap_carries_attempt_story`<br>test: `route_tap_reports_surviving_candidates` |
 | PB-96 | streaming byte layout (the terminal-usage settle guarantee) | mapped | PASS |  | test: `test_translate_anthropic_egress_to_openai_ingress`<br>test: `test_translate_openai_egress_to_anthropic_ingress`<br>test: `bedrock_stream_framing_emits_one_metadata_delta_then_guards_duplicate`<br>test: `test_translate_openai_include_usage_egress_to_bedrock_ingress_single_metadata`<br>test: `test_duplicate_terminal_message_delta_after_stop_is_dropped`<br>test: `test_tool_id_remap_is_a_stable_reversible_bijection`<br>test: `cohere_tool_ids_pass_through_verbatim_no_decode`<br>test: `strip_same_proto_usage_fires_without_object_field` |
 | PB-97 | pristine request bytes | mapped | PASS |  | test: `a_same_dialect_hop_is_the_callers_bytes_with_governed_splices`<br>test: `pristine_same_proto_is_byte_identical_body_model`<br>test: `pristine_same_proto_is_byte_identical_url_model`<br>test: `claude_on_vertex_drops_model_and_injects_anthropic_version`<br>test: `invalidator_3_model_rewrite_forces_non_pristine`<br>test: `invalidator_4_same_proto_model_shim_strip_forces_non_pristine` |
-| PB-98 | `error_map` and lane state carry-over | unproven | FAIL | partly proven; a referenced check settles nothing: test:least_busy_prefers_most_headroom, test:least_busy_all_saturated_ranks_by_idx, test:cheapest_all_unknown_abstains, test:usage_all_unknown_abstains, test:fastest_orders_by_latency | test: `test_normalize_raw_error_with_provider_override`<br>test: `restored_halfopen_state_normalizes_to_open`<br>test: `restore_does_not_clobber_new_limit_with_unlimited_sentinel`<br>test: `test_hard_down_follows_identity_across_rebuild`<br>test: `least_busy_prefers_most_headroom`<br>test: `least_busy_all_saturated_ranks_by_idx`<br>test: `cheapest_all_unknown_abstains`<br>test: `usage_all_unknown_abstains`<br>test: `fastest_orders_by_latency`<br>test: `from_ranked_never_produces_reject`<br>test: `from_ranked_empty_is_abstain`<br>test: `dlopen_notify_is_fire_and_forget` |
+| PB-98 | `error_map` and lane state carry-over | mapped | PASS |  | test: `test_normalize_raw_error_with_provider_override`<br>test: `restored_halfopen_state_normalizes_to_open`<br>test: `restore_does_not_clobber_new_limit_with_unlimited_sentinel`<br>test: `test_hard_down_follows_identity_across_rebuild`<br>oracle-cell: `route.cheapest\|card-swap`<br>test: `from_ranked_never_produces_reject`<br>test: `from_ranked_empty_is_abstain`<br>test: `dlopen_notify_is_fire_and_forget` |
 | PB-99 | legacy rows, hydrate and erasure | mapped | PASS |  | test: `test_metering_accumulates_split_per_key_model_and_bucket`<br>test: `test_record_metering_from_ir_usage_and_flat`<br>test: `test_additive_flush_carries_refund_deltas`<br>test: `delete_key_tombstones_and_cascades_usage_and_creds`<br>test: `scrub_key_requires_tombstone_first` |
 | PB-100 | admin wire details | mapped | PASS |  | oracle-family: `admin.ops` (44/323 cells cite it)<br>oracle-cell: `http.crosscut\|OPTIONS\|chat`<br>oracle-cell: `http.crosscut\|auth-token\|POST-empty`<br>oracle-cell: `ops.scrape\|v1models\|openai-fp`<br>test: `test_admin_v1_key_idempotent_mint_and_if_match`<br>test: `test_admin_v1_overlay_reset_hooks_reverts_to_base`<br>test: `keys_error_surface_is_byte_stable`<br>test: `admin_error_surface_witnesses_every_declared_response`<br>test: `declared_error_set_is_exactly_what_the_handlers_emit`<br>test: `record_list_get_and_bound`<br>test: `exchange_ok_body_includes_base_url_equal_to_public_url`<br>test: `begin_sets_httponly_secure_cookie_and_redirects`<br>test: `callback_state_mismatch_400`<br>test: `callback_nonce_mismatch_rejected`<br>test: `execute_hop_refuses_non_allowlisted_host`<br>test: `vet_hop_url_enforces_https_allowlist_and_blocks_metadata`<br>test: `execute_hop_does_not_follow_redirect`<br>test: `refresh_rotates_key_and_revokes_the_old_one` |
 | PB-101 | inbound auth details | mapped | PASS |  | test: `crates/busbar/tests/sigv4_both_ways.rs::sigv4_is_verified_inbound_and_signed_outbound`<br>oracle-cell: `llm\|bedrock\|bedrock\|request\|unauthenticated`<br>test: `throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch`<br>test: `a_fast_large_upload_is_not_killed_by_the_throughput_floor`<br>test: `total_deadline_trips_on_a_body_that_stays_above_the_floor_forever`<br>test: `body_read_timeout_trips_on_stalled_body`<br>test: `mtls_valid_client_cert_gets_200`<br>test: `mtls_rejects_bad_client_then_serves_valid` |
 | PB-102 | alarms and the disputes report | mapped | PASS |  | test: `a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric` |
 | PB-103 | the dated rate-card history, and the `/usage` read path that does not consult it | mapped | PASS |  | oracle-cell: `billing\|rate-card\|history-mid-window`<br>oracle-cell: `config\|rate-card\|append-not-replace`<br>oracle-cell: `ledger\|amend\|adjusting-entries`<br>oracle-cell: `ledger\|amend\|refused-unsigned`<br>oracle-cell: `ledger\|currency\|minor-unit-rounding`<br>oracle-cell: `ledger\|currency\|native`<br>oracle-cell: `ledger\|rate-history\|as-of` |
-
-## The unproven bindings: cited, but nothing was compared
-
-Each of these names one or more checks and is still proof of nothing. A binding here is
-red under `cargo xtask gate design-bindings`; it is fixed by making the citation real,
-or it is demoted to a named gap. It is never waived.
-
-- **PB-98** (`error_map` and lane state carry-over): partly proven; a referenced check settles nothing: test:least_busy_prefers_most_headroom, test:least_busy_all_saturated_ranks_by_idx, test:cheapest_all_unknown_abstains, test:usage_all_unknown_abstains, test:fastest_orders_by_latency
 
 ## Findings: bindings in conflict with the tree
 

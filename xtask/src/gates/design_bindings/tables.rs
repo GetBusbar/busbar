@@ -541,6 +541,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "restored_halfopen_state_normalizes_to_open", "HalfOpen restores as Open"),
         ("test", "restore_does_not_clobber_new_limit_with_unlimited_sentinel", "the budget carry-over rule on restore"),
         ("test", "test_hard_down_follows_identity_across_rebuild", "(model, provider) identity across a config apply"),
+        ("oracle-cell", "route.cheapest|card-swap", "a ranking native on the shipped binary: cheapest serves the cheaper lane first and re-ranks after a rate-card swap, diffed against 1.5.5 (the natives' unit tests moved with the crate to GetBusbar/busbar-hook-ranking)"),
         ("test", "from_ranked_never_produces_reject", "reply precedence: an order never becomes a reject"),
         ("test", "from_ranked_empty_is_abstain", "an empty order is abstain"),
         ("test", "dlopen_notify_is_fire_and_forget", "the notify op is fire-and-forget"),

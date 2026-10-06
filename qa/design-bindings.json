@@ -15,16 +15,16 @@
  },
  "counts": {
   "bindings": 104,
-  "mapped": 103,
-  "unproven": 1,
+  "mapped": 104,
+  "unproven": 0,
   "unmapped": 0,
   "gap": 0,
   "checks_by_kind": {
    "gate": 9,
    "lint": 5,
-   "oracle-cell": 71,
+   "oracle-cell": 72,
    "oracle-family": 5,
-   "test": 428
+   "test": 435
   }
  },
  "dropped_since_last_write": [],
@@ -4464,7 +4464,7 @@
    "surface": "`error_map` and lane state carry-over",
    "binding": "the `error_map` ladder (provider code first, `context_length` suppressed on 5xx, built-ins only on 400/413, HTTP fallback incl. 529 and 408, unrecognized value warned once and ignored) drives condition→disposition; `restore_health_impl` carries lane state across a config apply (`(model, provider)` match, budget `snap.budget.min(new_cap)` only when `limited && >= 0`, `HalfOpen → Open`); the five ranking natives verbatim (`weighted` abstains; `cheapest` / `fastest` / `usage` demote a missing signal to last with `idx` tie-break, all-missing ⇒ abstain; `least_busy` never abstains); a migrated hook receives `wire::build`'s bytes with ops `decide` / `transform` / `notify`, reply precedence `reject > restrict > abstain > order`, a malformed `restrict` ⇒ empty set ⇒ `on_empty`; a tap fires only for callers inside its `groups:` scope (self + ancestors, empty = all); a rewrite with a missing container or non-string content is a silent no-op returning `false`; `pools.hooks:` combines additively with a pool's own `hooks:`, deduped by name, firing once at its section-level position",
    "inventory": "proxy-hooks :118, :189-200, :363-371, :669-716, :752-767, :797; plugins-stores :1029-1033; config",
-   "status": "unproven",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
@@ -4495,37 +4495,9 @@
      "status": "mapped"
     },
     {
-     "kind": "test",
-     "ref": "least_busy_prefers_most_headroom",
-     "proves": "least_busy native",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "least_busy_all_saturated_ranks_by_idx",
-     "proves": "least_busy never abstains",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "cheapest_all_unknown_abstains",
-     "proves": "cheapest abstains when every signal is missing",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "usage_all_unknown_abstains",
-     "proves": "usage abstains when every signal is missing",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "fastest_orders_by_latency",
-     "proves": "fastest native",
+     "kind": "oracle-cell",
+     "ref": "route.cheapest|card-swap",
+     "proves": "a ranking native on the shipped binary: cheapest serves the cheaper lane first and re-ranks after a rate-card swap, diffed against 1.5.5 (the natives' unit tests moved with the crate to GetBusbar/busbar-hook-ranking)",
      "source": "curated",
      "status": "mapped"
     },
@@ -4551,8 +4523,8 @@
      "status": "mapped"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "partly proven; a referenced check settles nothing: test:least_busy_prefers_most_headroom, test:least_busy_all_saturated_ranks_by_idx, test:cheapest_all_unknown_abstains, test:usage_all_unknown_abstains, test:fastest_orders_by_latency"
+   "verdict": "PASS",
+   "verdict_detail": "test:test_normalize_raw_error_with_provider_override, test:restored_halfopen_state_normalizes_to_open, test:restore_does_not_clobber_new_limit_with_unlimited_sentinel, test:test_hard_down_follows_identity_across_rebuild, oracle-cell:route.cheapest|card-swap, test:from_ranked_never_produces_reject, test:from_ranked_empty_is_abstain, test:dlopen_notify_is_fire_and_forget"
   },
   {
    "id": "PB-99",
