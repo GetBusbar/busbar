@@ -572,10 +572,7 @@ fn install_catalog_remove_roundtrip() {
 
     // Catalog: the memory head + our dynamic plugin.
     let cat = svc.store_plugin_catalog();
-    assert_eq!(
-        cat[0].name,
-        busbar_kernel::config::MIGRATED_STORE_MODULE
-    );
+    assert_eq!(cat[0].name, busbar_kernel::config::MIGRATED_STORE_MODULE);
     let dyn_row = cat
         .iter()
         .find(|p| p.loader == "dynamic-library")

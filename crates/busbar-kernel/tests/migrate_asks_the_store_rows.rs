@@ -10,12 +10,7 @@
 //! stands), so the rows below must be the first thing this process installs.
 
 use busbar_kernel::config::migrate::migrate_config;
-use busbar_kernel::governance::RecordStore;
 use busbar_kernel::preflight::{install_linked_rows, LinkedStore, RootInstall};
-
-fn never(_: &str) -> Result<Box<dyn RecordStore>, String> {
-    Err(String::new())
-}
 
 extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
     std::ptr::null()
@@ -23,8 +18,8 @@ extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
 
 /// Two store rows the kernel has never heard of: one volatile, one durable.
 const STORES: &[LinkedStore] = &[
-    ("acme-volatile", true, true, never, no_door),
-    ("acme-durable", false, false, never, no_door),
+    ("acme-volatile", true, no_door),
+    ("acme-durable", false, no_door),
 ];
 
 fn install() {
