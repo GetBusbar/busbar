@@ -2333,7 +2333,8 @@ fn measured_row(
             )
         }
     };
-    let ivocab = instances::vocabulary(crates, &files, &reg.core_names);
+    let registry = cx.read(instances::REGISTRY).unwrap_or_default();
+    let ivocab = instances::vocabulary(crates, &files, &reg.core_names, &registry);
     let inst = instances::measure(crates, &files, &ivocab);
     let inst_total: usize = inst.values().map(|c| c.count).sum();
 

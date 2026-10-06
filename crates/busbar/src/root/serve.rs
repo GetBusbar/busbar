@@ -27,7 +27,7 @@ use busbar_contract::caps::{OpClassId, ReasonCode};
 use busbar_contract::plane::{declares_record_kind, PlaneDeclaration};
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::{
-    Caller, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    Caller, DiskDest, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
 };
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
@@ -360,6 +360,13 @@ impl HostServices for LateServices {
         }
     }
 
+    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.disk_append(dest, bytes, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
     fn snapshot_read(&self, caller: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
         match self.served() {
             Ok(s) => s.snapshot_read(caller, scope),
@@ -519,6 +526,32 @@ pub fn compose_planes(
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
 ) -> Result<Served, String> {
+    compose_planes_over(
+        &crate::LINKED,
+        doors,
+        dispatcher,
+        late,
+        sections,
+        money,
+        egress,
+    )
+}
+
+/// [`compose_planes`] over `linked`, the linked table each door plane's declared facts are read
+/// from beside the dropped-in manifests (its breaker fact, [`crate::root::linked::door_breaker`]).
+///
+/// # Errors
+///
+/// As [`compose_planes`]; and a door plane whose declared facts do not read.
+pub(crate) fn compose_planes_over(
+    linked: &crate::root::linked::Linked,
+    doors: &[(String, DoorPlane)],
+    dispatcher: &Arc<Dispatcher>,
+    late: &LateServices,
+    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+    money: &dyn Fn() -> Arc<PlaneMoney>,
+    egress: Option<&DoorEgress<'_>>,
+) -> Result<Served, String> {
     let mut served = Served::default();
     if doors.is_empty() {
         return Ok(served);
@@ -607,7 +640,7 @@ pub fn compose_planes(
                 ));
             }
         }
-        let facts = door_facts(
+        let mut facts = door_facts(
             plugin.name(),
             &declared.scope_kinds,
             &served_facts.billable_classes,
@@ -623,6 +656,15 @@ pub fn compose_planes(
                 })
                 .collect(),
         );
+        // THE PLANE'S BREAKER FACT, as it declares it (ARCHITECT Q4): read off its `declares`
+        // section, whichever plane it is; absent, its members' cells keep the default.
+        facts.bench_below_trip_threshold = crate::root::linked::door_breaker(
+            linked,
+            crate::root::linked::dropped(),
+            plugin.name(),
+        )
+        .map_err(|e| format!("{instance}: {e}"))?
+        .map(|b| b.bench_below_trip_threshold);
         let pools = DoorPools::of(section);
         // THE EGRESS, SEALED (THE DESIGN §6 steps 2-3): each member's route resolved and its
         // credential bound by the auth plugin serving its style, over the connector its needs were

@@ -14,6 +14,7 @@ use busbar_contract::abi::host::service::{
 };
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::Filled;
+use busbar_contract::services::DiskDest;
 
 use super::*;
 
@@ -34,6 +35,8 @@ struct Provider {
     filled: AtomicUsize,
     /// Every `records.secret` read that reached the provider, as `kind:id`.
     secrets: Mutex<Vec<String>>,
+    /// Every `disk.append` that reached the provider: the destination and the bytes.
+    appended: Mutex<Vec<(DiskDest, Vec<u8>)>>,
     /// Whether `snapshot.read` answers NOT READY (the recorder is not installed).
     snapshot_not_ready: std::sync::atomic::AtomicBool,
 }
@@ -238,6 +241,27 @@ impl HostServices for Provider {
         Ran::Now(Stored::ready(0))
     }
 
+    /// The disk-lane double: records the append and answers through `later` — READY with the
+    /// file rotated first, or, for a path ending `.fail`, FAILED at the open step.
+    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
+        self.appended.lock().unwrap().push((dest.clone(), bytes));
+        let failing = dest.path.ends_with(".fail");
+        later(
+            DiskReport {
+                step: if failing { svc::DISK_OPEN_FAILED } else { 0 },
+                rotated: true,
+                faults: 0,
+                error: if failing {
+                    "No such file or directory"
+                } else {
+                    ""
+                },
+            }
+            .stored(),
+        );
+        Ran::Later
+    }
+
     fn snapshot_read(&self, c: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
         self.saw(c, "snapshot.read", scope.to_string().as_bytes());
         if self.snapshot_not_ready.load(Ordering::Relaxed) {
@@ -433,6 +457,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.need_admit,
         HOST_SLOTS.trust_verify,
         HOST_SLOTS.records_secret,
+        HOST_SLOTS.disk_append,
         HOST_SLOTS.snapshot_read,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
@@ -1323,6 +1348,108 @@ fn unit_nest_reaches_the_kernel_with_the_unit_its_crossing_serves() {
             b"Some(11) POST /child ask".to_vec()
         )]
     );
+}
+
+/// A `disk.append` `in` naming `key`, appending `bytes`, its result into `result`.
+fn disk_in(
+    key: &'static str,
+    bytes: &'static [u8],
+    seq: u32,
+    result: &mut svc::DiskWritten,
+) -> svc::DiskAppendIn {
+    svc::DiskAppendIn {
+        head: head(op::DISK_APPEND, TICKET, seq, size_of::<svc::DiskAppendIn>()),
+        dest_key: AbiStr {
+            ptr: key.as_ptr(),
+            len: key.len(),
+        },
+        bytes: Blob {
+            ptr: bytes.as_ptr(),
+            len: bytes.len(),
+            fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+            flags: 0,
+        },
+        result: std::ptr::from_mut(result),
+    }
+}
+
+fn call_disk(ctx: HostCtx, i: &svc::DiskAppendIn) -> (RawOutcome, ServiceOut) {
+    let mut o = blank();
+    let ret = HOST_SLOTS.disk_append.unwrap()(ctx, std::ptr::from_ref(i).cast(), &mut o);
+    (ret, o)
+}
+
+fn blank_written() -> svc::DiskWritten {
+    svc::DiskWritten {
+        size: 0,
+        rotated: 0,
+        faults: 0,
+        _reserved: [0; 2],
+        written: 0,
+    }
+}
+
+/// THE DESTINATION RULE (THE DESIGN §11.12 `disk.append`): an instance appends only to the
+/// destinations its manifest declares (granted by the opener), at the path its settings bound; a key
+/// it was not granted, or one its settings leave unset, is REFUSED before the kernel sees anything.
+/// A granted, bound key reaches the kernel's disk lane with the bound path and the bytes unchanged,
+/// and the lane's report lands in the caller's result slot (READY: the whole of the bytes; FAILED:
+/// the step in `value`, nothing written). RED: before the slot, `disk.append` was no slot at all.
+#[test]
+fn disk_append_writes_only_to_a_granted_bound_destination() {
+    let d = double();
+    let mut w = blank_written();
+    // The double's instance was granted no destination.
+    let (ret, o) = call_disk(d.ctx, &disk_in("path", b"line\n", 0, &mut w));
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_DESTINATION);
+    assert!(d.route.provider.appended.lock().unwrap().is_empty());
+
+    // An instance granted `path`, its settings binding it.
+    let wake: &'static InstanceWake = Box::leak(Box::default());
+    let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
+    assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
+    assert!(wake.destinations.set(vec!["path".to_string()]).is_ok());
+    let ctx = HostCtx {
+        ptr: std::ptr::from_ref(wake).cast_mut().cast(),
+    };
+    // Granted, not yet bound (its settings set no path): refused.
+    let (ret, o) = call_disk(ctx, &disk_in("path", b"line\n", 0, &mut w));
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_DESTINATION);
+    let bound = DiskDest {
+        key: "path".into(),
+        path: "/var/log/busbar/requests.jsonl".into(),
+        rotate_at: Some(1024 * 1024),
+        keep: busbar_contract::services::DISK_KEEP,
+    };
+    wake.bound.write().unwrap().push(bound.clone());
+    // A key the instance was not granted, even with a path under it.
+    let (ret, o) = call_disk(ctx, &disk_in("other", b"line\n", 0, &mut w));
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_DESTINATION);
+    assert!(d.route.provider.appended.lock().unwrap().is_empty());
+
+    let i = disk_in("path", b"line\n", 0, &mut w);
+    let (ret, o) = call_disk(ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert!(svc::check_disk_append(&i, ret, &o).is_ok());
+    assert_eq!((w.rotated, w.faults, w.written), (svc::DISK_ROTATED, 0, 5));
+    assert_eq!(
+        d.route.provider.appended.lock().unwrap().as_slice(),
+        &[(bound, b"line\n".to_vec())]
+    );
+
+    // The lane's FAILED report: the step in `value`, nothing appended, the rotation reported.
+    wake.bound.write().unwrap()[0].path = "/nowhere/requests.fail".into();
+    let mut w = blank_written();
+    let i = disk_in("path", b"line\n", 1, &mut w);
+    let (ret, o) = call_disk(ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Failed);
+    assert_eq!(o.value, svc::DISK_OPEN_FAILED);
+    assert_eq!(error(&o), "No such file or directory");
+    assert!(svc::check_disk_append(&i, ret, &o).is_ok());
+    assert_eq!((w.rotated, w.written), (svc::DISK_ROTATED, 0));
 }
 
 /// The families the double's `snapshot.read` answers: every shape the scrape layout carries (a

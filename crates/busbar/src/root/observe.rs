@@ -28,6 +28,10 @@ impl PluginObserver for Observer {
     ) {
         KernelPluginObserver.observe(&LoaderGrants, plugin, kind, metrics, diagnostics);
     }
+
+    fn dropped(&self, observations: u64) {
+        KernelPluginObserver.dropped(observations);
+    }
 }
 
 /// The loader's grants, as the kernel's observer asks them.

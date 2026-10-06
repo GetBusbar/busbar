@@ -6,5 +6,3 @@ kind-isolation:deps	unlisted-dep-edge	legacy -> plane	2
 kind-isolation:deps	unlisted-transitional	crates/busbar-llm	1
 kind-isolation:test-deps	unlisted-dep-edge	cleanliness -> legacy	3
 kind-isolation:test-deps	unlisted-dep-edge	legacy -> cleanliness	2
-kind-isolation:test-deps	unlisted-dep-edge	legacy -> plane	1
-kind-isolation:test-deps	unlisted-transitional	crates/busbar-llm	1
