@@ -36,15 +36,21 @@
 //!     "never_echoed": ["<text no answer may carry: the token, the raw settings>", ...],
 //!     "login": {                                   // required when the tail states CAP_LOGIN
 //!       "begin": { "redirect_uri": "..", "state": "..", "code_challenge": "..", "nonce": ".." },
-//!       "authorize_prefix": "<the authorize URL starts with this>",
+//!       "authorize_prefix": "<the authorize URL starts with this>",   // a redirect login
+//!       "form": ["<name>:text|password[:required]", ...],             // a credential login
+//!       "begin_crossings": <crossings of begin_login, default 2 (the call, the release)>,
 //!       "complete": { "code": "..", "state": "..", "nonce": "..", "redirect_uri": "..",
-//!                     "code_verifier": ".." },
+//!                     "code_verifier": ".." }      // a redirect login's callback
+//!                 | { "submitted": { "<field>": "<value>", ... } },  // a credential login's form
 //!       "complete_verdict": "identity:<subject>" | "reject" | "outage" | "security",
-//!       "complete_crossings": <crossings of the submitted complete_login, default 1> } } }
+//!       "complete_rejected": <a `complete` the far end refuses: verdict reject; optional>,
+//!       "complete_crossings": <crossings of each submitted complete_login, default 1> } } }
 //! ```
 //!
 //! The cases must reach every verdict (an identity, a reject, a pass), so the two legs' equality
-//! covers all three. The verdict semantics are the kind's (`abi/auth/mod.rs`): VERDICTS ARE ALWAYS
+//! covers all three; but a door that judges no bearer credential (every case PASS, its identity
+//! is its login's) is compared over its login, which must then reach an identity and a refused
+//! credential (`complete_rejected`). The verdict semantics are the kind's (`abi/auth/mod.rs`): VERDICTS ARE ALWAYS
 //! READY, never leased; an identity names its subject in the host's buffer.
 //!
 //! Every step is one ticket-less crossing of the auth table (or one ticketed crossing, for the
@@ -56,13 +62,14 @@ use std::time::Duration;
 
 use busbar_contract::abi::auth::{
     self, slot, AuthTail, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut,
-    IdentifyOut, IdentityBuf, NamedValue, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn,
-    OutboundReadyOut, StripName, VerifyIn, BEGIN_AUTHORIZE, LOGIN_BAD_CREDENTIAL, LOGIN_IDENTITY,
+    IdentifyOut, IdentityBuf, LoginField, NamedValue, OpenOutboundIn, OpenOutboundOut,
+    OutboundReadyIn, OutboundReadyOut, StripName, VerifyIn, BEGIN_AUTHORIZE, BEGIN_FORM,
+    FORM_PASSWORD, FORM_TEXT, LOGIN_BAD_CREDENTIAL, LOGIN_IDENTITY, LOGIN_KIND_CREDENTIAL,
     LOGIN_OUTAGE, LOGIN_SECURITY_CHECK_FAILED, SPAN_ABSENT, VERDICT_IDENTITY, VERDICT_PASS,
     VERDICT_REJECT,
 };
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, DeadlineClass, Outcome, Span, BLOB_OCTETS, BLOB_SECRET,
+    AbiStr, Blob, DeadlineClass, Outcome, Span, BLOB_ABSENT, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement, MARK_WORD_CARRIER};
 
@@ -324,8 +331,49 @@ fn word(v: &serde_json::Value, key: &str) -> Vec<u8> {
     v[key].as_str().unwrap_or_default().as_bytes().to_vec()
 }
 
-/// `begin_login` over `begin`'s inputs, then the release of the lease its URL is held under: the
-/// answer, the shape, and the URL as the plugin answered it.
+/// Plugin text named by a READY answer, copied (`""` when absent).
+///
+/// # Safety
+/// `s` names plugin memory valid until the answer's lease is released (the caller copies first).
+unsafe fn copied(s: AbiStr) -> String {
+    if s.ptr.is_null() {
+        return String::new();
+    }
+    // SAFETY: the caller's contract.
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).into_owned()
+}
+
+/// A credential form as the transcript spells it: `name:kind[:required]` a field, in order.
+fn spelled_form(out: &BeginLoginOut) -> String {
+    if out.form.is_null() || out.form_len == 0 {
+        return "[]".to_string();
+    }
+    // SAFETY: a READY `begin_login` names `form_len` fields of plugin memory held under the
+    // answer's lease (or `'static`), valid until that lease is released (after this copy).
+    let fields = unsafe { std::slice::from_raw_parts(out.form, out.form_len) };
+    let fields: Vec<String> = fields
+        .iter()
+        .map(|f: &LoginField| {
+            let kind = match f.kind {
+                FORM_TEXT => "text".to_string(),
+                FORM_PASSWORD => "password".to_string(),
+                other => other.to_string(),
+            };
+            // SAFETY: as above.
+            let name = unsafe { copied(f.name) };
+            if f.required == 1 {
+                format!("{name}:{kind}:required")
+            } else {
+                format!("{name}:{kind}")
+            }
+        })
+        .collect();
+    format!("[{}]", fields.join(","))
+}
+
+/// `begin_login` over `begin`'s inputs, then the release of the lease its answer is held under
+/// (none for a `'static` answer): the answer, the shape, and the URL or the credential form as the
+/// plugin answered it.
 fn begin_login(p: &Plugin<Auth>, begin: &serde_json::Value) -> String {
     let (redirect, state, challenge, nonce) = (
         word(begin, "redirect_uri"),
@@ -339,29 +387,41 @@ fn begin_login(p: &Plugin<Auth>, begin: &serde_json::Value) -> String {
     f.input.code_challenge = AbiStr::over(&challenge);
     f.input.nonce = AbiStr::over(&nonce);
     let c = p.call(slot::BEGIN_LOGIN, &mut f);
-    let url = f.out.authorize_url;
-    let url = if url.ptr.is_null() {
-        String::new()
+    let shape = if f.out.shape == BEGIN_FORM {
+        format!("form={}", spelled_form(&f.out))
     } else {
         // SAFETY: a READY `begin_login` names its URL in plugin memory held under the answer's
         // lease, valid until that lease is released (below, after this copy).
-        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(url.ptr, url.len) })
-            .into_owned()
+        let url = unsafe { copied(f.out.authorize_url) };
+        format!("authorize={} url={url}", f.out.shape == BEGIN_AUTHORIZE)
     };
     let released = if c.lease == 0 {
         "none".to_string()
     } else {
         called(&release(p, c.lease))
     };
-    format!(
-        "{} authorize={} url={url} released={released}",
-        called(&c),
-        f.out.shape == BEGIN_AUTHORIZE
-    )
+    format!("{} {shape} released={released}", called(&c))
+}
+
+/// A secret blob over `bytes`, or the absent blob when the login input names none.
+fn secret_or_absent(v: &serde_json::Value, key: &str, bytes: &[u8]) -> Blob {
+    if v.get(key).is_some() {
+        secret(bytes)
+    } else {
+        Blob {
+            ptr: std::ptr::null(),
+            len: 0,
+            fmt: BLOB_ABSENT,
+            flags: 0,
+        }
+    }
 }
 
 /// `complete_login` over `complete`'s inputs, SUBMITTED on a ticket and awaited (the plugin makes
-/// its own token exchange over its need): the answer and the verdict it names.
+/// its own token exchange, or its directory bind, over its need): the answer and the verdict it
+/// names. The redirect flow's callback (`code`, `state`, `nonce`, `redirect_uri`,
+/// `code_verifier`), or the credential flow's `submitted` form fields (`{ "<name>": "<value>" }`),
+/// each value a secret blob as the host lends every submitted field.
 fn complete_submitted(p: &Plugin<Auth>, d: &Dispatcher, complete: &serde_json::Value) -> String {
     let (code, state, nonce, redirect, verifier) = (
         word(complete, "code"),
@@ -372,12 +432,36 @@ fn complete_submitted(p: &Plugin<Auth>, d: &Dispatcher, complete: &serde_json::V
     );
     let mut bytes = vec![0_u8; auth::IDENTITY_BUF_BYTES];
     let mut groups = vec![Span { offset: 0, len: 0 }; auth::IDENTITY_GROUPS as usize];
+    let submitted: Vec<(String, Vec<u8>)> = complete["submitted"]
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        v.as_str().unwrap_or_default().as_bytes().to_vec(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let named: Vec<NamedValue> = submitted
+        .iter()
+        .map(|(name, value)| NamedValue {
+            name: AbiStr::over(name.as_bytes()),
+            value: secret(value),
+        })
+        .collect();
     let mut f: Frame<CompleteLoginIn, IdentifyOut> = Frame::new(input(), output());
-    f.input.code = secret(&code);
+    f.input.code = secret_or_absent(complete, "code", &code);
     f.input.state = AbiStr::over(&state);
     f.input.nonce = AbiStr::over(&nonce);
     f.input.redirect_uri = AbiStr::over(&redirect);
-    f.input.code_verifier = secret(&verifier);
+    f.input.code_verifier = secret_or_absent(complete, "code_verifier", &verifier);
+    if !named.is_empty() {
+        f.input.submitted = named.as_ptr();
+        f.input.submitted_len = named.len();
+    }
     f.input.out_buf = IdentityBuf {
         buf: bytes.as_mut_ptr(),
         buf_cap: bytes.len(),
@@ -478,7 +562,20 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         Vec::new()
     };
     let expected: Vec<String> = specs.iter().map(expected_verdict).collect();
-    if inbound {
+    let lg = &k["login"];
+    // A door that judges no bearer credential (every case PASS: its identity is its login's) is
+    // compared over its login instead: the login must reach an identity AND a refused credential.
+    let pass_only = !expected.is_empty() && expected.iter().all(|v| v.ends_with("Pass"));
+    if inbound && pass_only {
+        assert!(
+            login
+                && expected_login(&lg["complete_verdict"]).contains("Identity(")
+                && lg["complete_rejected"].is_object(),
+            "conformance.json: auth.cases reach only PASS, so the door's login is what the two \
+             legs compare: the tail must state CAP_LOGIN, auth.login.complete_verdict an identity, \
+             and auth.login.complete_rejected a credential the far end refuses"
+        );
+    } else if inbound {
         for want in ["Identity(", "Reject", "Pass"] {
             assert!(
                 expected.iter().any(|v| v.contains(want)),
@@ -500,7 +597,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         }
     }
     let identity_at = expected.iter().position(|v| v.contains("Identity("));
-    let lg = &k["login"];
     if login {
         assert!(
             lg.is_object(),
@@ -547,23 +643,31 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
                 verify_submitted(&p, &d, c)
             });
         }
-        let at = identity_at.expect("an identity case");
-        // 2: the short answer, then the ONE re-call with the buffers it named.
-        r.line("verify short, re-called", 2, || {
-            verify_short(&p, &mut cases[at])
-        });
+        if let Some(at) = identity_at {
+            // 2: the short answer, then the ONE re-call with the buffers it named.
+            r.line("verify short, re-called", 2, || {
+                verify_short(&p, &mut cases[at])
+            });
+        }
     } else {
         r.line("verify undeclared", 1, || {
             undeclared::<VerifyIn, IdentifyOut>(&p, slot::VERIFY)
         });
     }
     if login {
-        // 2: the call, then the release of the lease its URL is held under.
-        r.line("begin_login", 2, || begin_login(&p, &lg["begin"]));
+        // 2: the call, then the release of the lease its answer is held under (a `'static`
+        // answer holds none: `begin_crossings` 1).
+        let begun = lg["begin_crossings"].as_u64().unwrap_or(2);
+        r.line("begin_login", begun, || begin_login(&p, &lg["begin"]));
         let pinned = lg["complete_crossings"].as_u64().unwrap_or(1);
         r.line("complete_login submitted", pinned, || {
             complete_submitted(&p, &d, &lg["complete"])
         });
+        if lg["complete_rejected"].is_object() {
+            r.line("complete_login rejected submitted", pinned, || {
+                complete_submitted(&p, &d, &lg["complete_rejected"])
+            });
+        }
     } else {
         r.line("begin_login undeclared", 1, || {
             undeclared::<BeginLoginIn, BeginLoginOut>(&p, slot::BEGIN_LOGIN)
@@ -616,15 +720,17 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let fold = r.fold();
     contract(&fold, &expected, identity_at, &never_echoed(k));
     if login {
-        login_contract(&fold, lg);
+        login_contract(&fold, lg, st.login_kind);
     }
     fold
 }
 
 /// THE LOGIN FAMILY'S CONTRACT: `begin_login` answers READY with an authorize URL that starts as
-/// the inputs say, leased and then released; the submitted `complete_login` answers READY with
-/// the login's verdict, unleased.
-fn login_contract(fold: &Fold, lg: &serde_json::Value) {
+/// the inputs say, leased and then released (a redirect login), or with the credential form the
+/// inputs state, field by field, its lease (if any) released (a credential login); the submitted
+/// `complete_login` answers READY with the login's verdict, unleased, and a credential the far end
+/// refuses (`complete_rejected`) answers READY with a refused credential.
+fn login_contract(fold: &Fold, lg: &serde_json::Value, login_kind: u32) {
     let at = |label: &str| {
         fold.iter()
             .find(|s| s.label == label)
@@ -632,21 +738,51 @@ fn login_contract(fold: &Fold, lg: &serde_json::Value) {
             .unwrap_or_else(|| panic!("the script ran no step '{label}'"))
     };
     let begin = at("begin_login");
-    let prefix = lg["authorize_prefix"]
-        .as_str()
-        .expect("conformance.json: auth.login.authorize_prefix");
-    assert!(
-        begin.starts_with("Ready lease=true ")
-            && begin.contains(&format!("authorize=true url={prefix}"))
-            && begin.ends_with("released=Ready lease=false "),
-        "begin_login answers its authorize URL under a lease it then releases: {begin}"
-    );
+    if login_kind == LOGIN_KIND_CREDENTIAL {
+        let form: Vec<&str> = lg["form"]
+            .as_array()
+            .expect("conformance.json: a credential login states auth.login.form")
+            .iter()
+            .map(|f| {
+                f.as_str()
+                    .expect("conformance.json: auth.login.form is `name:kind[:required]` lines")
+            })
+            .collect();
+        let released = if begin.starts_with("Ready lease=true ") {
+            "released=Ready lease=false "
+        } else {
+            "released=none"
+        };
+        assert!(
+            begin.starts_with("Ready ")
+                && begin.contains(&format!("form=[{}]", form.join(",")))
+                && begin.ends_with(released),
+            "begin_login answers its credential form (want {form:?}), any lease released: {begin}"
+        );
+    } else {
+        let prefix = lg["authorize_prefix"]
+            .as_str()
+            .expect("conformance.json: auth.login.authorize_prefix");
+        assert!(
+            begin.starts_with("Ready lease=true ")
+                && begin.contains(&format!("authorize=true url={prefix}"))
+                && begin.ends_with("released=Ready lease=false "),
+            "begin_login answers its authorize URL under a lease it then releases: {begin}"
+        );
+    }
     let complete = at("complete_login submitted");
     let want = expected_login(&lg["complete_verdict"]);
     assert!(
         complete.starts_with("Ready lease=false ") && complete.ends_with(&want),
         "complete_login: {complete} (want {want})"
     );
+    if lg["complete_rejected"].is_object() {
+        let refused = at("complete_login rejected submitted");
+        assert!(
+            refused.starts_with("Ready lease=false ") && refused.ends_with("verdict=Reject"),
+            "complete_login over a refused credential: {refused} (want verdict=Reject)"
+        );
+    }
 }
 
 /// A case's verdict as the transcript spells it.
