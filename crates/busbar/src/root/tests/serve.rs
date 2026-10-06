@@ -83,6 +83,10 @@ impl HostServices for Judges {
     ) -> Ran {
         Ran::Now(Stored::ready(20))
     }
+
+    fn disk_append(&self, _: &DiskDest, _: Vec<u8>, _: Later) -> Ran {
+        Ran::Now(Stored::ready(12))
+    }
 }
 
 fn judged(s: &LateServices) -> Stored {

@@ -64,7 +64,8 @@ use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::RecordStore;
 use busbar_contract::services::{
-    merge_list, Caller, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    merge_list, Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList,
+    Stored,
 };
 
 /// The refusal of a record write past the write queue's bound.
@@ -500,6 +501,8 @@ pub struct KernelServices {
     /// The root's nested-dispatch seam, attached once, and the permits nested units run under.
     nest: OnceLock<Arc<dyn NestRoute>>,
     nested: Arc<crate::pump::NestedPool>,
+    /// The bounded disk lane `disk.append` runs on (THE DESIGN §11.11 R4).
+    disk: crate::host_disk::DiskLane,
     /// The verify cache behind `verify.*`.
     verify: crate::host_verify::VerifyBook,
 }
@@ -550,6 +553,7 @@ impl KernelServices {
                 NEST_CONCURRENCY,
                 NEST_DEPTH_MAX as usize + 1,
             )),
+            disk: crate::host_disk::DiskLane::default(),
             verify: crate::host_verify::VerifyBook::default(),
         }
     }
@@ -1332,6 +1336,13 @@ impl HostServices for KernelServices {
 
     fn records_secret(&self, _kind: &str, _id: &str, _later: Later) -> Ran {
         Ran::Now(Stored::refused(NO_CREDENTIAL_SOURCE))
+    }
+
+    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
+        match self.disk.submit(dest.clone(), bytes, later) {
+            Ok(()) => Ran::Later,
+            Err(report) => Ran::Now(report.stored()),
+        }
     }
 
     fn random_fill(&self, len: u64) -> Stored {

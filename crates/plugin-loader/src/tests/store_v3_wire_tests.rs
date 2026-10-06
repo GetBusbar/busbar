@@ -673,6 +673,15 @@ impl busbar_contract::services::HostServices for ClockOnly {
     ) -> busbar_contract::services::Ran {
         busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
     }
+
+    fn disk_append(
+        &self,
+        _: &busbar_contract::services::DiskDest,
+        _: Vec<u8>,
+        _: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
+    }
 }
 
 /// A store whose connect is bounded by 200 ms over the dial and the handshake.

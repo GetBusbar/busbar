@@ -145,6 +145,12 @@ pub trait HostServices: Send + Sync {
     /// handle recorded. READY `0`, span `0`'s key the state byte and its value the record.
     fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran;
 
+    /// `disk.append` (THE DESIGN, the host's bounded disk lane): append `bytes` to the
+    /// file `dest` names, rotating it first when `dest` says it is due, OFF the caller's thread,
+    /// and hand the [`DiskReport`] (as [`DiskReport::stored`]) to `later`. The loader has already
+    /// mapped the caller's destination key to `dest`. A host with no disk lane refuses.
+    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran;
+
     // THE APPEND ORDER IS THE LANDING ORDER (ARCHITECT H9): a later lander carries every service
     // above and appends its own below.
 
@@ -194,6 +200,72 @@ pub struct NestAsk {
     pub target: String,
     /// The body.
     pub body: Vec<u8>,
+}
+
+/// A DESTINATION the host bound for an opened instance (THE DESIGN, host service `disk.append`): the
+/// file the operator's configuration gives a key the plugin's manifest declares, and the rotation
+/// the host applies to it. The plugin names the key; nothing here comes from the plugin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiskDest {
+    /// The declared settings key.
+    pub key: String,
+    /// The path the operator configured under it.
+    pub path: String,
+    /// Rotate before an append that finds the file at least this many bytes long; `None` = never.
+    pub rotate_at: Option<u64>,
+    /// How many archives a rotation keeps (`<path>.1` .. `<path>.{keep}`).
+    pub keep: u32,
+}
+
+/// How many archives the host keeps for a destination it rotates (`<path>.1` .. `<path>.9`): the
+/// retention the disk lane applies, never a plugin's parameter.
+pub const DISK_KEEP: u32 = 9;
+
+/// The settings key beside a destination that states its rotation threshold, in MiB: the host's
+/// own rotation grammar (the key `plugins.logs` rotates its files by, and the frozen 1.5.x
+/// request-log file sink's). Unset: the destination is never rotated.
+pub const DISK_ROTATE_KEY: &str = "rotate_mb";
+
+/// What one `disk.append` did, as the disk lane reports it and the mechanism stores it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiskReport {
+    /// `0` = the bytes landed; else the failed step (`DISK_OPEN_FAILED` / `DISK_APPEND_FAILED`).
+    pub step: u64,
+    /// Whether the file was rotated (renamed to its first archive) before the append.
+    pub rotated: bool,
+    /// The rotation steps that failed (`DISK_RETENTION_FAILED` | ...).
+    pub faults: u8,
+    /// For a failed step: why, in the operating system's words.
+    pub error: &'static str,
+}
+
+impl DiskReport {
+    /// The report as the mechanism stores it under the call's handle: READY or FAILED, the step in
+    /// `value`'s low byte, `rotated` and `faults` above it.
+    #[must_use]
+    pub fn stored(self) -> Stored {
+        let value = self.step | (u64::from(self.rotated) << 8) | (u64::from(self.faults) << 16);
+        Stored {
+            outcome: if self.step == 0 {
+                Outcome::Ready
+            } else {
+                Outcome::Failed
+            },
+            error: self.error,
+            ..Stored::ready(value)
+        }
+    }
+
+    /// The report a stored READY or FAILED `disk.append` holds ([`Self::stored`]'s inverse).
+    #[must_use]
+    pub fn of(stored: &Stored) -> Self {
+        Self {
+            step: stored.value & 0xff,
+            rotated: (stored.value >> 8) & 1 == 1,
+            faults: ((stored.value >> 16) & 0xff) as u8,
+            error: stored.error,
+        }
+    }
 }
 
 /// THE HOST-HELD CREDENTIAL READ `records.secret` serves: the secret of credential `id` of `kind`
