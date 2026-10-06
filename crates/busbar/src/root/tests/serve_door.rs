@@ -36,7 +36,9 @@ use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
 use busbar_plane_decisions::plane_door::door as decisions_door;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::planes_tests::{composed_services, money, Published, PUBLISHING};
+#[cfg(feature = "plane-decisions")]
+use super::planes_tests::money;
+use super::planes_tests::{composed_services, Published, PUBLISHING};
 use super::{compose_planes, door_routes, DoorEgress};
 use crate::root::door_steps::{provider_routes, DoorReach, OutboundAuths};
 use crate::root::loader::dispatch::kinds::plane::Plane;
