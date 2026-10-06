@@ -58,8 +58,8 @@ pub use oidf::{
     SUITES as OIDF_SUITES,
 };
 pub use rigs::{
-    decide_legs, decide_llm, decide_voice, decide_ws, rig_for, Inputs, LlmRun, VoiceRun, WsRun,
-    LLM_DIALECTS,
+    decide_legs, decide_llm, decide_voice, decide_ws, mcp_node_platform, rig_for, Inputs, LlmRun,
+    VoiceRun, WsRun, LLM_DIALECTS, MCP_NODE_VERSION,
 };
 pub use slsa::{decide_slsa, provenance_commit, SlsaRun};
 pub use subject::{b64url, base_config};

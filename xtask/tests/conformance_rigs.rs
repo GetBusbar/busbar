@@ -813,3 +813,34 @@ fn the_oidc_plugin_is_built_over_its_own_repo_workspace() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// The mcp rig runs on a PINNED node, never the runner's: the control peer's bundler ships its native
+/// binding as an optional dependency gated on node `^20.19.0 || >=22.12.0`, which pnpm skips silently
+/// outside that range, and the official suite needs node 22. Every runner platform has a digest, and
+/// the pin is inside both ranges.
+#[test]
+fn the_mcp_rig_pins_a_node_its_toolchain_accepts_on_every_runner_platform() {
+    use xtask::conformance_record::{mcp_node_platform, MCP_NODE_VERSION};
+    for (os, arch) in [
+        ("linux", "x86_64"),
+        ("linux", "aarch64"),
+        ("macos", "x86_64"),
+        ("macos", "aarch64"),
+    ] {
+        let (_, digest) = mcp_node_platform(os, arch).expect("a pinned tarball for this runner");
+        assert!(
+            digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()),
+            "{os}/{arch}: {digest}"
+        );
+    }
+    assert!(mcp_node_platform("windows", "x86_64").is_none());
+    let v: Vec<u32> = MCP_NODE_VERSION
+        .trim_start_matches('v')
+        .split('.')
+        .map(|n| n.parse().unwrap())
+        .collect();
+    assert!(
+        v[0] == 22 && v[1] >= 12,
+        "{MCP_NODE_VERSION} is outside >=22.12 <23"
+    );
+}
