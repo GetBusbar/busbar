@@ -828,8 +828,10 @@ pub fn compose_planes(
         dispatcher,
         late,
         sections,
+        public_url,
         money,
         egress,
+        hooks,
     )
 }
 
@@ -839,14 +841,17 @@ pub fn compose_planes(
 /// # Errors
 ///
 /// As [`compose_planes`]; and a door plane whose declared facts do not read.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compose_planes_over(
     linked: &crate::root::linked::Linked,
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
     late: &LateServices,
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
+    public_url: Option<&str>,
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
+    hooks: Option<&HookStage>,
 ) -> Result<Served, String> {
     let mut served = Served::default();
     if doors.is_empty() {
