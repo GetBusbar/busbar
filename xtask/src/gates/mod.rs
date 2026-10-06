@@ -690,6 +690,15 @@ const MEASURED_KIND_ISOLATION: f64 = 319_876.0; // 240 cases; #454 extractions g
 const MEASURED_KIND_ISOLATION_SHIP: f64 = 199_904.0; // 137 cases; same cause
 /// The two kind-isolation batteries were re-measured on #454's tree, not the 2026-09-10 sitting.
 const TAKEN_KIND_ISOLATION: &str = "2026-10-03 9c479c0fe9";
+// `ship-ready`'s one dear case is `run()` end to end: one whole `construction` run and one whole
+// `kind-isolation-ship` run over the tree, on one thread (so `--jobs` does not move it). It is not a
+// per-plant scan and has no plant to grow by; it grows with the tree. Measured on predev's merge
+// group (run 37535652346, base and candidate: 8 415 and 8 493 units, 94 per cent of the default)
+// and on the transport-carrier tree (run 37536563849: 9 294 units, 116.8 s), where stage A and B's
+// sources (+20k lines) and the two gates' own runs measured +3.6 per cent (`construction`, 44.1 s ->
+// 45.2-46.9 s) and +2 per cent (`kind-isolation-ship`, 70.7 s -> 71.8-72.6 s) on one Latchkey box.
+const MEASURED_SHIP_READY: f64 = 9_294.0; // 17 cases, 116.8 s, its one end-to-end case 116.8 s
+const TAKEN_SHIP_READY: &str = "2026-10-06 5172cd4393";
 
 // `audit-ledger` IS STRUCK AGAIN, AND THE EXPLANATION IT WAS RE-BASELINED ON WAS WRONG.
 //
@@ -835,6 +844,13 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         allowed: MEASURED_KIND_ISOLATION_SHIP * BUDGET_SLACK,
         taken: TAKEN_KIND_ISOLATION,
         why: "The ship twin of the battery above: the same shape held to a ceiling of zero, plus the derivations with a degenerate answer and the floors whose subject is the size of their own input. RE-MEASURED on #454's tree for the same cause as its non-ship twin.",
+    },
+    Budget {
+        gate: "ship-ready",
+        measured: MEASURED_SHIP_READY,
+        allowed: MEASURED_SHIP_READY * BUDGET_SLACK,
+        taken: TAKEN_SHIP_READY,
+        why: "Its cases are pure functions of computed rows but one: `run()` reaches the end and emits every owed row, which is one whole `construction` run and one whole `kind-isolation-ship` run over the tree. That case is the cost, it runs on one thread, and it grows with the tree rather than with any plant. A rule that grew a whole-tree scan per plant in either gate shows in that gate's own budget first.",
     },
     // `audit-ledger` HAS NO ENTRY HERE. It had one, set from 8 779 units and justified by a
     // register-growth story that measurement refuted; the cost was 128 `rev-list` processes per
