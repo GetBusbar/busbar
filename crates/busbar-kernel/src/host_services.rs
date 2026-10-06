@@ -58,7 +58,7 @@ use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::RecordStore;
 use busbar_contract::services::{
-    merge_list, Caller, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    merge_list, Caller, DiskDest, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
 };
 
 /// The refusal of a record write past the write queue's bound.
@@ -550,6 +550,8 @@ pub struct KernelServices {
     /// over its live snapshot; unattached, the principal admitted is the one judged.
     standing: OnceLock<Standing>,
     nested: Arc<crate::pump::NestedPool>,
+    /// The bounded disk lane `disk.append` runs on (THE DESIGN §11.11 R4).
+    disk: crate::host_disk::DiskLane,
 }
 
 /// The durable demotion record, and the instance its unprefixed rows belong to.
@@ -600,6 +602,7 @@ impl KernelServices {
                 NEST_CONCURRENCY,
                 NEST_DEPTH_MAX as usize + 1,
             )),
+            disk: crate::host_disk::DiskLane::default(),
         }
     }
 
@@ -1448,6 +1451,13 @@ impl HostServices for KernelServices {
 
     fn records_secret(&self, _kind: &str, _id: &str, _later: Later) -> Ran {
         Ran::Now(Stored::refused(NO_CREDENTIAL_SOURCE))
+    }
+
+    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
+        match self.disk.submit(dest.clone(), bytes, later) {
+            Ok(()) => Ran::Later,
+            Err(report) => Ran::Now(report.stored()),
+        }
     }
 
     fn random_fill(&self, len: u64) -> Stored {

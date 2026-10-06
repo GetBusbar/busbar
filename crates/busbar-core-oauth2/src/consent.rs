@@ -83,7 +83,7 @@ pub(crate) struct Sessions {
 struct Inner {
     /// session id -> (subject, when it expires)
     live: HashMap<String, (String, Instant)>,
-    /// session id -> the decisions staked for it: each key (`client_id\u{1f}scope`, or
+    /// session id -> the answers staked for it: each key (`client_id\u{1f}scope`, or
     /// [`pushed_key`] for a pushed request) with `true` for an approval and `false` for a refusal.
     staked: HashMap<String, Vec<(String, bool)>>,
 }
@@ -130,7 +130,7 @@ impl Sessions {
             .map(|(s, _)| s.clone())
     }
 
-    /// Stake ONE decision for `key` against this session: `approve` true for an approval, false
+    /// Stake ONE answer for `key` against this session: `approve` true for an approval, false
     /// for the operator's refusal (RFC 6749 s4.1.2.1 `access_denied`).
     pub(crate) fn stake(&self, id: &str, key: String, approve: bool) {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
@@ -143,7 +143,7 @@ impl Sessions {
         }
     }
 
-    /// Whether a decision is staked for `key`, WITHOUT spending it. The pushed-request gate in
+    /// Whether an answer is staked for `key`, WITHOUT spending it. The pushed-request gate in
     /// `routes` asks this before it lets `/authorize` reach `oauth-as`, which spends the
     /// `request_uri` on arrival.
     pub(crate) fn is_staked(&self, id: &str, key: &str) -> bool {
@@ -154,7 +154,7 @@ impl Sessions {
             .is_some_and(|pending| pending.iter().any(|(k, _)| k == key))
     }
 
-    /// SPEND a decision: `Some(approve)` at most once per [`Sessions::stake`], which is the whole
+    /// SPEND an answer: `Some(approve)` at most once per [`Sessions::stake`], which is the whole
     /// reason this is not a `contains`.
     fn spend(&self, id: &str, key: &str) -> Option<bool> {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
@@ -181,7 +181,7 @@ fn approval_key(client_id: &str, scope: &oauth_as::scope::ScopeSet) -> String {
     )
 }
 
-/// What a decision on a PUSHED request (RFC 9126) is for: one client, one `request_uri`. The handle
+/// What an answer on a PUSHED request (RFC 9126) is for: one client, one `request_uri`. The handle
 /// is single use and bound to the client that pushed it, so it names exactly one request, scope
 /// included; the scope is not in the authorization URL to key on. The `\u{1e}` keeps this key
 /// space apart from [`approval_key`]'s, whose scope tokens can never carry a control character.
@@ -189,9 +189,9 @@ pub(crate) fn pushed_key(client_id: &str, request_uri: &str) -> String {
     format!("{client_id}\u{1f}\u{1e}{request_uri}")
 }
 
-/// The key a decision on this authorization request is staked under: [`pushed_key`] when the
+/// The key an answer on this authorization request is staked under: [`pushed_key`] when the
 /// request names a `request_uri`, [`approval_key`] otherwise.
-fn decision_key(request: &ApprovalRequest<'_>) -> String {
+fn staked_key(request: &ApprovalRequest<'_>) -> String {
     let request_uri = request.uri.query().and_then(|q| {
         super::routes::form_urlencoded_pairs(q)
             .into_iter()
@@ -239,7 +239,7 @@ pub(crate) fn subject_resolver(
 /// an anonymous visitor is a phishing page this deployment hosts.
 ///
 /// NOTHING IS EVER REMEMBERED HERE. The outcomes are `Approve` or `Deny` — for a staked, and now
-/// spent, decision — and the redirect that sends the operator to the screen; `ApproveAndRemember` is never
+/// spent, answer — and the redirect that sends the operator to the screen; `ApproveAndRemember` is never
 /// returned, so no `oauth_as::consent::ConsentRecord` is ever written and `request.remembered` is
 /// always `None`. That is what makes the one-shot spend above the ONLY thing standing between an
 /// authorization request and a code, which is the property this plane wants: every request is
@@ -256,7 +256,7 @@ pub(crate) fn approval_resolver(
         if request.subject == PENDING || sessions.subject(&id).is_none() {
             return redirect(&login_url, request);
         }
-        match sessions.spend(&id, &decision_key(request)) {
+        match sessions.spend(&id, &staked_key(request)) {
             Some(true) => return ApprovalDecision::Approve,
             // The operator refused on the screen: RFC 6749 s4.1.2.1 `access_denied`, at the
             // client's validated redirect URI.
@@ -292,7 +292,7 @@ pub(crate) fn login_redirect(login_url: &str, target: &str) -> oauth_as::http::R
     let response = http::Response::builder()
         .status(http::StatusCode::FOUND)
         .header(http::header::LOCATION, target)
-        // A consent redirect is a per-request decision and must never be cached: a cached 302 would
+        // A consent redirect is a per-request answer and must never be cached: a cached 302 would
         // send a later, different authorization request to a screen describing an earlier one.
         .header(http::header::CACHE_CONTROL, "no-store")
         .body(oauth_as::http::Body::empty());

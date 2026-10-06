@@ -65,6 +65,10 @@ impl HostServices for Judges {
     fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
         Ran::Now(Stored::ready(16))
     }
+
+    fn disk_append(&self, _: &DiskDest, _: Vec<u8>, _: Later) -> Ran {
+        Ran::Now(Stored::ready(12))
+    }
 }
 
 fn judged(s: &LateServices) -> Stored {
