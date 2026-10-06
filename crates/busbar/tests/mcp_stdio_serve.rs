@@ -222,9 +222,14 @@ fn install_auth_plugin(dir: &Path) -> bool {
     };
     let mut m = common::plugins::manifest("auth", "e2e-idp-module", "e2e");
     m.alias = "e2e-idp".into();
+    // One staging file PER CALL: the scenarios run as threads of one process, and rewriting a
+    // library another thread still has mapped (dlopened for its Statement) truncates it under
+    // that mapping — SIGBUS on Linux.
+    static STAGED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let path = std::env::temp_dir().join(format!(
-        "busbar-stdio-idp-{}{}",
+        "busbar-stdio-idp-{}-{}{}",
         std::process::id(),
+        STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         std::env::consts::DLL_SUFFIX
     ));
     std::fs::write(&path, &lib).expect("stage the library");
