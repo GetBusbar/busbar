@@ -544,23 +544,29 @@ impl TestDoor {
         let (op, c) = match call {
             Carry::Listen(i, o) => {
                 let bind = text_of(i.bind);
-                ("listen", io_crossed(io.listen(OWNER, t, &bind), |(h, addr)| {
-                    let mut bytes: VecDeque<u8> = addr.into_bytes().into();
-                    let n = bytes.len().min(i.addr_cap);
-                    put(i.addr_buf, &mut bytes, n);
-                    o.addr_written = n as u64;
-                    o.listener = h;
-                }))
+                (
+                    "listen",
+                    io_crossed(io.listen(OWNER, t, &bind), |(h, addr)| {
+                        let mut bytes: VecDeque<u8> = addr.into_bytes().into();
+                        let n = bytes.len().min(i.addr_cap);
+                        put(i.addr_buf, &mut bytes, n);
+                        o.addr_written = n as u64;
+                        o.listener = h;
+                    }),
+                )
             }
             Carry::Accept(i, o) => (
                 "accept",
-                polled(io.accept(OWNER, t, i.listener, &self.waker_of(side)), |(h, peer)| {
-                    let mut bytes: VecDeque<u8> = peer.into_bytes().into();
-                    let n = bytes.len().min(i.peer_cap);
-                    put(i.peer_buf, &mut bytes, n);
-                    o.peer_written = n as u64;
-                    o.conn = h;
-                }),
+                polled(
+                    io.accept(OWNER, t, i.listener, &self.waker_of(side)),
+                    |(h, peer)| {
+                        let mut bytes: VecDeque<u8> = peer.into_bytes().into();
+                        let n = bytes.len().min(i.peer_cap);
+                        put(i.peer_buf, &mut bytes, n);
+                        o.peer_written = n as u64;
+                        o.conn = h;
+                    },
+                ),
             ),
             Carry::Dial(i, o) => {
                 // SAFETY: the connector's destination, live for the call.
@@ -617,19 +623,25 @@ impl TestDoor {
             ),
             Carry::Flush(i, _) => (
                 "flush",
-                polled(io.ready(OWNER, i.conn, DIR_WRITE, &self.waker_of(side)), |()| {}),
+                polled(
+                    io.ready(OWNER, i.conn, DIR_WRITE, &self.waker_of(side)),
+                    |()| {},
+                ),
             ),
             Carry::Shut(i, _) => {
                 let _ = io.close(OWNER, i.conn);
                 ("shut", io_crossed(Ok(()), |()| {}))
             }
-            Carry::Arrival(i, o) => ("arrival", io_crossed(io.ends(OWNER, i.conn), |(port, peer)| {
-                let mut bytes: VecDeque<u8> = peer.into_bytes().into();
-                let n = bytes.len().min(i.peer_cap);
-                put(i.peer_buf, &mut bytes, n);
-                o.peer_written = n as u64;
-                o.local_port = u32::from(port);
-            })),
+            Carry::Arrival(i, o) => (
+                "arrival",
+                io_crossed(io.ends(OWNER, i.conn), |(port, peer)| {
+                    let mut bytes: VecDeque<u8> = peer.into_bytes().into();
+                    let n = bytes.len().min(i.peer_cap);
+                    put(i.peer_buf, &mut bytes, n);
+                    o.peer_written = n as u64;
+                    o.local_port = u32::from(port);
+                }),
+            ),
             Carry::Cancel(_, _) => ("cancel", io_crossed(Ok(()), |()| {})),
         };
         self.carried.lock().unwrap().push(op);

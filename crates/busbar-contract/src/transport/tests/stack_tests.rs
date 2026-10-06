@@ -228,7 +228,10 @@ fn a_carrier_is_driven_through_its_trait_object() {
     );
     let waker = std::task::Waker::noop();
     let mut cx = Context::from_waker(waker);
-    assert_eq!(carrier.poll_write(7, &mut cx, b"abc", true), Poll::Ready(Ok(3)));
+    assert_eq!(
+        carrier.poll_write(7, &mut cx, b"abc", true),
+        Poll::Ready(Ok(3))
+    );
     assert!(carrier.poll_accept(1, &mut cx).is_pending());
     assert_eq!(carrier.arrival(7).unwrap().peer, "far");
     assert_eq!(carrier.arrival(8), None);

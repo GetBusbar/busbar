@@ -343,7 +343,7 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
             // reads every scheme it claims off its Statement.
             door_builds.push_str(&format!(
                 "fn __door_build_{n}(lower: Option<Wire>, settings: &::busbar_contract::transport::TransportSettings) -> Wire {{\n    \
-                 self::__busbar_doors::build(::{entry}::KEY, ::{entry}::door, lower, settings)\n}}\n\
+                 self::__busbar_doors::build(::{entry}::KEY, ::{entry}::door, lower, settings, None)\n}}\n\
                  fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
                  self::__busbar_doors::claims_of(::{entry}::door)\n}}\n"
             ));

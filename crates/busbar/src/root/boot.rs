@@ -664,7 +664,11 @@ pub fn dropped_transports(
                         let key = facts.claims.first().copied().unwrap_or_default();
                         let claims = facts.claims;
                         let composes_over = facts.composes_over;
-                        let (door, wire) = crate::root::doors::served(plugin, settings)?;
+                        let (door, wire) = crate::root::doors::served(
+                            plugin,
+                            settings,
+                            Some(crate::root::connector::address_carrier()),
+                        )?;
                         Ok(crate::root::registry::DroppedDoor {
                             key,
                             claims,

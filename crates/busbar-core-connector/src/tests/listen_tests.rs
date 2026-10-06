@@ -49,7 +49,15 @@ async fn echo(mut conn: Connection) {
 }
 
 fn plain(door: Arc<TestDoor>, limits: AcceptLimits) -> Listening {
-    Listening::bind(Some(door), &crate::support::via(), "127.0.0.1:0", None, Vec::new(), limits).expect("binds")
+    Listening::bind(
+        Some(door),
+        &crate::support::via(),
+        "127.0.0.1:0",
+        None,
+        Vec::new(),
+        limits,
+    )
+    .expect("binds")
 }
 
 /// A client's bytes reach the framer begun on `SIDE_ACCEPT`, and the answer the host emits on the

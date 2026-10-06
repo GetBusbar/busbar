@@ -49,8 +49,8 @@ use busbar_contract::abi::transport::{
 
 use super::host_io::{Admit, SuiteIo};
 use super::{
-    bind, close, crossings, dispatcher, input, load, open, output, ready_step, validate, Fold,
-    Leg, Recorder, Subject,
+    bind, close, crossings, dispatcher, input, load, open, output, ready_step, validate, Fold, Leg,
+    Recorder, Subject,
 };
 use crate::dispatch::kinds::transport::{Transport, TransportFacts};
 use crate::dispatch::{Called, Frame, InFrame, InlineTicket, OutFrame, Plugin};
@@ -323,7 +323,10 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let settings = s.settings();
     let d = dispatcher();
     let host = Arc::new(SuiteIo::default());
-    assert!(d.install_io(Arc::clone(&host) as _), "the suite's host I/O installs");
+    assert!(
+        d.install_io(Arc::clone(&host) as _),
+        "the suite's host I/O installs"
+    );
     let p = load::<Transport>(s, leg, bind(&d, "transport")).expect("the transport door loads");
     let facts = p
         .context::<TransportFacts>()
@@ -421,7 +424,8 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             "arrival".into(),
             Want::Is("Ready peer=127.0.0.1:* local_port_is_bound=true".into()),
         ));
-        far.write_all(b"from the far end").expect("the far end writes");
+        far.write_all(b"from the far end")
+            .expect("the far end writes");
         // Loopback: the bytes are at the accepted socket well inside this.
         std::thread::sleep(Duration::from_millis(100));
         r.line("accepted read", 1, || read(&p, &rd, accepted, false));
@@ -429,7 +433,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             "accepted read".into(),
             Want::Is("Ready bytes=\"from the far end\" end_of_frame=true".into()),
         ));
-        r.line("accepted write", 1, || write(&p, &wr, accepted, b"to the far end"));
+        r.line("accepted write", 1, || {
+            write(&p, &wr, accepted, b"to the far end")
+        });
         want.push(("accepted write".into(), Want::Is("Ready len=14".into())));
         let mut got = [0_u8; 14];
         let ok = far.read_exact(&mut got).is_ok() && &got == b"to the far end";
@@ -450,7 +456,10 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         serde_json::Value::String(a) if a == "authority" => {
             let at = echo();
             host.admit(wr.ticket.ticket(), Admit::Addr(at.clone()));
-            (Dest::authority(&at), Dest::program(&serde_json::json!({ "program": "/bin/cat" })))
+            (
+                Dest::authority(&at),
+                Dest::program(&serde_json::json!({ "program": "/bin/cat" })),
+            )
         }
         v => {
             let d = Dest::program(v);
@@ -503,7 +512,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         "write while a read pends".into(),
         Want::Is(format!("Ready len={}", frame.len())),
     ));
-    r.line("the host woke the read", 0, || format!("{}", woken(&host, &rd)));
+    r.line("the host woke the read", 0, || {
+        format!("{}", woken(&host, &rd))
+    });
     want.push(("the host woke the read".into(), Want::Is("true".into())));
     r.line("read resumed", 1, || read(&p, &rd, conn, true));
     want.push((

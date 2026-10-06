@@ -378,7 +378,11 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
         if let Some(neutral) = common::plugins::neutral_frame_door_bytes() {
             drop_in_as(&dir, &neutral, "a-neutral-framer");
             let (served, _, through) = serve_once(&dir, data_port, WORKERS);
-            assert_eq!(served, pinned(), "a framer beside the carrier moves no byte");
+            assert_eq!(
+                served,
+                pinned(),
+                "a framer beside the carrier moves no byte"
+            );
             assert_eq!(through, WORKERS);
             assert_eq!(
                 carriers(&dir),

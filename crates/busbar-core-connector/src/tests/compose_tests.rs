@@ -456,7 +456,8 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
             .expect_err("nothing listens")
             .to_string();
         let door = Arc::new(TestDoor::identity("bytes"));
-        let mut c = Connection::dial(door, &crate::support::via(), dial(&closed.to_string())).unwrap();
+        let mut c =
+            Connection::dial(door, &crate::support::via(), dial(&closed.to_string())).unwrap();
         assert!(matches!(next(&mut c).await, Err(Failure::Refused(_))));
         assert_eq!(
             c.cause(),

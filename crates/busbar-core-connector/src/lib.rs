@@ -93,8 +93,8 @@ use crate::compose::{
     Connection, Dial, Failure, Planned, Via, DEFAULT_OPEN_TIMEOUT, EXCHANGE_STREAM,
     WRITE_BUFFER_BYTES,
 };
-use crate::hostio::HostIo;
 use crate::framer::FramerDoor;
+use crate::hostio::HostIo;
 use crate::line::{Line, EVERY};
 use crate::listen::{AcceptLimits, Listening};
 use crate::pool::{PoolKey, PoolPosture, Pools};
@@ -816,8 +816,8 @@ impl Connector {
             return Err(ConnError::Refused);
         }
         let (framer, via) = self.ride_on(&door).ok_or(ConnError::Refused)?;
-        let l = Listening::bind(framer, &via, bind, tls, alpn, limits)
-            .map_err(|_| ConnError::Fault)?;
+        let l =
+            Listening::bind(framer, &via, bind, tls, alpn, limits).map_err(|_| ConnError::Fault)?;
         let addr = l.local_addr();
         listeners.insert((owner, need), Arc::new(Mutex::new(l)));
         Ok(addr)

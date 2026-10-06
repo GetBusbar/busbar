@@ -14,7 +14,13 @@ const TICKET: Ticket = Ticket {
     generation: 1,
 };
 
-fn answer(out: *mut ServiceOut, o: Outcome, value: u64, len: u64, error: &'static str) -> RawOutcome {
+fn answer(
+    out: *mut ServiceOut,
+    o: Outcome,
+    value: u64,
+    len: u64,
+    error: &'static str,
+) -> RawOutcome {
     // SAFETY: the SDK's `out`, live for the call.
     unsafe {
         (*out).outcome = RawOutcome::of(o);

@@ -116,9 +116,7 @@ impl Carried {
 
 /// The open instance and the host's I/O for this op, or the refusal a call on none earns.
 fn carried<'a>(i: &Instance<'a, State>) -> Result<(&'a Carried, Io<'a>), Refusal> {
-    let held = i
-        .get()
-        .ok_or_else(|| Refusal::failed("no open instance"))?;
+    let held = i.get().ok_or_else(|| Refusal::failed("no open instance"))?;
     let io = held
         .host()
         .map(|h| h.io(i.ticket()))
@@ -367,10 +365,12 @@ impl SafeSlot for Arrival {
     type In = ArrivalIn;
     type Out = ArrivalOut;
     type State = State;
-    fn call(inst: Instance<'_, State>, i: Lent<'_, ArrivalIn>, mut o: Out<'_, ArrivalOut>) -> Outcome {
-        let known = inst
-            .get()
-            .is_some_and(|h| h.life().conn(i.conn).is_some());
+    fn call(
+        inst: Instance<'_, State>,
+        i: Lent<'_, ArrivalIn>,
+        mut o: Out<'_, ArrivalOut>,
+    ) -> Outcome {
+        let known = inst.get().is_some_and(|h| h.life().conn(i.conn).is_some());
         if known {
             Outcome::Ready
         } else {

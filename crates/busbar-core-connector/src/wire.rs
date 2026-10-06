@@ -26,7 +26,9 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
-use busbar_contract::abi::transport::{CLOSE_NORMAL, ROLE_CARRIER, ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL};
+use busbar_contract::abi::transport::{
+    CLOSE_NORMAL, ROLE_CARRIER, ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL,
+};
 use busbar_contract::transport::wire::{
     ArrivalRecord, CloseReason, Conn, ConnHandle, Direction as FrameDirection, FrameMeta, RawIo,
     RawStream, TransportError,
@@ -393,12 +395,26 @@ impl HostWire {
     ) -> Result<(Conn, Vec<u8>), TransportError> {
         let chain = vec![self.key];
         if self.is_carrier() {
-            return Ok(self.hold_io(Io::Carried(carried), peer, local_port, chain, None, Yielded::default()));
+            return Ok(self.hold_io(
+                Io::Carried(carried),
+                peer,
+                local_port,
+                chain,
+                None,
+                Yielded::default(),
+            ));
         }
         let (framing, y) =
             Framing::begin(Arc::clone(&self.door), side, target, &self.established())
                 .map_err(|_| TransportError::Framing)?;
-        Ok(self.hold_io(Io::Carried(carried), peer, local_port, chain, Some(framing), y))
+        Ok(self.hold_io(
+            Io::Carried(carried),
+            peer,
+            local_port,
+            chain,
+            Some(framing),
+            y,
+        ))
     }
 
     /// What a framing on this entry is told the handshake established: its claim.
@@ -543,11 +559,15 @@ impl HostWire {
                 .or_else(|| self.riding.as_ref().and_then(|carrier| carrier()))
                 .ok_or(TransportError::AddressRefused)?
         };
-        let carried = Carried::dial(carrier, Arc::clone(&self.io), &Dest::Authority(addr.to_string()))
-            .map_err(|f| match f {
-                DialFailure::Refused(_) => TransportError::Refused,
-                DialFailure::Failed(_) => TransportError::Closed,
-            })?;
+        let carried = Carried::dial(
+            carrier,
+            Arc::clone(&self.io),
+            &Dest::Authority(addr.to_string()),
+        )
+        .map_err(|f| match f {
+            DialFailure::Refused(_) => TransportError::Refused,
+            DialFailure::Failed(_) => TransportError::Closed,
+        })?;
         let carried = Arc::new(carried);
         let connected = futures::future::poll_fn(|cx| carried.poll_connected(cx));
         match tokio::time::timeout(self.dial_timeout, connected).await {
@@ -556,7 +576,8 @@ impl HostWire {
             Ok(Ok(())) => {}
         }
         let local_port = carried.arrival().map_or(0, |(_, port)| port);
-        let (conn, opening) = self.frame(carried, addr.to_string(), local_port, SIDE_DIAL, target)?;
+        let (conn, opening) =
+            self.frame(carried, addr.to_string(), local_port, SIDE_DIAL, target)?;
         self.open_with(conn, opening).await
     }
 

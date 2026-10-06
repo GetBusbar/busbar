@@ -116,7 +116,12 @@ impl SuiteIo {
     }
 
     /// Run `f` on `owner`'s handle `id`.
-    fn on<R>(&self, owner: u64, id: u64, f: impl FnOnce(&mut Handle) -> IoResult<R>) -> IoResult<R> {
+    fn on<R>(
+        &self,
+        owner: u64,
+        id: u64,
+        f: impl FnOnce(&mut Handle) -> IoResult<R>,
+    ) -> IoResult<R> {
         let mut inner = lock(&self.inner);
         match inner.handles.get_mut(&id) {
             Some((o, h)) if *o == owner => f(h),
@@ -213,7 +218,10 @@ impl IoHost for SuiteIo {
         match got {
             Ok(Some((s, peer))) => {
                 let _ = s.set_nonblocking(true);
-                Poll::Ready(Ok((self.hold(owner, Some(ticket), Handle::Stream(s)), peer)))
+                Poll::Ready(Ok((
+                    self.hold(owner, Some(ticket), Handle::Stream(s)),
+                    peer,
+                )))
             }
             Ok(None) => {
                 self.park(listener, waker);

@@ -230,7 +230,11 @@ impl Carried {
     /// # Errors
     ///
     /// The carrier or the host refused, or the socket could not be made.
-    pub fn dial(door: Arc<dyn FramerDoor>, io: Arc<HostIo>, dest: &Dest) -> Result<Self, DialFailure> {
+    pub fn dial(
+        door: Arc<dyn FramerDoor>,
+        io: Arc<HostIo>,
+        dest: &Dest,
+    ) -> Result<Self, DialFailure> {
         let refused = || DialFailure::Refused("the transport is no carrier the host drives".into());
         let mut wr = Driven::of(door.as_ref()).ok_or_else(refused)?;
         let rd = Driven::of(door.as_ref()).ok_or_else(refused)?;
@@ -413,7 +417,11 @@ impl Carried {
     /// # Errors
     ///
     /// The carrier failed the connection.
-    pub fn poll_read(&self, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<io::Result<(usize, bool)>> {
+    pub fn poll_read(
+        &self,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<(usize, bool)>> {
         let mut i: ReadIn = blank_in();
         i.conn = self.conn;
         i.buf = buf.as_mut_ptr();

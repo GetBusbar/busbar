@@ -59,6 +59,7 @@ use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
 
 pub use answer::{Answer, Context};
+pub use inline::{InlineTicket, InlineTickets};
 pub use kinds::plane::PlaneCancel;
 pub use load::{
     load_dropped, load_dropped_bytes, load_linked, rendering_of, rendering_of_library, LinkedRow,
@@ -70,7 +71,6 @@ pub use plugin::{
     Metric, NoSink, Plugin, Recall, MAX_LOG_BYTES, MAX_LOG_RECORDS,
 };
 pub use services::{HostServices, Later, Ran, Reading, Stored};
-pub use inline::{InlineTicket, InlineTickets};
 pub use ticket::{Completions, Redeem};
 pub use validate::Violation;
 pub use worker::{Adopter, Budgets, DispatchConfig, DispatchStats, Dispatcher, Done, Lent, Reply};

@@ -155,7 +155,8 @@ fn other(t: String) -> std::io::Error {
 pub(crate) fn listen_through(via: &Via, bind: &str) -> std::io::Result<(u64, Driven, SocketAddr)> {
     let mut side = Driven::of(via.door.as_ref())
         .ok_or_else(|| other("the transport is no carrier the host drives".into()))?;
-    via.io.admit(side.ticket(), Admission::Bind(bind.to_owned()));
+    via.io
+        .admit(side.ticket(), Admission::Bind(bind.to_owned()));
     let mut addr = vec![0_u8; usize::try_from(MAX_ADDR).unwrap_or(256)];
     let mut i: ListenIn = blank_in();
     i.bind = busbar_contract::abi::mechanism::call::AbiStr {
@@ -229,7 +230,11 @@ impl Listening {
     /// # Errors
     ///
     /// The address does not parse or cannot be bound, or the caller is not on a worker.
-    pub fn bind_stream(via: Option<&Via>, bind: &str, limits: AcceptLimits) -> std::io::Result<Self> {
+    pub fn bind_stream(
+        via: Option<&Via>,
+        bind: &str,
+        limits: AcceptLimits,
+    ) -> std::io::Result<Self> {
         let (source, local) = match via {
             Some(via) => {
                 let (listener, side, local) = listen_through(via, bind)?;
@@ -336,7 +341,11 @@ impl Listening {
                 self.sleep = None;
             }
             let got = match &mut self.source {
-                Source::Carrier { via, listener, side } => {
+                Source::Carrier {
+                    via,
+                    listener,
+                    side,
+                } => {
                     std::task::ready!(accept_through(via, *listener, side, cx))
                 }
                 Source::Host(l) => std::task::ready!(l.poll_accept(cx))
@@ -410,12 +419,9 @@ pub(crate) fn accept_through(
         return Poll::Ready(Err(text(&c)));
     }
     let handle = via.io.made(side.ticket());
-    let Some(carried) = Carried::accepted(
-        Arc::clone(&via.door),
-        Arc::clone(&via.io),
-        o.conn,
-        handle,
-    ) else {
+    let Some(carried) =
+        Carried::accepted(Arc::clone(&via.door), Arc::clone(&via.io), o.conn, handle)
+    else {
         return Poll::Ready(Err("the transport is no carrier the host drives".into()));
     };
     let n = usize::try_from(o.peer_written).unwrap_or(0).min(peer.len());

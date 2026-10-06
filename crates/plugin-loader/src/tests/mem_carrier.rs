@@ -31,8 +31,7 @@ use busbar_contract::transport::wire::{
     CloseReason, Framing, StatusAt, TransportError, Unit0Trigger,
 };
 use busbar_contract::transport::{
-    Carrier, CarrierFacts, CarrierPoll, Chunk, Dest, TransportMeta, TransportRow,
-    TransportSettings,
+    Carrier, CarrierFacts, CarrierPoll, Chunk, Dest, TransportMeta, TransportRow, TransportSettings,
 };
 use busbar_contract::{AbiVersion, Kind, Plugin};
 
@@ -479,7 +478,11 @@ impl Peer {
         let mut buf = vec![0_u8; 1000];
         while all.len() < n {
             let want = (n - all.len()).min(buf.len());
-            match wait(|cx| self.carrier.poll_read(self.conn, cx, &mut buf[..want]).map_ok(|c| c.len)) {
+            match wait(|cx| {
+                self.carrier
+                    .poll_read(self.conn, cx, &mut buf[..want])
+                    .map_ok(|c| c.len)
+            }) {
                 Ok(0) => panic!("the stack closed after {} of {n} bytes", all.len()),
                 Ok(got) => all.extend_from_slice(&buf[..got]),
                 Err(e) => panic!("the peer's read failed: {e:?}"),
@@ -493,7 +496,11 @@ impl Peer {
         let mut all = Vec::new();
         let mut buf = vec![0_u8; 1000];
         loop {
-            match wait(|cx| self.carrier.poll_read(self.conn, cx, &mut buf).map_ok(|c| c.len)) {
+            match wait(|cx| {
+                self.carrier
+                    .poll_read(self.conn, cx, &mut buf)
+                    .map_ok(|c| c.len)
+            }) {
                 Ok(0) => return all,
                 Ok(n) => all.extend_from_slice(&buf[..n]),
                 Err(e) => panic!("the peer's read failed: {e:?}"),

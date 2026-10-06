@@ -270,7 +270,12 @@ impl std::fmt::Debug for Connection {
         f.debug_struct("Connection")
             .field(
                 "entry",
-                &self.door.as_ref().unwrap_or(self.carried.door()).facts().name,
+                &self
+                    .door
+                    .as_ref()
+                    .unwrap_or(self.carried.door())
+                    .facts()
+                    .name,
             )
             .field("target", &self.target)
             .finish_non_exhaustive()
@@ -1243,7 +1248,8 @@ impl Connection {
             // Up to the next frame's end, and that end marked when the offer reaches it.
             let (a, end) = match self.ends.front() {
                 Some(&at) => {
-                    let left = usize::try_from(at.saturating_sub(self.flushed)).unwrap_or(usize::MAX);
+                    let left =
+                        usize::try_from(at.saturating_sub(self.flushed)).unwrap_or(usize::MAX);
                     if left <= a.len() {
                         (&a[..left], true)
                     } else {

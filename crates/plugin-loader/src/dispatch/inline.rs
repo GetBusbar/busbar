@@ -53,7 +53,9 @@ impl InlineTickets {
         let index = match held.1.pop() {
             Some(i) => i,
             None => {
-                let i = u32::try_from(held.0.len()).ok().filter(|i| *i <= MAX_INDEX)?;
+                let i = u32::try_from(held.0.len())
+                    .ok()
+                    .filter(|i| *i <= MAX_INDEX)?;
                 held.0.push(Arc::new(Slot {
                     generation: AtomicU32::new(1),
                     waker: AtomicWaker::new(),

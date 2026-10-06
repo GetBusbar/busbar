@@ -79,7 +79,10 @@ fn the_address_carrier_is_the_first_declared_carrier_serving_a_port() {
     use busbar_contract::abi::transport::ROLE_FRAMER;
     let framer = || door(TestDoor::identity("framed").with_role(ROLE_FRAMER));
     let pathed = || door(TestDoor::identity("pathed").unported());
-    let (a, b) = (|| door(TestDoor::identity("a")), || door(TestDoor::identity("b")));
+    let (a, b) = (
+        || door(TestDoor::identity("a")),
+        || door(TestDoor::identity("b")),
+    );
     let first = Transports::new(vec![framer(), pathed(), a(), b()]).unwrap();
     assert_eq!(
         first.address_carrier().map(|e| e.door.facts().name.clone()),
@@ -87,7 +90,9 @@ fn the_address_carrier_is_the_first_declared_carrier_serving_a_port() {
     );
     let swapped = Transports::new(vec![framer(), pathed(), b(), a()]).unwrap();
     assert_eq!(
-        swapped.address_carrier().map(|e| e.door.facts().name.clone()),
+        swapped
+            .address_carrier()
+            .map(|e| e.door.facts().name.clone()),
         Some("b".to_owned())
     );
     // RED: a framer that states a port, and a carrier serving none, are never the address carrier.

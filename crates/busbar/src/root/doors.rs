@@ -399,8 +399,21 @@ impl busbar_contract::Transport for RootWire {
     }
 }
 
+/// Where a served wire's framed connections find their carrier: the root hands the process's
+/// connector's address carrier (`crate::root::connector::address_carrier`); a mount with no root
+/// hands none, and a framed dial on it is refused.
+pub type Riding = Option<busbar_core_connector::carrier::AddressCarrier>;
+
+/// `wire`, riding `riding` when one is handed.
+fn ride(wire: HostWire, riding: Riding) -> HostWire {
+    match riding {
+        Some(carrier) => wire.riding(carrier),
+        None => wire,
+    }
+}
+
 /// A door, opened with the deployment's `settings` and served over the host's sockets, presented
-/// at the legacy transport seam.
+/// at the legacy transport seam, its framed connections riding `riding`.
 ///
 /// # Errors
 ///
@@ -408,8 +421,9 @@ impl busbar_contract::Transport for RootWire {
 pub fn host_wire(
     plugin: Plugin<TransportKind>,
     settings: &busbar_contract::transport::TransportSettings,
+    riding: Riding,
 ) -> Result<Arc<dyn busbar_contract::Transport>, String> {
-    served(plugin, settings).map(|(_, wire)| wire)
+    served(plugin, settings, riding).map(|(_, wire)| wire)
 }
 
 /// An opened door and the wire the legacy seam presents over it.
@@ -424,18 +438,20 @@ pub type Served = (Arc<dyn FramerDoor>, Arc<dyn busbar_contract::Transport>);
 pub fn served(
     plugin: Plugin<TransportKind>,
     settings: &busbar_contract::transport::TransportSettings,
+    riding: Riding,
 ) -> Result<Served, String> {
     let door: Arc<dyn FramerDoor> = Arc::new(Dispatched::open(plugin, settings)?);
-    let wire = Arc::new(RootWire::new(
-        HostWire::new(Arc::clone(&door))?.riding(crate::root::connector::address_carrier()),
-    ));
+    let wire = Arc::new(RootWire::new(ride(
+        HostWire::new(Arc::clone(&door))?,
+        riding,
+    )));
     Ok((door, wire))
 }
 
 /// A linked row's build: its door admitted through the one validation, bound under the row's name
 /// `row` ([`row_bind`]), opened with the deployment's `settings`, served over the host's sockets. No
 /// entry composes over another (ARCHITECT Q128 U7), so the layer the registry hands a build is not
-/// read: the carrier is the connector's choice from the target's scheme.
+/// read: the carrier is the connector's choice from the target's scheme (`riding`, [`Riding`]).
 ///
 /// # Panics
 ///
@@ -446,13 +462,14 @@ pub fn build(
     door: DoorFn,
     _lower: Option<Arc<dyn busbar_contract::Transport>>,
     settings: &busbar_contract::transport::TransportSettings,
+    riding: Riding,
 ) -> Arc<dyn busbar_contract::Transport> {
     LinkedRow::of(door)
         .and_then(|linked| load_linked::<TransportKind>(&linked, row_bind(row)))
         .map_err(|e| e.to_string())
         .and_then(|plugin| Dispatched::open(plugin, settings))
         .and_then(|door| HostWire::new(Arc::new(door)))
-        .map(|wire| wire.riding(crate::root::connector::address_carrier()))
+        .map(|wire| ride(wire, riding))
         .map(|wire| Arc::new(RootWire::new(wire)) as Arc<dyn busbar_contract::Transport>)
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }

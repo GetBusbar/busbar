@@ -383,9 +383,9 @@ extern "C" fn ends(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> 
         }
         match c.io.ends(c.owner, i.handle) {
             // SAFETY: the caller's buffer, checked at least `MAX_ADDR`.
-            Ok((port, peer)) => {
-                Answer::ready(u64::from(port), unsafe { put(i.addr_buf, i.addr_cap, &peer) })
-            }
+            Ok((port, peer)) => Answer::ready(u64::from(port), unsafe {
+                put(i.addr_buf, i.addr_cap, &peer)
+            }),
             Err(e) => Answer::of(e),
         }
     })

@@ -23,7 +23,9 @@ fn carried(w: HostWire) -> HostWire {
 }
 
 fn wire() -> Arc<HostWire> {
-    Arc::new(carried(HostWire::new(Arc::new(framing(TestDoor::identity("bytes")))).unwrap()))
+    Arc::new(carried(
+        HostWire::new(Arc::new(framing(TestDoor::identity("bytes")))).unwrap(),
+    ))
 }
 
 /// `door` stated a FRAMER: its connections ride the test carrier (`support::via`), framed by it.
@@ -39,9 +41,8 @@ async fn pair(w: &Arc<HostWire>) -> (Conn, Conn, String) {
     let (listener, mut side, local) =
         crate::listen::listen_through(&via, "127.0.0.1:0").expect("the carrier listens");
     let addr = local.to_string();
-    let accept = std::future::poll_fn(|cx| {
-        crate::listen::accept_through(&via, listener, &mut side, cx)
-    });
+    let accept =
+        std::future::poll_fn(|cx| crate::listen::accept_through(&via, listener, &mut side, cx));
     let (client, far) = tokio::join!(w.dial_authority(&addr), accept);
     let (far, peer) = far.unwrap();
     let crate::listen::Got::Carried(far) = far else {
@@ -584,7 +585,9 @@ fn a_dialled_framing_is_begun_with_the_full_declared_target() {
                 ..Knobs::default()
             },
         )));
-        let w = carried(HostWire::new(Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>).unwrap());
+        let w = carried(
+            HostWire::new(Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>).unwrap(),
+        );
         let target = format!("bytes://{addr}/the/declared/path?q=1");
         let (dialled, far) = tokio::join!(w.dial_target(&target), l.accept());
         dialled.expect("dialled at the authority locate read off the target");
@@ -605,7 +608,9 @@ fn a_dialled_framing_is_begun_with_the_full_declared_target() {
                 ..Knobs::default()
             },
         )));
-        let w = carried(HostWire::new(Arc::clone(&secure) as Arc<dyn crate::framer::FramerDoor>).unwrap());
+        let w = carried(
+            HostWire::new(Arc::clone(&secure) as Arc<dyn crate::framer::FramerDoor>).unwrap(),
+        );
         assert_eq!(
             w.dial_target(&target).await.err(),
             Some(TransportError::AddressRefused)

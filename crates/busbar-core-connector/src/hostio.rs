@@ -250,7 +250,10 @@ impl HostIo {
                 let _ = sock.get_ref().shutdown(Shutdown::Write);
             }
             Kind::Program(p) => {
-                p.stdin.lock().unwrap_or_else(PoisonError::into_inner).take();
+                p.stdin
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
             }
             Kind::Listener(_) => {}
         }
@@ -360,7 +363,10 @@ impl HostListener {
     /// # Errors
     ///
     /// The accept failed (fd exhaustion): the caller backs off.
-    pub fn poll_accept(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<(TcpStream, SocketAddr)>> {
+    pub fn poll_accept(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<(TcpStream, SocketAddr)>> {
         loop {
             match std::task::ready!(self.sock.poll_io(Direction::Read, cx, TcpListener::accept)) {
                 Err(e)
@@ -384,7 +390,10 @@ fn shutdown(how: u32) -> Shutdown {
 
 impl IoHost for HostIo {
     fn open(&self, owner: u64, ticket: Ticket, addr: &str) -> IoResult<u64> {
-        self.admits(ticket, |a| matches!(a, Admission::Dial(at) if at.iter().any(|x| x == addr)))?;
+        self.admits(
+            ticket,
+            |a| matches!(a, Admission::Dial(at) if at.iter().any(|x| x == addr)),
+        )?;
         let sock = match Self::connect(addr) {
             Ok(s) => s,
             Err(f) => {
@@ -476,7 +485,9 @@ impl IoHost for HostIo {
         };
         let mut cx = Context::from_waker(waker);
         match &e.kind {
-            Kind::Stream { sock, .. } => polled(sock.poll_io(Direction::Read, &mut cx, |mut s| s.read(buf))),
+            Kind::Stream { sock, .. } => {
+                polled(sock.poll_io(Direction::Read, &mut cx, |mut s| s.read(buf)))
+            }
             Kind::Program(p) => loop {
                 if let Err(err) = std::task::ready!(p.stdout.poll_read_ready(&mut cx)) {
                     return Poll::Ready(Err(failed(&err)));
@@ -559,7 +570,10 @@ impl IoHost for HostIo {
             },
             Kind::Program(p) => {
                 if how & DIR_WRITE != 0 || how == DIR_BOTH {
-                    p.stdin.lock().unwrap_or_else(PoisonError::into_inner).take();
+                    p.stdin
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .take();
                 }
                 Ok(())
             }

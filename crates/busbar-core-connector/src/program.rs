@@ -37,7 +37,6 @@ use busbar_contract::transport::ConnFacts;
 
 use crate::compose::{Connection, Dial, Failure, Via, DEFAULT_OPEN_TIMEOUT};
 
-
 /// The first restart's backoff after a program ended (the previous release's crash-loop policy).
 const BASE_BACKOFF: Duration = Duration::from_millis(100);
 /// The ceiling the doubling backoff stops at.
@@ -485,7 +484,13 @@ impl Member {
             // A program is no network peer: no key is pinned, no client identity presented.
             peer_key_pin: None,
             client_identity: false,
-            claim: self.via.door.facts().claims.first().map(|c| (*c).to_owned()),
+            claim: self
+                .via
+                .door
+                .facts()
+                .claims
+                .first()
+                .map(|c| (*c).to_owned()),
         })
     }
 

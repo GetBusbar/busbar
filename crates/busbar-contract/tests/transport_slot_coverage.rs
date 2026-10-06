@@ -261,7 +261,12 @@ fn kind_ops(abi: &str, role: &str) -> Result<BTreeSet<String>, String> {
         if let Some(d) = line.strip_prefix("///") {
             doc = d.trim().to_string();
         } else if let Some(rest) = line.strip_prefix("pub const ") {
-            let name = rest.split(':').next().unwrap_or_default().trim().to_string();
+            let name = rest
+                .split(':')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
             if doc.starts_with(&format!("{role}:")) {
                 ops.insert(name);
             }
@@ -288,10 +293,16 @@ fn kind_covered(
         .collect();
     let unexplained: Vec<_> = ops
         .iter()
-        .filter(|op| !lowering.iter().any(|(m, o)| o == op && methods.contains(*m)))
+        .filter(|op| {
+            !lowering
+                .iter()
+                .any(|(m, o)| o == op && methods.contains(*m))
+        })
         .collect();
     if methods.is_empty() || ops.is_empty() {
-        return Err(format!("`{trait_name}` or its `{role}` kind ops read as empty"));
+        return Err(format!(
+            "`{trait_name}` or its `{role}` kind ops read as empty"
+        ));
     }
     if !unlowered.is_empty() || !unexplained.is_empty() {
         return Err(format!(
@@ -335,7 +346,10 @@ fn a_carrier_method_without_a_kind_op_is_red() {
     );
     assert_ne!(grown, traits, "the plant landed");
     let err = kind_covered(&grown, "Carrier", &abi, "Carrier", CARRIER_SLOTS).unwrap_err();
-    assert!(err.contains("methods with no kind op [\"poll_shutdown\"]"), "{err}");
+    assert!(
+        err.contains("methods with no kind op [\"poll_shutdown\"]"),
+        "{err}"
+    );
     let widened = abi.replacen(
         "pub mod slot {",
         "pub mod slot {\n    /// Carrier: peek.\n    pub const PEEK: u32 = 99;",
@@ -343,5 +357,8 @@ fn a_carrier_method_without_a_kind_op_is_red() {
     );
     assert_ne!(widened, abi, "the plant landed");
     let err = kind_covered(&traits, "Carrier", &widened, "Carrier", CARRIER_SLOTS).unwrap_err();
-    assert!(err.contains("kind ops no method explains [\"PEEK\"]"), "{err}");
+    assert!(
+        err.contains("kind ops no method explains [\"PEEK\"]"),
+        "{err}"
+    );
 }

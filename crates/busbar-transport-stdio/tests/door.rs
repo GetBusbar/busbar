@@ -188,7 +188,13 @@ impl Host {
         let mut i: OpenIn = z();
         i.host = &*tables;
         let mut o: OpenOut = z();
-        let r = call(ops().head.open, std::ptr::null_mut(), &mut i, &mut o, life::OPEN);
+        let r = call(
+            ops().head.open,
+            std::ptr::null_mut(),
+            &mut i,
+            &mut o,
+            life::OPEN,
+        );
         assert_eq!(r, Outcome::Ready);
         let args = [s("--stdio")];
         let mut dest: Destination = z();
@@ -269,22 +275,41 @@ fn each_line_is_one_frame_whatever_the_reads_cut() {
     ]);
     // Half a line, then nothing ready: PENDING, nothing moved.
     assert_eq!(h.read(64).0, Outcome::Pending);
-    assert_eq!(h.read(64), (Outcome::Ready, b"{\"a\":1}".to_vec(), true, String::new()));
+    assert_eq!(
+        h.read(64),
+        (Outcome::Ready, b"{\"a\":1}".to_vec(), true, String::new())
+    );
     // A blank line is an empty frame.
-    assert_eq!(h.read(64), (Outcome::Ready, Vec::new(), true, String::new()));
+    assert_eq!(
+        h.read(64),
+        (Outcome::Ready, Vec::new(), true, String::new())
+    );
     // A line longer than the host's buffer comes in several reads; the last carries the frame.
-    assert_eq!(h.read(4), (Outcome::Ready, b"seco".to_vec(), false, String::new()));
-    assert_eq!(h.read(64), (Outcome::Ready, b"nd line".to_vec(), true, String::new()));
+    assert_eq!(
+        h.read(4),
+        (Outcome::Ready, b"seco".to_vec(), false, String::new())
+    );
+    assert_eq!(
+        h.read(64),
+        (Outcome::Ready, b"nd line".to_vec(), true, String::new())
+    );
     // The final unterminated line is a frame at the end, then the clean end.
-    assert_eq!(h.read(64), (Outcome::Ready, b"last".to_vec(), true, String::new()));
-    assert_eq!(h.read(64), (Outcome::Ready, Vec::new(), false, String::new()));
+    assert_eq!(
+        h.read(64),
+        (Outcome::Ready, b"last".to_vec(), true, String::new())
+    );
+    assert_eq!(
+        h.read(64),
+        (Outcome::Ready, Vec::new(), false, String::new())
+    );
 }
 
 #[test]
 fn a_line_past_the_ceiling_fails_the_read() {
     let _one = ONE.lock().unwrap();
     let long = vec![b'x'; MAX_LINE_BYTES + 1];
-    let mut reads: Vec<Option<Vec<u8>>> = long.chunks(16 * 1024).map(|c| Some(c.to_vec())).collect();
+    let mut reads: Vec<Option<Vec<u8>>> =
+        long.chunks(16 * 1024).map(|c| Some(c.to_vec())).collect();
     reads.push(None);
     let h = Host::new(reads);
     let (r, _, _, why) = h.read(64);
@@ -296,7 +321,12 @@ fn a_frame_goes_out_as_one_line_and_one_that_cannot_be_one_is_refused() {
     let _one = ONE.lock().unwrap();
     let h = Host::new(Vec::new());
     assert_eq!(h.write(b"{\"id\":", false).0, Outcome::Ready);
-    with(|sc| assert!(sc.written.is_empty(), "nothing leaves before the frame ends"));
+    with(|sc| {
+        assert!(
+            sc.written.is_empty(),
+            "nothing leaves before the frame ends"
+        )
+    });
     assert_eq!(h.write(b"1}", true).0, Outcome::Ready);
     assert_eq!(h.write(b"", true).0, Outcome::Ready);
     with(|sc| assert_eq!(sc.written, b"{\"id\":1}\n\n"));
@@ -308,11 +338,19 @@ fn a_frame_goes_out_as_one_line_and_one_that_cannot_be_one_is_refused() {
         h.write(b"a return\r", true),
         (Outcome::Failed, NOT_ONE_LINE.to_owned())
     );
-    with(|sc| assert_eq!(sc.written, b"{\"id\":1}\n\n", "a refused frame writes nothing"));
+    with(|sc| {
+        assert_eq!(
+            sc.written, b"{\"id\":1}\n\n",
+            "a refused frame writes nothing"
+        )
+    });
     let mut i: ConnIn = z();
     i.conn = h.conn;
     let mut o: OutHead = z();
-    assert_eq!(call(ops().flush, h.inst, &mut i, &mut o, slot::FLUSH), Outcome::Ready);
+    assert_eq!(
+        call(ops().flush, h.inst, &mut i, &mut o, slot::FLUSH),
+        Outcome::Ready
+    );
 }
 
 #[test]
@@ -322,9 +360,15 @@ fn shut_closes_the_program_and_an_authority_or_a_listen_is_refused() {
     let mut i: ShutIn = z();
     i.conn = h.conn;
     let mut o: OutHead = z();
-    assert_eq!(call(ops().shut, h.inst, &mut i, &mut o, slot::SHUT), Outcome::Ready);
+    assert_eq!(
+        call(ops().shut, h.inst, &mut i, &mut o, slot::SHUT),
+        Outcome::Ready
+    );
     with(|sc| assert_eq!(sc.closed, [7]));
-    assert_eq!(call(ops().shut, h.inst, &mut i, &mut o, slot::SHUT), Outcome::Ready);
+    assert_eq!(
+        call(ops().shut, h.inst, &mut i, &mut o, slot::SHUT),
+        Outcome::Ready
+    );
 
     let mut dest: Destination = z();
     dest.kind = DEST_AUTHORITY;

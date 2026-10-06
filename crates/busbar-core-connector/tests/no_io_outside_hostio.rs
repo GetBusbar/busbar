@@ -137,6 +137,7 @@ fn a_dial_planted_outside_the_hosts_io_is_named() {
         .iter_mut()
         .find(|(r, _)| r == "hostio.rs")
         .expect("hostio.rs");
-    host.1.push_str("\nfn planted() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n");
+    host.1
+        .push_str("\nfn planted() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n");
     assert_eq!(offenders(&admitted), Vec::new());
 }

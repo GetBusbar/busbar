@@ -74,7 +74,8 @@ pub trait IoHost: Send + Sync {
     ) -> Poll<IoResult<(u64, String)>>;
 
     /// Bytes into `buf`; `0` is the clean end.
-    fn read(&self, owner: u64, handle: u64, buf: &mut [u8], waker: &Waker) -> Poll<IoResult<usize>>;
+    fn read(&self, owner: u64, handle: u64, buf: &mut [u8], waker: &Waker)
+        -> Poll<IoResult<usize>>;
 
     /// How many of `bytes` the handle took.
     fn write(&self, owner: u64, handle: u64, bytes: &[u8], waker: &Waker) -> Poll<IoResult<usize>>;

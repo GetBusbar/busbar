@@ -1555,7 +1555,11 @@ fn compute_layout() -> String {
     record!(s, tkind::DialIn, [head, dest]);
     record!(s, tkind::ConnOut, [head, conn]);
     record!(s, tkind::ReadIn, [head, conn, buf, cap]);
-    record!(s, tkind::WriteIn, [head, conn, bytes, len, flags, _reserved]);
+    record!(
+        s,
+        tkind::WriteIn,
+        [head, conn, bytes, len, flags, _reserved]
+    );
     record!(s, tkind::IoOut, [head, len, flags, _reserved]);
     record!(s, tkind::ConnIn, [head, conn]);
     record!(s, tkind::ShutIn, [head, conn, reason, _reserved]);
@@ -2068,7 +2072,11 @@ fn compute_layout() -> String {
     record!(s, hio::ReadyIn, [head, handle, dir, _reserved]);
     record!(s, hio::ShutIn, [head, handle, how, _reserved]);
     record!(s, hio::HandleIn, [head, handle]);
-    record!(s, hio::SpawnIn, [head, program, args, args_len, env, env_len]);
+    record!(
+        s,
+        hio::SpawnIn,
+        [head, program, args, args_len, env, env_len]
+    );
     record!(s, hsvc::ServiceHead, [size, op, handle]);
     record!(
         s,

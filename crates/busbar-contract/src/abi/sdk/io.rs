@@ -305,7 +305,11 @@ impl<'h> Io<'h> {
     }
 
     /// [`Io::accept`], the far end's address written into the host's buffer `peer`; the handle.
-    pub fn accept_host(&mut self, listener: u64, peer: &mut HostBuf<'_, u8>) -> Poll<IoAnswer<u64>> {
+    pub fn accept_host(
+        &mut self,
+        listener: u64,
+        peer: &mut HostBuf<'_, u8>,
+    ) -> Poll<IoAnswer<u64>> {
         let (i, cap) = Self::addr_in(listener, peer);
         match self.call(op::ACCEPT, |s| s.accept, i) {
             Poll::Pending => Poll::Pending,
