@@ -478,12 +478,22 @@ async fn a_gate_a_config_apply_adds_blocks_the_next_units_content_with_no_restar
         (200, "scan=0 gate=0 rewrite=0 verify=2"),
         "the boot generation configures no hook"
     );
-    // THE APPLY: the same deployment, its `hooks:` now holding a global gate.
-    let next = screening_gate("ping")
-        .keys_chain()
-        .governance(Arc::clone(&g.gov))
-        .cost(CostModel::flat(1))
-        .build();
+    // THE APPLY: the same deployment (every plane's runtime carried, as an apply carries them), its
+    // `hooks:` now defining a gate and wiring it globally, resolved through the build's one resolver.
+    let mut next = (*g.app).clone();
+    let registry: std::collections::HashMap<_, _> = [("screen".to_string(), screen_cfg("ping"))]
+        .into_iter()
+        .collect();
+    next.global_gates = busbar_kernel::hooks::resolve_gate_hooks(
+        &registry,
+        &["screen".to_string()],
+        &screen_env(),
+        1,
+    );
+    assert_eq!(next.global_gates.len(), 1, "the applied gate resolves");
+    next.hook_registry = registry;
+    next.global_hooks = vec!["screen".to_string()];
+    let next = Arc::new(next);
     g.handle.swap(next);
     let (status, body) = g.post("/call/services", true).await;
     assert_eq!(
