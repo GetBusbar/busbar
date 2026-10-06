@@ -1263,6 +1263,11 @@ known_sites = [
   # catalogue, whose entries are `&'static Diagnostic` with `&'static str` text by the catalogue's
   # type; one allocation per declared code, once, at boot, before the catalogue is first read.
   "crates/busbar/src/root/linked.rs::declared_diagnostics",
+  # REVIEWED 2026-10-05 (disk.append, ARCHITECT ruling Q-C1-FILE): a host service's error text is
+  # `'static` by the service's type (`DiskReport::error`), so the disk lane interns each distinct
+  # operating-system failure text ONCE and answers `OS_REFUSED` past `MAX_WORDS` of them — the
+  # leak-once intern shape of ids.rs `key` above, its allocation bounded by the cap.
+  "crates/busbar-kernel/src/host_disk.rs::os_words",
 ]
 
 # The escape list, mirroring crates/busbar-contract/src/caps/fixtures/lint_rules.rs HOLD_ESCAPES. A test in that

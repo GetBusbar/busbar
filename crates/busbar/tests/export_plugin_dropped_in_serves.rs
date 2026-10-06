@@ -15,8 +15,8 @@
 //!    it to the destination its manifest declares, and the line is on disk — the line, and no span
 //!    (the instance subscribes `logs` only);
 //! 3. the host's `/metrics` exposition, read into the recorder snapshot, reaches the dropped-in
-//!    sink's render. A sink that serves no metrics answers the SDK default, the text content type
-//!    and no body; the byte-for-byte render is the prometheus sink's own, proven in its repo
+//!    sink's render through its memory-ABI door. A sink that serves no metrics renders no body;
+//!    the byte-for-byte render is the prometheus sink's own, proven in its repo
 //!    (`render_exposition` left the contract SDK for it, ABI-TRIM F10a).
 //!
 //! RED against the tree before the axis: step 1 fails, the process exits naming the unknown exporter.
@@ -73,11 +73,13 @@ fn free_port() -> u16 {
 }
 
 /// The export `cdylib` packed as an UNSIGNED `kind: export` tarball (the config below opts into
-/// unsigned plugins, as the CLI fixtures do), its manifest declaring `destinations` (K9a S4): the
-/// settings keys the host opens a destination for.
+/// unsigned plugins, as the CLI fixtures do), its manifest stating the door's Statement and
+/// declaring `destinations` (K9a S4): the settings keys the host appends to for it.
 fn write_tarball_declaring(dir: &Path, lib: &[u8], destinations: &[&str]) {
     let mut m = common::plugins::manifest("export", PLUGIN, "acme");
     m.declares.destinations = destinations.iter().map(|d| d.to_string()).collect();
+    // The sink is on the export kind's memory ABI: its manifest states its door's Statement.
+    common::plugins::state(&mut m, lib);
     let bytes = common::plugins::seal(m, lib);
     std::fs::write(dir.join("plugins").join("dropped-sink.tar.gz"), bytes).unwrap();
 }
@@ -96,6 +98,7 @@ fn write_configs_with(dir: &Path, data_port: u16, admin_port: u16, tail_settings
 admin_listen: "127.0.0.1:{admin_port}"
 advanced:
   allow_destinations: ["127.0.0.1"]
+store: {{module: memory}}
 admin_require_mtls: false
 auth:
   chain: []
@@ -261,14 +264,17 @@ fn a_dropped_in_export_plugin_serves() {
     );
 
     // 3. THE RECORDER SNAPSHOT (K9a S6): the host's real exposition, read into the snapshot, is
-    // handed to the dropped-in sink. The file sink serves no `/metrics`, so it answers the SDK
-    // default: the text content type and no body. The byte-for-byte render is the prometheus
+    // handed to the dropped-in sink through its door. The file sink serves no `/metrics`, so it
+    // renders no body. The byte-for-byte render is the prometheus
     // sink's, which owns `render_exposition` (ABI-TRIM F10a) and proves it in its own repo.
     let exposition = scrape(data_port).map(|(_, b)| b).unwrap_or_default();
     assert!(!exposition.is_empty(), "the host serves an exposition");
-    let (content_type, rendered) = common::plugins::render_snapshot(&lib, PLUGIN, &exposition);
-    assert_eq!(content_type, "text/plain; version=0.0.4");
-    assert_eq!(rendered, "", "a sink serving no metrics renders no body");
+    let settings = format!("{{\"path\":\"{}\"}}", lines.display());
+    let rendered = common::plugins::render_snapshot(&lib, PLUGIN, &settings, &exposition);
+    assert!(
+        rendered.is_empty(),
+        "a sink serving no metrics renders no body"
+    );
 
     drop(child);
     let _ = std::fs::remove_dir_all(&dir);

@@ -36,13 +36,47 @@ wildcard grants over every registered server: close the data-plane chain, or dro
 Measured by the shadow oracle over 780 cells — boot refusals and warnings, `--validate`,
 `--migrate-config` on the whole migration corpus, the admin API, the six LLM dialects buffered and
 streaming, failover, billing, `/metrics`, and the published store plugins — 1.6.0 answers a 1.5.5
-config, request and plugin exactly as 1.5.5 did, apart from the improvements and breaking changes
-named next.
+config and request exactly as 1.5.5 did, apart from the improvements and breaking changes
+named next. Two owner-signed changes need action: a `store:` block is now required, and a plugin
+built for 1.5.5 no longer loads (see [Owner-signed changes from
+1.5.5](#owner-signed-changes-from-155)); the published store plugins in the oracle ran as 1.5.5
+builds against the 1.5.5 binary.
 
 A request whose upstream is down is counted and billed nothing, as in 1.5.5. The published 1.5.5
 binary books it as one request with 0 cents of spend and 0 tokens (shadow-oracle cell
 `billing|key-usage|upstream-down-refunded` in `testing/shadow-oracle/golden/1.5.5`), and 1.6.0 books
 the same.
+
+### Owner-signed changes from 1.5.5
+
+Everything else in this release is identical to 1.5.5, apart from the improvements and the breaking
+register entries listed below. These are the changes an operator must act on or will notice, each
+signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
+
+- **A `store:` block is required.** `busbar --validate` and boot refuse a config without one, and tell
+  you to add one, e.g. `store: {module: memory}`. 1.5.5 used `memory` when the block was absent.
+  **Migration:** run `busbar --migrate-config`, which inserts exactly `store: {module: memory}`
+  (spec line 555, "a signed customer-visible change from 1.5.5"; owner ruling Q-STORE (B), spec lines
+  4211-4216). See [the migration guide](docs/migration-1.6.md#the-store-block-is-required).
+- **A published 1.5.5 JSON-contract plugin no longer loads.** Plugins speak the memory ABI only; boot
+  refuses a 1.5.5 plugin, including the four published store plugins, with a message naming the
+  rebuild against the 1.6.0 SDK (spec lines 1271 and 1385-1388, section 11.8, "an owner-signed
+  customer-visible break"). A compiled-in plugin and a dropped-in one are the same thing.
+  **Migration:** install the 1.6.0 releases and rebuild any third-party plugin; see
+  [the SDK migration note](docs/plugin-sdk-migration-1.6.md) and [the plugin guide](docs/plugins.md).
+- **Provider and identity-provider addresses that resolve to a private network are refused unless
+  allowlisted.** `advanced.block_private_addresses` defaults to `true`; a provider or IdP on an
+  internal DNS name needs an entry in the allowlist (spec lines 616-620, "the default-true change from
+  1.5.5 is signed off").
+- **A hook with `on_error: reject` whose transform fails answers 503, and a hook granted
+  `prompt: ro|rw` sees tool-call arguments and tool results** (spec line 1356, the two owner-signed
+  exceptions of 2026-10-02, HOOK Q1 and Q2). Both are described further below.
+- **A store refuses a different record at an already-used task-event sequence as a fork**, where the
+  published store plugin overwrote it (spec lines 1200-1202, Q79-fork-refusal, "signed as an accepted
+  difference").
+- **The LDAP auth plugin differs from 1.5.5 in three ways:** a malformed reply or a hostless URL
+  fails closed instead of panicking, an overrunning nested length fails fast, and inbound replies are
+  capped at 16 MiB (spec lines 863-865, signed 2026-09-28).
 
 ### Security
 
@@ -399,7 +433,8 @@ differ accepts a `status` class on no other kind, and what it waives is a miscon
 provider that answered 401 now authenticating.)
 Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
-identically, and every 1.5.5 key and minted secret carries over.
+identically (once it carries the `store:` block that `--migrate-config` inserts), and every 1.5.5 key and
+minted secret carries over.
 
 - 1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native
   auth-failure envelope and recorded on the breaker. Previously, an auth or billing hard-down on a
@@ -548,6 +583,14 @@ is now a `400` naming the field; and the always-`null` `at` field on the hook vi
   said); 1.5.5 passed the request through.
 - 1.6.0 Breaking: a published 1.5.5 JSON-contract plugin no longer loads; boot refuses it with a
   message naming the rebuild against the 1.6.0 SDK (see the SDK migration note).
+- A config with no `store:` block is refused at boot and by `--validate`; `busbar --migrate-config`
+  inserts `store: {module: memory}`, the in-memory store such a config ran on in 1.5.x.
+- A request translated between LLM dialects no longer has a value substituted for one the target
+  dialect cannot carry: an image whose format Bedrock Converse does not accept is dropped instead
+  of relabelled `png`, and a Gemini `thinkingBudget: -1` ("the model decides") is dropped on a
+  target with no such setting instead of sent as the `medium` effort; each drop is warned and
+  audited by its wire path. A wrong-typed Gemini `thinkingBudget` or Anthropic image `media_type` is
+  answered with the caller's own 400 error instead of being translated.
 
 ### Deprecated env vars still honoured
 
@@ -608,12 +651,9 @@ compiled-in ≡ dropped-in guarantee that was asserted and false: a compiled-in 
 Busbar's own metrics recorder, while the same source built as a dropped-in `.so` links its own and
 silently lost every counter. Reaching a recorder is no longer representable from either build.
 
-**Nothing you have installed needs rebuilding.** The export window widens to `2..=3` rather than
-moving: a sink built before the envelope answers the bare response and keeps loading, and Busbar
-reads whichever shape a plugin speaks — decided once, when it loads. The store, secret, auth and
-hook payload schemas are unchanged, as is the transport version (`busbar_abi() == 1`) and the six
-exported symbols. A sink that wants the back-channel implements one new defaulted SDK method,
-`drain_observations`.
+**A plugin built for 1.6.0 speaks the memory ABI.** Every kind has exactly one ABI version and the
+host accepts only the current one. A sink that wants the observability back-channel implements one
+defaulted SDK method, `drain_observations`.
 
 **A new `plugins.logs` block is accepted and checked; plugin log lines have not moved.** The block
 names the directory for per-plugin log files (`dir`, default `logs/plugins`), the default level
@@ -658,10 +698,9 @@ each dialect translates, field by field, is listed in the generated
 - **`busbar --migrate-config` leaves your 1.5.5 pool members exactly as written.** Only the four
   retired spellings named under [Breaking](#breaking) above are rewritten; nothing else in a pool,
   provider or model block is touched.
-- **The store plugin ABI window is `2..=4`.** A published 1.5.5 store plugin (`abi_version: 2`,
-  e.g. the sqlite, postgres, mysql or valkey plugin) loads as-is, with no rebuild and no manifest
-  change, and answers the plane-record verbs it doesn't know with "unsupported", which 1.6.0
-  treats as inert. See [Plugins](#plugins) above.
+- **The store plugin ABI is exactly version 3.** A published 1.5.5 store plugin (`abi_version: 2`,
+  e.g. the sqlite, postgres, mysql or valkey plugin) is refused at boot, naming the rebuild against
+  the 1.6.0 SDK. See [Plugins](#plugins) above.
 
 ### Added
 
@@ -778,15 +817,15 @@ each dialect translates, field by field, is listed in the generated
   at a durable store and each inbound `tools/call` appends one hash-linked row: who called, which
   tool, under which approved schema, and whether it went out. Refusals are recorded as deliberately
   as successes. This is tamper-evidence, not tamper-prevention, and chains are verified at boot.
-  With the default `store: memory` nothing is persisted and nothing is claimed; with a 1.5.5 store
-  plugin the record is kept in process until an ABI-4 store ships.
+  With `store: memory` nothing is persisted and nothing is claimed; the record is durable only on a
+  store plugin that persists plane records.
 - **A quarantined MCP upstream stays quarantined across a restart**, so a restarted Busbar no
   longer hands an upstream its approval back until the next sweep. The first observation that finds
   the upstream serving what you approved clears it.
 - **An approval for a `ask_caller` confirm-once tool is redeemed once per deployment, not once per
   node.** Two nodes sharing a signing key previously redeemed the same approval once each, so a
   single operator confirmation could execute a money-moving tool twice behind a load balancer. This
-  needs a durable governance store: with the default `store: memory` the ledger is still the
+  needs a durable governance store: with `store: memory` the ledger is still the
   in-process one, so the guarantee is single-use per node, exactly as before.
 - **An upstream's `sampling/createMessage` ask can be satisfied under an operator-capped budget.**
   `tools.<server>.sampling` declares the model the completion runs on, a `max_tokens` ceiling and
@@ -882,12 +921,6 @@ each dialect translates, field by field, is listed in the generated
 - A request translated between LLM dialects no longer carries an empty text block in place of a
   content block the target dialect cannot represent, and an answer translated back no longer
   delivers one; the block is dropped with a warning and an audit row naming its wire path.
-- A request translated between LLM dialects no longer has a value substituted for one the target
-  dialect cannot carry: an image whose format Bedrock Converse does not accept is dropped instead
-  of relabelled `png`, and a Gemini `thinkingBudget: -1` ("the model decides") is dropped on a
-  target with no such setting instead of sent as the `medium` effort; each drop is warned and
-  audited by its wire path. A wrong-typed Gemini `thinkingBudget` or Anthropic image `media_type` is
-  answered with the caller's own 400 error instead of being translated.
 - What a dialect's reader cannot carry across a translation (an unknown image detail or effort
   word, a tool-choice form or modality with no counterpart, extra choices or candidates, a Bedrock-only
   answer member, a Responses answer's request echoes) is now audited like a writer's drop, and every

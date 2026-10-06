@@ -268,8 +268,8 @@ fn register_planes() {
     // The root legacy table, before the first configuration read (the dropped-plugin scan below
     // reads it): the kernel's 1.x detector and `--migrate-config` rewrite through it.
     root::legacy::install();
-    // The linked store and hook rows onto the kernel's cold-kind axis, with the default store the
-    // store rows declare, and its auth rows onto the auth axis, before anything resolves one.
+    // The linked store and hook rows onto the kernel's cold-kind axis, and its auth rows onto the
+    // auth axis, before anything resolves one.
     root::linked::register_stores(&LINKED);
     busbar_kernel::preflight::install_linked_auth(
         LINKED.auths,
@@ -296,8 +296,9 @@ fn register_planes() {
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
     // manifest note on the `busbar-core-oauth2` dependency), before any config loads. Mirrors
     // `install_planes` immediately above for the same reason: one composition root, one
-    // registration, before the first `App` is built.
-    busbar_core_oauth2::install();
+    // registration, before the first `App` is built. Its document fetch rides the one connector,
+    // read when a fetch needs it (`root::connector::AuthServerConns`).
+    busbar_core_oauth2::install::<root::connector::AuthServerConns>();
     // Register the admin API service's mount seam (`busbar_kernel::admin::seam`) — the composition
     // root is the one place entitled to name `busbar-admin`, exactly as it names `busbar-core-oauth2`
     // above. Unconditional: the admin surface carries no feature flag at this layer; core mounts it

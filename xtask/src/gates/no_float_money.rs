@@ -720,10 +720,10 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
 /// persisted-record home any more by a second measure as well — it derives `Serialize` on nothing
 /// (`grep -rn 'derive(.*Serialize' crates/busbar-kernel-ledger/src` is empty against a control of 19
 /// hits in the contract's `records.rs`). Nothing this list used to see is unseen now.
-const PERSISTED_RECORD_HOMES: &[&str] = &[
-    "crates/busbar-contract/src/records.rs",
-    "crates/plugin-loader/src/legacy_usage.rs",
-];
+///
+/// The loader's `legacy_usage.rs` (the 1.5.5 store wire's four-tier usage row) went with the JSON
+/// store lane (THE DESIGN §11.1, the P2 switch-over): struck with its file.
+const PERSISTED_RECORD_HOMES: &[&str] = &["crates/busbar-contract/src/records.rs"];
 
 /// What a record must name beside a `Count` for the mantissa to mean anything. Any of them: the
 /// constant, the serde default function, or a field whose name is the discriminator itself.

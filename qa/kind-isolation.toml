@@ -477,10 +477,6 @@ crate = "busbar-mcp"
 kind = "transport"
 
 [[cell]]
-crate = "busbar-core-oauth2"
-kind = "plane"
-
-[[cell]]
 crate = "busbar-plane-a2a"
 kind = "legacy"
 
