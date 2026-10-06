@@ -46,6 +46,9 @@ usage:
   cargo xtask plugin-gates parity <plugin Cargo.lock> <busbar Cargo.lock>
   cargo xtask plugin-gates bothways <conformance --list output>
   cargo xtask plugin-gates declares <busbar-root> <kind> <declares.json>
+  cargo xtask plugin-gates former-names <plugins.yaml> [<repo>] [--declared \"<name> ...\"]
+  (every entry, or <repo>'s, declares the 1.5.5 manifest name `legacy:` freezes for its repo;
+   --declared: judge that list, what a release packs, instead of the entry's `former_names:`)
   cargo xtask plugin-gates selftest";
 
 type Res<T> = Result<T, String>;
@@ -779,6 +782,52 @@ pub fn declares(root: &Path, kind: &str, text: &str) -> Res<Vec<String>> {
     Ok(Vec::new())
 }
 
+// -- former names --------------------------------------------------------------------------------
+
+/// 1.5.5 CONFIGS LOAD UNCHANGED (ARCHITECT ruling): a plugin repo whose 1.5.5-era release shipped
+/// under another manifest name (plugins.yaml `legacy:`'s frozen `name_1_5_5.<repo>` rows) must still
+/// answer that name, so its entry's `former_names:` carries it — or, with `declared`, the list a
+/// release is about to sign (plugin-release.yml's `former_names` input). One finding per missing
+/// name, naming the repo and the name. With no `repo`, every entry is judged and every frozen row
+/// must name a registered repo.
+pub fn former_names(
+    registry: &str,
+    repo: Option<&str>,
+    declared: Option<&[String]>,
+) -> Res<Vec<String>> {
+    let fleet = super::registry::parse(registry).map_err(|e| format!("plugin-gates: {e}"))?;
+    let frozen: Vec<(&str, &str)> = fleet.names_1_5_5().collect();
+    let mut out = Vec::new();
+    if repo.is_none() {
+        for (r, name) in &frozen {
+            if fleet.plugin(r).is_err() {
+                out.push(format!(
+                    "FORMER-NAMES legacy: name_1_5_5.{r} ('{name}') names no plugin repo in plugins.yaml"
+                ));
+            }
+        }
+    }
+    let entries: Vec<&super::registry::Plugin> = match repo {
+        Some(r) => vec![fleet.plugin(r).map_err(|e| format!("plugin-gates: {e}"))?],
+        None => fleet.plugins.iter().collect(),
+    };
+    for p in entries {
+        let have: &[String] = declared.unwrap_or(&p.former_names);
+        for (_, name) in frozen.iter().filter(|(r, _)| *r == p.repo) {
+            if !have.iter().any(|h| h == name) {
+                out.push(format!(
+                    "FORMER-NAMES {} shipped its 1.5.5-era release as '{name}' (plugins.yaml legacy: name_1_5_5.{}) and {} {}: add '{name}' to its former_names, or a 1.5.5 config naming it is refused at boot.",
+                    p.repo,
+                    p.repo,
+                    if declared.is_some() { "this release signs former_names" } else { "declares former_names" },
+                    py_list(have)
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
 // -- the deps.toml reader ------------------------------------------------------------------------
 
 struct Toml {
@@ -1357,6 +1406,61 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
         declares(d, "store", r#"{"contract_abi": {"min": 3, "max": 3}}"#),
         true,
     ));
+    let fleet = |entry: &str| {
+        format!(
+            "fleet:\n  busbar_ref: \"{}\"\n  name_pattern: \"^busbar-.*$\"\n  branches: [dev]\n\
+             legacy:\n  name_1_5_5.busbar-hook-x: busbar-x\n\
+             plugins:\n  - repo: busbar-hook-x\n    kind: hook\n    alias: x\n    crate: busbar-hook-x\n    \
+             service: none\n    description: \"d\"\n    declares: \"declares.json\"\n{entry}",
+            format_args!("{} 1.6.0", "0".repeat(40))
+        )
+    };
+    let declared = ["busbar-x".to_string()];
+    v.push((
+        "former-names declared",
+        former_names(
+            &fleet("    former_names: [busbar-x]\n"),
+            Some("busbar-hook-x"),
+            None,
+        ),
+        false,
+    ));
+    v.push((
+        "former-names missing",
+        former_names(&fleet(""), Some("busbar-hook-x"), None),
+        true,
+    ));
+    v.push((
+        "former-names other name",
+        former_names(&fleet("    former_names: [busbar-y]\n"), None, None),
+        true,
+    ));
+    v.push((
+        "former-names release signs it",
+        former_names(&fleet(""), Some("busbar-hook-x"), Some(&declared)),
+        false,
+    ));
+    v.push((
+        "former-names release drops it",
+        former_names(
+            &fleet("    former_names: [busbar-x]\n"),
+            Some("busbar-hook-x"),
+            Some(&[]),
+        ),
+        true,
+    ));
+    v.push((
+        "former-names stray frozen row",
+        former_names(
+            &fleet("    former_names: [busbar-x]\n").replace(
+                "legacy:\n",
+                "legacy:\n  name_1_5_5.busbar-hook-gone: busbar-gone\n",
+            ),
+            None,
+            None,
+        ),
+        true,
+    ));
     v.push((
         "declares literal",
         declares(d, "auth", r#"{"contract_abi": {"min": 3, "max": 3}}"#),
@@ -1432,6 +1536,26 @@ fn run(cmd: &str, args: &[String]) -> Res<Vec<String>> {
         "parity" => parity(&read(a(0)?)?, &read(a(1)?)?),
         "bothways" => Ok(bothways(&splitlines(&read(a(0)?)?))),
         "declares" => declares(Path::new(a(0)?), a(1)?, &read(a(2)?)?),
+        "former-names" => {
+            let mut rest = args[1..].iter();
+            let (mut repo, mut declared) = (None, None);
+            while let Some(x) = rest.next() {
+                if x == "--declared" {
+                    let v = rest.next().ok_or_else(|| {
+                        format!("plugin-gates: `--declared` needs a list\n{USAGE}")
+                    })?;
+                    declared = Some(
+                        v.split(|c: char| c == ',' || c.is_whitespace())
+                            .filter(|w| !w.is_empty())
+                            .map(str::to_string)
+                            .collect::<Vec<_>>(),
+                    );
+                } else {
+                    repo = Some(x.as_str());
+                }
+            }
+            former_names(&read(a(0)?)?, repo, declared.as_deref())
+        }
         other => Err(format!("plugin-gates: unknown gate `{other}`")),
     }
 }
@@ -1497,6 +1621,36 @@ mod tests {
         declares_current => "declares current",
         declares_stale => "declares stale",
         declares_literal => "declares literal",
+        former_names_declared => "former-names declared",
+        former_names_missing => "former-names missing",
+        former_names_other_name => "former-names other name",
+        former_names_release_signs_it => "former-names release signs it",
+        former_names_release_drops_it => "former-names release drops it",
+        former_names_stray_frozen_row => "former-names stray frozen row",
+    }
+
+    /// The committed plugins.yaml: every entry declares its repo's frozen 1.5.5 manifest name (the
+    /// ARCHITECT's measured nine), and a planted removal of one is RED naming the repo and the name.
+    #[test]
+    fn the_committed_registry_declares_every_1_5_5_name() {
+        let text = crate::ctx::Ctx::workspace()
+            .unwrap()
+            .read("plugins.yaml")
+            .unwrap();
+        assert_eq!(
+            former_names(&text, None, None).unwrap(),
+            Vec::<String>::new()
+        );
+        let fleet = super::super::registry::parse(&text).unwrap();
+        let frozen: Vec<(&str, &str)> = fleet.names_1_5_5().collect();
+        assert_eq!(frozen.len(), 9, "{frozen:?}");
+        let planted = text.replacen("    former_names: [busbar-webrequest]\n", "", 1);
+        assert_ne!(planted, text);
+        let red = former_names(&planted, Some("busbar-hook-webrequest"), None).unwrap();
+        assert_eq!(red.len(), 1, "{red:?}");
+        assert!(
+            red[0].contains("busbar-hook-webrequest") && red[0].contains("'busbar-webrequest'")
+        );
     }
 
     #[test]
