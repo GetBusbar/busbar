@@ -155,7 +155,10 @@ fn item_approvals(
         .flat_map(|m| m.iter())
         .filter_map(|(item, object)| {
             let digest = object.as_mapping()?.get(field)?.as_str()?.trim();
-            (!digest.is_empty()).then(|| (item.as_str()?.to_string(), digest.to_string()))
+            if digest.is_empty() {
+                return None;
+            }
+            Some((item.as_str()?.to_string(), digest.to_string()))
         })
         .collect()
 }
