@@ -270,8 +270,13 @@
 # name the tree under test's plugins.yaml (former_names) or the recipe states, so a renamed fleet plugin answers its
 # 1.5.5 name (busbar #508; the 52 webrequest cells re-record once both are in).
 #
+# 2026-10-06 (pin rule: a pin never moves backwards): moved f0ca9f1f1a76 -> 1869c0032ecf, the busbar-release dev tip,
+# the merge of #168 (p3-flip-streaming-plan: the build-test plan drops the voice runtime row; #503's pin). It descends
+# f0ca9f1f1a76 (#167), 4a7a7bba2c (predev's pin, #464's) and 0ede76aea9, so whichever of #493/#503 lands second keeps
+# every engine change of the other.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=f0ca9f1f1a7682fcc7f30c30192ee2dbc1e28b3b
+release_ref=1869c0032ecf2cdad8b1153ccf25311cb6baad75
 crate=busbar-release-oracle
 bin=busbar-oracle
