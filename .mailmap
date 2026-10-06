@@ -1,7 +1,18 @@
 # Canonical authorship. Commits go out under Matthew Jackson's GitHub noreply only.
-# Historical commits authored as dev3@getbusbar.com are canonicalized here for
-# display/blame/shortlog and on GitHub; the definitive author-byte rewrite
-# (git filter-repo --mailmap) runs once at branch consolidation, when no live
-# worktree is pinned to the pre-rewrite SHAs.
+# Every historical identity of that one author is canonicalized here for display, blame and
+# shortlog (and on GitHub); history itself is untouched. The definitive author-byte rewrite
+# (git filter-repo --mailmap) runs once at branch consolidation, when no live worktree is pinned to
+# the pre-rewrite SHAs.
+#
+# Deliberately NOT mapped, because they are not this author: dependabot[bot], Luca Guzzon (an
+# outside contributor), and busbar-ci <ci@getbusbar.com> (an automation identity, not a person).
+# Check: `git log --use-mailmap --format='%aN <%aE>' | sort -u` lists the canonical identity and
+# those three, nothing else.
+Matthew Jackson <1085847+MattJackson@users.noreply.github.com>
+Matthew Jackson <1085847+MattJackson@users.noreply.github.com> <dev@getbusbar.com>
+Matthew Jackson <1085847+MattJackson@users.noreply.github.com> <dev2@getbusbar.com>
 Matthew Jackson <1085847+MattJackson@users.noreply.github.com> <dev3@getbusbar.com>
-Matthew Jackson <1085847+MattJackson@users.noreply.github.com> Matthew <dev3@getbusbar.com>
+Matthew Jackson <1085847+MattJackson@users.noreply.github.com> <dev4@getbusbar.com>
+Matthew Jackson <1085847+MattJackson@users.noreply.github.com> <matthew@getbusbar.com>
+Matthew Jackson <1085847+MattJackson@users.noreply.github.com> <matthew@pq.io>
+Matthew Jackson <1085847+MattJackson@users.noreply.github.com> <mattjackson86@gmail.com>
