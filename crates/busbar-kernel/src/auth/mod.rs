@@ -469,7 +469,7 @@ impl AdminModule {
 pub use busbar_kernel_identity::{
     caller_ref::CallerRefKey,
     egress_auth::sigv4::uri_encode_path,
-    operator::{AdminUnavailable, Operator, OperatorCredential},
+    operator::{Operator, OperatorCredential},
 };
 
 /// Open the operator credential from `registry` through this build's auth axis: the row answering
@@ -1273,7 +1273,7 @@ async fn run_admin_chain(
                     true => operator.probe(&head),
                     false => operator.judge(head).await,
                 };
-                judged.map(|j| j.verdict().unwrap_or(AuthVerdict::Reject))
+                judged.map(busbar_kernel_identity::operator::Judgement::verdict)
             }
             // An EXTERNAL `kind: auth` admin plugin, resolved at load into `app.admin_modules`
             // (keyed by config name — the same `name` this loop iterates).
