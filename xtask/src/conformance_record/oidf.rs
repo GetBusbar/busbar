@@ -531,14 +531,17 @@ pub struct Plan {
 
 /// The FAPI 2.0 Security Profile OP posture for an authorization server that is not an OpenID
 /// provider: plain OAuth, private_key_jwt client authentication, DPoP sender-constraining, the
-/// plain profile, unsigned requests, plain responses.
+/// plain profile, simple authorization requests. Unsigned requests and plain responses are the
+/// posture too, but the PLAN sets those two itself: release-v5.3.1's
+/// `FAPI2SPFinalTestPlan.testModulesWithVariants` fixes `fapi_request_method=unsigned` and
+/// `fapi_response_mode=plain_response` as its baseline variants, and the suite refuses to create
+/// the plan when the caller sets either one too ("Variant 'fapi_request_method' has been set by
+/// user, but test plan already sets this variant"), so naming them here ran zero modules.
 const FAPI2SP_PLAIN_OAUTH: &[(&str, &str)] = &[
     ("openid", "plain_oauth"),
     ("client_auth_type", "private_key_jwt"),
     ("sender_constrain", "dpop"),
     ("fapi_profile", "plain_fapi"),
-    ("fapi_request_method", "unsigned"),
-    ("fapi_response_mode", "plain_response"),
     ("authorization_request_type", "simple"),
 ];
 
