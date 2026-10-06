@@ -34,15 +34,6 @@ impl Canned {
             calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
-
-    pub(crate) fn cacheable(name: &'static str, outcome: AuthOutcome) -> Self {
-        Canned {
-            name,
-            outcome,
-            cacheable: true,
-            calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        }
-    }
 }
 
 impl AuthModule for Canned {

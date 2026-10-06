@@ -1353,27 +1353,6 @@ fn test_caller_token_debug_redacts_value() {
     );
 }
 
-// ===================== INBOUND SigV4 WIRING TESTS =====================
-
-fn gov_with_aws_key() -> (std::sync::Arc<crate::governance::GovState>, String, String) {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
-    let store = std::sync::Arc::new(MemoryStore::new());
-    let gov = std::sync::Arc::new(GovState::new(store, None).unwrap());
-    let (_key, _bearer, akid, secret) = gov
-        .create_key_with_aws(
-            NewKeySpec {
-                name: "aws-signer".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-                ..Default::default()
-            },
-            busbar_kernel::store::now(),
-        )
-        .unwrap();
-    (gov, akid, secret)
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // BACK-COMPAT REGRESSION: governance is ALWAYS constructed (RAM store by default), but must be
 // INERT until an admin token is configured. A legacy deploy that never opted into governance (no
