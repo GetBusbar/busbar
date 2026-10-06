@@ -460,6 +460,24 @@ pub fn read_settings(settings: &[u8]) -> Result<StreamsCfg, String> {
     serde_json::from_slice::<StreamsCfg>(settings).map_err(|e| e.to_string())
 }
 
+/// THE SECTION A DEALT `validate` BLOB CARRIES. The boot's stage-3g deal hands a declared-verb
+/// plugin `{<verb>: <section>}` (`config_validate::deal`), where `open` and `refresh` are handed the
+/// section itself; the one verb this plane declares is [`SECTION`], so a blob that is exactly
+/// `{streams: …}` is unwrapped to its section and any other blob is the section already.
+#[must_use]
+pub fn dealt_section(settings: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    match serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(settings) {
+        Ok(map) if map.len() == 1 => match map.get(SECTION) {
+            Some(section) => serde_json::to_vec(section).map_or(
+                std::borrow::Cow::Borrowed(settings),
+                std::borrow::Cow::Owned,
+            ),
+            None => std::borrow::Cow::Borrowed(settings),
+        },
+        _ => std::borrow::Cow::Borrowed(settings),
+    }
+}
+
 /// ONE READING of the public base URL: parse it and REPLACE the path wholesale, dropping query and
 /// fragment, so a public URL with a path of its own cannot produce a second spelling.
 #[must_use]
@@ -636,10 +654,10 @@ macro_rules! slot {
     };
 }
 
-slot!(Validate, ValidateIn, OutHead, |_, input, _out| {
-    match read_settings(input.field(|i| &i.settings).bytes()) {
+slot!(Validate, ValidateIn, OutHead, |_, input, out| {
+    match read_settings(&dealt_section(input.field(|i| &i.settings).bytes())) {
         Ok(_) => Outcome::Ready,
-        Err(_) => Outcome::Refused,
+        Err(words) => out.fail(busbar_contract::abi::sdk::life::Refusal::refused(words)),
     }
 });
 

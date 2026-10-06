@@ -189,6 +189,15 @@ fn script(p: &Plugin<Plane>, public_url: Option<&'static str>) -> Vec<String> {
         "validate ceiling {:?}",
         validate(p, br#"{"session_max_secs":1800}"#)
     ));
+    // The stage-3g deal's shape, `{streams: <section>}` (the boot's validate hands this).
+    t.push(format!(
+        "validate dealt {:?}",
+        validate(p, br#"{"streams":{"session":{"model":"m-cap"}}}"#)
+    ));
+    t.push(format!(
+        "validate dealt unknown key {:?}",
+        validate(p, br#"{"streams":{"nonsense_key":1}}"#)
+    ));
 
     let (outcome, snap) = open(p, 1, br#"{"session_max_secs":1800}"#, public_url);
     t.push(format!("open {outcome:?} {snap}"));
@@ -282,6 +291,8 @@ fn expected(public: bool) -> Vec<String> {
         "validate zero ceiling Refused".into(),
         "validate empty Ready".into(),
         "validate ceiling Ready".into(),
+        "validate dealt Ready".into(),
+        "validate dealt unknown key Refused".into(),
         format!("open Ready {}", snap(1)),
         format!("refresh Ready {}", snap(2)),
         "retire 1 Ready".into(),
