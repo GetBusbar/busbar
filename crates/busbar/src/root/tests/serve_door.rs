@@ -28,7 +28,7 @@ use busbar_plane_decisions::plane_door::door as decisions_door;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::planes_tests::{composed_services, money, Published, PUBLISHING};
-use super::{compose_planes, door_routes, DoorEgress};
+use super::{compose_planes, compose_planes_over, door_routes, DoorEgress};
 use crate::root::door_steps::{provider_routes, DoorReach, OutboundAuths};
 use crate::root::loader::dispatch::kinds::plane::Plane;
 use crate::root::loader::dispatch::{
@@ -61,6 +61,9 @@ const CREDENTIAL: &str = "sk-door-test";
 /// The far end's answer: a decision, and the one unit it reports using.
 const ANSWER: &str = r#"{"id":"d-1","decision":"approve","usage":{"units":1}}"#;
 
+/// A far end's transient failure, as [`far_end_failing_first`] answers it.
+const UNAVAILABLE: &str = r#"{"error":"unavailable"}"#;
+
 /// A POST of the caller's decision state to `path` on `router`, with `token` as its bearer or with
 /// none: the response.
 async fn send(router: &axum::Router, path: &str, token: Option<&str>) -> axum::response::Response {
@@ -82,13 +85,24 @@ async fn send(router: &axum::Router, path: &str, token: Option<&str>) -> axum::r
 /// A far end on loopback answering every request with [`ANSWER`]; what it was sent comes back on
 /// the channel, one request head per connection.
 async fn far_end() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
+    far_end_failing_first(0).await
+}
+
+/// [`far_end`], but its first `failures` connections are answered with a bare transient failure
+/// (503, no `Retry-After`) instead of [`ANSWER`].
+async fn far_end_failing_first(
+    failures: usize,
+) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("a loopback port");
     let port = listener.local_addr().expect("its address").port();
     let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
+        let mut accepted = 0usize;
         while let Ok((mut socket, _)) = listener.accept().await {
+            let failing = accepted < failures;
+            accepted += 1;
             let sent = sent.clone();
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 16 * 1024];
@@ -119,10 +133,15 @@ async fn far_end() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
                         }
                     }
                 }
+                let (line, body) = if failing {
+                    ("503 Service Unavailable", UNAVAILABLE)
+                } else {
+                    ("200 OK", ANSWER)
+                };
                 let reply = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
-                     connection: close\r\n\r\n{ANSWER}",
-                    ANSWER.len()
+                    "HTTP/1.1 {line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+                     connection: close\r\n\r\n{body}",
+                    body.len()
                 );
                 let _ = socket.write_all(reply.as_bytes()).await;
                 let _ = socket.shutdown().await;
@@ -414,5 +433,266 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
             .expect("nothing to mount")
             .is_empty(),
         "a composition that claims nothing mounts nothing"
+    );
+}
+
+/// What a served door's data router needs kept alive beside it.
+struct Serving {
+    router: axum::Router,
+    token: String,
+    _handle: Arc<busbar_kernel::state::AppHandle>,
+}
+
+/// THE DECISIONS DOOR SERVED OVER `linked`, composed as the exit test above composes it (the
+/// connector over the linked transport doors, the door bound through the loader's one load, one
+/// model whose provider is the far end on `port`, a keyed caller): the composition reads the door
+/// plane's declared facts off `linked`.
+async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: u16) -> Serving {
+    let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
+        block_private_addresses: false,
+        ..Default::default()
+    })
+    .expect("the guard");
+    let connector = busbar_core_connector::process::build(
+        || {
+            crate::root::connector::entries(
+                crate::LINKED_TRANSPORT_DOORS,
+                &busbar_contract::transport::TransportSettings::default(),
+            )
+        },
+        judge,
+        &[],
+        Arc::new(|_| {}),
+        busbar_core_connector::pool::PoolPosture::NONE,
+    )
+    .expect("the connector builds");
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
+    let plane = load_linked::<Plane>(
+        &row,
+        Bind {
+            instance: Arc::from(instance),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: crate::root::loader::dispatch::ConnTable::Host(
+                Arc::clone(&connector) as Arc<dyn DeclaredConns>
+            ),
+        },
+    )
+    .expect("the linked door binds");
+    let section_key = plane.served().section;
+
+    let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
+    let gov = Arc::new(
+        GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
+            .expect("governance"),
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            NewKeySpec {
+                name: "decider".to_string(),
+                ..Default::default()
+            },
+            4_000_000_000,
+            1_700_000_000,
+        )
+        .expect("mint");
+    gov.hydrate_budgets(&CostModel::flat(1), 0)
+        .expect("hydrate");
+    let node = Arc::new(Node::new());
+    let book = crate::root::durability::node_book_over(Box::new(|| CARD.pin()));
+    node.bind_book(Arc::clone(&book.durability));
+    let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
+    let site = Arc::clone(&post);
+    let book_money = Arc::clone(&gov);
+    let plane_money = move || {
+        Arc::new(PlaneMoney::new(
+            Arc::clone(&book_money),
+            Arc::clone(&site) as Arc<dyn EndPost>,
+        ))
+    };
+
+    let key_file = std::env::temp_dir().join(format!(
+        "busbar-serve-door-{instance}-{}",
+        std::process::id()
+    ));
+    std::fs::write(&key_file, CREDENTIAL).expect("the credential file");
+    let provider: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(&format!(
+        "{{protocol: {}, base_url: 'http://127.0.0.1:{port}', api_key: {{file: '{}'}}, error_map: {{}}}}",
+        busbar_plane_decisions::config::PROTOCOL,
+        key_file.display()
+    ))
+    .expect("a provider entry");
+    let providers = provider_routes(&std::collections::HashMap::from([(
+        "typesafe".to_string(),
+        provider,
+    )]));
+    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let auths = OutboundAuths::new(
+        Arc::clone(&dispatcher),
+        crate::LINKED.auths,
+        None,
+        crate::root::loader::dispatch::ConnTable::Host(
+            Arc::clone(&connector) as Arc<dyn DeclaredConns>
+        ),
+    );
+    let reach = DoorReach {
+        providers: &providers,
+        secrets: &secrets,
+        auths: &auths,
+        conns: Arc::clone(&connector) as Arc<dyn PollConns>,
+        stream_ceiling_secs: 600,
+    };
+    let mut sections = BTreeMap::new();
+    sections.insert(
+        section_key,
+        serde_yaml::from_str("models: {m: {provider: typesafe}}").expect("a section"),
+    );
+    let mut served = compose_planes_over(
+        linked,
+        &[(instance.to_string(), plane)],
+        &dispatcher,
+        &composed_services(),
+        &sections,
+        &plane_money,
+        Some(&DoorEgress {
+            reach: &reach,
+            journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
+        }),
+    )
+    .expect("the door plane composes, its egress sealed");
+    let _ = std::fs::remove_file(&key_file);
+    served.post = Some(Arc::clone(&post));
+    let app = busbar_kernel::test_support::TestApp::new()
+        .keys_chain()
+        .governance(Arc::clone(&gov))
+        .cost(CostModel::flat(1))
+        .build();
+    let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
+    let (router, _admin, handle) =
+        busbar_kernel::build_split_routers_serving(app, doors, 1 << 20, 0, false);
+    Serving {
+        router,
+        token: token.expose_secret().to_string(),
+        _handle: handle,
+    }
+}
+
+/// The decisions door's `declares` section stating the breaker fact false (ARCHITECT Q4).
+const STATES_NO_BENCH: &str = r#"{"breaker":{"bench_below_trip_threshold":false}}"#;
+
+/// The linked table with the decisions door's row stating `declares` (the
+/// `[package.metadata.busbar.linked-declares]` row a plane's door crate names).
+fn declaring(declares: &'static str) -> crate::root::linked::Linked {
+    crate::root::linked::Linked {
+        plane_door_declares: vec![(
+            "busbar-plane-decisions",
+            decisions_door as busbar_contract::abi::mechanism::door::DoorFn,
+            declares,
+        )]
+        .leak(),
+        ..crate::LINKED
+    }
+}
+
+/// The decisions door's Statement name: the name the root finds its declared facts by.
+fn decisions_name() -> String {
+    let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
+    busbar_contract::abi::mechanism::rendering::read(&row.statement)
+        .expect("its Statement reads")
+        .name
+}
+
+/// One call, then the far end's next request head when it reached the far end.
+async fn call_once(
+    serving: &Serving,
+    heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+) -> (StatusCode, Option<String>) {
+    let status = send(&serving.router, CLAIMED, Some(&serving.token))
+        .await
+        .status();
+    (status, heard.try_recv().ok())
+}
+
+/// THE PLANE'S BREAKER FACT, READ BY THE ROOT (ARCHITECT Q4): a door plane whose `declares`
+/// states `bench_below_trip_threshold: false` keeps its sole member in service through one
+/// transient failure below the trip threshold — the 503 reaches the caller, and the NEXT call
+/// reaches the far end and is served. The root names no plane: it finds the fact by the door's
+/// Statement name. RED with the fact absent (the arm below).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plane_stating_no_bench_below_the_trip_keeps_its_sole_member_through_one_503() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-door-breaker-stated";
+    let _published = Published(instance);
+    let linked = declaring(STATES_NO_BENCH);
+    assert_eq!(
+        crate::root::linked::door_breaker(&linked, None, &decisions_name())
+            .expect("the fact reads"),
+        Some(crate::root::loader::sign::BreakerDecl {
+            bench_below_trip_threshold: false
+        }),
+        "the root reads the fact off the door's declares, by its Statement name"
+    );
+    let (port, mut heard) = far_end_failing_first(1).await;
+    let serving = serve_over(&linked, instance, port).await;
+
+    let (status, reached) = call_once(&serving, &mut heard).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "the far end's one transient failure"
+    );
+    assert!(reached.is_some(), "the failing call reached the far end");
+
+    let (status, reached) = call_once(&serving, &mut heard).await;
+    assert!(
+        reached.is_some(),
+        "one 503 below the trip benches nothing: the next call reaches the far end"
+    );
+    assert_eq!(status, StatusCode::OK, "and is served");
+}
+
+/// ABSENT, THE DEFAULT HOLDS: a door plane whose `declares` states no breaker fact (or that has no
+/// `declares` row at all, as no door in the shipped table has) keeps the host's default cell: one
+/// transient failure benches the sole member for its cooldown, so the next call is refused without
+/// reaching the far end, exactly as before the fact existed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plane_stating_no_breaker_fact_keeps_the_default_bench() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-door-breaker-absent";
+    let _published = Published(instance);
+    // The door's row states a `declares` section without the fact; the shipped table has no row.
+    let silent = declaring("{}");
+    assert_eq!(
+        crate::root::linked::door_breaker(&silent, None, &decisions_name()).expect("it reads"),
+        None
+    );
+    assert_eq!(
+        crate::root::linked::door_breaker(&crate::LINKED, None, &decisions_name())
+            .expect("nothing to read"),
+        None,
+        "no linked door states the fact in this build"
+    );
+
+    let (port, mut heard) = far_end_failing_first(1).await;
+    let serving = serve_over(&silent, instance, port).await;
+    let (status, reached) = call_once(&serving, &mut heard).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "the far end's one transient failure"
+    );
+    assert!(reached.is_some(), "the failing call reached the far end");
+
+    let (status, reached) = call_once(&serving, &mut heard).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "the benched member's call is refused"
+    );
+    assert_eq!(
+        reached, None,
+        "under the default one 503 benches the sole member: the next call never reaches the far end"
     );
 }
