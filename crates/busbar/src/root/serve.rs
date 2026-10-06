@@ -296,6 +296,13 @@ impl HostServices for LateServices {
         }
     }
 
+    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
+        match self.served() {
+            Ok(s) => s.trust_unreached(caller, counterparty),
+            Err(r) => r,
+        }
+    }
+
     fn trust_sight_item(
         &self,
         caller: &Caller,

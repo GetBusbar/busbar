@@ -28,7 +28,7 @@ use crate::abi::host::service::{
     RecordsListIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut, SignIn, TrustDueIn,
     TrustServesIn, TrustSightIn, TrustSightItemIn, TrustVerifyIn, UnitNestIn, WorkFindIn,
     WorkOpenIn, WorkResumeIn, WorkSettleIn, ABSENT, CLAIM_WON, DEST_ALLOWED, DEST_RESOLVE,
-    ENTITLED, FOUND,
+    ENTITLED, FOUND, TRUST_REACHED, TRUST_UNREACHABLE,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
@@ -372,10 +372,33 @@ impl Services {
         counterparty: &str,
         catalogue_hash: &str,
     ) -> Pend<u64> {
+        self.sighting(handle, counterparty, catalogue_hash, TRUST_REACHED)
+    }
+
+    /// `trust.sight` with [`TRUST_UNREACHABLE`]: the plane could NOT reach `counterparty` to look.
+    /// Ready: the KERNEL's last `TRUST_*` verdict, nothing changed; the plane fails its call as an
+    /// upstream failure. Never drifts, never clears, never quarantines.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::trust_sight`].
+    pub fn trust_unreachable(&self, handle: CompletionHandle, counterparty: &str) -> Pend<u64> {
+        self.sighting(handle, counterparty, "", TRUST_UNREACHABLE)
+    }
+
+    fn sighting(
+        &self,
+        handle: CompletionHandle,
+        counterparty: &str,
+        catalogue_hash: &str,
+        outcome: u32,
+    ) -> Pend<u64> {
         let input = TrustSightIn {
             head: head::<TrustSightIn>(op::TRUST_SIGHT, handle),
             counterparty: text(counterparty),
             catalogue_hash: text(catalogue_hash),
+            outcome,
+            _outcome_reserved: 0,
         };
         verdict(self.cross(
             op::TRUST_SIGHT,

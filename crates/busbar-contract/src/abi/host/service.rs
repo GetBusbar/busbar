@@ -471,7 +471,9 @@ pub struct WorkResumeIn {
 // ── trust ─────────────────────────────────────────────────────────────────────────────────────
 
 /// [`op::TRUST_SIGHT`]'s `in`: report a counterparty's catalogue hash; the kernel judges it.
-/// `value` = a `TRUST_*` verdict.
+/// `value` = a `TRUST_*` verdict. With [`TRUST_UNREACHABLE`] the plane reports it could not reach
+/// the counterparty to look: the kernel answers its LAST verdict and changes nothing (the hash is
+/// unread and may be empty), and the plane fails its call as an upstream failure.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct TrustSightIn {
@@ -481,7 +483,16 @@ pub struct TrustSightIn {
     pub counterparty: AbiStr,
     /// Its catalogue hash.
     pub catalogue_hash: AbiStr,
+    /// [`TRUST_REACHED`] | [`TRUST_UNREACHABLE`]; any other value is a fault.
+    pub outcome: u32,
+    /// Alignment padding.
+    pub _outcome_reserved: u32,
 }
+
+/// [`TrustSightIn::outcome`]: the plane reached the counterparty and reports what it serves.
+pub const TRUST_REACHED: u32 = 0;
+/// [`TrustSightIn::outcome`]: the plane could not reach the counterparty; nothing is sighted.
+pub const TRUST_UNREACHABLE: u32 = 1;
 
 /// [`op::TRUST_DUE`]'s `in`: the counterparties the kernel's `tick` marked for re-verification,
 /// one span each (key = the counterparty). Never pends.

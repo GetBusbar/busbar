@@ -959,6 +959,14 @@ pub const TRUST_RECOVERY_BACKOFF: u32 = 3;
 /// registration's trust anchors beside its pin, and the connector's one guard honours it on every
 /// connection the need opens to that destination. It carries no default and no mechanisms.
 pub const TRUST_PRIVATE_REACH: u32 = 4;
+/// [`TrustKey::role`]: the key holds the registration's CONFIGURED ITEM APPROVALS, a map of item to
+/// an object whose field [`TrustKey::default`] names holds the digest the operator approved the
+/// item at (`{<item>: {<field>: "<digest>"}}`). The kernel seeds the counterparty's approved items
+/// from it at every admit (an edit is the operator's re-approval); an item written with a blank or
+/// absent digest is allowed but approved at none, and is served at none. The core-admin trust verbs
+/// approve and revoke on top of it. It carries no mechanisms and no flags; its `default` is
+/// required.
+pub const TRUST_ITEM_APPROVALS: u32 = 5;
 /// [`TrustKey::flags`], on a [`TRUST_PIN`] key only: the pin object may also carry `fingerprint`.
 pub const PIN_FINGERPRINT: u32 = 1;
 /// [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key
@@ -1011,11 +1019,12 @@ pub struct TrustKey {
     /// The key, as written inside one registration.
     pub key: AbiStr,
     /// [`TRUST_PIN`] | [`TRUST_REVERIFY_TTL`] | [`TRUST_RECOVERY_BACKOFF`] |
-    /// [`TRUST_PRIVATE_REACH`].
+    /// [`TRUST_PRIVATE_REACH`] | [`TRUST_ITEM_APPROVALS`].
     pub role: u32,
     /// [`PIN_FINGERPRINT`] on a pin; `0` otherwise.
     pub flags: u32,
-    /// A duration key's value when a registration writes none; absent = zero. A pin has none.
+    /// A duration key's value when a registration writes none; absent = zero. A pin has none. On a
+    /// [`TRUST_ITEM_APPROVALS`] key: the field of each item's object holding its approved digest.
     pub default: AbiStr,
     /// A pin's mechanisms; empty for a duration key.
     pub mechanisms: *const PinMechanism,

@@ -157,6 +157,10 @@ impl HostServices for CredentialServices {
         self.inner.trust_due(caller)
     }
 
+    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
+        self.inner.trust_unreached(caller, counterparty)
+    }
+
     fn trust_sight_item(
         &self,
         caller: &Caller,

@@ -985,6 +985,19 @@ fn a_q71_node(
     axum::Router,
     Arc<std::sync::Mutex<Vec<busbar_contract::records::PlaneRecord>>>,
 ) {
+    a_q71_node_trusting(door, operator_key, crate::root::units_admin::no_trust())
+}
+
+/// [`a_q71_node`], its trust verbs bound to `trust`.
+#[cfg(feature = "root-admin")]
+fn a_q71_node_trusting(
+    door: busbar_kernel_identity::AuthChain,
+    operator_key: Option<[u8; 32]>,
+    trust: crate::root::units_admin::TrustDesk,
+) -> (
+    axum::Router,
+    Arc<std::sync::Mutex<Vec<busbar_contract::records::PlaneRecord>>>,
+) {
     busbar_kernel::metrics::init();
     busbar_core_admin::install();
     let app = busbar_kernel::test_support::TestApp::new()
@@ -1026,10 +1039,184 @@ fn a_q71_node(
                     Ok(())
                 },
             ));
+            units.admin.trust = trust;
             units
         },
     );
     (mounted, kept)
+}
+
+/// THE OPERATOR'S TRUST VERBS (ARCHITECT 2026-10-06): one generic core-admin verb set over the
+/// kernel's trust book, counterparty-phrased. Walked over the real mount behind the operator, each
+/// answer asserted by status AND body, against the trust book the kernel's Approve judges by:
+/// * unapproved (sighted, never approved) is refused at serve (the 403's case), and an approval
+///   with nothing sighted is a named `409`;
+/// * approved, it serves; the same approval twice answers the same row (idempotent);
+/// * a drift after the approval is quarantined again (refused) until re-approved;
+/// * revoked, it is refused again;
+/// * an unknown key is `404`, a body without one `400`; `GET /trust` lists every key's state;
+/// * each decision seals one audit row, and the read seals none.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
+    use busbar_contract::services::{Caller, HostServices, Later};
+    use busbar_kernel::host_services::{InstanceFacts, KernelServices};
+    use busbar_kernel::trust::book::{Distrust, TrustFacts};
+    use busbar_kernel::trust::reverify::Policy;
+    use busbar_kernel::trust::section::TrustEntry;
+
+    let kernel = Arc::new(KernelServices::new());
+    kernel
+        .admit(
+            "inst",
+            InstanceFacts {
+                trust: vec![(
+                    "peer".to_string(),
+                    TrustEntry {
+                        pin: None,
+                        policy: Policy {
+                            ttl_ms: 0,
+                            recovery_backoff_ms: 0,
+                        },
+                        approved: Default::default(),
+                    },
+                )],
+                ..InstanceFacts::default()
+            },
+        )
+        .expect("admitted");
+    let desk = Arc::clone(&kernel);
+    let (node, _) = a_q71_node_trusting(
+        a_door_that_identifies_the_operator(),
+        Some([7u8; 32]),
+        Arc::new(move || Some(Arc::clone(&desk))),
+    );
+    let op = Some(THE_OPERATORS_CREDENTIAL);
+    let caller = Caller {
+        instance: Arc::from("inst"),
+        plugin: Arc::from("the-plane"),
+        kind: busbar_contract::abi::mechanism::KindCode::Plane,
+    };
+    let sight = |hash: &str| {
+        let later: Later = Box::new(|_| {});
+        let _ = kernel.trust_sight(&caller, "peer", hash, later);
+    };
+    let served = || {
+        kernel.trust_judge(
+            "inst",
+            &TrustFacts {
+                counterparty: "peer",
+                item: None,
+                digest: None,
+            },
+        )
+    };
+    let approve = |key: &'static str| {
+        let node = node.clone();
+        async move {
+            over_as(
+                &node,
+                "POST",
+                "/api/v1/admin/trust/approve",
+                &format!(r#"{{"key":"{key}"}}"#),
+                op,
+            )
+            .await
+        }
+    };
+    let row = |state: &str, approved: &str, seen: &str| {
+        format!(
+            r#"{{"approved":{approved},"counterparty":"peer","instance":"inst","item":null,"key":"inst/peer","seen":{seen},"state":"{state}"}}"#
+        )
+    };
+
+    // Declared, never sighted: listed `new`, and an approval has nothing to approve at.
+    assert_eq!(
+        over_as(&node, "GET", "/api/v1/admin/trust", "", op).await,
+        (
+            200,
+            format!(r#"{{"keys":[{}]}}"#, row("new", "null", "null"))
+        )
+    );
+    assert_eq!(
+        approve("inst/peer").await,
+        (
+            409,
+            r#"{"error":{"code":"conflict","message":"trust key `inst/peer` was never sighted"}}"#
+                .to_string()
+        )
+    );
+
+    // RED: sighted and unapproved, it is refused at serve.
+    sight("h1");
+    assert_eq!(served(), Err(Distrust::NotApproved));
+
+    // Approved: served. The same approval twice answers the same row.
+    let first = approve("inst/peer").await;
+    assert_eq!(first, (200, row("approved", r#""h1""#, r#""h1""#)));
+    assert_eq!(approve("inst/peer").await, first, "idempotent");
+    assert_eq!(served(), Ok(()));
+
+    // RED: a drift after the approval is quarantined again, refused until re-approved.
+    sight("h2");
+    assert_eq!(served(), Err(Distrust::Quarantined));
+    assert_eq!(
+        over_as(&node, "GET", "/api/v1/admin/trust", "", op).await,
+        (
+            200,
+            format!(r#"{{"keys":[{}]}}"#, row("drifted", r#""h1""#, r#""h2""#))
+        )
+    );
+    assert_eq!(
+        approve("inst/peer").await,
+        (200, row("approved", r#""h2""#, r#""h2""#))
+    );
+    assert_eq!(served(), Ok(()));
+
+    // RED: revoked, refused again.
+    assert_eq!(
+        over_as(
+            &node,
+            "POST",
+            "/api/v1/admin/trust/revoke",
+            r#"{"key":"inst/peer"}"#,
+            op
+        )
+        .await,
+        (200, row("new", r#""h2""#, r#""h2""#))
+    );
+    assert_eq!(served(), Err(Distrust::NotApproved));
+
+    // An unknown key is 404; a body naming none is 400.
+    assert_eq!(
+        approve("inst/stranger").await,
+        (
+            404,
+            r#"{"error":{"code":"not_found","message":"trust key `inst/stranger` not found"}}"#
+                .to_string()
+        )
+    );
+    assert_eq!(
+        over_as(&node, "POST", "/api/v1/admin/trust/revoke", "{}", op).await,
+        (
+            400,
+            r#"{"error":{"code":"invalid_request","message":"key is required"}}"#.to_string()
+        )
+    );
+
+    // Audited like every admin write: one row per decision; the read seals none.
+    let approvals = the_operators_rows_for(&node, "/api/v1/admin/trust/approve").await;
+    assert_eq!(
+        approvals.len(),
+        5,
+        "every approval call sealed one row: {approvals:?}"
+    );
+    assert!(approvals.iter().all(|(verb, _)| verb == "trust_approve"));
+    assert_eq!(
+        the_operators_rows_for(&node, "/api/v1/admin/trust").await,
+        Vec::<(String, String)>::new(),
+        "the read seals nothing"
+    );
 }
 
 /// One request over `router` presenting `credential` (or none).

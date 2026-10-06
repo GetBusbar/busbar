@@ -18,6 +18,8 @@
 //! default come off the declaration. The sentences are the ones the planes spoke before the keys
 //! moved here, with the key and token words substituted in.
 
+use std::collections::BTreeMap;
+
 use busbar_contract::plane::{TrustKeyDecl, TrustRole};
 
 use super::reverify::Policy;
@@ -45,6 +47,10 @@ pub struct TrustEntry {
     pub pin: Option<DeclaredPin>,
     /// The re-verification cadence, each half from its key, its declared default, or zero.
     pub policy: Policy,
+    /// The CONFIGURED ITEM APPROVALS (`abi::plane::TRUST_ITEM_APPROVALS`): each item the
+    /// registration approves, at the digest it approves it at. An item written with a blank or
+    /// absent digest is allowed but approved at none, and is absent here.
+    pub approved: BTreeMap<String, String>,
 }
 
 /// Parse and judge one registration's trust keys, in declaration order.
@@ -93,6 +99,7 @@ fn read_entry(
             ttl_ms: 0,
             recovery_backoff_ms: 0,
         },
+        approved: BTreeMap::new(),
     };
     let map = entry.as_mapping();
     for decl in keys {
@@ -117,6 +124,7 @@ fn read_entry(
                     shape::<()>(strict, format!("{at}: `{k}:` must be true or false"))?;
                 }
             }
+            TrustRole::ItemApprovals => out.approved = item_approvals(decl, value),
         }
     }
     Ok(out)
@@ -131,6 +139,25 @@ pub fn private_reach(entry: &serde_yaml::Value, keys: &[TrustKeyDecl]) -> bool {
         .filter(|k| k.role == TrustRole::PrivateReach)
         .filter_map(|k| entry.as_mapping()?.get(k.key)?.as_bool())
         .any(|b| b)
+}
+
+/// The configured item approvals under an item-approvals key: every item whose object carries a
+/// non-blank digest (trimmed) under the declared field. The map's SHAPE is the plane's grammar to
+/// refuse in its own words; anything that is not an item object reads as no approval here.
+fn item_approvals(
+    decl: &TrustKeyDecl,
+    value: Option<&serde_yaml::Value>,
+) -> BTreeMap<String, String> {
+    let field = decl.default.unwrap_or_default();
+    value
+        .and_then(serde_yaml::Value::as_mapping)
+        .into_iter()
+        .flat_map(|m| m.iter())
+        .filter_map(|(item, object)| {
+            let digest = object.as_mapping()?.get(field)?.as_str()?.trim();
+            (!digest.is_empty()).then(|| (item.as_str()?.to_string(), digest.to_string()))
+        })
+        .collect()
 }
 
 /// A malformed shape: refused when `strict`, otherwise read as absent.
