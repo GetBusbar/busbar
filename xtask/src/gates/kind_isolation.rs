@@ -7194,6 +7194,36 @@ impl Gate for KindIsolationGate {
                 &["new-forbidden-edge", "busbar-planted-clean -> busbar-plugin-loader"],
             ));
 
+            // A RENAME IS THE EDGE IT RENAMES ONLY THROUGH A REVIEWED ROW. The kernel's
+            // `fixture-hook` reaches busbar-hook-ranking, which the base reached as
+            // busbar-hooks-ranking: the construction census's `[[gate.census.renamed]]` row is what
+            // says the two are one crate. With that row gone the rename is UNREVIEWED, and the edge
+            // under its new name is one this branch introduced.
+            let unreviewed = {
+                let mut ov = Overlay::new();
+                let ceilings = cx
+                    .read(crate::gates::construction::CEILINGS)
+                    .unwrap_or_default();
+                let kept: Vec<&str> = ceilings
+                    .split("\n[[gate.census.renamed]]\n")
+                    .filter(|chunk| !chunk.contains("from = \"busbar-hooks-ranking\""))
+                    .collect();
+                ov.set(
+                    crate::gates::construction::CEILINGS,
+                    kept.join("\n[[gate.census.renamed]]\n"),
+                );
+                ov
+            };
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a crate renamed with its move and no reviewed rename row is a new edge under its \
+                 new name",
+                &[ROW_DEPS],
+                unreviewed,
+                &["new-forbidden-edge", "busbar-kernel -> busbar-hook-ranking"],
+            ));
+
             // A `[[cell]]` ROW IS EXISTENCE ONLY, and a `count` written back into one is refused
             // at load: size is not a CI check (owner 2026-10-02), and a field the reader still
             // accepted would be the integers coming back one row at a time.
