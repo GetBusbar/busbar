@@ -2311,7 +2311,7 @@ impl DataRoutes {
             .get(claim as usize)
             .map(|c| c.carrier.clone());
         if let Some((door, carrier)) = carrier.and_then(|c| {
-            framed::stream_framer(&c, DATA_CARRIER, |s| self.framer_for(s)).map(|d| (d, c))
+            serve_framed::stream_framer(&c, DATA_CARRIER, |s| self.framer_for(s)).map(|d| (d, c))
         }) {
             let head: Vec<(String, Vec<u8>)> = arrival
                 .fields
@@ -2332,7 +2332,7 @@ impl DataRoutes {
                 Err(why) => {
                     let status = refusal_status(ReasonCode::DecodeFailed);
                     return match stream.refuse(why.error.as_bytes(), status) {
-                        Ok(block) => framed::whole(status, &block),
+                        Ok(block) => serve_framed::whole(status, &block),
                         Err(_) => stated((status, Vec::new()), Body::empty()),
                     };
                 }
@@ -2341,10 +2341,10 @@ impl DataRoutes {
                 body: Arc::from(messages.concat()),
                 ..arrival
             };
-            let stream: framed::Shared = Arc::new(Mutex::new(Some(stream)));
+            let stream: serve_framed::Shared = Arc::new(Mutex::new(Some(stream)));
             let (inner, reply) = IngressCaller::arriving(body);
             let (trailers, trailed) = oneshot::channel();
-            let caller = framed::FramedCaller::new(inner, Arc::clone(&stream), trailers);
+            let caller = serve_framed::FramedCaller::new(inner, Arc::clone(&stream), trailers);
             let unit = async move {
                 let caller = caller;
                 self.drive(
@@ -2361,7 +2361,7 @@ impl DataRoutes {
             return reply
                 .with_trailers(trailed)
                 .answer_with(Box::pin(unit), move |rendered| {
-                    framed::refused(&stream, rendered)
+                    serve_framed::refused(&stream, rendered)
                 })
                 .await;
         }
@@ -3174,7 +3174,7 @@ impl http_body::Body for ReplyBody {
 
 #[cfg(linked_axis_node)]
 #[path = "serve_framed.rs"]
-mod framed;
+mod serve_framed;
 
 #[cfg(test)]
 #[path = "tests/serve.rs"]
