@@ -72,6 +72,12 @@ pub(crate) struct InstanceWake {
         busbar_contract::conn::InstanceId,
         std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>,
     )>,
+    /// The settings keys the instance's manifest declares DESTINATIONS (granted once, by the
+    /// opener that read the manifest): `disk.append` serves this instance those only.
+    pub(crate) destinations: OnceLock<Vec<String>>,
+    /// Each granted key bound to the file the instance's settings give it, re-bound by every
+    /// `open` and `refresh` (`disk.append` maps a key through it).
+    pub(crate) bound: std::sync::RwLock<Vec<busbar_contract::services::DiskDest>>,
 }
 
 impl std::fmt::Debug for InstanceWake {
@@ -81,7 +87,8 @@ impl std::fmt::Debug for InstanceWake {
             .field("caller", &self.caller)
             .field("credential_kinds", &self.credential_kinds)
             .field("conn", &self.conn.get().map(|(id, _)| id))
-            .finish()
+            .field("destinations", &self.destinations)
+            .finish_non_exhaustive()
     }
 }
 

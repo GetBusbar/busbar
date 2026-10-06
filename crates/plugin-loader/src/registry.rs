@@ -78,8 +78,8 @@ impl LoadablePlugin {
         matches!(self.entry, Some(LinkedEntry::Store { .. }))
     }
 
-    /// M6-COLD-DELETE residue: whether this row is a LINKED JSON-lane export sink
-    /// (`BUSBAR_COLD_ENTRY`), the request-log file and webhook sinks until their door re-pins.
+    /// M6-COLD-DELETE residue: whether this row is a LINKED JSON-lane auth plugin
+    /// (`BUSBAR_COLD_ENTRY`), until the auth plugin's door re-pin.
     pub fn image_is_cold_linked(&self) -> bool {
         matches!(self.entry, Some(LinkedEntry::Boundary(_)))
     }
@@ -97,8 +97,8 @@ impl LoadablePlugin {
         self.entry.is_some()
     }
 
-    /// What a JSON-lane load runs over (M6-COLD-DELETE residue: the hosted login and the two
-    /// request-log sinks): the linked boundary, or the verified bytes.
+    /// What a JSON-lane load runs over (M6-COLD-DELETE residue: the auth plugin's verify and hosted
+    /// login): the linked boundary, or the verified bytes.
     pub fn image(&self) -> crate::Image<'_> {
         match self.entry {
             Some(LinkedEntry::Boundary(entry)) => crate::Image::Linked(entry),
@@ -160,13 +160,13 @@ pub enum LinkedEntry {
     /// the same door a dropped-in build exports as `busbar_plugin_door` (THE DESIGN: compiled-in =
     /// dropped-in). Loaded through [`crate::dispatch::load_linked`].
     Door(busbar_contract::abi::mechanism::door::DoorFn),
-    /// M6-COLD-DELETE residue: a linked JSON-lane export sink's SDK boundary (`BUSBAR_COLD_ENTRY`),
-    /// the request-log file and webhook sinks until their door re-pins land.
+    /// M6-COLD-DELETE residue: a linked JSON-lane auth plugin's SDK boundary (`BUSBAR_COLD_ENTRY`),
+    /// until the auth plugin's door re-pin.
     Boundary(&'static ColdEntry),
 }
 
 impl LinkedPlugin {
-    /// M6-COLD-DELETE residue: a linked JSON-lane export sink, `manifest` and its boundary.
+    /// M6-COLD-DELETE residue: a linked JSON-lane auth plugin, `manifest` and its boundary.
     pub fn boundary(manifest: Manifest, entry: &'static ColdEntry) -> Self {
         LinkedPlugin {
             manifest,
@@ -802,14 +802,30 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
     // Phase 2: trust. A rejection here is a SKIP (logged, never dlopen'ed) - unless the plugin is
     // actually referenced, in which case resolution fails loudly with this reason attached.
     match evaluate(&unpacked.lib_bytes, &unpacked.manifest, policy) {
-        Ok(verdict) => FileOutcome::Loadable(LoadablePlugin {
-            file,
-            manifest: unpacked.manifest,
-            verdict,
-            lib_bytes: unpacked.lib_bytes,
-            ephemeral: false,
-            entry: None,
-        }),
+        Ok(verdict) => {
+            let plugin = LoadablePlugin {
+                file,
+                manifest: unpacked.manifest,
+                verdict,
+                lib_bytes: unpacked.lib_bytes,
+                ephemeral: false,
+                entry: None,
+            };
+            // Phase 2b: the egress-class grant (§5): a plugin that is not first-party declaring a
+            // need in a first-party class is never admitted.
+            match plugin.first_party() {
+                true => FileOutcome::Loadable(plugin),
+                false => match crate::sign::egress_grant(&plugin.manifest) {
+                    Ok(()) => FileOutcome::Loadable(plugin),
+                    Err(reason) => FileOutcome::Skipped(SkippedPlugin {
+                        file: plugin.file,
+                        manifest: plugin.manifest,
+                        reason,
+                        kind: crate::sign::RejectKind::EgressGrant,
+                    }),
+                },
+            }
+        }
         Err(rejected) => FileOutcome::Skipped(SkippedPlugin {
             file,
             manifest: unpacked.manifest,
@@ -978,12 +994,15 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     RejectKind::UnknownPublisher => "unknown-publisher",
                     RejectKind::Tampered => "tampered",
                     RejectKind::Unsigned => "unsigned",
+                    RejectKind::EgressGrant => "third-party (egress grant)",
                 }
                 .to_string();
                 let status = match s.kind {
                     // Only a TRUSTED-but-below-floor artifact is a hard REJECTED row; every untrusted
                     // reject (including a floored untrusted one) is a SKIP.
-                    RejectKind::AntiDowngrade => format!("REJECTED: {}", s.reason),
+                    RejectKind::AntiDowngrade | RejectKind::EgressGrant => {
+                        format!("REJECTED: {}", s.reason)
+                    }
                     _ => format!("SKIPPED: {}", s.reason),
                 };
                 rows.push(InventoryEntry {

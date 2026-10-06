@@ -286,7 +286,7 @@ fn an_absent_block_resolves_to_no_authorization_server() {
     assert_eq!(identity.issuer(), ISSUER);
 }
 
-/// `App::oauth_as` and the mounted surface are the same decision, and the router must not be able to
+/// `App::oauth_as` and the mounted surface are the same choice, and the router must not be able to
 /// disagree with the state it was built from.
 #[test]
 fn the_mounted_surface_and_the_app_state_cannot_disagree() {

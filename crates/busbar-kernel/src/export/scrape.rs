@@ -7,7 +7,7 @@
 //! What stays the host's is what only the host can hold: the recorder every emit site writes
 //! ([`crate::metrics`]), its scrape-time gauges, and the route. The SCRAPE SINK — the instance whose
 //! sink carries the `metrics` stream and which subscribes to it ([`crate::config::PluginExportSettings`])
-//! — is handed the recorder's SNAPSHOT (`ExportRequest::Scrape`) and the host serves the exposition
+//! — is handed the recorder's SNAPSHOT (its `scrape` op) and the host serves the exposition
 //! it renders. On every scrape, on the route's blocking thread: with the recorder installed, the
 //! scrape-time gauges are refreshed from the LIVE `App` and every export-axis sink's `status` is
 //! folded (the recorder then holds everything it will report); then [`exposition`] answers — the

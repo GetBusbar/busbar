@@ -97,6 +97,7 @@ fn either_half_alone_still_folds() {
 fn a_second_install_is_refused() {
     struct Other;
     impl PluginObserver for Other {
+        fn dropped(&self, _: u64) {}
         fn observe(&self, _: &str, _: &str, _: &[serde_json::Value], _: &[serde_json::Value]) {}
     }
     let _guard = exclusive();
@@ -124,4 +125,247 @@ fn a_granted_shed_declaration_is_the_hosts_shed_counter() {
         .collect();
     grant_series("k9b-third-party", false, &third).expect("nothing to refuse");
     assert!(shed_series("k9b-third-party").is_empty());
+}
+
+// ── ENVELOPE-ALL (ARCHITECT ruling 2026-10-03): every kind's envelope, through a bounded intake ──
+
+/// A binder's own sink, recorded: what the door's binder still receives once the host's
+/// observability stands before it.
+#[derive(Default)]
+struct Binder(std::sync::Mutex<Vec<String>>);
+
+impl crate::dispatch::EnvelopeSink for Binder {
+    fn metric(&self, m: crate::dispatch::Metric<'_>) {
+        self.0.lock().unwrap().push(format!("metric {}", m.family));
+    }
+    fn diag(&self, d: crate::dispatch::Diagnostic<'_>) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("diag {}", String::from_utf8_lossy(d.text)));
+    }
+    fn dropped(&self, why: crate::dispatch::Dropped) {
+        self.0.lock().unwrap().push(format!("dropped {why:?}"));
+    }
+}
+
+/// THE ONE BIND OBSERVES EVERY KIND: `door` (a real plugin's, where the kind has one in this
+/// crate's graph; the kind's existing fixture otherwise) bound through the one load with a sink of
+/// its binder's own, and handed — as the dispatcher hands every reply's ingested envelope — a
+/// declared diagnostic and a log record. The diagnostic reaches the host's observer under the
+/// plugin's Statement name and `kind`; the log record does not (it is the plugin log's); the
+/// binder's sink still receives both. RED before the ruling: every binder but export's bound
+/// `NoSink` downstream of the log sink, and the observer received nothing.
+fn observed_through_its_bind<K: crate::dispatch::Kind>(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+    kind: &str,
+) {
+    let guard = exclusive();
+    let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let binder = std::sync::Arc::new(Binder::default());
+    let row = crate::dispatch::LinkedRow::of(door).expect("the door states its Statement");
+    let name = busbar_contract::abi::mechanism::rendering::read(&row.statement)
+        .expect("the Statement reads back")
+        .name;
+    let plugin = crate::dispatch::load_linked::<K>(
+        &row,
+        crate::dispatch::Bind {
+            instance: std::sync::Arc::from("envelope-all"),
+            max_inflight_cap: 64,
+            sink: binder.clone(),
+            dispatcher: d.adopter(),
+            conns: None,
+        },
+    )
+    .expect("the door binds");
+    testing::clear(&guard);
+    let sink = plugin.envelope_sink();
+    sink.diag(crate::dispatch::Diagnostic {
+        id: 0,
+        name: b"BUSBAR-7999",
+        severity: 2,
+        text: b"a declared diagnostic",
+    });
+    sink.diag(crate::dispatch::Diagnostic {
+        id: busbar_contract::abi::mechanism::call::DIAG_LOG,
+        name: b"",
+        severity: 0,
+        text: b"a log record",
+    });
+    let folds = testing::folds();
+    assert_eq!(folds.len(), 1, "{kind}: {folds:?}");
+    let (plugin_name, folded_kind, metrics, diagnostics) = &folds[0];
+    assert_eq!(
+        (plugin_name.as_str(), folded_kind.as_str()),
+        (name.as_str(), kind)
+    );
+    assert!(metrics.is_empty());
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0]["code"], "BUSBAR-7999");
+    assert_eq!(diagnostics[0]["level"], "error");
+    assert_eq!(diagnostics[0]["message"], "a declared diagnostic");
+    assert_eq!(
+        *binder.0.lock().unwrap(),
+        vec![
+            "diag a declared diagnostic".to_string(),
+            "diag a log record".to_string()
+        ],
+        "{kind}: the binder's sink still receives every entry"
+    );
+}
+
+/// `kind: plane` — the plane kind's door fixture (no real plane door in this crate's graph).
+#[test]
+fn a_plane_envelope_reaches_the_host_observer() {
+    observed_through_its_bind::<crate::dispatch::kinds::plane::Plane>(
+        crate::plane_door_plugin::door,
+        busbar_contract::abi::mechanism::kind::PLANE,
+    );
+}
+
+/// `kind: auth` — the real operator admin-tokens module (the `auth-verify` both-ways row).
+#[test]
+fn an_auth_envelope_reaches_the_host_observer() {
+    observed_through_its_bind::<crate::dispatch::kinds::auth::Auth>(
+        crate::both_ways::door_fixture("auth-verify").1,
+        busbar_contract::abi::mechanism::kind::AUTH,
+    );
+}
+
+/// `kind: store` — the real in-memory store's door (the `store` both-ways row).
+#[test]
+fn a_store_envelope_reaches_the_host_observer() {
+    observed_through_its_bind::<crate::dispatch::kinds::store::Store>(
+        crate::both_ways::store_fixture::door,
+        busbar_contract::abi::mechanism::kind::STORE,
+    );
+}
+
+/// `kind: hook` — the hook kind's door fixture (no real hook door in this crate's graph).
+#[test]
+fn a_hook_envelope_reaches_the_host_observer() {
+    observed_through_its_bind::<crate::dispatch::kinds::hook::Hook>(
+        crate::hook_door_conformance_tests::hook_door_plugin::conforming::door,
+        busbar_contract::abi::mechanism::kind::HOOK,
+    );
+}
+
+/// `kind: secret` — the real env secret source's door (the `secret` both-ways row).
+#[test]
+fn a_secret_envelope_reaches_the_host_observer() {
+    observed_through_its_bind::<crate::dispatch::kinds::secret::Secret>(
+        crate::both_ways::secret_fixture::door::door,
+        busbar_contract::abi::mechanism::kind::SECRET,
+    );
+}
+
+/// `kind: transport` — the real tcp transport's door (the `transport` both-ways row).
+#[test]
+fn a_transport_envelope_reaches_the_host_observer() {
+    observed_through_its_bind::<crate::dispatch::kinds::transport::Transport>(
+        crate::both_ways::transport_linked::door,
+        busbar_contract::abi::mechanism::kind::TRANSPORT,
+    );
+}
+
+/// `kind: export` — the real request-log file sink's door.
+#[test]
+fn an_export_envelope_reaches_the_host_observer() {
+    observed_through_its_bind::<crate::dispatch::kinds::export::Export>(
+        busbar_export_file::door,
+        busbar_contract::abi::mechanism::kind::EXPORT,
+    );
+}
+
+/// A declared metric family's entry is folded named by its family, through the one bind's observer
+/// as through the export arm's (`export_conformance_tests`): every metric of a door reaches the
+/// host the same way.
+#[test]
+fn a_metric_is_named_by_its_family_for_every_kind() {
+    use crate::dispatch::EnvelopeSink as _;
+    let guard = exclusive();
+    let kinds = [
+        busbar_contract::abi::mechanism::kind::PLANE,
+        busbar_contract::abi::mechanism::kind::AUTH,
+        busbar_contract::abi::mechanism::kind::STORE,
+        busbar_contract::abi::mechanism::kind::HOOK,
+        busbar_contract::abi::mechanism::kind::SECRET,
+        busbar_contract::abi::mechanism::kind::TRANSPORT,
+    ];
+    for kind in kinds {
+        testing::clear(&guard);
+        let sink = EnvelopeObserver::before(
+            std::sync::Arc::new(Binder::default()),
+            "envelope-all",
+            kind,
+            vec![busbar_contract::abi::mechanism::rendering::ReadFamily {
+                name: "envelope_all_events_total".into(),
+                help: String::new(),
+                unit: String::new(),
+                label_keys: vec!["outcome".into()],
+                kind: busbar_contract::abi::mechanism::door::FAMILY_COUNTER,
+            }],
+        );
+        sink.metric(crate::dispatch::Metric {
+            family: 0,
+            kind: busbar_contract::abi::mechanism::call::METRIC_ADD,
+            value: 2.0,
+            labels: &[b"ok"],
+        });
+        let folds = testing::folds();
+        assert_eq!(folds.len(), 1, "{kind}: {folds:?}");
+        assert_eq!(folds[0].1, kind);
+        assert_eq!(
+            folds[0].2,
+            vec![serde_json::json!({
+                "name": "envelope_all_events_total",
+                "type": "counter",
+                "value": 2.0,
+                "labels": { "outcome": "ok" },
+            })]
+        );
+    }
+}
+
+/// THE INTAKE IS BOUNDED AND NEVER BLOCKS: with the observer stalled, a plugin's back-channels
+/// past the intake's room are DROPPED at once — the reporting call returns without waiting — and
+/// every one dropped is counted to the observer ([`PluginObserver::dropped`], the host's
+/// `busbar_plugin_observations_dropped_total`); once the observer catches up it has every one that
+/// was kept. RED: an inline (or blocking) intake stalls the reporting calls for as long as the
+/// observer does.
+#[test]
+fn a_full_intake_drops_and_counts_and_never_stalls_the_caller() {
+    use std::sync::atomic::Ordering;
+    let guard = exclusive();
+    testing::clear(&guard);
+    let dropped_before = testing::DROPPED.load(Ordering::SeqCst);
+    let sent = INTAKE_BOUND + 100;
+    testing::HOLD.store(true, Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    for n in 0..sent {
+        fold_entries(
+            "intake-witness",
+            busbar_contract::abi::mechanism::kind::EXPORT,
+            &[serde_json::json!({ "name": "intake_witness_total", "type": "counter", "value": n })],
+            &[],
+        );
+    }
+    let took = started.elapsed();
+    testing::HOLD.store(false, Ordering::SeqCst);
+    let kept = testing::folds()
+        .iter()
+        .filter(|(p, ..)| p == "intake-witness")
+        .count();
+    let dropped = testing::DROPPED.load(Ordering::SeqCst) - dropped_before;
+    assert!(
+        took < std::time::Duration::from_secs(2),
+        "the reporting calls waited on a stalled observer: {took:?}"
+    );
+    // The observer thread may hold one it took before the stall, beside a full intake.
+    assert!(kept <= INTAKE_BOUND + 1, "kept {kept}");
+    assert!(kept >= 1, "nothing reached the observer");
+    assert!(
+        dropped as usize >= sent - kept,
+        "every back-channel not kept is counted dropped: sent {sent}, kept {kept}, dropped {dropped}"
+    );
 }

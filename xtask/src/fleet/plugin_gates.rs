@@ -689,24 +689,15 @@ pub fn kind_abi(root: &Path, kind: &str) -> Res<u64> {
         }
     }
     let reg = reg.ok_or("no plugin-loader registry.rs in the busbar tree")?;
-    let key = format!("\"{kind}\"");
+    // An arm is keyed by the kind's word (`"export" =>`) or by its constant (`kind::EXPORT =>`).
+    let words = [
+        format!("\"{kind}\""),
+        format!("kind::{}", kind.to_ascii_uppercase()),
+    ];
     let mut body = None;
-    let mut from = 0;
-    while let Some(off) = reg[from..].find(&key) {
-        let at = from + off;
-        from = at + 1;
-        while !reg.is_char_boundary(from) {
-            from += 1;
-        }
-        let r = reg[at + key.len()..].trim_start();
-        let Some(r) = r.strip_prefix("=>") else {
-            continue;
-        };
-        let Some(r) = r.trim_start().strip_prefix("&[") else {
-            continue;
-        };
-        if let Some(end) = r.find(']') {
-            body = Some(r[..end].to_string());
+    for key in &words {
+        body = arm(&reg, key);
+        if body.is_some() {
             break;
         }
     }
@@ -741,6 +732,29 @@ pub fn kind_abi(root: &Path, kind: &str) -> Res<u64> {
         }
     }
     Err(format!("cannot resolve `{top}` in busbar-contract"))
+}
+
+/// The body of the `supported_abi` arm `key =>` in `reg`: what its `&[...]` lists.
+fn arm(reg: &str, key: &str) -> Option<String> {
+    let mut from = 0;
+    while let Some(off) = reg[from..].find(key) {
+        let at = from + off;
+        from = at + 1;
+        while !reg.is_char_boundary(from) {
+            from += 1;
+        }
+        let r = reg[at + key.len()..].trim_start();
+        let Some(r) = r.strip_prefix("=>") else {
+            continue;
+        };
+        let Some(r) = r.trim_start().strip_prefix("&[") else {
+            continue;
+        };
+        if let Some(end) = r.find(']') {
+            return Some(r[..end].to_string());
+        }
+    }
+    None
 }
 
 /// Python `got == {"min": want, "max": want}` (`True == 1`, `3.0 == 3`).
@@ -1592,6 +1606,29 @@ mod tests {
         assert_eq!(
             found("declares stale"),
             ["DECLARES contract_abi is {'min': 3, 'max': 3}; busbar at the pin speaks store v4 (min = max = 4). Re-render it with busbar-release plugin sync."]
+        );
+    }
+
+    #[test]
+    fn declares_reads_an_arm_keyed_by_the_kind_constant() {
+        let tmp = TempDir::new();
+        let d = &tmp.0;
+        std::fs::create_dir_all(d.join("crates/plugin-loader/src")).unwrap();
+        std::fs::create_dir_all(d.join("crates/busbar-contract/src/abi/export")).unwrap();
+        std::fs::write(
+            d.join("crates/plugin-loader/src/registry.rs"),
+            "kind::EXPORT => &[busbar_contract::abi::export::ABI_VERSION],",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("crates/busbar-contract/src/abi/export/mod.rs"),
+            "pub const ABI_VERSION: u32 = 4;",
+        )
+        .unwrap();
+        assert_eq!(kind_abi(d, "export"), Ok(4));
+        assert!(
+            kind_abi(d, "store").is_err(),
+            "no arm for a kind the registry does not key"
         );
     }
 

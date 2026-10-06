@@ -38,6 +38,29 @@ pub fn the() -> &'static Arc<Connector> {
     ONE.get_or_init(|| Arc::new(Connector::new()))
 }
 
+/// THE IDENTITY THE COMPOSITION ROOT'S OWN NEEDS ARE DECLARED UNDER on the one connector: the
+/// authorization server's (`busbar-core-oauth2`, a compiled-in cleanliness crate, not a plugin
+/// instance). The loader mints every plugin instance's identity from 1 up
+/// (`busbar_plugin_loader`'s dispatch, `NEXT_INSTANCE`), so 0 never names a plugin's table.
+pub const ROOT_OWNER: busbar_contract::conn::InstanceId = busbar_contract::conn::InstanceId(0);
+
+/// THE AUTHORIZATION SERVER'S CONNECTION TABLE (`busbar_core_oauth2::Connections`): this process's
+/// one connector, read when a fetch needs it (after boot installed it), its needs under
+/// [`ROOT_OWNER`]. The Client ID Metadata Document fetch rides it, so the connector's one
+/// destination guard judges where it goes (THE DESIGN §5).
+pub struct AuthServerConns;
+
+impl busbar_core_oauth2::Connections for AuthServerConns {
+    fn table() -> Option<busbar_core_oauth2::Table> {
+        let one = the();
+        Some(busbar_core_oauth2::Table {
+            owner: ROOT_OWNER,
+            declared: Arc::clone(one) as Arc<dyn busbar_contract::conn::DeclaredConns>,
+            conns: Arc::clone(one) as Arc<dyn busbar_contract::conn::PollConns>,
+        })
+    }
+}
+
 /// Install `connector` as the process's one.
 ///
 /// # Errors

@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use busbar_contract::abi::host::service::{SECRET_LIVE, SECRET_NOT_LIVE};
 use busbar_contract::services::{
-    Caller, CredentialRead, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    Caller, CredentialRead, DiskDest, HostServices, Later, NestAsk, Ran, Reading, RecordsList,
+    Stored,
 };
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
 use busbar_kernel::test_support::TestApp;
@@ -128,6 +129,10 @@ impl HostServices for Inner {
     }
     fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
         Ran::Now(Stored::ready(16))
+    }
+
+    fn disk_append(&self, _: &DiskDest, _: Vec<u8>, _: Later) -> Ran {
+        Ran::Now(Stored::ready(12))
     }
 }
 
