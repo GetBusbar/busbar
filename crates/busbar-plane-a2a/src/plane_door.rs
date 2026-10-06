@@ -2724,7 +2724,7 @@ slot!(
             return verb_refused(&input, &mut out, STATUS_NOT_FOUND, "", None, AUDIT_REJECTED);
         }
         // THE KERNEL'S DECISION: the agent's trust key approved at what this look just sighted.
-        if let Err(refusal) = approve_key(plane, &at, &name) {
+        if let Err(refusal) = approve_key(plane, &at, &name, claimed.trim()) {
             return verb_refused(&input, &mut out, 400, &refusal, None, AUDIT_REJECTED);
         }
         // THE SERVED CARD, warmed from the document this approval just verified: the relay reads
@@ -2743,31 +2743,33 @@ slot!(
     }
 );
 
-/// APPROVE `agent`'s trust key on the KERNEL'S trust book at what it was last sighted at
-/// (`trust.decide`, the decision `POST /admin/trust/approve` makes for `<instance>/<agent>`).
+/// APPROVE `agent`'s trust key on the KERNEL'S trust book at the fingerprint the operator named
+/// and this look just sighted (`trust.decide`, the ONE decide path `POST /admin/trust/approve`
+/// takes for `<instance>/<agent>`).
 ///
 /// # Errors
 ///
-/// The refusal in the served engine's words: no host services, or a key the book has nothing
-/// sighted for.
-fn approve_key(plane: &A2aDoor, at: &LookAt<'_>, agent: &str) -> Result<(), String> {
+/// The refusal in the served engine's words: no host services, nothing sighted to approve, a
+/// sighting other than the one named, or an agent with no authenticity root.
+fn approve_key(plane: &A2aDoor, at: &LookAt<'_>, agent: &str, seen: &str) -> Result<(), String> {
     use busbar_contract::abi::host::service as svc;
     let services = plane
         .services
         .ok_or_else(|| "the instance was handed no host services".to_string())?;
-    match services.trust_decide(
-        at.handle(TRUST_DECIDE_SEQ),
-        agent,
-        None,
-        svc::TRUST_DECIDE_APPROVE,
-    ) {
-        Ok(code) if code == svc::UNDECIDED_UNSIGHTED => Err(
-            "the agent's card could not be authenticated, so there is nothing to approve"
+    match services.trust_decide(at.handle(TRUST_DECIDE_SEQ), agent, None, Some(seen), true) {
+        Ok(svc::UNDECIDED_UNPINNED) => Err(
+            "the agent's card could not be authenticated, so there is nothing to approve".to_string(),
+        ),
+        Ok(svc::UNDECIDED_STALE) => Err(format!(
+            "the endpoint's card moved while it was being approved: `{seen}` is no longer what the \
+             trust book last sighted; re-run `connect` and read the new fingerprint before approving."
+        )),
+        Ok(svc::UNDECIDED_ROOTLESS) => Err(
+            "cannot approve: this registration has no authenticity root (unpinned). Supply an \
+             issuer key out of band, or pin the endpoint at the transport layer."
                 .to_string(),
         ),
-        Ok(code) if code == svc::UNDECIDED_UNKNOWN => {
-            Err(format!("the trust book declares no agent `{agent}`"))
-        }
+        Ok(svc::UNDECIDED_UNKNOWN) => Err(format!("the trust book declares no agent `{agent}`")),
         Ok(_) => Ok(()),
         Err(e) => Err(format!("the trust book did not decide: {e:?}")),
     }
