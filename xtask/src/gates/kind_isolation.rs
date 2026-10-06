@@ -2682,11 +2682,9 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
                 if implied == "allowed" || implied == "tcb" {
                     continue;
                 }
-                if base.has_edge(&e.from, &e.to, half.word())
-                    || renamed_from
-                        .get(e.to.as_str())
-                        .is_some_and(|old| base.has_edge(&e.from, old, half.word()))
-                {
+                if pre_existing(&renamed_from, &e.from, &e.to, |from, to| {
+                    base.has_edge(from, to, half.word())
+                }) {
                     continue;
                 }
                 if witness.contains(&(e.from.clone(), e.to.clone())) {
@@ -7194,36 +7192,6 @@ impl Gate for KindIsolationGate {
                 &["new-forbidden-edge", "busbar-planted-clean -> busbar-plugin-loader"],
             ));
 
-            // A RENAME IS THE EDGE IT RENAMES ONLY THROUGH A REVIEWED ROW. The kernel's
-            // `fixture-hook` reaches busbar-hook-ranking, which the base reached as
-            // busbar-hooks-ranking: the construction census's `[[gate.census.renamed]]` row is what
-            // says the two are one crate. With that row gone the rename is UNREVIEWED, and the edge
-            // under its new name is one this branch introduced.
-            let unreviewed = {
-                let mut ov = Overlay::new();
-                let ceilings = cx
-                    .read(crate::gates::construction::CEILINGS)
-                    .unwrap_or_default();
-                let kept: Vec<&str> = ceilings
-                    .split("\n[[gate.census.renamed]]\n")
-                    .filter(|chunk| !chunk.contains("from = \"busbar-hooks-ranking\""))
-                    .collect();
-                ov.set(
-                    crate::gates::construction::CEILINGS,
-                    kept.join("\n[[gate.census.renamed]]\n"),
-                );
-                ov
-            };
-            report.push(prove_rows_red(
-                cx,
-                subject,
-                "a crate renamed with its move and no reviewed rename row is a new edge under its \
-                 new name",
-                &[ROW_DEPS],
-                unreviewed,
-                &["new-forbidden-edge", "busbar-kernel -> busbar-hook-ranking"],
-            ));
-
             // A `[[cell]]` ROW IS EXISTENCE ONLY, and a `count` written back into one is refused
             // at load: size is not a CI check (owner 2026-10-02), and a field the reader still
             // accepted would be the integers coming back one row at a time.
@@ -10391,6 +10359,82 @@ fn manifest_plus(cx: &Ctx, rel: &str, extra: &str) -> String {
 
 /// A planted `Cargo.toml` for `dir`, declaring `name` and depending on `deps`. `set` rather than an
 /// `Edit::Create` so the same helper serves both a brand-new crate and a rewrite of a real one.
+/// Whether `from -> to` pre-dates this branch: the base declares it, or `to` is the NEW name of a
+/// crate a reviewed rename row (`renamed_from`: new name -> old name, the construction census's
+/// `[[gate.census.renamed]]`) moved, and the base declares `from -> <old name>`. A rename with no
+/// reviewed row is no rename here: the edge under the new name is new.
+fn pre_existing(
+    renamed_from: &BTreeMap<String, String>,
+    from: &str,
+    to: &str,
+    base_has: impl Fn(&str, &str) -> bool,
+) -> bool {
+    base_has(from, to)
+        || renamed_from
+            .get(to)
+            .is_some_and(|old| base_has(from, old.as_str()))
+}
+
+#[cfg(test)]
+mod pre_existing_tests {
+    use super::*;
+
+    fn base(from: &str, to: &str) -> bool {
+        (from, to) == ("busbar-kernel", "busbar-hooks-ranking")
+    }
+
+    fn reviewed() -> BTreeMap<String, String> {
+        [(
+            "busbar-hook-ranking".to_string(),
+            "busbar-hooks-ranking".to_string(),
+        )]
+        .into()
+    }
+
+    #[test]
+    fn an_edge_the_base_declares_pre_exists() {
+        assert!(pre_existing(
+            &BTreeMap::new(),
+            "busbar-kernel",
+            "busbar-hooks-ranking",
+            base
+        ));
+    }
+
+    #[test]
+    fn a_reviewed_rename_is_the_edge_it_renames() {
+        assert!(pre_existing(
+            &reviewed(),
+            "busbar-kernel",
+            "busbar-hook-ranking",
+            base
+        ));
+    }
+
+    /// RED: with no reviewed rename row, the edge under the new name is one this branch introduced.
+    #[test]
+    fn an_unreviewed_rename_is_a_new_edge() {
+        assert!(!pre_existing(
+            &BTreeMap::new(),
+            "busbar-kernel",
+            "busbar-hook-ranking",
+            base
+        ));
+    }
+
+    /// RED: a reviewed row renames one crate, not every edge that lands on the new name from a
+    /// crate the base never reached the old one from.
+    #[test]
+    fn a_reviewed_rename_does_not_excuse_another_crate_s_edge() {
+        assert!(!pre_existing(
+            &reviewed(),
+            "busbar-core-admin",
+            "busbar-hook-ranking",
+            base
+        ));
+    }
+}
+
 fn manifest_plant(dir: &str, name: &str, deps: &[&str]) -> Overlay {
     let mut body = format!("[package]\nname = \"{name}\"\nversion = \"0.0.0\"\n\n[dependencies]\n");
     for d in deps {
