@@ -43,6 +43,27 @@ use hyper::body::Incoming;
 use super::pool::{self, CheckedOut, ClientInner, EngineError, ErrorKind, PoolKey, PoolMap};
 use super::{EngineConnector, H2KeepAlive};
 
+/// THE CONNECTION'S RETURN, as a response extension: present on an HTTP/1.1 response whose
+/// connection goes back to its pool only once hyper's dispatcher finishes the exchange (the body
+/// was not drained at head time). [`ConnReturned::settled`] resolves once that return has happened,
+/// or the connection died and is dropped. A caller that reads the body to its end and then reports
+/// that end awaits it first, so a hop opened after that end is lent the connection back in the pool
+/// instead of racing its return with a fresh dial (a second connection the second hop never rides).
+#[derive(Clone, Debug)]
+pub struct ConnReturned(tokio::sync::watch::Receiver<bool>);
+
+impl ConnReturned {
+    /// The connection is back in its pool, or dropped (it died, or the pool is gone).
+    pub async fn settled(mut self) {
+        let _ = self.0.wait_for(|returned| *returned).await;
+    }
+}
+
+/// A delay before a watcher's return, per authority (`host:port`): the window between a body's end
+/// and its connection's return, held open so a test meets the order a loaded host gives by chance.
+#[cfg(test)]
+pub(crate) static RETURN_DELAY_FOR_TESTS: Mutex<Option<(String, Duration)>> = Mutex::new(None);
+
 /// The pooled egress client — the owned struct behind the seam every plane builds from
 /// (`build_client`). Cheap to clone: clones share one pool; dropping the last clone releases the
 /// pool and closes its idle sockets.
@@ -209,8 +230,24 @@ async fn send_request(
                         } else {
                             let weak = Arc::downgrade(&inner);
                             let key = pool_key.clone();
+                            // The response carries the return's settling, for a caller that
+                            // reports the body's end only once its connection is back.
+                            let (returned, settled) = tokio::sync::watch::channel(false);
+                            resp.extensions_mut().insert(ConnReturned(settled));
                             tokio::spawn(async move {
                                 let ready = std::future::poll_fn(|cx| sender.poll_ready(cx)).await;
+                                #[cfg(test)]
+                                {
+                                    let delay = RETURN_DELAY_FOR_TESTS
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                        .as_ref()
+                                        .filter(|(at, _)| *at == key.1.as_str())
+                                        .map(|(_, d)| *d);
+                                    if let Some(d) = delay {
+                                        tokio::time::sleep(d).await;
+                                    }
+                                }
                                 // An Err means the conn died during the body read: drop it —
                                 // never returned, nothing delivered, no counter touched.
                                 if ready.is_ok() {
@@ -218,6 +255,7 @@ async fn send_request(
                                         pool::return_h1_conn(&inner, &key, sender, extras);
                                     }
                                 }
+                                let _ = returned.send(true);
                             });
                         }
                         return Ok(resp);
