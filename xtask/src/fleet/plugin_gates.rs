@@ -796,6 +796,30 @@ fn const_value(src: &str, name: &str) -> Option<u64> {
     None
 }
 
+/// The `&[...]` body of the `supported_abi` arm keyed `key =>`, if any. A key followed by
+/// anything but an arrow (e.g. `kind::STORE,` in another list) is skipped.
+fn arm_body(reg: &str, key: &str) -> Option<String> {
+    let mut from = 0;
+    while let Some(off) = reg[from..].find(key) {
+        let at = from + off;
+        from = at + 1;
+        while !reg.is_char_boundary(from) {
+            from += 1;
+        }
+        let r = reg[at + key.len()..].trim_start();
+        let Some(r) = r.strip_prefix("=>") else {
+            continue;
+        };
+        let Some(r) = r.trim_start().strip_prefix("&[") else {
+            continue;
+        };
+        if let Some(end) = r.find(']') {
+            return Some(r[..end].to_string());
+        }
+    }
+    None
+}
+
 /// The current contract-ABI version of `kind` in the busbar tree at `root`: the top of the loader's
 /// `supported_abi(kind)`, resolved through busbar-contract's constants.
 pub fn kind_abi(root: &Path, kind: &str) -> Res<u64> {
@@ -825,27 +849,11 @@ pub fn kind_abi(root: &Path, kind: &str) -> Res<u64> {
         }
     }
     let reg = reg.ok_or("no plugin-loader registry.rs in the busbar tree")?;
-    let key = format!("\"{kind}\"");
-    let mut body = None;
-    let mut from = 0;
-    while let Some(off) = reg[from..].find(&key) {
-        let at = from + off;
-        from = at + 1;
-        while !reg.is_char_boundary(from) {
-            from += 1;
-        }
-        let r = reg[at + key.len()..].trim_start();
-        let Some(r) = r.strip_prefix("=>") else {
-            continue;
-        };
-        let Some(r) = r.trim_start().strip_prefix("&[") else {
-            continue;
-        };
-        if let Some(end) = r.find(']') {
-            body = Some(r[..end].to_string());
-            break;
-        }
-    }
+    // An arm is keyed by the kind's string (`"store" =>`) or, since the loader keys its arms by the
+    // kind constants, by `kind::STORE =>`.
+    let quoted = format!("\"{kind}\"");
+    let constant = format!("kind::{}", kind.to_ascii_uppercase());
+    let body = arm_body(&reg, &quoted).or_else(|| arm_body(&reg, &constant));
     let body = body.ok_or_else(|| format!("supported_abi has no arm for kind `{kind}`"))?;
     let top = body
         .split(',')
@@ -1907,6 +1915,23 @@ mod tests {
         ] {
             assert_eq!(req_ok(v, r).unwrap(), want, "{v} vs {r}");
         }
+    }
+
+    /// The loader keys its `supported_abi` arms by the kind constants (`kind::STORE =>`); the declares
+    /// gate reads every kind's version off the REAL tree (RED before the arm reader took that form:
+    /// "supported_abi has no arm for kind `store`", which turned every plugin's declares step red).
+    #[test]
+    fn the_declares_gate_reads_the_real_trees_kind_constant_arms() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for kind in KINDS {
+            let v = kind_abi(&root, kind).unwrap_or_else(|e| panic!("{kind}: {e}"));
+            assert!(v >= 1, "{kind}: {v}");
+        }
+        assert_eq!(
+            arm_body("kind::STORE => &[a::B],", "kind::STORE").as_deref(),
+            Some("a::B")
+        );
+        assert_eq!(arm_body("[kind::STORE, kind::AUTH]", "kind::STORE"), None);
     }
 
     #[test]
