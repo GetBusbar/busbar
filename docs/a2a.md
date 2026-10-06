@@ -243,7 +243,7 @@ A fetched card's JWS, against the operator's out-of-band issuer key. **The algor
 
 The order is verify-then-fingerprint, always. A failed verification is recorded as a *failed sighting*, which derives an error state and serves nothing — never as an absence of contact (`crates/busbar-a2a/src/a2a/verify.rs:11-23`). `VerifyRefusal` distinguishes, among others, `TransportPinNotObserved` from `TransportPinMismatch`: "we could not look" and "it matched" must stay apart (`verify.rs:49-90`).
 
-**`unpinned` is registrable and never approvable** — there is no fingerprint to sight, so its trust key is never sighted and cannot be approved.
+**`unpinned` is registrable and never approvable** — there is no fingerprint to approve (`crates/busbar-a2a/src/a2a/pin.rs:90`, `:217`).
 
 **There is no knob that slows detection or delays a demotion.** Only recovery is held (`recovery_backoff:`), and a test enumerates the knobs and fails if one grows a direction (`verify.rs`). The `reverify_ttl:` you set is the longest a verification may be reused on the delegation path; a stale card is re-verified **on the call**, single-flight and fail-closed, with no background job — see [Tool and agent trust](/docs/tool-and-agent-trust/).
 
@@ -540,16 +540,18 @@ The claim is **tamper-evidence, not tamper-prevention**, and the boot verifier r
 
 | Route | Scope | What it does |
 |---|---|---|
-| `POST /api/v1/admin/agents/{name}/connect` | mutation | **Reaches the network.** Fetches the agent's card, verifies it against the operator's root, SIGHTS its fingerprint on the kernel's trust book, and audits whatever it found as `a2a_agent.connect`. It **grants nothing**. |
-| `GET /api/v1/admin/trust` | read | The kernel's trust book: every trust key, `<instance>/<agent>` for an agent, and its state (`new`, `approved`, `same`, `drifted`, `quarantined`). |
-| `POST /api/v1/admin/trust/approve` | mutation | Body `{"key": "<instance>/<agent>"}` — approves the key at what it was last sighted at (its card's fingerprint), and clears a quarantine. |
-| `POST /api/v1/admin/trust/revoke` | mutation | Body `{"key": …}` — the key is refused until approved again. |
+| `POST /api/v1/admin/agents/{name}/connect` | mutation | **Reaches the network.** Fetches the agent's card, verifies it against the operator's root, records the observation, and audits whatever it found as `a2a_agent.connect`. It **grants nothing**. |
+| `POST /api/v1/admin/agents/{name}/approve` | mutation | Body `{"fingerprint": "…"}` — the fingerprint `connect` reported, echoed back. |
 
-**The trust decision is the kernel's, not the plane's** (ARCHITECT, FLIP-A2A). The a2a plane reports what it sees (each agent's verified card fingerprint, through `trust.sight`) and reads the kernel's verdict at admission; pinning, quarantine and the operator's approval live on the kernel's trust book, and the operator approves through the generic `/admin/trust`, as every plane's counterparties are approved. A first sighting is `new` and refused until approved, unless the registration declares `pin.fingerprint`; a card that moves from its approved fingerprint (or stops verifying) quarantines the agent until it is approved again; a card that cannot be reached keeps the last verdict. An operator's decision is durable and outlives a config apply and a restart.
+Mounted at `crates/busbar-core/src/admin/v1/json/mod.rs:91-100`. **Without these the `agents:` surface is CRUD only, every registration stays `Pending`, and no sequence of operator actions can make a fronted agent serve** — `Pending` is the fail-closed floor its only constructor puts it in.
 
-An agent the book does not serve is refused `403`, `-32004`, "fronted agent `<id>` is not serving (Pending)" (or `(Quarantined)`). `unpinned` presents no fingerprint, so nothing is ever sighted for it and its key can never be approved (`409`, never sighted).
+`approve` refuses if the observed fingerprint differs from the one you echoed, if the sighting is `Failed`, or if the registration is `unpinned` (there is no authenticity root, so there is nothing to approve). The `404` is answered **before** the body is parsed, so the error shape is not an existence oracle (`crates/busbar-a2a/src/a2a/verbs.rs:505-516`, `:600-…`). The write re-finds the registration **under the registry lock** rather than mutating a clone, because a config apply may have removed the row while the card was being fetched.
 
-`connect` answers `A2aTrustView`: `{name, state, pin_mechanism, fingerprint, observed_skills, failure}`, its `state` the kernel's verdict on the agent's key (or `suspended`/`error`).
+**The decision is the kernel's** (ARCHITECT, FLIP-A2A): `connect` SIGHTS the verified card fingerprint on the kernel's trust book, and `approve` approves the agent's trust key `<instance>/<agent>` there — the same decision the generic `POST /api/v1/admin/trust/approve` makes, which an operator may use instead (`/trust/revoke` refuses the agent again). A first sighting is refused until approved; a card that moves from its approved fingerprint quarantines the agent until it is approved again; an unreachable card keeps the last verdict. An agent the book does not serve is refused `403`, `-32004`, "fronted agent `<id>` is not serving (Pending)" (or `(Quarantined)`).
+
+`connect` deliberately does not approve. Adopting what was seen is a separate, explicit operator act, precisely so a poisoned card cannot be adopted by the same call that fetched it (`crates/busbar-core/src/admin/planeverbs.rs:44-47`).
+
+Both verbs answer the same `A2aTrustView`: `{name, state, pin_mechanism, fingerprint, pin_changed, added, changed, removed, observed_skills, failure}` (`crates/busbar-a2a/src/a2a/verbs.rs:361`).
 
 > **`sync`, `operator_suspend` and `operator_resume` are implemented but not mounted** (`crates/busbar-a2a/src/a2a/verbs.rs:55-57`). Each needs its own admin verb and its own audit row. Today an operator suspends a registration by removing or editing it.
 

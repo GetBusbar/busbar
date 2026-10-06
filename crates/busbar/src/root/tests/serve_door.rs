@@ -2422,50 +2422,54 @@ mod agent_door {
         );
     }
 
-    /// THE OPERATOR'S CEREMONY for agent `name` (ARCHITECT FLIP-A2A): `connect` to look at its card
-    /// (the look sights its fingerprint on the kernel's trust book), then approve its trust key on
-    /// the generic `/trust`. The key then serves.
+    /// THE OPERATOR'S CEREMONY for agent `name` (ARCHITECT Q-L3B-VERBS, over the kernel's trust
+    /// book, FLIP-A2A): `connect` to see its card (the look sights its fingerprint on the book),
+    /// `approve` the fingerprint seen (the book approves the agent's key). It then serves.
     async fn approve(s: &Served, name: &str) {
         let (status, preview) = admin(s, &format!("/agents/{name}/connect"), "").await;
         assert_eq!(status, StatusCode::OK, "{preview}");
-        assert!(
-            preview["fingerprint"].is_string(),
-            "connect reported no fingerprint: {preview}"
-        );
-        approve_key(s, name).await;
+        let fingerprint = preview["fingerprint"]
+            .as_str()
+            .unwrap_or_else(|| panic!("connect reported no fingerprint: {preview}"))
+            .to_string();
+        let (status, approved) = admin(
+            s,
+            &format!("/agents/{name}/approve"),
+            &format!(r#"{{"fingerprint": "{fingerprint}"}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{approved}");
+        assert_eq!(approved["state"], "approved", "{approved}");
     }
 
-    /// Approve agent `name`'s trust key on the generic `/trust`, at what it was last sighted at.
-    async fn approve_key(s: &Served, name: &str) -> (StatusCode, serde_json::Value) {
+    /// Decide agent `name`'s trust key on the generic `/trust` (`approve` or `revoke`), at what it
+    /// was last sighted at.
+    async fn decide_key(s: &Served, name: &str, decision: &str) -> (StatusCode, serde_json::Value) {
         let (key, _) = trust_key(s, name).await;
         let body = serde_json::json!({ "key": key }).to_string();
-        let (status, decided) = admin(s, "/trust/approve", &body).await;
-        if name != "scout" {
-            assert_eq!(status, StatusCode::OK, "{decided}");
-        }
-        (status, decided)
+        admin(s, &format!("/trust/{decision}"), &body).await
     }
 
     /// The root cells `trust-pinning × a2a-client` and `trust-pinning × a2a-server`, on the KERNEL'S
-    /// trust book (ARCHITECT FLIP-A2A: the plane sights, the kernel pins and demotes, the operator
-    /// approves on the generic `/trust`):
+    /// trust book (ARCHITECT FLIP-A2A: the plane sights, the kernel pins, quarantines and keeps the
+    /// operator's decision; the door's own `approve` verb and the generic `/trust` both decide it):
     ///
     /// * an agent registered with an out-of-band issuer key and nothing approved is refused
     ///   (`403`, `-32004`, "fronted agent `planner` is not serving (Pending)") and never dialled;
     /// * `connect` fetches the card at the agent origin's well-known path, has the kernel verify
-    ///   its signature against the pinned key and SIGHTS its fingerprint: `pending`, the fingerprint
-    ///   the key is approved at; it grants nothing, so the relay is still refused, and `/trust`
-    ///   lists the key `new`;
-    /// * approving the key on `/trust` serves it;
+    ///   its signature against the pinned key and SIGHTS its fingerprint: a `pending` preview, the
+    ///   fingerprint a human is asked to approve; `/trust` lists the key `new`; still refused;
+    /// * the door's `approve` naming that fingerprint approves the key: `approved`, and it serves;
+    /// * `/trust/revoke` refuses it again (`403`); `/trust/approve` serves it again;
     /// * the card is re-issued under the right key with a skill the operator never read (the
-    ///   rug-pull): the next relay re-verifies the card on call (`reverify_ttl: 0s`), the kernel
-    ///   quarantines the moved catalogue, and the hop's gate refuses (`503`, "this agent is not
-    ///   currently serving", naming its task) without dialling; restoring the approved card does
-    ///   not lift it ("... is not serving (Quarantined)"); `connect` reports `quarantined`;
-    ///   approving the key again pins what it now presents and serves it;
-    /// * an `unpinned` registration is captured by `connect` with no fingerprint, so nothing is
-    ///   sighted: its key cannot be approved (`409`) and it is never served; an unregistered name is
-    ///   `404`.
+    ///   rug-pull): the next relay re-verifies on call (`reverify_ttl: 0s`), the kernel quarantines
+    ///   the moved card, and the hop's gate refuses (`503`, "this agent is not currently serving",
+    ///   naming its task) without dialling; restoring the approved card does not lift it ("... is
+    ///   not serving (Quarantined)"); `connect` reports `quarantined`; an `approve` of the old
+    ///   fingerprint is refused (`400`), one of the fingerprint it now serves serves it;
+    /// * an `unpinned` registration is captured by `connect` with no fingerprint: the door's
+    ///   `approve` refuses it (`400`, no authenticity root), `/trust/approve` finds nothing sighted
+    ///   (`409`), and it is never served; an unregistered name is `404`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_kernel_trust_book_pins_an_agent_card_and_the_relay_serves_only_the_approved_one() {
         // A build that links no agent door has nothing for this cell to drive.
@@ -2504,7 +2508,7 @@ mod agent_door {
         assert_eq!(status, StatusCode::OK, "{preview}");
         assert_eq!(
             preview["state"], "pending",
-            "a look grants nothing: {preview}"
+            "a preview grants nothing: {preview}"
         );
         assert_eq!(preview["pin_mechanism"], "jws_issuer_key", "{preview}");
         assert_eq!(preview["fingerprint"], fingerprint.as_str(), "{preview}");
@@ -2520,7 +2524,16 @@ mod agent_door {
         untrusted(status, &body, "planner", "Pending");
         assert!(!agent.relayed(), "a refused unit is never dialled");
 
-        approve_key(&s, "planner").await;
+        // THE DOOR'S OWN VERB approves the key on the kernel's book.
+        let (status, approved) = admin(
+            &s,
+            "/agents/planner/approve",
+            &format!(r#"{{"fingerprint": "{fingerprint}"}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{approved}");
+        assert_eq!(approved["state"], "approved", "{approved}");
+        assert_eq!(approved["fingerprint"], fingerprint.as_str(), "{approved}");
         let fetched = agent.fetches();
         let (status, body) = answered(&s.router, send("planner")).await;
         assert_eq!(
@@ -2534,6 +2547,18 @@ mod agent_door {
             agent.fetches() > fetched,
             "its card was re-verified on call"
         );
+
+        // THE GENERIC `/trust`: a revoke refuses it, an approve serves it again.
+        let (status, revoked) = decide_key(&s, "planner", "revoke").await;
+        assert_eq!(status, StatusCode::OK, "{revoked}");
+        let (status, body) = answered(&s.router, send("planner")).await;
+        untrusted(status, &body, "planner", "Pending");
+        assert!(!agent.relayed(), "a revoked agent is never dialled");
+        let (status, reapproved) = decide_key(&s, "planner", "approve").await;
+        assert_eq!(status, StatusCode::OK, "{reapproved}");
+        let (status, body) = answered(&s.router, send("planner")).await;
+        assert_eq!(status, StatusCode::OK, "approved on /trust, served: {body}");
+        assert!(agent.relayed(), "dialled again");
 
         // THE RUG-PULL: the right issuer key, a skill the operator never read.
         agent.reissue("plans the work and forwards it on");
@@ -2569,8 +2594,15 @@ mod agent_door {
         assert_ne!(drifted["fingerprint"], fingerprint.as_str(), "{drifted}");
         let (_, state) = trust_key(&s, "planner").await;
         assert_eq!(state, "quarantined", "the book holds the quarantine");
-        // The operator approves what it presents now: the quarantine clears and it is served.
-        approve_key(&s, "planner").await;
+        let (status, stale) = admin(
+            &s,
+            "/agents/planner/approve",
+            &format!(r#"{{"fingerprint": "{fingerprint}"}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{stale}");
+        assert_eq!(stale["error"]["code"], "invalid_request", "{stale}");
+        approve(&s, "planner").await;
         let (status, body) = answered(&s.router, send("planner")).await;
         assert_eq!(status, StatusCode::OK, "re-approved, it is served: {body}");
 
@@ -2584,8 +2616,15 @@ mod agent_door {
             serde_json::Value::Null,
             "{captured}"
         );
-        let (status, capped) = approve_key(&s, "scout").await;
-        assert_eq!(status, StatusCode::CONFLICT, "never sighted: {capped}");
+        let (status, capped) = admin(
+            &s,
+            "/agents/scout/approve",
+            r#"{"fingerprint": "sha256:any"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{capped}");
+        let (status, unsighted) = decide_key(&s, "scout", "approve").await;
+        assert_eq!(status, StatusCode::CONFLICT, "never sighted: {unsighted}");
         let (status, body) = answered(&s.router, send("scout")).await;
         untrusted(status, &body, "scout", "Pending");
 

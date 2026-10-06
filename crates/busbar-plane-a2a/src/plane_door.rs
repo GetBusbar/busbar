@@ -2617,18 +2617,27 @@ fn verb_refused(
 }
 
 slot!(
-    /// `serve`: the trust verb over the section's registrations (ARCHITECT Q-L3B-VERBS), in the
-    /// served engine's order and words. There is ONE: `connect`. Approving is the operator's act on
-    /// the kernel's trust book, the generic core-admin `/admin/trust` (ARCHITECT FLIP-A2A); the
-    /// plane holds no approval and serves no approve verb.
+    /// `serve`: the trust verbs over the section's registrations (ARCHITECT Q-L3B-VERBS), in the
+    /// served engine's order and words, over the KERNEL'S trust book (ARCHITECT FLIP-A2A: the
+    /// plane holds no approval; the book pins, quarantines and keeps the operator's decision):
     ///
     /// * an unregistered name is `404` before anything else, audited nowhere;
-    /// * `connect` LOOKS ([`look`]): the card fetched over the agent's own connection need,
-    ///   verified against its pin and SIGHTED on the kernel's trust book; it holds the verified card
-    ///   for the relay and answers what the card presented and the state the agent's key stands in
-    ///   ([`crate::trust::connect_view`]): a first sighting is `pending` until approved.
+    /// * `approve` reads its body (`{"fingerprint": "…"}`) next, and a malformed one is `400`
+    ///   (the malformed-body condition), audited nowhere;
+    /// * both then LOOK ([`look`]): the card fetched over the agent's own connection need,
+    ///   verified against its pin and SIGHTED on the kernel's trust book;
+    /// * `connect` answers its preview and decides nothing;
+    /// * `approve` compares what the endpoint serves now against the fingerprint the operator
+    ///   names and refuses any disagreement `400` (the invalid-config condition), audited
+    ///   rejected; otherwise it APPROVES the agent's trust key on the kernel's book
+    ///   (`trust.decide`, the same decision `POST /admin/trust/approve` makes), holds the verified
+    ///   card for the relay, and answers the registration as it now stands.
     Serve, ServeIn, ServeOut, |instance, input, mut out| {
-        use busbar_contract::abi::plane::{AUDIT_APPLIED, AUDIT_NONE};
+        use busbar_contract::abi::plane::{AUDIT_APPLIED, AUDIT_NONE, AUDIT_REJECTED};
+        use busbar_contract::plane::{
+            ADMIN_CONDITION_INVALID_CONFIG as INVALID_CONFIG,
+            ADMIN_CONDITION_MALFORMED_BODY as MALFORMED_BODY,
+        };
         let Some(plane) = instance.get() else {
             return Outcome::Failed;
         };
@@ -2638,6 +2647,7 @@ slot!(
         let Some((_, route)) = door::ADMIN_VERBS.get(input.get().route as usize) else {
             return verb_refused(&input, &mut out, STATUS_NOT_FOUND, "", None, AUDIT_NONE);
         };
+        let approving = route.ends_with("/approve");
         let registered = |name: &str| {
             plane
                 .generations
@@ -2648,6 +2658,26 @@ slot!(
             .and_then(|name| registered(&name).map(|def| (name, def)));
         let Some((name, def)) = found else {
             return verb_refused(&input, &mut out, STATUS_NOT_FOUND, "", None, AUDIT_NONE);
+        };
+        let claimed = if approving {
+            let fields = input.fields();
+            let content_type = fields
+                .iter()
+                .find(|f| {
+                    f.field(|f| &f.name)
+                        .as_str()
+                        .is_ok_and(|n| n.eq_ignore_ascii_case(relay::H_CONTENT_TYPE))
+                })
+                .and_then(|f| f.field(|f| &f.value).as_str().ok());
+            match crate::trust::approve_body(content_type, input.field(|i| &i.body).bytes()) {
+                Ok(fingerprint) => Some(fingerprint),
+                Err(refusal) => {
+                    let condition = Some(MALFORMED_BODY);
+                    return verb_refused(&input, &mut out, 400, &refusal, condition, AUDIT_NONE);
+                }
+            }
+        } else {
+            None
         };
         let at = LookAt {
             plane,
@@ -2661,23 +2691,90 @@ slot!(
                 return Outcome::Pending;
             }
         };
-        // THE SERVED CARD, warmed from the document this look just verified: the relay reads the
-        // agent's binding and skills off it once the key is approved.
+        let mut standing = plane.trust.get(&name).unwrap_or_default();
+        let state_now = |plane: &A2aDoor, standing: &crate::trust::Standing| {
+            if standing.suspension.is_some() {
+                crate::trust::State::Suspended
+            } else {
+                crate::trust::state_of(verdict(plane, &name))
+            }
+        };
+        let Some(claimed) = claimed else {
+            // A PREVIEW DECIDES NOTHING: the key stands where the book has it.
+            if let Some(card) = looked.card {
+                plane.cards.hold(&name, plane.newest(), card);
+            }
+            let view = crate::trust::connect_view(
+                &name,
+                state_now(plane, &standing),
+                &looked.sighting,
+            );
+            standing.sighting = looked.sighting;
+            plane.trust.insert(name, standing);
+            return out.answer(&input, 200, VIEW_FIELDS, view.as_bytes(), AUDIT_APPLIED);
+        };
+        if let Err(refusal) = crate::trust::agrees(&looked.sighting, claimed.trim()) {
+            let condition = Some(INVALID_CONFIG);
+            return verb_refused(&input, &mut out, 400, &refusal, condition, AUDIT_REJECTED);
+        }
+        // RE-FOUND, NOT ASSUMED: a refresh may have dropped the registration or moved its pin
+        // while the card was fetched, and an approval is the operator's decision about the
+        // registration as it stands.
+        if registered(&name).is_none_or(|now| now.pin != def.pin) {
+            return verb_refused(&input, &mut out, STATUS_NOT_FOUND, "", None, AUDIT_REJECTED);
+        }
+        // THE KERNEL'S DECISION: the agent's trust key approved at what this look just sighted.
+        if let Err(refusal) = approve_key(plane, &at, &name) {
+            return verb_refused(&input, &mut out, 400, &refusal, None, AUDIT_REJECTED);
+        }
+        // THE SERVED CARD, warmed from the document this approval just verified: the relay reads
+        // the agent's binding and skills off it.
         if let Some(card) = looked.card {
             plane.cards.hold(&name, plane.newest(), card);
         }
-        let mut standing = plane.trust.get(&name).unwrap_or_default();
-        let state = if standing.suspension.is_some() {
-            crate::trust::State::Suspended
-        } else {
-            crate::trust::state_of(verdict(plane, &name))
-        };
-        let view = crate::trust::connect_view(&name, state, &looked.sighting);
+        let view = crate::trust::registration_view(
+            &name,
+            state_now(plane, &standing),
+            &looked.sighting,
+        );
         standing.sighting = looked.sighting;
         plane.trust.insert(name, standing);
         out.answer(&input, 200, VIEW_FIELDS, view.as_bytes(), AUDIT_APPLIED)
     }
 );
+
+/// APPROVE `agent`'s trust key on the KERNEL'S trust book at what it was last sighted at
+/// (`trust.decide`, the decision `POST /admin/trust/approve` makes for `<instance>/<agent>`).
+///
+/// # Errors
+///
+/// The refusal in the served engine's words: no host services, or a key the book has nothing
+/// sighted for.
+fn approve_key(plane: &A2aDoor, at: &LookAt<'_>, agent: &str) -> Result<(), String> {
+    use busbar_contract::abi::host::service as svc;
+    let services = plane
+        .services
+        .ok_or_else(|| "the instance was handed no host services".to_string())?;
+    match services.trust_decide(
+        at.handle(TRUST_DECIDE_SEQ),
+        agent,
+        None,
+        svc::TRUST_DECIDE_APPROVE,
+    ) {
+        Ok(code) if code == svc::UNDECIDED_UNSIGHTED => Err(
+            "the agent's card could not be authenticated, so there is nothing to approve"
+                .to_string(),
+        ),
+        Ok(code) if code == svc::UNDECIDED_UNKNOWN => {
+            Err(format!("the trust book declares no agent `{agent}`"))
+        }
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("the trust book did not decide: {e:?}")),
+    }
+}
+
+/// The completion handle the approve's decision rides: past every handle its look issued.
+const TRUST_DECIDE_SEQ: u32 = u32::MAX - 1;
 
 slot!(
     /// `hydrate`: nothing to load. The door's durable state is host records (its tasks, their push

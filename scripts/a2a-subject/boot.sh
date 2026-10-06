@@ -68,10 +68,9 @@
 #   1. A registration is born `Pending` and something must promote it. `A2aPlane::from_config`
 #      deliberately does not lift an operator's declared pin into an approval, which is right: an
 #      approval is a statement about a document a human actually saw. The verbs that capture a
-#      sighting and act on it are now MOUNTED — `POST /api/v1/admin/agents/{name}/connect` (which
-#      sights the card on the kernel's trust book) and the generic `POST /api/v1/admin/trust/approve`
-#      — so this script drives the sequence a real operator drives, in that order. Nothing is
-#      auto-approved.
+#      sighting and act on it are now MOUNTED — `POST /api/v1/admin/agents/{name}/connect` and
+#      `.../approve` — so this script drives the sequence a real operator drives, in that order,
+#      echoing back the fingerprint `connect` reported. Nothing is auto-approved.
 #   2. A loopback backend is refused unless the operator says so. `agents.<name>.allow_private:` is
 #      the same knob, the same spelling and the same fail-closed default the `tools:` sibling has,
 #      and it is set here — out loud, in the config this script writes — because the backend really
@@ -389,9 +388,9 @@ subject_await() {
 
 # PROMOTE THE REGISTRATION THE WAY AN OPERATOR PROMOTES ONE, and no other way.
 #
-# `connect` fetches, verifies, SIGHTS and REPORTS; it grants nothing, by construction. Approving the
-# agent's trust key on `/admin/trust` is a second, explicit act, at what `connect` sighted. Nothing
-# here approves anything busbar did not itself
+# `connect` fetches, verifies and REPORTS; it grants nothing, by construction. `approve` is a second,
+# explicit act that must echo back the fingerprint `connect` reported — busbar re-fetches and
+# re-verifies and refuses if the two disagree. Nothing here approves anything busbar did not itself
 # authenticate against the operator's issuer key, and there is no path in this script that writes a
 # trust state directly.
 subject_promote() {
@@ -410,31 +409,20 @@ except Exception:
 there is nothing an operator could approve. The preview was: $preview"
   say "   connect: the card verified against the operator's issuer key, fingerprint $fingerprint"
 
-  # APPROVE ITS TRUST KEY on the kernel's trust book (ARCHITECT FLIP-A2A: the plane sights, the
-  # operator approves on the generic `/admin/trust`): the key `connect` just sighted, as `GET
-  # /trust` lists it, approved at what it was last sighted at.
-  local book key approved state
-  book="$(curl -s --max-time 30 "http://127.0.0.1:$admin_port/api/v1/admin/trust" \
-    -H "authorization: Bearer $admin_token")"
-  key="$(printf '%s' "$book" | SUBJECT="$SUBJECT_AGENT_ID" python3 -c 'import json,os,sys
-try:
-    rows=json.load(sys.stdin).get("keys") or []
-    print(next((r["key"] for r in rows if r.get("counterparty")==os.environ["SUBJECT"] and not r.get("item")), ""))
-except Exception:
-    print("")')"
-  [ -n "$key" ] || die "the trust book lists no key for \`$SUBJECT_AGENT_ID\`: $book"
-  approved="$(curl -s --max-time 30 -X POST "http://127.0.0.1:$admin_port/api/v1/admin/trust/approve" \
+  local approved state
+  approved="$(curl -s --max-time 30 -X POST \
+    "http://127.0.0.1:$admin_port/api/v1/admin/agents/$SUBJECT_AGENT_ID/approve" \
     -H "authorization: Bearer $admin_token" -H 'content-type: application/json' \
-    -d "{\"key\":\"$key\"}")"
+    -d "{\"fingerprint\":\"$fingerprint\"}")"
   printf '%s\n' "$approved" > "$dir/approve.json"
   state="$(printf '%s' "$approved" | python3 -c 'import json,sys
 try:
     print(json.load(sys.stdin).get("state") or "")
 except Exception:
     print("")')"
-  case "$state" in approved|same) ;; *) die "approving \`$key\` left it in state \`$state\`, so \
-busbar fronts nothing and every instrument below would be measuring a refusal. The answer was: $approved" ;; esac
-  say "   approve: the trust key $key is APPROVED at the fingerprint the operator saw"
+  [ "$state" = "approved" ] || die "\`approve\` left \`$SUBJECT_AGENT_ID\` in state \`$state\`, so \
+busbar fronts nothing and every instrument below would be measuring a 503. The answer was: $approved"
+  say "   approve: the registration is APPROVED against the fingerprint the operator saw"
 }
 
 # THE CARD BUSBAR SERVES FOR THE AGENT IT FRONTS, waited for rather than assumed.

@@ -143,10 +143,10 @@ YAML
   h2_approve_agent
 }
 
-# THE OPERATOR'S APPROVAL CEREMONY — `connect` (re-contact: the card fetched, verified and sighted on
-# the kernel's trust book) then approve the agent's trust key on the generic `/admin/trust`.
-# Factored out of `h2_boot` because a leg that applies live config runs it again; the kernel keeps
-# the operator's decision across an apply, so the second run finds the key already approved.
+# THE OPERATOR'S APPROVAL CEREMONY — connect (re-contact + re-pin) then approve the fingerprint it
+# reports; `approve` approves the agent's trust key on the kernel's trust book (ARCHITECT FLIP-A2A),
+# a decision the book keeps across a config apply. Factored out of `h2_boot` because a leg that
+# applies live config runs it again; the second run finds the key already approved.
 h2_approve_agent() {
   local preview fingerprint approved state
   preview="$(curl -s --max-time 30 -X POST "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/agents/probe/connect" \
@@ -157,26 +157,15 @@ try:
 except Exception:
     print("")' <<<"$preview")"
   [ -n "$fingerprint" ] || { echo "H2: connect reported no fingerprint for 'probe': $preview" >&2; return 1; }
-  # THE AGENT'S TRUST KEY on the kernel's trust book, as `GET /trust` lists it, approved on the
-  # generic `/admin/trust` at what `connect` just sighted (ARCHITECT FLIP-A2A).
-  local key
-  key="$(curl -s --max-time 30 "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/trust" \
-    -H "authorization: Bearer $H2_ADMIN_TOKEN" | python3 -c 'import json,sys
-try:
-    rows=json.load(sys.stdin).get("keys") or []
-    print(next((r["key"] for r in rows if r.get("counterparty")=="probe" and not r.get("item")), ""))
-except Exception:
-    print("")')"
-  [ -n "$key" ] || { echo "H2: the trust book lists no key for 'probe'" >&2; return 1; }
-  approved="$(curl -s --max-time 30 -X POST "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/trust/approve" \
+  approved="$(curl -s --max-time 30 -X POST "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/agents/probe/approve" \
     -H "authorization: Bearer $H2_ADMIN_TOKEN" -H 'content-type: application/json' \
-    -d "{\"key\":\"$key\"}")"
+    -d "{\"fingerprint\":\"$fingerprint\"}")"
   state="$(python3 -c 'import json,sys
 try:
     print(json.load(sys.stdin).get("state") or "")
 except Exception:
     print("")' <<<"$approved")"
-  case "$state" in approved|same) ;; *) echo "H2: approving '$key' left it in state '$state': $approved" >&2; return 1 ;; esac
+  [ "$state" = "approved" ] || { echo "H2: approve left 'probe' in state '$state': $approved" >&2; return 1; }
   return 0
 }
 

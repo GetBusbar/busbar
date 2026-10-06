@@ -176,18 +176,31 @@ fn the_kernel_s_verdict_reads_as_the_admission_s_state() {
 }
 
 #[test]
-fn the_connect_view_is_what_the_card_presented_and_the_key_s_state() {
+fn the_connect_view_is_a_preview_of_the_card_under_the_key_s_state() {
     let s = seen(&card("plans"));
     let fp = card::fingerprint(&card("plans")).unwrap();
     assert_eq!(
         connect_view("planner", State::Pending, &s),
         format!(
-            r#"{{"name":"planner","state":"pending","pin_mechanism":"jws_issuer_key","fingerprint":"{fp}","observed_skills":1,"failure":null}}"#
+            r#"{{"name":"planner","state":"pending","pin_mechanism":"jws_issuer_key","fingerprint":"{fp}","pin_changed":false,"added":[],"changed":[],"removed":[],"observed_skills":1,"failure":null}}"#
         )
     );
-    let approved: Value =
+    let preview: Value =
         serde_json::from_str(&connect_view("planner", State::Approved, &s)).unwrap();
+    assert_eq!(
+        preview["state"], "pending",
+        "a preview never reports approved"
+    );
+    let approved: Value =
+        serde_json::from_str(&registration_view("planner", State::Approved, &s)).unwrap();
     assert_eq!(approved["state"], "approved");
+    assert_eq!(approved["fingerprint"], fp.as_str());
+    let quarantined: Value =
+        serde_json::from_str(&connect_view("planner", State::Quarantined, &s)).unwrap();
+    assert_eq!(
+        quarantined["pin_changed"], true,
+        "the kernel quarantined a moved card"
+    );
     let failed: Value = serde_json::from_str(&connect_view(
         "planner",
         State::Approved,
@@ -222,6 +235,62 @@ fn an_unpinned_registration_presents_no_fingerprint_to_sight() {
     assert_eq!(view["state"], "pending");
     assert_eq!(view["fingerprint"], Value::Null);
     assert_eq!(view["pin_mechanism"], "unpinned");
+}
+
+#[test]
+fn agreement_refuses_every_arm_but_the_named_fingerprint() {
+    let s = seen(&card("plans"));
+    let fp = card::fingerprint(&card("plans")).unwrap();
+    assert_eq!(agrees(&s, &fp), Ok(()));
+    assert!(agrees(&s, "")
+        .unwrap_err()
+        .starts_with("`fingerprint` must name"));
+    assert!(agrees(&s, "sha256:other")
+        .unwrap_err()
+        .contains("The card moved between the preview and the approval"));
+    assert!(agrees(&Sighting::Failed("down".to_string()), &fp)
+        .unwrap_err()
+        .ends_with("nothing to approve: down"));
+}
+
+#[test]
+fn the_approve_body_is_read_as_the_engine_s_extractor_read_it() {
+    let json = Some("application/json");
+    assert_eq!(
+        approve_body(json, br#"{"fingerprint":"sha256:a"}"#),
+        Ok("sha256:a".to_string())
+    );
+    assert_eq!(
+        approve_body(
+            Some("application/merge+json; charset=utf-8"),
+            br#"{"fingerprint":"f"}"#
+        ),
+        Ok("f".to_string())
+    );
+    let prefix =
+        "the approve body must be `{\"fingerprint\": \"…\"}` naming the fingerprint `connect` reported: ";
+    assert_eq!(
+        approve_body(None, b"{}").unwrap_err(),
+        format!("{prefix}Expected request with `Content-Type: application/json`")
+    );
+    assert_eq!(
+        approve_body(json, b"{").unwrap_err(),
+        format!("{prefix}Failed to parse the request body as JSON: EOF while parsing an object at line 1 column 1")
+    );
+    assert_eq!(
+        approve_body(json, b"{}").unwrap_err(),
+        format!("{prefix}Failed to deserialize the JSON body into the target type: missing field `fingerprint` at line 1 column 2")
+    );
+    assert_eq!(
+        approve_body(json, br#"{"fingerprint":5}"#).unwrap_err(),
+        format!("{prefix}Failed to deserialize the JSON body into the target type: fingerprint: invalid type: integer `5`, expected a string at line 1 column 16")
+    );
+    assert!(approve_body(json, br#"{"x":1}"#)
+        .unwrap_err()
+        .contains("unknown field `x`, expected `fingerprint`"));
+    assert!(approve_body(json, br#"{"fingerprint":"a"} x"#)
+        .unwrap_err()
+        .contains("Failed to parse the request body as JSON: trailing characters"));
 }
 
 fn def_of(pin: AgentPinCfg, cadence: serde_json::Value) -> AgentDefCfg {

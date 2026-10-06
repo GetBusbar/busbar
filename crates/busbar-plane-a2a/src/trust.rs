@@ -732,23 +732,26 @@ pub fn verify(
 
 // ── THE VERBS' ANSWERS ───────────────────────────────────────────────────────────────────────────
 
-/// THE TRUST VIEW of one registered agent: what `connect` answers with. Its state is the kernel's
-/// verdict on the agent's key ([`state_of`]), or the plane's own `suspended`/`error`.
+/// THE TRUST VIEW of one registered agent, field for field the served engine's: what both verbs
+/// answer with. Its `state` is the kernel's verdict on the agent's trust key (or the plane's own
+/// `suspended`/`error`); the approval it reads against is the KERNEL'S (ARCHITECT FLIP-A2A), which
+/// pins the card's fingerprint and not its skills, so the per-skill queue (`added`, `changed`,
+/// `removed`) is always empty and `pin_changed` says the kernel quarantined a moved card.
 #[derive(serde::Serialize)]
 struct TrustView<'a> {
     name: &'a str,
     state: &'static str,
     pin_mechanism: &'static str,
     fingerprint: Option<&'a str>,
+    pin_changed: bool,
+    added: Vec<String>,
+    changed: Vec<String>,
+    removed: Vec<String>,
     observed_skills: usize,
     failure: Option<&'a str>,
 }
 
-/// `connect`'s answer: what the card presented (`sighting`, which this look reported to the
-/// kernel's trust book) and the state the agent's key stands in now (`state`). A first sighting is
-/// `pending` until the operator approves the key `<instance>/<agent>` on `/admin/trust`.
-#[must_use]
-pub fn connect_view(name: &str, state: State, sighting: &Sighting) -> String {
+fn view(name: &str, state: State, sighting: &Sighting) -> String {
     let state = if sighting.failure().is_some() && state != State::Suspended {
         State::Error
     } else {
@@ -759,10 +762,158 @@ pub fn connect_view(name: &str, state: State, sighting: &Sighting) -> String {
         state: state.word(),
         pin_mechanism: sighting.mechanism(),
         fingerprint: sighting.seen().and_then(|o| o.pin.fingerprint()),
+        pin_changed: state == State::Quarantined,
+        added: Vec::new(),
+        changed: Vec::new(),
+        removed: Vec::new(),
         observed_skills: sighting.skill_count(),
         failure: sighting.failure(),
     })
     .unwrap_or_default()
+}
+
+/// `connect`'s answer: a PREVIEW of what the card presented (`sighting`, which this look sighted on
+/// the kernel's trust book) under the state the agent's key stands in (`state`). It never reports
+/// `approved` — a key that serves is reported `pending`, so the preview cannot be read as the
+/// grant — and it surfaces the fingerprint the operator is being asked to approve.
+#[must_use]
+pub fn connect_view(name: &str, state: State, sighting: &Sighting) -> String {
+    let state = match state {
+        State::Approved => State::Pending,
+        other => other,
+    };
+    view(name, state, sighting)
+}
+
+/// `approve`'s answer: the registration as it now stands on the kernel's trust book (`state`), its
+/// fingerprint the one approved.
+#[must_use]
+pub fn registration_view(name: &str, state: State, sighting: &Sighting) -> String {
+    view(name, state, sighting)
+}
+
+/// DOES WHAT THE ENDPOINT SERVES NOW AGREE WITH WHAT THE OPERATOR SAYS THEY APPROVED? Every arm
+/// is a refusal but the one where the observed fingerprint is the one `claimed` names.
+///
+/// # Errors
+///
+/// The refusal, in the served engine's words.
+pub fn agrees(sighting: &Sighting, claimed: &str) -> Result<(), String> {
+    if claimed.is_empty() {
+        return Err(
+            "`fingerprint` must name the canonical card fingerprint `connect` reported. An \
+             approval with nothing to compare is trust-on-first-use with a button on it."
+                .to_string(),
+        );
+    }
+    if let Some(reason) = sighting.failure() {
+        return Err(format!(
+            "the agent's card could not be authenticated, so there is nothing to approve: {reason}"
+        ));
+    }
+    match sighting.seen().and_then(|o| o.pin.fingerprint()) {
+        None => Err(
+            "this registration has no authenticity root (`pin.mechanism: unpinned`), so the card \
+             it serves has no fingerprint to approve. Supply an issuer key or a certificate SPKI \
+             out of band and name it in `pin:`."
+                .to_string(),
+        ),
+        Some(observed) if observed == claimed => Ok(()),
+        Some(observed) => Err(format!(
+            "the endpoint is serving fingerprint `{observed}` and the approval names `{claimed}`. \
+             The card moved between the preview and the approval, or the approval is for a \
+             different agent; re-run `connect` and read the new fingerprint before approving."
+        )),
+    }
+}
+
+/// THE `approve` BODY, `{"fingerprint": "…"}`, read as the served engine's JSON extractor read it:
+/// a JSON media type first, then the one field and no other. The fingerprint, or the refusal.
+///
+/// # Errors
+///
+/// The refusal, naming what the body must be.
+pub fn approve_body(content_type: Option<&str>, body: &[u8]) -> Result<String, String> {
+    let refused = |e: String| {
+        format!(
+            "the approve body must be `{{\"fingerprint\": \"…\"}}` naming the fingerprint \
+             `connect` reported: {e}"
+        )
+    };
+    if !content_type.is_some_and(is_json_media_type) {
+        return Err(refused(
+            "Expected request with `Content-Type: application/json`".to_string(),
+        ));
+    }
+    let mut inside = None;
+    let mut reader = serde_json::Deserializer::from_slice(body);
+    let fingerprint =
+        serde::de::DeserializeSeed::deserialize(ApproveSeed(&mut inside), &mut reader)
+            // Trailing bytes after the one document are a syntax refusal with no field to name.
+            .and_then(|fp| reader.end().map(|()| fp));
+    fingerprint.map_err(|e| {
+        let at = inside.map(|seg| format!("{seg}: ")).unwrap_or_default();
+        refused(match e.classify() {
+            serde_json::error::Category::Data => {
+                format!("Failed to deserialize the JSON body into the target type: {at}{e}")
+            }
+            _ => format!("Failed to parse the request body as JSON: {at}{e}"),
+        })
+    })
+}
+
+/// `application/json`, or any `application/*+json`, parameters aside.
+fn is_json_media_type(value: &str) -> bool {
+    let essence = value.split(';').next().unwrap_or_default().trim();
+    let Some((kind, sub)) = essence.split_once('/') else {
+        return false;
+    };
+    kind.eq_ignore_ascii_case("application")
+        && (sub.eq_ignore_ascii_case("json") || sub.to_ascii_lowercase().ends_with("+json"))
+}
+
+/// The one field of the `approve` body, read with the path the reader was at when it failed
+/// recorded in `.0` (the field's name, or `[0]` for the array spelling).
+struct ApproveSeed<'a>(&'a mut Option<&'static str>);
+
+impl<'de> serde::de::DeserializeSeed<'de> for ApproveSeed<'_> {
+    type Value = String;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<String, D::Error> {
+        d.deserialize_struct("ApproveReq", &["fingerprint"], self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for ApproveSeed<'_> {
+    type Value = String;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("struct ApproveReq")
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<String, A::Error> {
+        *self.0 = Some("[0]");
+        let fingerprint = seq.next_element::<String>()?;
+        *self.0 = None;
+        fingerprint
+            .ok_or_else(|| serde::de::Error::invalid_length(0, &"struct ApproveReq with 1 element"))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<String, A::Error> {
+        let mut fingerprint = None;
+        while let Some(key) = map.next_key::<String>()? {
+            if key != "fingerprint" {
+                return Err(serde::de::Error::unknown_field(&key, &["fingerprint"]));
+            }
+            if fingerprint.is_some() {
+                return Err(serde::de::Error::duplicate_field("fingerprint"));
+            }
+            *self.0 = Some("fingerprint");
+            fingerprint = Some(map.next_value::<String>()?);
+            *self.0 = None;
+        }
+        fingerprint.ok_or_else(|| serde::de::Error::missing_field("fingerprint"))
+    }
 }
 
 #[cfg(test)]
