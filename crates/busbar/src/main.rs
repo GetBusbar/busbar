@@ -949,7 +949,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     );
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     // The door planes' units bind the hooks of the generation this handle holds, from now on.
-    let _bound = door_hooks_live.set(std::sync::Arc::clone(&app_handle));
+    let live = std::sync::Arc::clone(&app_handle);
+    let _bound = door_hooks_live
+        .set(std::sync::Arc::new(move || live.load()) as root::serve::LiveGeneration);
     // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,

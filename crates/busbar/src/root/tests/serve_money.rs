@@ -35,8 +35,15 @@ struct Governed {
     token: String,
     app: Arc<App>,
     book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
-    /// The live generation's handle: a config apply swaps it.
-    handle: Arc<busbar_kernel::state::AppHandle>,
+    /// The live generation, as the door planes' units read it: a config apply replaces it.
+    current: Arc<std::sync::Mutex<Arc<App>>>,
+}
+
+impl Governed {
+    /// A CONFIG APPLY: `next` is the generation every unit that binds from now on reads.
+    fn apply(&self, next: Arc<App>) {
+        *self.current.lock().expect("unpoisoned") = next;
+    }
 }
 
 /// `keys_chain`: the deployment's data chain verifies a key (a claim that takes a credential is
@@ -242,10 +249,15 @@ fn governed_hooked(
     served.post = Some(Arc::clone(&post));
     let routes = door_routes(served, || crate::root::kernel::ROOT_CARD.pin(), &[], &[])
         .expect("its claims mount");
-    let (router, _admin, handle) =
+    let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), routes, 1 << 20, 0, false);
-    // As the boot does once the routers exist: units bind the live generation's hooks from now on.
-    assert!(live.set(Arc::clone(&handle)).is_ok());
+    // As the boot does once the routers exist: units bind the live generation's hooks from now on
+    // (the boot reads its swap handle; this rig, a cell its config applies replace).
+    let current = Arc::new(std::sync::Mutex::new(Arc::clone(&app)));
+    let reads = Arc::clone(&current);
+    let source: super::LiveGeneration =
+        Arc::new(move || Arc::clone(&reads.lock().expect("unpoisoned")));
+    assert!(live.set(source).is_ok());
     Some(Governed {
         _published: Published(instance),
         router,
@@ -256,7 +268,7 @@ fn governed_hooked(
         token: token.expose_secret().clone(),
         app,
         book,
-        handle,
+        current,
     })
 }
 
@@ -468,13 +480,6 @@ async fn a_configured_gate_blocks_in_session_content_through_a_dropped_in_plane(
 #[tokio::test]
 async fn a_gate_a_config_apply_adds_blocks_the_next_units_content_with_no_restart() {
     let _one = PUBLISHING.lock().await;
-    // A swap runs every REGISTERED plane's `on_swap` over both generations, and which planes this
-    // test binary has registered depends on which tests ran first (a plane's test seams register it
-    // process-wide). Every generation this test builds therefore carries the MCP plane's runtime,
-    // as every production generation does, whatever ran before it.
-    busbar_kernel::test_support::install_test_section_plane_runtime_factory(
-        busbar_mcp::testkit::default_mcp_runtime,
-    );
     let Some(g) = governed("serve-money-live", true) else {
         eprintln!("skip: the test plane's cdylib is not built in this scoped run");
         return;
@@ -501,7 +506,7 @@ async fn a_gate_a_config_apply_adds_blocks_the_next_units_content_with_no_restar
     next.hook_registry = registry;
     next.global_hooks = vec!["screen".to_string()];
     let next = Arc::new(next);
-    g.handle.swap(next);
+    g.apply(next);
     let (status, body) = g.post("/call/services", true).await;
     assert_eq!(
         (status, body.as_str()),

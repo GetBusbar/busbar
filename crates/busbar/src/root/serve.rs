@@ -539,11 +539,16 @@ pub struct DoorEgress<'a> {
 /// apply reaches every unit that binds after it with no restart; a unit keeps the generation it
 /// bound (1.5.5 behaviour, frozen).
 pub struct DoorHooks {
-    /// The generation the boot built: what a unit binds until the live handle is bound.
+    /// The generation the boot built: what a unit binds until the live source is bound.
     pub boot: Arc<busbar_kernel::state::App>,
-    /// The live generation's handle, bound once the routers that own it are built.
-    pub live: Arc<OnceLock<Arc<busbar_kernel::state::AppHandle>>>,
+    /// The live generation's source (the boot binds the routers' swap handle's `load`), bound once
+    /// the routers that own it are built.
+    pub live: Arc<OnceLock<LiveGeneration>>,
 }
+
+/// Where the configuration generation current NOW is read: each call answers the one a config
+/// apply last swapped in.
+pub type LiveGeneration = Arc<dyn Fn() -> Arc<busbar_kernel::state::App> + Send + Sync>;
 
 /// What the hooks may know of a verified caller (the principal is its key's id), over one
 /// generation's governance book: its key, its group (a tap's `groups:` scope), its rate headroom
@@ -602,7 +607,7 @@ impl busbar_kernel::plane_driver::CallerFacts for GovCaller {
 /// moment and binds its hooks, as [`busbar_kernel::plane_driver::HostHooks`] binds a fixed one.
 struct LiveHooks {
     boot: Arc<busbar_kernel::state::App>,
-    live: Arc<OnceLock<Arc<busbar_kernel::state::AppHandle>>>,
+    live: Arc<OnceLock<LiveGeneration>>,
     dialects: Vec<String>,
 }
 
@@ -612,7 +617,7 @@ impl LiveHooks {
         let app = self
             .live
             .get()
-            .map_or_else(|| Arc::clone(&self.boot), |h| h.load());
+            .map_or_else(|| Arc::clone(&self.boot), |current| current());
         let host = busbar_kernel::plane_host::engine_host(&app);
         busbar_kernel::plane_driver::HostHooks {
             host: Arc::clone(&host),
