@@ -44,6 +44,16 @@ pub struct Reading {
 /// result under the call's handle and wakes its ticket.
 pub type Later = Box<dyn FnOnce(Stored) + Send>;
 
+/// One trust key a plane names (`trust.decide`): a counterparty of the calling instance, and
+/// optionally one item there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrustKeyRef<'a> {
+    /// The counterparty.
+    pub counterparty: &'a str,
+    /// The item there; `None` = the counterparty as a whole.
+    pub item: Option<&'a str>,
+}
+
 /// THE HOST SERVICES, as the kernel implements them. The dispatcher holds one for every instance it
 /// adopts; each slot validates the caller's `in`, applies the mechanism's rules, and calls in here
 /// at most once per completion handle. Every service is required, with no default body (spec
@@ -103,6 +113,21 @@ pub trait HostServices: Send + Sync {
         digest: &str,
     ) -> Stored {
         let _ = (caller, counterparty, item, digest);
+        Stored::refused(UNSERVED)
+    }
+
+    /// `trust.decide`: the operator's decision (`approve`, at `expected` when stated) about the
+    /// calling instance's trust key `counterparty` (`item`: one item there), through the plane's
+    /// own administrative verb. READY with the `TRUST_DECIDED_*` verdict after it, or an
+    /// `UNDECIDED_*`. Never pends. Unserved by default.
+    fn trust_decide(
+        &self,
+        caller: &Caller,
+        key: TrustKeyRef<'_>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Stored {
+        let _ = (caller, key, expected, approve);
         Stored::refused(UNSERVED)
     }
 

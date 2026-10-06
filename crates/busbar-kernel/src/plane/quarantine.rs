@@ -49,7 +49,7 @@
 //! out what its backend kept by READING IT BACK at boot.
 
 use crate::plane::store::{decode, encode, PlaneStore, KIND_DEMOTION, KIND_TRUST_DECISION};
-use crate::trust::book::DecisionRow;
+use crate::trust::book::RulingRow;
 use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreResult};
 use std::sync::{Arc, Mutex};
 
@@ -198,7 +198,7 @@ impl DemotionRecord {
     /// # Errors
     ///
     /// The store's refusal.
-    pub fn keep_decision(&self, row: &DecisionRow, now: u64) -> Result<(), String> {
+    pub fn keep_decision(&self, row: &RulingRow, now: u64) -> Result<(), String> {
         let Some(store) = self.sink() else {
             return Ok(());
         };
@@ -224,7 +224,7 @@ impl DemotionRecord {
 
     /// EVERY kept trust decision; empty when no store is attached or none was kept. A read failure
     /// is reported and reads as none: the configured trust stands until the operator decides again.
-    pub fn decisions(&self) -> Vec<DecisionRow> {
+    pub fn decisions(&self) -> Vec<RulingRow> {
         let Some(store) = self.sink() else {
             return Vec::new();
         };

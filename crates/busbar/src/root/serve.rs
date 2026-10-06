@@ -303,6 +303,19 @@ impl HostServices for LateServices {
         }
     }
 
+    fn trust_decide(
+        &self,
+        caller: &Caller,
+        key: busbar_contract::services::TrustKeyRef<'_>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Stored {
+        match self.served() {
+            Ok(s) => s.trust_decide(caller, key, expected, approve),
+            Err(r) => r,
+        }
+    }
+
     fn trust_sight_item(
         &self,
         caller: &Caller,

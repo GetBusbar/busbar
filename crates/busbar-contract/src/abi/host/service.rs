@@ -156,10 +156,12 @@ pub mod op {
     pub const TRUST_SIGHT_ITEM: u32 = 23;
     /// `trust.serves`.
     pub const TRUST_SERVES: u32 = 24;
+    /// `trust.decide`.
+    pub const TRUST_DECIDE: u32 = 25;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 25;
+pub const SERVICES: u32 = 26;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
 /// an index past the table.
@@ -177,6 +179,7 @@ pub const fn may_pend(service: u32) -> bool {
             | op::TRUST_VERIFY
             | op::TRUST_SIGHT_ITEM
             | op::TRUST_SERVES
+            | op::TRUST_DECIDE
     ) && service < SERVICES
 }
 
@@ -564,6 +567,51 @@ pub const DISTRUST_CHANGED: u64 = 5;
 /// The item was never sighted at this counterparty: an unknown item (a 404's case).
 pub const DISTRUST_UNKNOWN_ITEM: u64 = 6;
 
+/// [`op::TRUST_DECIDE`]'s `in`: THE OPERATOR'S DECISION about one of the calling instance's trust
+/// keys (the key `trust.sight_item` and `trust.serves` name: a counterparty, and optionally an item
+/// there), made through the plane's own administrative verb: the ONE decide path the core-admin
+/// `POST /api/v1/admin/trust/approve` and `/revoke` take, durable alike. An approval approves what
+/// the caller SAW: `expected`, when stated, must be the key's current sighting. `value` = the
+/// `TRUST_DECIDED_*` verdict after it, or the `UNDECIDED_*` that refused it. Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TrustDecideIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The counterparty.
+    pub counterparty: AbiStr,
+    /// The item there; empty = the counterparty as a whole.
+    pub item: AbiStr,
+    /// The fingerprint (catalogue hash or item digest) the caller saw and approves; empty = none
+    /// stated. Unread by a revoke.
+    pub expected: AbiStr,
+    /// [`TRUST_DECIDE_APPROVE`] | [`TRUST_DECIDE_REVOKE`]; any other value is a fault.
+    pub decision: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+}
+
+/// [`TrustDecideIn::decision`]: approve the key at what it was last sighted at.
+pub const TRUST_DECIDE_APPROVE: u32 = 0;
+/// [`TrustDecideIn::decision`]: revoke the key: refused until approved again.
+pub const TRUST_DECIDE_REVOKE: u32 = 1;
+
+/// `trust.decide`'s verdict: the key serves.
+pub const TRUST_DECIDED_SERVING: u64 = 1;
+/// `trust.decide`'s verdict: the key is not approved (new, or revoked): refused.
+pub const TRUST_DECIDED_PENDING: u64 = 2;
+/// `trust.decide`'s verdict: the key's sighting moved from its approval: refused until re-approved.
+pub const TRUST_DECIDED_QUARANTINED: u64 = 3;
+/// `trust.decide` refused: the key was never sighted at anything to approve.
+pub const UNDECIDED_UNPINNED: u64 = 4;
+/// `trust.decide` refused: the fingerprint the caller expects is not the key's current sighting.
+pub const UNDECIDED_STALE: u64 = 5;
+/// `trust.decide` refused: the calling instance has no such key.
+pub const UNDECIDED_UNKNOWN: u64 = 6;
+/// `trust.decide` refused: the counterparty declares no authenticity root; nothing at it is
+/// approvable.
+pub const UNDECIDED_ROOTLESS: u64 = 7;
+
 /// [`op::TRUST_VERIFY`]'s `in`: verify a document's detached signatures against the root key the
 /// kernel holds for `counterparty` (the operator's out-of-band material its declared pin names).
 /// The key selects the algorithm; a signature's header is only checked against it. `value` = a
@@ -886,6 +934,8 @@ pub struct HostSlots {
     pub trust_sight_item: Option<ServiceFn>,
     /// [`op::TRUST_SERVES`], in [`TrustServesIn`]. A tail addition.
     pub trust_serves: Option<ServiceFn>,
+    /// [`op::TRUST_DECIDE`], in [`TrustDecideIn`]. A tail addition.
+    pub trust_decide: Option<ServiceFn>,
 }
 
 // ── the host's checks of an `in` ──────────────────────────────────────────────────────────────
@@ -1304,6 +1354,27 @@ pub fn check_trust_serves(
         &i.head,
         out,
         bare(op::TRUST_SERVES, (DISTRUST_NONE, DISTRUST_UNKNOWN_ITEM)),
+    )
+}
+
+/// `trust.decide`'s answer: a `TRUST_DECIDED_*` verdict or an `UNDECIDED_*`.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_trust_decide(
+    i: &TrustDecideIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    answer(
+        ret,
+        &i.head,
+        out,
+        bare(
+            op::TRUST_DECIDE,
+            (TRUST_DECIDED_SERVING, UNDECIDED_ROOTLESS),
+        ),
     )
 }
 

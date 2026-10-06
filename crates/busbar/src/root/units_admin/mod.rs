@@ -1234,9 +1234,9 @@ impl busbar_core_admin::Governance for CoreGovernance {
             }
             KernelVerb::TrustApprove | KernelVerb::TrustRevoke => {
                 let decision = if verb == KernelVerb::TrustApprove {
-                    busbar_kernel::trust::book::Decision::Approve
+                    busbar_kernel::trust::book::Ruling::Approve
                 } else {
-                    busbar_kernel::trust::book::Decision::Revoke
+                    busbar_kernel::trust::book::Ruling::Revoke
                 };
                 return bound::trust_decide_effect(request, decision, &self.trust)
                     .map(|a| a.pack());

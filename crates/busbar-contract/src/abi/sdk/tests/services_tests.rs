@@ -79,6 +79,7 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         disk_append: None,
         trust_sight_item: None,
         trust_serves: None,
+        trust_decide: None,
     }
 }
 

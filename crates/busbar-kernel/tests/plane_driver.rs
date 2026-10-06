@@ -1490,17 +1490,13 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
         let later: busbar_contract::services::Later = Box::new(|_| {});
         let _ = services.trust_sight(&instance(), "peer", hash, later);
     };
-    let decide = |key: &str, decision| {
-        services
-            .trust_decide(key, decision)
-            .expect("an admitted key")
-    };
-    use busbar_kernel::trust::book::Decision;
+    let decide = |key: &str, decision| services.trust_rule(key, decision).expect("an admitted key");
+    use busbar_kernel::trust::book::Ruling;
     sight("h1");
     let (outcome, body) = approved(&driver, "/trusted/peer").await;
     assert!(untrusted(&outcome), "{outcome:?}");
     assert_eq!(body, refused(4), "sighted, never approved");
-    decide("inst/peer", Decision::Approve);
+    decide("inst/peer", Ruling::Approve);
     let (outcome, _) = approved(&driver, "/trusted/peer").await;
     assert!(!untrusted(&outcome), "{outcome:?}");
 
@@ -1509,7 +1505,7 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
     assert!(untrusted(&outcome), "{outcome:?}");
     assert_eq!(body, refused(4));
     let _ = services.trust_sight_item(&instance(), "peer", "cap", "d1");
-    decide("inst/peer/cap", Decision::Approve);
+    decide("inst/peer/cap", Ruling::Approve);
     let (outcome, _) = approved(&driver, "/trusted/peer/cap@d1").await;
     assert!(!untrusted(&outcome), "{outcome:?}");
     let (outcome, body) = approved(&driver, "/trusted/peer/cap@d2").await;
@@ -1532,7 +1528,7 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
     let (outcome, body) = approved(&driver, "/trusted/peer/tool").await;
     assert!(untrusted(&outcome), "{outcome:?}");
     assert_eq!(body, refused(4));
-    decide("inst/peer/tool", Decision::Approve);
+    decide("inst/peer/tool", Ruling::Approve);
     let serves = |item: &str| {
         services
             .trust_serves(&instance(), "peer", Some(item), None)
@@ -1560,16 +1556,16 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
     let (outcome, body) = approved(&driver, "/trusted/peer/cap@d1").await;
     assert!(untrusted(&outcome), "{outcome:?}");
     assert_eq!(body, refused(3));
-    decide("inst/peer", Decision::Approve);
+    decide("inst/peer", Ruling::Approve);
     let (outcome, _) = approved(&driver, "/trusted/peer/cap@d1").await;
     assert!(!untrusted(&outcome), "re-approved: {outcome:?}");
-    decide("inst/peer", Decision::Revoke);
+    decide("inst/peer", Ruling::Revoke);
     let (outcome, body) = approved(&driver, "/trusted/peer/cap@d1").await;
     assert!(untrusted(&outcome), "{outcome:?}");
     assert_eq!(body, refused(4), "revoked");
     // Unknown keys are no keys.
     assert_eq!(
-        services.trust_decide("inst/stranger", Decision::Approve),
+        services.trust_rule("inst/stranger", Ruling::Approve),
         Err(busbar_kernel::host_services::TrustRefused::NoSuchKey)
     );
 }

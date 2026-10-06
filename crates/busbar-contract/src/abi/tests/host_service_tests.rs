@@ -414,7 +414,7 @@ fn the_host_refuses_a_capacity_with_a_null_buffer() {
 }
 
 #[test]
-fn the_services_that_never_pend_are_exactly_the_stated_ten() {
+fn the_services_that_never_pend_are_exactly_the_stated_eleven() {
     let never: Vec<u32> = (0..SERVICES).filter(|s| !may_pend(*s)).collect();
     assert_eq!(
         never,
@@ -428,7 +428,8 @@ fn the_services_that_never_pend_are_exactly_the_stated_ten() {
             op::NEED_ADMIT,
             op::TRUST_VERIFY,
             op::TRUST_SIGHT_ITEM,
-            op::TRUST_SERVES
+            op::TRUST_SERVES,
+            op::TRUST_DECIDE
         ]
     );
     assert!(!may_pend(SERVICES), "an index past the table never pends");
@@ -495,6 +496,7 @@ fn every_service_field_sits_at_its_op_index() {
             op::TRUST_SIGHT_ITEM,
         ),
         (offset_of!(HostSlots, trust_serves), op::TRUST_SERVES),
+        (offset_of!(HostSlots, trust_decide), op::TRUST_DECIDE),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");
@@ -870,4 +872,46 @@ fn a_disk_append_answer_lands_whole_or_names_its_failed_step() {
     assert!(check(written(0, 0, 0), &pending, TICKET).is_ok());
     assert!(check(written(0, 0, 0), &pending, Ticket::NONE).is_err());
     assert!(may_pend(op::DISK_APPEND));
+}
+
+/// `trust.decide` (ARCHITECT 2026-10-06): it never pends, and its value is a `TRUST_DECIDED_*`
+/// verdict or an `UNDECIDED_*` refusal code; RED: a value past the vocabulary, and a PENDING
+/// answer even on a ticket, are FAULT.
+#[test]
+fn trust_decide_answers_a_verdict_or_an_undecided_code_and_never_pends() {
+    let i = TrustDecideIn {
+        head: head(
+            op::TRUST_DECIDE,
+            TICKET,
+            core::mem::size_of::<TrustDecideIn>(),
+        ),
+        counterparty: none(),
+        item: none(),
+        expected: none(),
+        decision: TRUST_DECIDE_APPROVE,
+        _reserved: 0,
+    };
+    assert!(!may_pend(op::TRUST_DECIDE));
+    let mut o = out(Outcome::Ready);
+    for value in [
+        TRUST_DECIDED_SERVING,
+        TRUST_DECIDED_PENDING,
+        TRUST_DECIDED_QUARANTINED,
+        UNDECIDED_UNPINNED,
+        UNDECIDED_STALE,
+        UNDECIDED_UNKNOWN,
+        UNDECIDED_ROOTLESS,
+    ] {
+        o.value = value;
+        assert!(check_trust_decide(&i, ready(&o), &o).is_ok(), "{value}");
+    }
+    for value in [0, UNDECIDED_ROOTLESS + 1] {
+        o.value = value;
+        assert_eq!(
+            rule(check_trust_decide(&i, ready(&o), &o)),
+            Rule::UnknownCode
+        );
+    }
+    let pending = out(Outcome::Pending);
+    assert!(check_trust_decide(&i, ready(&pending), &pending).is_err());
 }
