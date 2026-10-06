@@ -16,8 +16,14 @@ use futures::StreamExt;
 use super::*;
 use crate::support::{worker, Knobs, TestDoor};
 
+/// `w`, its framed connections riding the test carrier (`support::via`) as the root's wires ride
+/// the serving connector's address carrier.
+fn carried(w: HostWire) -> HostWire {
+    w.riding(Arc::new(|| Some(crate::support::via().door)))
+}
+
 fn wire() -> Arc<HostWire> {
-    Arc::new(HostWire::new(Arc::new(framing(TestDoor::identity("bytes")))).unwrap())
+    Arc::new(carried(HostWire::new(Arc::new(framing(TestDoor::identity("bytes")))).unwrap()))
 }
 
 /// `door` stated a FRAMER: its connections ride the test carrier (`support::via`), framed by it.
@@ -90,7 +96,7 @@ fn a_text_frame_arrives_as_text_at_the_seam() {
                     ..Knobs::default()
                 },
             );
-            let w = Arc::new(HostWire::new(Arc::new(framing(door))).unwrap());
+            let w = Arc::new(carried(HostWire::new(Arc::new(framing(door))).unwrap()));
             let (client, server, _l) = pair(&w).await;
             w.write(&client, StreamId(0), ScratchBytes::new(b"{}"), false)
                 .await
@@ -109,7 +115,7 @@ fn a_text_write_reaches_the_framer_as_text() {
     worker().block_on(async {
         for text in [true, false] {
             let door = Arc::new(framing(TestDoor::identity("bytes")));
-            let w = Arc::new(HostWire::new(door.clone()).unwrap());
+            let w = Arc::new(carried(HostWire::new(door.clone()).unwrap()));
             let (client, server, _l) = pair(&w).await;
             w.write(&client, StreamId(0), ScratchBytes::new(b"{}"), text)
                 .await
@@ -361,8 +367,7 @@ fn the_dial_budget_defaults_to_the_constant_and_with_dial_timeout_replaces_it() 
 #[test]
 fn a_dial_to_a_non_routable_address_returns_within_the_bound_with_the_mapped_error() {
     worker().block_on(async {
-        let w = HostWire::new(Arc::new(framing(TestDoor::identity("bytes"))))
-            .unwrap()
+        let w = carried(HostWire::new(Arc::new(framing(TestDoor::identity("bytes")))).unwrap())
             .with_dial_timeout(Duration::from_millis(200));
         let started = std::time::Instant::now();
         let r = tokio::time::timeout(Duration::from_secs(8), w.dial_authority("192.0.2.1:9"))
@@ -579,7 +584,7 @@ fn a_dialled_framing_is_begun_with_the_full_declared_target() {
                 ..Knobs::default()
             },
         )));
-        let w = HostWire::new(Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>).unwrap();
+        let w = carried(HostWire::new(Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>).unwrap());
         let target = format!("bytes://{addr}/the/declared/path?q=1");
         let (dialled, far) = tokio::join!(w.dial_target(&target), l.accept());
         dialled.expect("dialled at the authority locate read off the target");
@@ -600,7 +605,7 @@ fn a_dialled_framing_is_begun_with_the_full_declared_target() {
                 ..Knobs::default()
             },
         )));
-        let w = HostWire::new(Arc::clone(&secure) as Arc<dyn crate::framer::FramerDoor>).unwrap();
+        let w = carried(HostWire::new(Arc::clone(&secure) as Arc<dyn crate::framer::FramerDoor>).unwrap());
         assert_eq!(
             w.dial_target(&target).await.err(),
             Some(TransportError::AddressRefused)

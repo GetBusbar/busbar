@@ -101,6 +101,13 @@ pub fn declared(
     Ok(linked)
 }
 
+/// WHERE THE ROOT'S WIRES FIND THEIR CARRIER: the process's one connector's address carrier, asked at
+/// each dial (none before the connector is built, or when it serves no carrier).
+#[must_use]
+pub fn address_carrier() -> busbar_core_connector::carrier::AddressCarrier {
+    Arc::new(|| ONE.get().and_then(|c| c.address_via()).map(|via| via.door))
+}
+
 /// The claim of the carrier a root listener accepts through, for its boot line; `host` when the
 /// connector serves no address carrier (the host's own listener).
 #[must_use]
@@ -195,10 +202,6 @@ pub fn boot(
         eprintln!("busbar: a second connector was built; the process has one");
         std::process::exit(2);
     });
-    // The process's address carrier: what a framed connection on the legacy wire seam rides.
-    if let Some(via) = one.address_via() {
-        let _ = busbar_core_connector::carrier::install_address_carrier(via.door);
-    }
     one
 }
 

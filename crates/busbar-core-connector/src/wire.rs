@@ -13,7 +13,7 @@
 //!
 //! The sockets are the host's, and a CARRIER moves their bytes ([`crate::carrier`]): a dial rides the
 //! entry itself when it is a carrier (carried as itself: every read a frame, every write a frame's
-//! bytes), else the process's address carrier ([`crate::carrier::address_carrier`]) under the
+//! bytes), else the address carrier the wire was handed ([`crate::carrier::AddressCarrier`]) under the
 //! entry's framer ([`crate::framer`]); a connection handed up (`detach`) gives the carried stream to
 //! the layer above with the bytes the framer took and did not answer in front of it. Nothing here
 //! starts a thread. A close ends whatever is parked on the connection — a read on a silent peer, a
@@ -53,8 +53,10 @@ pub struct HostWire {
     door: Arc<dyn FramerDoor>,
     /// The host I/O its carriers are served from.
     io: Arc<HostIo>,
-    /// The carrier its framed connections ride; `None` = the process's address carrier.
+    /// The carrier its framed connections ride; `None` = the address carrier [`HostWire::riding`].
     under: Option<Arc<dyn FramerDoor>>,
+    /// Where its framed connections find the address carrier when no `under` was given.
+    riding: Option<crate::carrier::AddressCarrier>,
     key: &'static str,
     conns: Arc<Mutex<HashMap<u64, Arc<HostConn>>>>,
     next: AtomicU64,
@@ -339,6 +341,7 @@ impl HostWire {
             door,
             io: crate::hostio::process(),
             under: None,
+            riding: None,
             key,
             conns: Arc::new(Mutex::new(HashMap::new())),
             next: AtomicU64::new(1),
@@ -351,6 +354,14 @@ impl HostWire {
     pub fn over(mut self, under: Arc<dyn FramerDoor>, io: Arc<HostIo>) -> Self {
         self.under = Some(under);
         self.io = io;
+        self
+    }
+
+    /// The same wire, its framed connections riding the address carrier `carrier` answers at each
+    /// dial (the serving connector's; [`crate::carrier::AddressCarrier`]).
+    #[must_use]
+    pub fn riding(mut self, carrier: crate::carrier::AddressCarrier) -> Self {
+        self.riding = Some(carrier);
         self
     }
 
@@ -529,7 +540,7 @@ impl HostWire {
         } else {
             self.under
                 .clone()
-                .or_else(crate::carrier::address_carrier)
+                .or_else(|| self.riding.as_ref().and_then(|carrier| carrier()))
                 .ok_or(TransportError::AddressRefused)?
         };
         let carried = Carried::dial(carrier, Arc::clone(&self.io), &Dest::Authority(addr.to_string()))

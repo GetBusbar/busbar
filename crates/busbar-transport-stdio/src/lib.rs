@@ -17,9 +17,9 @@
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
 
-// THE KIND'S SKELETON (`BUSBAR-1.6.0.md` THE DESIGN, §2), the same files every transport twin
-// carries: what it declares (`meta`), what it claims (`claims`), the entry (`transport`), and the
-// door that states them.
+// THE KIND'S FILES (`BUSBAR-1.6.0.md` THE DESIGN, §2), the same ones every transport twin carries:
+// what it declares (`meta`), what it claims (`claims`), the entry (`transport`), and the door that
+// states them.
 mod claims;
 pub mod door;
 mod meta;

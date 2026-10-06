@@ -652,8 +652,6 @@ impl TestDoor {
 pub fn via() -> Via {
     static CARRIER: std::sync::OnceLock<Arc<dyn FramerDoor>> = std::sync::OnceLock::new();
     let door = Arc::clone(CARRIER.get_or_init(|| Arc::new(TestDoor::identity("test-carrier"))));
-    // The process's address carrier, for the legacy wire seam's framed dials.
-    let _ = super::carrier::install_address_carrier(Arc::clone(&door));
     Via {
         door,
         io: super::hostio::process(),

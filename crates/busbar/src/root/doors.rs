@@ -426,7 +426,9 @@ pub fn served(
     settings: &busbar_contract::transport::TransportSettings,
 ) -> Result<Served, String> {
     let door: Arc<dyn FramerDoor> = Arc::new(Dispatched::open(plugin, settings)?);
-    let wire = Arc::new(RootWire::new(HostWire::new(Arc::clone(&door))?));
+    let wire = Arc::new(RootWire::new(
+        HostWire::new(Arc::clone(&door))?.riding(crate::root::connector::address_carrier()),
+    ));
     Ok((door, wire))
 }
 
@@ -450,6 +452,7 @@ pub fn build(
         .map_err(|e| e.to_string())
         .and_then(|plugin| Dispatched::open(plugin, settings))
         .and_then(|door| HostWire::new(Arc::new(door)))
+        .map(|wire| wire.riding(crate::root::connector::address_carrier()))
         .map(|wire| Arc::new(RootWire::new(wire)) as Arc<dyn busbar_contract::Transport>)
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }

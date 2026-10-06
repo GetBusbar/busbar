@@ -80,21 +80,11 @@ fn op_of(c: &Carry<'_>) -> u8 {
     }
 }
 
-/// THE PROCESS'S ADDRESS CARRIER, as the root installed it once its transports were folded: what a
-/// framer's connection on the legacy wire seam ([`crate::wire::HostWire`]) rides. The first install
-/// stands.
-static ADDRESS_CARRIER: std::sync::OnceLock<Arc<dyn FramerDoor>> = std::sync::OnceLock::new();
-
-/// Install the process's address carrier ([`ADDRESS_CARRIER`]); `false` when one was installed.
-pub fn install_address_carrier(door: Arc<dyn FramerDoor>) -> bool {
-    ADDRESS_CARRIER.set(door).is_ok()
-}
-
-/// The process's address carrier, where the root installed one.
-#[must_use]
-pub fn address_carrier() -> Option<Arc<dyn FramerDoor>> {
-    ADDRESS_CARRIER.get().cloned()
-}
+/// WHERE A FRAMER'S CONNECTION ON THE LEGACY WIRE SEAM FINDS ITS CARRIER ([`crate::wire::HostWire`]):
+/// asked at each dial, answering the address carrier of the connector that serves it (the first
+/// carrier in declared order whose claim serves a port, `Transports::address_carrier`), or `None`
+/// when it serves none. The wire holds it; no process-wide slot does.
+pub type AddressCarrier = Arc<dyn Fn() -> Option<Arc<dyn FramerDoor>> + Send + Sync>;
 
 /// The text of a crossing that did not answer READY.
 #[must_use]
