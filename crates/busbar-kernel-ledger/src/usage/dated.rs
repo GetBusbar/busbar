@@ -106,7 +106,7 @@ impl<'h> DatedHistory<'h> {
 
 /// **A DATED BUDGET CELL, PRICED.** `money = f(ledger counts, dated ratecard)` over one bucket.
 ///
-/// - `rows`: `(lane, era, counts)` per (model, era) segment the cell holds;
+/// - `rows`: `(lane, era, counts)` per (lane, era) segment the cell holds;
 /// - `fees`: `(era, billable requests)` per era, when the fee is to be included;
 /// - `window_start_ms`: the start of the cell's window. A segment resolves at
 ///   `max(window_start_ms, era)` — its OWN first instant, the rule a metering row resolves by, so a
@@ -182,8 +182,8 @@ pub fn price_dated<'r>(
 /// A dated cell's segments folded back to ONE count map per lane, in first-seen order, with `add`
 /// combining a lane's eras class by class.
 ///
-/// For the readers that must not see an era: the per-model token gauges and the durable
-/// write-behind row, which is per model and carries no era. An undated cell folds to exactly the
+/// For the readers that must not see an era: the per-lane class gauges and the durable
+/// write-behind row, which is per lane and carries no era. An undated cell folds to exactly the
 /// maps it holds.
 pub fn by_lane<'r, V: Copy>(
     segments: impl IntoIterator<Item = (&'r str, BTreeMap<String, V>)>,
