@@ -471,8 +471,15 @@ impl<O> Ran<O> {
     }
 }
 
+/// The `RecordStore` surface's error for a store call. A FAILED op carries the store's own text
+/// unchanged, so the operator reads `store error: <the backend's text>` exactly as 1.5.5 printed it
+/// (oracle BOOT-172/BOOT-175: `store error: database disk image is malformed`); the other failures
+/// have no 1.5.5 counterpart and keep their typed wording.
 fn bridge<T>(r: Result<T, StoreFailure>) -> RecordStoreResult<T> {
-    r.map_err(|f| RecordStoreError(f.to_string()))
+    r.map_err(|f| match f {
+        StoreFailure::Failed(text) => RecordStoreError(text),
+        other => RecordStoreError(other.to_string()),
+    })
 }
 
 // ── the requests ─────────────────────────────────────────────────────────────────────────────
