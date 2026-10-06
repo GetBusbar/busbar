@@ -27,7 +27,7 @@ use busbar_contract::caps::{OpClassId, ReasonCode};
 use busbar_contract::plane::{declares_record_kind, PlaneDeclaration};
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::{
-    Caller, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    Caller, DiskDest, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
 };
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
@@ -356,6 +356,13 @@ impl HostServices for LateServices {
     fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran {
         match self.served() {
             Ok(s) => s.work_resume(caller, unit, handle, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.disk_append(dest, bytes, later),
             Err(r) => Ran::Now(r),
         }
     }

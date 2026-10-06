@@ -454,6 +454,12 @@ pub const HOOK_CONTENT_TRUNCATED_TOTAL: &str = "busbar_hook_content_truncated_to
 /// it streams verbatim; only the billing side-channel is capped.)
 pub const BILLING_TRUNCATED_TOTAL: &str = "busbar_billing_truncated_total"; // no labels
 
+/// Plugin back-channels (#85 envelopes: a plugin response's metrics and diagnostics) the host
+/// DROPPED because its bounded observer intake was full: the hot path never waits for the observer
+/// (ARCHITECT ruling ENVELOPE-ALL 2026-10-03). Unlabeled; absent until the first drop. A non-zero
+/// rate means plugin telemetry is arriving faster than the host folds it.
+pub const PLUGIN_OBSERVATIONS_DROPPED_TOTAL: &str = "busbar_plugin_observations_dropped_total"; // no labels
+
 /// Journal segments whose damaged remainder boot recovery set aside in a quarantine file: a record
 /// failed its checksum with whole, verifying records behind it, so acknowledged postings and holds
 /// are no longer on the book. Incremented once per quarantine, at boot. Unlabeled. Any non-zero

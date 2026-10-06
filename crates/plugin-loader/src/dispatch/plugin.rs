@@ -148,6 +148,19 @@ impl EnvelopeSink for NoSink {
 /// The next instance identity bind mints; `0` is never minted.
 static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
+/// MINT ONE INSTANCE IDENTITY off `next`, never `0`: `0` is the composition root's own identity on
+/// the one connector (`busbar`'s `root::connector::ROOT_OWNER`, the authorization server's needs),
+/// so a plugin minted `0` would share that table's needs and connections. A counter that wraps
+/// past `u64::MAX` skips `0` rather than handing it out.
+fn mint_instance(next: &AtomicU64) -> InstanceId {
+    loop {
+        let id = next.fetch_add(1, Ordering::Relaxed);
+        if id != 0 {
+            return InstanceId(id);
+        }
+    }
+}
+
 /// What the host binds a loaded plugin to.
 #[derive(Clone)]
 pub struct Bind {
@@ -521,6 +534,48 @@ impl Instance {
         }
     }
 
+    /// Bind each DESTINATION key the instance was granted to the file `settings` (the settings
+    /// `open` or `refresh` hands the plugin) give it, before the plugin sees them: a non-empty path
+    /// under the key, rotated at the `rotate_mb` (the host's rotation key,
+    /// [`busbar_contract::services::DISK_ROTATE_KEY`]) beside it, keeping
+    /// [`busbar_contract::services::DISK_KEEP`] archives. A key the settings leave unset is not
+    /// bound, and `disk.append` refuses it. A refresh re-binds, so a changed path moves the file.
+    fn bind_destinations(&self, settings: Blob) {
+        let Some(keys) = self.wake.destinations.get() else {
+            return;
+        };
+        let bytes: &[u8] = if settings.ptr.is_null() {
+            &[]
+        } else {
+            // SAFETY: the host's own settings blob, live for the crossing it is handed to.
+            unsafe { std::slice::from_raw_parts(settings.ptr, settings.len) }
+        };
+        let doc = serde_json::from_slice::<serde_json::Value>(bytes).unwrap_or_default();
+        let rotate_at = doc
+            .get(busbar_contract::services::DISK_ROTATE_KEY)
+            .and_then(serde_json::Value::as_u64)
+            .map(|mb| mb.saturating_mul(1024 * 1024));
+        let bound = keys
+            .iter()
+            .filter_map(|key| {
+                let path = doc.get(key)?.as_str()?;
+                (!path.is_empty() && !path.contains('\0')).then(|| {
+                    busbar_contract::services::DiskDest {
+                        key: key.clone(),
+                        path: path.to_owned(),
+                        rotate_at,
+                        keep: busbar_contract::services::DISK_KEEP,
+                    }
+                })
+            })
+            .collect();
+        *self
+            .wake
+            .bound
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = bound;
+    }
+
     pub(crate) fn leave_lifecycle(&self) {
         self.lifecycle_busy.store(false, Ordering::Release);
     }
@@ -643,7 +698,9 @@ impl Instance {
                 open.err_cap = err_cap;
             }
             // SAFETY: as above.
-            self.declare_targeted(unsafe { (*input.cast::<OpenIn>()).settings });
+            let settings = unsafe { (*input.cast::<OpenIn>()).settings };
+            self.declare_targeted(settings);
+            self.bind_destinations(settings);
         }
         if s == slot::READY {
             // `ready` is handed the same host tables `open` was.
@@ -653,7 +710,9 @@ impl Instance {
         // SAFETY: the host wrote `in.size`; a frame that holds a `RefreshIn` is read as one.
         if s == slot::REFRESH && unsafe { (*input).size } as usize >= size_of::<RefreshIn>() {
             // SAFETY: as above.
-            self.declare_targeted(unsafe { (*input.cast::<RefreshIn>()).settings });
+            let settings = unsafe { (*input.cast::<RefreshIn>()).settings };
+            self.declare_targeted(settings);
+            self.bind_destinations(settings);
         }
         // THE HOST ZEROES THE WHOLE `out` BEFORE EVERY CALL, RESUME included (FAULT = 0, every
         // tail field absent), then states its size: the plugin writes at most min(out.size, own).
@@ -1008,6 +1067,46 @@ impl<K: Kind> std::fmt::Debug for Plugin<K> {
     }
 }
 
+/// The kind's name as the host's observer knows it (the cold wire's kind words).
+fn kind_word(kind: KindCode) -> &'static str {
+    use busbar_contract::abi::mechanism::kind;
+    match kind {
+        KindCode::Store => kind::STORE,
+        KindCode::Secret => kind::SECRET,
+        KindCode::Auth => kind::AUTH,
+        KindCode::Hook => kind::HOOK,
+        KindCode::Export => kind::EXPORT,
+        KindCode::Plane => kind::PLANE,
+        KindCode::Transport => kind::TRANSPORT,
+    }
+}
+
+/// THE #85 ENVELOPE, OBSERVED FOR EVERY KIND (ARCHITECT ruling ENVELOPE-ALL 2026-10-03): the
+/// binder's sink, with the host's observability standing before it
+/// ([`crate::observe::EnvelopeObserver`]): every metric of a family the Statement declares and every
+/// declared diagnostic reach the installed observer, under the plugin's name and kind, whoever bound
+/// the door, and the binder's sink is still handed every entry.
+fn observed(
+    then: &Arc<dyn EnvelopeSink>,
+    st: &busbar_contract::abi::mechanism::door::Statement,
+    kind: KindCode,
+    name: &[u8],
+) -> Arc<dyn EnvelopeSink> {
+    // SAFETY: `validate` ran `check_statement` on this Statement; the rendering reads its
+    // `'static` lists.
+    let families = unsafe { busbar_contract::abi::mechanism::rendering::render(st) }
+        .ok()
+        .and_then(|b| busbar_contract::abi::mechanism::rendering::read(&b).ok())
+        .map(|r| r.families)
+        .unwrap_or_default();
+    Arc::new(crate::observe::EnvelopeObserver::before(
+        then.clone(),
+        &String::from_utf8_lossy(name),
+        kind_word(kind),
+        families,
+    ))
+}
+
 impl<K: Kind> Plugin<K> {
     pub(crate) fn bind(v: Validated, lib: Option<Lib>, bind: Bind) -> Result<Self, LoadError> {
         let st = v.statement;
@@ -1026,7 +1125,7 @@ impl<K: Kind> Plugin<K> {
         let wake: &'static InstanceWake = Box::leak(Box::default());
         // THE CONNECTION TABLE: minted an identity and declared on the host's one table, need by
         // need under its Statement index, when the Statement declares a need; otherwise none.
-        let instance = InstanceId(NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed));
+        let instance = mint_instance(&NEXT_INSTANCE);
         let mut declared_needs: Box<[ReadNeed]> = Box::default();
         let conns: *const busbar_contract::abi::host::conn::connector::ConnectorSlots =
             match (&bind.conns, st.needs_len) {
@@ -1120,7 +1219,7 @@ impl<K: Kind> Plugin<K> {
                 op_name: K::op_name,
                 unit_of: K::unit_of,
                 context,
-                sink: bind.sink.clone(),
+                sink: observed(&bind.sink, &st, v.kind, name),
                 wake,
                 tables,
                 open_reason: Mutex::new(Vec::new()),
@@ -1131,6 +1230,20 @@ impl<K: Kind> Plugin<K> {
         };
         bind.dispatcher.adopt(&plugin.inner);
         Ok(plugin)
+    }
+
+    /// The envelope sink the dispatcher ingests this instance's replies into (a witness).
+    #[cfg(test)]
+    pub(crate) fn envelope_sink(&self) -> Arc<dyn EnvelopeSink> {
+        self.inner.sink.clone()
+    }
+
+    /// GRANT this instance the DESTINATIONS its manifest declares (the settings keys that name a
+    /// file the host appends to for it, `declares.destinations`), before it opens: its `open` and
+    /// `refresh` bind each to the path its settings give, and `disk.append` serves it those only.
+    /// Granted once; a second grant is ignored.
+    pub fn grant_destinations(&self, keys: &[String]) {
+        let _ = self.inner.wake.destinations.set(keys.to_vec());
     }
 
     /// What the kind read from the Statement at bind ([`Kind::context`]), as the kind's type `T`.
@@ -1320,3 +1433,7 @@ pub(crate) fn resolve_target(settings: &serde_json::Value, path: &str) -> Option
         .filter(|t| !t.is_empty())
         .map(str::to_owned)
 }
+
+#[cfg(test)]
+#[path = "../tests/instance_id_tests.rs"]
+mod instance_id_tests;

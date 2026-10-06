@@ -379,7 +379,6 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
- "url",
 ]
 
 [[package]]
@@ -624,7 +623,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-file"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-file?rev=795eadb866e5f9a98bc854b9697ae42a28a51e92#795eadb866e5f9a98bc854b9697ae42a28a51e92"
+source = "git+https://github.com/GetBusbar/busbar-export-file?rev=c0a2d690b281ec96ef5d904981f73e2b2a0b11c2#c0a2d690b281ec96ef5d904981f73e2b2a0b11c2"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -635,8 +634,9 @@ dependencies = [
 [[package]]
 name = "busbar-export-file-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-file?rev=795eadb866e5f9a98bc854b9697ae42a28a51e92#795eadb866e5f9a98bc854b9697ae42a28a51e92"
+source = "git+https://github.com/GetBusbar/busbar-export-file?rev=c0a2d690b281ec96ef5d904981f73e2b2a0b11c2#c0a2d690b281ec96ef5d904981f73e2b2a0b11c2"
 dependencies = [
+ "busbar-contract",
  "busbar-export-file",
 ]
 
@@ -683,19 +683,21 @@ dependencies = [
 [[package]]
 name = "busbar-export-webhook"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=3ad5a711aad433f2015a980cf3a792afa5fd3a7a#3ad5a711aad433f2015a980cf3a792afa5fd3a7a"
+source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=46cd95ba78f6639b28d14067bc7c6876e00c5458#46cd95ba78f6639b28d14067bc7c6876e00c5458"
 dependencies = [
  "busbar-contract",
  "serde",
  "serde_json",
+ "tracing",
  "url",
 ]
 
 [[package]]
 name = "busbar-export-webhook-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=3ad5a711aad433f2015a980cf3a792afa5fd3a7a#3ad5a711aad433f2015a980cf3a792afa5fd3a7a"
+source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=46cd95ba78f6639b28d14067bc7c6876e00c5458#46cd95ba78f6639b28d14067bc7c6876e00c5458"
 dependencies = [
+ "busbar-contract",
  "busbar-export-webhook",
 ]
 
@@ -979,11 +981,13 @@ dependencies = [
  "busbar-auth-admin-tokens-plugin",
  "busbar-auth-oidc-plugin",
  "busbar-contract",
+ "busbar-export-file",
  "busbar-export-file-plugin",
  "busbar-export-otlp",
  "busbar-export-otlp-plugin",
  "busbar-export-prometheus",
  "busbar-export-prometheus-plugin",
+ "busbar-export-webhook",
  "busbar-export-webhook-plugin",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
@@ -1518,7 +1522,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3354,7 +3358,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3792,7 +3796,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4478,7 +4482,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

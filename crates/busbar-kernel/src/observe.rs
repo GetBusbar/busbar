@@ -239,6 +239,13 @@ pub trait Grants: Send + Sync {
 }
 
 impl KernelPluginObserver {
+    /// Count `observations` plugin back-channels the loader's bounded intake dropped
+    /// ([`crate::snapshot::PLUGIN_OBSERVATIONS_DROPPED_TOTAL`]).
+    pub fn dropped(&self, observations: u64) {
+        metrics::counter!(crate::snapshot::PLUGIN_OBSERVATIONS_DROPPED_TOTAL)
+            .increment(observations);
+    }
+
     /// Fold one call's back-channel: what the loader's observer hands the kernel for every plugin
     /// response (installed by the composition root).
     pub fn observe(
