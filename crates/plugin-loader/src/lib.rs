@@ -973,7 +973,10 @@ fn wire_up(
 /// Read the kind a mapped library states into an owned `String`. A memory-ABI image states it in
 /// its door's head ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`],
 /// [`dispatch::load::kind_of_door`]): the SDK's `busbar_plugin_kind` answers for no door it
-/// registered (a null kind). Any other image answers `busbar_plugin_kind()`.
+/// registered (a null kind). A plane or transport image registered through its decl answers
+/// `busbar_plugin_kind()`. Any other library with no door is a 1.5.5-era JSON-contract plugin: its
+/// kind symbol only CLASSIFIES it, and it is REFUSED here, naming the rebuild (no legacy loading,
+/// THE DESIGN §11.8, ruling C21/ABI-o1), so no upload vet, inventory or kind gate takes it as valid.
 fn read_plugin_kind(lib: &Library, display: &str) -> Result<String, String> {
     // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; the symbol is copied out as a plain
     // fn pointer and `lib` outlives every use of it here.
@@ -992,7 +995,16 @@ fn read_plugin_kind(lib: &Library, display: &str) -> Result<String, String> {
     let f = unsafe { lib.get::<PluginKindFn>(symbol::PLUGIN_KIND) }.map_err(|_| {
         format!("'{display}' is not a busbar plugin (no busbar_plugin_kind symbol)")
     })?;
-    kind_from_fn(*f, display)
+    let kind = kind_from_fn(*f, display)?;
+    use busbar_contract::abi::mechanism::kind::{PLANE, TRANSPORT};
+    if kind != PLANE && kind != TRANSPORT {
+        return Err(format!(
+            "plugin '{display}' states kind '{kind}' and exports no busbar_plugin_door — a plugin \
+             built against the 1.5.5 JSON contract; {}",
+            dispatch::load::REBUILD
+        ));
+    }
+    Ok(kind)
 }
 
 /// Call a plugin's `busbar_plugin_kind()` — looked up or linked — and read the kind it names.
