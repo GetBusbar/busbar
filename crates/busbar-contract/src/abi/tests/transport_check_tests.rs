@@ -880,6 +880,9 @@ fn a_streams_final_status_is_judged_against_its_claims_numbering() {
     assert_eq!(
         check_final_status(&i, &rows, 1),
         f(Rule::NullWithCount, "finish.final_bytes")
+    );
+}
+
 fn fault_row(claim: u32, lo: u32, hi: u32, fault: u32) -> FaultRow {
     FaultRow {
         claim,

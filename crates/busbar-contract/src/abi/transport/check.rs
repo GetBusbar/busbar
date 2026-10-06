@@ -13,13 +13,13 @@
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{
-    AcceptOut, ArrivalOut, Claim, ConnFacts, FaultRow, FinishIn, FramePiece, FrameSpan, FramerOut, HeadSlots,
-    IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail, CANCEL_COMPLETED,
-    CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH, FAULT_CALLER,
-    FAULT_HARD, FRAMING_DATAGRAM, FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED, PIECE_END_OF_FRAME,
-    PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT,
-    ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER,
-    STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    AcceptOut, ArrivalOut, Claim, ConnFacts, FaultRow, FinishIn, FramePiece, FrameSpan, FramerOut,
+    HeadSlots, IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail,
+    CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH,
+    FAULT_CALLER, FAULT_HARD, FRAMING_DATAGRAM, FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED,
+    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED,
+    PIECE_TEXT, ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL,
+    STATUS_OTHER, STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
@@ -538,6 +538,10 @@ pub fn check_final_status(i: &FinishIn, rows: &[StatusRow], claim: u32) -> Resul
             continue;
         }
         range(u64::from(s.offset), u64::from(s.len), bound, field)?;
+    }
+    Ok(())
+}
+
 /// Every fault row: names a claim, `lo <= hi`, and a fault reading that is stated (never
 /// `FAULT_NONE`: a code the table does not cover already reads none).
 ///
