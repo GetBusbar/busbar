@@ -512,13 +512,14 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
     };
     let opened = axis
         .open(
-            // A store this build links, opened through its door as boot opens the configured one
-            // (Q-STORE (B): no row is a default; the store is the one config names).
+            // The build's ephemeral linked store, picked by its flag (the row's `(name, ephemeral,
+            // door)`), as boot opens it.
             StoreDoor::Linked(
                 crate::LINKED
                     .stores
-                    .first()
-                    .expect("the build links a store")
+                    .iter()
+                    .find(|s| s.1)
+                    .expect("the build links an ephemeral store")
                     .2,
             ),
             "records-attach",
