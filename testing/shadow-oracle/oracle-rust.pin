@@ -261,8 +261,12 @@
 # unreleased line's plugins are built from the commit busbar pins (the `src:` rows in plugin-digests.tsv), signed
 # by a throwaway per-run oracle key and trusted only by the candidate configs that stage them.
 #
+# 2026-10-06: moved 2119a67a6fef -> 5b89bdf67326, the merge of busbar-release #166 into dev (descends 0ede76aea9):
+# a staging config that states its own plugins.trust keeps every word and the run's publisher joins its publishers
+# list (BOOT-W23 now validates the tampered plugin as UNVERIFIED, as 1.5.5 does).
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=2119a67a6fef3c6123627c3463527d3a74b3fd94
+release_ref=5b89bdf673269454a94d8c6eba9d031b9ae216ab
 crate=busbar-release-oracle
 bin=busbar-oracle
