@@ -265,6 +265,7 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
                     target: kept(r.target),
                     flags: r.flags,
                     audit_verb: kept(r.audit_verb),
+                    style: kept(r.style),
                 })
                 .collect(),
             admin_openapi: (!tail.admin_openapi.ptr.is_null()).then(|| {
@@ -1438,6 +1439,8 @@ pub struct OwnedAdminRoute {
     pub flags: u32,
     /// The word a served request is audited under; empty = never audited.
     pub audit_verb: String,
+    /// A public route's auth scheme; empty = none.
+    pub style: String,
 }
 
 /// A GENERATION SNAPSHOT COPIED OUT OF THE PLUGIN at the crossing that published it, so nothing
@@ -1550,6 +1553,7 @@ fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot
                     target: text(r.target)?,
                     flags: r.flags,
                     audit_verb: text(r.audit_verb)?,
+                    style: text(r.style)?,
                 })
             })
             .collect::<Option<_>>()?,

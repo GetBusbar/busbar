@@ -2529,6 +2529,7 @@ struct bb_plane_AdminRoute {
     uint32_t flags;
     uint32_t _reserved;
     bb_mech_AbiStr audit_verb;
+    bb_mech_AbiStr style;
 };
 
 /* THE GENERATION SNAPSHOT: what the plane answers for THIS generation's settings. Valid until */
@@ -4813,13 +4814,14 @@ BB_ASSERT(offsetof(bb_plane_Claim, carrier) == 32, "bb_plane_Claim.carrier: offs
 BB_ASSERT(offsetof(bb_plane_Claim, flags) == 48, "bb_plane_Claim.flags: offset");
 BB_ASSERT(offsetof(bb_plane_Claim, refusal_dialect) == 52, "bb_plane_Claim.refusal_dialect: offset");
 BB_ASSERT(offsetof(bb_plane_Claim, _pad) == 54, "bb_plane_Claim._pad: offset");
-BB_ASSERT(sizeof(bb_plane_AdminRoute) == 56, "bb_plane_AdminRoute: size");
+BB_ASSERT(sizeof(bb_plane_AdminRoute) == 72, "bb_plane_AdminRoute: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_AdminRoute) == 8, "bb_plane_AdminRoute: alignment");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, verb) == 0, "bb_plane_AdminRoute.verb: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, target) == 16, "bb_plane_AdminRoute.target: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, flags) == 32, "bb_plane_AdminRoute.flags: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, _reserved) == 36, "bb_plane_AdminRoute._reserved: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, audit_verb) == 40, "bb_plane_AdminRoute.audit_verb: offset");
+BB_ASSERT(offsetof(bb_plane_AdminRoute, style) == 56, "bb_plane_AdminRoute.style: offset");
 BB_ASSERT(sizeof(bb_plane_PlaneSnapshot) == 128, "bb_plane_PlaneSnapshot: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneSnapshot) == 8, "bb_plane_PlaneSnapshot: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, size) == 0, "bb_plane_PlaneSnapshot.size: offset");

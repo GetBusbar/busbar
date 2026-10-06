@@ -420,6 +420,7 @@ static ADMIN_ROUTES: Shared<[AdminRoute; 2]> = Shared([
         flags: 0,
         _reserved: 0,
         audit_verb: s(b"act"),
+        style: NO_STR,
     },
     AdminRoute {
         verb: s(b"POST"),
@@ -427,6 +428,7 @@ static ADMIN_ROUTES: Shared<[AdminRoute; 2]> = Shared([
         flags: ROUTE_PUBLIC,
         _reserved: 0,
         audit_verb: NO_STR,
+        style: NO_STR,
     },
 ]);
 

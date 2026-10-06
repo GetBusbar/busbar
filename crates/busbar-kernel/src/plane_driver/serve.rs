@@ -52,6 +52,9 @@ pub struct ServeRoute {
     pub flags: u32,
     /// The word its audit row names; empty = never audited.
     pub audit_verb: String,
+    /// A public route's auth scheme: its callers are verified under it before `serve`; empty =
+    /// none.
+    pub style: String,
 }
 
 /// One published plane instance: its current snapshot's routes and the calls that serve them.

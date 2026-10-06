@@ -164,6 +164,8 @@ pub struct StatedAdminRoute {
     pub flags: u32,
     /// The audit word; empty = never audited.
     pub audit_verb: &'static str,
+    /// A public route's auth scheme; empty = none.
+    pub style: &'static str,
 }
 
 /// THE REGISTRY FACTS A PLANE DOOR STATES (ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL; spec #49

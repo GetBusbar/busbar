@@ -1020,6 +1020,15 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
             u64::from(ROUTE_PUBLIC),
             "admin_route.flags",
         )?;
+        // The scheme a public route's callers are verified under: text, bounded; an admin route is
+        // the admin chain's and names none.
+        text(r.style, "admin_route.style")?;
+        if r.style.len > MAX_TEXT {
+            return Err(fault(Rule::OverMax, "admin_route.style"));
+        }
+        if r.style.len != 0 && r.flags & ROUTE_PUBLIC == 0 {
+            return Err(fault(Rule::Contradiction, "admin_route.style"));
+        }
     }
     Ok(())
 }

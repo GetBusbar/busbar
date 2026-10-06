@@ -1052,6 +1052,7 @@ pub(crate) fn compose_planes_over(
                 target: r.target.clone(),
                 flags: r.flags,
                 audit_verb: r.audit_verb.clone(),
+                style: r.style.clone(),
             })
             .collect();
         // The admin router's fallback is this table, so a kernel admin route always matches first

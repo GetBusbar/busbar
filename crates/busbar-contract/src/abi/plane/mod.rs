@@ -1156,6 +1156,14 @@ pub struct AdminRoute {
     pub _reserved: u32,
     /// The word the kernel's audit row names a served request by; empty = never audited.
     pub audit_verb: AbiStr,
+    /// On a [`ROUTE_PUBLIC`] route: the auth SCHEME (style) its callers are verified under
+    /// (ARCHITECT Q2 webhook receiver, 2026-10-06; spec Part 3 "Inbound webhooks"). The kernel runs
+    /// the inbound verify of the auth instances serving that scheme over the request's head and its
+    /// whole bounded body before `serve`: a request none of them identifies is refused 401, and a
+    /// verified identity's replay key is claimed once (a key already claimed is 401). The plane
+    /// names a scheme, never an instance, and never sees the secret. Empty = the route is served to
+    /// an unauthenticated caller. Never on a route that is not public. A tail addition.
+    pub style: AbiStr,
 }
 
 /// THE GENERATION SNAPSHOT: what the plane answers for THIS generation's settings. Valid until

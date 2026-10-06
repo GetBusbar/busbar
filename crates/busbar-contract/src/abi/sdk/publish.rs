@@ -218,6 +218,8 @@ pub struct AdminRouteSpec {
     pub flags: u32,
     /// The word the kernel audits it under; empty = never audited.
     pub audit_verb: String,
+    /// A public route's auth scheme; empty = none (see [`AdminRoute::style`]).
+    pub style: String,
 }
 
 impl AdminRouteSpec {
@@ -229,7 +231,15 @@ impl AdminRouteSpec {
             target: target.to_string(),
             flags,
             audit_verb: String::new(),
+            style: String::new(),
         }
+    }
+
+    /// The public route, its callers verified under the auth scheme `style` before it is served.
+    #[must_use]
+    pub fn verified_by(mut self, style: &str) -> Self {
+        self.style = style.to_string();
+        self
     }
 
     /// The route, audited under `word`.
@@ -249,6 +259,7 @@ impl Publish for AdminRoute {
             flags: spec.flags,
             _reserved: 0,
             audit_verb: arena.str(&spec.audit_verb),
+            style: arena.str(&spec.style),
         }
     }
 }

@@ -931,6 +931,47 @@ fn a_serve_audit_is_one_of_the_three() {
     );
 }
 
+/// THE PUBLIC ROUTE'S AUTH SCHEME (ARCHITECT Q2 webhook receiver, 2026-10-06): a public route may
+/// name the scheme its callers are verified under; a scheme on an admin route, one counted with no
+/// bytes and one past the text bound are FAULT (RED arms).
+#[test]
+fn a_public_routes_style_is_bounded_text_on_a_public_route_alone() {
+    let style = "webhook-signature";
+    let mut r = AdminRoute {
+        verb: s("POST"),
+        target: s("/v1/llm/webhooks/openai"),
+        flags: ROUTE_PUBLIC,
+        _reserved: 0,
+        audit_verb: z(),
+        style: s(style),
+    };
+    assert_eq!(check_admin_routes(&[r]), Ok(()));
+    r.flags = 0;
+    assert_eq!(
+        check_admin_routes(&[r]),
+        f(Rule::Contradiction, "admin_route.style"),
+        "an admin route is the admin chain's"
+    );
+    r.flags = ROUTE_PUBLIC;
+    r.style = AbiStr {
+        ptr: null(),
+        len: 3,
+    };
+    assert_eq!(
+        check_admin_routes(&[r]),
+        f(Rule::NullWithCount, "admin_route.style")
+    );
+    let long = "s".repeat(MAX_TEXT + 1);
+    r.style = AbiStr {
+        ptr: long.as_ptr(),
+        len: long.len(),
+    };
+    assert_eq!(
+        check_admin_routes(&[r]),
+        f(Rule::OverMax, "admin_route.style")
+    );
+}
+
 #[test]
 fn an_admin_route_audit_verb_is_text_or_empty() {
     let mut r = AdminRoute {
@@ -939,6 +980,7 @@ fn an_admin_route_audit_verb_is_text_or_empty() {
         flags: 0,
         _reserved: 0,
         audit_verb: s("connect"),
+        style: z(),
     };
     assert_eq!(check_admin_routes(&[r]), Ok(()));
     r.audit_verb = z();
@@ -1176,6 +1218,7 @@ fn every_snapshot_claim_and_route_is_named() {
         flags: 0,
         _reserved: 0,
         audit_verb: z(),
+        style: z(),
     };
     assert_eq!(
         check_admin_routes(&[r]),
@@ -1766,6 +1809,7 @@ fn an_admin_route_flag_is_known() {
         flags: ROUTE_PUBLIC,
         _reserved: 0,
         audit_verb: z(),
+        style: z(),
     };
     assert_eq!(check_admin_routes(&[r]), Ok(()));
     r.flags = ROUTE_PUBLIC << 1;

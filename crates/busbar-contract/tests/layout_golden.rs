@@ -1729,7 +1729,7 @@ fn compute_layout() -> String {
     record!(
         s,
         pkind::AdminRoute,
-        [verb, target, flags, _reserved, audit_verb]
+        [verb, target, flags, _reserved, audit_verb, style]
     );
     record!(
         s,

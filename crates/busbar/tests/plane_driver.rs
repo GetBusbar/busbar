@@ -788,6 +788,7 @@ fn serve_table(
             target: r.target.clone(),
             flags: r.flags,
             audit_verb: r.audit_verb.clone(),
+            style: r.style.clone(),
         })
         .collect();
     let table = ServeTable {
