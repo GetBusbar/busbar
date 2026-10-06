@@ -1034,7 +1034,12 @@ impl Connector {
         // and short of it the reader is woken when it passes.
         held.within_due(waker)?;
         let read = self.read_held(&held, waker, buf);
-        if read.is_ok() {
+        // A LEASE'S HEAD is the host's own (the generation of the program it reaches), served the
+        // instant the lease opens: the far end's answer begins with the program's first bytes.
+        if read
+            .as_ref()
+            .is_ok_and(|p| held.lease.is_none() || p.kind != PieceKind::Fields)
+        {
             held.answered();
         }
         read
