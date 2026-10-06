@@ -334,11 +334,12 @@ pub fn mint_pki(dir: &Path, sans: &[&str]) -> Result<Pki, String> {
     Ok(pki)
 }
 
-/// The config every plain subject boots with: a listener, a loopback admin listener, no provider.
+/// The config every plain subject boots with: a listener, a loopback admin listener, the memory
+/// store a config must name (Q-STORE = (B)), no provider.
 /// What a rig needs beyond that (a `tls:` block, an `oauth_as:` block) it appends.
 pub fn base_config(listen: &str, admin: u16) -> String {
     format!(
-        "listen: \"{listen}\"\nadmin_listen: \"127.0.0.1:{admin}\"\nproviders: {{}}\nmodels: {{}}\n"
+        "listen: \"{listen}\"\nadmin_listen: \"127.0.0.1:{admin}\"\nstore: {{ module: memory }}\nproviders: {{}}\nmodels: {{}}\n"
     )
 }
 
