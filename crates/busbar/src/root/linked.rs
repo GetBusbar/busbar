@@ -73,6 +73,15 @@ pub struct Linked {
     /// The secret axis: each linked secret plugin's door, loaded through the one loader when a
     /// reference first names it (see [`secret_rows`]).
     pub secrets: &'static [busbar_contract::abi::mechanism::door::DoorFn],
+    /// Each linked plane door's DECLARED METADATA, `(row, door, declares)`: its manifest `declares`
+    /// section as JSON (the crate's `declares.json`, named by `[package.metadata.busbar.linked-declares]`),
+    /// read as every default-linked plugin's is, beside the door it belongs to. A linked door is
+    /// first-party.
+    pub plane_door_declares: &'static [(
+        &'static str,
+        busbar_contract::abi::mechanism::door::DoorFn,
+        &'static str,
+    )],
     /// Protocol declarations, appended to the installed protocol set in this order.
     pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
     /// URL-model arrivals, by protocol name.
