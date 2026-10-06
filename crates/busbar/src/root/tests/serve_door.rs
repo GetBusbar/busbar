@@ -504,7 +504,7 @@ mod decisions_door {
 /// through the loader's one load, opened with its `agents:` section and the deployment's public
 /// base URL, its claims mounted on the data router at its construction, a keyed caller's request
 /// admitted and charged by the door steps and answered by the door.
-#[cfg(linked_axis_plane_sections)]
+#[cfg(linked_plane_sections)]
 mod agent_door {
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -800,9 +800,10 @@ mod agent_door {
             busbar_contract::store_calls::StoreDoor::Linked(
                 crate::LINKED
                     .stores
-                    .first()
-                    .expect("the build links a store")
-                    .3,
+                    .iter()
+                    .find(|s| s.1)
+                    .expect("the build links an ephemeral store")
+                    .2,
             ),
             instance,
             b"{}",

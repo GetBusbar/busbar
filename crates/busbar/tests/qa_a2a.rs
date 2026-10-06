@@ -30,7 +30,7 @@
 //! for the refused call, and the refusal follows a live re-fetch of the card, not a stale memory.
 
 // The plane under test is served through its door (FLIP-A2A): the linked `plane-sections` axis is its row.
-#![cfg(all(linked_axis_plane_sections, feature = "auth-admin-tokens"))]
+#![cfg(all(linked_plane_sections, feature = "auth-admin-tokens"))]
 
 mod common;
 
