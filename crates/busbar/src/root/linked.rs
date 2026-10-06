@@ -76,6 +76,15 @@ pub struct Linked {
     /// Each plane door row's place among [`Linked::planes`] (how many plane rows precede it in
     /// manifest order), parallel to [`Linked::plane_doors`]: where its folded registry row goes.
     pub plane_door_slots: &'static [usize],
+    /// Each linked plane door's DECLARED METADATA, `(row, door, declares)`: its manifest `declares`
+    /// section as JSON (the crate's `declares.json`, named by `[package.metadata.busbar.linked-declares]`),
+    /// read as every default-linked plugin's is, beside the door it belongs to. A linked door is
+    /// first-party.
+    pub plane_door_declares: &'static [(
+        &'static str,
+        busbar_contract::abi::mechanism::door::DoorFn,
+        &'static str,
+    )],
     /// Protocol declarations, appended to the installed protocol set in this order.
     pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
     /// URL-model arrivals, by protocol name.
@@ -1075,6 +1084,60 @@ pub fn register_exports(dropped: Option<&'static crate::root::loader::PluginRegi
 /// The registry [`register_exports`] kept; `None` before it ran, or with nothing to keep.
 pub(crate) fn dropped() -> Option<&'static crate::root::loader::PluginRegistry> {
     DROPPED.get().copied()
+}
+
+/// THE BREAKER FACTS A DOOR PLANE DECLARES (`declares.breaker`, ARCHITECT Q4), found by the plane's
+/// Statement name: a linked door's in its row's `declares.json` ([`Linked::plane_door_declares`]),
+/// a dropped-in plane's in its signed manifest (`dropped`). `None`: it declares none, and its
+/// members' cells keep the host's default posture. The root names no plane: whichever plane states
+/// the fact, it reads it.
+///
+/// # Errors
+///
+/// A linked door whose Statement or `declares` section does not read, or a dropped-in manifest
+/// whose Statement does not read.
+pub fn door_breaker(
+    linked: &Linked,
+    dropped: Option<&crate::root::loader::PluginRegistry>,
+    plane: &str,
+) -> Result<Option<crate::root::loader::sign::BreakerDecl>, String> {
+    for (row, door, json) in linked.plane_door_declares {
+        let stated = crate::root::loader::dispatch::LinkedRow::of(*door)
+            .map_err(|e| format!("plugin '{row}': {e}"))?;
+        let name = busbar_contract::abi::mechanism::rendering::read(&stated.statement)
+            .map_err(|e| {
+                format!(
+                    "plugin '{row}': its Statement rendering does not read back at byte {}",
+                    e.at
+                )
+            })?
+            .name;
+        if name != plane {
+            continue;
+        }
+        let declares: crate::root::loader::sign::Declares =
+            serde_json::from_str(json).map_err(|e| {
+                format!("plugin '{row}' states a `declares` section that does not read: {e}")
+            })?;
+        return Ok(declares.breaker);
+    }
+    let Some(registry) = dropped else {
+        return Ok(None);
+    };
+    let planes = registry.loadable().iter();
+    for p in planes.filter(|p| p.manifest.kind == busbar_contract::abi::mechanism::kind::PLANE) {
+        let Some(stated) = p
+            .manifest
+            .stated()
+            .map_err(|e| format!("plugin '{}': {e}", p.manifest.name))?
+        else {
+            continue;
+        };
+        if stated.name == plane {
+            return Ok(p.manifest.declares.breaker);
+        }
+    }
+    Ok(None)
 }
 
 /// The configured `plugins.logs`, or its defaults: where every opened plugin instance logs.
