@@ -6,12 +6,15 @@
 //!
 //! The loader's own suite proves the scan refuses the artifact. This drives the REAL binary: a
 //! published-1.5.5-shaped plugin of each JSON-contract kind (its manifest states that kind's 1.5.5
-//! payload version: store 2, auth 2, hook 1, export 2) is dropped into `plugins.dir`, and the boot
+//! payload version: store 2, auth 2, hook 1, export 2, secret 1) is dropped into `plugins.dir`, and the boot
 //! itself must stop, before anything serves, with a refusal that names the file, the kind, the
 //! version and the rebuild against the 1.6.0 SDK.
 //!
 //! RED against a loader that still admits the 1.5.5 floors: the process boots and serves, and the
-//! deadline below expires with no refusal.
+//! deadline below expires with no refusal. The `secret` arm is RED against a loader that admits the
+//! secret kind at its JSON-lane version (1, the 1.5.5 value): the vault plugin a 1.5.5 deployment
+//! dropped in still loaded on the cold lane until the P2 switch-over gave the secret kind its one
+//! version (2, THE DESIGN §11.2).
 
 #![cfg(unix)]
 // THE END-TO-END BOOT PROOF DRIVES THE REAL DATA DOOR, so it needs the row that carries the
@@ -34,7 +37,13 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// Each JSON-contract kind and the payload version its published 1.5.5 plugins state.
-const PUBLISHED_1_5_5: &[(&str, u32)] = &[("store", 2), ("auth", 2), ("hook", 1), ("export", 2)];
+const PUBLISHED_1_5_5: &[(&str, u32)] = &[
+    ("store", 2),
+    ("auth", 2),
+    ("hook", 1),
+    ("export", 2),
+    ("secret", 1),
+];
 
 /// How long a refused boot may take. A boot that has not stopped by then is serving.
 const DEADLINE: Duration = Duration::from_secs(60);
@@ -64,7 +73,7 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
         dir.join("config.yaml"),
         format!(
             "listen: \"127.0.0.1:{data_port}\"\nadmin_listen: \"127.0.0.1:{admin_port}\"\n\
-             admin_require_mtls: false\nplugins:\n  enabled: true\n  dir: '{}'\n  trust:\n    \
+             admin_require_mtls: false\nstore: {{module: memory}}\nplugins:\n  enabled: true\n  dir: '{}'\n  trust:\n    \
              allow_unsigned: true\nproviders:\n  mock:\n    api_key: {{ env: MOCK_KEY }}\n\
              models:\n  test-model:\n    provider: mock\n",
             dir.join("plugins").display()

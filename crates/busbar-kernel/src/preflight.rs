@@ -41,16 +41,13 @@ pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
     (!path.as_os_str().is_empty()).then_some(path)
 }
 
-type StoreOpen = fn(&str) -> Result<Box<dyn governance::RecordStore>, String>;
-/// A linked STORE's entry: `(name, ephemeral, default, open, door)` — the name `governance.store`
-/// selects it by, whether what it holds is lost on restart, whether it claims to be the store a
-/// deployment that configures none runs on, its in-process open, and its store v3 door (the door
-/// boot opens it through, on the root's [`RootInstall::store_axis`]).
+/// A linked STORE's entry: `(name, ephemeral, door)` — the name `store.module` selects it by,
+/// whether what it holds is lost on restart, and its store v3 door (the door boot opens it through,
+/// on the root's [`RootInstall::store_axis`]). No row is a default: the store is the one config
+/// names (Q-STORE = (B)).
 pub type LinkedStore = (
     &'static str,
     bool,
-    bool,
-    StoreOpen,
     busbar_contract::abi::mechanism::door::DoorFn,
 );
 /// The root's store axis (WIRE-STORE Q8/Q9): every store boot opens is loaded through the root's
@@ -107,19 +104,16 @@ pub type PluginsFetch = fn(
     &dyn Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<Fetched>, Vec<String>>;
 
-/// WHAT THE COMPOSITION ROOT INSTALLS into the kernel, by name: its linked entries, the default
-/// store it resolved and its registry build — and, as each kind's axis lands, that kind's
+/// WHAT THE COMPOSITION ROOT INSTALLS into the kernel, by name: its linked entries and its registry
+/// build — and, as each kind's axis lands, that kind's
 /// `<kind>_axis` field (ARCHITECT ruling Q8: the kernel receives contract `<Kind>Axis` seams from
 /// the root, never the loader). A field is added by name; nothing is positional. Nothing
-/// installed ([`Default`]): no linked rows, no default store, and a build and a fetch that refuse,
-/// naming the missing root.
+/// installed ([`Default`]): no linked rows, and a build and a fetch that refuse, naming the missing
+/// root.
 #[derive(Clone, Copy, Default)]
 pub struct RootInstall {
     /// The build's linked in-process stores.
     pub stores: &'static [LinkedStore],
-    /// The governance store a deployment that configures none runs on: the linked store row that
-    /// declares itself the default (empty when no row claims it).
-    pub default_store_module: &'static str,
     /// The root's registry build.
     pub registry_build: Option<RegistryBuild>,
     /// The root's `plugins.fetch`.
@@ -150,12 +144,10 @@ pub type HookAxisBuild =
     ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String>;
 
 /// A test build has no root: its store and ranking fixtures stand in for the root's entries, the
-/// stand-in store (which claims the default) as the default, the shipped secret sources as the
-/// secret axis, and the test axis for the exports.
+/// shipped secret sources as the secret axis, and the test axis for the exports.
 #[cfg(any(test, feature = "test-support"))]
 const STAND_IN: RootInstall = RootInstall {
     stores: &[fixture_store::linked::STORE],
-    default_store_module: fixture_store::linked::STORE.0,
     registry_build: Some(crate::test_support::registry_stand_in),
     plugins_fetch: Some(crate::test_support::fetch_stand_in),
     hook_axis: Some(crate::test_support::hook_axis_stand_in),
@@ -173,21 +165,19 @@ pub(crate) const STAND_IN_HOOK_DOORS: &[busbar_contract::abi::mechanism::door::D
 ];
 
 /// The composition root's linked store and hook entries (the build's in-process stores and, when
-/// compiled in, its ranking hooks), its resolved default store and its registry build, installed
-/// once before the first resolution.
+/// compiled in, its ranking hooks) and its registry build, installed once before the first
+/// resolution.
 static ROOT_ROWS: std::sync::OnceLock<RootInstall> = std::sync::OnceLock::new();
 
-/// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries, the
-/// default store the root resolved from the stores' claims and the root's registry build (the first
-/// install stands). The kernel names none of the plugins it registers, and no default store (#2
-/// rule (1), #40).
+/// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries and the
+/// root's registry build (the first install stands). The kernel names none of the plugins it
+/// registers, and no store is a default (#2 rule (1), #40; Q-STORE = (B)).
 pub fn install_linked_rows(rows: RootInstall) {
     let _ = ROOT_ROWS.set(rows);
 }
 
-/// The installed root rows (a test build stands its fixtures in). `.2` is the governance store a
-/// deployment that configures none runs on: the linked row that declares itself the default. Admin's
-/// store catalog lists `.0`, the stores this build links.
+/// The installed root rows (a test build stands its fixtures in). Admin's store catalog lists
+/// `stores`, the stores this build links.
 pub fn root_rows() -> RootInstall {
     #[cfg(any(test, feature = "test-support"))]
     let _ = ROOT_ROWS.set(STAND_IN);
@@ -231,7 +221,7 @@ pub(crate) fn auth_axis(
 /// takes (DECISIONS #2 rule (1)).
 fn linked_rows() -> Vec<LinkedPlugin> {
     let RootInstall { stores, .. } = root_rows();
-    let store = |s: &LinkedStore| LinkedPlugin::store(s.0, s.3, s.1).with_store_door(s.4);
+    let store = |&(name, ephemeral, door): &LinkedStore| LinkedPlugin::store(name, door, ephemeral);
     let rows = stores.iter().map(store);
     let auths = busbar_kernel_identity::operator::linked().iter();
     rows.chain(auths.map(|&(name, door)| LinkedPlugin::auth_door(name, door)))
@@ -377,10 +367,12 @@ pub fn plugins_preflight(
         l.rotate_mb,
         l.keep,
     )?;
-    let store_ref = store_cfg.map_or_else(config::default_governance_store, |g| g.module.clone());
+    // The store config names; an absent block names none and resolves nothing here (Q-STORE = (B):
+    // `config_validate::validate` refuses it, on every path that reaches this pre-flight).
+    let store_ref = store_cfg.map(|g| g.module.clone()).unwrap_or_default();
     // Resolved on the store AXIS: a row this build links opens in-process; any other name is a
     // `kind: store` plugin the plugins directory must supply.
-    let store_is_plugin = linked()?.resolve(&store_ref).is_none();
+    let store_is_plugin = store_cfg.is_some() && linked()?.resolve(&store_ref).is_none();
 
     // Every non-builtin `auth.chain` module is a `kind: auth` plugin — the same manifest-only
     // pre-flight the store ref gets, so `--validate` catches a missing/wrong-kind/untrusted auth
@@ -1050,9 +1042,8 @@ pub fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), Str
 
 /// Build the [`config::secret::SecretResolver`] the engine resolves every secret reference through:
 /// the built-in `env`/`file` modules inline, and any OTHER module name via a loaded `kind: secret`
-/// plugin from `registry` (opened per resolution; a secret module is off every hot path so the
-/// per-call open + resolve is fine). FAIL-CLOSED: `open_secret` errors surface as an unresolvable
-/// secret. When the plugin subsystem is off the registry is empty and every non-built-in reference
+/// plugin on the secret axis (opened once per resolver, over the one dispatcher). FAIL-CLOSED: a
+/// module no door answers is an unresolvable secret, refused in the registry's words. When the plugin subsystem is off the registry is empty and every non-built-in reference
 /// is a fail-closed error at resolve time.
 pub(crate) fn build_secret_resolver(
     registry: Arc<busbar_plugin_loader::PluginRegistry>,
@@ -1081,8 +1072,6 @@ pub(crate) fn build_secret_resolver(
     // module-level open config) — is a hard boot error: silently passing `{}` for a mis-typed module
     // is exactly the failure this closes. The `--validate` path applies the identical policy via the
     // shared `validate_secret_module`/`validate_secret_modules` helpers.
-    let mut open_config: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
     let mut raw_config: std::collections::BTreeMap<String, serde_json::Value> =
         std::collections::BTreeMap::new();
     // Which `secrets:` block key produced each canonical entry, so an ALIAS/CANONICAL collision can
@@ -1105,13 +1094,9 @@ pub(crate) fn build_secret_resolver(
                  One of the two blocks would be silently dropped; keep exactly one."
             ));
         }
-        let resolved = config::secret::resolve_settings(&mcfg.settings, &builtins)
+        config::secret::resolve_settings(&mcfg.settings, &builtins)
             .map_err(|e| format!("secrets.{module} settings: {e}"))?;
         claimed_by.insert(canonical.clone(), module.clone());
-        open_config.insert(
-            canonical.clone(),
-            serde_json::Value::Object(resolved).to_string(),
-        );
         raw_config.insert(canonical, serde_json::Value::Object(mcfg.settings.clone()));
     }
     // A dropped-in plugin that states a door opens through the root's secret axis, once per
@@ -1144,28 +1129,9 @@ pub(crate) fn build_secret_resolver(
                     .map(|m| m.expose_secret().clone())
                     .map_err(|r| r.text);
             }
-            // Canonicalize the referenced module the SAME way, so an alias-vs-name spelling difference
-            // between the `secrets:` block and this `SecretRef` still finds the configured open() JSON.
-            // A module that does not resolve falls through to `open_secret` below, which produces the
-            // authoritative "no such plugin" error.
-            let canonical = registry
-                .resolve(module)
-                .map(|p| p.manifest.name.as_str())
-                .unwrap_or(module);
-            // Deliver the module's configured open() JSON (default `{}` for an unconfigured module).
-            let open_cfg = open_config
-                .get(canonical)
-                .map(String::as_str)
-                .unwrap_or("{}");
-            let m = registry.open_secret(module, open_cfg)?;
-            // The decoder's own text is withheld (`json_err`): it can quote a settings value.
-            m.resolve(
-                &serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(settings)
-                    .map_err(crate::egress_auth::json_err(
-                        "secret settings are not a JSON object",
-                    ))?,
-            )
-            .map_err(|e| e.to_string())
+            // No door answers it: no such secret plugin, or a 1.5.5 JSON-contract one, which this
+            // host does not load (THE DESIGN §11.8). Refused in the registry's own words.
+            Err(registry.secret_refusal(module))
         },
     )))
 }

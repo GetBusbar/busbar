@@ -2275,7 +2275,7 @@
     },
     {
       "id": "DF-SITES no value is substituted for one the target dialect cannot carry",
-      "kind": "improvement",
+      "kind": "breaking",
       "changelog": "A request translated between LLM dialects no longer has a value substituted for one the target dialect cannot carry: an image whose format Bedrock Converse does not accept is dropped instead of relabelled `png`, and a Gemini `thinkingBudget: -1` (\"the model decides\") is dropped on a target with no such setting instead of sent as the `medium` effort; each drop is warned and audited by its wire path. A wrong-typed Gemini `thinkingBudget` or Anthropic image `media_type` is answered with the caller's own 400 error instead of being translated.",
       "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops (never a substitution); spec Part 2 #76 (wrong-typed input = native error envelope)",
       "cells": "^llm\\.no-substitution\\|(anthropic|openai|responses|gemini|cohere)\\|(bedrock|openai|responses|anthropic)$",
@@ -2284,7 +2284,7 @@
         "body",
         "status"
       ],
-      "rationale": "Two writer sites put a value of their own in place of the caller's on a TRANSLATE attempt, which F3 forbids. (1) The Bedrock writer relabelled an image whose media type is outside Converse's ImageFormat union {png, jpeg, gif, webp} (or not image/<subtype> at all) as format png and sent its bytes. (2) Every writer without a \"model decides\" form (Chat, Responses, and Anthropic / Bedrock lanes without adaptive thinking) projected Gemini's thinkingBudget -1 (and Anthropic adaptive / Cohere budget-less thinking) onto the effort table's medium entry. Both are now dropped on the one drop path with a WARN and an egress.control_unrepresentable audit row naming the caller's wire path; a format or budget that maps is carried (jpg is jpeg; Cohere and adaptive lanes keep \"model decides\"). Separately, a wrong-typed Gemini thinkingBudget (silently left out) and a wrong-typed Anthropic image media_type (read as \"\" and relabelled png on Bedrock) are refused by the caller's own reader in its native 400 envelope. Tests: crates/busbar-plane-llm/src/codec/tests/drop_writer_tests.rs (no substitution section). No oracle cell sends either value across dialects: the cells are OWED, `cells` names them and expected_cells is 0.",
+      "rationale": "KIND CORRECTED 2026-10-04 (improvement -> breaking; ARCHITECT, promotion blocker): the engine accepts the `status` class only on a kind=breaking entry with a changelog line, and refused this entry at load, so `bin/oracle replay` could not run. The entry already named `status` for #76's wrong-typed-input 400 (OWNER LAW #76: wrong-typed input = the caller's native error envelope); kind is the only field changed: id, cells, expected_cells (0, owed), classes, premise, signoff and expiry are as signed, so it forgives nothing it did not, and its CHANGELOG line moves verbatim to ### Breaking. Two writer sites put a value of their own in place of the caller's on a TRANSLATE attempt, which F3 forbids. (1) The Bedrock writer relabelled an image whose media type is outside Converse's ImageFormat union {png, jpeg, gif, webp} (or not image/<subtype> at all) as format png and sent its bytes. (2) Every writer without a \"model decides\" form (Chat, Responses, and Anthropic / Bedrock lanes without adaptive thinking) projected Gemini's thinkingBudget -1 (and Anthropic adaptive / Cohere budget-less thinking) onto the effort table's medium entry. Both are now dropped on the one drop path with a WARN and an egress.control_unrepresentable audit row naming the caller's wire path; a format or budget that maps is carried (jpg is jpeg; Cohere and adaptive lanes keep \"model decides\"). Separately, a wrong-typed Gemini thinkingBudget (silently left out) and a wrong-typed Anthropic image media_type (read as \"\" and relabelled png on Bedrock) are refused by the caller's own reader in its native 400 envelope. Tests: crates/busbar-plane-llm/src/codec/tests/drop_writer_tests.rs (no substitution section). No oracle cell sends either value across dialects: the cells are OWED, `cells` names them and expected_cells is 0.",
       "premise": {
         "cell": "llm|anthropic|openai|request|ok",
         "status": 200
@@ -2298,6 +2298,84 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "Q-STORE migrate names the store",
+      "kind": "breaking",
+      "changelog": "A config with no `store:` block is refused at boot and by `--validate`; `busbar --migrate-config` inserts `store: {module: memory}`, the in-memory store such a config ran on in 1.5.x.",
+      "by": "owner (Matthew Jackson), OWNER RULED Q-STORE = (B) (2026-09-27) + Q-STEP7-a (2026-10-04: D1 approved, D2 signed #46)",
+      "cells": "^config\\.migrate\\|[^|]+\\|migrate$",
+      "expected_cells": 78,
+      "classes": [
+        "body",
+        "effects.stderr"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "(?m)^store:\\n  module: memory\\n",
+            ""
+          ],
+          [
+            "\\nCHANGES \\(1\\):\\n  - store: inserted `store: \\{module: memory\\}`[^\\n]*\\n",
+            ""
+          ],
+          [
+            "(?m)^  - store: inserted `store: \\{module: memory\\}`[^\\n]*\\n",
+            ""
+          ],
+          [
+            "CHANGES \\(2\\):",
+            "CHANGES (1):"
+          ],
+          [
+            "CHANGES \\(3\\):",
+            "CHANGES (2):"
+          ],
+          [
+            "CHANGES \\(4\\):",
+            "CHANGES (3):"
+          ],
+          [
+            "CHANGES \\(5\\):",
+            "CHANGES (4):"
+          ],
+          [
+            "CHANGES \\(7\\):",
+            "CHANGES (6):"
+          ],
+          [
+            "CHANGES \\(10\\):",
+            "CHANGES (9):"
+          ],
+          [
+            "CHANGES \\(30\\):",
+            "CHANGES (29):"
+          ],
+          [
+            "CHANGES \\(32\\):",
+            "CHANGES (31):"
+          ],
+          [
+            "CHANGES \\(33\\):",
+            "CHANGES (32):"
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "config.migrate|v1.5.5|migrate",
+        "body_contains": "store:\n  module: memory"
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-04",
+        "ruling": "2026-09-27 OWNER RULED Q-STORE = (B); Q-STEP7-a (1.6.0-QUESTIONS.md) answered 2026-10-04: \"Approve D1\" (the oracle baseline names its store), \"Sign #46\" (this entry)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "OWNER RULED Q-STORE = (B) (2026-09-27, docs/design/BUSBAR-1.6.0.md): 1.6.0 refuses a config with no `store:` block, and `busbar --migrate-config` inserts `store: {module: memory}`, the store 1.5.5 ran such a config on (v1.5.5 GOVERNANCE_STORE_MEMORY via default_governance_store, config/mod.rs:3026/3061). Q-STEP7-a (1.6.0-QUESTIONS.md, answered by the owner 2026-10-04): D1, approved, makes the oracle's run-time inputs name that store (busbar-release recorder/store_baseline.rs: the configs the engine writes and boots, each capture cell's config, the admin config-apply/validate bodies and every script cell's config via `upgrade-config`; no stored cell definition is edited, no golden re-recorded), so every other 1.5.5 golden stays the 1.5.5 answer. D2, signed as #46, is this entry: the cells that move BECAUSE of the ruling are exactly the 78 `config.migrate|<tag>|migrate` cells, since every corpus config lacks `store:` and none carries a 1.4.x `governance:`. The migrated document (body) gains `store:\\n  module: memory` as its last root key, and stderr gains `  - store: inserted `store: {module: memory}` (1.6.0 requires a `store:` block; ...)` under CHANGES: the header appears on the 9 cells whose 1.5.5 golden printed none, and the count is +1 on the other 69 (goldens print 1,2,3,4,6,9,29,31,32). The transform removes exactly that block and that line and decrements the count (ascending, so no count is rewritten twice); the cell then scores ACCEPTED, never PASS, and anything else that moved stays red. The 78 `validate-migrated` cells do not move (the migrated config validates). PREMISE (evaluated): the v1.5.5 corpus config's migrated body names the memory store, so a build that does not insert the block withholds the entry. kind=breaking: a 1.5.5 config with no store block no longer boots unchanged."
     }
   ]
 }

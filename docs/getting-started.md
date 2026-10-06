@@ -160,6 +160,8 @@ providers:
 models:
   claude-sonnet-4-5:
     provider: anthropic
+
+store: { module: memory }   # required: where keys/usage live (memory = RAM, reset on restart)
 ```
 
 `provider` is the only required field on a model. `max_concurrent` (a per-lane concurrency limiter) is optional and defaults to unbounded; add it only when you want to cap in-flight requests to a model.
@@ -177,8 +179,9 @@ Save this as `config.yaml` in your working directory.
 | `providers.<name>.api_key` | A secret reference to this provider's API key (`{ env: VAR }` / `{ file: /path }` / a secret plugin) |
 | `models.<name>.provider` | Which provider entry in the `providers` block this model calls |
 | `models.<name>.max_concurrent` | Optional per-lane concurrency limiter: max simultaneous in-flight requests to this model. Omit for unbounded (the default); set a value ≥ 1 to cap. |
+| `store.module` | The store keys, usage and audit live in: `memory` (RAM, reset on restart) or a store plugin (`sqlite`, `postgres`, `valkey`). A config without a `store:` block is refused; `busbar --migrate-config` inserts `store: { module: memory }` |
 
-`providers` and `models` are the only required sections. `listen` defaults to `0.0.0.0:8080`. `auth` defaults to an empty chain (`chain: []`), an open relay, when omitted, fine for local dev, not for production.
+`providers`, `models` and `store` are the only required sections. `listen` defaults to `0.0.0.0:8080`. `auth` defaults to an empty chain (`chain: []`), an open relay, when omitted, fine for local dev, not for production.
 
 ---
 
@@ -284,6 +287,8 @@ Once the single-provider setup is working, extend the config to introduce a pool
 <!-- doc-check: config -->
 ```yaml
 # config.yaml, two providers, two models, one pool, with client auth
+store: { module: memory }
+
 identity-providers:
   admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
 
@@ -392,8 +397,9 @@ Prometheus scrape exposition. Like `/stats`, `/metrics` is subject to the auth m
 
 ### Durable store: giving persistence a writable volume
 
-**The default store is in-memory.** With no `store:` block, keys, usage counters, ledgers and the
-audit trail all live in RAM and are gone on restart — Busbar logs one WARN at boot saying so. The
+**A `store:` block is required in 1.6.0.** `busbar --validate` refuses a config without one, and
+`busbar --migrate-config` inserts `store: {module: memory}` into a config that lacks it. The `memory` store keeps keys, usage counters, ledgers and the
+audit trail in RAM, so they are gone on restart — Busbar logs one WARN at boot saying so. The
 admin-API config overlay (Step 1's `busbar-overlay.json`) is a *separate* thing and persists on its
 own writable path; it does not make keys/usage/ledgers durable.
 
@@ -402,7 +408,7 @@ A durable store ships as a **signed plugin**, not code baked into the binary or 
 (`GetBusbar/busbar-store-sqlite`, `GetBusbar/busbar-store-postgres`, `GetBusbar/busbar-store-mysql`,
 `GetBusbar/busbar-store-valkey` — the full list, with each plugin's alias and crate name, is
 [`plugins.yaml`](../plugins.yaml) at the repo root). "Give it a writable volume" is necessary but
-not sufficient; the complete recipe has **four** parts:
+not sufficient; the complete recipe has **four** parts. (Use the store plugin releases built for 1.6.0: a store plugin built for 1.5.5 is refused at boot, see [Plugins](plugins.md#plugins-and-160).)
 
 1. **`plugins.enabled: true`** — the plugin subsystem's master switch. Default is `false`, and with
    it off a tarball sitting in the plugins directory is inert: `store.module: sqlite` refuses boot

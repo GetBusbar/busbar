@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 65,
    "oracle-family": 5,
-   "test": 458
+   "test": 455
   }
  },
  "dropped_since_last_write": [],
@@ -1867,22 +1867,10 @@
      "status": "mapped",
      "why": "validate, boot, mint, spend, restart, read back (persistence is the job)",
      "source": "cells.json why"
-    },
-    {
-     "kind": "test",
-     "ref": "unsupported_alone_opens_the_inert_default_on_every_defaulting_verb",
-     "status": "mapped",
-     "source": "hand"
-    },
-    {
-     "kind": "test",
-     "ref": "every_other_failure_shape_propagates_on_every_verb",
-     "status": "mapped",
-     "source": "hand"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:plugins.store-persist|store-mysql, oracle-cell:plugins.store-persist|store-postgres, oracle-cell:plugins.store-persist|store-sqlite, oracle-cell:plugins.store-persist|store-valkey, test:unsupported_alone_opens_the_inert_default_on_every_defaulting_verb, test:every_other_failure_shape_propagates_on_every_verb"
+   "verdict_detail": "oracle-cell:plugins.store-persist|store-mysql, oracle-cell:plugins.store-persist|store-postgres, oracle-cell:plugins.store-persist|store-sqlite, oracle-cell:plugins.store-persist|store-valkey"
   },
   {
    "id": "PB-38",
@@ -4328,19 +4316,13 @@
     },
     {
      "kind": "test",
-     "ref": "unsupported_alone_opens_the_inert_default_on_every_defaulting_verb",
-     "status": "mapped",
-     "source": "hand"
-    },
-    {
-     "kind": "test",
-     "ref": "a_real_answer_passes_through_untouched",
+     "ref": "every_added_operation_on_a_published_schema_store_is_silent_and_never_errors",
      "status": "mapped",
      "source": "hand"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:plugins.store-persist|store-mysql, oracle-cell:plugins.store-persist|store-postgres, oracle-cell:plugins.store-persist|store-sqlite, oracle-cell:plugins.store-persist|store-valkey, test:unsupported_alone_opens_the_inert_default_on_every_defaulting_verb, test:a_real_answer_passes_through_untouched"
+   "verdict_detail": "oracle-cell:plugins.store-persist|store-mysql, oracle-cell:plugins.store-persist|store-postgres, oracle-cell:plugins.store-persist|store-sqlite, oracle-cell:plugins.store-persist|store-valkey, test:every_added_operation_on_a_published_schema_store_is_silent_and_never_errors"
   },
   {
    "id": "PB-94",

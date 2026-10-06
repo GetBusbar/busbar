@@ -43,7 +43,6 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("compose", "compose", "compose"),
     ("stdio-serve", "stdio_serve", "stdio_serve"),
     ("cli-help", "cli_help", "CLI_HELP"),
-    ("exports", "exports", "EXPORT"),
     ("stores", "stores", "STORE"),
     // The hook axis: each linked `kind: hook` row's door (`plugin_door!`), the same door its
     // dropped-in build exports.
@@ -356,6 +355,24 @@ pub(crate) fn linked_source(
     out.push_str("    secrets: &[");
     for e in on_axis(SECRET_AXIS) {
         out.push_str(&format!("{e}::door, "));
+    }
+    out.push_str("],\n");
+    // EACH LINKED PLANE DOOR'S DECLARED METADATA: `(crate, door, declares)`, the JSON its
+    // `[package.metadata.busbar.linked-declares]` row names (the crate's `declares.json`), read as
+    // every default-linked plugin's `declares` section is, beside the door it belongs to (so the
+    // root finds a bound door plane's declaration by its Statement). A door row with no such row
+    // declares none.
+    out.push_str("    plane_door_declares: &[");
+    for ((feature, krate), (entry, _)) in on.iter().zip(&linked) {
+        let is_door = axes
+            .iter()
+            .any(|(f, a)| f == feature && a.split_whitespace().any(|x| x == PLANE_DOOR_AXIS));
+        if !is_door {
+            continue;
+        }
+        if let Some(path) = metadata_value(manifest, "package.metadata.busbar.linked-declares", feature) {
+            out.push_str(&format!("({krate:?}, {entry}::door, {path}), "));
+        }
     }
     out.push_str("],\n");
     out.push_str("    transports: &[");

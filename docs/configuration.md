@@ -706,7 +706,7 @@ internal`; no figure moves, only the status and code the caller sees change.
 
 ### `store`
 
-The durable store as a plugin instance: `{ module, settings }`. The default `memory` module is the
+The store as a plugin instance: `{ module, settings }`. **Required in 1.6.0**: `busbar --validate` refuses a config without a `store:` block, and `busbar --migrate-config` inserts `store: {module: memory}`. The `memory` module is the
 compiled-in ephemeral RAM store (keys, usage, and the audit log reset on restart); every durable
 backend is a signed plugin tarball.
 
@@ -1452,12 +1452,14 @@ security:
 
 ## Minimal working example
 
-The smallest config that parses and resolves. `providers` and `models` are the only required top-level sections.
+The smallest config that parses and resolves. `providers`, `models` and `store` are the only required top-level sections.
 
 **`config.yaml`:**
 
 <!-- doc-check: config -->
 ```yaml
+store: { module: memory }
+
 providers:
   anthropic:
     api_key: { env: ANTHROPIC_KEY }
@@ -1523,8 +1525,8 @@ rate_card:
 per_request_fee: 1
 
 # ---------------------------------------------------------------------------
-# Store: durable keys/usage/audit/denylist (a loadable plugin; omit the block
-# for the ephemeral RAM default).
+# Store: keys/usage/audit/denylist (a plugin; REQUIRED in 1.6.0, `module: memory`
+# is the ephemeral RAM store; `busbar --migrate-config` inserts it).
 # ---------------------------------------------------------------------------
 store:
   module: sqlite

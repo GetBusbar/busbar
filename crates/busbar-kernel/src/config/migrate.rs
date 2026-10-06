@@ -406,6 +406,10 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // cadence, default 6h) becomes `verify_ttl:` (max verification staleness on the `tools/call` path,
     // default 5s). A pure key rename, but the SEMANTICS changed, so it carries a loud warning per occurrence.
     migrate_tools_verify_ttl(&mut root, &mut changes, &mut warnings);
+    // 1.6.0 Q-STORE = (B): `store:` is required. Runs LAST, after `migrate_governance` lifted a
+    // 1.4.x `governance:` database into `store:`, so only a config that still names no store gains
+    // the one 1.5.x ran it on.
+    migrate_store_required(&mut root, &mut changes);
 
     let body = serde_yaml::to_string(&Value::Mapping(root))
         .map_err(|e| format!("could not serialize the migrated config: {e}"))?;
@@ -496,6 +500,35 @@ fn migrate_tools_verify_ttl(
              refresh daemon; see the per-server WARNING for the semantics change)"
                 .into(),
         );
+    }
+}
+
+/// 1.6.0 Q-STORE = (B) (owner ruling 2026-09-27): a config with no `store:` block is refused, so the
+/// migration writes the store a 1.5.x config without one ran on — `store: {module: memory}`, exactly
+/// 1.5.5's implicit behaviour made explicit. A `store:` mapping that names no `module` read as that
+/// same store in 1.5.5 (serde's default), so it gains the `module:` and keeps its `settings:`. A
+/// `store:` of any other shape, or one that names a module, is left exactly as written.
+fn migrate_store_required(root: &mut Mapping, changes: &mut Vec<String>) {
+    let key = Kind::Store.root();
+    let module = crate::config::MIGRATED_STORE_MODULE;
+    match root.get_mut(Value::from(key)) {
+        None => {
+            let mut store = Mapping::new();
+            store.insert("module".into(), module.into());
+            root.insert(key.into(), Value::Mapping(store));
+            changes.push(format!(
+                "{key}: inserted `{key}: {{module: {module}}}` (1.6.0 requires a `{key}:` block; \
+                 a config without one ran on the in-memory store, which this keeps)"
+            ));
+        }
+        Some(Value::Mapping(store)) if !store.contains_key(Value::from("module")) => {
+            store.insert("module".into(), module.into());
+            changes.push(format!(
+                "{key}.module: inserted `{module}` (1.6.0 requires the store to be named; a \
+                 `{key}:` block without a module ran on the in-memory store, which this keeps)"
+            ));
+        }
+        Some(_) => {}
     }
 }
 
@@ -924,7 +957,7 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         store.insert("module".into(), module.clone().into());
         let mut settings = Mapping::new();
         match (module.as_str(), db_path) {
-            (m, _) if is_ephemeral_store(m) => {}
+            (m, _) if is_ephemeral_store(m) || m == crate::config::MIGRATED_STORE_MODULE => {}
             // No explicit db_path: 1.4.x's real default was "busbar-governance.db", not memory.
             (m, p) if m == legacy_store_text("gov14_module") => {
                 let p = p.unwrap_or_else(|| legacy_store_text("gov14_db_path").into());
