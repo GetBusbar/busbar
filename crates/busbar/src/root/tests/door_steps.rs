@@ -4024,6 +4024,115 @@ mod task_continuation {
             "{done}"
         );
     }
+
+    /// The member's ask inside a task, as it sends it.
+    const UPSTREAM_ASK: &str = r#"{"jsonrpc":"2.0","id":0,"result":{"resultType":"input_required","inputRequests":{"ok":{"method":"elicitation/create","params":{"message":"Publish it?","requestedSchema":{"type":"object","properties":{}}}}},"requestState":"theirs"}}"#;
+
+    /// A member that asks its caller on the first call and answers the retry carrying answers.
+    async fn asking_member() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        super::tool_door::tool_server_answering(std::sync::Arc::new(|request: &str| {
+            if request.contains("\"tools/list\"") {
+                serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}})
+                    .to_string()
+            } else if request.contains("\"inputResponses\"") {
+                r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"answered by the caller"}]}}"#
+                    .to_string()
+            } else {
+                UPSTREAM_ASK.to_string()
+            }
+        }))
+        .await
+    }
+
+    /// The task tool's section, the elicitation ask granted as a relay permission or not.
+    fn asking_tools(port: u16, granted: bool) -> serde_yaml::Value {
+        serde_yaml::from_str(&format!(
+            "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
+             grants: {{ elicitation: {granted} }}\n  \
+             tools_allow:\n    read_file: {{ schema_hash: \"{}\", task_support: optional }}\n",
+            tool_digest()
+        ))
+        .expect("a section")
+    }
+
+    /// LAW 11 ON THE TASK PATH (ARCHITECT Q6). RED against the deleted refusal ("a task's
+    /// continuation has no caller waiting to relay the upstream's ask to"), which failed the task:
+    /// the member's ask parks the task `input_required` with its `inputRequests` verbatim; the
+    /// caller's `tasks/update` answer goes back to the SAME member as a new unit, with the caller's
+    /// answers and the member's own state verbatim; the task completes with the member's result.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_members_ask_inside_a_task_reaches_the_caller_and_its_answer_reaches_the_member() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-task-relay";
+        let _published = Published(instance);
+        let (port, mut heard) = asking_member().await;
+        let rig = rig_tools(instance, port, asking_tools(port, true), &|app| app);
+        let (_, task_id) = create(&rig).await;
+        let parked = until(&rig, &task_id, "input_required").await;
+        let sent: serde_json::Value = serde_json::from_str(UPSTREAM_ASK).expect("the ask");
+        assert_eq!(
+            parked["result"]["inputRequests"], sent["result"]["inputRequests"],
+            "the member's requests reach the caller verbatim: {parked}"
+        );
+        assert!(parked["result"].get("requestState").is_none(), "{parked}");
+        let first = next_call(&mut heard).await;
+        assert!(!first.contains("inputResponses"), "{first}");
+
+        let mut update: serde_json::Value =
+            serde_json::from_str(&verb("tasks/update", &task_id)).expect("a verb");
+        update["params"]["inputResponses"] =
+            serde_json::json!({ "ok": { "action": "accept", "content": {} } });
+        let (status, ack) = send_as(
+            &rig.router,
+            Some(&rig.token),
+            &update.to_string(),
+            "tasks/update",
+            Some(&task_id),
+        )
+        .await;
+        assert_eq!(status.as_u16(), 200, "{}", String::from_utf8_lossy(&ack));
+
+        // THE RETRY reaches the member: the caller's answers and the member's own state, verbatim.
+        let retry = next_call(&mut heard).await;
+        let body = retry
+            .split_once("\r\n\r\n")
+            .map_or(retry.as_str(), |(_, b)| b);
+        let retry: serde_json::Value = serde_json::from_str(body).expect("JSON");
+        assert_eq!(retry["params"]["requestState"], "theirs", "{retry}");
+        assert_eq!(
+            retry["params"]["inputResponses"]["ok"]["action"], "accept",
+            "{retry}"
+        );
+        assert!(
+            retry["params"]["arguments"].get("ok").is_none(),
+            "the member's answers never become arguments: {retry}"
+        );
+        let done = until(&rig, &task_id, "completed").await;
+        assert_eq!(
+            done["result"]["result"]["content"][0]["text"], "answered by the caller",
+            "{done}"
+        );
+    }
+
+    /// An ungranted ask inside a task is still refused (`ask_ungranted`, the operator's policy): the
+    /// task fails in the refusal's words and nothing is relayed to the caller.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_ungranted_ask_inside_a_task_is_refused() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-task-relay-ungranted";
+        let _published = Published(instance);
+        let (port, _heard) = asking_member().await;
+        let rig = rig_tools(instance, port, asking_tools(port, false), &|app| app);
+        let (_, task_id) = create(&rig).await;
+        let failed = until(&rig, &task_id, "failed").await;
+        assert!(
+            failed["result"]["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("grants.elicitation")),
+            "{failed}"
+        );
+        assert!(failed["result"].get("inputRequests").is_none(), "{failed}");
+    }
 }
 
 /// THE HOOK PARITY BATTERY ON THE DRIVER (BUSBAR-1.6.0.md Part 3 section 12 "Hooks": the hook stages
@@ -4506,6 +4615,192 @@ mod program_member {
             fact(&second, "pongs"),
             "1",
             "the child's own request was answered once: {second}"
+        );
+    }
+}
+
+/// LAW 11 FOR A STDIO CHILD (ARCHITECT Q6), end to end through the composed door and the real
+/// connector. RED against the deleted reply ("no satisfier for that ask on the stdio leg ... not
+/// proxied to busbar's caller"), which answered a granted ask on the caller's behalf: the child's
+/// `sampling/createMessage`, read while its call is in flight, reaches the caller verbatim under
+/// busbar's sealed state (correlated with `work.*`); the caller's retry writes its answer to the
+/// child under the child's own id and the call the child still owed is answered; a partial answer,
+/// a spent state and a forged one are refused; an ungranted ask is refused on the child's input.
+#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+mod program_member_ask {
+    use axum::http::StatusCode;
+
+    use super::tool_door::{rig_tools, send, tool_digest, tool_listing, CALL};
+    use crate::root::serve::planes_tests::{Published, PUBLISHING};
+
+    /// The server, as a shell script: each call is held while it asks busbar's caller for a
+    /// completion (`srv-ask-<n>`), and answered with what came back on its input (the text of the
+    /// answer, or the reason it was refused).
+    fn script() -> String {
+        let listing = tool_listing().to_string().replace('\'', "'\\''");
+        r#"calls=0; pending=""
+L='__LISTING__'
+while IFS= read -r l; do
+  id=$(printf '%s' "$l" | sed -n 's/.*"id":\([0-9]\{10,\}\).*/\1/p')
+  case "$l" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"s","version":"1"}}}\n' "$id" ;;
+    *'"method":"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":%s}}\n' "$id" "$L" ;;
+    *'"method":"tools/call"'*) calls=$((calls+1)); pending=$id; printf '{"jsonrpc":"2.0","id":"srv-ask-%s","method":"sampling/createMessage","params":{"messages":[{"role":"user","content":{"type":"text","text":"Draft it."}}],"maxTokens":64}}\n' "$calls" ;;
+    *'"srv-ask-'*) got=$(printf '%s' "$l" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p'); [ -n "$got" ] || got=$(printf '%s' "$l" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p'); printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"answered with %s"}]}}\n' "$pending" "$got" ;;
+  esac
+done
+"#
+        .replace("__LISTING__", &listing)
+    }
+
+    /// The section: one registration that is the program above, its one tool approved, the sampling
+    /// ask granted as a relay permission or not.
+    fn section(granted: bool) -> serde_yaml::Value {
+        let mut fs = serde_yaml::Mapping::new();
+        fs.insert("transport".into(), "stdio".into());
+        fs.insert("command".into(), "/bin/sh".into());
+        fs.insert(
+            "args".into(),
+            serde_yaml::Value::Sequence(vec!["-c".into(), script().into()]),
+        );
+        fs.insert(
+            "pin".into(),
+            serde_yaml::from_str("{ mechanism: pinned_pubkey, key: \"sha256/K=\" }").unwrap(),
+        );
+        fs.insert(
+            "grants".into(),
+            serde_yaml::from_str(&format!("{{ sampling: {granted} }}")).unwrap(),
+        );
+        fs.insert(
+            "tools_allow".into(),
+            serde_yaml::from_str(&format!(
+                "{{ read_file: {{ schema_hash: \"{}\" }} }}",
+                tool_digest()
+            ))
+            .unwrap(),
+        );
+        let mut tools = serde_yaml::Mapping::new();
+        tools.insert("fs".into(), serde_yaml::Value::Mapping(fs));
+        serde_yaml::Value::Mapping(tools)
+    }
+
+    /// One call of `body` through `rig`'s door: the status and the JSON-RPC body.
+    async fn call(
+        router: &axum::Router,
+        token: &str,
+        body: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let (status, body) = send(router, Some(token), body).await;
+        (
+            status,
+            serde_json::from_slice(&body).expect("a JSON-RPC answer"),
+        )
+    }
+
+    /// The call's retry: `answers` and the state it was handed.
+    fn retry(answers: serde_json::Value, state: &str) -> String {
+        let mut body: serde_json::Value = serde_json::from_str(CALL).expect("the call");
+        body["params"]["inputResponses"] = answers;
+        body["params"]["requestState"] = state.into();
+        body.to_string()
+    }
+
+    /// The caller's completion.
+    fn draft() -> serde_json::Value {
+        serde_json::json!({ "role": "assistant", "content": { "type": "text", "text": "the callers own draft" }, "model": "m" })
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_childs_ask_reaches_the_caller_verbatim_and_its_answer_reaches_the_child() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-program-ask";
+        let _published = Published(instance);
+        let rig = rig_tools(instance, 0, section(true), &|app| app);
+
+        // THE ASK reaches the caller verbatim, under busbar's sealed state.
+        let (status, body) = call(&rig.router, &rig.token, CALL).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["id"], 30, "{body}");
+        assert_eq!(body["result"]["resultType"], "input_required", "{body}");
+        assert_eq!(
+            body["result"]["inputRequests"]["srv-ask-1"],
+            serde_json::json!({"method": "sampling/createMessage", "params": {"messages": [{"role": "user", "content": {"type": "text", "text": "Draft it."}}], "maxTokens": 64}}),
+            "the child's request, verbatim: {body}"
+        );
+        let state = body["result"]["requestState"]
+            .as_str()
+            .expect("busbar's sealed state")
+            .to_string();
+
+        // THE ANSWER reaches the child under its own id, and the call it owed is answered.
+        let answered = retry(serde_json::json!({ "srv-ask-1": draft() }), &state);
+        let (status, body) = call(&rig.router, &rig.token, &answered).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["result"]["content"][0]["text"], "answered with the callers own draft",
+            "{body}"
+        );
+
+        // RED: a spent state, and a forged one, are refused.
+        let (status, body) = call(&rig.router, &rig.token, &answered).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "a spent state: {body}");
+        let (status, body) = call(
+            &rig.router,
+            &rig.token,
+            &retry(serde_json::json!({ "srv-ask-1": draft() }), "forged"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "a forged state: {body}");
+        assert_eq!(
+            body["error"]["data"]["reason"], "ask_unsolicited_state",
+            "{body}"
+        );
+
+        // RED: busbar answers none of the child's requests itself, so a retry that leaves one
+        // unanswered is refused, unspent; the whole answer then goes through.
+        let (status, body) = call(&rig.router, &rig.token, CALL).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let state = body["result"]["requestState"]
+            .as_str()
+            .expect("busbar's sealed state")
+            .to_string();
+        assert!(
+            body["result"]["inputRequests"].get("srv-ask-2").is_some(),
+            "{body}"
+        );
+        let (status, body) = call(
+            &rig.router,
+            &rig.token,
+            &retry(serde_json::json!({}), &state),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error"]["data"]["reason"], "ask_unanswered", "{body}");
+        let (status, body) = call(
+            &rig.router,
+            &rig.token,
+            &retry(serde_json::json!({ "srv-ask-2": draft() }), &state),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["result"]["content"][0]["text"], "answered with the callers own draft",
+            "{body}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_ungranted_childs_ask_is_refused_on_its_input_and_never_relayed() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-program-ask-ungranted";
+        let _published = Published(instance);
+        let rig = rig_tools(instance, 0, section(false), &|app| app);
+        let (status, body) = call(&rig.router, &rig.token, CALL).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["result"].get("inputRequests").is_none(), "{body}");
+        assert_eq!(
+            body["result"]["content"][0]["text"], "answered with ask_ungranted",
+            "the child was refused on its input, by the operator's grant: {body}"
         );
     }
 }

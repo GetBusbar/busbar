@@ -424,7 +424,10 @@ fn a_granted_roots_ask_is_relayed_to_the_caller_as_it_came() {
             child,
         } => {
             assert_eq!(round, 0);
-            assert_eq!(child, None, "an `input_required` result is not a child's request");
+            assert_eq!(
+                child, None,
+                "an `input_required` result is not a child's request"
+            );
             let sent: Value = serde_json::from_str(far).expect("json");
             assert_eq!(
                 result, sent["result"],

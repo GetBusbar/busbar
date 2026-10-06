@@ -357,8 +357,7 @@ fn owe(member: &str, relay: &mut ProgramRelay) {
         let owed: Vec<(Vec<u8>, Option<u64>)> =
             relay.corr.outbox.drain(..).map(|r| (r, None)).collect();
         relay.replying = Some(
-            ProgramExchange::new(member, door::NEED_PROGRAM, owed, false)
-                .only_on(relay.generation),
+            ProgramExchange::new(member, door::NEED_PROGRAM, owed, false).only_on(relay.generation),
         );
         relay.replies += 1;
     }

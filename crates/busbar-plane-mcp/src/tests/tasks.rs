@@ -452,12 +452,21 @@ fn a_task_parked_on_its_upstreams_ask_hands_the_answers_back_once() {
         Value::Object(requests.clone()),
         "the upstream's requests, verbatim"
     );
-    assert!(t.deliver(&serde_json::from_value(json!({"draft": {"x": 1}})).unwrap(), 6));
+    assert!(t.deliver(
+        &serde_json::from_value(json!({"draft": {"x": 1}})).unwrap(),
+        6
+    ));
     assert_eq!(t.take_relay(), None, "one key is still unanswered");
     assert_eq!(t.status(), Status::InputRequired);
-    assert!(t.deliver(&serde_json::from_value(json!({"ok": {"action": "accept"}})).unwrap(), 7));
+    assert!(t.deliver(
+        &serde_json::from_value(json!({"ok": {"action": "accept"}})).unwrap(),
+        7
+    ));
     assert_eq!(t.status(), Status::Working);
-    assert!(t.answers().is_empty(), "an upstream's answers are never arguments");
+    assert!(
+        t.answers().is_empty(),
+        "an upstream's answers are never arguments"
+    );
     let park = t.take_relay().expect("the park, answered");
     assert_eq!(park.state, "sealed");
     assert_eq!(park.params, json!({"name": "fs_x"}));

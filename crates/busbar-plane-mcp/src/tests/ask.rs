@@ -469,12 +469,16 @@ fn a_childs_relayed_ask_is_answered_whole_by_the_caller_and_spent_once() {
         responses: Some(&partial),
         state: Some(&state),
     };
-    let AskDecision::Refuse(refused) = decide(&[], 3, &caps(), retry, bind("k"), "d", Some(&mut seal))
+    let AskDecision::Refuse(refused) =
+        decide(&[], 3, &caps(), retry, bind("k"), "d", Some(&mut seal))
     else {
         panic!("a partial answer is refused");
     };
     assert_eq!(refused.audit_reason(), "ask_unanswered");
-    assert!(refused.to_string().contains('9'), "names the unanswered key: {refused}");
+    assert!(
+        refused.to_string().contains('9'),
+        "names the unanswered key: {refused}"
+    );
     // Not spent: the caller answers the rest and the retry goes through, once.
     let whole = json!({ "srv-1": { "action": "accept" }, "9": { "roots": [] } });
     let retry = Retry {

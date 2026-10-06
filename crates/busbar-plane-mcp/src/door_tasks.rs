@@ -637,7 +637,9 @@ pub(super) fn continuation_asked(
     let Some(TaskUnit::Run(mut run)) = unit.task.take() else {
         return Step::Declined;
     };
-    let step = asking(plane, ticket, principal, unit, &mut run, result, round, child, asked);
+    let step = asking(
+        plane, ticket, principal, unit, &mut run, result, round, child, asked,
+    );
     unit.task = Some(TaskUnit::Run(run));
     step
 }
@@ -848,8 +850,12 @@ fn relayed_leg(
         pending: false,
     };
     let now = seal.now();
-    let opened =
-        crate::ask::open_relayed(&retry.state, relay_bind(principal, name, now), &digest, &mut seal);
+    let opened = crate::ask::open_relayed(
+        &retry.state,
+        relay_bind(principal, name, now),
+        &digest,
+        &mut seal,
+    );
     if seal.pending {
         return Poll::Pending;
     }
@@ -942,7 +948,8 @@ fn running(
                         Poll::Ready(
                             Ok(true)
                             | Err(
-                                ServiceError::Declined(AbiOutcome::Refused) | ServiceError::Unserved,
+                                ServiceError::Declined(AbiOutcome::Refused)
+                                | ServiceError::Unserved,
                             ),
                         ) => {}
                         Poll::Ready(_) => return not_run(unit, run),
@@ -1167,12 +1174,12 @@ fn call(
         if let Some(state) = &leg.state {
             continuation.insert("requestState".into(), state.clone());
         }
-        RelayedRetry {
+        Box::new(RelayedRetry {
             member: leg.member.clone(),
             round: leg.round,
             continuation: Value::Object(continuation),
             child: leg.child.clone(),
-        }
+        })
     });
     let round = relay.as_ref().map_or(0, |r| r.round);
     let admitted = AdmittedCall {

@@ -199,14 +199,24 @@ fn a_granted_ask_is_taken_for_the_caller_and_never_answered_here() {
         .iter()
         .map(|r| serde_json::from_slice(r).unwrap())
         .collect();
-    assert_eq!(replies.len(), 2, "busbar answered only the ping and the refusal");
+    assert_eq!(
+        replies.len(),
+        2,
+        "busbar answered only the ping and the refusal"
+    );
     assert!(
         replies.iter().all(|r| r["id"] != json!("srv-1")),
         "busbar wrote nothing for the granted ask: {replies:?}"
     );
     assert_eq!(replies[0]["id"], json!(4));
-    assert_eq!(replies[0]["error"]["data"]["reason"], json!("ask_ungranted"));
-    assert_eq!(replies[1], json!({"jsonrpc": "2.0", "id": "p", "result": {}}));
+    assert_eq!(
+        replies[0]["error"]["data"]["reason"],
+        json!("ask_ungranted")
+    );
+    assert_eq!(
+        replies[1],
+        json!({"jsonrpc": "2.0", "id": "p", "result": {}})
+    );
 }
 
 /// An exchange of the door's own (a greeting, a tool list) relays no call: it neither takes nor
@@ -220,8 +230,10 @@ fn an_exchange_of_the_doors_own_leaves_a_granted_ask_for_the_call() {
         },
         ..Door::default()
     };
-    let ask = bytes(&json!({"jsonrpc": "2.0", "id": 5, "method": "elicitation/create",
-                            "params": {"message": "ok?"}}));
+    let ask = bytes(
+        &json!({"jsonrpc": "2.0", "id": 5, "method": "elicitation/create",
+                            "params": {"message": "ok?"}}),
+    );
     let mut own = Correlator::default();
     assert_eq!(own.take(&ask, 1, "srv", 1, &mut door), Ok(None));
     assert!(own.asks.is_empty() && own.outbox.is_empty());
@@ -250,7 +262,10 @@ fn the_childs_asks_go_out_verbatim_and_the_answers_come_back_under_its_ids() {
     assert_eq!(result["inputRequests"]["7"], asks[1].request);
     assert_eq!(
         keys,
-        vec![("srv-1".to_string(), json!("srv-1")), ("7".to_string(), json!(7))]
+        vec![
+            ("srv-1".to_string(), json!("srv-1")),
+            ("7".to_string(), json!(7))
+        ]
     );
     let leg = crate::ask::ChildLeg {
         generation: 1,
@@ -258,7 +273,8 @@ fn the_childs_asks_go_out_verbatim_and_the_answers_come_back_under_its_ids() {
         asks: keys,
         work: None,
     };
-    let answers = json!({"srv-1": {"action": "accept", "content": {"ok": true}}, "7": {"roots": []}});
+    let answers =
+        json!({"srv-1": {"action": "accept", "content": {"ok": true}}, "7": {"roots": []}});
     let replies: Vec<Value> = child_replies(&leg, Some(&answers))
         .iter()
         .map(|r| serde_json::from_slice(r).unwrap())

@@ -1905,11 +1905,11 @@ fn relay_ask(
 ) -> Relayed {
     let server = relay.admitted.entry.server.clone();
     let ids = |c: &crate::ask::ChildLeg| c.asks.iter().map(|(_, id)| id.clone()).collect();
-    let refused = |child: Option<crate::ask::ChildLeg>, refusal: crate::call::AskRefusal| match child
-    {
-        Some(c) => Relayed::RefuseChild(ids(&c), refusal),
-        None => Relayed::Answer(crate::call::ask_refused(&relay.admitted, &refusal)),
-    };
+    let refused =
+        |child: Option<crate::ask::ChildLeg>, refusal: crate::call::AskRefusal| match child {
+            Some(c) => Relayed::RefuseChild(ids(&c), refusal),
+            None => Relayed::Answer(crate::call::ask_refused(&relay.admitted, &refusal)),
+        };
     let no_sealer = crate::call::AskRefusal::NoSealer {
         server: server.clone(),
     };

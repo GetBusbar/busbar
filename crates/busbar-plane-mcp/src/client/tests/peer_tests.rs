@@ -247,7 +247,10 @@ fn a_granted_ask_is_relayed_and_never_answered_by_busbar() {
         roots: true,
     };
     for (verb, ask) in [
-        (ServerRequestVerb::SamplingCreateMessage, ServerAsk::Sampling),
+        (
+            ServerRequestVerb::SamplingCreateMessage,
+            ServerAsk::Sampling,
+        ),
         (ServerRequestVerb::ElicitationCreate, ServerAsk::Elicitation),
         (ServerRequestVerb::RootsList, ServerAsk::Roots),
     ] {
@@ -263,7 +266,13 @@ fn a_granted_ask_is_relayed_and_never_answered_by_busbar() {
             ask.key()
         );
         assert!(
-            answer(&serde_json::json!(1), verb, &ServerRequestGrants::default(), "fs").is_some(),
+            answer(
+                &serde_json::json!(1),
+                verb,
+                &ServerRequestGrants::default(),
+                "fs"
+            )
+            .is_some(),
             "an ungranted ask is still refused"
         );
     }
@@ -277,10 +286,7 @@ fn each_grant_opens_only_its_own_ask() {
         roots: true,
         ..ServerRequestGrants::default()
     };
-    assert_eq!(
-        decide_ask(ServerAsk::Roots, &roots_only),
-        AskOutcome::Relay
-    );
+    assert_eq!(decide_ask(ServerAsk::Roots, &roots_only), AskOutcome::Relay);
     assert_eq!(
         decide_ask(ServerAsk::Sampling, &roots_only),
         AskOutcome::Ungranted

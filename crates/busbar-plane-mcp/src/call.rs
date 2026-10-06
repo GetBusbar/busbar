@@ -204,7 +204,7 @@ pub struct AdmittedCall {
     /// THE RETRY OF A RELAYED UPSTREAM ASK: the member that asked (the call goes back to it and no
     /// other) and the continuation it is sent (the caller's `inputResponses` and the upstream's own
     /// `requestState`, verbatim). `None` for every other call.
-    pub relay: Option<RelayedRetry>,
+    pub relay: Option<Box<RelayedRetry>>,
 }
 
 /// A relayed ask's retry: where it goes and what it carries.
@@ -549,12 +549,12 @@ pub fn admit_trusted(
             if let Some(state) = leg.state {
                 continuation.insert("requestState".to_string(), state);
             }
-            relay = Some(RelayedRetry {
+            relay = Some(Box::new(RelayedRetry {
                 member: leg.member,
                 round: leg.round,
                 continuation: Value::Object(continuation),
                 child: leg.child,
-            });
+            }));
         }
         crate::ask::AskDecision::Refuse(refusal) => {
             return Admission::Refused(
