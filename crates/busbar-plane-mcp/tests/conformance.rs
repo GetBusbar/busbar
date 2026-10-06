@@ -2464,7 +2464,7 @@ mod both_ways {
         assert_eq!(ask.status, 403);
         assert_eq!(
             document(&ask.reply)["error"]["data"]["reason"],
-            json!("ask_unsatisfiable")
+            json!("ask_no_sealer")
         );
     }
 

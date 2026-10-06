@@ -371,6 +371,7 @@ fn a_relayed_asks_retry_is_pinned_spent_once_and_bound_to_its_caller() {
         member: "fs".into(),
         state: Some(json!("upstream-state")),
         round: 1,
+        child: None,
     };
     let state = relay_state(bind("k"), "d", leg.clone(), &mut seal).expect("sealed");
     let answers = json!({ "r": { "roots": [] } });
@@ -437,4 +438,125 @@ fn the_relayed_result_keeps_the_upstreams_requests_verbatim() {
     assert_eq!(body["id"], json!(7));
     assert_eq!(body["result"]["inputRequests"], upstream["inputRequests"]);
     assert_eq!(body["result"]["requestState"], json!("ours"));
+}
+
+/// A stdio child's two requests, relayed: the keys the caller was handed, the child's own ids.
+fn child_leg() -> UpstreamLeg {
+    UpstreamLeg {
+        member: "fs".into(),
+        state: None,
+        round: 1,
+        child: Some(ChildLeg {
+            generation: 3,
+            wait: 77,
+            asks: vec![("srv-1".into(), json!("srv-1")), ("9".into(), json!(9))],
+            work: Some("ab".repeat(16)),
+        }),
+    }
+}
+
+/// LAW 11, A STDIO CHILD'S OWN REQUESTS (ARCHITECT Q6): busbar writes none of them, so a retry that
+/// leaves one unanswered is refused (`ask_unanswered`) BEFORE its state is spent, and the caller can
+/// still answer it; the complete retry is the relayed retry, carrying the child's leg, spent once.
+/// RED: a forged state, and a spent one, are refused.
+#[test]
+fn a_childs_relayed_ask_is_answered_whole_by_the_caller_and_spent_once() {
+    let mut seal = Plain::default();
+    let leg = child_leg();
+    let state = relay_state(bind("k"), "d", leg.clone(), &mut seal).expect("sealed");
+    let partial = json!({ "srv-1": { "action": "accept" } });
+    let retry = Retry {
+        responses: Some(&partial),
+        state: Some(&state),
+    };
+    let AskDecision::Refuse(refused) = decide(&[], 3, &caps(), retry, bind("k"), "d", Some(&mut seal))
+    else {
+        panic!("a partial answer is refused");
+    };
+    assert_eq!(refused.audit_reason(), "ask_unanswered");
+    assert!(refused.to_string().contains('9'), "names the unanswered key: {refused}");
+    // Not spent: the caller answers the rest and the retry goes through, once.
+    let whole = json!({ "srv-1": { "action": "accept" }, "9": { "roots": [] } });
+    let retry = Retry {
+        responses: Some(&whole),
+        state: Some(&state),
+    };
+    assert_eq!(
+        decide(&[], 3, &caps(), retry, bind("k"), "d", Some(&mut seal)),
+        AskDecision::Relayed(leg)
+    );
+    assert_eq!(
+        decide(&[], 3, &caps(), retry, bind("k"), "d", Some(&mut seal)),
+        AskDecision::Refuse(AskRefusal::StateRejected(Rejected::AlreadySpent)),
+        "a spent state is refused"
+    );
+    let forged = Retry {
+        responses: Some(&whole),
+        state: Some("forged"),
+    };
+    assert_eq!(
+        decide(&[], 3, &caps(), forged, bind("k"), "d", Some(&mut seal)),
+        AskDecision::Refuse(AskRefusal::Unsolicited {
+            capability: "fs_confirm".into()
+        }),
+        "a forged state is no relayed retry"
+    );
+}
+
+/// THE TASK PATH'S RETRY (ARCHITECT Q6): the state `tasks/update` carries back is opened, bound to
+/// its principal and call, and spent once; a forged state, a spent one, another caller's, and a
+/// state of busbar's own ask (no upstream leg) are refused.
+#[test]
+fn a_tasks_relayed_state_opens_once_for_its_caller_and_call() {
+    let mut seal = Plain::default();
+    let leg = UpstreamLeg {
+        member: "fs".into(),
+        state: Some(json!("theirs")),
+        round: 1,
+        child: None,
+    };
+    let state = relay_state_for(bind("k"), "d", leg.clone(), 86_400, &mut seal).expect("sealed");
+    // A day later the state still stands: a task waits on a human.
+    let later = Bind {
+        now: 100 + 86_000,
+        ..bind("k")
+    };
+    assert_eq!(open_relayed(&state, later, "d", &mut seal), Ok(leg));
+    assert_eq!(
+        open_relayed(&state, bind("k"), "d", &mut seal),
+        Err(Rejected::AlreadySpent)
+    );
+    let mut fresh = Plain::default();
+    assert_eq!(
+        open_relayed(&state, bind("other"), "d", &mut fresh),
+        Err(Rejected::WrongPrincipal)
+    );
+    assert_eq!(
+        open_relayed(&state, bind("k"), "e", &mut fresh),
+        Err(Rejected::WrongRequest)
+    );
+    assert_eq!(
+        open_relayed("forged", bind("k"), "d", &mut fresh),
+        Err(Rejected::BadSignature)
+    );
+    let own = seal
+        .mint(&AskState {
+            principal: "k".into(),
+            method: "tools/call".into(),
+            capability: "fs_confirm".into(),
+            args_digest: "d".into(),
+            generation: 1,
+            round: 0,
+            nonce: "own".into(),
+            issued_at: 100,
+            ttl_secs: 300,
+            roots_epoch: None,
+            upstream: None,
+        })
+        .expect("sealed");
+    assert_eq!(
+        open_relayed(&own, bind("k"), "d", &mut fresh),
+        Err(Rejected::WrongRequest),
+        "busbar's own ask is not a relayed one"
+    );
 }

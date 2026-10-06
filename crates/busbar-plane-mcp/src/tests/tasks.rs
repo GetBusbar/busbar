@@ -433,3 +433,41 @@ fn the_run_digest_names_the_call() {
         run_digest(&json!({ "name": "fs_read", "arguments": { "path": "/a" } }))
     );
 }
+
+/// LAW 11 ON THE TASK PATH (ARCHITECT Q6): a task parked on its upstream's ask is `input_required`
+/// with the upstream's `inputRequests` verbatim; the caller's answers are kept for the retry and
+/// never merged into the tool's arguments; the park is taken once, when every key is answered.
+#[test]
+fn a_task_parked_on_its_upstreams_ask_hands_the_answers_back_once() {
+    let mut t = task("k");
+    let requests: Map<String, Value> = serde_json::from_value(json!({
+        "draft": {"method": "sampling/createMessage", "params": {"maxTokens": 9}},
+        "ok": {"method": "elicitation/create", "params": {"message": "sure?"}},
+    }))
+    .unwrap();
+    t.park_relay(&requests, "sealed".into(), json!({"name": "fs_x"}), 5);
+    assert_eq!(t.status(), Status::InputRequired);
+    assert_eq!(
+        t.detailed()["inputRequests"],
+        Value::Object(requests.clone()),
+        "the upstream's requests, verbatim"
+    );
+    assert!(t.deliver(&serde_json::from_value(json!({"draft": {"x": 1}})).unwrap(), 6));
+    assert_eq!(t.take_relay(), None, "one key is still unanswered");
+    assert_eq!(t.status(), Status::InputRequired);
+    assert!(t.deliver(&serde_json::from_value(json!({"ok": {"action": "accept"}})).unwrap(), 7));
+    assert_eq!(t.status(), Status::Working);
+    assert!(t.answers().is_empty(), "an upstream's answers are never arguments");
+    let park = t.take_relay().expect("the park, answered");
+    assert_eq!(park.state, "sealed");
+    assert_eq!(park.params, json!({"name": "fs_x"}));
+    assert_eq!(park.responses["draft"], json!({"x": 1}));
+    assert_eq!(park.responses["ok"], json!({"action": "accept"}));
+    assert_eq!(t.take_relay(), None, "taken once");
+    // A cancelled task parks nothing.
+    let mut gone = task("k");
+    assert!(gone.cancel(8));
+    gone.park_relay(&requests, "sealed".into(), json!({}), 9);
+    assert_eq!(gone.status(), Status::Cancelled);
+    assert_eq!(gone.take_relay(), None);
+}

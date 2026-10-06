@@ -140,6 +140,32 @@ pub struct UpstreamLeg {
     /// The upstream rounds relayed so far: the next request is round `round`.
     #[serde(rename = "r")]
     pub round: u32,
+    /// A STDIO CHILD'S OWN REQUESTS, relayed: present only when the ask was the child's JSON-RPC
+    /// request read while its call was in flight (not an `input_required` result). The retry
+    /// answers each on the child's input under the child's own id, then reads on for the call.
+    #[serde(rename = "c", default, skip_serializing_if = "Option::is_none")]
+    pub child: Option<ChildLeg>,
+}
+
+/// THE CHILD'S SIDE OF A RELAYED ASK (spec Part 3 B.3 item 10: across separate HTTP arrivals the
+/// ask is correlated with `work.*`): the child generation that asked (an answer is never written to
+/// the next), the id of the call the child still owes an answer to, each `inputRequests` key the
+/// caller was handed with the child's own request id, and the reference of the work handle the
+/// exchange is correlated under.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ChildLeg {
+    /// The generation of the child that asked.
+    #[serde(rename = "g")]
+    pub generation: u64,
+    /// The id of the call in flight on the child.
+    #[serde(rename = "w")]
+    pub wait: u64,
+    /// `(inputRequests key, the child's request id)`, in the order the child asked.
+    #[serde(rename = "i")]
+    pub asks: Vec<(String, Value)>,
+    /// The work handle's reference (`work.open`), once one is opened.
+    #[serde(rename = "h", default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<String>,
 }
 
 /// Why a presented `requestState` was refused.
@@ -480,6 +506,15 @@ pub fn decide(
                 ) {
                     return AskDecision::Refuse(AskRefusal::StateRejected(e));
                 }
+                // A CHILD'S REQUESTS are each answered on its input, and busbar writes none of
+                // them itself: a retry that leaves one unanswered is refused before the state is
+                // spent, so the caller can still answer it.
+                if let Some(missing) = leg.child.as_ref().and_then(|c| unanswered(c, retry)) {
+                    return AskDecision::Refuse(AskRefusal::Unanswered {
+                        capability: capability(),
+                        missing,
+                    });
+                }
                 let expires_at = opened.issued_at.saturating_add(opened.ttl_secs);
                 if !sealer.redeem(&opened.nonce, expires_at, bind.now) {
                     return AskDecision::Refuse(AskRefusal::StateRejected(Rejected::AlreadySpent));
@@ -646,6 +681,18 @@ pub fn input_required_result(id: &Value, asks: &[CallerAsk], request_state: &str
     serde_json::to_vec(&Value::Object(envelope)).unwrap_or_default()
 }
 
+/// The keys of a child's requests the retry did not answer, joined; `None` when it answered all.
+fn unanswered(child: &ChildLeg, retry: Retry<'_>) -> Option<String> {
+    let answered = retry.responses.and_then(Value::as_object);
+    let missing: Vec<&str> = child
+        .asks
+        .iter()
+        .map(|(key, _)| key.as_str())
+        .filter(|key| !answered.is_some_and(|m| m.contains_key(*key)))
+        .collect();
+    (!missing.is_empty()).then(|| missing.join(", "))
+}
+
 /// THE STATE A RELAYED UPSTREAM ASK IS ANSWERED UNDER: busbar's one sealed `requestState`, bound to
 /// the principal, the call (method, tool, arguments as the caller sent them) and the catalogue
 /// generation, nesting the member that asked and its own state. `None` when it cannot be sealed.
@@ -654,6 +701,20 @@ pub fn relay_state(
     bind: Bind<'_>,
     args_digest: &str,
     leg: UpstreamLeg,
+    seal: &mut dyn Seal,
+) -> Option<String> {
+    relay_state_for(bind, args_digest, leg, DEFAULT_TTL_SECS, seal)
+}
+
+/// [`relay_state`], standing `ttl_secs`: a task parked on its caller's answer waits as long as the
+/// task may stay active ([`crate::tool_tasks::ACTIVE_TASK_ABANDON_MS`]), not a request's replay
+/// window.
+#[must_use]
+pub fn relay_state_for(
+    bind: Bind<'_>,
+    args_digest: &str,
+    leg: UpstreamLeg,
+    ttl_secs: u64,
     seal: &mut dyn Seal,
 ) -> Option<String> {
     let nonce = seal.nonce()?;
@@ -666,10 +727,43 @@ pub fn relay_state(
         round: 0,
         nonce,
         issued_at: bind.now,
-        ttl_secs: DEFAULT_TTL_SECS,
+        ttl_secs,
         roots_epoch: None,
         upstream: Some(leg),
     })
+}
+
+/// A RELAYED ASK'S STATE, presented on the task path's retry (the continuation `tasks/update` nests):
+/// opened, matched to the principal, the call and the generation it was sealed under, and spent
+/// once. The leg it nests, or why it was refused: a forged state does not open, a spent one does
+/// not redeem, and a state of busbar's own asks is not a relayed one.
+///
+/// # Errors
+///
+/// The first check it fails.
+pub fn open_relayed(
+    blob: &str,
+    bind: Bind<'_>,
+    args_digest: &str,
+    seal: &mut dyn Seal,
+) -> Result<UpstreamLeg, Rejected> {
+    let opened = seal.open(blob)?;
+    let Some(leg) = opened.upstream.clone() else {
+        return Err(Rejected::WrongRequest);
+    };
+    opened.matches(
+        bind.principal,
+        bind.method,
+        bind.capability,
+        args_digest,
+        bind.generation,
+        bind.now,
+    )?;
+    let expires_at = opened.issued_at.saturating_add(opened.ttl_secs);
+    if !seal.redeem(&opened.nonce, expires_at, bind.now) {
+        return Err(Rejected::AlreadySpent);
+    }
+    Ok(leg)
 }
 
 /// THE UPSTREAM'S `InputRequiredResult`, RELAYED: its result as it came (`inputRequests` verbatim),

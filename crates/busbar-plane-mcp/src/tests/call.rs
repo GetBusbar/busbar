@@ -418,8 +418,13 @@ fn an_ungranted_ask_is_refused_and_never_forwarded() {
 fn a_granted_roots_ask_is_relayed_to_the_caller_as_it_came() {
     let far = r#"{"jsonrpc":"2.0","id":0,"result":{"resultType":"input_required","inputRequests":{"r":{"method":"roots/list"}},"requestState":"s"}}"#;
     match settle_far(far) {
-        Settled::Relay { result, round } => {
+        Settled::Relay {
+            result,
+            round,
+            child,
+        } => {
             assert_eq!(round, 0);
+            assert_eq!(child, None, "an `input_required` result is not a child's request");
             let sent: Value = serde_json::from_str(far).expect("json");
             assert_eq!(
                 result, sent["result"],

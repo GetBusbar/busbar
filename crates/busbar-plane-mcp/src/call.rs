@@ -216,6 +216,9 @@ pub struct RelayedRetry {
     pub round: u32,
     /// `{inputResponses, requestState}`, the caller's answers and the upstream's state verbatim.
     pub continuation: Value,
+    /// A stdio child's own requests the caller answered: each answer goes back to the child under
+    /// its request id, and the call the child still owes is read on ([`crate::ask::ChildLeg`]).
+    pub child: Option<crate::ask::ChildLeg>,
 }
 
 /// What [`admit`] decided.
@@ -550,6 +553,7 @@ pub fn admit_trusted(
                 member: leg.member,
                 round: leg.round,
                 continuation: Value::Object(continuation),
+                child: leg.child,
             });
         }
         crate::ask::AskDecision::Refuse(refusal) => {
@@ -929,8 +933,9 @@ pub fn result(id: &Value, mut value: Value) -> Vec<u8> {
     serde_json::to_vec(&Value::Object(envelope)).unwrap_or_default()
 }
 
-/// Why busbar declined to carry an upstream's ask, in the engine's words. Every arm is
-/// busbar-attributed: the ask terminates at busbar and is never forwarded.
+/// Why busbar declined to carry an upstream's ask to its caller, in the engine's words. Every arm is
+/// busbar enforcing the operator's policy or the limits of the deployment; none answers the ask on
+/// the caller's behalf (Law 11).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AskRefusal {
     /// The operator granted this server nothing for this kind of ask.
@@ -947,12 +952,16 @@ pub enum AskRefusal {
         /// The cap.
         cap: u32,
     },
-    /// Busbar held the grant and still could not satisfy the ask.
-    Unsatisfiable {
+    /// The deployment cannot seal the state the relayed ask is answered under (no signing key).
+    NoSealer {
         /// The server.
         server: String,
-        /// The ask's kind.
-        kind: String,
+    },
+    /// The ask could not be carried to the caller: the work handle a stdio child's ask is
+    /// correlated under could not be opened.
+    Unavailable {
+        /// The server.
+        server: String,
         /// Why.
         reason: String,
     },
@@ -965,9 +974,8 @@ impl std::fmt::Display for AskRefusal {
                 f,
                 "MCP server `{server}` asked busbar to satisfy a `{kind}` request, and that grant \
                  is not held. Server-initiated asks are deny-by-default: set \
-                 `tools.{server}.grants.{kind}: true` if the operator intends this server to spend \
-                 busbar's authority that way. The ask was not forwarded to you — an upstream's ask \
-                 terminates at busbar."
+                 `tools.{server}.grants.{kind}: true` if the operator intends this server to put \
+                 that ask to its callers. The ask was not relayed."
             ),
             AskRefusal::RoundCapExceeded { server, cap } => write!(
                 f,
@@ -976,14 +984,17 @@ impl std::fmt::Display for AskRefusal {
                  indefinitely. Raise `tools.{server}.max_input_required_rounds` only if this \
                  exchange genuinely needs more rounds."
             ),
-            AskRefusal::Unsatisfiable {
-                server,
-                kind,
-                reason,
-            } => write!(
+            AskRefusal::NoSealer { server } => write!(
                 f,
-                "busbar holds the `{kind}` grant for MCP server `{server}` but could not satisfy \
-                 the ask: {reason}"
+                "MCP server `{server}` asked for input that would be relayed to you, but this \
+                 deployment has no `auth.signing_key` and cannot seal the `requestState` a relayed \
+                 ask is answered under. The ask is refused rather than relayed with unprotected \
+                 state."
+            ),
+            AskRefusal::Unavailable { server, reason } => write!(
+                f,
+                "the ask MCP server `{server}` made could not be relayed to busbar's caller: \
+                 {reason}"
             ),
         }
     }
@@ -996,7 +1007,8 @@ impl AskRefusal {
         match self {
             AskRefusal::Ungranted { .. } => "ask_ungranted",
             AskRefusal::RoundCapExceeded { .. } => "ask_round_cap",
-            AskRefusal::Unsatisfiable { .. } => "ask_unsatisfiable",
+            AskRefusal::NoSealer { .. } => "ask_no_sealer",
+            AskRefusal::Unavailable { .. } => "ask_unavailable",
         }
     }
 }
@@ -1021,6 +1033,9 @@ pub enum Settled {
         result: Value,
         /// The upstream round it asked on.
         round: u32,
+        /// A stdio child's own requests, when that is what asked: `result` is then their
+        /// `inputRequests`, each verbatim ([`crate::tool_program::relayed_asks`]).
+        child: Option<crate::ask::ChildLeg>,
     },
 }
 
@@ -1210,6 +1225,7 @@ fn judge_ask(
     Ok(Settled::Relay {
         result: payload.clone(),
         round,
+        child: None,
     })
 }
 
@@ -1218,6 +1234,13 @@ fn judge_ask(
 #[must_use]
 pub fn relayed_line(entry: &ToolEntry) -> CallLine {
     CallLine::resolved(entry, vocab::OUTCOME_DISPATCHED, REASON_ASK_RELAYED).asking(true)
+}
+
+/// The call-log line of a relayed ask's retry refused under `reason` (its state, or the work handle
+/// it is correlated under): audited as busbar's ask of its caller, rejected.
+#[must_use]
+pub fn retry_refused_line(entry: &ToolEntry, reason: &str) -> CallLine {
+    CallLine::resolved(entry, vocab::OUTCOME_REFUSED, reason).asking(false)
 }
 
 /// An upstream ask busbar declined: `403`, `-32000`, the refusal's words and reason.

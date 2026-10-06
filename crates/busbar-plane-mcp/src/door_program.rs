@@ -11,7 +11,11 @@
 //!   has not greeted, runs `initialize` and its acknowledgement.
 //! * The relayed `tools/call` goes over the kernel's walk on the member's route like any other
 //!   member's; its answer is the message carrying the unit's id among everything the child writes
-//!   ([`far`]), and a request of the child's own read on the way is answered on a lease of its own.
+//!   ([`far`]), and a request of the child's own read on the way is answered on a lease of its own
+//!   (`ping`, an unknown method, an ungranted ask) or, a granted authority ask, handed up as busbar's
+//!   caller's to answer ([`Far::Asked`], Law 11). The caller's answer comes back on a retry of the
+//!   call ([`ProgramRelay::retrying`]): written to the child under its own request id, and the call
+//!   the child still owes read on.
 //! * Verify-on-call's `tools/list` ([`tools_listed`]), an operator's `connect`, and a further round reach the
 //!   same child the same way.
 
@@ -58,6 +62,9 @@ pub(super) struct ProgramRelay {
     replies: u32,
     /// The answer (or why there is none), held while the replies are written.
     settled: Option<Result<Vec<u8>, String>>,
+    /// A retry answering the child's own requests: the generation that asked, which is the only one
+    /// its answers and its wait mean anything to.
+    expect: Option<u64>,
 }
 
 impl ProgramRelay {
@@ -66,13 +73,28 @@ impl ProgramRelay {
         ProgramRelay {
             wait,
             generation: 0,
-            corr: Correlator::default(),
+            corr: Correlator::relaying(),
             replying: None,
             replies: 0,
             settled: None,
+            expect: None,
         }
     }
+
+    /// THE RETRY OF A CHILD'S RELAYED ASK: the caller's answers after the first (which the walk's
+    /// own lease carries) owed on the child of `generation`, and the call `wait` it still owes read
+    /// on, on that generation only.
+    pub(super) fn retrying(wait: u64, generation: u64, rest: Vec<Vec<u8>>) -> Self {
+        let mut relay = ProgramRelay::waiting(wait);
+        relay.expect = Some(generation);
+        relay.corr.outbox.extend(rest);
+        relay
+    }
 }
+
+/// The sentence a retry fails with when the child that asked is gone.
+pub(super) const RESTARTED: &str = "the stdio MCP child that asked was restarted before the \
+                                    caller's answer reached it, so the call it was serving is gone";
 
 /// The door, as an exchange with member `member`'s child needs it.
 struct DoorPeer<'a> {
@@ -270,6 +292,9 @@ pub(super) enum Far {
     Pending,
     /// The answer to the call's id, or why there is none.
     Settled(Result<Vec<u8>, String>),
+    /// The child asked for something busbar's caller answers (Law 11): its granted requests, in
+    /// order, unanswered.
+    Asked(Vec<crate::tool_program::ChildAsk>),
 }
 
 /// ONE FAR PIECE of a stdio member's answer: the head names the child's generation; each body
@@ -290,6 +315,15 @@ pub(super) fn far(
     if relay.replying.is_none() && relay.settled.is_none() {
         if let Some(generation) = head {
             relay.generation = generation;
+            // A retry reaches only the child that asked: a restarted one owes nothing.
+            if relay.expect.is_some_and(|g| g != generation) {
+                relay.corr.outbox.clear();
+                relay.settled = Some(Err(RESTARTED.to_string()));
+                return match relay.settled.take() {
+                    Some(settled) => Far::Settled(settled),
+                    None => Far::Taken,
+                };
+            }
         }
         let mut peer = DoorPeer {
             plane,
@@ -305,16 +339,39 @@ pub(super) fn far(
             Ok(None) => {}
             Err(reason) => relay.settled = Some(Err(reason)),
         }
-        if !relay.corr.outbox.is_empty() {
-            let owed: Vec<(Vec<u8>, Option<u64>)> =
-                relay.corr.outbox.drain(..).map(|r| (r, None)).collect();
-            relay.replying = Some(
-                ProgramExchange::new(member, door::NEED_PROGRAM, owed, false)
-                    .only_on(relay.generation),
-            );
-            relay.replies += 1;
-        }
+        owe(member, relay);
     }
+    if replying(plane, ticket, member, def, relay) {
+        return Far::Pending;
+    }
+    match relay.settled.take() {
+        Some(settled) => Far::Settled(settled),
+        None if !relay.corr.asks.is_empty() => Far::Asked(std::mem::take(&mut relay.corr.asks)),
+        None => Far::Taken,
+    }
+}
+
+/// The replies the child is owed, put on an exchange of their own (to its generation only).
+fn owe(member: &str, relay: &mut ProgramRelay) {
+    if !relay.corr.outbox.is_empty() {
+        let owed: Vec<(Vec<u8>, Option<u64>)> =
+            relay.corr.outbox.drain(..).map(|r| (r, None)).collect();
+        relay.replying = Some(
+            ProgramExchange::new(member, door::NEED_PROGRAM, owed, false)
+                .only_on(relay.generation),
+        );
+        relay.replies += 1;
+    }
+}
+
+/// The replies' exchange driven: whether it pends.
+fn replying(
+    plane: &McpDoor,
+    ticket: Ticket,
+    member: &str,
+    def: &crate::tools_config::McpServerDefCfg,
+    relay: &mut ProgramRelay,
+) -> bool {
     if let Some(mut exchange) = relay.replying.take() {
         if let Some(host) = plane.host.as_ref() {
             let base = REPLY_SEQ.saturating_add(
@@ -324,13 +381,32 @@ pub(super) fn far(
             );
             if exchange_child(plane, host, ticket, base, member, def, &mut exchange).is_pending() {
                 relay.replying = Some(exchange);
-                return Far::Pending;
+                return true;
             }
         }
     }
-    match relay.settled.take() {
-        Some(settled) => Far::Settled(settled),
-        None => Far::Taken,
+    false
+}
+
+/// ASKS BUSBAR COULD NOT RELAY, refused on the child's input (`replies`, one per ask: the round
+/// cap, or a relay the deployment cannot carry) so the child is never left waiting on an answer
+/// nobody will give; the call it serves is read on. `Pending` while the replies are written.
+pub(super) fn refuse_asks(
+    plane: &McpDoor,
+    ticket: Ticket,
+    member: &str,
+    def: &crate::tools_config::McpServerDefCfg,
+    relay: &mut ProgramRelay,
+    replies: Vec<Vec<u8>>,
+) -> Far {
+    relay.corr.outbox.extend(replies);
+    if relay.replying.is_none() {
+        owe(member, relay);
+    }
+    if replying(plane, ticket, member, def, relay) {
+        Far::Pending
+    } else {
+        Far::Taken
     }
 }
 

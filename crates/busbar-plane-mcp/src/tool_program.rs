@@ -14,9 +14,12 @@
 //!   to another id is another exchange's and is passed over.
 //! * A message of the child's own is handled as the previous release handled it on the stdio leg
 //!   (`client::peer`): `notifications/progress` carrying this call's token is relayed; a list-changed
-//!   notification brings verify-on-call forward; every other notification is passed over; a
-//!   request (`ping`, an authority ask, an unknown method) is ANSWERED, once per child generation
-//!   whichever exchange read it first ([`Peer::claim`]), with the deny-by-default reply. At most
+//!   notification brings verify-on-call forward; every other notification is passed over; `ping`,
+//!   an unknown method and an UNGRANTED authority ask are ANSWERED (the empty result, `-32601`, the
+//!   operator's refusal), once per child generation whichever exchange read it first
+//!   ([`Peer::claim`]). A GRANTED authority ask is busbar's caller's to answer (Law 11): the
+//!   exchange relaying a call takes it ([`Correlator::asks`]) and busbar writes nothing back; an
+//!   exchange of the door's own leaves it for the call it belongs to. At most
 //!   [`MAX_INTERLEAVED_MESSAGES`] such messages per exchange.
 //! * `initialize` runs ONCE PER GENERATION of the child (the generation each lease's head names):
 //!   an exchange that opens on a generation the door has not greeted greets it first
@@ -150,6 +153,76 @@ pub struct Correlator {
     pub outbox: VecDeque<Vec<u8>>,
     /// The progress frames carrying this exchange's token, in order.
     pub progress: Vec<Value>,
+    /// This exchange relays a caller's call: a granted authority ask it reads is the caller's
+    /// ([`Self::asks`]), never answered here.
+    pub relays: bool,
+    /// THE CHILD'S GRANTED ASKS this exchange took, in order, for busbar's caller to answer.
+    pub asks: Vec<ChildAsk>,
+}
+
+/// ONE REQUEST OF A CHILD'S OWN, for busbar's caller to answer (Law 11): its id (the answer goes
+/// back under it) and the request as the child sent it, less its envelope.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChildAsk {
+    /// The child's request id, verbatim.
+    pub id: Value,
+    /// `{method, params}`, verbatim: the `inputRequests` entry the caller is handed.
+    pub request: Value,
+}
+
+impl Correlator {
+    /// The reading of an exchange that relays a caller's call ([`Self::relays`]).
+    #[must_use]
+    pub fn relaying() -> Self {
+        Correlator {
+            relays: true,
+            ..Correlator::default()
+        }
+    }
+}
+
+/// THE CHILD'S ASKS AS THE CALLER IS HANDED THEM: an `input_required` result whose `inputRequests`
+/// carries each request verbatim, keyed by the child's own id (a string id as it is, any other as
+/// its JSON), and the keys paired with the ids the answers go back under.
+#[must_use]
+pub fn relayed_asks(asks: &[ChildAsk]) -> (Value, Vec<(String, Value)>) {
+    let mut requests = serde_json::Map::new();
+    let mut keys = Vec::new();
+    for ask in asks {
+        let base = match &ask.id {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        let mut key = base.clone();
+        let mut n = 1;
+        while requests.contains_key(&key) {
+            n += 1;
+            key = format!("{base}#{n}");
+        }
+        requests.insert(key.clone(), ask.request.clone());
+        keys.push((key, ask.id.clone()));
+    }
+    let result = serde_json::json!({
+        "resultType": crate::jsonrpc::RESULT_TYPE_INPUT_REQUIRED,
+        "inputRequests": Value::Object(requests),
+    });
+    (result, keys)
+}
+
+/// THE CALLER'S ANSWERS, AS THE CHILD IS WRITTEN THEM: one JSON-RPC response per request it asked,
+/// under the child's own id, its `result` the caller's answer verbatim. A key the caller did not
+/// answer has no reply ([`crate::ask::decide`] refuses such a retry before it gets here).
+#[must_use]
+pub fn child_replies(child: &crate::ask::ChildLeg, responses: Option<&Value>) -> Vec<Vec<u8>> {
+    child
+        .asks
+        .iter()
+        .filter_map(|(key, id)| {
+            let answer = responses?.get(key)?;
+            serde_json::to_vec(&serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": answer }))
+                .ok()
+        })
+        .collect()
 }
 
 impl Correlator {
@@ -233,9 +306,26 @@ impl Correlator {
                 None
             }
             ServerMessage::UnknownNotification(_) => None,
+            // A GRANTED AUTHORITY ASK is the caller's (Law 11): the exchange relaying the call takes
+            // it, and one of the door's own leaves it unclaimed for that exchange to read.
+            ServerMessage::Request { id, verb }
+                if verb.ask().is_some_and(|ask| peer.grants().allows(ask)) =>
+            {
+                if self.relays && peer.claim(generation, &id) {
+                    let mut request = value.as_object().cloned().unwrap_or_default();
+                    request.remove("jsonrpc");
+                    request.remove("id");
+                    self.asks.push(ChildAsk {
+                        id,
+                        request: Value::Object(request),
+                    });
+                }
+                None
+            }
             ServerMessage::Request { id, verb } => peer
                 .claim(generation, &id)
-                .then(|| crate::client::peer::answer(&id, verb, &peer.grants(), member)),
+                .then(|| crate::client::peer::answer(&id, verb, &peer.grants(), member))
+                .flatten(),
             ServerMessage::UnknownRequest { id, method } => peer
                 .claim(generation, &id)
                 .then(|| crate::client::peer::method_not_found(&id, &method)),

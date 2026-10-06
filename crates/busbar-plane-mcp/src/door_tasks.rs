@@ -18,6 +18,14 @@
 //!   task's own rounds (`task_ask_caller`, answered through `tasks/update`), sends the call to the
 //!   member its walk picked, and settles the handle with the task's terminal state (`work.settle`).
 //!   A settle the handle refuses means `tasks/cancel` got there first.
+//! * AN UPSTREAM'S ASK, RELAYED (Law 11: busbar answers nothing on the caller's behalf; ARCHITECT
+//!   Q6): when the member answers the continuation's call with an `input_required` result, the task
+//!   parks `input_required` with the upstream's `inputRequests` verbatim, under busbar's sealed
+//!   state (bound to the principal, the tool and the member, nesting the upstream's own), and the
+//!   continuation ends with the handle live. The caller answers through `tasks/update`; once every
+//!   key is answered the update nests a NEW continuation ([`continuation_asked`], the retry): it
+//!   presents the state, which is opened, matched and spent once, binds the handle and sends the
+//!   call back to the SAME member with the caller's answers and the upstream's own state.
 //! * `tasks/get` is `work.find` plus what the instance holds of the task (or, when it holds none,
 //!   the result written in the plane's records); `tasks/update` delivers input and wakes the
 //!   continuation; `tasks/cancel` settles the handle `cancelled`, which the continuation observes
@@ -32,10 +40,10 @@ use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
 use serde_json::{json, Map, Value};
 
 use super::{
-    clock_s, twin_of, CallUnit, CompletionHandle, Held, McpDoor, Pending, Relay, Services, Step,
-    Ticket, Twin,
+    clock_s, twin_of, CallUnit, CompletionHandle, DoorSeal, Held, McpDoor, Pending, Relay,
+    Services, Step, Ticket, Twin,
 };
-use crate::call::{AdmittedCall, Leg};
+use crate::call::{AdmittedCall, Leg, RelayedRetry};
 use crate::door::RECORD_TASK;
 use crate::tool_arrival::Refusal;
 use crate::tool_tasks::{
@@ -52,14 +60,25 @@ pub(super) enum TaskUnit {
     Verb(Verb),
 }
 
+/// The caller's answer to a relayed ask, as the retry continuation carries it: busbar's sealed state
+/// and the caller's `inputResponses`.
+#[derive(Clone)]
+pub(super) struct Retry {
+    state: String,
+    responses: Value,
+}
+
 impl TaskUnit {
-    /// A continuation of task `reference`, running `params`.
-    pub(super) fn run(reference: String, params: Value) -> Self {
+    /// A continuation of task `reference`, running `params`; `retry` = the caller's answer to the
+    /// upstream's ask it carries back (the retry of a relayed ask).
+    pub(super) fn run(reference: String, params: Value, retry: Option<Retry>) -> Self {
         let digest = run_digest(&params);
         TaskUnit::Run(Box::new(Run {
             reference,
             params,
             digest,
+            retry,
+            leg: None,
             begun: false,
             phase: Phase::Bind,
             find: None,
@@ -109,6 +128,10 @@ pub(super) struct Run {
     /// The call it runs: the published name, the arguments as admitted, the caller's `_meta`.
     params: Value,
     digest: String,
+    /// The retry of a relayed ask: the state and the caller's answers it carries.
+    retry: Option<Retry>,
+    /// The upstream leg the retry's state opened to: the member it goes back to and its own state.
+    leg: Option<crate::ask::UpstreamLeg>,
     /// Its caller's body has arrived: its phases run.
     begun: bool,
     phase: Phase,
@@ -183,7 +206,7 @@ const PAGE: u32 = 64;
 const MAX_STRIKES: usize = 64;
 
 /// One span, blank.
-fn blank() -> ItemSpan {
+pub(super) fn blank() -> ItemSpan {
     let absent = Span {
         offset: SPAN_ABSENT,
         len: 0,
@@ -195,7 +218,7 @@ fn blank() -> ItemSpan {
 }
 
 /// The handle numbered `slot` on `ticket`: the number it was first issued under, or the unit's next.
-fn handle(ticket: Ticket, issued: &mut u32, slot: &mut Option<u32>) -> CompletionHandle {
+pub(super) fn handle(ticket: Ticket, issued: &mut u32, slot: &mut Option<u32>) -> CompletionHandle {
     let seq = *slot.get_or_insert_with(|| {
         let seq = *issued;
         *issued += 1;
@@ -262,21 +285,34 @@ pub(super) fn budget_refused(id: Option<Value>, message: &str) -> Refusal {
     }
 }
 
+/// What a continuation's arrival carries: its reference, the call it runs, that call as the
+/// `tools/call` body the one dispatch decides, and the caller's answer to a relayed ask it carries
+/// back (`None` for the task's first run).
+pub(super) type RunArrival = (String, Value, Vec<u8>, Option<Retry>);
+
 /// THE CONTINUATION'S ARRIVAL on the task-run claim: its reference, the call it runs, and that call
-/// as the `tools/call` body the one dispatch decides (its head fields mirrored from it). `None` for
-/// a body that is not one.
-pub(super) fn run_arrival(body: &[u8]) -> Option<(String, Value, Vec<u8>)> {
+/// as the `tools/call` body the one dispatch decides (its head fields mirrored from it), and — the
+/// retry of a relayed ask — `relay: {requestState, inputResponses}`. `None` for a body that is not
+/// one.
+pub(super) fn run_arrival(body: &[u8]) -> Option<RunArrival> {
     let value: Value = serde_json::from_slice(body).ok()?;
     let reference = value.get("taskId")?.as_str()?.to_string();
     let params = value.get("params")?.clone();
     params.get("name")?.as_str()?;
+    let retry = match value.get("relay") {
+        None => None,
+        Some(relay) => Some(Retry {
+            state: relay.get("requestState")?.as_str()?.to_string(),
+            responses: relay.get("inputResponses")?.clone(),
+        }),
+    };
     let call = json!({
         "jsonrpc": "2.0",
         "id": 0,
         "method": crate::codec::METHOD_TOOLS_CALL,
         "params": params,
     });
-    Some((reference, params, serde_json::to_vec(&call).ok()?))
+    Some((reference, params, serde_json::to_vec(&call).ok()?, retry))
 }
 
 /// The refused arrival of a continuation whose body names no task.
@@ -580,6 +616,125 @@ pub(super) fn resume(
 /// upstream failure or a refusal of an upstream's ask, `failed` — then the handle settled.
 /// `answered` is the length of the document a far end answered with (`None`: no far end answered),
 /// the tool call and the byte count the run reports.
+/// THE FAR END ASKED THE CONTINUATION'S CALLER (Law 11, ARCHITECT Q6), the ask granted
+/// ([`crate::call::settle_call`]): the task parks `input_required` with the upstream's `result`'s
+/// `inputRequests` verbatim under busbar's sealed state, bound to the principal, the tool (`digest`:
+/// the arguments as sent) and the member that asked, nesting the upstream's own state; the
+/// continuation ends with the handle live, and `tasks/update` answers it. A deployment that cannot
+/// seal the state fails the task in the refusal's words. `server` is the asking registration's,
+/// `answered` the length of the document it answered with.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn continuation_asked(
+    plane: &McpDoor,
+    ticket: Ticket,
+    principal: &str,
+    unit: &mut CallUnit,
+    result: &Value,
+    round: u32,
+    child: Option<crate::ask::ChildLeg>,
+    asked: (&str, &str, Option<usize>),
+) -> Step {
+    let Some(TaskUnit::Run(mut run)) = unit.task.take() else {
+        return Step::Declined;
+    };
+    let step = asking(plane, ticket, principal, unit, &mut run, result, round, child, asked);
+    unit.task = Some(TaskUnit::Run(run));
+    step
+}
+
+#[allow(clippy::too_many_arguments)]
+fn asking(
+    plane: &McpDoor,
+    ticket: Ticket,
+    principal: &str,
+    unit: &mut CallUnit,
+    run: &mut Run,
+    result: &Value,
+    round: u32,
+    child: Option<crate::ask::ChildLeg>,
+    (server, digest, answered): (&str, &str, Option<usize>),
+) -> Step {
+    if let Some(far) = answered {
+        run.answered = true;
+        run.far_bytes = run.far_bytes.saturating_add(far);
+    }
+    let Some(services) = plane.services else {
+        return not_run(unit, run);
+    };
+    let leg = crate::ask::UpstreamLeg {
+        member: unit.member.clone().unwrap_or_default(),
+        state: result.get("requestState").cloned(),
+        round: round.saturating_add(1),
+        child,
+    };
+    let name = run
+        .params
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let sealed = {
+        let mut seal = DoorSeal {
+            services,
+            ticket,
+            issued: &mut unit.issued,
+            claim: &mut unit.claim,
+            spent: &plane.spent,
+            pending: false,
+        };
+        let now = seal.now();
+        crate::ask::relay_state_for(
+            relay_bind(principal, &name, now),
+            digest,
+            leg,
+            tasks::TASK_RELAY_TTL_SECS,
+            &mut seal,
+        )
+    };
+    let Some(state) = sealed else {
+        run.end = Some(End::Failed(
+            crate::call::AskRefusal::NoSealer {
+                server: server.to_string(),
+            }
+            .to_string(),
+        ));
+        run.phase = Phase::Settle;
+        return running(plane, ticket, principal, unit, run);
+    };
+    let requests = result
+        .get("inputRequests")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let now = task_clock_ms(services, ticket, &mut unit.issued);
+    let params = run.params.clone();
+    let gone = plane.tasks.with(&run.reference, |t| match t {
+        Some(t) if !t.status().is_terminal() => {
+            t.park_relay(&requests, state, params, now);
+            t.runner = None;
+            None
+        }
+        Some(t) => Some(t.status()),
+        None => Some(Status::Cancelled),
+    });
+    // THE CONTINUATION ENDS with the handle live: the caller's answer runs the next one.
+    reply(unit, run, gone.unwrap_or(Status::InputRequired), Vec::new())
+}
+
+/// What a task's relayed-ask state is bound to: the principal, the tool (`name`, as published) and,
+/// in the state's leg, the member; not the catalogue generation, because a task parked on a human
+/// outlives a configuration move.
+fn relay_bind<'a>(principal: &'a str, name: &'a str, now: u64) -> crate::ask::Bind<'a> {
+    crate::ask::Bind {
+        principal,
+        method: crate::codec::METHOD_TOOLS_CALL,
+        capability: name,
+        generation: 0,
+        now,
+        roots_epoch: 0,
+    }
+}
+
 pub(super) fn continuation_answered(
     plane: &McpDoor,
     ticket: Ticket,
@@ -657,6 +812,50 @@ fn not_run(unit: &mut CallUnit, run: &mut Run) -> Step {
     Step::Write
 }
 
+/// THE RETRY'S STATE, opened ([`crate::ask::open_relayed`]): busbar's own, sealed for this
+/// principal and this task's tool over the arguments it sends (the admitted ones with busbar's own
+/// answers merged), nesting an upstream leg, and spent once. `None` for a state that is forged,
+/// spent, another caller's or another call's, or for a task that is not this principal's or has
+/// ended.
+fn relayed_leg(
+    plane: &McpDoor,
+    services: Services,
+    ticket: Ticket,
+    principal: &str,
+    unit: &mut CallUnit,
+    run: &Run,
+    retry: &Retry,
+) -> Poll<Option<crate::ask::UpstreamLeg>> {
+    let held = plane.tasks.get(&run.reference);
+    let Some(task) = held.filter(|t| t.owned_by(principal) && !t.status().is_terminal()) else {
+        return Poll::Ready(None);
+    };
+    let arguments = tasks::merge_answers(
+        &run.params
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        task.answers(),
+    );
+    let digest = crate::ask::digest_arguments(&arguments);
+    let name = run.params.get("name").and_then(Value::as_str).unwrap_or("");
+    let mut seal = DoorSeal {
+        services,
+        ticket,
+        issued: &mut unit.issued,
+        claim: &mut unit.claim,
+        spent: &plane.spent,
+        pending: false,
+    };
+    let now = seal.now();
+    let opened =
+        crate::ask::open_relayed(&retry.state, relay_bind(principal, name, now), &digest, &mut seal);
+    if seal.pending {
+        return Poll::Pending;
+    }
+    Poll::Ready(opened.ok())
+}
+
 #[allow(clippy::too_many_lines)]
 fn running(
     plane: &McpDoor,
@@ -705,36 +904,49 @@ fn running(
                         });
                     });
                 }
-                // THE RUN, TAKEN ONCE: the instance's own half, then the host's one-time claim.
+                // THE RUN, TAKEN ONCE: the instance's own half, then the host's one-time claim. The
+                // retry of a relayed ask is taken by its state instead, spent once.
                 if !run.local {
-                    let took = plane.tasks.with(&run.reference, |t| match t {
-                        Some(t) if !t.started && t.owned_by(principal) => {
-                            t.started = true;
-                            true
+                    if let Some(retry) = run.retry.clone() {
+                        match relayed_leg(plane, services, ticket, principal, unit, run, &retry) {
+                            Poll::Pending => return Step::Pending,
+                            Poll::Ready(Some(leg)) => run.leg = Some(leg),
+                            Poll::Ready(None) => return not_run(unit, run),
                         }
-                        _ => false,
-                    });
-                    if !took {
-                        return not_run(unit, run);
+                    } else {
+                        let took = plane.tasks.with(&run.reference, |t| match t {
+                            Some(t) if !t.started && t.owned_by(principal) => {
+                                t.started = true;
+                                true
+                            }
+                            _ => false,
+                        });
+                        if !took {
+                            return not_run(unit, run);
+                        }
                     }
                     run.local = true;
                 }
-                let h = handle(ticket, &mut unit.issued, &mut run.claim);
-                let key = format!("task-run:{}", run.reference);
-                match services.records_claim(
-                    h,
-                    crate::door::KIND_APPROVAL,
-                    key.as_bytes(),
-                    RUN_CLAIM_TTL_MS,
-                ) {
-                    Poll::Pending => return Step::Pending,
-                    // The host's ledger said this unit takes the run; or no store is bound, and the
-                    // instance's own half was the whole gate.
-                    Poll::Ready(
-                        Ok(true)
-                        | Err(ServiceError::Declined(AbiOutcome::Refused) | ServiceError::Unserved),
-                    ) => {}
-                    Poll::Ready(_) => return not_run(unit, run),
+                if run.leg.is_none() {
+                    let h = handle(ticket, &mut unit.issued, &mut run.claim);
+                    let key = format!("task-run:{}", run.reference);
+                    match services.records_claim(
+                        h,
+                        crate::door::KIND_APPROVAL,
+                        key.as_bytes(),
+                        RUN_CLAIM_TTL_MS,
+                    ) {
+                        Poll::Pending => return Step::Pending,
+                        // The host's ledger said this unit takes the run; or no store is bound, and
+                        // the instance's own half was the whole gate.
+                        Poll::Ready(
+                            Ok(true)
+                            | Err(
+                                ServiceError::Declined(AbiOutcome::Refused) | ServiceError::Unserved,
+                            ),
+                        ) => {}
+                        Poll::Ready(_) => return not_run(unit, run),
+                    }
                 }
                 // THE HANDLE, BOUND to this unit (principal-checked).
                 let h = handle(ticket, &mut unit.issued, &mut run.resume);
@@ -750,7 +962,12 @@ fn running(
                         t.runner = Some(runner);
                     }
                 });
-                run.phase = Phase::Ask;
+                // The retry's caller already answered busbar's own rounds before the first call.
+                run.phase = if run.leg.is_some() {
+                    Phase::Call
+                } else {
+                    Phase::Ask
+                };
             }
             Phase::Ask => {
                 let name = run.params.get("name").and_then(Value::as_str).unwrap_or("");
@@ -926,6 +1143,10 @@ fn call(
         // No member to send it to: the walk's terminal is the kernel's to render.
         return Ok(Step::Taken);
     };
+    // A RELAYED ASK'S RETRY goes back to the member that asked, and no other.
+    if run.leg.as_ref().is_some_and(|leg| leg.member != member) {
+        return Ok(Step::Decline);
+    }
     let entry = match twin_of(held, Some(&run.params), &member) {
         Twin::Same => entry,
         Twin::Declined => return Ok(Step::Decline),
@@ -937,27 +1158,107 @@ fn call(
     let Some(def) = held.section.servers.get(&member) else {
         return Ok(Step::Decline);
     };
+    // THE RETRY: the caller's answers and the upstream's own state, verbatim, on the next round.
+    let relay = run.leg.as_ref().map(|leg| {
+        let mut continuation = Map::new();
+        if let Some(retry) = &run.retry {
+            continuation.insert("inputResponses".into(), retry.responses.clone());
+        }
+        if let Some(state) = &leg.state {
+            continuation.insert("requestState".into(), state.clone());
+        }
+        RelayedRetry {
+            member: leg.member.clone(),
+            round: leg.round,
+            continuation: Value::Object(continuation),
+            child: leg.child.clone(),
+        }
+    });
+    let round = relay.as_ref().map_or(0, |r| r.round);
     let admitted = AdmittedCall {
         sent_digest: crate::ask::digest_arguments(&arguments),
         entry,
         arguments,
         id: json!(0),
         progress_token: None,
-        capabilities: Value::Null,
-        relay: None,
+        // The caller's declared capabilities: what an upstream's ask may be relayed to it for.
+        capabilities: capabilities(Some(&run.params)),
+        relay,
     };
-    let Some(outbound) = crate::call::outbound(&admitted, &member, def, 0, None) else {
+    let continuation = admitted.relay.as_ref().map(|r| r.continuation.clone());
+    let Some(outbound) =
+        crate::call::outbound(&admitted, &member, def, round, continuation.as_ref())
+    else {
         return Err(End::Failed(format!(
             "server `{member}` registers no `url:` this door can reach it at"
         )));
     };
     unit.pending = Some(Pending::far(outbound).laned(&admitted.entry.namespaced));
-    unit.relay = Some(Relay::of(admitted));
+    let mut relay = Relay::of(admitted);
+    relay.round = round;
+    unit.relay = Some(relay);
     run.phase = Phase::Far;
     Ok(Step::Write)
 }
 
 // ── the verbs ─────────────────────────────────────────────────────────────────────────────────
+
+/// THE RETRY OF A RELAYED ASK, nested by the `tasks/update` that answered its last key: the task's
+/// call, busbar's sealed state and the caller's answers, on the task-run claim (under the updating
+/// caller's principal, the task's own). A host that runs no continuation for it fails the task.
+fn retry_relayed(
+    plane: &McpDoor,
+    services: Services,
+    ticket: Ticket,
+    unit: &mut CallUnit,
+    task: &Task,
+    park: tasks::RelayPark,
+    at: u64,
+) {
+    let body = serde_json::to_vec(&json!({
+        "taskId": task.id,
+        "params": park.params,
+        "relay": {
+            "requestState": park.state,
+            "inputResponses": Value::Object(park.responses),
+        },
+    }))
+    .unwrap_or_default();
+    let mut fresh = None;
+    let h = handle(ticket, &mut unit.issued, &mut fresh);
+    let mut buf = vec![0u8; 1024];
+    let mut spans = vec![blank(); 8];
+    match services.unit_nest(
+        h,
+        "POST",
+        crate::tool_claims::TASK_RUN_MOUNT,
+        &body,
+        &mut buf,
+        &mut spans,
+    ) {
+        // The retry runs: its answer is its own, and nobody waits for it here.
+        Poll::Pending
+        | Poll::Ready(Ok(_))
+        | Poll::Ready(Err(busbar_contract::abi::sdk::services::ServiceError::Short { .. })) => {}
+        Poll::Ready(Err(_)) => {
+            let failed = plane.tasks.with(&task.id, |t| {
+                t.and_then(|t| {
+                    t.fail(
+                        TASK_PROTOCOL_ERROR_CODE,
+                        "the host ran no continuation for the caller's answer".to_string(),
+                        at,
+                    )
+                    .then(|| t.clone())
+                })
+            });
+            if let Some(t) = failed {
+                let mut fresh = None;
+                let h = handle(ticket, &mut unit.issued, &mut fresh);
+                let _unheard = services.work_settle(h, t.handle, &t.row());
+            }
+        }
+    }
+}
 
 /// What resolving a verb's `taskId` came to.
 enum Resolved {
@@ -1057,10 +1358,16 @@ fn verbing(
             .cloned()
             .unwrap_or_default();
         let delivered = plane.tasks.with(&task.id, |t| {
-            t.map(|t| (t.deliver(&responses, at), t.clone()))
+            t.map(|t| (t.deliver(&responses, at), t.take_relay(), t.clone()))
         });
         return match delivered {
-            Some((false, _)) => refuse(
+            // THE CALLER'S ANSWER TO THE UPSTREAM'S ASK continues the task as a NEW unit: the retry,
+            // nested on the task-run claim, back to the member that asked.
+            Some((true, Some(park), t)) => {
+                retry_relayed(plane, services, ticket, unit, &t, park, at);
+                ack(unit)
+            }
+            Some((false, _, _)) => refuse(
                 unit,
                 &invalid(
                     id,
@@ -1072,7 +1379,7 @@ fn verbing(
                     ),
                 ),
             ),
-            Some((true, t)) => {
+            Some((true, None, t)) => {
                 wake(plane, &t);
                 ack(unit)
             }

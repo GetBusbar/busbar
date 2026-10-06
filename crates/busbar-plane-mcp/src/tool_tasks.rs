@@ -89,6 +89,10 @@ pub const TASK_PROTOCOL_ERROR_CODE: i64 = -32603;
 /// retention after, so a task cannot be run twice while its handle can still be found.
 pub const RUN_CLAIM_TTL_MS: u64 = ACTIVE_TASK_ABANDON_MS + TASK_TTL_MS;
 
+/// How long the state a task's relayed ask is answered under stands, in seconds: as long as the task
+/// may stay parked on its caller ([`ACTIVE_TASK_ABANDON_MS`]), a human's answer included.
+pub const TASK_RELAY_TTL_SECS: u64 = ACTIVE_TASK_ABANDON_MS / 1000;
+
 /// The bytes of one result chunk: a plane record holds at most
 /// [`busbar_contract::bounded::MAX_RECORD_BYTES`].
 pub const RESULT_CHUNK_BYTES: usize = 480;
@@ -180,6 +184,24 @@ pub struct Task {
     pub unsettled: bool,
     /// How many result chunks were written for it.
     pub chunks: u32,
+    /// THE UPSTREAM'S ASK IT IS PARKED ON, relayed (Law 11): answered through `tasks/update` and
+    /// carried back to the member that asked, never merged into the tool's arguments.
+    relay: Option<RelayPark>,
+}
+
+/// A TASK PARKED ON ITS UPSTREAM'S ASK: busbar's sealed state (bound to the principal, the tool and
+/// the member, nesting the upstream's own), the call the retry runs, the upstream's keys and the
+/// caller's answers to them so far.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RelayPark {
+    /// Busbar's sealed state the retry presents.
+    pub state: String,
+    /// The call the continuation runs (its digest is the task's).
+    pub params: Value,
+    /// The upstream's `inputRequests` keys, in its order.
+    keys: Vec<String>,
+    /// The caller's answers, by the upstream's keys.
+    pub responses: Map<String, Value>,
 }
 
 impl Task {
@@ -203,6 +225,7 @@ impl Task {
             runner: None,
             unsettled: false,
             chunks: 0,
+            relay: None,
         }
     }
 
@@ -308,12 +331,65 @@ impl Task {
         }
     }
 
+    /// PARK ON THE UPSTREAM'S ASK, relayed to the caller (Law 11): `input_required`, its
+    /// `inputRequests` the upstream's own, verbatim and in its order, under busbar's sealed `state`;
+    /// the retry runs `params`. A terminal task does not park.
+    pub fn park_relay(
+        &mut self,
+        requests: &Map<String, Value>,
+        state: String,
+        params: Value,
+        now_ms: u64,
+    ) {
+        if self.status.is_terminal() {
+            return;
+        }
+        self.input_requests = requests
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        self.relay = Some(RelayPark {
+            state,
+            params,
+            keys: requests.keys().cloned().collect(),
+            responses: Map::new(),
+        });
+        self.status = Status::InputRequired;
+        self.updated_ms = now_ms;
+    }
+
+    /// THE RELAYED ASK, ANSWERED: taken once every key the upstream asked is answered (the retry
+    /// goes to the member with the caller's answers), `None` before, and `None` to any later caller.
+    pub fn take_relay(&mut self) -> Option<RelayPark> {
+        let park = self.relay.as_ref()?;
+        if park.keys.iter().any(|k| !park.responses.contains_key(k)) {
+            return None;
+        }
+        self.relay.take()
+    }
+
     /// Deliver `inputResponses`. Keys the task is not waiting on are IGNORED rather than refused.
+    /// On a task parked on its upstream's ask the answers are the upstream's: kept for the retry,
+    /// never merged into the tool's arguments.
     ///
     /// Returns `false`, applying NOTHING, when this batch would grow the task's answer map past
     /// [`MAX_TASK_ANSWERS`] DISTINCT keys — refused whole, never truncated. A key already held is a
     /// REPEAT, not new, so re-answering one never counts against the ceiling.
     pub fn deliver(&mut self, responses: &Map<String, Value>, now_ms: u64) -> bool {
+        if let Some(park) = self.relay.as_mut() {
+            for (key, value) in responses {
+                if park.keys.contains(key) {
+                    park.responses.insert(key.clone(), value.clone());
+                }
+            }
+            self.input_requests
+                .retain(|(k, _)| !responses.contains_key(k));
+            self.updated_ms = now_ms;
+            if self.input_requests.is_empty() && self.status == Status::InputRequired {
+                self.status = Status::Working;
+            }
+            return true;
+        }
         let new_keys = responses
             .keys()
             .filter(|k| !self.answers.contains_key(k.as_str()))
@@ -363,6 +439,7 @@ impl Task {
         self.status = Status::Completed;
         self.result = Some(result);
         self.input_requests.clear();
+        self.relay = None;
         self.updated_ms = now_ms;
         true
     }
@@ -377,6 +454,7 @@ impl Task {
         self.error = Some(json!({ "code": code, "message": message }));
         self.result = None;
         self.input_requests.clear();
+        self.relay = None;
         self.updated_ms = now_ms;
         true
     }
@@ -389,6 +467,7 @@ impl Task {
         }
         self.status = Status::Cancelled;
         self.input_requests.clear();
+        self.relay = None;
         self.updated_ms = now_ms;
         true
     }

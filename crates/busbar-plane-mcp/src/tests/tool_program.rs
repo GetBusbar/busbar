@@ -162,3 +162,112 @@ fn every_id_on_a_child_is_its_own() {
     assert_eq!(generation_of(b"generation: 12\r\n"), 12);
     assert_eq!(generation_of(b"other: 1\r\n"), 0);
 }
+
+/// LAW 11 (ARCHITECT Q6), RED against the deleted "no satisfier" reply: a GRANTED authority ask the
+/// child sends while busbar relays a call is TAKEN for the caller, verbatim, and busbar writes the
+/// child nothing in its place; an UNGRANTED one is still refused on the child's input
+/// (`ask_ungranted`); `ping` is still answered by busbar (keepalive, not an ask).
+#[test]
+fn a_granted_ask_is_taken_for_the_caller_and_never_answered_here() {
+    let mut door = Door {
+        grants: ServerRequestGrants {
+            sampling: true,
+            ..ServerRequestGrants::default()
+        },
+        ..Door::default()
+    };
+    let sampling = json!({"jsonrpc": "2.0", "id": "srv-1", "method": "sampling/createMessage",
+                          "params": {"messages": [{"role": "user", "content": {"type": "text", "text": "hi"}}],
+                                     "maxTokens": 9}});
+    let stream = [
+        sampling.clone(),
+        json!({"jsonrpc": "2.0", "id": 4, "method": "roots/list"}),
+        json!({"jsonrpc": "2.0", "id": "p", "method": "ping"}),
+    ];
+    let all: Vec<u8> = stream.iter().flat_map(bytes).collect();
+    let mut c = Correlator::relaying();
+    assert_eq!(c.take(&all, 9, "srv", 1, &mut door), Ok(None));
+    assert_eq!(c.asks.len(), 1, "the granted ask is the caller's");
+    assert_eq!(c.asks[0].id, json!("srv-1"));
+    assert_eq!(
+        c.asks[0].request,
+        json!({"method": "sampling/createMessage", "params": sampling["params"]}),
+        "the request as the child sent it, less its envelope"
+    );
+    let replies: Vec<Value> = c
+        .outbox
+        .iter()
+        .map(|r| serde_json::from_slice(r).unwrap())
+        .collect();
+    assert_eq!(replies.len(), 2, "busbar answered only the ping and the refusal");
+    assert!(
+        replies.iter().all(|r| r["id"] != json!("srv-1")),
+        "busbar wrote nothing for the granted ask: {replies:?}"
+    );
+    assert_eq!(replies[0]["id"], json!(4));
+    assert_eq!(replies[0]["error"]["data"]["reason"], json!("ask_ungranted"));
+    assert_eq!(replies[1], json!({"jsonrpc": "2.0", "id": "p", "result": {}}));
+}
+
+/// An exchange of the door's own (a greeting, a tool list) relays no call: it neither takes nor
+/// answers a granted ask, and leaves it unclaimed for the exchange relaying the call to take.
+#[test]
+fn an_exchange_of_the_doors_own_leaves_a_granted_ask_for_the_call() {
+    let mut door = Door {
+        grants: ServerRequestGrants {
+            elicitation: true,
+            ..ServerRequestGrants::default()
+        },
+        ..Door::default()
+    };
+    let ask = bytes(&json!({"jsonrpc": "2.0", "id": 5, "method": "elicitation/create",
+                            "params": {"message": "ok?"}}));
+    let mut own = Correlator::default();
+    assert_eq!(own.take(&ask, 1, "srv", 1, &mut door), Ok(None));
+    assert!(own.asks.is_empty() && own.outbox.is_empty());
+    let mut call = Correlator::relaying();
+    assert_eq!(call.take(&ask, 9, "srv", 1, &mut door), Ok(None));
+    assert_eq!(call.asks.len(), 1, "the call's exchange takes it");
+}
+
+/// The caller is handed the child's requests verbatim, keyed by the child's own ids; its answers go
+/// back to the child under those ids, each the caller's answer verbatim.
+#[test]
+fn the_childs_asks_go_out_verbatim_and_the_answers_come_back_under_its_ids() {
+    let asks = vec![
+        ChildAsk {
+            id: json!("srv-1"),
+            request: json!({"method": "elicitation/create", "params": {"message": "ok?"}}),
+        },
+        ChildAsk {
+            id: json!(7),
+            request: json!({"method": "roots/list"}),
+        },
+    ];
+    let (result, keys) = relayed_asks(&asks);
+    assert_eq!(result["resultType"], json!("input_required"));
+    assert_eq!(result["inputRequests"]["srv-1"], asks[0].request);
+    assert_eq!(result["inputRequests"]["7"], asks[1].request);
+    assert_eq!(
+        keys,
+        vec![("srv-1".to_string(), json!("srv-1")), ("7".to_string(), json!(7))]
+    );
+    let leg = crate::ask::ChildLeg {
+        generation: 1,
+        wait: 9,
+        asks: keys,
+        work: None,
+    };
+    let answers = json!({"srv-1": {"action": "accept", "content": {"ok": true}}, "7": {"roots": []}});
+    let replies: Vec<Value> = child_replies(&leg, Some(&answers))
+        .iter()
+        .map(|r| serde_json::from_slice(r).unwrap())
+        .collect();
+    assert_eq!(
+        replies,
+        vec![
+            json!({"jsonrpc": "2.0", "id": "srv-1", "result": answers["srv-1"]}),
+            json!({"jsonrpc": "2.0", "id": 7, "result": {"roots": []}}),
+        ]
+    );
+}

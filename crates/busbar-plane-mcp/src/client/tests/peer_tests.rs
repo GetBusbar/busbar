@@ -184,7 +184,8 @@ fn ping_is_answered_with_an_empty_result_under_no_grants() {
         ServerRequestVerb::Ping,
         &ServerRequestGrants::default(),
         "fs",
-    );
+    )
+    .expect("busbar answers a ping itself: it is keepalive, not an ask");
     assert_eq!(reply["id"], 9);
     assert_eq!(reply["result"], serde_json::json!({}));
     assert!(
@@ -217,12 +218,15 @@ fn the_three_authority_asks_are_denied_by_default_and_name_their_grant() {
             AskOutcome::Ungranted,
             "{kind} must be denied when the operator granted nothing"
         );
-        let reply = answer(&serde_json::json!(3), verb, &none, "fs");
+        let reply = answer(&serde_json::json!(3), verb, &none, "fs")
+            .expect("an ungranted ask is refused on the child's input");
         let message = reply["error"]["message"].as_str().unwrap_or_default();
         assert!(
             message.contains(&format!("tools.fs.grants.{kind}: true")),
             "the refusal must name the exact key an operator sets: {message}"
         );
+        assert_eq!(reply["error"]["code"], -32001, "{reply}");
+        assert_eq!(reply["error"]["data"]["reason"], "ask_ungranted", "{reply}");
         assert!(
             reply.get("result").is_none(),
             "a refused ask carries no result: {reply}"
@@ -230,57 +234,39 @@ fn the_three_authority_asks_are_denied_by_default_and_name_their_grant() {
     }
 }
 
-/// GRANTED AND UNGRANTED ARE DIFFERENT ANSWERS, because they send an operator to different places.
-///
-/// A single word for both would make an operator debug the grant matrix for a decision the grant
-/// matrix did not take — and, worse, would leave `Ungranted` looking identical to a grant that IS
-/// held and simply cannot be satisfied.
+/// LAW 11: A GRANTED ASK IS THE CALLER'S, AND BUSBAR WRITES NOTHING IN ITS PLACE. The grant is a
+/// relay permission: held, the ask is relayed to busbar's caller and the child gets no reply from
+/// busbar at all (the caller's answer is written under the child's id); not held, the child is
+/// refused (`ask_ungranted`, the operator's policy). RED against the deleted "no satisfier" reply,
+/// which answered a granted ask on the caller's behalf.
 #[test]
-fn a_held_grant_produces_a_different_refusal_than_a_missing_one() {
+fn a_granted_ask_is_relayed_and_never_answered_by_busbar() {
     let all = ServerRequestGrants {
         sampling: true,
         elicitation: true,
         roots: true,
     };
-    for ask in [
-        ServerAsk::Sampling,
-        ServerAsk::Elicitation,
-        ServerAsk::Roots,
+    for (verb, ask) in [
+        (ServerRequestVerb::SamplingCreateMessage, ServerAsk::Sampling),
+        (ServerRequestVerb::ElicitationCreate, ServerAsk::Elicitation),
+        (ServerRequestVerb::RootsList, ServerAsk::Roots),
     ] {
-        assert_eq!(
-            decide_ask(ask, &all),
-            AskOutcome::Unsatisfiable,
-            "{} is granted here, so the refusal must not blame the grant",
-            ask.key()
-        );
+        assert_eq!(decide_ask(ask, &all), AskOutcome::Relay, "{}", ask.key());
         assert_eq!(
             decide_ask(ask, &ServerRequestGrants::default()),
             AskOutcome::Ungranted
         );
+        assert_eq!(
+            answer(&serde_json::json!(1), verb, &all, "fs"),
+            None,
+            "busbar answers a granted `{}` ask with nothing: the caller does",
+            ask.key()
+        );
+        assert!(
+            answer(&serde_json::json!(1), verb, &ServerRequestGrants::default(), "fs").is_some(),
+            "an ungranted ask is still refused"
+        );
     }
-    let granted = answer(
-        &serde_json::json!(1),
-        ServerRequestVerb::SamplingCreateMessage,
-        &all,
-        "fs",
-    );
-    let ungranted = answer(
-        &serde_json::json!(1),
-        ServerRequestVerb::SamplingCreateMessage,
-        &ServerRequestGrants::default(),
-        "fs",
-    );
-    assert_ne!(
-        granted["error"]["message"], ungranted["error"]["message"],
-        "the two refusals must be distinguishable; they have different remedies"
-    );
-    assert!(
-        granted["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("no satisfier"),
-        "a held grant must say the satisfier is missing, not that the grant is: {granted}"
-    );
 }
 
 /// ONE GRANT DOES NOT OPEN THE OTHER TWO. The three are independent authorities and a table that
@@ -293,7 +279,7 @@ fn each_grant_opens_only_its_own_ask() {
     };
     assert_eq!(
         decide_ask(ServerAsk::Roots, &roots_only),
-        AskOutcome::Unsatisfiable
+        AskOutcome::Relay
     );
     assert_eq!(
         decide_ask(ServerAsk::Sampling, &roots_only),
