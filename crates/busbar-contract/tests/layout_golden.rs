@@ -2131,6 +2131,11 @@ fn compute_layout() -> String {
         [head, counterparty, item, digest]
     );
     record!(s, hsvc::TrustServesIn, [head, counterparty, item, digest]);
+    record!(
+        s,
+        hsvc::TrustDecideIn,
+        [head, counterparty, item, expected, decision, _reserved]
+    );
     record!(s, hsvc::TrustStateIn, [head, counterparty, into]);
     record!(s, hsvc::TrustDueIn, [head, into]);
     record!(s, hsvc::VerifyLookupIn, [head, key, into]);
@@ -2170,6 +2175,7 @@ fn compute_layout() -> String {
             disk_append,
             trust_sight_item,
             trust_serves,
+            trust_decide,
             trust_state
         ]
     );

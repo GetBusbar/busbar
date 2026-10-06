@@ -73,7 +73,7 @@ use crate::host_work::{
 };
 use crate::plane::quarantine::DemotionRecord;
 use crate::trust::book::{
-    Decision, Distrust, Effect, KeyRow, KeyState, Sight, TrustBook, TrustFacts, Undecided, Unjudged,
+    Distrust, Effect, KeyRow, KeyState, Ruling, Sight, TrustBook, TrustFacts, Undecided, Unjudged,
 };
 use crate::trust::section::TrustEntry;
 use crate::trust::signed;
@@ -853,30 +853,52 @@ impl KernelServices {
     /// [`TrustRefused::NoSuchKey`] for a key no admitted instance has,
     /// [`TrustRefused::NothingSighted`] for an approval with nothing to approve at, and
     /// [`TrustRefused::Store`] (the store's words) when the decision could not be kept.
-    pub fn trust_decide(&self, key: &str, decision: Decision) -> Result<KeyRow, TrustRefused> {
+    pub fn trust_rule(&self, key: &str, ruling: Ruling) -> Result<KeyRow, TrustRefused> {
         let found = self
             .trust
             .rows()
             .into_iter()
             .find(|r| r.key() == key)
             .ok_or(TrustRefused::NoSuchKey)?;
+        self.decide_key(
+            &found.instance,
+            &found.counterparty,
+            found.item.as_deref(),
+            ruling,
+            None,
+        )
+    }
+
+    /// THE ONE DECIDE PATH, the core-admin verbs' ([`Self::trust_rule`]) and a plane's own
+    /// administrative verb's (`trust.decide`) alike: the trust book's decision
+    /// ([`TrustBook::decide`]), kept durably before it answers; approving a counterparty also
+    /// clears its durable demotion.
+    ///
+    /// # Errors
+    ///
+    /// The [`TrustRefused`] that refuses it.
+    pub fn decide_key(
+        &self,
+        instance: &str,
+        counterparty: &str,
+        item: Option<&str>,
+        ruling: Ruling,
+        expected: Option<&str>,
+    ) -> Result<KeyRow, TrustRefused> {
         let (row, fact) = self
             .trust
-            .decide(
-                &found.instance,
-                &found.counterparty,
-                found.item.as_deref(),
-                decision,
-            )
+            .decide(instance, counterparty, item, ruling, expected)
             .map_err(|why| match why {
                 Undecided::NoSuchKey => TrustRefused::NoSuchKey,
                 Undecided::NothingSighted => TrustRefused::NothingSighted,
+                Undecided::Rootless => TrustRefused::Rootless,
+                Undecided::Stale => TrustRefused::Stale,
             })?;
         if let Some(d) = self.demotions.get() {
             d.record
                 .keep_decision(&fact, (self.wall_ms)() / 1000)
                 .map_err(TrustRefused::Store)?;
-            if fact.item.is_none() && decision == Decision::Approve {
+            if fact.item.is_none() && ruling == Ruling::Approve {
                 let cleared = |server: &str| {
                     crate::plane::quarantine::settle(
                         &d.record,
@@ -1211,6 +1233,8 @@ pub const NO_POOL: &str = "no pool is bound";
 pub const POOL_REFUSED: &str = "the pool refused the store call";
 /// The FAILED answer of a store call that did not answer.
 pub const STORE_FAILED: &str = "the store did not answer";
+/// The FAILED answer of a `trust.decide` whose decision the store could not keep.
+pub const DECISION_UNKEPT: &str = "the trust decision could not be kept";
 /// The refusal of a `records.secret` read by services that hold no credential source (the root
 /// composes the credential source over these services).
 pub const NO_CREDENTIAL_SOURCE: &str = "no credential source";
@@ -1263,6 +1287,10 @@ pub enum TrustRefused {
     NoSuchKey,
     /// The key was never sighted (nor declared) at anything to approve.
     NothingSighted,
+    /// The counterparty declares no authenticity root: nothing at it can be approved.
+    Rootless,
+    /// The fingerprint the caller approves is not the key's current sighting.
+    Stale,
     /// The decision could not be kept; the store's words, for the node's log.
     Store(String),
 }
@@ -1546,6 +1574,39 @@ impl HostServices for KernelServices {
             Err(Unjudged::UnknownInstance) => Stored::refused(NOT_ADMITTED),
             Err(Unjudged::UnknownCounterparty) => Stored::refused(NOT_A_COUNTERPARTY),
         }
+    }
+
+    fn trust_decide(
+        &self,
+        caller: &Caller,
+        key: busbar_contract::services::TrustKeyRef<'_>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Stored {
+        if self.facts(caller).is_none() {
+            return Stored::refused(NOT_ADMITTED);
+        }
+        let ruling = if approve {
+            Ruling::Approve
+        } else {
+            Ruling::Revoke
+        };
+        Stored::ready(
+            match self.decide_key(
+                &caller.instance,
+                key.counterparty,
+                key.item,
+                ruling,
+                expected,
+            ) {
+                Ok(row) => decided_code(row.state),
+                Err(TrustRefused::NoSuchKey) => svc::UNDECIDED_UNKNOWN,
+                Err(TrustRefused::NothingSighted) => svc::UNDECIDED_UNPINNED,
+                Err(TrustRefused::Stale) => svc::UNDECIDED_STALE,
+                Err(TrustRefused::Rootless) => svc::UNDECIDED_ROOTLESS,
+                Err(TrustRefused::Store(_)) => return failed(DECISION_UNKEPT),
+            },
+        )
     }
 
     fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
@@ -1945,6 +2006,16 @@ mod trust_verify_tests;
 #[cfg(test)]
 #[path = "tests/host_nest_tests.rs"]
 mod host_nest_tests;
+
+/// The `TRUST_DECIDED_*` verdict (`trust.decide`) a key's [`KeyState`] is answered as.
+#[must_use]
+pub fn decided_code(state: KeyState) -> u64 {
+    match state {
+        KeyState::Same | KeyState::Approved => svc::TRUST_DECIDED_SERVING,
+        KeyState::New => svc::TRUST_DECIDED_PENDING,
+        KeyState::Drifted | KeyState::Quarantined => svc::TRUST_DECIDED_QUARANTINED,
+    }
+}
 
 /// The `KEY_*` value (`trust.state`) a [`KeyState`] is answered as.
 #[must_use]

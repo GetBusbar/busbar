@@ -27,7 +27,7 @@ use busbar_contract::plane::PlaneDeclaration;
 use busbar_contract::records::{PlaneDisposition, PlaneRecord};
 use busbar_core_admin::GovernanceError;
 use busbar_kernel::host_services::{KernelServices, TrustRefused};
-use busbar_kernel::trust::book::{Decision, KeyRow};
+use busbar_kernel::trust::book::{KeyRow, Ruling};
 
 use super::{AdminAnswer, AmendmentJournal, LedgerView};
 
@@ -387,7 +387,7 @@ pub(crate) fn trust_list_effect(desk: &TrustDesk) -> Result<AdminAnswer, Governa
 /// `Store` (`503`).
 pub(crate) fn trust_decide_effect(
     body: &[u8],
-    decision: Decision,
+    decision: Ruling,
     desk: &TrustDesk,
 ) -> Result<AdminAnswer, GovernanceError> {
     let doc: serde_json::Value =
@@ -410,13 +410,24 @@ pub(crate) fn trust_decide_effect(
     let Some(kernel) = desk() else {
         return not_found();
     };
-    match kernel.trust_decide(key, decision) {
+    match kernel.trust_rule(key, decision) {
         Ok(row) => answer(&trust_row(&row)),
         Err(TrustRefused::NoSuchKey) => not_found(),
         Err(TrustRefused::NothingSighted) => Ok(refused(
             409,
             "conflict",
             &format!("trust key `{key}` was never sighted"),
+        )),
+        // The core-admin verbs state no expected fingerprint, so a stale one is never theirs.
+        Err(TrustRefused::Stale) => Ok(refused(
+            409,
+            "conflict",
+            &format!("trust key `{key}` moved since it was seen"),
+        )),
+        Err(TrustRefused::Rootless) => Ok(refused(
+            409,
+            "conflict",
+            &format!("trust key `{key}` has no authenticity root"),
         )),
         Err(TrustRefused::Store(why)) => {
             tracing::error!(key = %key, error = %why, "a trust decision could not be kept");

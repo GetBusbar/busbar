@@ -919,7 +919,8 @@ fn doc_for(
                         errors.push((
                             "409",
                             "`conflict`: ``trust key `<key>` was never sighted`` — nothing to \
-                             approve it at"
+                             approve it at — or ``trust key `<key>` has no authenticity root`` — \
+                             its registration declares none, and nothing at it is approvable"
                                 .to_string(),
                         ));
                     }

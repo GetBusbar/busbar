@@ -601,7 +601,7 @@ extern "C" {
 #define BB_HSVC_OP_DISK_APPEND UINT32_C(22) /* `disk.append`. */
 #define BB_HSVC_OP_TRUST_SIGHT_ITEM UINT32_C(23) /* `trust.sight_item`. */
 #define BB_HSVC_OP_TRUST_SERVES UINT32_C(24) /* `trust.serves`. */
-#define BB_HSVC_OP_TRUST_STATE UINT32_C(25) /* `trust.state`. */
+#define BB_HSVC_OP_TRUST_DECIDE UINT32_C(25) /* `trust.decide`. */
 #define BB_HSVC_SERVICES UINT32_C(26) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
 #define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
@@ -638,11 +638,15 @@ extern "C" {
 #define BB_HSVC_DISTRUST_NOT_APPROVED UINT64_C(4) /* The item is known (sighted) and was never approved: a known item ungranted (a 403's case). */
 #define BB_HSVC_DISTRUST_CHANGED UINT64_C(5) /* The item is offered at another digest than the one approved (or at none). */
 #define BB_HSVC_DISTRUST_UNKNOWN_ITEM UINT64_C(6) /* The item was never sighted at this counterparty: an unknown item (a 404's case). */
-#define BB_HSVC_KEY_NEW UINT64_C(1) /* `trust.state`'s value: sighted (or declared) and never approved, or revoked: refused. */
-#define BB_HSVC_KEY_SAME UINT64_C(2) /* `trust.state`'s value: approved, and its last sighting is what was approved. */
-#define BB_HSVC_KEY_DRIFTED UINT64_C(3) /* `trust.state`'s value: approved, and its last sighting moved from it: refused until re-approved. */
-#define BB_HSVC_KEY_QUARANTINED UINT64_C(4) /* `trust.state`'s value: quarantined: refused until re-approved (or its pin is seen again). */
-#define BB_HSVC_KEY_APPROVED UINT64_C(5) /* `trust.state`'s value: approved, and not sighted since. */
+#define BB_HSVC_TRUST_DECIDE_APPROVE UINT32_C(0) /* [`TrustDecideIn::decision`]: approve the key at what it was last sighted at. */
+#define BB_HSVC_TRUST_DECIDE_REVOKE UINT32_C(1) /* [`TrustDecideIn::decision`]: revoke the key: refused until approved again. */
+#define BB_HSVC_TRUST_DECIDED_SERVING UINT64_C(1) /* `trust.decide`'s verdict: the key serves. */
+#define BB_HSVC_TRUST_DECIDED_PENDING UINT64_C(2) /* `trust.decide`'s verdict: the key is not approved (new, or revoked): refused. */
+#define BB_HSVC_TRUST_DECIDED_QUARANTINED UINT64_C(3) /* `trust.decide`'s verdict: the key's sighting moved from its approval: refused until re-approved. */
+#define BB_HSVC_UNDECIDED_UNPINNED UINT64_C(4) /* `trust.decide` refused: the key was never sighted at anything to approve. */
+#define BB_HSVC_UNDECIDED_STALE UINT64_C(5) /* `trust.decide` refused: the fingerprint the caller expects is not the key's current sighting. */
+#define BB_HSVC_UNDECIDED_UNKNOWN UINT64_C(6) /* `trust.decide` refused: the calling instance has no such key. */
+#define BB_HSVC_UNDECIDED_ROOTLESS UINT64_C(7) /* `trust.decide` refused: the counterparty declares no authenticity root; nothing at it is */
 #define BB_HSVC_SIGNED_VERIFIED UINT64_C(0) /* `trust.verify` verdict: a signature verified against the root key. */
 #define BB_HSVC_SIGNED_NONE UINT64_C(1) /* `trust.verify` verdict: the document carries no signature. */
 #define BB_HSVC_SIGNED_TOO_MANY UINT64_C(2) /* `trust.verify` verdict: more signatures than one document needs. */
@@ -1014,7 +1018,7 @@ typedef struct bb_hsvc_TrustSightIn bb_hsvc_TrustSightIn;
 typedef struct bb_hsvc_TrustDueIn bb_hsvc_TrustDueIn;
 typedef struct bb_hsvc_TrustSightItemIn bb_hsvc_TrustSightItemIn;
 typedef struct bb_hsvc_TrustServesIn bb_hsvc_TrustServesIn;
-typedef struct bb_hsvc_TrustStateIn bb_hsvc_TrustStateIn;
+typedef struct bb_hsvc_TrustDecideIn bb_hsvc_TrustDecideIn;
 typedef struct bb_hsvc_TrustVerifyIn bb_hsvc_TrustVerifyIn;
 typedef struct bb_hsvc_VerifyLookupIn bb_hsvc_VerifyLookupIn;
 typedef struct bb_hsvc_VerifyStoreIn bb_hsvc_VerifyStoreIn;
@@ -3571,11 +3575,14 @@ struct bb_hsvc_TrustServesIn {
     bb_mech_AbiStr digest;
 };
 
-/* [`op::TRUST_STATE`]'s `in`: the KERNEL'S TRUST STATE of one counterparty and its items, as the */
-struct bb_hsvc_TrustStateIn {
+/* [`op::TRUST_DECIDE`]'s `in`: THE OPERATOR'S DECISION about one of the calling instance's trust */
+struct bb_hsvc_TrustDecideIn {
     bb_hsvc_ServiceHead head;
     bb_mech_AbiStr counterparty;
-    bb_hsvc_ServiceBufs into;
+    bb_mech_AbiStr item;
+    bb_mech_AbiStr expected;
+    uint32_t decision;
+    uint32_t _reserved;
 };
 
 /* [`op::TRUST_VERIFY`]'s `in`: verify a document's detached signatures against the root key the */
@@ -3684,7 +3691,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn disk_append;
     bb_hsvc_ServiceFn trust_sight_item;
     bb_hsvc_ServiceFn trust_serves;
-    bb_hsvc_ServiceFn trust_state;
+    bb_hsvc_ServiceFn trust_decide;
 };
 
 /* ---- layout proof: 267 of 270 structures are pinned by the golden ---- */
@@ -5683,11 +5690,14 @@ BB_ASSERT(offsetof(bb_hsvc_TrustServesIn, head) == 0, "bb_hsvc_TrustServesIn.hea
 BB_ASSERT(offsetof(bb_hsvc_TrustServesIn, counterparty) == 24, "bb_hsvc_TrustServesIn.counterparty: offset");
 BB_ASSERT(offsetof(bb_hsvc_TrustServesIn, item) == 40, "bb_hsvc_TrustServesIn.item: offset");
 BB_ASSERT(offsetof(bb_hsvc_TrustServesIn, digest) == 56, "bb_hsvc_TrustServesIn.digest: offset");
-BB_ASSERT(sizeof(bb_hsvc_TrustStateIn) == 72, "bb_hsvc_TrustStateIn: size");
-BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustStateIn) == 8, "bb_hsvc_TrustStateIn: alignment");
-BB_ASSERT(offsetof(bb_hsvc_TrustStateIn, head) == 0, "bb_hsvc_TrustStateIn.head: offset");
-BB_ASSERT(offsetof(bb_hsvc_TrustStateIn, counterparty) == 24, "bb_hsvc_TrustStateIn.counterparty: offset");
-BB_ASSERT(offsetof(bb_hsvc_TrustStateIn, into) == 40, "bb_hsvc_TrustStateIn.into: offset");
+BB_ASSERT(sizeof(bb_hsvc_TrustDecideIn) == 80, "bb_hsvc_TrustDecideIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustDecideIn) == 8, "bb_hsvc_TrustDecideIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_TrustDecideIn, head) == 0, "bb_hsvc_TrustDecideIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustDecideIn, counterparty) == 24, "bb_hsvc_TrustDecideIn.counterparty: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustDecideIn, item) == 40, "bb_hsvc_TrustDecideIn.item: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustDecideIn, expected) == 56, "bb_hsvc_TrustDecideIn.expected: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustDecideIn, decision) == 72, "bb_hsvc_TrustDecideIn.decision: offset");
+BB_ASSERT(offsetof(bb_hsvc_TrustDecideIn, _reserved) == 76, "bb_hsvc_TrustDecideIn._reserved: offset");
 BB_ASSERT(sizeof(bb_hsvc_TrustVerifyIn) == 120, "bb_hsvc_TrustVerifyIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_TrustVerifyIn) == 8, "bb_hsvc_TrustVerifyIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_TrustVerifyIn, head) == 0, "bb_hsvc_TrustVerifyIn.head: offset");
@@ -5774,7 +5784,7 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, records_secret) == 176, "bb_hsvc_HostSlots
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, disk_append) == 184, "bb_hsvc_HostSlots.disk_append: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_sight_item) == 192, "bb_hsvc_HostSlots.trust_sight_item: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_serves) == 200, "bb_hsvc_HostSlots.trust_serves: offset");
-BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_state) == 208, "bb_hsvc_HostSlots.trust_state: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_decide) == 208, "bb_hsvc_HostSlots.trust_decide: offset");
 #endif
 
 #ifdef __cplusplus

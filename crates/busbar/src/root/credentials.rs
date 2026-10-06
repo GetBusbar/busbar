@@ -161,6 +161,16 @@ impl HostServices for CredentialServices {
         self.inner.trust_unreached(caller, counterparty)
     }
 
+    fn trust_decide(
+        &self,
+        caller: &Caller,
+        key: busbar_contract::services::TrustKeyRef<'_>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Stored {
+        self.inner.trust_decide(caller, key, expected, approve)
+    }
+
     fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
         self.inner.trust_state(caller, counterparty)
     }
