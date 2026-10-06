@@ -5208,7 +5208,7 @@ fn plane_faces(cx: &Ctx, dir: &str) -> PlaneFaces {
                 let table = &code[at..];
                 let table = &table[..table.find('}').unwrap_or(table.len())];
                 let named: BTreeSet<String> = table
-                    .split(|c: char| c == ',' || c == '{')
+                    .split([',', '{'])
                     .filter_map(|e| e.split(':').next())
                     .map(|n| n.trim().to_string())
                     .filter(|n| !n.is_empty())
