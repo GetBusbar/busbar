@@ -58,8 +58,6 @@ pub mod secret_calls;
 // trust evaluation is the loader's OWN job, not a crate the loader reaches for. Pure data +
 // policy, no I/O -- the I/O that acts on its verdicts is `tarball`, `fetch` and `registry`.
 pub mod sign;
-/// THE REGISTRY AS THE KERNEL READS IT (the contract's `PluginRows`).
-pub mod rows;
 mod stage;
 pub mod store_adapter;
 pub mod store_v3;
@@ -75,6 +73,9 @@ pub mod tcp_conns;
 pub mod test_support;
 pub mod transport;
 pub mod transport_adapter;
+
+/// THE REGISTRY AS THE KERNEL READS IT (the contract's `PluginRows`).
+pub mod rows;
 
 pub use auth::DynAuth;
 use busbar_contract::abi::cold::ColdEntry;
