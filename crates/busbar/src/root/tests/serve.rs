@@ -516,7 +516,7 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
                     .iter()
                     .find(|s| s.1)
                     .expect("the build links an ephemeral store")
-                    .3,
+                    .2,
             ),
             "records-attach",
             b"{}",

@@ -1275,7 +1275,7 @@ pub fn door_breaker(
         return Ok(None);
     };
     let planes = registry.loadable().iter();
-    for p in planes.filter(|p| p.manifest.kind == busbar_contract::abi::cold::kind::PLANE) {
+    for p in planes.filter(|p| p.manifest.kind == busbar_contract::abi::mechanism::kind::PLANE) {
         let Some(stated) = p
             .manifest
             .stated()
