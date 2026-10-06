@@ -1212,7 +1212,7 @@ pub fn data_routes(
 pub type DataMounts = (
     Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
     Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
-    Vec<PlaneRefusalSpec>,
+    Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
 );
 
 /// [`data_routes`], and the door planes' session routes beside them (ARCHITECT Q-L5B-SESSION-SERVE;
