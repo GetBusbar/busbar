@@ -252,6 +252,10 @@ print(rows[0].get('$field') if rows else '-')"
 # is not a quantity; #44's flat fee is the dimension that prices it). Used by the class-price leg to
 # ask the one question that needs no rate card to be answerable: did the plane report a number for
 # what it moved, at all?
+#
+# A PLANE'S OWN CLASSES ARE COLUMNS TOO: the row's `classes` object (new in 1.6.0, FLIP-A2A ruling --
+# 1.5.5's rows carried the token split alone and 1.5.5 served no plane with a class of its own) holds
+# each plane-declared class's `{count, cost}`, and its counts are summed with the token columns.
 h2_meter_row_quantity() {
   local model="$1" provider="$2"
   curl -sS -m 10 -H "Authorization: Bearer $H2_ADMIN_TOKEN" \
@@ -263,7 +267,22 @@ if not rows:
     print('-')
 else:
     r=rows[0]
-    print(sum(int(r.get(k) or 0) for k in ('tokens_input','tokens_output','tokens_cache_read','tokens_cache_creation')))"
+    print(sum(int(r.get(k) or 0) for k in ('tokens_input','tokens_output','tokens_cache_read','tokens_cache_creation'))
+          + sum(int((c or {}).get('count') or 0) for c in (r.get('classes') or {}).values()))"
+}
+
+# One plane-declared class's `count` or `cost` (micro-units) off the `classes` object of the
+# `GET /api/v1/admin/usage` `by_model` row for (model, provider): `-` when no such row exists, and 0
+# for a class the row does not carry (an absent class is a count and a cost of 0, the field's own
+# rule -- a token-only row carries no `classes` key at all, as 1.5.5's did).
+h2_meter_row_class() {
+  local model="$1" provider="$2" class="$3" field="$4"
+  curl -sS -m 10 -H "Authorization: Bearer $H2_ADMIN_TOKEN" \
+    "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/usage" \
+    | python3 -c "import json,sys
+d=json.load(sys.stdin)
+rows=[r for r in (d.get('by_model') or []) if r.get('model')=='$model' and r.get('provider')=='$provider']
+print(((rows[0].get('classes') or {}).get('$class') or {}).get('$field', 0) if rows else '-')"
 }
 
 # One scalar off `GET /api/v1/admin/usage`'s `total` block — the OTHER admin money read, and since
@@ -542,8 +561,9 @@ h2_call() { if [ -n "${H2_RATE_CARD_YAML+x}" ] && ! _st_carded; then echo "200 {
 h2_usage_field() { _st_next usage "${H2_ST_USAGE:-1}"; }
 h2_apply_plane_fee() { echo '{"applied":true}'; }
 h2_admin_usage_total() { echo 80000; }
-h2_meter_row_field() { case "$3" in requests) echo 1 ;; *) echo 10000 ;; esac; }
+h2_meter_row_field() { case "$3" in requests) echo 1 ;; spend_micros) printf '%s\n' "${H2_ST_SPEND-10362}" ;; *) echo 10000 ;; esac; }
 h2_meter_row_quantity() { printf '%s\n' "${H2_ST_QTY-3}"; }
+h2_meter_row_class() { case "$3:$4" in tool_calls:count) printf '%s\n' "${H2_ST_TC-1}" ;; tool_calls:cost) printf '%s\n' "${H2_ST_TCC-2}" ;; bytes:count) printf '%s\n' "${H2_ST_BY-120}" ;; bytes:cost) printf '%s\n' "${H2_ST_BYC-360}" ;; esac; }
 h2_validate_card() { echo ok; }
 sleep() { :; }
 STUB
@@ -597,11 +617,15 @@ _h2_st_case_card_epoch() {
 }
 
 _h2_st_case_class_price() {
-  _h2_st_want "class-price: control quantity 3 passes" 0 "$(_h2_st_rig h2-class-price.sh H2_ST_QTY=3)"
-  _h2_st_want "class-price: no metering row (-) is red" red "$(_h2_st_rig h2-class-price.sh H2_ST_QTY=-)"
-  _h2_st_want "class-price: quantity 0 is red" red "$(_h2_st_rig h2-class-price.sh H2_ST_QTY=0)"
-  _h2_st_want "class-price: an EMPTY quantity read is red, not a pass" red "$(_h2_st_rig h2-class-price.sh H2_ST_QTY=)"
-  _h2_st_want "class-price: a non-numeric quantity read is red, not a pass" red "$(_h2_st_rig h2-class-price.sh H2_ST_QTY=None)"
+  _h2_st_want "class-price: control 1 call, 120 bytes, costs 2 + 360, spend 10362 passes" 0 "$(_h2_st_rig h2-class-price.sh)"
+  _h2_st_want "class-price: no metering row (-) is red" red "$(_h2_st_rig h2-class-price.sh H2_ST_TC=- H2_ST_BY=-)"
+  _h2_st_want "class-price: tool_calls count 0 (class absent) is red" red "$(_h2_st_rig h2-class-price.sh H2_ST_TC=0 H2_ST_TCC=0 H2_ST_SPEND=10360)"
+  _h2_st_want "class-price: bytes count 0 (class absent) is red" red "$(_h2_st_rig h2-class-price.sh H2_ST_BY=0 H2_ST_BYC=0 H2_ST_SPEND=10002)"
+  _h2_st_want "class-price: an EMPTY count read is red, not a pass" red "$(_h2_st_rig h2-class-price.sh H2_ST_BY=)"
+  _h2_st_want "class-price: a non-numeric count read is red, not a pass" red "$(_h2_st_rig h2-class-price.sh H2_ST_BY=None)"
+  _h2_st_want "class-price: a class cost that is not count x rate is red" red "$(_h2_st_rig h2-class-price.sh H2_ST_BYC=120 H2_ST_SPEND=10122)"
+  _h2_st_want "class-price: costs right but the row spend is the fee alone is red" red "$(_h2_st_rig h2-class-price.sh H2_ST_SPEND=10000)"
+  _h2_st_want "class-price: an EMPTY cost read is red, not a pass" red "$(_h2_st_rig h2-class-price.sh H2_ST_TCC=)"
 }
 
 _h2_st_case_unpriced_refuses() {
