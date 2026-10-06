@@ -97,6 +97,7 @@ fn the_abi_trust_keys_are_the_grammars_trust_keys() {
             TrustRole::ReverifyTtl => TRUST_REVERIFY_TTL,
             TrustRole::RecoveryBackoff => TRUST_RECOVERY_BACKOFF,
             TrustRole::PrivateReach => TRUST_PRIVATE_REACH,
+            TrustRole::ItemApprovals => busbar_contract::abi::plane::TRUST_ITEM_APPROVALS,
         };
         assert_eq!(abi.role, role, "{}", decl.key);
         assert_eq!(
