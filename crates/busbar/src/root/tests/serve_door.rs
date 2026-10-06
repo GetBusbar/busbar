@@ -552,9 +552,10 @@ mod decisions_door {
         let reach = DoorReach {
             providers: &providers,
             secrets: &secrets,
-            auths: &auths,
+            auths: Arc::new(auths),
             conns: Arc::clone(&connector) as Arc<dyn PollConns>,
             stream_ceiling_secs: 600,
+            upgrades: Vec::new(),
         };
         let mut sections = BTreeMap::new();
         sections.insert(
