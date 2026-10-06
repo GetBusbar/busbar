@@ -195,9 +195,6 @@ pub struct Candidate {
     /// The other names config may give it: its Statement's alias rewrites and, for a dropped
     /// plugin, its manifest's alias and former names.
     pub aliases: Vec<String>,
-    /// Which of `aliases` are FORMER NAMES (the manifest names the plugin's earlier releases
-    /// carried): a word the one-owner rule never lets two plugins share ([`one_owner`]).
-    pub former: Vec<String>,
     /// The reference keys that name it (its sugar rewrites).
     pub sugar: Vec<String>,
     /// Its declaring sections (a plane's verbs).
@@ -241,7 +238,6 @@ impl Candidate {
         Ok(Self {
             kind,
             aliases,
-            former: Vec::new(),
             sugar: words(REWRITE_SUGAR).collect(),
             verbs: r
                 .sections
@@ -281,7 +277,6 @@ impl Candidate {
             let word = word.as_ref();
             if !self.answers(word) {
                 self.aliases.push(word.to_string());
-                self.former.push(word.to_string());
             }
         }
         self
@@ -308,12 +303,11 @@ impl Candidate {
     }
 }
 
-/// THE ONE-OWNER RULE over an axis's candidates (linked and dropped in alike): two DIFFERENT
-/// plugins (different names) that answer one word are refused, naming both and the word, so no
-/// reference resolves ambiguously — except where the design states a precedence on purpose: a
-/// LINKED row answers its name and aliases ahead of a DROPPED-IN plugin spelling the same word (the
-/// boot stages' selection rule), unless the word is a FORMER NAME of either, which is never shared.
-/// Two candidates of the SAME plugin (a linked row and its dropped-in copy) are not a conflict.
+/// THE ONE-OWNER RULE over an axis's candidates, linked and dropped in alike (Q-P4-12 (ARCHITECT, BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing")): two DIFFERENT
+/// plugins (different names) that answer one word (a name, an alias, a former name) are refused,
+/// naming both and the word. No ambiguity is resolved by picking a winner, and neither door outranks
+/// the other (compiled in = dropped in). Two candidates of the SAME plugin (a linked row and its
+/// dropped-in copy) are not a claim conflict: the one-version-per-kind rule governs them.
 ///
 /// # Errors
 ///
@@ -324,13 +318,7 @@ pub fn one_owner(candidates: &[Candidate]) -> Result<(), String> {
             if a.name == b.name {
                 continue;
             }
-            let linked = |c: &Candidate| matches!(c.origin, Origin::Linked(_));
-            let precedence = linked(a) != linked(b);
-            let legacy = |w: &str| a.former.iter().chain(&b.former).any(|f| f == w);
-            let contested = a
-                .words()
-                .find(|w| b.answers(w) && (!precedence || legacy(w)));
-            if let Some(word) = contested {
+            if let Some(word) = a.words().find(|w| b.answers(w)) {
                 return Err(format!(
                     "plugin claim conflict: '{word}' is claimed by both '{}' and '{}' - a name, \
                      alias or former name must resolve to one plugin; remove one",
@@ -358,9 +346,9 @@ pub struct Selected {
 /// one of its verbs is a root key; a store, secret, auth, hook or export plugin once per entry whose
 /// `module` names it (its name or an alias) and once if a reference uses its sugar; a transport iff
 /// a configured URL uses a scheme it claims. Candidates are read in order and the first that answers
-/// an entry takes it, so a linked row listed ahead answers its module ahead of a dropped-in plugin
-/// spelling the same word. An entry no candidate answers selects nothing here: the kind's own
-/// validation refuses it, naming the missing module.
+/// an entry takes it; two DIFFERENT plugins never both answer one word, which the one-owner rule
+/// ([`one_owner`], Q-P4-12 (ARCHITECT, BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing")) refuses before selection. An entry no candidate answers selects nothing here:
+/// the kind's own validation refuses it, naming the missing module.
 #[must_use]
 pub fn select(uses: &Uses, candidates: &[Candidate]) -> Vec<Selected> {
     let mut out = Vec::new();

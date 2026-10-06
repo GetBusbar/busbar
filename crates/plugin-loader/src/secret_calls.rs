@@ -234,8 +234,9 @@ impl SecretCalls for LoadedSecret {
 
 /// THE PROCESS'S SECRET PLUGINS, by Statement name and alias: the linked rows (fixed at build) and
 /// the dropped-in ones (replaced at each registry build), each loaded on first use through the one
-/// loader and called through the one dispatcher. A linked row answers ahead of a dropped-in plugin
-/// spelling the same word (the boot stages' selection rule). The composition root builds it and
+/// loader and called through the one dispatcher. Two different plugins answering one word are
+/// refused when the dropped-in set is admitted ([`SecretRows::admit_dropped`], ARCHITECT Q-P4-12);
+/// neither door outranks the other. The composition root builds it and
 /// installs it as the kernel's [`SecretAxis`].
 pub struct SecretRows {
     /// The process dispatcher, asked for at first use: a plugin is opened on it, never before.

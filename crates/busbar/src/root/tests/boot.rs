@@ -239,7 +239,6 @@ fn listening_plane(target_from: &str) -> Candidate {
         kind: KindCode::Plane,
         name: "p1".into(),
         aliases: Vec::new(),
-        former: Vec::new(),
         sugar: Vec::new(),
         verbs: vec!["agents".into()],
         schemes: Vec::new(),

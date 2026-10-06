@@ -714,8 +714,9 @@ fn claims(c: &Candidate, word: &str) -> bool {
 
 /// THE PROCESS'S HOOK PLUGINS, by Statement name and alias: the compiled-in doors and the
 /// dropped-in libraries whose signed manifests state a Statement, each bound on open through the
-/// one loader path and called through the one dispatcher. A linked row answers ahead of a
-/// dropped-in plugin spelling the same word (the boot stages' selection rule).
+/// one loader path and called through the one dispatcher. Two different plugins answering one word
+/// are refused at [`Self::new`] ([`crate::boot::one_owner`], ARCHITECT Q-P4-12); neither door
+/// outranks the other.
 pub struct HookRows {
     candidates: Vec<Candidate>,
     /// The dropped-in rows signed by the release key (a linked row is first-party by construction).
@@ -813,9 +814,9 @@ impl HookRows {
         Ok(self)
     }
 
-    /// The rows `candidates` state (each a `kind: hook` candidate, a linked one ahead of a
-    /// dropped-in one spelling the same word), bound on `dispatcher`. Only a linked row is
-    /// first-party here; [`Self::new`] adds the dropped-in rows the release key signed.
+    /// The rows `candidates` state (each a `kind: hook` candidate), bound on `dispatcher`. Only a
+    /// linked row is first-party here; [`Self::new`] adds the dropped-in rows the release key signed
+    /// and refuses two different plugins answering one word.
     #[must_use]
     pub fn of(candidates: Vec<Candidate>, dispatcher: Arc<Dispatcher>) -> Self {
         Self {

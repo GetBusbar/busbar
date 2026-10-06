@@ -518,3 +518,36 @@ fn a_former_name_two_hooks_claim_is_refused_on_the_axis() {
         "{refused}"
     );
 }
+
+/// ARCHITECT Q-P4-12 ON THE HOOK AXIS: a linked hook and a DIFFERENT dropped-in hook answering one
+/// word (here the dropped-in plugin's manifest alias spells the linked hook's name) refuse the
+/// configuration, naming both; no door outranks the other. GREEN arm: the dropped-in hook under an
+/// alias of its own sits beside the linked one.
+#[test]
+fn a_linked_hook_and_a_different_dropped_in_hook_claiming_one_word_are_refused() {
+    let abi = crate::supported_abi("hook")[0];
+    let stated = hex::encode(
+        rendering_of(hook_door_plugin::broken::door).expect("the door renders its Statement"),
+    );
+    let dropped = |alias: &str| {
+        let mut m = crate::both_ways::statement("hook", "acme-hook-other", alias, abi);
+        m.statement = Some(stated.clone());
+        crate::both_ways::dropped(&format!("claim-{alias}"), m, b"a hook library")
+    };
+    let rows = |registry: &crate::PluginRegistry| {
+        HookRows::new(
+            &[hook_door_plugin::conforming::door],
+            Some(registry),
+            Arc::new(Dispatcher::new(DispatchConfig::default())),
+        )
+    };
+    let refused = rows(&dropped(NAME)).expect_err("a word two hooks claim is refused");
+    assert!(
+        refused.contains(&format!("'{NAME}'")) && refused.contains(BROKEN_NAME),
+        "{refused}"
+    );
+    assert!(
+        rows(&dropped("acme-other")).is_ok(),
+        "distinct words coexist"
+    );
+}

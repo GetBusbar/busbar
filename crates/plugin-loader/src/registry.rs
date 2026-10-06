@@ -338,11 +338,10 @@ impl PluginRegistry {
 
     /// THE REGISTRATION of one row on the axis — the ONE function both doors call (DECISIONS #2
     /// rule (1)): the row becomes resolvable by its name, by its alias and by each of its former
-    /// names ([`Manifest::former_names`]). The FIRST row to register a name or alias holds it, so a
-    /// linked row (registered first) is not displaced by a dropped-in one spelling the same name or
-    /// alias, and no word is ever ambiguous otherwise: phase 3 refused a shared word among the
-    /// dropped-in rows, and [`Self::link`] refuses a former name two plugins claim, or a word two
-    /// linked plugins claim ([`cross_claim`]), before any of it got here.
+    /// names ([`Manifest::former_names`]). No word reaches here claimed by two different plugins:
+    /// phase 3 refused that among the dropped-in rows, and [`Self::link`] refuses it between a linked
+    /// row and any other ([`cross_claim`]; Q-P4-12 (ARCHITECT, BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing")). The first row to register a word keeps it only for
+    /// the SAME plugin arriving by both doors, which the one-version-per-kind rule governs.
     fn admit(&mut self, row: LoadablePlugin) {
         let i = self.rows.len();
         self.by_name.entry(row.manifest.name.clone()).or_insert(i);
@@ -702,35 +701,21 @@ impl PluginRegistry {
     }
 }
 
-/// THE ONE-OWNER RULE across the doors (ARCHITECT, legacy names): a name, alias or former name
-/// config may reference resolves to exactly one plugin. `rows` is the registry about to be built,
-/// its first `new` rows the ones being linked; each is checked against every row after it (the
-/// other linked rows and every row already admitted: earlier linked rows and the plugins
-/// directory's). Two DIFFERENT plugins (different canonical names) claiming one word refuse the
-/// boot, naming both and the word, when the word is a FORMER NAME of either (a legacy name never
-/// resolves ambiguously) or when both rows are linked. Two DROPPED-IN rows were already held to this
-/// by phase 3 ([`conflicts`]).
-///
-/// The one exception is the design's own: a LINKED row answers its name and alias ahead of a
-/// dropped-in row spelling the same word ([`PluginRegistry::admit`]; K9e-2 "a dropped-in row never
-/// takes a module from the sink this build links"), so a name/alias a linked row and a dropped-in
-/// row share is not refused. The same plugin linked and dropped in (one canonical name) is never a
-/// conflict.
+/// THE ONE-OWNER RULE across the doors (Q-P4-12 (ARCHITECT, BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing")): a name, alias or former name config may reference
+/// resolves to exactly one plugin, and an ambiguity is never resolved by picking a winner: compiled
+/// in = dropped in, so neither door outranks the other. `rows` is the registry about to be built, its
+/// first `new` rows the ones being linked; each is checked against every row after it (the other
+/// linked rows and every row already admitted: the plugins directory's). Two DIFFERENT plugins
+/// (different canonical names) claiming one word refuse the boot, naming both and the word. Two
+/// DROPPED-IN rows were already held to this by phase 3 ([`conflicts`]). The SAME plugin arriving by
+/// both doors (one canonical name) is not a claim conflict: the one-version-per-kind rule governs it.
 fn cross_claim(rows: &[LoadablePlugin], new: usize) -> Option<String> {
     for (i, a) in rows.iter().enumerate().take(new) {
         for b in &rows[i + 1..] {
             if a.manifest.name == b.manifest.name {
                 continue;
             }
-            let legacy = |w: &str| {
-                a.manifest.former_names.iter().any(|f| f == w)
-                    || b.manifest.former_names.iter().any(|f| f == w)
-            };
-            let contested = a
-                .manifest
-                .identities()
-                .find(|w| b.manifest.answers_to(w) && (b.linked() || legacy(w)));
-            if let Some(word) = contested {
+            if let Some(word) = a.manifest.identities().find(|w| b.manifest.answers_to(w)) {
                 return Some(format!(
                     "plugin claim conflict: '{word}' is claimed by both {} ({}) and {} ({}) - \
                      a name, alias or former name must resolve to one plugin; remove one",
