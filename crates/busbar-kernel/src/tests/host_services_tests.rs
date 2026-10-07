@@ -410,13 +410,20 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     let r = rig();
     let me = caller("inst");
     let sight = |h: &str| run(|l| r.s.trust_sight(&me, "cp", h, l));
-    assert_eq!(sight("fp").value, svc::TRUST_SAME);
+    // A sighting of the declared fingerprint before any approval reports pending (coordinator
+    // 2026-10-07, #555 point ii; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
+    // Pending; crates/busbar-a2a/src/a2a/registry.rs:123 lowers every registration unpinned).
+    assert_eq!(sight("fp").value, svc::TRUST_NEW);
     assert_eq!(sight("moved").value, svc::TRUST_DRIFTED);
     let demoted = r.s.demotions.get().unwrap().record.list();
     assert_eq!(demoted.len(), 1);
     assert_eq!(demoted[0].server, demotion_key("inst", "cp"));
     assert_eq!(sight("moved").value, svc::TRUST_QUARANTINED);
-    assert_eq!(sight("fp").value, svc::TRUST_SAME);
+    assert_eq!(
+        sight("fp").value,
+        svc::TRUST_NEW,
+        "cleared, and still pending"
+    );
     assert!(r.s.demotions.get().unwrap().record.list().is_empty());
     let s = run(|l| r.s.trust_sight(&me, "nobody", "fp", l));
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_A_COUNTERPARTY));
@@ -487,8 +494,25 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
         svc::UNDECIDED_STALE,
         "approve what you saw"
     );
+    // An item at a counterparty whose declared fingerprint was never approved waits on that
+    // approval (coordinator 2026-10-07, #555 point iii; predev
+    // crates/busbar-kernel/src/trust/mod.rs:336-337, `serves` is false while nothing is pinned).
     assert_eq!(
         r.s.trust_decide(&me, tool, Some("d1"), true).value,
+        svc::TRUST_DECIDED_PENDING
+    );
+    assert_eq!(
+        serves("t"),
+        svc::DISTRUST_NOT_APPROVED,
+        "the counterparty is pending"
+    );
+    let whole = TrustKeyRef {
+        counterparty: "cp",
+        item: None,
+    };
+    run(|l| r.s.trust_sight(&me, "cp", "fp", l));
+    assert_eq!(
+        r.s.trust_decide(&me, whole, Some("fp"), true).value,
         svc::TRUST_DECIDED_SERVING
     );
     assert_eq!(serves("t"), svc::DISTRUST_NONE, "approved, it serves");
@@ -516,10 +540,6 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
         "revoked, it is refused"
     );
     // The counterparty: a changed catalogue quarantines it; its own verb sees it.
-    let whole = TrustKeyRef {
-        counterparty: "cp",
-        item: None,
-    };
     run(|l| r.s.trust_sight(&me, "cp", "moved", l));
     assert_eq!(
         r.s.trust_decide(&me, tool, None, false).value,
@@ -710,9 +730,12 @@ fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
     // Re-admitted with a pin, the default instance's clean sighting clears the unprefixed row.
     let pinned = restarted(&r);
     pinned.admit(SECTION_KEY, trusting(Some("fp"))).unwrap();
+    // A sighting of the declared fingerprint before any approval reports pending (coordinator
+    // 2026-10-07, #555 point ii; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
+    // Pending; crates/busbar-a2a/src/a2a/registry.rs:123 lowers every registration unpinned).
     assert_eq!(
         run(|l| pinned.trust_sight(&caller(SECTION_KEY), "cp", "fp", l)).value,
-        svc::TRUST_SAME
+        svc::TRUST_NEW
     );
     assert!(r.s.demotions.get().unwrap().record.list().is_empty());
 }

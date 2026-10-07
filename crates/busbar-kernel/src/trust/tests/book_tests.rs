@@ -104,11 +104,16 @@ fn a_declared_fingerprint_does_not_become_an_approval_at_boot() {
         "a registration lowered from config is pending, never approved"
     );
     assert_eq!(state(&b), Some(KeyState::New), "listed pending");
-    b.sight("inst", "cp", "fp", 1).unwrap();
+    assert_eq!(
+        b.sight("inst", "cp", "fp", 1),
+        Ok((Sight::New, Effect::None)),
+        "a sighting of the declared fingerprint reports pending (coordinator 2026-10-07, #555 \
+         point ii; predev crates/busbar-kernel/src/trust/mod.rs:289-290)"
+    );
     assert_eq!(
         b.judge(&i, &whole),
         Err(Distrust::NotApproved),
-        "a sighting of the declared fingerprint approves nothing either"
+        "and approves nothing either"
     );
     let (_, kept) = b
         .decide(&i, "cp", None, Ruling::Approve, Some("fp"))
@@ -119,6 +124,11 @@ fn a_declared_fingerprint_does_not_become_an_approval_at_boot() {
         "only the operator's approval admits it"
     );
     assert_eq!(state(&b), Some(KeyState::Same));
+    assert_eq!(
+        b.sight("inst", "cp", "fp", 2),
+        Ok((Sight::Same, Effect::None)),
+        "approved, the pin is the pinned catalogue"
+    );
     // The kept approval outlives a restart: replayed, the declared fingerprint is approved.
     let (fresh, f) = book(entry(Some("fp"), 0, 0));
     assert_eq!(fresh.judge(&f, &whole), Err(Distrust::NotApproved));
@@ -129,6 +139,26 @@ fn a_declared_fingerprint_does_not_become_an_approval_at_boot() {
     assert_eq!(b.judge(&i, &whole), Ok(()));
     b.admit(&i, [("cp".to_string(), entry(Some("fp2"), 0, 0))], []);
     assert_eq!(b.judge(&i, &whole), Err(Distrust::NotApproved));
+    // Every item there waits on the counterparty's approval, a configured one included
+    // (coordinator 2026-10-07, #555 point iii; predev crates/busbar-kernel/src/trust/mod.rs:336-337,
+    // `serves` is false while nothing is pinned).
+    let mut e = entry(Some("fp"), 0, 0);
+    e.approved.insert("t".to_string(), "d1".to_string());
+    let (b, i) = book(e);
+    let item = TrustFacts {
+        counterparty: "cp",
+        item: Some("t"),
+        digest: Some("d1"),
+    };
+    b.sight_item(&i, "cp", "t", "d1").unwrap();
+    assert_eq!(b.judge(&i, &item), Err(Distrust::NotApproved));
+    b.decide(&i, "cp", None, Ruling::Approve, None)
+        .expect("a key");
+    assert_eq!(
+        b.judge(&i, &item),
+        Ok(()),
+        "the counterparty approved, it serves"
+    );
 }
 
 #[test]
@@ -150,13 +180,15 @@ fn a_resighting_of_the_pin_clears_the_quarantine() {
     let (b, _) = book(entry(Some("h1"), 0, 0));
     b.sight("inst", "cp", "h1", 1).unwrap();
     b.sight("inst", "cp", "h2", 2).unwrap();
+    // Pending, never Same: the declared fingerprint was never approved (coordinator 2026-10-07,
+    // #555 point ii; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending).
     assert_eq!(
         b.sight("inst", "cp", "h1", 3),
-        Ok((Sight::Same, Effect::Clear))
+        Ok((Sight::New, Effect::Clear))
     );
     assert_eq!(
         b.sight("inst", "cp", "h1", 4),
-        Ok((Sight::Same, Effect::None))
+        Ok((Sight::New, Effect::None))
     );
 }
 
@@ -174,9 +206,11 @@ fn a_clean_sighting_inside_the_recovery_backoff_is_held() {
         b.sight("inst", "cp", "h1", 5),
         Ok((Sight::Quarantined, Effect::None))
     );
+    // Pending, never Same: the declared fingerprint was never approved (coordinator 2026-10-07,
+    // #555 point ii; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending).
     assert_eq!(
         b.sight("inst", "cp", "h1", 110),
-        Ok((Sight::Same, Effect::Clear))
+        Ok((Sight::New, Effect::Clear))
     );
 }
 
@@ -193,9 +227,11 @@ fn a_replayed_demotion_quarantines_at_admit() {
         b.sight("inst", "cp", "other", 2),
         Ok((Sight::Quarantined, Effect::None))
     );
+    // Pending, never Same: the declared fingerprint was never approved (coordinator 2026-10-07,
+    // #555 point ii; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending).
     assert_eq!(
         b.sight("inst", "cp", "fp", 3),
-        Ok((Sight::Same, Effect::Clear))
+        Ok((Sight::New, Effect::Clear))
     );
 }
 
@@ -209,9 +245,11 @@ fn a_readmit_keeps_state_unless_the_declared_pin_changed() {
         Ok((Sight::Quarantined, Effect::None))
     );
     b.admit(&i, [("cp".to_string(), entry(Some("other"), 0, 0))], []);
+    // Pending, never Same: the declared fingerprint was never approved (coordinator 2026-10-07,
+    // #555 point ii; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending).
     assert_eq!(
         b.sight("inst", "cp", "other", 3),
-        Ok((Sight::Same, Effect::None))
+        Ok((Sight::New, Effect::None))
     );
 }
 
@@ -247,9 +285,11 @@ fn a_replayed_demotion_with_no_declared_pin_stays_until_one_is_declared() {
         Ok((Sight::Quarantined, Effect::None))
     );
     b.admit(&i, [("cp".to_string(), entry(Some("h"), 0, 0))], []);
+    // Pending, never Same: the declared fingerprint was never approved (coordinator 2026-10-07,
+    // #555 point ii; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending).
     assert_eq!(
         b.sight("inst", "cp", "h", 3),
-        Ok((Sight::Same, Effect::None))
+        Ok((Sight::New, Effect::None))
     );
 }
 
