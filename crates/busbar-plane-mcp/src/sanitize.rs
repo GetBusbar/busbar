@@ -9,11 +9,10 @@
 //! text busbar composes and serves itself:
 //!
 //! - tool, prompt and resource DESCRIPTIONS and names in the catalogue;
-//! - `resources/read` CONTENT and `prompts` TEMPLATES answered from the section;
-//! - busbar's own words on a failed upstream leg.
+//! - `resources/read` CONTENT and `prompts` TEMPLATES answered from the section.
 //!
-//! An upstream's tool RESULT is not among them: it is the upstream's data and reaches the caller as
-//! the upstream sent it (Law 11).
+//! An upstream's tool RESULT and its error message are not among them: they are the upstream's
+//! data and reach the caller as the upstream sent them (Law 11).
 //!
 //! ## What this does NOT do, stated here rather than in a footnote
 //!

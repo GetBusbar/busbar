@@ -980,7 +980,8 @@ pub fn upstream_ask_field(value: &Value) -> Option<&'static str> {
 }
 
 /// The tool-execution-error RESULT for an upstream leg that failed: `isError: true` with the
-/// failure, busbar-attributed and naming the server, in a normalised text block.
+/// failure, busbar-attributed and naming the server, in one text block. An upstream's own words in
+/// `reason` (its JSON-RPC error message) are carried unchanged (Law 11).
 #[must_use]
 pub fn upstream_failure_result(server: &str, reason: &str) -> Value {
     json!({
@@ -988,9 +989,7 @@ pub fn upstream_failure_result(server: &str, reason: &str) -> Value {
         "isError": true,
         "content": [{
             "type": "text",
-            "text": crate::sanitize::normalise(&format!(
-                "The MCP server `{server}` did not complete this tool call: {reason}"
-            )),
+            "text": format!("The MCP server `{server}` did not complete this tool call: {reason}"),
         }],
     })
 }

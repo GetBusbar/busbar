@@ -3,11 +3,10 @@
 
 //! THE SANITISER'S COMPLEXITY GUARDS — the half of markup-normalisation that is measured in time.
 //!
-//! The strip reads bytes a sender chose: an upstream's error message carried in busbar's words on a
-//! failed leg, and a caller's arguments substituted into a prompt or resource template. A scan that
-//! goes quadratic on a shape the sender picks is a denial of service the sender can spell in a
-//! 200 KB body, so the two adversarial shapes below carry a wall-clock bound as well as an output
-//! assertion.
+//! The strip reads bytes a sender chose: a caller's arguments substituted into a prompt or resource
+//! template. A scan that goes quadratic on a shape the sender picks is a denial of service the
+//! sender can spell in a 200 KB body, so the two adversarial shapes below carry a wall-clock bound
+//! as well as an output assertion.
 //!
 //! WHY THESE TWO LIVE OUT HERE AND THE REST OF THE SUITE LIVES IN `src/tests/`. They read a clock,
 //! and this crate's purity oracle (`tests/purity.rs::the_plane_performs_no_input_or_output`) walks
