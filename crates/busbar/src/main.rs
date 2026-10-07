@@ -895,7 +895,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         root::dispatch::dispatcher(),
         LINKED.auths,
         root::boot::dropped_registry(),
-        Some(Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::DeclaredConns>),
+        root::loader::dispatch::ConnTable::Host(
+            Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::DeclaredConns>
+        ),
     ));
     // The kernel's own App (its lane store, its telemetry bank), through its swap handle once it exists (a config apply
     // rebuilds the store), the boot App's until then.

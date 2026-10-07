@@ -267,7 +267,7 @@ impl AdminService {
                 .map(|(name, cfg)| export_def_view(name, cfg))
                 .collect(),
             // A plane section reads its registrations through the plane's `named_def_list` seam,
-            // so this arm names no `busbar_mcp::mcp`/`busbar_a2a::a2a` view or registry type; the empty vec for
+            // so this arm names no plane crate's view or registry type; the empty vec for
             // a plane compiled out is the seam's own `None`.
             NamedMapSection::Plane(_) => plane_named_def_list(section, &self.app),
         };
@@ -1002,10 +1002,10 @@ impl AdminService {
     /// base64-encoded, COMPRESSED ARCHIVE, reachable by the WEAKEST admin credential in the system,
     /// and the archive must be decompressed and its manifest parsed BEFORE the signature can even be
     /// checked, so the trust check happens strictly after the dangerous part):
-    ///   1. a hard cap on the DECODED tarball size, `busbar_plugin_loader::tarball::MAX_TARBALL_FILE_BYTES`
+    ///   1. a hard cap on the DECODED tarball size, the loader's `tarball::MAX_TARBALL_FILE_BYTES`
     ///      — the same ceiling `POST /plugins` (install) and the on-disk catalog scan both already
     ///      enforce, checked here BEFORE `unpack` ever runs;
-    ///   2. `busbar_plugin_loader::tarball::unpack` itself streams each archive member through a
+    ///   2. the loader's `tarball::unpack` itself streams each archive member through a
     ///      cap enforced DURING decompression (`read_entry_bounded`'s `.take(cap + 1)`) — a
     ///      decompression bomb fails fast, never after allocating the bomb — and rejects any
     ///      non-regular-file or path-traversal entry name outright, and errors immediately on a
@@ -1292,11 +1292,11 @@ impl AdminService {
     /// confident wrong answer. A refusal rather than an empty body, because an empty body is a
     /// silent zero wearing a different hat (#42).
     fn validated_snapshot(
-        history: Option<&busbar_kernel_ledger::cost::History>,
+        history: Option<&busbar_kernel::cost::History>,
         seq: u64,
-    ) -> Result<busbar_kernel_ledger::cost::HistorySeq, AdminError> {
+    ) -> Result<busbar_kernel::cost::HistorySeq, AdminError> {
         let head = history
-            .and_then(busbar_kernel_ledger::cost::History::head)
+            .and_then(busbar_kernel::cost::History::head)
             .ok_or_else(|| {
                 AdminError::Validation(
                     "as_of names a rate-card history snapshot; this node has resolved no \
@@ -1310,7 +1310,7 @@ impl AdminService {
                  not exist is refused, never answered at the head"
             )));
         }
-        Ok(busbar_kernel_ledger::cost::HistorySeq(seq))
+        Ok(busbar_kernel::cost::HistorySeq(seq))
     }
 
     /// `GET /api/v1/admin/usage` — the fleet METERING read (FinOps surface): the current UTC-day
@@ -1434,7 +1434,7 @@ impl AdminService {
         // THE COUNT CORRECTIONS (item 404, OWNER RULING Q9): every `adjust` the node amendment
         // journal sealed, read ONCE for the whole response. Each row prices its counts AS CORRECTED
         // (`row_count_corrections`), never a money figure a correction carried — it carries none.
-        let corrections = busbar_kernel::audit::amend::node_corrections();
+        let corrections = amend::node_corrections();
         // Aggregate in memory — a bucket is bounded by (keys × models) accumulation rows.
         let mut total = UsageBreakdown::default();
         let mut by_model: std::collections::BTreeMap<(String, String), UsageBreakdown> =
@@ -1505,7 +1505,7 @@ impl AdminService {
             // card nobody put in force for it; the record has a gap and the read says so.
             //
             // THE PRICING ITSELF IS NOT HERE AND IS NOT THIS CRATE'S: the row is handed to
-            // `busbar_kernel_ledger::cost::price_in_view`, THE ONE FUNCTION, which resolves the
+            // the ledger's `cost::price_in_view`, THE ONE FUNCTION, which resolves the
             // card at the instant below and prices against it. See
             // `derive_spend_micros_row_at_card`.
             let at = row_priced_at_ms(window.start, r.priced_from_ms);
@@ -1521,7 +1521,7 @@ impl AdminService {
                     Some((_card_seq, card)) => derive_spend_micros_row_classes_at_card(
                         v, at, card, &cost, &lane, &row_view, classes,
                     ),
-                    None => Err(busbar_kernel_ledger::cost::MoneyError::NoCardInForce { at }),
+                    None => Err(busbar_kernel::cost::MoneyError::NoCardInForce { at }),
                 },
                 None => derive_spend_micros_row_classes(&cost, &lane, &row_view, classes),
             };
@@ -1545,7 +1545,7 @@ impl AdminService {
                         Some((_card_seq, card)) => derive_spend_micros_row_classes_at_card(
                             v, at, card, &cost, &lane, &none, &one,
                         ),
-                        None => Err(busbar_kernel_ledger::cost::MoneyError::NoCardInForce { at }),
+                        None => Err(busbar_kernel::cost::MoneyError::NoCardInForce { at }),
                     },
                     None => derive_spend_micros_row_classes(&cost, &lane, &none, &one),
                 }

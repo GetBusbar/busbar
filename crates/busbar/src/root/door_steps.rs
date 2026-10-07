@@ -1547,7 +1547,7 @@ pub struct OutboundAuths {
     dispatcher: Arc<crate::root::loader::dispatch::Dispatcher>,
     linked: Vec<busbar_kernel::preflight::LinkedAuth>,
     dropped: Option<&'static crate::root::loader::PluginRegistry>,
-    conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+    conns: crate::root::loader::dispatch::ConnTable,
     opened:
         Mutex<HashMap<String, Arc<crate::root::loader::dispatch::auth_outbound::OutboundInstance>>>,
 }
@@ -1565,14 +1565,15 @@ impl std::fmt::Debug for OutboundAuths {
 
 impl OutboundAuths {
     /// The auth rows `linked` (the build's) and `dropped` (the plugins directory's), loaded on
-    /// `dispatcher`, their needs declared on `conns` (the process's connector; `None`: no need is
-    /// granted, and a style that mints mints nothing).
+    /// `dispatcher`, their needs declared on `conns`: `ConnTable::Host`, the process's connector;
+    /// or, stated by the caller, `ConnTable::NoNeeds`: no need is granted, a row that declares one
+    /// will not load and is passed over, and a style that mints mints nothing.
     #[must_use]
     pub fn new(
         dispatcher: Arc<crate::root::loader::dispatch::Dispatcher>,
         linked: &[busbar_kernel::preflight::LinkedAuth],
         dropped: Option<&'static crate::root::loader::PluginRegistry>,
-        conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+        conns: crate::root::loader::dispatch::ConnTable,
     ) -> Self {
         Self {
             dispatcher,

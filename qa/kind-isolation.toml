@@ -1423,16 +1423,6 @@ why     = "busbar-core-admin names busbar-kernel: declared normal (default-featu
 drain   = "none: the architecture grants cleanliness -> kernel. What this row holds is the NUMBER; the dependency stays one-way, so the kernel naming busbar-core-admin back would be an ungranted class."
 
 [[dep]]
-from    = "busbar-core-admin"
-to      = "busbar-kernel-ledger"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §8 (BUSBAR-1.6.0.md:1123-1126): \"Exactly three crates are compiled in and are never plugins; each depends one way on the kernel, names no plugin\"; DECISIONS #5 (BUSBAR-1.6.0.md:2159): \"admin, oauth2 and the connector are NOT plugins. They are the three compiled-in cleanliness crates, one-way dep on core\" — busbar-kernel-ledger is a kernel-tier crate (DECISIONS #36, BUSBAR-1.6.0.md:2196: MONEY group), so this is the same one-way cleanliness -> kernel edge (ARCHITECTURE_ALLOWED cleanliness -> kernel)."
-why     = "busbar-core-admin names busbar-kernel-ledger: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: the architecture grants cleanliness -> kernel. What this row holds is the NUMBER; the dependency stays one-way."
-
-[[dep]]
 from    = "busbar-kernel"
 to      = "busbar-kernel-breaker"
 half    = "shipped"

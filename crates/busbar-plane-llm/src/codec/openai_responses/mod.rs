@@ -2265,7 +2265,8 @@ const RESPONSES_USAGE_IDENTITY: &str = "openai_responses.usage";
 /// cached and cache-write slices), `cached_tokens` (cache read), `cache_write_tokens` (cache
 /// write), `output_tokens` (output); `output_tokens_details.reasoning_tokens` is a slice of
 /// `output_tokens`. `total_tokens` is OpenAI's sum, never a unit: it is cross-checked against the
-/// ledgered classes and a gap is WARN-logged and carried as the usage identity note, never ledgered.
+/// ledgered classes, a gap is WARN-logged and carried as the usage identity note, and a total ABOVE
+/// the itemized classes is the open class `unitemized_tokens` (owner LEDGER-100).
 fn read_responses_usage(
     usage: Option<&serde_json::Value>,
     response: Option<&serde_json::Value>,
