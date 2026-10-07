@@ -34,6 +34,20 @@
 //! (`//` in place of `#` inside `xtask/src`.) The sibling-checkout plugin builds are the real
 //! exceptions and they carry one each.
 //!
+//! AN EXEMPTION IS SCOPED TO THE FILE IT NAMES. A declaration excuses the dead package in the
+//! `<covered file>` it writes and NOWHERE ELSE: the same dead name selected in any other file is
+//! RED until that file carries a declaration of its own. Keyed on the name alone, one written
+//! exception silenced every other dead selector of that spelling in the tree, and the file field
+//! was checked only to be SOME covered file, never the one holding the site (X5 finding 8).
+//!
+//! WHICH FILES ARE READ is derived from the tree, not from an extension list: EVERY file under
+//! `.github` (workflows, composite actions under `.github/actions`, `.github/scripts`), `scripts`,
+//! `qa` and `xtask/src` is walked, and its shape picks the reader. `.rs` is read for command
+//! literals (rule 3); `.yml`/`.yaml` as commands plus matrix cells (rules 1 and 2); `.json` for its
+//! command strings (rule 4); Markdown is prose and is not read; EVERYTHING ELSE — `.sh`, `.py`,
+//! `.mjs`, `.toml`, a `Makefile`, an extensionless script — is read as command lines (rule 1). A
+//! new script language is therefore covered the day it lands, without anyone adding its suffix.
+//!
 //! WHAT IS COVERED, AND WHY SO NARROWLY. Only UNAMBIGUOUS PACKAGE-SELECTOR POSITIONS:
 //!
 //! 1. `-p <name>` / `--package <name>` on a NON-COMMENT line, inside a command segment that names
@@ -45,6 +59,11 @@
 //! 3. A Rust string literal under `xtask/src` that BEGINS with `cargo ` — the command strings
 //!    a runner mirrors a pipeline with. The "begins with" is load-bearing: the same tuples carry PROSE
 //!    strings that quote dead selectors on purpose, and prose is not a command.
+//! 4. A JSON string that is the value of a `run` key — the turnstile's `qa/pipeline-checks.json`
+//!    runs exactly those as bash. JSON is data, and a string in it is a command only where a
+//!    consumer executes it: the audit evidence under `qa/` opens prose fields with `cargo test -p
+//!    <a crate since folded away> …` as the record of what was run, and that record is not a
+//!    command.
 //!
 //! WHAT IS DELIBERATELY NOT COVERED, stated so it is not mistaken for held: the general "no string
 //! literal anywhere names a non-workspace crate". Historical crate names legitimately appear in
@@ -61,9 +80,10 @@
 //! 2. [`ROW_SITE_FLOOR`] — at least [`SITE_FLOOR`] selector sites were discovered. Zero is never
 //!    clean: "every selector resolves" is vacuously true over no selectors, which is exactly what a
 //!    scanner that stopped matching reports.
-//! 3. [`ROW_RESOLVES`] — every discovered selector names a package in the universe, or is declared.
-//! 4. [`ROW_DECL_LIVE`] — a declaration names a package that is still selected somewhere AND still
-//!    fails to resolve. A stale exemption outlives the site it excused and silently excuses the next
+//! 3. [`ROW_RESOLVES`] — every discovered selector names a package in the universe, or is declared
+//!    FOR THE FILE IT IS IN.
+//! 4. [`ROW_DECL_LIVE`] — a declaration names a package that is still selected IN THE FILE IT
+//!    NAMES AND still fails to resolve. A stale exemption outlives the site it excused and silently excuses the next
 //!    selector to take the name; a declaration for a package that has since joined the workspace is
 //!    an exemption nobody needs, and leaving it hides the day it leaves again.
 //! 5. [`ROW_DECL_FILE`] — the file a declaration names is one of the covered files. A reference to a
@@ -85,8 +105,10 @@ pub const ROOT_MANIFEST: &str = "Cargo.toml";
 /// field-inventory job — stay green without an entry anywhere.
 pub const LOCKFILE: &str = "Cargo.lock";
 
-/// The covered roots, one per extension the walk can ask for.
-pub const WORKFLOW_ROOT: &str = ".github/workflows";
+/// The covered roots. Every file under each is walked; its shape picks the reader ([`reader_for`]).
+/// `.github` whole, not `.github/workflows`: a composite action under `.github/actions` and a
+/// script under `.github/scripts` run cargo with the release workflow's tokens too.
+pub const GITHUB_ROOT: &str = ".github";
 pub const SCRIPT_ROOT: &str = "scripts";
 pub const QA_ROOT: &str = "qa";
 pub const XTASK_ROOT: &str = "xtask/src";
@@ -112,10 +134,12 @@ pub const ROW_DECL_REASON: &str = "package-selectors:declaration-reason";
 /// makes every selector in the tree look dead, which is a defect in the instrument reported as a
 /// defect in the tree.
 pub const UNIVERSE_FLOOR: usize = 40;
-/// The floor under the discovered selector sites. Measured at 47, across 243 covered files, once
-/// the deleted workflows' selectors, then the dead landing/runner scripts and the retired qa soak, left the tree (it read 200 across 245 files before). This is the floor that matters: an empty scan set is the one state in
-/// which "every selector resolves" is true and means nothing.
-pub const SITE_FLOOR: usize = 47;
+/// The floor under the discovered selector sites, armed at the measured count: 55 sites across
+/// 311 read files (plus 25 Markdown files walked and not read) at predev 0fd08ee75d, once the walk
+/// read every file under its roots by shape rather than four suffixes (the four-suffix walk read 52
+/// across 266). This is the floor that matters: an empty scan set is the one state in which "every
+/// selector resolves" is true and means nothing.
+pub const SITE_FLOOR: usize = 55;
 /// The shortest exemption reason that is a reason rather than a shrug.
 pub const MIN_REASON: usize = 30;
 
@@ -147,8 +171,35 @@ struct Decl {
 struct Covered {
     rel: String,
     text: String,
-    rust: bool,
-    yaml: bool,
+    reader: Reader,
+}
+
+/// Which scanner a covered file is read by, chosen from the file's own name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reader {
+    /// `.rs`: string literals that begin with `cargo ` (rule 3).
+    Rust,
+    /// `.yml` / `.yaml`: command lines and matrix cells (rules 1 and 2).
+    Yaml,
+    /// `.json`: `run` values (rule 4).
+    Json,
+    /// Markdown: prose, which RECORDS deleted crates on purpose. Walked, counted, not read.
+    Prose,
+    /// Everything else — shell, python, node, TOML, a Makefile, an extensionless script: command
+    /// lines (rule 1). The default is READ, so a file shape nobody listed is covered, not skipped.
+    Commands,
+}
+
+/// The reader for one repo-relative path, from the extension of its last segment.
+fn reader_for(rel: &str) -> Reader {
+    let base = rel.rsplit('/').next().unwrap_or(rel);
+    match base.rsplit_once('.').map(|(_, ext)| ext) {
+        Some("rs") => Reader::Rust,
+        Some("yml" | "yaml") => Reader::Yaml,
+        Some("json") => Reader::Json,
+        Some("md") => Reader::Prose,
+        _ => Reader::Commands,
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -270,7 +321,9 @@ fn selectors(args: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < toks.len() {
-        let t = toks[i];
+        // A python argv list writes the flag as `"-p",`; the quotes and the comma are spelling,
+        // not part of the flag.
+        let t = toks[i].trim_matches(['"', '\'', ',', '[', ']']);
         let value = if t == "-p" || t == "--package" {
             i += 1;
             toks.get(i).copied()
@@ -364,7 +417,8 @@ fn logical_lines(text: &str) -> Vec<(usize, String)> {
 /// the removed `qa-gate-run.sh`'s note about what the selector used to read) is all whole-line.
 fn scan_commands(rel: &str, text: &str, out: &mut Vec<Site>) {
     for (line, joined) in logical_lines(text) {
-        if joined.trim_start().starts_with('#') {
+        let t = joined.trim_start();
+        if t.starts_with('#') || t.starts_with("//") {
             continue;
         }
         for seg in segments(&joined) {
@@ -475,6 +529,56 @@ fn scan_rust_commands(rel: &str, text: &str, out: &mut Vec<Site>) {
     }
 }
 
+/// Rule 4: a JSON string that is a `run` value.
+///
+/// A JSON string cannot span lines, so the scan is per line: the string after a `"run":` key, read
+/// as a shell command line, so a `run` value that chains `m=$(…); cargo build -p x` is held to the
+/// same `cargo`-in-the-segment rule as a script.
+fn scan_json_commands(rel: &str, text: &str, out: &mut Vec<Site>) {
+    for (idx, raw) in text.lines().enumerate() {
+        let line = idx + 1;
+        let b = raw.as_bytes();
+        let mut starts: Vec<usize> = Vec::new();
+        for (i, _) in raw.match_indices("\"run\"") {
+            let rest = &raw[i + 5..];
+            let after_colon = rest.trim_start().strip_prefix(':').map(str::trim_start);
+            if let Some(v) = after_colon.filter(|v| v.starts_with('"')) {
+                starts.push(raw.len() - v.len());
+            }
+        }
+        for start in starts {
+            let mut lit = String::new();
+            let mut j = start + 1;
+            while j < b.len() && b[j] != b'"' {
+                if b[j] == b'\\' {
+                    match b.get(j + 1) {
+                        Some(b'n' | b't' | b'r') => lit.push(' '),
+                        Some(&c) => lit.push(c as char),
+                        None => {}
+                    }
+                    j += 2;
+                    continue;
+                }
+                lit.push(b[j] as char);
+                j += 1;
+            }
+            for seg in segments(&lit) {
+                if !has_word(seg, "cargo") {
+                    continue;
+                }
+                for pkg in selectors(seg) {
+                    out.push(Site {
+                        pkg,
+                        file: rel.to_string(),
+                        line,
+                        kind: "JSON command string",
+                    });
+                }
+            }
+        }
+    }
+}
+
 /// `# package-selector: pkg -- file -- reason`, in either comment spelling. A line that carries the
 /// prefix and does not have this shape is NOT silently skipped: it is returned with the empty fields
 /// it parsed to, so the file and reason rules report it.
@@ -495,25 +599,21 @@ fn parse_decl(trimmed: &str) -> Option<Decl> {
 // discovery
 // ---------------------------------------------------------------------------------------------
 
-/// Every covered file, DERIVED by walking the four roots. A hand-kept list is the mechanism that
-/// let twenty sites rot in the first place.
+/// Every file under the four roots, DERIVED by walking them with NO extension filter. A hand-kept
+/// list of files is the mechanism that let twenty sites rot in the first place, and a hand-kept
+/// list of suffixes is the same mechanism one level up: a `.yaml` workflow, a composite action, a
+/// python script or a Makefile was never opened. Markdown comes back too, as [`Reader::Prose`], so
+/// the count of what was walked and not read is printed rather than implied.
 fn covered(cx: &Ctx) -> Result<Vec<Covered>, String> {
-    let roots: [(&str, &str); 4] = [
-        (WORKFLOW_ROOT, "yml"),
-        (SCRIPT_ROOT, "sh"),
-        (QA_ROOT, "toml"),
-        (XTASK_ROOT, "rs"),
-    ];
     let mut out = Vec::new();
-    for (root, ext) in roots {
+    for root in [GITHUB_ROOT, SCRIPT_ROOT, QA_ROOT, XTASK_ROOT] {
         let files = cx
-            .walk(&WalkSpec::new([root]).ext(ext))
+            .walk(&WalkSpec::new([root]))
             .map_err(|e| format!("the `{root}` walk failed: {e}"))?;
         for f in files {
             let rel = f.rel_str();
             out.push(Covered {
-                rust: ext == "rs",
-                yaml: ext == "yml",
+                reader: reader_for(&rel),
                 text: f.text,
                 rel,
             });
@@ -528,13 +628,15 @@ fn scan(files: &[Covered]) -> (Vec<Site>, Vec<(String, usize, Decl)>) {
     let mut sites = Vec::new();
     let mut decls = Vec::new();
     for f in files {
-        if f.rust {
-            scan_rust_commands(&f.rel, &f.text, &mut sites);
-        } else {
-            scan_commands(&f.rel, &f.text, &mut sites);
-            if f.yaml {
+        match f.reader {
+            Reader::Prose => continue,
+            Reader::Rust => scan_rust_commands(&f.rel, &f.text, &mut sites),
+            Reader::Json => scan_json_commands(&f.rel, &f.text, &mut sites),
+            Reader::Yaml => {
+                scan_commands(&f.rel, &f.text, &mut sites);
                 scan_matrix(&f.rel, &f.text, &mut sites);
             }
+            Reader::Commands => scan_commands(&f.rel, &f.text, &mut sites),
         }
         for (idx, raw) in f.text.lines().enumerate() {
             if let Some(d) = parse_decl(raw.trim()) {
@@ -598,9 +700,24 @@ impl Gate for PackageSelectorsGate {
             Err(why) => return unproven(&why),
         };
         let (sites, decls) = scan(&files);
-        let covered_paths: BTreeSet<&str> = files.iter().map(|f| f.rel.as_str()).collect();
-        let declared: BTreeSet<&str> = decls.iter().map(|(_, _, d)| d.pkg.as_str()).collect();
+        let prose = files.iter().filter(|f| f.reader == Reader::Prose).count();
+        let read = files.len() - prose;
+        let covered_paths: BTreeSet<&str> = files
+            .iter()
+            .filter(|f| f.reader != Reader::Prose)
+            .map(|f| f.rel.as_str())
+            .collect();
+        // KEYED ON (PACKAGE, FILE). A declaration excuses its package in the file it names and
+        // nowhere else; a selector of the same dead name in another file is that file's defect.
+        let declared: BTreeSet<(&str, &str)> = decls
+            .iter()
+            .map(|(_, _, d)| (d.pkg.as_str(), d.file.as_str()))
+            .collect();
         let selected: BTreeSet<&str> = sites.iter().map(|s| s.pkg.as_str()).collect();
+        let selected_in: BTreeSet<(&str, &str)> = sites
+            .iter()
+            .map(|s| (s.pkg.as_str(), s.file.as_str()))
+            .collect();
 
         let mut rows = vec![Row::pass(
             ROW_UNIVERSE,
@@ -617,12 +734,11 @@ impl Gate for PackageSelectorsGate {
                 ROW_SITE_FLOOR,
                 "the selector scan collapsed below its discovery floor",
                 format!(
-                    "only {} selector site(s) were found across {} covered file(s) under \
-                     [{WORKFLOW_ROOT}, {SCRIPT_ROOT}, {QA_ROOT}, {XTASK_ROOT}] (floor \
-                     {SITE_FLOOR}). An empty scan set is the one state in which 'every selector \
-                     resolves' is true and means nothing.",
+                    "only {} selector site(s) were found across {read} read file(s) under \
+                     [{GITHUB_ROOT}, {SCRIPT_ROOT}, {QA_ROOT}, {XTASK_ROOT}] ({prose} Markdown \
+                     file(s) walked and not read; floor {SITE_FLOOR}). An empty scan set is the \
+                     one state in which 'every selector resolves' is true and means nothing.",
                     sites.len(),
-                    files.len()
                 ),
             )
         } else {
@@ -630,18 +746,22 @@ impl Gate for PackageSelectorsGate {
                 ROW_SITE_FLOOR,
                 "enough selector sites were discovered for the check to mean something",
                 format!(
-                    "{} site(s) across {} covered file(s) (floor {SITE_FLOOR})",
+                    "{} site(s) across {read} read file(s) under [{GITHUB_ROOT}, {SCRIPT_ROOT}, \
+                     {QA_ROOT}, {XTASK_ROOT}], {prose} Markdown file(s) walked and not read \
+                     (floor {SITE_FLOOR})",
                     sites.len(),
-                    files.len()
                 ),
             )
         });
 
-        // RESOLVES — in the universe, or declared. The declaration's own validity is rules 4-6; a
-        // stale declaration still discharges rule 3, so exactly one row goes red per defect.
+        // RESOLVES — in the universe, or declared FOR THIS FILE. The declaration's own validity is
+        // rules 4-6; a stale declaration still discharges rule 3 in its own file, so exactly one
+        // row goes red per defect.
         let dead: Vec<&Site> = sites
             .iter()
-            .filter(|s| !packages.contains(&s.pkg) && !declared.contains(s.pkg.as_str()))
+            .filter(|s| {
+                !packages.contains(&s.pkg) && !declared.contains(&(s.pkg.as_str(), s.file.as_str()))
+            })
             .collect();
         rows.push(if dead.is_empty() {
             Row::pass(
@@ -664,7 +784,8 @@ impl Gate for PackageSelectorsGate {
                      condition is a non-zero exit (cargo xtask txn-fence) that failure reads as a \
                      pass, and where it is a test filter it selects zero tests and exits 0. \
                      Repoint the selector, or write a `{DECL_HASH} <pkg>{SEP}<file>{SEP}<reason>` \
-                     line beside it.",
+                     line beside it, naming THAT file: a declaration excuses only the file it \
+                     names.",
                     dead.iter()
                         .map(|s| s.cite())
                         .collect::<Vec<_>>()
@@ -678,13 +799,14 @@ impl Gate for PackageSelectorsGate {
         let mut bad_file = Vec::new();
         let mut thin = Vec::new();
         for (rel, line, d) in &decls {
-            if !selected.contains(d.pkg.as_str()) {
-                unused.push(format!("{rel}:{line} `{}`", d.pkg));
-            } else if packages.contains(&d.pkg) {
-                needless.push(format!("{rel}:{line} `{}`", d.pkg));
-            }
+            // A declaration naming a file this gate does not read can excuse nothing and can never
+            // be live: that is ONE defect, and rule 5 alone reports it.
             if !covered_paths.contains(d.file.as_str()) {
                 bad_file.push(format!("{rel}:{line} `{}` names `{}`", d.pkg, d.file));
+            } else if !selected_in.contains(&(d.pkg.as_str(), d.file.as_str())) {
+                unused.push(format!("{rel}:{line} `{}` for `{}`", d.pkg, d.file));
+            } else if packages.contains(&d.pkg) {
+                needless.push(format!("{rel}:{line} `{}`", d.pkg));
             }
             if d.reason.chars().count() < MIN_REASON {
                 thin.push(format!(
@@ -705,8 +827,10 @@ impl Gate for PackageSelectorsGate {
             let mut detail = String::new();
             if !unused.is_empty() {
                 detail.push_str(&format!(
-                    "no covered file selects {} — a stale exemption outlives the site it excused \
-                     and then silently excuses the next selector to take the name. ",
+                    "the file a declaration names does not select its package: {} — a stale \
+                     exemption outlives the site it excused and then silently excuses the next \
+                     selector to take the name; a selector of that name in some OTHER file is not \
+                     the site it was written for. ",
                     unused.join(", ")
                 ));
             }
@@ -736,7 +860,7 @@ impl Gate for PackageSelectorsGate {
                 "a declared exception names a file this gate does not cover",
                 format!(
                     "{} — a claim pointing at a path that was renamed away is a claim nobody can \
-                     check. The file must be one of the covered files under [{WORKFLOW_ROOT}, \
+                     check. The file must be one of the read files under [{GITHUB_ROOT}, \
                      {SCRIPT_ROOT}, {QA_ROOT}, {XTASK_ROOT}].",
                     bad_file.join(" | ")
                 ),
@@ -838,7 +962,7 @@ fn plant_target(cx: &Ctx) -> Option<(String, String)> {
     let files = covered(cx).ok()?;
     files
         .into_iter()
-        .find(|f| f.rel.starts_with(SCRIPT_ROOT))
+        .find(|f| f.rel.starts_with(&format!("{SCRIPT_ROOT}/")) && f.rel.ends_with(".sh"))
         .map(|f| (f.rel, f.text))
 }
 
@@ -947,15 +1071,15 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
         ov
     });
 
-    // A DECLARATION POINTING AT A FILE THAT IS NOT COVERED. The selector is planted alongside it so
-    // the package really is selected and really is unresolvable, which keeps rules 3 and 4 green.
+    // A DECLARATION POINTING AT A FILE THAT IS NOT COVERED. No selector is planted beside it: a
+    // declaration excuses only the file it names, so a selector here would be unexcused and redden
+    // rule 3 as well, and the liveness rule leaves an uncovered file to this rule alone.
     let bad_file_decl = target.as_ref().map(|(rel, text)| {
         let mut ov = Overlay::new();
         ov.set(
             rel,
             format!(
-                "{text}\ncargo build --locked -p {PLANTED_EXCUSED}\n\
-                 {DECL_HASH} {PLANTED_EXCUSED}{SEP}{PLANTED_GONE_FILE}{SEP}{PLANTED_REASON}\n"
+                "{text}\n{DECL_HASH} {PLANTED_EXCUSED}{SEP}{PLANTED_GONE_FILE}{SEP}{PLANTED_REASON}\n"
             ),
         );
         ov
@@ -1188,6 +1312,107 @@ mod tests {
         assert_eq!(package_token("busbar-store-<backend>"), None);
         assert_eq!(package_token("22"), None);
         assert_eq!(package_token("8080:8080"), None);
+    }
+
+    #[test]
+    fn the_reader_is_picked_by_the_files_own_shape_and_only_markdown_is_unread() {
+        assert_eq!(reader_for("xtask/src/gates/x.rs"), Reader::Rust);
+        assert_eq!(reader_for(".github/workflows/promote.yml"), Reader::Yaml);
+        assert_eq!(reader_for(".github/actions/a/action.yaml"), Reader::Yaml);
+        assert_eq!(reader_for("qa/pipeline-checks.json"), Reader::Json);
+        assert_eq!(reader_for("qa/DESIGN-BINDINGS.md"), Reader::Prose);
+        for commands in [
+            "scripts/x.sh",
+            "scripts/x.py",
+            "scripts/x.mjs",
+            "qa/construction.toml",
+            "scripts/sub/Makefile",
+            "scripts/release-gate/run",
+            ".github/release-notify-targets.txt",
+        ] {
+            assert_eq!(reader_for(commands), Reader::Commands, "{commands}");
+        }
+    }
+
+    #[test]
+    fn a_python_argv_list_is_a_cargo_command_and_a_js_comment_is_not() {
+        let mut out = Vec::new();
+        scan_commands(
+            "x.py",
+            "    base = [\"cargo\", \"test\", \"-p\", \"busbar\", \"--features\", F]\n\
+             // cargo build -p busbar-kernel\n",
+            &mut out,
+        );
+        assert_eq!(
+            out.iter().map(|s| s.pkg.as_str()).collect::<Vec<_>>(),
+            vec!["busbar"],
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn a_json_run_value_is_a_command_and_a_json_prose_field_is_not() {
+        let mut out = Vec::new();
+        scan_json_commands(
+            "qa/x.json",
+            "{\n  \"run\": \"m=$(cargo metadata --locked); cargo build -p busbar-kernel\",\n\
+             \x20 \"summary\": \"it ran `cargo test -p busbar-llm --lib x` and found nothing\",\n\
+             \x20 \"positive_control\": \"cargo test -p busbar-llm usage (run in the pin)\"\n}\n",
+            &mut out,
+        );
+        assert_eq!(
+            out.iter()
+                .map(|s| (s.pkg.as_str(), s.line))
+                .collect::<Vec<_>>(),
+            vec![("busbar-kernel", 2)],
+            "a prose field that opens with a command is the record of a run, not a run: {out:?}"
+        );
+    }
+
+    /// AN EXEMPTION IS SCOPED TO ITS OWN FILE: the declared file stays green and the other file
+    /// carrying the same dead selector is RED, cited by its own path and line.
+    #[test]
+    fn a_declaration_excuses_the_dead_selector_only_in_the_file_it_names() {
+        let ((a, a_text), (b, b_text)) = plant_pair(&cx()).expect("two covered scripts");
+        let declared_in_a = format!(
+            "{a_text}\ncargo build --locked -p {PLANTED_SCOPED}\n\
+             {DECL_HASH} {PLANTED_SCOPED}{SEP}{a}{SEP}{PLANTED_REASON}\n"
+        );
+
+        let mut only_a = Overlay::new();
+        only_a.set(&a, declared_in_a.clone());
+        assert!(
+            failed_ids(only_a).is_empty(),
+            "the declared site in its own file must stay green"
+        );
+
+        let mut both = Overlay::new();
+        both.set(&a, declared_in_a);
+        both.set(
+            &b,
+            format!("{b_text}\ncargo build --locked -p {PLANTED_SCOPED}\n"),
+        );
+        let planted = cx().with_overlay(both);
+        let verdict = crate::gates::execute(&PackageSelectorsGate, &planted);
+        let red: Vec<_> = verdict
+            .rows
+            .iter()
+            .filter(|r| r.status != crate::ledger::Status::Pass)
+            .collect();
+        assert_eq!(
+            red.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec![ROW_RESOLVES]
+        );
+        assert!(
+            red[0].detail.contains(&format!("{b}:")),
+            "{}",
+            red[0].detail
+        );
+        assert!(
+            !red[0].detail.contains(&format!("{a}:")),
+            "{}",
+            red[0].detail
+        );
     }
 
     /// The ids that went non-PASS under one planted overlay.
