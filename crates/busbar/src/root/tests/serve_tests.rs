@@ -8547,4 +8547,279 @@ mod agent_door {
         assert!(!agent.relayed(), "never relayed to a member");
         assert_eq!(admitted(&s), 0, "nothing charged");
     }
+
+    /// A TASK THE WALK PLACED ON THE TWIN IS NAMED FOR THE AGENT THE CALLER ADDRESSED (predev
+    /// `receive.rs`: `format!("a2a-{}-{}", admitted.dispatch.agent_id, ..)`, the admitted agent, not
+    /// the member the walk chose): the id is client-visible. Its row still names the member holding
+    /// it, so a read of it goes there. RED on the lane base: the id named the twin.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_task_placed_on_the_twin_is_named_for_the_agent_addressed() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-pool-task-name";
+        let _published = Published(instance);
+        let (mut agent, section) = twins(Arc::new(primary_refused)).await;
+        let s = served(instance, &section, false, None);
+        approve(&s, "planner-a").await;
+        approve(&s, "planner-b").await;
+        let send = || rpc("planner-a", "message/send", SEND, Some(&s.token));
+        let _ = answered(&s.router, send()).await;
+        let (status, body) = answered(&s.router, send()).await;
+        assert_eq!(status, StatusCode::OK, "placed on the twin: {body}");
+        let task_id = task_id_of(&body);
+        assert!(
+            task_id.starts_with(&format!("{}-planner-a-", surface("task_id_prefix"))),
+            "the id names the agent addressed, never the twin: {task_id}"
+        );
+        let mut log = Vec::new();
+        hear(&mut agent, &mut log);
+        assert_eq!((hits(&log, "planner-a"), hits(&log, "planner-b")), (1, 1));
+        let get = format!(r#"{{"id":"{task_id}"}}"#);
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner-a", "tasks/get", &get, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        hear(&mut agent, &mut log);
+        assert_eq!(
+            (hits(&log, "planner-a"), hits(&log, "planner-b")),
+            (1, 2),
+            "the row names the member holding the task"
+        );
+    }
+
+    /// AN UNADDRESSED UNIT WHOSE ONE AGENT IS A POOL MEMBER IS WALKED OVER THE POOL (predev
+    /// `receive.rs:1262-1268`: the agent `select` chose converges with the addressed path at `:1839`
+    /// `pool_of` and `:1916` `select_member`). A caller granted the primary alone trips it through
+    /// addressed submissions (each recorded on the POOL's cell); an unaddressed submission resolves
+    /// to the primary, walks the pool, finds it open and the twin outside the caller's grant, and
+    /// is refused in the breaker's words naming the POOL (predev: `agent_id: pool_name`), never
+    /// dialling anyone. RED on the lane base: the unaddressed unit was routed to the primary's own
+    /// cell, untouched by the trips, and dialled it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unaddressed_unit_whose_one_agent_is_pooled_is_walked_over_the_pool() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-pool-unaddressed";
+        let _published = Published(instance);
+        let (mut agent, section) = twins(Arc::new(|request: &str| {
+            if to_member(request, "planner-a") {
+                503
+            } else {
+                200
+            }
+        }))
+        .await;
+        let s = served(instance, &section, false, None);
+        approve(&s, "planner-a").await;
+        approve(&s, "planner-b").await;
+        let (_, token) = another_caller(&s, "primary-only", Some(vec![agent_scope("planner-a")]));
+        let mut tripped = false;
+        for _ in 0..32 {
+            let (_, body) = answered(
+                &s.router,
+                rpc("planner-a", "message/send", SEND, Some(&token)),
+            )
+            .await;
+            if body.contains("breaker_open") {
+                tripped = true;
+                break;
+            }
+        }
+        assert!(
+            tripped,
+            "the primary's pool cell opened within 32 failing submissions"
+        );
+        let mut log = Vec::new();
+        hear(&mut agent, &mut log);
+        let before = (hits(&log, "planner-a"), hits(&log, "planner-b"));
+        assert_eq!(before.1, 0, "the twin is outside the caller's grant");
+        let (status, body) = answered(&s.router, rpc("", "message/send", SEND, Some(&token))).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("an envelope");
+        let message = doc["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("agent `planner` is unavailable"),
+            "the walk's refusal names the pool: {body}"
+        );
+        hear(&mut agent, &mut log);
+        assert_eq!(
+            (hits(&log, "planner-a"), hits(&log, "planner-b")),
+            before,
+            "nothing dialled"
+        );
+    }
+
+    /// A CONFIG APPLY KEEPS THE POOL (`DoorApply::apply`): the generation an apply installs holds
+    /// the section as written (no pools) and the unified pools beside it; the door is refreshed
+    /// onto the section carrying them, as boot composes it, so the pool still walks: the primary
+    /// trips and the next submission is served by the twin. RED on the lane base: the apply read the
+    /// pools through the registry, found none, and refreshed the door onto a section without them,
+    /// so the second submission went to the tripped primary again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_config_apply_keeps_the_pool_walking() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-pool-apply";
+        let _published = Published(instance);
+        let (mut agent, section) = twins(Arc::new(primary_refused)).await;
+        let s = served(instance, &section, false, None);
+        approve(&s, "planner-a").await;
+        approve(&s, "planner-b").await;
+
+        // THE NEXT GENERATION, as an apply installs it: the door's slot holds the section as
+        // written, and the generic per-plane pool map holds the pool.
+        let mut written: serde_yaml::Value = serde_yaml::from_str(&section).expect("a section");
+        if let Some(map) = written.as_mapping_mut() {
+            map.remove(busbar_contract::section::RESERVED_POOLS_KEY);
+        }
+        let slot = busbar_kernel::plane::door::DoorSlot {
+            section: busbar_kernel::plane::door::DoorSection::new(surface("section"), written),
+            facing: busbar_contract::plane_calls::DoorFacing {
+                claims: Vec::new(),
+                admission: None,
+            },
+        };
+        let mut next = busbar_kernel::test_support::TestApp::new()
+            .keys_chain()
+            .admin_chain(vec![busbar_kernel::config::operator_provider().to_string()])
+            .governance(Arc::clone(&s.gov))
+            .cost(CostModel::flat(1))
+            .agent_pool("planner", &["planner-a", "planner-b"]);
+        next.install_plane_runtime(surface("plane_key"), Arc::new(slot));
+        let next = next.build();
+        {
+            let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::empty();
+            s.handle.swap(next);
+        }
+        let mut log = Vec::new();
+        let mut heard = || {
+            hear(&mut agent, &mut log);
+            (hits(&log, "planner-a"), hits(&log, "planner-b"))
+        };
+        reroute_battery(
+            &s,
+            &mut heard,
+            ("message/send", SEND),
+            StatusCode::BAD_GATEWAY,
+        )
+        .await;
+    }
+
+    /// THE PINNED REFUSAL ANSWERS THE PINNED MEMBER'S OWN WAIT (predev `relay.rs:1659`: the pinned
+    /// hop's breaker refusal reads `breaker_retry_after_secs` of the pinned member's cell), never the
+    /// soonest wait across the pool (the walk's figure, 1.5.5's for an exhausted model pool, v1.5.5
+    /// `proxy/engine/walk.rs:49-63`, which the door keeps for every refusal it does not pin): the
+    /// door states the member on the walk's exhausted refused piece (`OnPieceOut::wait_member`).
+    ///
+    /// The task is held by the twin, whose cell opens on five straight failures (streak 5: a
+    /// cooldown near 120 s); the primary then opens on F/S/F/S/F (streak 1: near 30 s). A read of
+    /// the task, both cells open, is refused naming the twin with the twin's wait. RED without the
+    /// stated member: the refusal answered the primary's sooner ~30 s.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_pinned_refusal_answers_the_pinned_members_own_wait() {
+        use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-pool-pinned-wait";
+        let _published = Published(instance);
+        let twin_status = Arc::new(AtomicU16::new(200));
+        let primary_calls = Arc::new(AtomicUsize::new(0));
+        let (twin, calls) = (Arc::clone(&twin_status), Arc::clone(&primary_calls));
+        let (mut agent, section) = twins(Arc::new(move |request: &str| {
+            if to_member(request, "planner-a") {
+                // F, S, F, S, F ...: the primary's cell trips on its fifth outcome, streak 1.
+                if calls.fetch_add(1, Ordering::SeqCst) % 2 == 0 {
+                    503
+                } else {
+                    200
+                }
+            } else {
+                twin.load(Ordering::SeqCst)
+            }
+        }))
+        .await;
+        let s = served(instance, &section, false, None);
+        approve(&s, "planner-a").await;
+        approve(&s, "planner-b").await;
+
+        // The task, placed on the twin: a caller granted the twin alone declines the primary.
+        let (key, token) = another_caller(&s, "pinned-wait", Some(vec![agent_scope("planner-b")]));
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner-b", "message/send", SEND, Some(&token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "placed on the twin: {body}");
+        let task_id = task_id_of(&body);
+        let mut row = s
+            .gov
+            .store()
+            .get_key(&key.id)
+            .expect("a read")
+            .expect("the key's row");
+        row.allowed_scopes = Some(vec![agent_scope("planner-a"), agent_scope("planner-b")]);
+        s.gov.store().put_key(&row).expect("the grant is written");
+        s.gov.refresh().expect("the book reloads");
+
+        // The twin's cell opens on five straight failures of reads pinned to it.
+        twin_status.store(503, Ordering::SeqCst);
+        let get = format!(r#"{{"id":"{task_id}"}}"#);
+        let mut tripped = false;
+        for _ in 0..32 {
+            let (_, body) =
+                answered(&s.router, rpc("planner-b", "tasks/get", &get, Some(&token))).await;
+            if body.contains("breaker_open") {
+                tripped = true;
+                break;
+            }
+        }
+        assert!(tripped, "the twin's cell opened");
+
+        // The primary's opens on F/S/F/S/F: a streak of one, a sooner wait.
+        let mut tripped = false;
+        for _ in 0..12 {
+            let (_, body) = answered(
+                &s.router,
+                rpc("planner-a", "message/send", SEND, Some(&token)),
+            )
+            .await;
+            if body.contains("breaker_open") {
+                tripped = true;
+                break;
+            }
+        }
+        assert!(tripped, "the primary's cell opened");
+        hear(&mut agent, &mut Vec::new());
+
+        let response = {
+            use tower::ServiceExt as _;
+            s.router
+                .clone()
+                .oneshot(rpc("planner-a", "tasks/get", &get, Some(&token)))
+                .await
+                .expect("the router answers")
+        };
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let wait: u64 = response
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok())
+            .expect("a whole-seconds Retry-After");
+        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .expect("the body");
+        let body = String::from_utf8_lossy(&body).into_owned();
+        assert!(
+            body.contains("agent `planner-b` is unavailable")
+                && body.contains(&format!("Retry after {wait}s")),
+            "the refusal names the member the task is pinned to, with its wait: {body}"
+        );
+        assert!(
+            wait > 60,
+            "the twin's own wait (streak 5, near 120 s), never the primary's sooner one (streak 1, \
+             near 30 s): {wait}"
+        );
+        let mut log = Vec::new();
+        hear(&mut agent, &mut log);
+        assert!(log.is_empty(), "nothing dialled: {log:?}");
+    }
 }

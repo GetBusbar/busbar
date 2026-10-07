@@ -34,3 +34,5 @@ card_signing_domain = a2a/agent-card-signing/v1
 # The binding word a JSON-RPC hop goes out on (surface.rs BINDING_DOCUMENT): the `lane` label its
 # attempts' counters carry, as predev's relay counted them (relay.rs:1705).
 binding_document = jsonrpc
+# The prefix of the task ids busbar mints (identity.rs TASK_ID_PREFIX): `<prefix>-<agent>-<16 hex>`.
+task_id_prefix = a2a
