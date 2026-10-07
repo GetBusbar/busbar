@@ -1522,6 +1522,7 @@ impl Connection {
                     text: false,
                     reason: None,
                     failed: false,
+                    end: false,
                 });
             }
             if end {

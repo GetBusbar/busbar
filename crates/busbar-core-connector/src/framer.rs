@@ -24,9 +24,9 @@ use busbar_contract::abi::transport::{check::check_final_status, StatusRow, CLOS
 use busbar_contract::abi::transport::{
     AdoptIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut,
     FramerSink, FramingIn, HeadSlots, IngestIn, LocateIn, LocateOut, RefuseIn, EMIT_TEXT,
-    PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER,
-    PIECE_STREAM_FAILED, PIECE_TEXT, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE,
-    YIELD_MORE,
+    PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
+    PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED,
+    YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 
 /// One framer op, its `in` and its `out`, as the connector hands it to a [`FramerDoor`].
@@ -159,15 +159,18 @@ pub struct Got {
     /// The stream FAILED (`PIECE_STREAM_FAILED`): this is its last piece and the bytes are the
     /// reason; its siblings on the connection carry on.
     pub failed: bool,
+    /// The stream ENDS whole here (`PIECE_END`): no piece of it follows.
+    pub end: bool,
 }
 
 impl Got {
-    /// Whether this piece ENDS its stream whole: the EMPTY payload piece that closes a stream's
-    /// frames (`busbar_contract::abi::transport`, "streams end by piece"). An empty fields piece is
-    /// an empty head, never the end, and a failed stream's piece ends it failed.
+    /// Whether this piece ENDS its stream whole: the framer said so (`PIECE_END`,
+    /// `busbar_contract::abi::transport`, "streams end by flag"), and nothing else says it. An
+    /// EMPTY piece without it is an empty message, text or binary, and is relayed as one; an empty
+    /// fields piece is an empty head; a failed stream's piece ends it failed.
     #[must_use]
-    pub fn ends_stream(&self) -> bool {
-        self.end_of_frame && self.bytes.is_empty() && !self.fields && !self.failed
+    pub const fn ends_stream(&self) -> bool {
+        self.end
     }
 }
 
@@ -447,6 +450,7 @@ impl Buffers {
                 text: p.flags & PIECE_TEXT != 0,
                 reason: None,
                 failed: p.flags & PIECE_STREAM_FAILED != 0,
+                end: p.flags & PIECE_END != 0,
             });
         }
         let heads = self

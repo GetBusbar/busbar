@@ -506,6 +506,7 @@ extern "C" {
 #define BB_TRANSPORT_PIECE_FIELDS UINT16_C(16) /* [`FramePiece::flags`]: the piece's bytes are a FIELD BLOCK (the far end's head or its trailers), */
 #define BB_TRANSPORT_PIECE_CONTINUED UINT16_C(32) /* [`FramePiece::flags`], with [`PIECE_FIELDS`]: the piece's first byte CONTINUES a line an earlier */
 #define BB_TRANSPORT_PIECE_TEXT UINT16_C(64) /* [`FramePiece::flags`]: the piece's bytes belong to a TEXT message, not a binary one, on a wire */
+#define BB_TRANSPORT_PIECE_END UINT16_C(128) /* [`FramePiece::flags`]: the stream ENDS whole here; no piece of it follows. The ONLY way a */
 #define BB_TRANSPORT_EMIT_TEXT UINT32_C(1) /* [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are */
 #define BB_TRANSPORT_WRITE_END_OF_FRAME UINT32_C(1) /* [`WriteIn::flags`]: the bytes complete a FRAME of the carrier's own wire, for a carrier that */
 #define BB_TRANSPORT_READ_END_OF_FRAME UINT32_C(1) /* [`IoOut::flags`] on a `read`: the bytes complete a FRAME of the carrier's own wire. A carrier */

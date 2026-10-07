@@ -17,9 +17,10 @@ use super::{
     HeadSlots, IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail,
     CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH,
     FAULT_CALLER, FAULT_HARD, FRAMING_DATAGRAM, FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED,
-    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED,
-    PIECE_TEXT, ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL,
-    STATUS_OTHER, STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER,
+    PIECE_STREAM_FAILED, PIECE_TEXT, ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT,
+    STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED,
+    YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
@@ -227,16 +228,27 @@ pub fn check_framer(
                     | PIECE_STREAM_FAILED
                     | PIECE_FIELDS
                     | PIECE_CONTINUED
-                    | PIECE_TEXT,
+                    | PIECE_TEXT
+                    | PIECE_END,
             ),
             "framer.piece.flags",
         )?;
-        // Text is a fact about a message's bytes: an empty piece, a field block and a failed
-        // stream's reason carry none.
+        // Text is a fact about a message, an empty one too: a field block, a failed stream's
+        // reason and a stream's end are none.
         if p.flags & PIECE_TEXT != 0
-            && (p.len == 0 || p.flags & (PIECE_FIELDS | PIECE_STREAM_FAILED) != 0)
+            && p.flags & (PIECE_FIELDS | PIECE_STREAM_FAILED | PIECE_END) != 0
         {
             return Err(fault(Rule::Contradiction, "framer.piece.text_not_message"));
+        }
+        // A stream's end is its own empty piece: bytes on it would be a message the end swallows,
+        // and a failed stream or a field block is never the whole end.
+        if p.flags & PIECE_END != 0 {
+            if p.len != 0 {
+                return Err(fault(Rule::Contradiction, "framer.piece.end_with_bytes"));
+            }
+            if p.flags & (PIECE_FIELDS | PIECE_STREAM_FAILED | PIECE_CONTINUED) != 0 {
+                return Err(fault(Rule::Contradiction, "framer.piece.end_not_payload"));
+            }
         }
         if p.flags & PIECE_CONTINUED != 0 && p.flags & PIECE_FIELDS == 0 {
             return Err(fault(
@@ -248,8 +260,8 @@ pub fn check_framer(
         if p.flags & PIECE_FIELDS != 0 && p.flags & PIECE_STREAM_FAILED != 0 {
             return Err(fault(Rule::Contradiction, "framer.piece.fields_failed"));
         }
-        // An empty piece is a stream's end, so it completes its frame; a failed stream's piece is
-        // its last, so it does too.
+        // An empty piece is a whole frame (an empty message, or the stream's end), so it
+        // completes its frame; a failed stream's piece is its last, so it does too.
         if (p.len == 0 || p.flags & PIECE_STREAM_FAILED != 0) && p.flags & PIECE_END_OF_FRAME == 0 {
             return Err(fault(
                 Rule::Contradiction,

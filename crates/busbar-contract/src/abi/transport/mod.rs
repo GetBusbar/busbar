@@ -46,12 +46,13 @@
 //! continuing where it stopped. A framer that answers any byte or piece twice is wrong. A framer op
 //! never pends.
 //!
-//! STREAMS END BY PIECE. A frame is one or more pieces on one stream; the last carries
-//! [`PIECE_END_OF_FRAME`]. A stream's frames END with an EMPTY piece (length `0`) carrying
-//! [`PIECE_END_OF_FRAME`]; a stream that FAILED ends instead with a piece carrying
+//! STREAMS END BY FLAG. A frame is one or more pieces on one stream; the last carries
+//! [`PIECE_END_OF_FRAME`]. A stream's frames END with a piece carrying [`PIECE_END`] (with
+//! [`PIECE_END_OF_FRAME`], and no bytes); a stream that FAILED ends instead with a piece carrying
 //! [`PIECE_STREAM_FAILED`] and [`PIECE_END_OF_FRAME`], its bytes the reason (never secret material).
-//! A failed stream fails alone: its siblings on the connection carry on. [`YIELD_ENDED`] ends the
-//! CONNECTION, never one stream.
+//! Nothing else ends a stream: an EMPTY piece is an empty frame (a wire's empty message, text or
+//! binary), never the stream's end. A failed stream fails alone: its siblings on the connection
+//! carry on. [`YIELD_ENDED`] ends the CONNECTION, never one stream.
 //!
 //! FIELDS BY PIECE. A frame whose pieces carry [`PIECE_FIELDS`] is a FIELD BLOCK, never payload: the
 //! far end's HEAD (a response's head fields, a call's initial metadata) is ONE such frame, the
@@ -419,10 +420,17 @@ pub const PIECE_CONTINUED: u16 = 32;
 
 /// [`FramePiece::flags`]: the piece's bytes belong to a TEXT message, not a binary one, on a wire
 /// whose messages are one or the other (ws's TEXT and BINARY opcodes). Absent means binary, the
-/// meaning every framer that never sets it keeps. On every message-bearing piece (`len > 0`) of a
-/// text message; never on an empty piece, a field block or a failed stream's reason. The host reads
-/// it into `FrameMeta::text`, the bit's one home above the ABI.
+/// meaning every framer that never sets it keeps. On every piece of a text message, an EMPTY text
+/// message's one piece too; never on a field block, a failed stream's reason or a stream's
+/// [`PIECE_END`]. The host reads it into `FrameMeta::text`, the bit's one home above the ABI.
 pub const PIECE_TEXT: u16 = 64;
+
+/// [`FramePiece::flags`]: the stream ENDS whole here; no piece of it follows. The ONLY way a
+/// stream ends whole (an empty piece without it is an empty frame, never the end). Always with
+/// [`PIECE_END_OF_FRAME`] and on an EMPTY piece (`len == 0`): an end that carried bytes would make
+/// them a message the end swallows. Never with [`PIECE_STREAM_FAILED`] (a failed stream's piece
+/// ends it failed), [`PIECE_FIELDS`] (an empty fields piece is an empty head) or [`PIECE_TEXT`].
+pub const PIECE_END: u16 = 128;
 
 /// [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are
 /// one or the other (ws sends them under its TEXT opcode); read on the call that completes the
