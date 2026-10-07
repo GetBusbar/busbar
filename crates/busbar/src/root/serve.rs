@@ -3301,6 +3301,11 @@ mod door_kernel_ported_tests;
 #[path = "tests/serve_door_exchange_ported.rs"]
 mod door_exchange_ported_tests;
 
+// The release engine's timing gate, on the door (ignored; run explicitly in release mode).
+#[cfg(all(test, linked_fold_on_driver, linked_axis_node))]
+#[path = "tests/serve_door_timing.rs"]
+mod door_timing_tests;
+
 #[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_framed.rs"]
 mod framed_tests;
