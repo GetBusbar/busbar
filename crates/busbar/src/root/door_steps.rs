@@ -1279,9 +1279,19 @@ impl OutboundAuths {
     }
 
     /// The bind one auth row is loaded under: its needs on the connection table, its diagnostics
-    /// (a mint that failed and will retry) in its own log file under the configured `plugins.logs`
-    /// (THE DESIGN #85).
+    /// (a mint that failed and will retry, a credential it could not present) in its own log file
+    /// under the configured `plugins.logs` (THE DESIGN #85) AND, each declared one, in the main log
+    /// in the line 1.5.5 wrote there ([`MainLogSink`]).
     fn bind(&self, name: &str) -> crate::root::loader::dispatch::Bind {
+        self.bind_with(name, self.conns.clone())
+    }
+
+    /// [`Self::bind`] with the needs declared on `conns` (`ConnTable::NoNeeds`: no need is granted).
+    fn bind_with(
+        &self,
+        name: &str,
+        conns: crate::root::loader::dispatch::ConnTable,
+    ) -> crate::root::loader::dispatch::Bind {
         use crate::root::loader::dispatch::{EnvelopeSink, NoSink};
         let sink: Arc<dyn EnvelopeSink> = crate::root::boot::plugin_logs()
             .sink(
@@ -1293,12 +1303,13 @@ impl OutboundAuths {
                 |_| Arc::new(NoSink) as Arc<dyn EnvelopeSink>,
                 |s| Arc::new(s) as Arc<dyn EnvelopeSink>,
             );
+        let sink: Arc<dyn EnvelopeSink> = Arc::new(MainLogSink(sink));
         crate::root::loader::dispatch::Bind {
             instance: Arc::from(name),
             max_inflight_cap: 64,
             sink,
             dispatcher: self.dispatcher.adopter(),
-            conns: self.conns.clone(),
+            conns,
         }
     }
 
@@ -1310,12 +1321,33 @@ impl OutboundAuths {
         String,
         crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::auth::Auth>,
     )> {
+        self.rows_with(true)
+    }
+
+    /// [`Self::rows`], each loaded with its needs granted (`granted`) or with none.
+    fn rows_with(
+        &self,
+        granted: bool,
+    ) -> Vec<(
+        String,
+        crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::auth::Auth>,
+    )> {
         use crate::root::loader::dispatch::kinds::auth::Auth;
         use crate::root::loader::dispatch::{load_dropped_bytes, load_linked, LinkedRow};
+        let bind = |name: &str| {
+            self.bind_with(
+                name,
+                if granted {
+                    self.conns.clone()
+                } else {
+                    crate::root::loader::dispatch::ConnTable::NoNeeds
+                },
+            )
+        };
         let mut rows = Vec::new();
         for (name, door) in &self.linked {
             if let Ok(plugin) =
-                LinkedRow::of(*door).and_then(|row| load_linked::<Auth>(&row, self.bind(name)))
+                LinkedRow::of(*door).and_then(|row| load_linked::<Auth>(&row, bind(name)))
             {
                 rows.push(((*name).to_string(), plugin));
             }
@@ -1327,7 +1359,7 @@ impl OutboundAuths {
                 continue;
             };
             if let Ok(plugin) =
-                load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, self.bind(name))
+                load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, bind(name))
             {
                 rows.push((name.clone(), plugin));
             }
@@ -1388,6 +1420,152 @@ impl OutboundAuths {
         }
         Ok(None)
     }
+}
+
+impl OutboundAuths {
+    /// CHECK, NEVER DIAL: `credential` bound under `settings` on a FRESH instance of the plugin
+    /// serving `style`, loaded with no need granted (so it mints nothing), and the refusals it names
+    /// for the credential itself — its `credential:` lines, their text. Empty when it accepts the
+    /// credential or no row states the style.
+    ///
+    /// # Errors
+    ///
+    /// The serving plugin would not open for its outbound styles.
+    pub fn check(
+        &self,
+        style: &str,
+        credential: &[u8],
+        settings: &serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        use crate::root::loader::dispatch::auth_outbound::{outbound_style, OutboundInstance};
+        for (_, plugin) in self.rows_with(false) {
+            if outbound_style(&plugin, style).is_none() {
+                continue;
+            }
+            let bytes = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
+            let instance =
+                OutboundInstance::open_with(plugin, Arc::clone(&self.dispatcher), 0, &bytes)?;
+            return Ok(
+                match instance.open_outbound_raw(style, credential, settings) {
+                    Ok(_) => Vec::new(),
+                    Err((_, why)) => why
+                        .lines()
+                        .filter_map(|l| l.strip_prefix("credential: "))
+                        .map(str::to_string)
+                        .collect(),
+                },
+            );
+        }
+        Ok(Vec::new())
+    }
+}
+
+/// AN AUTH ROW'S DECLARED DIAGNOSTICS, WRITTEN TO THE MAIN LOG IN 1.5.5'S LINE (ARCHITECT D1
+/// 2026-10-05, LOG LINES; THE DESIGN #85).
+///
+/// 1.5.5 wrote a credential it could not present, and a mint that failed, to the main log; the auth
+/// plugin that now holds the credential reports the same condition as a DECLARED diagnostic on the
+/// #85 envelope of the call that met it, and this sink writes it there again, word for word, before
+/// the row's own log file keeps it too. A plugin's free log records ([`DIAG_LOG`]) stay in its own
+/// file only.
+///
+/// The line: the text up to its first named value is the message; the named values follow as
+/// ` name=value`, in 1.5.5's order — `protocol`, `header`, then `error` (which runs to the end) —
+/// and are written as the fields 1.5.5 wrote them (`protocol` and `header` as text, `error` as
+/// display). A declared id that is a code of the host's catalog (`BUSBAR-NNNN`) is written as the
+/// `diag` field, at the level the catalog's severity sets (benign-recurring: debug); any other at
+/// the plugin's own severity.
+///
+/// [`DIAG_LOG`]: busbar_contract::abi::mechanism::call::DIAG_LOG
+pub(crate) struct MainLogSink(pub(crate) Arc<dyn crate::root::loader::dispatch::EnvelopeSink>);
+
+impl MainLogSink {
+    /// `text` split into its message and the named values 1.5.5's line carried.
+    fn named(text: &str) -> (&str, Option<&str>, Option<&str>, Option<&str>) {
+        let split = |t: &'_ str, name: &str| -> (usize, Option<usize>) {
+            t.find(name)
+                .map_or((t.len(), None), |at| (at, Some(at + name.len())))
+        };
+        let (end, from) = split(text, " error=");
+        let error = from.map(|f| &text[f..]);
+        let rest = &text[..end];
+        let (end, from) = split(rest, " header=");
+        let header = from.map(|f| &rest[f..]);
+        let rest = &rest[..end];
+        let (end, from) = split(rest, " protocol=");
+        let protocol = from.map(|f| &rest[f..]);
+        (&rest[..end], protocol, header, error)
+    }
+
+    /// Write one declared diagnostic to the main log.
+    fn write(d: &crate::root::loader::dispatch::Diagnostic<'_>) {
+        use busbar_contract::diagnostic::Severity;
+        use tracing::Level;
+        let text = String::from_utf8_lossy(d.text);
+        let (message, protocol, header, error) = Self::named(&text);
+        let code = std::str::from_utf8(d.name)
+            .ok()
+            .and_then(|n| n.strip_prefix("BUSBAR-"))
+            .and_then(|n| n.parse::<u16>().ok())
+            .and_then(busbar_kernel::diagnostics::by_code);
+        let level = match (code.map(|c| c.severity), d.severity) {
+            (Some(Severity::BenignRecurring), _) => Level::DEBUG,
+            (Some(Severity::Fatal), _) | (_, 2..) => Level::ERROR,
+            (_, 1) => Level::WARN,
+            _ => Level::INFO,
+        };
+        let diag = code.map(|c| tracing::field::display(c.banner()));
+        let error = error.map(tracing::field::display);
+        macro_rules! line {
+            ($level:expr) => {
+                tracing::event!($level, diag, protocol, header, error, "{message}")
+            };
+        }
+        match level {
+            Level::DEBUG => line!(Level::DEBUG),
+            Level::INFO => line!(Level::INFO),
+            Level::WARN => line!(Level::WARN),
+            _ => line!(Level::ERROR),
+        }
+    }
+}
+
+impl crate::root::loader::dispatch::EnvelopeSink for MainLogSink {
+    fn metric(&self, m: crate::root::loader::dispatch::Metric<'_>) {
+        self.0.metric(m);
+    }
+
+    fn diag(&self, d: crate::root::loader::dispatch::Diagnostic<'_>) {
+        use busbar_contract::abi::mechanism::call::{DIAG_LOG, DIAG_LOG_DROPPED};
+        if d.id != DIAG_LOG && d.id != DIAG_LOG_DROPPED {
+            Self::write(&d);
+        }
+        self.0.diag(d);
+    }
+
+    fn dropped(&self, why: crate::root::loader::dispatch::Dropped) {
+        self.0.dropped(why);
+    }
+}
+
+/// THE PROCESS'S OUTBOUND AUTH INSTANCES: the build's linked `auths` rows, then the plugins
+/// directory's, on the process's dispatcher, their needs declared on the process's one connector.
+/// One set per process, so a style is served by one opened instance (and one tick schedule)
+/// whichever plane's member, or whichever configuration generation, binds it. Read only once the
+/// connector is booted (the first read pins the connector, `root::connector::the`).
+pub fn process_auths() -> Arc<OutboundAuths> {
+    static AUTHS: std::sync::OnceLock<Arc<OutboundAuths>> = std::sync::OnceLock::new();
+    Arc::clone(AUTHS.get_or_init(|| {
+        Arc::new(OutboundAuths::new(
+            crate::root::dispatch::dispatcher(),
+            crate::LINKED.auths,
+            crate::root::boot::dropped_registry(),
+            crate::root::loader::dispatch::ConnTable::Host(
+                Arc::clone(crate::root::connector::the())
+                    as Arc<dyn busbar_contract::conn::DeclaredConns>,
+            ),
+        ))
+    }))
 }
 
 /// WHAT A DOOR PLANE'S MEMBERS ARE REACHED THROUGH, for the process (THE DESIGN §6 steps 2-3, §5):
