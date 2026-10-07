@@ -48,8 +48,10 @@ use crate::gitp;
 pub use a2a::{discriminates, governance_observed, NEGATIVE_PAIRS};
 pub use h2::{decide_h2, junit_cases, Case, CaseResult, H2Run};
 pub use jev::{
-    decide_jev, is_jev_refusal, jev_subject_config, judge_jev_ledger, tests_passed, JevRun,
-    REPORTED_UNITS,
+    decide_jev, is_jev_refusal, jev_refusal_code, jev_subject_config, judge_admit, judge_audit,
+    judge_audit_window, judge_exit, judge_jev_ledger, judge_meter, judge_refused_before_dial,
+    judge_route, ledger_spend, tests_passed, Call, JevRun, Spend, AUDIT_OP_CLASS, ELSEWHERE,
+    H2_CHECKS, ONE_REQUEST_GROUP, REPORTED_UNITS, SUCCESS as JEV_SUCCESS, UNAVAILABLE,
 };
 pub use oidf::{
     as_signing_key, base64_std, decide_oidf, es256_jwk, idp_reply, module_results,

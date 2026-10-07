@@ -446,6 +446,11 @@ const H2_DIRS: [(&str, &str); 2] = [
     ("mcp.rig", "scripts/mcp-subject"),
     ("a2a.battery", "scripts/a2a-subject"),
 ];
+/// The rigs whose scenarios are named checks of ONE source file (the jev rig is Rust, run by
+/// `cargo xtask conformance record --suite jev`; it writes no per-scenario ledger row the
+/// rigs-baseline could carry). A cell `<namespace>|<check>` is owned by the file only while the
+/// file DECLARES the check's name as a whole token.
+const FILE_RIGS: [(&str, &str); 1] = [("jev.rig", "xtask/src/conformance_record/jev.rs")];
 const SOURCE_DIRS: [(&str, &str); 2] = [
     ("mcp.battery", "testing/mcp-conformance/src/suites"),
     ("a2a.supplement", "testing/a2a-supplement/a2asup"),
@@ -470,6 +475,15 @@ pub fn resolve_cell(cx: &Ctx, cell_id: &str) -> Option<String> {
             let path = format!("{dir}/{rest}.sh");
             return cx.exists(&path).then_some(path);
         }
+    }
+
+    // THE FILE ARM RETURNS EARLY TOO, for the H2 arm's reason: a check renamed out of its rig's
+    // file must not be adopted by another arm's search somewhere else.
+    if let Some((_, file)) = FILE_RIGS.iter().find(|(ns, _)| *ns == namespace) {
+        return cx
+            .read(file)
+            .is_ok_and(|t| declares_id(&t, rest))
+            .then(|| (*file).to_string());
     }
 
     if namespace == "voice.rig" {
@@ -616,7 +630,8 @@ pub fn check_rig_column(cx: &Ctx, m: &Matrix) -> Vec<String> {
                 out.push(format!(
                     "{LEDGER_REL}: matrix.{plane}.{step} names rig cell {}, which NOTHING in the \
                      tree owns -- no oracle cell of that id, no h2 subject script, no voice leg, \
-                     no suite source declaring it and no row in rigs-baseline.json. The scenario \
+                     no jev rig check, no suite source declaring it and no row in \
+                     rigs-baseline.json. The scenario \
                      was renamed or deleted; a claim that outlives its evidence is the drift this \
                      check exists to stop",
                     json_lite::py_repr(&cell_id)
@@ -1694,6 +1709,19 @@ impl Gate for TellerStepsGate {
                 }),
             ),
             (
+                "a jev rig cell whose check its rig no longer declares",
+                ROW_RIG,
+                "NOTHING in the tree owns",
+                Box::new(|p: &mut Plant| {
+                    p.set_cell_field(
+                        "decision",
+                        "route",
+                        "cell",
+                        Json::Str("jev.rig|h2-a-check-that-was-renamed-away".into()),
+                    );
+                }),
+            ),
+            (
                 "a root proof whose named loop cell was renamed away",
                 ROW_ROOT_COLUMN,
                 "no `fn a_fn_that_was_renamed_away(` exists there",
@@ -1809,15 +1837,9 @@ impl Gate for TellerStepsGate {
                 "an owed gap that was closed and not struck",
                 ROW_GATING,
                 "owed_gaps.decision.verify is owed but is no longer a gating gap",
-                Box::new(|p: &mut Plant| {
-                    p.set_cell_field(
-                        "decision",
-                        "verify",
-                        "cell",
-                        Json::Str("concurrency|inbound-shed|n8".into()),
-                    );
-                    p.set_cell_field("decision", "verify", "status", Json::Str("mapped".into()));
-                }),
+                // The committed matrix owes nothing on this cell any more (the jev rig closed it),
+                // so the plant re-adds the struck entry beside the closed cell.
+                Box::new(|p: &mut Plant| p.owe("decision.verify", "DECISIONS-FIX")),
             ),
             // ── THE ROSTER WAS THE FILE'S OWN. These are the two lists checked against the tree. ──
             (
@@ -2061,6 +2083,19 @@ impl Plant {
             if let Some(row) = rows.get(from).cloned() {
                 rows.insert(to, row);
             }
+        }
+    }
+
+    /// Name `cell` in the owed-gaps list, owed by `owner`, creating the list if it is gone.
+    fn owe(&mut self, cell: &str, owner: &str) {
+        let Some(doc) = self.doc.as_object_mut() else {
+            return;
+        };
+        if !matches!(doc.get_mut(OWED_KEY), Some(Json::Object(_))) {
+            doc.insert(OWED_KEY, Json::Object(json_lite::Obj::default()));
+        }
+        if let Some(Json::Object(owed)) = doc.get_mut(OWED_KEY) {
+            owed.insert(cell, Json::Str(owner.into()));
         }
     }
 

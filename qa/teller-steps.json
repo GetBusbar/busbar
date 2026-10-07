@@ -83,15 +83,7 @@
       "note": "one terminal, no double-post: the loop's last step, StepName::Encode in the kernel's own roster (THE DESIGN §1, BUSBAR-1.6.0.md:154, spells it exit)"
     }
   },
-  "owed_gaps": {
-    "decision.authenticate": "DECISIONS-FIX",
-    "decision.verify": "DECISIONS-FIX",
-    "decision.admit": "DECISIONS-FIX",
-    "decision.route": "DECISIONS-FIX",
-    "decision.meter": "DECISIONS-FIX",
-    "decision.audit": "DECISIONS-FIX",
-    "decision.encode": "DECISIONS-FIX"
-  },
+  "owed_gaps": {},
   "root_legs": {
     "root-llm": {
       "plane": "llm",
@@ -594,9 +586,9 @@
         }
       },
       "authenticate": {
-        "cell": "none",
-        "status": "none",
-        "note": "no rig scenario presents the decisions claim a bad credential; the refusal is proven only by the root leg beside this cell",
+        "cell": "jev.rig|h2-authenticate-refusal",
+        "status": "new",
+        "note": "xtask/src/conformance_record/jev.rs check h2-authenticate-refusal (`cargo xtask conformance record --suite jev`, served leg): a forged bearer at POST /v1/systemone is answered 401 in jev's refusal shape with zero far-end hops and the node's ledger unmoved, so the bad credential never reaches Verify or egress",
         "root": {
           "state": "proven",
           "leg": "root-decisions",
@@ -605,9 +597,9 @@
         }
       },
       "verify": {
-        "cell": "none",
-        "status": "none",
-        "note": "no rig scenario asks the decision plane for a provider the caller's credential may not reach",
+        "cell": "jev.rig|h2-verify-refusal",
+        "status": "new",
+        "note": "xtask/src/conformance_record/jev.rs check h2-verify-refusal (`cargo xtask conformance record --suite jev`, served leg): a key minted with allowed_pools naming only another pool is answered 403 in jev's shape with zero hops, nothing on the ledger and no request counted on the key's usage, so the provider it may not reach is refused before Admit draws (the grant is judged over Verify's sealed set, door_steps.rs approve)",
         "root": {
           "state": "none",
           "leg": "root-decisions",
@@ -625,19 +617,20 @@
         }
       },
       "admit": {
-        "cell": "none",
-        "status": "none",
-        "note": "no rig scenario spends a decisions caller's budget and watches the next request refused before its dial",
+        "cell": "jev.rig|h2-admit-refusal",
+        "status": "new",
+        "note": "xtask/src/conformance_record/jev.rs check h2-admit-refusal (`cargo xtask conformance record --suite jev`, served leg): a key in a group allowing one request a day is served once, then answered 429 in jev's shape with zero hops, the ledger unmoved and the key's request count unchanged, so the over-budget unit is refused before Route dials and charged nothing",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-decisions",
-          "note": "the served cell admits its one keyed request and counts it on the governance ledger, but no cell spends the key's budget, so the over-budget refusal before the dial is never driven here"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_decisions_unit_past_its_budget_is_refused_with_a_retry_after",
+          "note": "a keyed caller whose group budget is spent by one served unit has its next systemone unit refused 429 with a Retry-After before the dial, the far end never hearing it, and the governance book charging the presenting key once"
         }
       },
       "route": {
-        "cell": "none",
-        "status": "none",
-        "note": "no rig scenario takes the decision provider down; the jev rig owes the failover or terminal outcome",
+        "cell": "jev.rig|h2-route-terminal",
+        "status": "new",
+        "note": "xtask/src/conformance_record/jev.rs check h2-route-terminal (`cargo xtask conformance record --suite jev`, served leg): the sole member's far end answers 503 and the unit ends inside itself in a terminal 5xx in jev's shape, never the far end's own bytes, after dialling the lane and with nothing charged: the documented terminal outcome of a down lane with no member to fail over to",
         "root": {
           "state": "proven",
           "leg": "root-decisions",
@@ -646,9 +639,9 @@
         }
       },
       "meter": {
-        "cell": "none",
-        "status": "none",
-        "note": "no rig scenario reads a decisions usage delta; the plane's own battery proves only the metering surface",
+        "cell": "jev.rig|h2-meter-row",
+        "status": "new",
+        "note": "xtask/src/conformance_record/jev.rs check h2-meter-row (`cargo xtask conformance record --suite jev`, served leg): one served request moves the jev lane on GET /api/v1/admin/ledger/totals by exactly one fee and exactly the 42 units the far end reported, priced at the rig's card of 1 micro-unit per decision",
         "root": {
           "state": "proven",
           "leg": "root-decisions",
@@ -657,19 +650,20 @@
         }
       },
       "audit": {
-        "cell": "none",
-        "status": "none",
-        "note": "no rig scenario reads the audit chain after a decisions unit; the plane declares no record kinds",
+        "cell": "jev.rig|h2-audit-record",
+        "status": "new",
+        "note": "xtask/src/conformance_record/jev.rs check h2-audit-record (`cargo xtask conformance record --suite jev`, served leg): one served request seals exactly one record under the systemone operation class with outcome Completed, read off GET /api/v1/admin/audit/head and /audit/range over the window the request opened",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-decisions",
-          "note": "the leg reads the governance ledger and the node's book but never the audit chain, so a decision unit's sealed audit entry is unwitnessed over the driver"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::every_decisions_unit_served_or_refused_seals_one_record_on_one_tamper_evident_chain",
+          "note": "a served unit and a limit-refused unit each seal exactly one record on the node's chain under the systemone operation class, Completed and Refused(RateLimited) in turn, contiguous and hash-linked, and a record altered after its seal breaks the walk"
         }
       },
       "encode": {
-        "cell": "none",
-        "status": "none",
-        "note": "no rig scenario drives two decisions units and counts their terminals",
+        "cell": "jev.rig|h2-exit-terminal",
+        "status": "new",
+        "note": "xtask/src/conformance_record/jev.rs check h2-exit-terminal (`cargo xtask conformance record --suite jev`, served leg): two served requests give two answers, each the far end's bytes over one dial, exactly two fees on the jev lane and exactly two Completed systemone records: one terminal per unit, never dropped, merged or posted twice",
         "root": {
           "state": "proven",
           "leg": "root-decisions",
