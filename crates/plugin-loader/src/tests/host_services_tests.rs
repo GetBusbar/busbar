@@ -1476,6 +1476,68 @@ fn random_fill_writes_the_kernels_bytes_and_refuses_outside_its_cap_before_the_k
     );
 }
 
+/// RED (loader-PL1 #5): a late completion from an op that is over never lands on the next op's
+/// handle on the same ticket (THE DESIGN §11.11 H2, §11.12). The first op's service pends and the
+/// op ends unredeemed (a deadline `cancel`, or it answered without redeeming); a new op starts on
+/// the ticket (the worker forgets the ticket's results at every new op's start) and its handle 0
+/// pends too. The first op's completer then answers: it wakes nothing and the new op does not read
+/// it; the new op's own completion lands and wakes it.
+#[test]
+fn a_late_completion_from_an_ended_op_never_lands_on_the_next_ops_handle() {
+    let d = double();
+    let store = Arc::clone(&d.route.store);
+    let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
+    let route = Arc::downgrade(&dyn_route);
+    let held: Mutex<Option<Completer>> = Mutex::new(None);
+    let pend = || {
+        |c: Option<Completer>| {
+            *held.lock().unwrap() = c;
+            Ran::Later
+        }
+    };
+    let h = head(op::RECORDS_GET, TICKET, 0, 0);
+    let (mut b, mut s) = ([0u8; 8], [SPAN; 1]);
+    let into = bufs(&mut b, &mut s);
+    // SAFETY: the test's own buffers.
+    let first = unsafe { serve(&store, &route, &h, Some(&into), pend()) };
+    assert_eq!(first.outcome, Outcome::Pending);
+    let late = held
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the first op's completer");
+
+    // The first op is over; a new op starts on the ticket, and its handle 0 pends.
+    store.forget(TICKET);
+    // SAFETY: as above.
+    let second = unsafe { serve(&store, &route, &h, Some(&into), pend()) };
+    assert_eq!(second.outcome, Outcome::Pending);
+    let own = held.lock().unwrap().take().expect("the new op's completer");
+
+    late.complete(Stored::ready(7));
+    assert!(
+        d.route.wakes.lock().unwrap().is_empty(),
+        "a completion of an op that is over wakes nothing"
+    );
+    // SAFETY: as above.
+    let resumed = unsafe { serve(&store, &route, &h, Some(&into), |_| panic!("ran twice")) };
+    assert_eq!(
+        resumed.outcome,
+        Outcome::Pending,
+        "the new op never reads the ended op's result"
+    );
+
+    own.complete(Stored::ready(9));
+    assert_eq!(*d.route.wakes.lock().unwrap(), vec![TICKET]);
+    // SAFETY: as above.
+    let landed = unsafe { serve(&store, &route, &h, Some(&into), |_| panic!("ran twice")) };
+    assert_eq!(
+        (landed.outcome, landed.value),
+        (Outcome::Ready, 9),
+        "the new op's own completion lands"
+    );
+}
+
 /// A RECYCLE drops the stored service results of every `(ticket, n)` of its ticket, through the
 /// dispatcher's own recycle path: nothing an earlier request's services answered survives into the
 /// ticket's next life, and a replay of an old handle runs its service afresh rather than reading

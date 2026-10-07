@@ -955,7 +955,8 @@ impl Worker {
                     return Some(st);
                 };
                 if e.driver.is_some() {
-                    // A tick starts the driver ticket's next cycle: the last cycle's kept answers go.
+                    // A tick starts the driver ticket's next cycle: the last cycle's kept answers (and
+                    // their epoch) go.
                     let kept = env.services.forget(ticket)
                         + super::conn_services::forget(meta.instance.instance, ticket);
                     env.stats
@@ -967,6 +968,8 @@ impl Worker {
                     // stored result is redeemed only by the op that issued it, on its resume (THE
                     // DESIGN §11.12) — so the last op's kept answers go. Kept, the next op's
                     // `ESTABLISH` (handle 0) would answer the last op's stream without a dial.
+                    // The forget ends the last op's epoch too: a service of its still running
+                    // completes into nothing, never into this op's same-numbered handle.
                     env.services.forget(ticket);
                     super::conn_services::forget(meta.instance.instance, ticket);
                 }
