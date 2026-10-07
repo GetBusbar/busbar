@@ -19,8 +19,10 @@
 //!   kinds the caller's Statement declares, [`UNDECLARED_KIND`] otherwise), `work.open` /
 //!   `work.find` / `work.settle` / `work.resume`, `unit.nest`, `content.scan` and `hook.call`
 //!   (for the unit the crossing serves), `verify.lookup` / `verify.store` (the caller's own
-//!   single-flight verify cache) and `disk.append` (to the destinations the caller was granted,
-//!   [`NO_DESTINATION`] otherwise). Every slot of the table is served.
+//!   single-flight verify cache), `disk.append` (to the destinations the caller was granted,
+//!   [`NO_DESTINATION`] otherwise) and `snapshot.read` (the host's metric families, laid out in the
+//!   caller's buffer by [`super::snapshot`], to the crossing the kernel granted them). Every slot of
+//!   the table is served.
 //! * **Who called.** The instance's [`Caller`], stated at bind, is handed to every service that is
 //!   scoped to its caller; an instance with none is REFUSED ([`NO_CALLER`]).
 //!
@@ -39,16 +41,17 @@ use busbar_contract::abi::host::service::{
     check_random_fill_in, check_records_claim_in, check_work_record, may_pend, op, ClockNowIn,
     ClockReading, ContentScanIn, DestJudgeIn, DiskAppendIn, DiskWritten, EntitlementCheckIn,
     HookCallIn, HostSlots, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn,
-    RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut, SignIn, TrustDueIn, TrustSightIn,
-    TrustVerifyIn, UnitNestIn, VerifyLookupIn, VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn,
-    WorkSettleIn, SERVICES,
+    RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut, SignIn, SnapshotReadIn, TrustDecideIn,
+    TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn, TrustVerifyIn, UnitNestIn,
+    VerifyLookupIn, VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
 
 pub use busbar_contract::services::{
-    Caller, DiskReport, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    Caller, DiskReport, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Snapshot,
+    Stored,
 };
 
 use super::ticket::{decode, InstanceWake, WakeRoute};
@@ -71,6 +74,9 @@ pub const UNDECLARED_KIND: &str = "the caller does not declare that credential k
 /// The refusal of a `disk.append` to a key the calling instance was not granted (its manifest
 /// declares no such destination) or its settings leave unset, before anything is written.
 pub const NO_DESTINATION: &str = "the caller was granted no such destination";
+/// The error text of a `snapshot.read` before the host's recorder is installed: the caller answers
+/// "not ready, retry".
+pub const SNAPSHOT_NOT_READY: &str = "the snapshot is not ready";
 /// The error text of the second short answer on one handle.
 pub const SECOND_SHORT: &str = "a second short answer on one handle";
 
@@ -344,6 +350,10 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     trust_verify: Some(trust_verify),
     records_secret: Some(records_secret),
     disk_append: Some(disk_append),
+    snapshot_read: Some(snapshot_read),
+    trust_sight_item: Some(trust_sight_item),
+    trust_serves: Some(trust_serves),
+    trust_decide: Some(trust_decide),
 };
 
 /// The dispatcher an instance's context routes to, and what it serves.
@@ -857,17 +867,136 @@ extern "C" fn trust_sight(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
         |served, route, head, caller| {
             // SAFETY: the head covered a `TrustSightIn`.
             let i = unsafe { input.cast::<TrustSightIn>().read_unaligned() };
-            let (Some(counterparty), Some(hash)) = (
-                text_of(i.counterparty, "trust_sight.counterparty"),
-                text_of(i.catalogue_hash, "trust_sight.catalogue_hash"),
+            let Some(counterparty) = text_of(i.counterparty, "trust_sight.counterparty") else {
+                return Answered::fault();
+            };
+            let provider = Arc::clone(&served.provider);
+            match i.outcome {
+                svc::TRUST_REACHED => {}
+                // Unreached: the last verdict, nothing sighted (the hash is unread).
+                svc::TRUST_UNREACHABLE => {
+                    // SAFETY: no buffer is named.
+                    return unsafe {
+                        pended(&served, &route, &head, None, |_| {
+                            Ran::Now(provider.trust_unreached(&caller, &counterparty))
+                        })
+                    };
+                }
+                _ => return Answered::fault(),
+            }
+            let Some(hash) = text_of(i.catalogue_hash, "trust_sight.catalogue_hash") else {
+                return Answered::fault();
+            };
+            // SAFETY: no buffer is named.
+            unsafe {
+                pended(&served, &route, &head, None, |later| {
+                    provider.trust_sight(&caller, &counterparty, &hash, later)
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn trust_sight_item(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::TRUST_SIGHT_ITEM,
+        size_of::<TrustSightItemIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `TrustSightItemIn`.
+            let i = unsafe { input.cast::<TrustSightItemIn>().read_unaligned() };
+            let (Some(counterparty), Some(item), Some(digest)) = (
+                text_of(i.counterparty, "trust_sight_item.counterparty"),
+                text_of(i.item, "trust_sight_item.item"),
+                text_of(i.digest, "trust_sight_item.digest"),
             ) else {
                 return Answered::fault();
             };
             let provider = Arc::clone(&served.provider);
             // SAFETY: no buffer is named.
             unsafe {
-                pended(&served, &route, &head, None, |later| {
-                    provider.trust_sight(&caller, &counterparty, &hash, later)
+                serve(&served.store, &route, &head, None, |_| {
+                    Ran::Now(provider.trust_sight_item(&caller, &counterparty, &item, &digest))
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn trust_serves(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::TRUST_SERVES,
+        size_of::<TrustServesIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `TrustServesIn`.
+            let i = unsafe { input.cast::<TrustServesIn>().read_unaligned() };
+            let (Some(counterparty), Some(item), Some(digest)) = (
+                text_of(i.counterparty, "trust_serves.counterparty"),
+                text_of(i.item, "trust_serves.item"),
+                text_of(i.digest, "trust_serves.digest"),
+            ) else {
+                return Answered::fault();
+            };
+            let some = |s: String| (!s.is_empty()).then_some(s);
+            let (item, digest) = (some(item), some(digest));
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: no buffer is named.
+            unsafe {
+                serve(&served.store, &route, &head, None, |_| {
+                    Ran::Now(provider.trust_serves(
+                        &caller,
+                        &counterparty,
+                        item.as_deref(),
+                        digest.as_deref(),
+                    ))
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn trust_decide(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::TRUST_DECIDE,
+        size_of::<TrustDecideIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `TrustDecideIn`.
+            let i = unsafe { input.cast::<TrustDecideIn>().read_unaligned() };
+            let approve = match i.decision {
+                svc::TRUST_DECIDE_APPROVE => true,
+                svc::TRUST_DECIDE_REVOKE => false,
+                _ => return Answered::fault(),
+            };
+            let (Some(counterparty), Some(item), Some(expected)) = (
+                text_of(i.counterparty, "trust_decide.counterparty"),
+                text_of(i.item, "trust_decide.item"),
+                text_of(i.expected, "trust_decide.expected"),
+            ) else {
+                return Answered::fault();
+            };
+            let some = |s: String| (!s.is_empty()).then_some(s);
+            let (item, expected) = (some(item), some(expected));
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: no buffer is named.
+            unsafe {
+                serve(&served.store, &route, &head, None, |_| {
+                    let key = busbar_contract::services::TrustKeyRef {
+                        counterparty: &counterparty,
+                        item: item.as_deref(),
+                    };
+                    Ran::Now(provider.trust_decide(&caller, key, expected.as_deref(), approve))
                 })
             }
         },
@@ -1370,3 +1499,48 @@ extern "C" fn need_admit(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
 #[cfg(test)]
 #[path = "../tests/host_services_tests.rs"]
 mod tests;
+
+extern "C" fn snapshot_read(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::SNAPSHOT_READ,
+        size_of::<SnapshotReadIn>(),
+        |served, _, _, caller| {
+            // SAFETY: the head covered a `SnapshotReadIn`.
+            let i = unsafe { input.cast::<SnapshotReadIn>().read_unaligned() };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            if svc::check_snapshot_read_in(&i).is_err() {
+                return Answered::fault();
+            }
+            match served.provider.snapshot_read(&caller, i.scope) {
+                Snapshot::Families(families) => {
+                    let needed = super::snapshot::size_of_layout(&families);
+                    if needed > i.into.cap {
+                        return Answered {
+                            needed_bytes: needed as u64,
+                            ..Answered::bare(Outcome::Failed, SHORT)
+                        };
+                    }
+                    // SAFETY: `into` was checked above (a capacity never behind NULL, the
+                    // alignment the layout needs), and the layout fits its capacity.
+                    let used = unsafe { super::snapshot::lay_out(&families, i.into.buf) };
+                    Answered {
+                        value: families.len() as u64,
+                        len: used as u64,
+                        ..Answered::bare(Outcome::Ready, "")
+                    }
+                }
+                Snapshot::NotReady => Answered::bare(Outcome::Failed, SNAPSHOT_NOT_READY),
+                Snapshot::Refused(why) => Answered::bare(Outcome::Refused, why),
+            }
+        },
+    )
+}

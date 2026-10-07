@@ -215,6 +215,18 @@ fn stats(plugin: &Plugin<Plane>) -> [u64; cases::stat::COUNT] {
                 ptr: std::ptr::null(),
                 len: 0,
             },
+            trust_counterparty: busbar_contract::abi::mechanism::call::AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            trust_item: busbar_contract::abi::mechanism::call::AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            trust_digest: busbar_contract::abi::mechanism::call::AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
         },
     );
     assert_eq!(
@@ -387,6 +399,18 @@ fn zero_arrive_out() -> ArriveOut {
         route_flags: 0,
         _route_reserved: [0; 6],
         affinity: busbar_contract::abi::mechanism::call::AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        trust_counterparty: busbar_contract::abi::mechanism::call::AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        trust_item: busbar_contract::abi::mechanism::call::AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        trust_digest: busbar_contract::abi::mechanism::call::AbiStr {
             ptr: std::ptr::null(),
             len: 0,
         },

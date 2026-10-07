@@ -37,6 +37,7 @@ pub mod plane_calls;
 pub mod plugin;
 pub mod ready;
 pub mod services;
+pub mod snapshot;
 pub mod ticket;
 pub mod validate;
 mod watchdog;

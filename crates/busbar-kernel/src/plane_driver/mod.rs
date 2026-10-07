@@ -56,7 +56,7 @@
 mod cancel;
 mod epoch;
 mod far_end;
-mod hooks;
+pub(crate) mod hooks;
 mod money;
 mod needs;
 mod probe;
@@ -105,6 +105,7 @@ use crate::auth::CallerRefKey;
 use crate::host_services::{InstanceFacts, KernelServices, Signing};
 use crate::slice::GroupLeaseSlip;
 use crate::teller::{Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units};
+use crate::trust::book::{Distrust, TrustFacts};
 use crate::trust::section::parse_section;
 use busbar_contract::ids::RecordSchemaId;
 
@@ -196,7 +197,10 @@ pub fn refusal_status(reason: ReasonCode) -> u32 {
     match reason {
         ReasonCode::DecodeFailed | ReasonCode::SchemeNotDeclared => 400,
         ReasonCode::Unauthenticated | ReasonCode::Revoked | ReasonCode::SessionUnbound => 401,
-        ReasonCode::ScopeDenied | ReasonCode::PoolNotPermitted | ReasonCode::HookVeto => 403,
+        ReasonCode::ScopeDenied
+        | ReasonCode::PoolNotPermitted
+        | ReasonCode::HookVeto
+        | ReasonCode::Untrusted => 403,
         ReasonCode::BodyTooLarge => 413,
         ReasonCode::RateLimited | ReasonCode::OverBudget | ReasonCode::GroupFrozen => 429,
         ReasonCode::DestinationUnreachable | ReasonCode::PlanePanic => 502,
@@ -222,7 +226,8 @@ pub struct PlaneDriver {
     sessions: Mutex<HashMap<u64, Arc<Notify>>>,
     /// Which hooks bind to a unit of this plane; `None` = none ever does.
     hooks: Option<Arc<dyn HookBinder>>,
-    /// The instance's label, as admitted to the services.
+    /// The instance's label, as admitted to the services: what its trust entries are admitted
+    /// and judged under.
     label: Arc<str>,
     /// Where a unit's audit row (a `RECORD_AUDIT` write) is written: the kernel's own audit chain.
     audit: Arc<dyn AuditSink>,
@@ -516,6 +521,9 @@ pub struct Decoded {
     pub route: u8,
     /// The `ROUTE_*` flag bits its `arrive` stated (`ROUTE_ONCE`, `ROUTE_SESSION`).
     pub route_flags: u8,
+    /// The trust facts its `arrive` stated (a counterparty, and an item at a digest), which
+    /// the kernel's Approve judges; `None` = the unit rests on no counterparty.
+    pub trust: Option<busbar_contract::plane_calls::ArrivedTrust>,
 }
 
 /// THE KERNEL STEPS A PLANE'S UNIT IS SERVED UNDER ([`PlaneDriver::unit`]'s `steps`): the loop's
@@ -583,6 +591,8 @@ pub(crate) struct UnitState {
     hooked_pool: String,
     /// The hook that ordered or restricted the walk, for the opt-in transparency fields.
     route_policy: Option<&'static str>,
+    /// Why the kernel's Approve did not trust the unit's stated facts, for the plane's rendering.
+    distrust: Option<Distrust>,
 }
 
 /// ONE UNIT OF A PLANE, as the loop drives it.
@@ -728,6 +738,9 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             pool,
             route: o.route,
             route_flags: o.route_flags,
+            trust: (outcome == AbiOutcome::Ready)
+                .then(|| self.driver.calls.arrived_trust(&o))
+                .flatten(),
         })
     }
 }
@@ -775,13 +788,6 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             .as_deref()
             .or(steps_words.as_deref())
             .unwrap_or(said.unwrap_or(reason.as_str()).as_bytes());
-        let caps = self.driver.config.caps;
-        let (mut reply, mut fields, mut arena) = (
-            vec![0u8; caps.reply],
-            vec![NO_FIELD; caps.fields],
-            vec![0u8; caps.arena],
-        );
-        let mut records = vec![NO_RECORD; caps.records];
         let mut input = RefusalIn {
             cause: if words.is_some() {
                 REFUSAL_ARRIVE
@@ -794,41 +800,60 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             dialect,
             reason: reason_code(reason),
             text: AbiStr::over(text),
-            reply_buf: reply.as_mut_ptr(),
-            reply_cap: reply.len(),
-            fields_buf: fields.as_mut_ptr(),
-            fields_cap: fields.len(),
-            arena_buf: arena.as_mut_ptr(),
-            arena_cap: arena.len(),
             unit,
             plane_code: declined.map_or(0, |(code, _)| code),
             retry_after_s,
             target: AbiStr::over(&self.arrival.target),
-            records_buf: records.as_mut_ptr(),
-            records_cap: records.len(),
+            trust: if reason == ReasonCode::Untrusted {
+                self.lock().distrust.map_or(0, |why| {
+                    u32::try_from(crate::host_services::distrust_code(why)).unwrap_or(0)
+                })
+            } else {
+                0
+            },
             ..blank_in()
         };
         // The vetoing hook's name, on a gate refusal alone (absent = NULL otherwise).
         if let Some(hook) = hook {
             input.hook = AbiStr::over(hook.as_bytes());
         }
+        let principal = self.lock().principal.clone();
+        self.driver.render_refusal(input, principal.as_ref())
+    }
+}
+
+impl PlaneDriver {
+    /// THE ONE REFUSAL CROSSING: `input` (every field but the host buffers) through the plane's
+    /// `refusal`, its short buffers re-called at the sizes it asks, its record writes folded under
+    /// `principal`, and its rendering read back. A plane that answers other than READY renders an
+    /// empty body at the kernel's status.
+    fn render_refusal(&self, mut input: RefusalIn, principal: Option<&PrincipalId>) -> Rendered {
+        let status = input.status;
+        let caps = self.config.caps;
+        let (mut reply, mut fields, mut arena) = (
+            vec![0u8; caps.reply],
+            vec![NO_FIELD; caps.fields],
+            vec![0u8; caps.arena],
+        );
+        let mut records = vec![NO_RECORD; caps.records];
+        (input.reply_buf, input.reply_cap) = (reply.as_mut_ptr(), reply.len());
+        (input.fields_buf, input.fields_cap) = (fields.as_mut_ptr(), fields.len());
+        (input.arena_buf, input.arena_cap) = (arena.as_mut_ptr(), arena.len());
+        (input.records_buf, input.records_cap) = (records.as_mut_ptr(), records.len());
         let mut o: RefusalOut = blank_out();
-        let outcome = self
-            .driver
-            .calls
-            .refusal(&mut input, &mut o, &mut |short, i| {
-                reply.resize((short.reply_needed as usize).max(reply.len()), 0);
-                fields.resize((short.fields_needed as usize).max(fields.len()), NO_FIELD);
-                arena.resize((short.arena_needed as usize).max(arena.len()), 0);
-                records.resize(
-                    (short.records_needed as usize).max(records.len()),
-                    NO_RECORD,
-                );
-                (i.records_buf, i.records_cap) = (records.as_mut_ptr(), records.len());
-                (i.reply_buf, i.reply_cap) = (reply.as_mut_ptr(), reply.len());
-                (i.fields_buf, i.fields_cap) = (fields.as_mut_ptr(), fields.len());
-                (i.arena_buf, i.arena_cap) = (arena.as_mut_ptr(), arena.len());
-            });
+        let outcome = self.calls.refusal(&mut input, &mut o, &mut |short, i| {
+            reply.resize((short.reply_needed as usize).max(reply.len()), 0);
+            fields.resize((short.fields_needed as usize).max(fields.len()), NO_FIELD);
+            arena.resize((short.arena_needed as usize).max(arena.len()), 0);
+            records.resize(
+                (short.records_needed as usize).max(records.len()),
+                NO_RECORD,
+            );
+            (i.records_buf, i.records_cap) = (records.as_mut_ptr(), records.len());
+            (i.reply_buf, i.reply_cap) = (reply.as_mut_ptr(), reply.len());
+            (i.fields_buf, i.fields_cap) = (fields.as_mut_ptr(), fields.len());
+            (i.arena_buf, i.arena_cap) = (arena.as_mut_ptr(), arena.len());
+        });
         if outcome != AbiOutcome::Ready {
             return Rendered {
                 status,
@@ -840,14 +865,13 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
         // refused, and any put it writes beside it.
         let written = (o.records_written as usize).min(records.len());
         if written != 0 {
-            let principal = self.lock().principal.clone();
             let arena_written = (o.arena_written as usize).min(arena.len());
             let writes = busbar_contract::plane_calls::CancelWrite::owned(
                 &records,
                 written,
                 &arena[..arena_written],
             );
-            self.driver.fold_writes(&writes, principal.as_ref());
+            self.fold_writes(&writes, principal);
         }
         let span = |s: Span| {
             let start = s.offset as usize;
@@ -869,6 +893,26 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
                 .unwrap_or_default()
                 .to_vec(),
         }
+    }
+
+    /// A UNIT-LESS REFUSAL (spec Part 3 section 12, "Refusals": "for a refusal with no unit — the
+    /// TARGET, which the plane renders by its own path rule"): `reason`, decided by the kernel before
+    /// any unit exists (an unauthenticated caller at the door), rendered by the plane's `refusal` in
+    /// `dialect` (the matched route's `refusal_dialect`) for `target`, at the status the plane's tail
+    /// states for that dialect and reason, else the kernel's. No unit, no principal, nothing charged.
+    #[must_use]
+    pub fn refuse_unitless(&self, reason: ReasonCode, dialect: u32, target: &[u8]) -> Rendered {
+        let input = RefusalIn {
+            cause: REFUSAL_KERNEL,
+            status: self.config.status(dialect, reason),
+            dialect,
+            reason: reason_code(reason),
+            text: AbiStr::over(reason.as_str().as_bytes()),
+            unit: 0,
+            target: AbiStr::over(target),
+            ..blank_in()
+        };
+        self.render_refusal(input, None)
     }
 }
 
@@ -1037,8 +1081,6 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     forward_to_steps! {
         arrival(token: &Pass<ArrivalStep>, ctx: &UnitCtx) -> StepAnswer<ArrivalStep>;
         authenticate(token: &Pass<Authenticate>, ctx: &UnitCtx) -> StepAnswer<Authenticate>;
-        approve(token: &Pass<Approve>, ctx: &UnitCtx, principal: &PrincipalId,
-            destinations: &[VerifiedDestination]) -> StepAnswer<Approve>;
         meter(token: &Pass<Meter>, usage: &Grant<Consumption>, ctx: &UnitCtx, provisional: &Outcome,
             destinations: &[VerifiedDestination]) -> StepAnswer<Meter>;
         audit(token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> StepAnswer<Audit>;
@@ -1065,6 +1107,39 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         }
         self.steps
             .admit(token, admit, ctx, principal, destinations, leases)
+    }
+
+    /// THE KERNEL'S APPROVE (ARCHITECT 2026-10-06: trust is the kernel's Approve step; a plane
+    /// states facts and judges none): the trust facts the plane's `arrive` stated are judged
+    /// against the kernel's trust book first, and a unit the book does not trust is refused
+    /// [`ReasonCode::Untrusted`] before the deployment's own Approve runs; a unit that states none
+    /// goes straight to it.
+    fn approve(
+        &self,
+        token: &Pass<Approve>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+    ) -> StepAnswer<Approve> {
+        let stated = self.lock().decoded.as_ref().and_then(|d| d.trust.clone());
+        if let Some(t) = stated {
+            let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+            let (counterparty, item, digest) = (
+                text(&t.counterparty),
+                t.item.as_deref().map(text),
+                t.digest.as_deref().map(text),
+            );
+            let facts = TrustFacts {
+                counterparty: &counterparty,
+                item: item.as_deref(),
+                digest: digest.as_deref(),
+            };
+            if let Err(why) = self.driver.services.trust_judge(&self.driver.label, &facts) {
+                self.lock().distrust = Some(why);
+                return StepAnswer::refuse(token, Refusal::new(ReasonCode::Untrusted));
+            }
+        }
+        self.steps.approve(token, ctx, principal, destinations)
     }
 
     /// The kernel's verify, after which the unit's caller reference is derived under the node's

@@ -47,6 +47,11 @@ mod host;
 /// publishes (fetched artifacts, the high-water marks, plugin log directories) goes through it.
 pub(crate) use busbar_kernel_wal::durable;
 mod hostlog;
+/// NEVER SHIPPED: the framed connection-table stand-in with in-process far ends (`test-support`,
+/// and the published conformance suite's `far_ends`), for a build that cannot link the process's
+/// connector. No TLS library: TLS stays in the connector.
+#[cfg(any(test, feature = "test-support", feature = "conformance"))]
+pub mod https_conns;
 pub mod observe;
 pub mod plane;
 pub mod registry;
@@ -68,6 +73,10 @@ pub mod tarball;
 /// a plugin repo names this crate only as a dev-dependency, so it reaches no shipped closure.
 #[cfg(any(test, feature = "test-support", feature = "conformance"))]
 pub mod tcp_conns;
+/// TEST ONLY: a local token issuer (an ES256 key, its JWKS, signed tokens) for the tests of a host
+/// that loads a token-verifying auth plugin (`test-support`).
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_issuer;
 /// TEST ONLY: the fake-call store harness the kernel's minting tests share with this crate's own.
 /// Compiled for this crate's tests and under the `test-support` feature, which only
 /// busbar-kernel's `[dev-dependencies]` edge turns on; never in a shipped build.
@@ -967,12 +976,41 @@ fn wire_up(
     })
 }
 
-/// Read `busbar_plugin_kind()` from a mapped library into an owned `String`.
+/// Read the kind a mapped library states into an owned `String`. A memory-ABI image states it in
+/// its door's head ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`],
+/// [`dispatch::load::kind_of_door`]): the SDK's `busbar_plugin_kind` answers for no door it
+/// registered (a null kind). A plane or transport image registered through its decl answers
+/// `busbar_plugin_kind()`. Any other library with no door is a 1.5.5-era JSON-contract plugin: its
+/// kind symbol only CLASSIFIES it, and it is REFUSED here, naming the rebuild (no legacy loading,
+/// THE DESIGN §11.8, ruling C21/ABI-o1), so no upload vet, inventory or kind gate takes it as valid.
 fn read_plugin_kind(lib: &Library, display: &str) -> Result<String, String> {
+    // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; the symbol is copied out as a plain
+    // fn pointer and `lib` outlives every use of it here.
+    let door = unsafe {
+        lib.get::<busbar_contract::abi::mechanism::door::DoorFn>(
+            busbar_contract::abi::mechanism::DOOR_SYMBOL,
+        )
+        .map(|s| *s)
+    };
+    if let Ok(door) = door {
+        // Guarded: the door function is plugin code; a panic fails the read CLOSED.
+        let kind = ffi_guard_confined(display, "door", || dispatch::load::kind_of_door(door))?
+            .map_err(|e| format!("plugin '{display}' states no kind the host has: {e}"))?;
+        return Ok(kind.word().to_string());
+    }
     let f = unsafe { lib.get::<PluginKindFn>(symbol::PLUGIN_KIND) }.map_err(|_| {
         format!("'{display}' is not a busbar plugin (no busbar_plugin_kind symbol)")
     })?;
-    kind_from_fn(*f, display)
+    let kind = kind_from_fn(*f, display)?;
+    use busbar_contract::abi::mechanism::kind::{PLANE, TRANSPORT};
+    if kind != PLANE && kind != TRANSPORT {
+        return Err(format!(
+            "plugin '{display}' states kind '{kind}' and exports no busbar_plugin_door — a plugin \
+             built against the 1.5.5 JSON contract; {}",
+            dispatch::load::REBUILD
+        ));
+    }
+    Ok(kind)
 }
 
 /// Call a plugin's `busbar_plugin_kind()` — looked up or linked — and read the kind it names.

@@ -157,6 +157,41 @@ impl HostServices for CredentialServices {
         self.inner.trust_due(caller)
     }
 
+    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
+        self.inner.trust_unreached(caller, counterparty)
+    }
+
+    fn trust_decide(
+        &self,
+        caller: &Caller,
+        key: busbar_contract::services::TrustKeyRef<'_>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Stored {
+        self.inner.trust_decide(caller, key, expected, approve)
+    }
+
+    fn trust_sight_item(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Stored {
+        self.inner
+            .trust_sight_item(caller, counterparty, item, digest)
+    }
+
+    fn trust_serves(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        self.inner.trust_serves(caller, counterparty, item, digest)
+    }
+
     fn trust_verify(
         &self,
         caller: &Caller,
@@ -250,6 +285,10 @@ impl HostServices for CredentialServices {
 
     fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
         self.inner.hook_call(caller, unit, ask, later)
+    }
+
+    fn snapshot_read(&self, caller: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
+        self.inner.snapshot_read(caller, scope)
     }
 }
 

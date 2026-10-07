@@ -1789,7 +1789,10 @@ fn compute_layout() -> String {
             route,
             route_flags,
             _route_reserved,
-            affinity
+            affinity,
+            trust_counterparty,
+            trust_item,
+            trust_digest
         ]
     );
     record!(
@@ -1879,7 +1882,9 @@ fn compute_layout() -> String {
             target,
             records_buf,
             records_cap,
-            hook
+            hook,
+            trust,
+            _trust_reserved
         ]
     );
     record!(
@@ -2136,7 +2141,28 @@ fn compute_layout() -> String {
     record!(s, hsvc::WorkFindIn, [head, reference, into]);
     record!(s, hsvc::WorkSettleIn, [head, handle, record]);
     record!(s, hsvc::WorkResumeIn, [head, handle, into]);
-    record!(s, hsvc::TrustSightIn, [head, counterparty, catalogue_hash]);
+    record!(
+        s,
+        hsvc::TrustSightIn,
+        [
+            head,
+            counterparty,
+            catalogue_hash,
+            outcome,
+            _outcome_reserved
+        ]
+    );
+    record!(
+        s,
+        hsvc::TrustSightItemIn,
+        [head, counterparty, item, digest]
+    );
+    record!(s, hsvc::TrustServesIn, [head, counterparty, item, digest]);
+    record!(
+        s,
+        hsvc::TrustDecideIn,
+        [head, counterparty, item, expected, decision, _reserved]
+    );
     record!(s, hsvc::TrustDueIn, [head, into]);
     record!(s, hsvc::VerifyLookupIn, [head, key, into]);
     record!(s, hsvc::VerifyStoreIn, [head, key, entry, ttl_ms]);
@@ -2172,7 +2198,11 @@ fn compute_layout() -> String {
             need_admit,
             trust_verify,
             records_secret,
-            disk_append
+            disk_append,
+            snapshot_read,
+            trust_sight_item,
+            trust_serves,
+            trust_decide
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
@@ -2188,6 +2218,7 @@ fn compute_layout() -> String {
         hsvc::DiskWritten,
         [size, rotated, faults, _reserved, written]
     );
+    record!(s, hsvc::SnapshotReadIn, [head, scope, _reserved, into]);
 
     // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
     record!(s, SecretOps, [head, resolve]);

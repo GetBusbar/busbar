@@ -52,6 +52,7 @@ fn decl(
             method,
             auth,
         },
+        scrape: false,
         dispatch: Arc::new(FakeDispatch { label }),
     }
 }
@@ -219,6 +220,31 @@ fn confinement_export_metrics_exception_and_reserved_routes() {
         "x",
     )]))
     .contains("/exports/datadog/*"));
+}
+
+/// THE SCRAPE SINK'S WELL-KNOWN PATH (owner law 2026-09-27: `/metrics/hooks` leaves core, a
+/// listener need of the scrape sink). RED: any other export plugin, or a hook, claiming
+/// `/metrics/hooks` is refused as a reserved route; the scrape sink's own claim is accepted.
+#[test]
+fn only_the_scrape_sink_claims_metrics_hooks() {
+    let hooks = |owner: &str, kind: RouteKind, scrape: bool| RouteDecl {
+        scrape,
+        ..decl(
+            owner,
+            kind,
+            "/metrics/hooks",
+            RouteMethod::Get,
+            RouteAuth::Key,
+            "x",
+        )
+    };
+    assert!(build_route_table(vec![hooks("prometheus", RouteKind::Export, true)]).is_ok());
+    for refused in [
+        hooks("datadog", RouteKind::Export, false),
+        hooks("sr", RouteKind::Hook, false),
+    ] {
+        assert!(expect_err(build_route_table(vec![refused])).contains("reserved core route"));
+    }
 }
 
 // ── End-to-end dispatch + scrape-time (live-snapshot) resolution ─────────────────────────────────

@@ -268,6 +268,17 @@ pub trait ExportCalls: Send + Sync {
     /// The instance failed, was refused, faulted, or answered short twice.
     fn scrape(&self, families: &[Family]) -> Result<Vec<u8>, String>;
 
+    /// Render the HOOK `families` (`/metrics/hooks`) as this instance's exposition text, through
+    /// `scrape` with [`crate::abi::export::SCRAPE_FLAG_HOOK_FAMILIES`] set, on the calling thread.
+    /// An instance with no hook rendering answers `Err`.
+    ///
+    /// # Errors
+    /// The instance renders no hook families, failed, was refused, faulted, or answered short twice.
+    fn scrape_hooks(&self, families: &[Family]) -> Result<Vec<u8>, String> {
+        let _ = families;
+        Err("this instance renders no hook families".to_string())
+    }
+
     /// Ask the instance for its `status` (what it reports when the host renders its status
     /// exposition): the 1.5.5 status JSON, or `None` when it has none. Its envelope's metrics and
     /// diagnostics are folded by the host as every reply's are.
@@ -333,6 +344,28 @@ pub trait ExportAxis: Send + Sync {
 
     /// Whether `module` names a FIRST-PARTY row: linked, or dropped in signed by the release key.
     fn first_party(&self, module: &str) -> bool;
+
+    /// Whether `module`'s row states the `one_instance` mark
+    /// ([`crate::abi::mechanism::door::MARK_ONE_INSTANCE`]): at most one instance may be
+    /// configured. The kernel then asks the module's own `check` at the limits phase while the
+    /// configuration is resolved, and renders its findings verbatim. None by default.
+    fn one_instance(&self, module: &str) -> bool {
+        let _ = module;
+        false
+    }
+
+    /// The routes `module`'s row declares (its Statement's `routes`), read without opening an
+    /// instance: what a configuration apply that adds an instance would mount. None by default.
+    fn routes(&self, module: &str) -> Vec<crate::abi::mechanism::route::Route> {
+        let _ = module;
+        Vec::new()
+    }
+
+    /// The `module:` words of the export rows this build LINKS, in the order the composition root
+    /// registered them: what an unknown-exporter refusal lists. None by default.
+    fn linked_modules(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]
