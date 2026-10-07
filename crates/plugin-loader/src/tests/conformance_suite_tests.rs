@@ -791,3 +791,82 @@ fn regex_lite_meter(script: &str) -> Vec<String> {
         })
         .collect()
 }
+
+// ── THE ADMISSION AND CONNECTION RED ARMS (`red.rs`), over the loader's own fixtures ─────────────
+
+mod red_arms {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use busbar_contract::abi::mechanism::door::DoorFn;
+
+    use super::super::{
+        red_cross_instance_conn, red_statement, red_undeclared_need, red_wrong_kind, Subject,
+    };
+
+    /// Whether `krate`'s example `cdylib` is built in this target dir (`cargo test` builds the
+    /// examples; `--lib` alone does not). Under CI a missing one is a failure, never a skip.
+    fn built(krate: &str) -> bool {
+        let built = std::env::current_exe()
+            .ok()
+            .and_then(|exe| Some(exe.parent()?.parent()?.join("examples")))
+            .is_some_and(|dir| dir.join(crate::plugin_library_filename(krate)).exists());
+        assert!(
+            built || std::env::var_os("CI").is_none(),
+            "the {krate} example cdylib is not built under CI; a both-ways proof must not skip"
+        );
+        built
+    }
+
+    /// The fixtures of two kinds: the plane door and the hook door, each its linked door and the
+    /// example `cdylib` that is its dropped-in image.
+    fn fixtures() -> Vec<(DoorFn, &'static str)> {
+        vec![
+            (
+                crate::plane_door_plugin::door as DoorFn,
+                "plane_door_plugin",
+            ),
+            (
+                crate::hook_door_conformance_tests::hook_door_plugin::conforming::door,
+                "hook_door",
+            ),
+        ]
+    }
+
+    fn panics(f: impl FnOnce()) -> String {
+        let e = catch_unwind(AssertUnwindSafe(f)).expect_err("the arm fails");
+        e.downcast_ref::<String>()
+            .cloned()
+            .or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_string()))
+            .unwrap_or_default()
+    }
+
+    /// GREEN: an honest door of each kind passes all four arms (its mismatched Statement, every
+    /// other kind, an undeclared need and another instance's connection all refused; its honest
+    /// twin admitted and connected).
+    #[test]
+    fn an_honest_door_of_each_kind_passes_the_four_arms() {
+        for (door, krate) in fixtures() {
+            let s = Subject::new(door, krate, "{}");
+            red_undeclared_need(&s);
+            red_cross_instance_conn(&s);
+            if built(krate) {
+                red_statement(&s);
+                red_wrong_kind(&s);
+            }
+        }
+    }
+
+    /// RED: a plugin whose dropped-in library is not its linked door (the plane door shipped with
+    /// the hook library) fails the Statement arm and the kind arm, on their honest twins.
+    #[test]
+    fn red_a_plugin_whose_library_is_not_its_door_fails_the_arms() {
+        if !(built("plane_door_plugin") && built("hook_door")) {
+            return;
+        }
+        let s = Subject::new(crate::plane_door_plugin::door, "hook_door", "{}");
+        let text = panics(|| red_statement(&s));
+        assert!(text.contains("honest library"), "{text}");
+        let text = panics(|| red_wrong_kind(&s));
+        assert!(text.contains("honest library"), "{text}");
+    }
+}
