@@ -135,7 +135,9 @@ fn a_fresh_request_mints_busbars_id_and_opens_the_task_dispatched_to_the_agent()
     assert_eq!(genesis.kind, "task.submitted");
     assert_eq!(dispatch.kind, "task.delegated");
     assert_eq!(dispatch.prev_hash, genesis.hash);
-    assert_eq!(dispatch.request_id, MINTED);
+    // The event's `request_id` join key is not on the chain: the host keeps a chained record's own
+    // bytes, every one of them digested, and the join key stays out of the digest (ARCHITECT
+    // ruling B1).
 }
 
 #[test]

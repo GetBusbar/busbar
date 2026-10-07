@@ -102,9 +102,12 @@ fn rig() -> (KernelServices, Arc<MemoryStore>) {
     (s, store)
 }
 
+/// Where a write's acknowledgement lands.
+type Answered = Arc<Mutex<Option<Result<(), &'static str>>>>;
+
 /// Append `bytes` to the chain `scope` and answer its acknowledgement.
 fn append(s: &KernelServices, scope: &[u8], bytes: &[u8]) -> Result<(), &'static str> {
-    let got: Arc<Mutex<Option<Result<(), &'static str>>>> = Arc::default();
+    let got: Answered = Arc::default();
     let into = Arc::clone(&got);
     s.record_write(
         &me(),

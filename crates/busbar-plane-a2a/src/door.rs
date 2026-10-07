@@ -155,8 +155,8 @@ const RECORD_KINDS: &[AbiStr] = &[
     abi_str(crate::records::HELD_KINDS[3]),
 ];
 
-/// THE TASK CHAIN (ARCHITECT ruling B1, 2026-10-07; `BUSBAR-1.6.0.md` Part 3 §5 and THE DESIGN's
-/// route pump): the task-event kind is chained, pipe-separated with its scope in the digest, the
+/// THE TASK CHAIN (ARCHITECT ruling B1, 2026-10-07; `BUSBAR-1.6.0.md` Part 3, the chain section, and THE
+/// DESIGN's route pump): the task-event kind is chained, pipe-separated with its scope in the digest, the
 /// framing the engine's per-task chain was sealed under (`prev|task|seq|ts|kind|context|principal|
 /// agent|state`). The host frames the prelude and keeps and verifies the chain; the plane writes
 /// only each event's own fields ([`crate::tasks::suffix`]).

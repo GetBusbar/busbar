@@ -149,10 +149,13 @@ fn digest_text(bytes: &[u8]) -> Option<(String, &[u8])> {
 /// One chain's position: the instance's label, the kind, the scope.
 type Position = (Arc<str>, String, String);
 
+/// Every chain's position, the least recently written first.
+type Positions = IndexMap<Position, Chain<PlaneJournalRecord>>;
+
 /// THE CHAIN POSITIONS of every instance's chained kinds, the flush's to keep.
 #[derive(Default)]
 pub struct ChainBook {
-    positions: Mutex<IndexMap<Position, Chain<PlaneJournalRecord>>>,
+    positions: Mutex<Positions>,
 }
 
 impl std::fmt::Debug for ChainBook {
@@ -164,7 +167,7 @@ impl std::fmt::Debug for ChainBook {
 }
 
 impl ChainBook {
-    fn lock(&self) -> MutexGuard<'_, IndexMap<Position, Chain<PlaneJournalRecord>>> {
+    fn lock(&self) -> MutexGuard<'_, Positions> {
         self.positions.lock().unwrap_or_else(|e| e.into_inner())
     }
 

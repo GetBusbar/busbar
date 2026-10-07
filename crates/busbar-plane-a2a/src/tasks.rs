@@ -15,7 +15,7 @@
 //! * A CHANGE IS RACE-SAFE: every write of a task consumes the next sequence of its chain, and the
 //!   sequence is won with `records.claim` on `<caller>/<task>/<seq>` before anything is written. A
 //!   writer that loses re-reads and tries the next one.
-//! * THE HASH CHAIN IS THE HOST'S (ARCHITECT ruling B1, 2026-10-07; `BUSBAR-1.6.0.md` Part 3 §5):
+//! * THE HASH CHAIN IS THE HOST'S (ARCHITECT ruling B1, 2026-10-07; `BUSBAR-1.6.0.md` Part 3, the chain section):
 //!   the task-event kind is declared chained, pipe-separated with its scope digested
 //!   (`crate::door`'s `RECORD_CHAINS`). An event is an APPEND to the chain keyed `<caller>/<task>`
 //!   carrying only its own fields ([`suffix`]); the host frames `prev|scope|seq` ahead of them,
