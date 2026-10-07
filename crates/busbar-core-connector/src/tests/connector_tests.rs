@@ -1771,3 +1771,34 @@ fn members_sharing_an_origin_each_answer_their_own_binding_and_never_a_neighbour
         "another need"
     );
 }
+
+/// A REQUEST NAMING NO MEMBER GETS NO BINDING, even where EXACTLY ONE member is bound at its origin
+/// (the coordinator's answer: no origin fallback; R5: a request that is no member's is dialled
+/// with no credential): the connector keys a binding by (instance, need, member, target origin),
+/// so the one member's own request answers its binding and a memberless request to the same origin
+/// answers none, its request carrying no `authorization`. RED: an origin fallback (answer the
+/// binding when a single member holds one at the origin) lends that member's credential to a
+/// request that is not its own.
+#[test]
+fn a_request_naming_no_member_gets_no_binding_even_from_the_one_member_at_its_origin() {
+    let c = Connector::default();
+    let (owner, need) = (InstanceId(3), NeedId(1));
+    c.bind_auth(owner, need, "solo", "https://solo.example", bound_as(7));
+    let handle =
+        |member: &str, target: &str| c.auth_of(owner, need, member, target).map(|b| b.handle);
+    assert_eq!(
+        handle("solo", "https://solo.example/solo"),
+        Some(7),
+        "the member's own request carries its binding"
+    );
+    assert_eq!(
+        handle("", "https://solo.example/solo"),
+        None,
+        "a request naming no member carries no binding, though one member alone is bound there"
+    );
+    assert_eq!(
+        handle("", "https://solo.example"),
+        None,
+        "nor at the bare origin"
+    );
+}
