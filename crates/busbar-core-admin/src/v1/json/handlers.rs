@@ -2410,10 +2410,18 @@ pub(crate) async fn restart(
 
 /// The `POST /api/v1/admin/config/apply` body: a full proposed config (validate's exact shape).
 /// Optimistic concurrency rides `If-Match`.
+///
+/// `config` is carried as a raw [`serde_json::Value`] and parsed by the SAME pre-pass boot runs
+/// (`busbar_kernel::config::deploy_from_deserializer`), exactly as [`ValidateConfigReq`] is: the
+/// plane sections (`tools`/`agents`/`streams`/…) are lifted before the frozen `deny_unknown_fields`
+/// `DeployCfg` parses the remainder. A plain-derived `DeployCfg` here refused every plane section as
+/// an unknown field, so a config that boots could not be applied (ARCHITECT, FLIP-A2A: apply accepts
+/// exactly the boot config shape, plane sections included, and they flow to each plane's refresh
+/// with no restart).
 #[derive(serde::Deserialize)]
 pub(crate) struct ApplyConfigReq {
-    /// The deploy config (operator-owned `config.yaml` shape).
-    config: busbar_kernel::config::DeployCfg,
+    /// The deploy config (operator-owned `config.yaml` shape), pre-lift.
+    config: serde_json::Value,
     /// The provider definitions (`providers.yaml` shape). Optional — empty validates/fails loudly
     /// on dangling references.
     #[serde(default)]
@@ -2445,6 +2453,17 @@ pub(crate) async fn apply_config(
             )))
         }
     };
+    // The boot pre-pass, as `validate_config` runs it: plane sections lifted, the rest frozen.
+    let req_deploy: busbar_kernel::config::DeployCfg =
+        match busbar_kernel::config::deploy_from_deserializer(req.config) {
+            Ok(d) => d,
+            Err(e) => {
+                return err_json(&AdminError::Validation(format!(
+                    "malformed config body: {e}"
+                )))
+            }
+        };
+    let req_providers = req.providers;
     let out = config_transaction(&handle, move |txn| {
         let current = txn.app();
         if let Some(e) = stale_if_match(expected, current.config_version) {
@@ -2473,10 +2492,7 @@ pub(crate) async fn apply_config(
                 .overlay_path
                 .as_deref()
                 .and_then(busbar_kernel::config::overlay::read);
-            let ApplyConfigReq {
-                config: mut deploy,
-                providers,
-            } = req;
+            let (mut deploy, providers) = (req_deploy, req_providers);
             if let Some(doc) = overlay_doc.as_ref() {
                 busbar_kernel::config::overlay::apply_root_to_deploy(&mut deploy, doc);
                 // Without this an apply re-validates against the BASE floors and silently reverts a

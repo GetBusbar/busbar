@@ -469,6 +469,9 @@ pub struct FieldsRequest {
     /// The caller's verified credential, for a passthrough binding (`abi::auth::MODE_PASSTHROUGH`).
     /// Secret: zeroised when it drops (every copy is its own [`Redacted`]).
     pub caller_credential: Option<Redacted<Vec<u8>>>,
+    /// The call's extensions blob (`abi::mechanism::extensions`), lent as `FieldsIn::head.extensions`:
+    /// the per-call scope under `abi::auth::EXT_SCOPE` when the request stated one. Empty = absent.
+    pub extensions: Vec<u8>,
 }
 
 impl Default for FieldsRequest {
@@ -486,6 +489,7 @@ impl Default for FieldsRequest {
             timestamp: 0,
             headers: Vec::new(),
             caller_credential: None,
+            extensions: Vec::new(),
         }
     }
 }

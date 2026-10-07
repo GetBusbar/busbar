@@ -158,6 +158,7 @@ pub fn fire_stage_taps_where(
         prompt: None,
         identity: None,
         signals,
+        session: None,
     };
     let tap = busbar_contract::abi::host::hook::NotifyFrame::build(&req, Some(&stage), false);
     for (timeout, _send_prompt, hook, groups) in taps {

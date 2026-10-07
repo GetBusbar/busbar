@@ -17,7 +17,7 @@ impl HostServices for Judges {
             mono_ns: 7,
         }
     }
-    fn dest_judge(&self, _: &str, _: u32, _: bool, _: Option<Later>) -> Ran {
+    fn dest_judge(&self, _: &str, _: u32, _: u32, _: Option<Later>) -> Ran {
         Ran::Now(Stored::ready(1))
     }
     fn records_get(&self, _: &Caller, _: &str, _: &[u8], _: Later) -> Ran {
@@ -72,7 +72,7 @@ impl HostServices for Judges {
 }
 
 fn judged(s: &LateServices) -> Stored {
-    match s.dest_judge("https://example.test/", 0, false, None) {
+    match s.dest_judge("https://example.test/", 0, 0, None) {
         Ran::Now(stored) => stored,
         Ran::Later => panic!("the late services never pend"),
     }
@@ -162,7 +162,7 @@ fn kernel(blocked: &[&str], allow_all: bool) -> KernelServices {
 }
 
 fn verdict(s: &dyn HostServices, dest: &str, class: u32) -> Stored {
-    match s.dest_judge(dest, class, false, None) {
+    match s.dest_judge(dest, class, 0, None) {
         Ran::Now(stored) => stored,
         Ran::Later => panic!("an unresolved judgement answers at once"),
     }
@@ -254,6 +254,57 @@ async fn the_ingress_caller_answers_with_the_units_head_and_bytes() {
     };
     let ((), body) = tokio::join!(unit, handler);
     assert_eq!(&body[..], b"hello world");
+}
+
+/// A WHOLE ANSWER STATES ITS LENGTH (1.5.5 parity: a buffered answer went out under
+/// `content-length`, never chunked): a head that states its length (one the plane rendered in full)
+/// is collected to its end and sent under the length of what was written; an event stream, and an
+/// answer that states no length, go out piece by piece. RED before: every answer streamed.
+#[tokio::test]
+async fn a_whole_answer_is_sent_under_its_length_and_a_stream_piece_by_piece() {
+    use http_body::Body as _;
+    let cases: [(HeadFields, Option<u64>); 3] = [
+        (
+            vec![
+                (b"content-type".to_vec(), b"application/json".to_vec()),
+                (b"content-length".to_vec(), b"99".to_vec()),
+            ],
+            Some(11),
+        ),
+        (
+            vec![
+                (b"content-type".to_vec(), b"text/event-stream".to_vec()),
+                (b"content-length".to_vec(), b"11".to_vec()),
+            ],
+            None,
+        ),
+        (
+            vec![(b"content-type".to_vec(), b"application/json".to_vec())],
+            None,
+        ),
+    ];
+    for (fields, length) in cases {
+        let (caller, reply) = IngressCaller::new();
+        let caller = Arc::new(caller);
+        let writer = Arc::clone(&caller);
+        let unit: DrivenUnit = Box::pin(async move {
+            writer.head(200, fields);
+            assert!(writer.write(b"hello ").await);
+            assert!(writer.write(b"world").await);
+            None
+        });
+        drop(caller);
+        let response = reply.answer(unit).await;
+        assert_eq!(
+            response.body().size_hint().exact(),
+            length,
+            "the length stated, or none"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("the body");
+        assert_eq!(&body[..], b"hello world");
+    }
 }
 
 /// A write resolves only once the body has taken the piece before it: one piece in flight.
@@ -351,6 +402,7 @@ fn plane(section: &'static str, record_kinds: &'static [&'static str]) -> PlaneD
         required_config_sections: &[],
         trust_keys: &[],
         served_op_classes: &[],
+        caller_credential_refusal: None,
     }
 }
 
@@ -420,6 +472,7 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     let demotions = Arc::new(DemotionRecord::default());
     attach(
         &late,
+        None,
         Some(Arc::new(Signs)),
         &demotions,
         &[&plane("owner", &[KIND_DEMOTION])],
@@ -437,5 +490,105 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     assert!(
         !k.attach_signer(Arc::new(Signs)),
         "a second attach is refused"
+    );
+}
+
+/// THE RECORD STORE (ARCHITECT Q-L3B-RECORDS): the late attach binds the configured governance
+/// store — opened through its door on the store axis, as boot opens it — as the kernel's record
+/// store, its typed records served over its store v3 slots ([`busbar_kernel::host_records::StoreRows`]).
+/// A governance store with no door binds nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
+    use busbar_contract::kinds::RecordBytes;
+    use busbar_contract::store_calls::{StoreAxis as _, StoreDoor};
+    use busbar_kernel::host_records::RecordRows as _;
+    let axis = crate::root::loader::store_v3::DoorStoreAxis {
+        dispatcher: Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+            crate::root::loader::dispatch::DispatchConfig::default(),
+        )),
+        logs: crate::root::boot::plugin_logs().clone(),
+        conns: None,
+        mint: busbar_kernel::door::op_id,
+    };
+    let opened = axis
+        .open(
+            // The build's ephemeral linked store, picked by its flag (the row's `(name, ephemeral,
+            // door)`), as boot opens it.
+            StoreDoor::Linked(
+                crate::LINKED
+                    .stores
+                    .iter()
+                    .find(|s| s.1)
+                    .expect("the build links an ephemeral store")
+                    .2,
+            ),
+            "records-attach",
+            b"{}",
+        )
+        .expect("the default store opens through its door");
+    let calls = opened.calls.expect("a door-opened store has its v3 slots");
+
+    // The adapter reads back what it wrote, through the store's own record slots.
+    let rows = busbar_kernel::host_records::StoreRows(Arc::clone(&calls));
+    let schema = busbar_contract::ids::RecordSchemaId::new("attach-probe");
+    let value = RecordBytes::new(b"v".to_vec()).expect("a small record");
+    let written = tokio::task::spawn_blocking(move || {
+        rows.record_put(schema, b"k", &value).expect("put");
+        rows.record_get(schema, b"k").expect("get")
+    })
+    .await
+    .expect("the blocking call ran");
+    assert_eq!(written.map(|v| v.as_slice().to_vec()), Some(b"v".to_vec()));
+
+    // With the governance store's slots kept, the attach binds it; a second bind is refused.
+    let gov = busbar_kernel::governance::GovState::new(Arc::clone(&opened.records), None)
+        .expect("governance");
+    assert!(gov.attach_store_calls(calls));
+    let late = LateServices::new();
+    let k = Arc::new(KernelServices::new());
+    late.install_kernel(Arc::clone(&k), Arc::clone(&k) as Arc<dyn HostServices>)
+        .expect("installed once");
+    attach(
+        &late,
+        Some(&gov),
+        None,
+        &Arc::new(DemotionRecord::default()),
+        &[],
+    );
+    assert!(
+        !k.attach_records(
+            Arc::new(busbar_kernel::host_records::StoreRows(
+                gov.store_calls().expect("kept")
+            )),
+            gov.store()
+        ),
+        "the governance store is already the record store"
+    );
+
+    // No door, no slots: nothing is bound.
+    let bare = busbar_kernel::governance::GovState::new(
+        Arc::new(busbar_kernel::governance::MemoryStore::new()),
+        None,
+    )
+    .expect("governance");
+    let late = LateServices::new();
+    let k = Arc::new(KernelServices::new());
+    late.install_kernel(Arc::clone(&k), Arc::clone(&k) as Arc<dyn HostServices>)
+        .expect("installed once");
+    attach(
+        &late,
+        Some(&bare),
+        None,
+        &Arc::new(DemotionRecord::default()),
+        &[],
+    );
+    assert!(
+        k.attach_records(
+            Arc::new(busbar_kernel::host_records::StoreRows(Arc::clone(
+                &gov.store_calls().expect("kept")
+            ))),
+            bare.store()
+        ),
+        "a store with no slots bound nothing"
     );
 }

@@ -64,6 +64,14 @@ impl ConsumedCredentials {
 pub struct CallerCredential(pub(super) String);
 
 impl CallerCredential {
+    /// THE CREDENTIAL LENT TO THE HOST'S EGRESS (L2 credential lending): the bytes, zeroised on
+    /// drop and printed as presence only, for the one outbound auth call of a passthrough member
+    /// (`FieldsRequest::caller_credential`). Never handed to a plane.
+    #[must_use]
+    pub fn lend(&self) -> busbar_contract::redacted::Redacted<Vec<u8>> {
+        busbar_contract::redacted::Redacted::new(self.0.as_bytes().to_vec())
+    }
+
     /// A ref over `token`, for a test that stands in for the gate.
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_test(token: &str) -> Self {
