@@ -890,7 +890,7 @@ fn rotate(path: &std::path::Path, value: &str) {
 /// lease_ttl_ms: 60000}` (`placement` the YAML after the secret, or empty for none).
 fn registration(path: &std::path::Path, placement: &str) -> serde_yaml::Value {
     serde_yaml::from_str(&format!(
-        "url: 'https://a2a.vendor/planner'\nupstream_credential: {{secret: {{file: '{}'}}{placement}, \
+        "url: 'https://agent.vendor/planner'\nupstream_credential: {{secret: {{file: '{}'}}{placement}, \
          lease_ttl_ms: 60000}}",
         path.display()
     ))
@@ -961,7 +961,7 @@ fn a_bearer_placement_presents_the_secret_only_as_the_bearer() {
         );
     }
     let bare: serde_yaml::Value =
-        serde_yaml::from_str("url: 'https://a2a.vendor/planner'").expect("yaml");
+        serde_yaml::from_str("url: 'https://agent.vendor/planner'").expect("yaml");
     assert!(
         super::upstream_credential_binding("planner", &bare, &reach)
             .expect("no block is no error")
@@ -1010,7 +1010,7 @@ fn a_named_header_placement_presents_the_secret_verbatim_in_that_header() {
 #[test]
 fn an_unresolvable_credential_fails_closed_and_names_the_member() {
     let reach = own_reach();
-    let missing = std::path::Path::new("/nonexistent/busbar/a2a/secret");
+    let missing = std::path::Path::new("/nonexistent/busbar/agent/secret");
     let err = refused(super::upstream_credential_binding(
         "planner",
         &registration(missing, ""),

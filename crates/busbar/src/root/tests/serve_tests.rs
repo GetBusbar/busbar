@@ -3878,7 +3878,7 @@ mod agent_door {
 
             let info = serde_json::json!({
                 "@type": "type.googleapis.com/google.rpc.ErrorInfo",
-                "domain": "a2a-protocol.org",
+                "domain": surface("error_info_domain"),
                 "reason": "INVALID_AGENT_RESPONSE",
             });
             let (status, body) = answered(
@@ -3899,7 +3899,7 @@ mod agent_door {
                     "message": "the backend agent did not complete this task",
                     "data": [info.clone(), {
                         "@type": "type.googleapis.com/google.rpc.ResourceInfo",
-                        "resourceType": "a2a.busbar/task",
+                        "resourceType": surface("task_resource_type"),
                         "resourceName": failed,
                     }],
                 } }),

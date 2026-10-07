@@ -152,9 +152,10 @@ fn seam_buffered(url: &str, cap: usize) -> super::Buffered {
 /// THE CORE EQUALITY. Pins that the hostless seam's `buffered` and a direct pinned reqwest hop agree
 /// field for field against the same fixture: status, location, body, peer key pin and
 /// `client_identity_offered`, with a body under the cap reading `Complete`. Ported from busbar-a2a
-/// `egress_seam_tests`, with the old `ReqwestTransport::get` comparator replaced by the direct hop.
+/// `egress_seam_tests` (`buffered_adapter_matches_the_..._transport_get_byte_for_byte`, renamed: the
+/// kernel names no plane), with the old `ReqwestTransport::get` comparator replaced by the direct hop.
 #[test]
-fn buffered_adapter_matches_the_a2a_transport_get_byte_for_byte() {
+fn buffered_adapter_matches_a_direct_pinned_get_byte_for_byte() {
     let body = b"the agent card bytes, exactly".to_vec();
     let port = spawn_mock(
         "200 OK",
