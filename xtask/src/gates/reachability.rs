@@ -184,6 +184,8 @@ const GATE: &str = "reachability";
 
 pub const ROW_SCAN_FLOOR: &str = "reachability:scan-floor";
 pub const ROW_ROSTER: &str = "reachability:roster";
+/// Every plane-kind crate the census finds maps to a roster plane. See the header.
+pub const ROW_PLANE_CRATES: &str = "reachability:plane-crates";
 pub const ROW_STALE: &str = "reachability:stale-declaration";
 pub const ROW_ROOT_MODULE: &str = "reachability:root-module";
 /// THE CITED EVIDENCE IS READ, AND NOT MERELY NAMED.
@@ -2947,6 +2949,76 @@ impl Gate for ReachabilityGate {
             FIX_RED,
             &["units_orphan"],
         ));
+        // ── THE PLANE CRATES ARE READ OFF THE CENSUS, NOT OFF A LIST ─────────────────────────
+        //
+        // The green fixture carries the five plane-kind crates the real tree does, each mapped to a
+        // roster plane (four by the key their `impl PlaneMeta` declares, `busbar-plane-mcp` by being
+        // the mcp row's linked crate). A SIXTH plane crate whose plane is on no roster row is the
+        // finding this row exists for: the old gate held the roster against `planes::PLANE_KEYS`, a
+        // second typed list, and had no row that read the plane crates on disk at all.
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a sixth plane-kind crate whose plane is on no roster row reds the plane-crates row",
+            &[ROW_PLANE_CRATES.to_string()],
+            evidenced(sixth_plane_crate()),
+            "`busbar-plane-zzz`",
+        ));
+        // A NAME IS NOT A THING: a crate named for a roster plane, declaring no key and linked by no
+        // roster row, maps to nothing.
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a plane-kind crate mapped only by its NAME reds the plane-crates row",
+            &[ROW_PLANE_CRATES.to_string()],
+            evidenced({
+                let mut ov = Overlay::new();
+                ov.set(
+                    "crates/busbar-plane-a2a/src/lib.rs",
+                    "pub struct A2aPlane;\n",
+                );
+                ov
+            }),
+            "`busbar-plane-a2a`",
+        ));
+        // A CENSUS THAT FINDS NO PLANE CRATE FOUND NOTHING, which is not zero findings.
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a tree with no plane-kind crate reds the plane-crates row",
+            &[ROW_PLANE_CRATES.to_string()],
+            evidenced({
+                let mut ov = Overlay::new();
+                for c in FIXTURE_PLANE_CRATES {
+                    ov.remove(format!("crates/{c}/Cargo.toml"));
+                }
+                ov
+            }),
+            "the plane-crate population is empty",
+        ));
+        // THE ON-DISK SPELLING MAPS: a plane crate declaring `voice` is the streaming plane's.
+        report.push(green_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a plane-kind crate declaring a roster plane's on-disk spelling maps to that plane",
+            evidenced({
+                let mut ov = Overlay::new();
+                ov.set(
+                    "crates/busbar-plane-voice/Cargo.toml",
+                    "[package]\nname = \"busbar-plane-voice\"\nversion = \"0.0.0\"\n",
+                );
+                ov.set(
+                    "crates/busbar-plane-voice/src/lib.rs",
+                    "pub struct VoicePlane;\n\nimpl PlaneMeta for VoicePlane {\n    \
+                     const KEY: &'static str = \"voice\";\n}\n",
+                );
+                ov
+            }),
+        ));
         report.push(prove_rows_red_at(
             cx,
             self,
@@ -3163,6 +3235,30 @@ impl Gate for ReachabilityGate {
 
         report
     }
+}
+
+/// The plane-kind crates the green fixture carries — the five the real tree does.
+const FIXTURE_PLANE_CRATES: &[&str] = &[
+    "busbar-plane-a2a",
+    "busbar-plane-decisions",
+    "busbar-plane-llm",
+    "busbar-plane-mcp",
+    "busbar-plane-streaming",
+];
+
+/// A SIXTH plane-kind crate beside the green fixture's five: a manifest and a source declaring a
+/// plane key no roster row has.
+fn sixth_plane_crate() -> Overlay {
+    let mut ov = Overlay::new();
+    ov.set(
+        "crates/busbar-plane-zzz/Cargo.toml",
+        "[package]\nname = \"busbar-plane-zzz\"\nversion = \"0.0.0\"\n",
+    );
+    ov.set(
+        "crates/busbar-plane-zzz/src/lib.rs",
+        "pub struct ZzzPlane;\n\nimpl PlaneMeta for ZzzPlane {\n    const KEY: &'static str = \"zzz\";\n}\n",
+    );
+    ov
 }
 
 /// The green fixture's `plane_claims()` naming no plane type, so the linked table is the only
