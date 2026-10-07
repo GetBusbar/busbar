@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The Admin API v1 CONTRACT — transport-agnostic types shared by every adapter.
+//! The Admin API v1 CONTRACT — transport-agnostic types shared by every adapter. Moved here from the
+//! kernel's `admin::v1::contract` (P2 D4, ARCHITECT Q-D4-ADMIN (b) 2026-10-04): the kernel keeps only
+//! the admin gate's half (`busbar_kernel::admin::gate`: the scope matrix, the paths it keys off and
+//! the neutral envelope for the answers it gives itself), re-exported below.
 //!
 //! This is the frozen surface expressed in Rust: the operation VIEWS (what a read returns), the
 //! stable ERROR taxonomy (`AdminError` → stable `code` + HTTP status), and the authorization SCOPE
@@ -21,27 +24,17 @@ use serde::Serialize;
 // and the emission recorder tags responses with it in a test build.
 pub mod taxonomy;
 
-/// The root every busbar-NATIVE API surface mounts under (`/api/<version>/<area>/…`). A plane's own
-/// mimicked wire surface is deliberately OUTSIDE this root — its paths are dictated by whatever
-/// external protocol it mimics, not by busbar.
-pub const API_ROOT: &str = "/api";
-
-/// The frozen Admin API v1 path prefix — relocated to the neutral substrate (`busbar_kernel::api`)
-/// so a plane crate names it without reaching into core; re-exported here so every in-core caller
-/// (the router nest, the scope matrix, the OpenAPI doc) is unchanged.
-pub use busbar_kernel::api::ADMIN_PREFIX;
-
-/// Relative (post-`ADMIN_PREFIX`) path segments matched in more than one place — the scope matrix
-/// (`required_scope`), auth.rs's mutation-rate classifier, and the json.rs router/OpenAPI builder —
-/// single-sourced here so the three surfaces cannot drift.
-pub const PATH_ADMIN_AUTH: &str = "/admin-auth";
-pub const PATH_CONFIG_VALIDATE: &str = "/config/validate";
-/// `POST /plugins/inspect` — a stateless, `read-only`-scope preview of a candidate plugin
-/// tarball. Single-sourced here for the
-/// same reason as `PATH_CONFIG_VALIDATE`: the scope matrix, the mutation-rate classifier, and the
-/// router all key off this exact string.
-pub const PATH_PLUGINS_INSPECT: &str = "/plugins/inspect";
+/// The admin gate's half of the contract, which the KERNEL answers before any admin handler runs —
+/// the native-API root, the v1 prefix, the paths the scope matrix and the mutation-rate classifier
+/// key off, and the scope matrix itself — re-exported from `busbar_kernel::admin::gate` so every
+/// in-admin caller (the router nest, the OpenAPI doc) names one definition.
+pub use busbar_kernel::admin::gate::{
+    required_scope, ADMIN_PREFIX, API_ROOT, PATH_ADMIN_AUTH, PATH_CONFIG_VALIDATE,
+    PATH_PLUGINS_INSPECT,
+};
+/// `/hooks`, matched in more than one place.
 pub const PATH_HOOKS: &str = "/hooks";
+/// `/groups`, matched in more than one place.
 pub const PATH_GROUPS: &str = "/groups";
 
 /// Shared pagination limit policy for the admin
@@ -65,39 +58,10 @@ pub const VERSIONS_LIMIT_DEFAULT: usize = 100;
 pub use busbar_contract::authz::{Grants, Scope};
 
 // `parse_ceiling` (the `max_admin_scope:` ceiling-token check) RELOCATED to
-// `crate::config::parse` (1.6.0 de-vocab): its callers — `config_validate`'s chain-entry rule and
+// `busbar_kernel::config::parse` (1.6.0 de-vocab): its callers — `config_validate`'s chain-entry rule and
 // `config::named_map`'s write path — are both neutral config surfaces, not the admin HTTP API.
 // Byte-identical rename: the admin-worded error TEXT is unchanged, only the Rust binding path
 // moved.
-
-/// The AUTHORIZATION MATRIX: the scope an admin endpoint requires, derived from METHOD + PATH —
-/// never from the body (a crafted request cannot escalate). A strict two-rung split (1.5.2 scope
-/// collapse): every read (`GET`/`HEAD`) plus the two stateless dry-run POSTs (`config/validate`,
-/// `plugins/inspect`) is `read-only`; every mutation — config apply/rollback, auth chains, keys,
-/// hooks, group_map, cache — needs `full`. Unknown methods fail closed to `full`. Body-derived
-/// refinements (a non-`full` caller must not register a hook wired into a security-critical path)
-/// remain at the service layer as defense-in-depth.
-// `pub` (not `pub`): the extracted plane crates' admin-verb conformance tests assert their
-// declared route scope equals the bar this one function ENFORCES (`busbar_kernel::admin_verbs`
-// documents the invariant), so they name it across the honest crate boundary. A pure `(method, path)
-// → Scope` function with no state to leak.
-pub fn required_scope(method: &axum::http::Method, path: &str) -> Scope {
-    use axum::http::Method;
-    if method == Method::GET || method == Method::HEAD {
-        return Scope::ReadOnly;
-    }
-    // Match RELATIVE to the one true prefix so the matrix can never drift from the mount grammar.
-    // A path outside the prefix (impossible for a mounted admin route) fails closed to `full`.
-    let rel = path.strip_prefix(ADMIN_PREFIX).unwrap_or(path);
-    // `POST /config/validate` (and `POST /plugins/inspect`) are STATELESS DRY-RUNS — reads in POST
-    // clothing (the body is the config to lint / tarball to preview, far past URL length limits). A
-    // read-only CI token must be able to lint configs.
-    if rel == PATH_CONFIG_VALIDATE || rel == PATH_PLUGINS_INSPECT {
-        return Scope::ReadOnly;
-    }
-    // Every other mutation (and any non-read extension method) is full-only.
-    Scope::Full
-}
 
 /// The stable v1 error taxonomy. Each variant maps to a fixed `code` (the machine-stable branch key
 /// tooling switches on — NEVER `message`) and an HTTP status the JSON-REST adapter uses. A non-HTTP
@@ -156,6 +120,10 @@ pub enum AdminError {
     UnpricedClass { lane: String, class: Option<String> },
 }
 
+// The variants the KERNEL also answers itself (the admin gate, the router fallback, the plane-driver
+// serve) read their frozen words from the kernel's neutral envelope, so the two cannot drift.
+use busbar_kernel::admin::gate::ApiError;
+
 impl AdminError {
     /// The plain "no such thing" — message `"<what> not found"`.
     pub fn not_found(what: impl Into<String>) -> Self {
@@ -178,15 +146,15 @@ impl AdminError {
     pub fn code(&self) -> &'static str {
         match self {
             AdminError::NotFound { .. } => "not_found",
-            AdminError::Unauthorized => "unauthorized",
-            AdminError::MethodNotAllowed => "method_not_allowed",
+            AdminError::Unauthorized => ApiError::Unauthorized.code(),
+            AdminError::MethodNotAllowed => ApiError::MethodNotAllowed.code(),
             AdminError::Forbidden { .. } => "forbidden",
             AdminError::Validation(_) => "invalid_request",
             AdminError::VersionConflict(_) => "version_conflict",
             AdminError::Conflict(_) => "conflict",
-            AdminError::RateLimited => "rate_limited",
-            AdminError::Internal => "internal",
-            AdminError::Unavailable(_) => "unavailable",
+            AdminError::RateLimited => ApiError::RateLimited.code(),
+            AdminError::Internal => ApiError::Internal.code(),
+            AdminError::Unavailable(_) => ApiError::Unavailable(String::new()).code(),
             AdminError::UnpricedClass { .. } => "unpriced_class",
         }
     }
@@ -195,15 +163,15 @@ impl AdminError {
     pub fn http_status(&self) -> u16 {
         match self {
             AdminError::NotFound { .. } => 404,
-            AdminError::Unauthorized => 401,
-            AdminError::MethodNotAllowed => 405,
+            AdminError::Unauthorized => ApiError::Unauthorized.http_status(),
+            AdminError::MethodNotAllowed => ApiError::MethodNotAllowed.http_status(),
             AdminError::Forbidden { .. } => 403,
             AdminError::Validation(_) => 400,
             AdminError::VersionConflict(_) => 409,
             AdminError::Conflict(_) => 409,
-            AdminError::RateLimited => 429,
-            AdminError::Internal => 500,
-            AdminError::Unavailable(_) => 503,
+            AdminError::RateLimited => ApiError::RateLimited.http_status(),
+            AdminError::Internal => ApiError::Internal.http_status(),
+            AdminError::Unavailable(_) => ApiError::Unavailable(String::new()).http_status(),
             AdminError::UnpricedClass { .. } => 409,
         }
     }
@@ -216,10 +184,8 @@ impl AdminError {
                 note: Some(why),
             } => format!("{what} not found ({why})"),
             AdminError::NotFound { what, note: None } => format!("{what} not found"),
-            AdminError::Unauthorized => {
-                "missing or invalid admin credential (Bearer or x-admin-token)".to_string()
-            }
-            AdminError::MethodNotAllowed => "method not allowed for this resource".to_string(),
+            AdminError::Unauthorized => ApiError::Unauthorized.message(),
+            AdminError::MethodNotAllowed => ApiError::MethodNotAllowed.message(),
             AdminError::Forbidden { needed } => {
                 format!(
                     "insufficient scope: this endpoint requires `{}`",
@@ -229,10 +195,8 @@ impl AdminError {
             AdminError::Validation(msg) => msg.clone(),
             AdminError::VersionConflict(msg) => msg.clone(),
             AdminError::Conflict(msg) => msg.clone(),
-            AdminError::RateLimited => {
-                "admin mutation rate limit exceeded; retry next minute".to_string()
-            }
-            AdminError::Internal => "internal error".to_string(),
+            AdminError::RateLimited => ApiError::RateLimited.message(),
+            AdminError::Internal => ApiError::Internal.message(),
             AdminError::Unavailable(msg) => msg.clone(),
             AdminError::UnpricedClass { lane, class } => match class {
                 Some(class) => format!(
@@ -247,17 +211,21 @@ impl AdminError {
     }
 }
 
-/// Convert the neutral [`crate::config::transaction::TxnError`] `config_transaction`'s own
+/// Convert the neutral [`busbar_kernel::config::transaction::TxnError`] `config_transaction`'s own
 /// machinery raises (a persist failure or a `spawn_blocking` join panic) into this transport's
 /// wire error — the EXACT mapping the hand-coded `AdminError::Validation`/`AdminError::Internal`
 /// construction made before `config_transaction` was generic (1.6.0 de-alias, stage 2a). Byte-
 /// identical: same variant, same message, same `code`/status.
-impl From<crate::config::transaction::TxnError> for AdminError {
-    fn from(e: crate::config::transaction::TxnError) -> Self {
+impl From<busbar_kernel::config::transaction::TxnError> for AdminError {
+    fn from(e: busbar_kernel::config::transaction::TxnError) -> Self {
         match e {
-            crate::config::transaction::TxnError::Validation(msg) => AdminError::Validation(msg),
-            crate::config::transaction::TxnError::Conflict(msg) => AdminError::Conflict(msg),
-            crate::config::transaction::TxnError::Internal => AdminError::Internal,
+            busbar_kernel::config::transaction::TxnError::Validation(msg) => {
+                AdminError::Validation(msg)
+            }
+            busbar_kernel::config::transaction::TxnError::Conflict(msg) => {
+                AdminError::Conflict(msg)
+            }
+            busbar_kernel::config::transaction::TxnError::Internal => AdminError::Internal,
         }
     }
 }
@@ -295,7 +263,9 @@ pub struct InfoView {
 pub struct BuildInfo {
     /// Auth modules baked into this binary (e.g. `["tokens"]`; empty under `--no-default-features`).
     pub auth_modules: Vec<&'static str>,
-    /// Hook plugins baked into this binary (e.g. `["ranking"]`).
+    /// Hook plugins baked into this binary — the served description's example is read off the
+    /// compiled-in list itself ([`hook_plugins_description`]).
+    #[cfg_attr(feature = "openapi-schema", schemars(description = hook_plugins_description()))]
     pub hook_plugins: Vec<&'static str>,
     /// The inline SWRR floor: ALWAYS `true` (compiled in unconditionally, non-removable).
     pub weighted_floor: bool,
@@ -380,7 +350,9 @@ pub struct PoolMemberStatusView {
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct ModelView {
     pub model: String,
-    pub provider: String,
+    // The wire key is the frozen 1.5.5 `provider` (a plain comment: a doc line would grow the schema).
+    #[serde(rename = "provider")]
+    pub upstream: String,
 }
 
 /// A provider in the topology read (`GET /api/v1/admin/providers`): the provider name + how many model
@@ -388,7 +360,9 @@ pub struct ModelView {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct ProviderView {
-    pub provider: String,
+    // The wire key is the frozen 1.5.5 `provider` (a plain comment: a doc line would grow the schema).
+    #[serde(rename = "provider")]
+    pub upstream: String,
     pub model_count: usize,
 }
 
@@ -523,8 +497,8 @@ pub struct LimitView {
     pub per: Option<&'static str>,
     /// The pool scope: present when the limit carries `pool: <name>` (it accounts and enforces
     /// only that pool's traffic, per `(group, pool)`); absent for a group-wide limit.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pool: Option<String>,
+    #[serde(rename = "pool", skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     /// The budget-exhaustion behavior: `block` or `downgrade`. Absent = block (the default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_exhaust: Option<&'static str>,
@@ -535,15 +509,15 @@ pub struct LimitView {
 
 impl LimitView {
     /// Project a config `LimitCfg` into its explicit read shape.
-    pub fn from_cfg(l: &crate::config::LimitCfg) -> Self {
+    pub fn from_cfg(l: &busbar_kernel::config::LimitCfg) -> Self {
         LimitView {
             metric: l.metric.as_str(),
             amount: l.amount,
             per: l.per.map(|w| w.as_str()),
-            pool: l.scope.as_ref().map(|s| s.value.clone()),
+            scope: l.scope.as_ref().map(|s| s.value.clone()),
             on_exhaust: l.on_exhaust.map(|e| match e {
-                crate::config::groups::OnExhaust::Block => "block",
-                crate::config::groups::OnExhaust::Downgrade => "downgrade",
+                busbar_kernel::config::groups::OnExhaust::Block => "block",
+                busbar_kernel::config::groups::OnExhaust::Downgrade => "downgrade",
             }),
             downgrade_to: l.downgrade_to.as_ref().map(|s| s.value.clone()),
         }
@@ -552,7 +526,7 @@ impl LimitView {
 
 impl GroupView {
     /// Project a named `groups:` config entry into its read shape.
-    pub fn from_cfg(name: &str, cfg: &crate::config::GroupCfg) -> Self {
+    pub fn from_cfg(name: &str, cfg: &busbar_kernel::config::GroupCfg) -> Self {
         GroupView {
             name: name.to_string(),
             parent: cfg.parent.clone(),
@@ -592,8 +566,8 @@ pub struct GroupBucketUsageView {
     /// The accounting window: `minute` | `hour` | `day` | `month` | `total`.
     pub window: &'static str,
     /// The pool scope for a pool-qualified bucket; absent for a group-wide bucket.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pool: Option<String>,
+    #[serde(rename = "pool", skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     /// Requests admitted this window (the requests-limit truth: failures are not refunded).
     pub requests: u64,
     /// Total tokens ledgered this window (all tiers).
@@ -1057,7 +1031,9 @@ pub struct UsageBreakdown {
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct ModelUsageView {
     pub model: String,
-    pub provider: String,
+    // The wire key is the frozen 1.5.5 `provider` (a plain comment: a doc line would grow the schema).
+    #[serde(rename = "provider")]
+    pub upstream: String,
     #[serde(flatten)]
     pub usage: UsageBreakdown,
 }
@@ -1089,13 +1065,24 @@ pub struct AdminAuthView {
     pub modules: Vec<String>,
 }
 
+/// The served description of [`BuildInfo::hook_plugins`]: 1.5.5's text byte for byte, its example
+/// read off the list the info read reports (`v1::service::hook_plugins_compiled_in`), so this
+/// contract spells no hook plugin.
+#[cfg(feature = "openapi-schema")]
+fn hook_plugins_description() -> String {
+    format!(
+        "Hook plugins baked into this binary (e.g. `{:?}`).",
+        crate::v1::service::hook_plugins_compiled_in()
+    )
+}
+
 /// The served description of [`AdminAuthView::modules`]: 1.5.5's text byte for byte, its example
 /// read off the operator credential's frozen provider row, so the kernel spells no auth module.
 #[cfg(feature = "openapi-schema")]
 fn modules_description() -> String {
     format!(
         "The active admin-plane guard module names, the `admin_auth` chain verbatim (e.g.\n`[\"{}\"]`), reported in order. Empty when the admin plane is open.",
-        crate::config::operator_provider()
+        busbar_kernel::config::operator_module()
     )
 }
 

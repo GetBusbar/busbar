@@ -87,6 +87,10 @@ impl HostServices for Judges {
     fn disk_append(&self, _: &DiskDest, _: Vec<u8>, _: Later) -> Ran {
         Ran::Now(Stored::ready(12))
     }
+
+    fn snapshot_read(&self, _: &Caller, _: u32) -> busbar_contract::services::Snapshot {
+        busbar_contract::services::Snapshot::NotReady
+    }
 }
 
 fn judged(s: &LateServices) -> Stored {
