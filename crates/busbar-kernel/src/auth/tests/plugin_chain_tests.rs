@@ -5,9 +5,14 @@
 //! `kind: auth` plugin cdylib over the loader, exactly as boot does. The plugin is the REAL
 //! token-verifying OIDC module, GetBusbar/busbar-auth-oidc (the owner's FIXTURES ruling: real plugins are the
 //! proofs; R-FIX2), pulled at a pinned rev as a dev-dependency of the composition root so the
-//! workspace build carries its cdylib. We pack it into a tarball, run it through `plugins_preflight` +
-//! `AuthMiddleware::new` against a LOCAL issuer ([`Issuer`]: an ES256 key whose JWKS is served over a
-//! real HTTPS listener, trusted through the module's `ca_cert_pem` setting), present SIGNED JWTs, and
+//! workspace build carries its cdylib. It is on the auth kind's memory ABI: it holds no socket and no
+//! TLS, and fetches through the host's connection table over the needs its Statement declares. We
+//! pack it into a tarball stating that Statement, run it through `plugins_preflight` +
+//! `AuthMiddleware::new` against a LOCAL issuer (the loader's `test_issuer`: an ES256 key whose JWKS
+//! is served only to a need trusting the issuer's certificate, the module's `ca_cert_pem` setting)
+//! reached through a connection table (the loader's `https_conns`, standing in for the process's
+//! connector, which this crate cannot link: the connector depends on it; the real connector's fetch
+//! over real TLS is the composition root's `mcp_stdio_serve` proof), present SIGNED JWTs, and
 //! prove:
 //!
 //! * a valid token → `Identify` → a mapped `Principal` whose roles resolve to `role_bindings`
@@ -77,13 +82,21 @@ fn auth_cdylib() -> Option<PathBuf> {
 const ISSUER: &str = "https://issuer.plugin-chain.invalid";
 const AUDIENCE: &str = "api://plugin-chain";
 
-/// THE LOCAL ISSUER, one per test process: the auth module's OWN test issuer (its logic crate's
-/// `testkit` feature) — an ES256 key, its JWKS served over a certificate-verified loopback endpoint
-/// the module trusts through `ca_cert_pem`, and genuinely signed tokens. The module's own blocking
-/// fetcher does the whole fetch and the whole verification.
-fn issuer() -> &'static busbar_auth_oidc::testkit::Issuer {
-    static ONE: std::sync::OnceLock<busbar_auth_oidc::testkit::Issuer> = std::sync::OnceLock::new();
-    ONE.get_or_init(|| busbar_auth_oidc::testkit::Issuer::start(ISSUER, "plugin-chain"))
+/// THE LOCAL ISSUER, one per test process (the loader's `test_issuer`): an ES256 key, its JWKS
+/// served only to a need trusting the issuer's certificate (which the module names as its
+/// `ca_cert_pem`), and genuinely signed tokens. Starting it also binds the test build's auth axis to
+/// a connection table serving that JWKS (`https_conns`): the host fetches it for the module over its
+/// declared need, and the module does the whole verification.
+fn issuer() -> &'static busbar_plugin_loader::test_issuer::Issuer {
+    static ONE: std::sync::OnceLock<busbar_plugin_loader::test_issuer::Issuer> =
+        std::sync::OnceLock::new();
+    ONE.get_or_init(|| {
+        let issuer = busbar_plugin_loader::test_issuer::Issuer::start(ISSUER, "plugin-chain");
+        let conns = busbar_plugin_loader::https_conns::HttpsConns::new();
+        conns.serve_issuer(&issuer);
+        busbar_plugin_loader::auth_axis::stand_in_conns(std::sync::Arc::new(conns));
+        issuer
+    })
 }
 
 /// The module's `settings:` for the local issuer and [`AUDIENCE`].
@@ -96,16 +109,16 @@ fn alice_token() -> String {
     issuer().mint("alice", &["platform"], AUDIENCE)
 }
 
-/// The runtime identity the module reports for itself — what its OWN compiled-in constructor's
-/// `name()` answers under the same settings. The chain must report this, never the config alias.
+/// The runtime identity the module reports for itself — the name its door's Statement states. The
+/// chain must report this, never the config alias.
 fn module_name() -> &'static str {
-    busbar_auth_oidc_plugin::open(&serde_json::Value::Object(settings()).to_string())
-        .expect("the compiled-in constructor opens under the same settings")
-        .name()
+    busbar_auth_oidc::door::NAME
 }
 
 /// A `kind: auth` manifest for the given name/alias (the store helper stamps kind=store; we retarget
-/// it to auth + the auth ABI so the scan admits it).
+/// it to auth + the auth ABI so the scan admits it), stating the door's Statement as the packer
+/// renders it from the built library (`busbar-plugin-pack`): a 1.6.0 plugin's manifest states its
+/// door, and the engine admits the door against it.
 fn auth_manifest(name: &str, alias: &str, publisher: &str) -> busbar_plugin_loader::sign::Manifest {
     let mut m = plugin_manifest(name, alias, publisher);
     m.kind = "auth".into();
@@ -113,6 +126,11 @@ fn auth_manifest(name: &str, alias: &str, publisher: &str) -> busbar_plugin_load
         .iter()
         .max()
         .expect("auth abi");
+    m.statement = auth_cdylib().and_then(|path| {
+        busbar_plugin_loader::dispatch::rendering_of_library(&path)
+            .expect("the auth-oidc cdylib states its door")
+            .map(hex::encode)
+    });
     m
 }
 
@@ -166,7 +184,7 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
         &crate::test_support::trust_policy(&plugins2).unwrap(),
     )
     .expect("scan");
-    crate::auth::token::LoginMethods::build(&cfg, &registry2, &resolver)
+    crate::auth::token::LoginMethods::build(&cfg, &std::sync::Arc::new(registry2), &resolver)
         .expect("the current login-capable plugin with browser_login builds");
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -256,8 +274,9 @@ fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>
 
 /// A SECRET-REFERENCE SETTING, END TO END (the ADR-0010 delivery path, on a real module): a setting
 /// spelled as a SecretRef (`{ env: VAR }`) is RESOLVED by the engine and DELIVERED to the plugin,
-/// which uses it ITSELF — here the module's `ca_cert_pem`, the trust root its own HTTPS fetcher needs
-/// to reach the issuer, so a token only verifies if the resolved PEM arrived. Conversely, an
+/// which uses it ITSELF — here the module's `ca_cert_pem`, the trust root its need declares for the
+/// host to reach the issuer with (`trust_from`), so a token only verifies if the resolved PEM
+/// arrived. Conversely, an
 /// UNRESOLVABLE ref fails the load FAIL-CLOSED — the plugin is never handed a dangling reference.
 #[test]
 fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {

@@ -21,22 +21,10 @@
 //! conformance test leaves out the host-assigned display name.
 
 use crate::sign::{sign, Manifest, SigningKey, TrustPolicy};
-use crate::{LinkedPlugin, PluginRegistry};
-use busbar_contract::abi::cold::ColdEntry;
+use crate::PluginRegistry;
 use std::path::PathBuf;
 
 include!(concat!(env!("OUT_DIR"), "/both_ways.rs"));
-
-/// The both-ways fixture of `kind`: its `cdylib`'s crate name and its linked entry.
-pub(crate) fn fixture(kind: &str) -> (&'static str, &'static ColdEntry) {
-    FIXTURES
-        .iter()
-        .find(|(k, ..)| *k == kind)
-        .map(|&(_, krate, entry)| (krate, entry))
-        .unwrap_or_else(|| {
-            panic!("no `{kind}` row in Cargo.toml's [package.metadata.busbar.both-ways]")
-        })
-}
 
 /// The memory-ABI both-ways fixture of `row`: its `cdylib`'s crate name and its linked door.
 pub(crate) fn door_fixture(
@@ -141,13 +129,6 @@ pub(crate) fn cdylib(crate_snake: &str) -> Option<PathBuf> {
     found
 }
 
-/// THE LINKED DOOR: `manifest` and `entry` registered through [`PluginRegistry::link`].
-pub(crate) fn linked(manifest: Manifest, entry: &'static ColdEntry) -> PluginRegistry {
-    PluginRegistry::empty()
-        .link(vec![LinkedPlugin::boundary(manifest, entry)])
-        .expect("the linked door admits the plugin")
-}
-
 /// THE DROPPED-IN DOOR: `lib` signed first-party under `manifest` into a fresh `plugins/` directory,
 /// and that directory scanned under the default posture that holds the release key.
 pub(crate) fn dropped(tag: &str, manifest: Manifest, lib: &[u8]) -> PluginRegistry {
@@ -216,35 +197,4 @@ pub(crate) fn row(registry: &PluginRegistry, name: &str) -> String {
         ..p.manifest.clone()
     };
     serde_json::json!({ "manifest": stated, "alias_resolves_to": by_alias }).to_string()
-}
-
-/// Both doors for the fixture of `manifest.kind`: `(row, transcript)` for the LINKED registration,
-/// then for the DROPPED one — each registry's row for `manifest.name`, and `script` run over what
-/// `open` makes of it. `None` when the `cdylib` is not built in this (scoped, non-CI) run.
-pub(crate) fn both_doors<T>(
-    manifest: Manifest,
-    open: impl Fn(&PluginRegistry) -> T,
-    script: impl Fn(&T) -> String,
-) -> Option<[(String, String); 2]> {
-    let kind = manifest.kind.clone();
-    both_doors_of(&kind, manifest, open, script)
-}
-
-/// [`both_doors`] for the plugin of table row `proof` — a kind's SECOND proof, keyed
-/// `<kind>-<proof>` in `[package.metadata.busbar.both-ways]`, still reached by its row and never by
-/// the plugin's name. `manifest.kind` stays the plugin's kind.
-pub(crate) fn both_doors_of<T>(
-    proof: &str,
-    manifest: Manifest,
-    open: impl Fn(&PluginRegistry) -> T,
-    script: impl Fn(&T) -> String,
-) -> Option<[(String, String); 2]> {
-    let (crate_snake, entry) = fixture(proof);
-    let lib = std::fs::read(cdylib(crate_snake)?).expect("read the cdylib");
-    let name = manifest.name.clone();
-    let doors = [
-        linked(manifest.clone(), entry),
-        dropped(crate_snake, manifest, &lib),
-    ];
-    Some(doors.map(|registry| (row(&registry, &name), script(&open(&registry)))))
 }

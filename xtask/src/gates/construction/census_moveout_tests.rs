@@ -20,6 +20,16 @@ fn package(dir: &str) -> Option<String> {
 
 const DOC: &str = "[gate.census]\nplane_crates = 4\n\n[gate.census.plugin_kinds]\nx = 4\n";
 
+/// No rename rows.
+fn none() -> BTreeMap<String, String> {
+    BTreeMap::new()
+}
+
+/// The census ledger's rename row `busbar-x-old -> busbar-x-moved`.
+fn renamed() -> BTreeMap<String, String> {
+    [("busbar-x-old".to_string(), "busbar-x-moved".to_string())].into()
+}
+
 fn doc(s: &str) -> crate::toml_doc::Document {
     crate::toml_doc::parse_str(s).expect("the fixture parses")
 }
@@ -27,7 +37,7 @@ fn doc(s: &str) -> crate::toml_doc::Document {
 #[test]
 fn a_crate_pinned_back_as_a_git_dependency_at_a_rev_moved_out() {
     assert_eq!(
-        moved_out(&["crates/busbar-x-moved".into()], package, ROOT),
+        moved_out(&["crates/busbar-x-moved".into()], package, ROOT, &none()),
         Some(1)
     );
 }
@@ -41,7 +51,11 @@ fn a_drop_with_no_pinned_git_dependency_is_not_a_move_out() {
         "crates/busbar-x-branch",
         "crates/busbar-x-path",
     ] {
-        assert_eq!(moved_out(&[gone.into()], package, ROOT), None, "{gone}");
+        assert_eq!(
+            moved_out(&[gone.into()], package, ROOT, &none()),
+            None,
+            "{gone}"
+        );
     }
     assert_eq!(
         moved_out(
@@ -50,11 +64,12 @@ fn a_drop_with_no_pinned_git_dependency_is_not_a_move_out() {
                 "crates/busbar-x-gone".into()
             ],
             package,
-            ROOT
+            ROOT,
+            &none()
         ),
         None
     );
-    assert_eq!(moved_out(&[], package, ROOT), None);
+    assert_eq!(moved_out(&[], package, ROOT, &none()), None);
 }
 
 /// RED: the floor drop is refused unless a move-out covers it, and only by as many crates as moved.
@@ -132,4 +147,56 @@ fn an_unlisted_plane_crate_drop_stays_red() {
         &BTreeMap::new()
     )
     .is_empty());
+}
+
+/// RED (ARCHITECT 2026-10-03, Q-L7B2-CENSUS): a crate whose package name changed with the move is
+/// NOT a move-out on the pin alone. `crates/busbar-x-old` left the tree, and the root pins
+/// `busbar-x-moved` at a rev, but with no rename row nothing says the new crate is the old one.
+#[test]
+fn a_renamed_move_with_no_rename_row_stays_red() {
+    assert_eq!(
+        moved_out(&["crates/busbar-x-old".into()], package, ROOT, &none()),
+        None
+    );
+    // And so the floor drop it would have excused is still refused.
+    let now = doc(&DOC.replace("x = 4", "x = 3"));
+    let out = lowered_floors(&now, &doc(DOC), "abc1234", &BTreeMap::new());
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert!(
+        out[0].contains("plugin_kinds.x: the floor itself went 4 -> 3"),
+        "{out:?}"
+    );
+}
+
+/// RED: a rename row is not enough either. The row names `busbar-x-old -> busbar-x-branch`, and
+/// the root pulls the new name by branch, not at a rev — the move is unproven. Nor does a row for
+/// one crate excuse another.
+#[test]
+fn a_rename_row_without_a_pin_under_the_new_name_stays_red() {
+    let to_branch: BTreeMap<String, String> =
+        [("busbar-x-old".to_string(), "busbar-x-branch".to_string())].into();
+    assert_eq!(
+        moved_out(&["crates/busbar-x-old".into()], package, ROOT, &to_branch),
+        None
+    );
+    let to_absent: BTreeMap<String, String> =
+        [("busbar-x-old".to_string(), "busbar-x-absent".to_string())].into();
+    assert_eq!(
+        moved_out(&["crates/busbar-x-old".into()], package, ROOT, &to_absent),
+        None
+    );
+    assert_eq!(
+        moved_out(&["crates/busbar-x-other".into()], package, ROOT, &renamed()),
+        None
+    );
+}
+
+/// GREEN: BOTH halves — the rename row AND the git pin at a rev under the new name — make the
+/// renamed crate a move-out.
+#[test]
+fn a_renamed_move_with_its_row_and_its_pin_moved_out() {
+    assert_eq!(
+        moved_out(&["crates/busbar-x-old".into()], package, ROOT, &renamed()),
+        Some(1)
+    );
 }

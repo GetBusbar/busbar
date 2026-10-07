@@ -84,7 +84,7 @@ fn usage() -> &'static str {
 
 USAGE:
     busbar-plugin-pack pack --lib <cdylib> --name <name> --alias <alias> --kind <store|auth|hook|secret|export>
-                            --version <semver> --publisher <publisher> --out <file.tar.gz>
+                            [--version <semver>] --publisher <publisher> --out <file.tar.gz>
                             [--description <text>] [--homepage <url>] [--license <spdx>]
                             [--needs-prompt <no|ro|rw>] [--needs-user <no|ro>]
                             [--settings-schema-file <path.json>] [--schema-derived]
@@ -514,6 +514,45 @@ fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
     scan(root, defs, Position::Root, 0, &mut HashSet::new())
 }
 
+fn read_rendering(
+    rendering: &[u8],
+) -> Result<busbar_contract::abi::mechanism::rendering::Read, String> {
+    busbar_contract::abi::mechanism::rendering::read(rendering).map_err(|e| {
+        format!(
+            "the Statement rendering does not read back: byte {} is not {}",
+            e.at, e.what
+        )
+    })
+}
+
+/// The version the plugin's Statement states: what `--version` defaults to.
+///
+/// # Errors
+/// The rendering does not read back.
+pub(crate) fn stated_version(rendering: &[u8]) -> Result<String, String> {
+    read_rendering(rendering).map(|r| r.version)
+}
+
+/// ONE VERSION PER PLUGIN (ARCHITECT ruling C', question 3): the manifest's `--version` is the
+/// version the plugin's own Statement states. The loader's one-version rule compares Statement
+/// versions, so a release whose manifest says another version would publish a plugin that is not
+/// the version it claims; packing refuses it, naming both.
+///
+/// # Errors
+/// The rendering does not read back, or states another version.
+pub(crate) fn statement_version_is(rendering: &[u8], version: &str) -> Result<(), String> {
+    let r = read_rendering(rendering)?;
+    if r.version == version {
+        return Ok(());
+    }
+    Err(format!(
+        "--version {version} is not the version plugin '{}' states in its Statement ({}): a \
+         release's manifest version is the plugin's own; release the tag the crate states, or bump \
+         the crate",
+        r.name, r.version
+    ))
+}
+
 fn pack(args: &[String]) -> ExitCode {
     let Flags {
         map: flags,
@@ -549,7 +588,8 @@ fn pack(args: &[String]) -> ExitCode {
             name: required("name")?,
             alias: required("alias")?,
             kind,
-            version: required("version")?,
+            // Absent: the version the plugin's own Statement states (filled below).
+            version: flags.get("version").cloned().unwrap_or_default(),
             publisher: required("publisher")?,
             abi_version: flags
                 .get("abi-version")
@@ -630,8 +670,29 @@ fn pack(args: &[String]) -> ExitCode {
             }
             Err(e) => return Err(format!("--lib '{lib_path}': {e}")),
         };
+        let version = match statement.as_deref() {
+            Some(stated) => {
+                let bytes = hex::decode(stated).map_err(|e| format!("--lib '{lib_path}': {e}"))?;
+                let own = stated_version(&bytes).map_err(|e| format!("--lib '{lib_path}': {e}"))?;
+                if manifest.version.is_empty() {
+                    own
+                } else {
+                    statement_version_is(&bytes, &manifest.version)
+                        .map_err(|e| format!("--lib '{lib_path}': {e}"))?;
+                    manifest.version.clone()
+                }
+            }
+            None if manifest.version.is_empty() => {
+                return Err(format!(
+                    "missing required --version: --lib '{lib_path}' states no Statement to read \
+                     the plugin's version from"
+                ))
+            }
+            None => manifest.version.clone(),
+        };
         let manifest = Manifest {
             statement,
+            version,
             ..manifest
         };
 

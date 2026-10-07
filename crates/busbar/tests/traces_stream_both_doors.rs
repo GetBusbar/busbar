@@ -190,50 +190,29 @@ fn a_closed_span_reaches_an_otlp_collector_and_a_third_party_collector_is_refuse
     // Model requests whose upstream refuses: the request path's spans open and close regardless.
     let body =
         r#"{"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"#;
-    // A PORT PICKED IS NOT A PORT HELD: `free_port` claims its number against every other busbar
-    // test, but any other socket on the machine (an outbound connection's ephemeral source port, a
-    // listener another crate's test bound to `:0`) can take it before the child binds it, and the
-    // child then refuses to boot (BUSBAR-9007, address in use) with nothing of this test's wrong.
-    // That one refusal, and only it, boots again on freshly picked ports; any other exit fails.
-    const BOOTS: usize = 4;
-    let mut boot = 0;
-    let child = loop {
-        boot += 1;
-        let (data_port, admin_port) = (common::boot::free_port(), common::boot::free_port());
-        write_configs(&dir, data_port, admin_port, collector_port, false);
-        let log = std::fs::File::create(&log_path).unwrap();
-        let mut child = Reap(
-            busbar()
-                .stdout(log.try_clone().unwrap())
-                .stderr(log)
-                .spawn()
-                .expect("spawn busbar"),
-        );
-        let deadline = Instant::now() + Duration::from_secs(60);
-        let mut served = 0;
-        let mut collided = false;
-        while served < 3 {
-            if let Some(status) = child.0.try_wait().expect("try_wait") {
-                let out = read_log();
-                if boot < BOOTS
-                    && out.contains("BUSBAR-9007")
-                    && out.contains("Address already in use")
-                {
-                    collided = true;
-                    break;
-                }
-                panic!("busbar exited ({status}) before serving:\n{out}");
-            }
-            assert!(Instant::now() < deadline, "no data door:\n{}", read_log());
-            match request(data_port, body) {
-                Some(_) => served += 1,
-                None => std::thread::sleep(Duration::from_millis(100)),
-            }
+    // The ports steps 1 and 2 wrote: `free_port` holds each from the moment it chose it, so no
+    // other socket took one while those runs neither bound it.
+    write_configs(&dir, data_port, admin_port, collector_port, false);
+    let log = std::fs::File::create(&log_path).unwrap();
+    let mut child = Reap(
+        busbar()
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
+            .spawn()
+            .expect("spawn busbar"),
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut served = 0;
+    while served < 3 {
+        if let Some(status) = child.0.try_wait().expect("try_wait") {
+            panic!("busbar exited ({status}) before serving:\n{}", read_log());
         }
-        if !collided {
-            break child;
+        assert!(Instant::now() < deadline, "no data door:\n{}", read_log());
+        match request(data_port, body) {
+            Some(_) => served += 1,
+            None => std::thread::sleep(Duration::from_millis(100)),
         }
-    };
+    }
 
     // Delivery is off the request path, batched: wait until the spans settle.
     let spans_at = |path| common::otlp::spans(&common::otlp::requests(&seen, Some(path))).len();
