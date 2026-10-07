@@ -857,9 +857,10 @@ mod agent_door {
         surface("mount")
     }
 
-    /// THE AGENT DOOR: of the linked plane doors, the one whose Statement owns the section the
-    /// fixture names (found by binding each, once); `None` in a build that links no such door, whose
-    /// cells then have nothing to drive.
+    /// THE AGENT DOOR: of the linked plane doors, the one whose Statement DECLARES the section the
+    /// fixture names (found by binding each, once). This module compiles only where a linked row
+    /// drives the plane-sections seam, and the build that does links the door: `None` is a defect,
+    /// never a skip (every cell that drives the door fails through [`door`]).
     fn linked_door() -> Option<DoorFn> {
         static DOOR: std::sync::OnceLock<Option<DoorFn>> = std::sync::OnceLock::new();
         *DOOR.get_or_init(|| {
@@ -881,7 +882,7 @@ mod agent_door {
                         conns: crate::root::loader::dispatch::ConnTable::Probe,
                     },
                 )
-                .is_ok_and(|plane| plane.served().owns.contains(&section))
+                .is_ok_and(|plane| plane.served().section == section)
             })
         })
     }
@@ -1386,10 +1387,6 @@ mod agent_door {
     /// claim is refused before the door and charges nothing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_agent_unit_served_through_its_door_charges_the_presenting_key() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door";
         let _published = Published(instance);
@@ -1596,10 +1593,6 @@ mod agent_door {
     /// admitted it is approved, dialled at its own path, and its answer relayed whole.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_agent_unit_dials_only_the_address_the_guard_admits() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let mut agent = Agent::start(200, ANSWER).await;
         let section = agent.entry("planner", "1h");
@@ -1649,10 +1642,6 @@ mod agent_door {
     /// served at that agent and its one admitted request is attributed to the presenting key.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_relayed_agent_unit_charges_the_presenting_key() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-charged";
         let _published = Published(instance);
@@ -1688,10 +1677,6 @@ mod agent_door {
     /// closed at its end.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-audited";
         let _published = Published(instance);
@@ -1746,10 +1731,6 @@ mod agent_door {
     /// charging nothing more.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_agent_unit_past_its_callers_request_limit_is_refused_before_it_dials() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-limited";
         let _published = Published(instance);
@@ -1783,10 +1764,6 @@ mod agent_door {
     /// parse error's own `-32700` at the door's arrival, and nothing is relayed or charged.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_agent_unit_whose_body_is_not_json_is_refused_at_its_arrival() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-undecoded";
         let _published = Published(instance);
@@ -1813,10 +1790,6 @@ mod agent_door {
     /// it, and relayed to that agent's own path.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_unaddressed_agent_unit_is_routed_to_the_one_agent_the_grant_reaches() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-select-one";
         let _published = Published(instance);
@@ -1840,10 +1813,6 @@ mod agent_door {
     /// it can address one; while neither is approved, none serves, and it is 1.5.5's none-refusal.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_unaddressed_agent_unit_several_agents_reach_is_refused_naming_them() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-select-several";
         let _published = Published(instance);
@@ -1895,10 +1864,6 @@ mod agent_door {
     /// 1.5.5's answer (`-32004`, 400), the same a caller with no grant gets for a named agent.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_unaddressed_agent_unit_no_agent_reaches_is_refused_in_its_1_5_5_words() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-select-none";
         let _published = Published(instance);
@@ -1921,10 +1886,6 @@ mod agent_door {
     /// grant is refused before it dials, and charges nothing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_agent_unit_outside_the_callers_grant_is_refused_before_it_dials() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-ungranted";
         let _published = Published(instance);
@@ -1949,10 +1910,6 @@ mod agent_door {
     /// answered in the plane's own envelope, not left hanging.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_relayed_agent_unit_to_an_agent_that_is_down_ends_inside_its_unit() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-down";
         let _published = Published(instance);
@@ -1985,10 +1942,6 @@ mod agent_door {
     /// `breaker_open` before it dials.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failing_agent_trips_its_breaker_and_the_next_unit_is_refused_before_it_dials() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-breaker";
         let _published = Published(instance);
@@ -2035,10 +1988,6 @@ mod agent_door {
     /// every unit is dialled and answered in the agent's own words.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_agent_answering_protocol_errors_never_trips_its_breaker() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-breaker-protocol-error";
         let _published = Published(instance);
@@ -2068,10 +2017,6 @@ mod agent_door {
     /// authenticated the caller to busbar and stops there.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_relayed_agent_unit_never_hands_the_agent_the_callers_token() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-egress-auth";
         let _published = Published(instance);
@@ -2424,10 +2369,6 @@ mod agent_door {
     ///   in the served engine's words, naming the key it served and the key pinned.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_cert_spki_agent_is_observed_approved_served_and_refused_once_its_key_changes() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-spki";
         let _published = Published(instance);
@@ -2526,10 +2467,6 @@ mod agent_door {
     ///   (`409`), and it is never served; an unregistered name is `404`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_kernel_trust_book_pins_an_agent_card_and_the_relay_serves_only_the_approved_one() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-trust";
         let _published = Published(instance);
@@ -2692,10 +2629,6 @@ mod agent_door {
     /// both are served.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrent_units_due_on_one_agent_share_one_card_look() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-single-flight";
         let _published = Published(instance);
@@ -2724,10 +2657,6 @@ mod agent_door {
     /// guard in 1.5.5's words, and the agent never hears the fetch.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_card_fetch_follows_redirects_and_is_guarded_in_its_1_5_5_words() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         use std::sync::atomic::Ordering;
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-card-fetch";
@@ -2784,10 +2713,6 @@ mod agent_door {
     /// `SkillNotDeclared("fly")`) once it is approved — never dialled either way.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_request_the_card_does_not_fit_is_judged_after_the_trust_gate() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-fit-order";
         let _published = Published(instance);
@@ -2823,10 +2748,6 @@ mod agent_door {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_unit_to_an_agent_that_is_not_serving_is_refused_after_its_grant_and_charges_nothing()
     {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-gate";
         let _published = Published(instance);
@@ -2876,10 +2797,6 @@ mod agent_door {
     /// not refused as several.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_unaddressed_unit_is_routed_to_the_one_granted_agent_that_serves() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-scope-trust";
         let _published = Published(instance);
@@ -2908,10 +2825,6 @@ mod agent_door {
     /// apply keeps under the same pin keeps its approval, and the approved agent is still served.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_config_apply_keeps_the_operators_approval() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-apply";
         let _published = Published(instance);
@@ -2938,10 +2851,6 @@ mod agent_door {
     /// named; a host that does not resolve is refused with the resolver's reason.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_card_fetch_is_refused_in_1_5_5_words_whatever_the_deployment_private_stance() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-guard-words";
         let _published = Published(instance);
@@ -3005,10 +2914,6 @@ mod agent_door {
     /// and closes without a byte of reply.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_card_fetch_whose_far_end_closes_unanswered_fails_in_predev_words() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         use tokio::io::AsyncReadExt;
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-closed-unanswered";
@@ -3057,10 +2962,6 @@ mod agent_door {
     /// host's own connect to that port answers.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_card_fetch_to_a_closed_port_fails_in_predev_words() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-closed-port";
         let _published = Published(instance);
@@ -3098,10 +2999,6 @@ mod agent_door {
     /// served — rather than stalling on a look that will never land.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_abandoned_card_look_wakes_its_waiters_at_once() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         use std::time::Duration;
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-abandoned-look";
@@ -3191,10 +3088,6 @@ mod agent_door {
     /// the gate before its meter).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_agents_gate_refuses_a_submission_in_its_own_words_before_the_hop() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-gate";
         let _published = Published(instance);
@@ -3231,10 +3124,6 @@ mod agent_door {
     /// the message's parts, reaches the gate through the door's `{tool, arguments}` projection.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_messages_own_parts_reach_the_agents_gate() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-gate-content";
         let _published = Published(instance);
@@ -3279,10 +3168,6 @@ mod agent_door {
     /// receives the params the hook rewrote them to; the caller's own prose never reaches it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_agents_rewrite_replaces_the_params_the_agent_receives() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-rewrite";
         let _published = Published(instance);
@@ -3337,10 +3222,7 @@ mod agent_door {
     /// door's Statement name, so an agent's cell refuses on a trip and nothing less.
     #[test]
     fn the_agent_door_states_a_cell_refuses_on_a_trip_and_nothing_less() {
-        // A build that links no agent door has nothing for this cell to read.
-        let Some(door) = linked_door() else {
-            return;
-        };
+        let door = door();
         let row = LinkedRow::of(door).expect("the door states its Statement");
         let name = busbar_contract::abi::mechanism::rendering::read(&row.statement)
             .expect("its Statement reads")
@@ -3354,10 +3236,6 @@ mod agent_door {
     /// busbar (every binding it serves, no fronted agent enumerated) and signed with busbar's key.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn busbars_own_card_is_served_at_the_well_known_path_signed_and_naming_no_agent() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         use tower::ServiceExt as _;
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-own-card";
@@ -3404,10 +3282,6 @@ mod agent_door {
     /// agent is approved, its card with every URL busbar's and busbar's own scheme and signature.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_fronted_agents_card_is_served_rewritten_through_busbar_behind_its_grant() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-agent-card";
         let _published = Published(instance);
@@ -3445,10 +3319,6 @@ mod agent_door {
     /// with no hook in the way), while a submission to the same agent is refused by the gate.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_gated_agents_card_is_still_served_and_its_submission_refused() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-gated-card";
         let _published = Published(instance);
@@ -3486,10 +3356,6 @@ mod agent_door {
     /// catalogue holds, answered by busbar, never relayed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_extended_card_on_the_planes_endpoint_names_the_callers_agents() {
-        // A build that links no agent door has nothing for this cell to drive.
-        if linked_door().is_none() {
-            return;
-        }
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-door-extended-card";
         let _published = Published(instance);
