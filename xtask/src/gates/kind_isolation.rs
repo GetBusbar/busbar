@@ -4609,7 +4609,15 @@ fn links_door(text: &str) -> bool {
 
 /// The SDK's door BUILDERS: the macros that build a kind's door table (`plugin_door!` for any kind,
 /// and the kinds' safe-layer builders). `export_door!` only exports a door some builder made.
-const DOOR_BUILDERS: &[&str] = &["plugin_door!", "store_door!(", "auth_verify_door!("];
+/// `hook_door!` is the hook kind's safe-layer builder (busbar-contract `abi/sdk/hook.rs`); without it
+/// a hook plugin's door (busbar-hook-ranking's `door.rs`) read as no door at all, and the crate as
+/// one with no implementor.
+const DOOR_BUILDERS: &[&str] = &[
+    "plugin_door!",
+    "store_door!(",
+    "auth_verify_door!(",
+    "hook_door!",
+];
 
 /// Whether a file builds a door: a production line invoking one of [`DOOR_BUILDERS`] (a builder's
 /// own `macro_rules!` definition is not an invocation).
@@ -10153,6 +10161,27 @@ impl Gate for KindIsolationGate {
             .filter(|(dir, _, _)| dir == "crates/busbar-export-file")
         {
             ov.remove(format!("{twin}/{}", f.1));
+        }
+        // THE HOOK KIND BUILDS ITS DOOR WITH `hook_door!`, and the pinned hook-ranking repo's
+        // logic crate does exactly that: with its builder line taken out, the door it exports is
+        // built by nothing and the crate has no implementor again.
+        let hook_door = "crates/busbar-hook-ranking/src/door.rs";
+        if cx.read(hook_door).is_ok_and(|t| t.contains("hook_door!")) {
+            let mut ov_hook = Overlay::new();
+            ov_hook.set(
+                hook_door,
+                cx.read(hook_door)
+                    .unwrap_or_default()
+                    .replace("hook_door!", "hook_door_planted_away!"),
+            );
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a hook plugin whose door no builder builds has no implementor",
+                &[ROW_TESTKIT],
+                ov_hook,
+                &["no-implementor", "busbar-hook-ranking"],
+            ));
         }
         report.push(prove_rows_red(
             cx,
