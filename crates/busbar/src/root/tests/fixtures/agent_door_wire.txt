@@ -15,3 +15,5 @@ task_resource_type = a2a.busbar/task
 # resource names the agent under (`<resource_kind>:<agent id>`).
 audit_action = agent.call
 resource_kind = agent
+# The scope kind a key's grant names an agent under (door.rs SCOPE): `<scope_kind>:<agent id>`.
+scope_kind = agent
