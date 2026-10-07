@@ -202,11 +202,11 @@ impl PlaneBootCtx for BootCtx {
     /// or an `App`: the returned `Arc<dyn EngineHost>` is the neutral substrate seam and the app it
     /// wraps is the core-owned hydrate-phase `App`.
     fn engine_host(&self) -> std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost> {
-        // PHASE-AWARE: the hydrate phase supplies the freshly-built `app` and mints a SNAPSHOT-ONLY host
-        // over it (no live handle yet, which is correct — hydration reads exactly the generation it
-        // restores into); the start phase supplies the live `handle` and mints a LIVE host from it
-        // (`from_handle`, so `plane_slot_live` sees the current generation), byte-identical to the old
-        // start hook's `handle.load()`-driven reads. Exactly one of the two is present per phase.
+        // PHASE-AWARE: the hydrate phase supplies the freshly-built `app` and mints a SNAPSHOT-ONLY
+        // host over it (no live handle yet, which is correct — hydration reads exactly the
+        // generation it restores into); the start phase supplies the live `handle` and mints a host
+        // over its current load (`from_handle`), byte-identical to the old start hook's
+        // `handle.load()`-driven reads. Exactly one of the two is present per phase.
         if let Some(handle) = self.handle.as_ref() {
             crate::plane_host::engine_host_from_handle(handle)
         } else {
@@ -662,7 +662,7 @@ pub fn build_dispatch(
     Ok(dispatch)
 }
 
-// `registry_tests` MOVED to `tests/registry_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle
+// `registry_tests` MOVED to `crates/busbar/tests/registry_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle
 // cleanup): most of it drove the REAL `busbar_llm`/`busbar_mcp`/`busbar_a2a` `PLANE_DECL`s and their
 // real runtime objects, which only type-checks with ONE `busbar_kernel` in the graph — an
 // integration-test target, never this `#[cfg(test)]` unit module. See that file's header. The two
@@ -862,6 +862,31 @@ pub type OpenapiSchemasHook = fn(
 /// See the `openapi-schema` twin: uncallable, because no document is generated in this build.
 #[cfg(not(feature = "openapi-schema"))]
 pub type OpenapiSchemasHook = fn(std::convert::Infallible);
+
+/// THE SCHEMAS HOOK OF THE DOOR PLANE AT `I` (ARCHITECT Q2): the `components.schemas` its admin
+/// OpenAPI blob states ([`crate::plane::door::stated_schemas`]), inserted into the generator's
+/// definitions as written. `None` in a build that generates no document.
+#[cfg(feature = "openapi-schema")]
+pub(crate) const fn stated_schemas_hook<const I: usize>() -> Option<OpenapiSchemasHook> {
+    Some(stated_schemas::<I>)
+}
+
+/// See the `openapi-schema` twin: no document is generated in this build.
+#[cfg(not(feature = "openapi-schema"))]
+pub(crate) const fn stated_schemas_hook<const I: usize>() -> Option<OpenapiSchemasHook> {
+    None
+}
+
+#[cfg(feature = "openapi-schema")]
+fn stated_schemas<const I: usize>(
+    schema_gen: &mut schemars::SchemaGenerator,
+    _req_gen: &mut schemars::SchemaGenerator,
+    _paths: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    if let Some(schemas) = crate::plane::door::stated_schemas::<I>() {
+        schema_gen.definitions_mut().extend(schemas);
+    }
+}
 
 impl std::ops::Deref for PlaneDecl {
     type Target = PlaneDeclaration;

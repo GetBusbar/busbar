@@ -2009,7 +2009,7 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
 // shows.
 
 // `an_unmounted_plane_claims_no_path_by_url_shape` MOVED to `tests/residual_envelope_cross_plane.rs`,
-// beside its mounted twin in `tests/plane_integration.rs`: the path it probes is a real plane's
+// beside its mounted twin in `crates/busbar/tests/plane_integration.rs`: the path it probes is a real plane's
 // mount path, which that integration target names through the plane crate itself.
 
 // ── response-header consolidation (default OFF, opt-in via `advanced.response_headers`) ──────────

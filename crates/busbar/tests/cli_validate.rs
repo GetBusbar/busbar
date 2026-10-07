@@ -80,7 +80,7 @@ models:
 /// codecs) the build carries. The empty `providers:`/`models:` pair is written only when the plane
 /// that owns `models:` is linked (`linked_axis_body_ingress`): a plane the build does not link
 /// requires nothing (Law 7).
-#[cfg(linked_axis_stdio_serve)]
+#[cfg(linked_section_tools)]
 fn write_tools_only_configs(dir: &Path, extra: &str) {
     std::fs::write(dir.join("providers.yaml"), "").unwrap();
     let catalog = if cfg!(linked_axis_body_ingress) {
@@ -1042,13 +1042,13 @@ fn validate_fails_on_unresolvable_browser_login_client_secret() {
 /// typed (`publish_as: foo_bar` versus server `foo`'s tool `bar`). A check that compared overrides
 /// only to each other would exit 0 here and look correct doing it.
 ///
-/// GATED ON the linked `stdio-serve` axis (`linked_axis_stdio_serve`, emitted by build.rs from
-/// `[package.metadata.busbar.linked-axes]`): the collision check lives in the plane that owns
-/// `tools:`, the linked row carrying that axis, and is compiled out with it — a binary without that
+/// GATED ON `linked_section_tools`, set exactly when the linked door declaring `tools:` is in the
+/// build (the `linked-section` row; the linked row that once carried a `stdio-serve` axis is gone): the collision check lives in that
+/// plane and is compiled out with it — a binary without that
 /// plane has no `tools:` to collide in, so `--validate` exiting 0 there is the correct answer, not the
 /// missed refusal this test exists to pin. The config configures that plane and nothing else (no
 /// provider, no model), so the test runs on every build that links it, whatever else is linked.
-#[cfg(linked_axis_stdio_serve)]
+#[cfg(linked_section_tools)]
 #[test]
 fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
     let dir = fixture_dir("publish-as-collision");
