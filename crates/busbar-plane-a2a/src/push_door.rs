@@ -165,17 +165,20 @@ impl Calls<'_> {
 /// WHAT ONE ATTEMPT ASKS OF THE HOST after its jitter byte, in its one order: the destination judge
 /// over the callback, then the exchange. A seam, so what a verdict stops and what reaches the
 /// receiver hold under a test's host as under the kernel's ([`attempt`]).
+/// One judgement: the `DEST_*` verdict, the addresses judged, and the set a dial must land within.
+type Judgement = (u64, Vec<String>, String);
+
 trait Line {
     /// The destination judge over `url`: its `DEST_*` verdict, the addresses it judged, and the set
     /// a dial must land within; `None` when nothing was checked.
-    fn judge(&self, url: &str) -> Poll<Option<(u64, Vec<String>, String)>>;
+    fn judge(&mut self, url: &str) -> Poll<Option<Judgement>>;
     /// One exchange of `ex` to `url`: the receiver's status; `None` when the connection or the
     /// exchange failed.
-    fn send(&self, ex: &mut Exchange, url: &str) -> Poll<Option<u16>>;
+    fn send(&mut self, ex: &mut Exchange, url: &str) -> Poll<Option<u16>>;
 }
 
 impl Line for Calls<'_> {
-    fn judge(&self, url: &str) -> Poll<Option<(u64, Vec<String>, String)>> {
+    fn judge(&mut self, url: &str) -> Poll<Option<Judgement>> {
         let absent = Span {
             offset: SPAN_ABSENT,
             len: 0,
@@ -206,7 +209,7 @@ impl Line for Calls<'_> {
         }
     }
 
-    fn send(&self, ex: &mut Exchange, url: &str) -> Poll<Option<u16>> {
+    fn send(&mut self, ex: &mut Exchange, url: &str) -> Poll<Option<u16>> {
         let mut conn = self.host.connector_from(self.ticket, 2);
         match exchange(&mut conn, ex, NEED_OPEN_WEB, Some(url)) {
             Poll::Pending => Poll::Pending,
@@ -221,7 +224,7 @@ impl Line for Calls<'_> {
 /// a fresh resolution before each one): a refusal, the judge's or the anti-rebinding rule's, ends
 /// the attempt before anything is framed or sent.
 fn attempt(
-    line: &dyn Line,
+    line: &mut dyn Line,
     deliveries: &Deliveries,
     flight: &mut Flight,
 ) -> Poll<(Attempted, Vec<String>)> {
@@ -279,13 +282,13 @@ pub(crate) fn tick(plane: &A2aDoor, instance: &Instance<'_, A2aDoor>, now_ns: u6
             None => return Outcome::Ready,
         },
     };
-    let calls = Calls {
+    let mut calls = Calls {
         host,
         services,
         ticket,
     };
     let jitter = calls.jitter();
-    match attempt(&calls, deliveries, &mut flight) {
+    match attempt(&mut calls, deliveries, &mut flight) {
         Poll::Pending => {
             instance.park(flight);
             Outcome::Pending

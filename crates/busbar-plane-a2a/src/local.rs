@@ -412,7 +412,7 @@ pub fn delivery_auth(cfg: &Value) -> Result<Option<DeliveryAuth>, String> {
 /// not a URL, or one whose authority names a user, is malformed; one with no host says so); whether
 /// the destination may be reached at all (its scheme, an alternate spelling of an address, an
 /// internal or metadata address, a name that resolves to nothing) is the host's destination judge,
-/// the ONE check every outbound connection passes (`BUSBAR-1.6.0.md` §5, "Destination guard — ONE
+/// the ONE check every outbound connection passes (`BUSBAR-1.6.0.md`, the destination guard: "ONE
 /// check for every outbound connection"), asked here at registration as push delivery asks it again
 /// on every attempt. `Ok` is the URL as registered.
 ///
@@ -441,10 +441,6 @@ pub fn judge_callback(reach: &mut dyn Reach, url: &str) -> Result<Result<(), Str
         _ => return malformed(),
     };
     let host = parts.host.to_ascii_lowercase();
-    // The address the refusal names: a literal as the engine printed it, else the host.
-    let shown = host
-        .parse::<std::net::IpAddr>()
-        .map_or_else(|_| host.clone(), |ip| ip.to_string());
     Ok(match reach.judge(url)? {
         DEST_ALLOWED => Ok(()),
         DEST_SCHEME | DEST_PLAINTEXT => Err(format!(
@@ -463,7 +459,7 @@ pub fn judge_callback(reach: &mut dyn Reach, url: &str) -> Result<Result<(), Str
         )),
         // An internal or metadata address, or any refusal the judge has no sentence for here.
         _ => Err(format!(
-            "push callback resolves to the INTERNAL address {shown}; delivering there would lend \
+            "push callback resolves to the INTERNAL address {host}; delivering there would lend \
              busbar's network position to the caller"
         )),
     })

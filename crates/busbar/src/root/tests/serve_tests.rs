@@ -1974,6 +1974,41 @@ mod agent_door {
         assert_eq!(admitted(&s), 0, "nothing charged");
     }
 
+    /// The caller's key must be LIVE for busbar to spend its hop on the caller's behalf (predev's
+    /// `creds::authorise_egress`, `KeyNotLive`): a key deleted after it was served is refused at
+    /// the door's next unit, and the agent is never dialled for it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agent_unit_from_a_key_that_is_no_longer_live_never_dials() {
+        // A build that links no agent door has nothing for this cell to drive.
+        if linked_door().is_none() {
+            return;
+        }
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-key-gone";
+        let _published = Published(instance);
+        let mut agent = Agent::start(200, ANSWER).await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "the live key is served: {body}");
+        assert!(agent.relayed(), "the live key's unit dialled");
+        let _ = s.gov.delete_key(&s.key.id);
+        let (status, body) = answered(
+            &s.router,
+            rpc("planner", "message/send", SEND, Some(&s.token)),
+        )
+        .await;
+        assert!(
+            status.is_client_error(),
+            "a key that is not live is refused: {status} {body}"
+        );
+        assert!(!agent.relayed(), "and the agent is never dialled for it");
+    }
+
     /// The root cell `disposition × a2a-client`: a relayed unit to an approved agent that has gone
     /// down (its verification still fresh, so the hop is sent) ends inside its unit — the caller
     /// answered in the plane's own envelope, not left hanging.

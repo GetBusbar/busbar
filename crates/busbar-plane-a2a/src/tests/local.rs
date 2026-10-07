@@ -379,7 +379,8 @@ fn exactly_these_methods_are_answered_locally() {
 /// Each push verb carries the dialect its spelling names, so its answer takes that dialect's shape.
 #[test]
 fn the_push_verbs_carry_the_dialect_that_named_them() {
-    let pairs: [(&str, &str, fn(Dialect) -> LocalVerb); 4] = [
+    type Spelled = (&'static str, &'static str, fn(Dialect) -> LocalVerb);
+    let pairs: [Spelled; 4] = [
         (
             "CreateTaskPushNotificationConfig",
             "tasks/pushNotificationConfig/set",
@@ -604,7 +605,7 @@ fn v03_delete_reads_pushnotificationconfigid_and_actually_clears() {
 
 // ── the callback floor: the host's verdict, the engine's words (`pushnotify_tests.rs`) ──────────
 
-/// THE DESTINATION IS THE HOST'S TO JUDGE (`BUSBAR-1.6.0.md` §5, the ONE destination guard): an
+/// THE DESTINATION IS THE HOST'S TO JUDGE (`BUSBAR-1.6.0.md`, the ONE destination guard): an
 /// internal literal is refused because the host's judge refused it, and the judge was asked for it;
 /// a judge that admits it (an operator's allow-list) is not second-guessed by a check of the
 /// plane's own. RED before the guard moved: the plane refused the literal itself and never asked.

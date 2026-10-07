@@ -154,8 +154,6 @@ fn an_owed_outcome_is_filed_on_its_tasks_chain() {
 
 // ── one attempt, over a test's host (the engine's `pushdeliver_tests.rs`) ──────────────────────
 
-use std::cell::RefCell;
-
 use busbar_contract::abi::host::service::{DEST_INTERNAL, DEST_PLAINTEXT};
 use busbar_contract::vocab::EV_PUSH_REFUSED;
 
@@ -164,43 +162,41 @@ use crate::push::Settled;
 /// A public address a callback resolves to at registration.
 const AT_REGISTRATION: &str = "203.0.113.7";
 
+/// One scripted judgement: a verdict and the addresses it judged; `None` = nothing was checked.
+type Scripted = Option<(u64, Vec<String>)>;
+
 /// A host whose judge answers each attempt from a script (the last answer repeats), and whose
 /// receiver answers `status`; every judged URL and every send is logged.
 struct TestHost {
-    verdicts: RefCell<Vec<Option<(u64, Vec<String>)>>>,
+    verdicts: Vec<Scripted>,
     status: u16,
-    judged: RefCell<Vec<String>>,
-    sent: RefCell<Vec<String>>,
+    judged: Vec<String>,
+    sent: Vec<String>,
 }
 
 impl TestHost {
     fn answering(verdicts: Vec<Option<(u64, &[&str])>>, status: u16) -> Self {
         TestHost {
-            verdicts: RefCell::new(
-                verdicts
-                    .into_iter()
-                    .map(|v| {
-                        v.map(|(verdict, a)| {
-                            (verdict, a.iter().copied().map(String::from).collect())
-                        })
-                    })
-                    .collect(),
-            ),
+            verdicts: verdicts
+                .into_iter()
+                .map(|v| {
+                    v.map(|(verdict, a)| (verdict, a.iter().copied().map(String::from).collect()))
+                })
+                .collect(),
             status,
-            judged: RefCell::default(),
-            sent: RefCell::default(),
+            judged: Vec::new(),
+            sent: Vec::new(),
         }
     }
 }
 
 impl Line for TestHost {
-    fn judge(&self, url: &str) -> Poll<Option<(u64, Vec<String>, String)>> {
-        self.judged.borrow_mut().push(url.to_string());
-        let mut script = self.verdicts.borrow_mut();
-        let next = if script.len() > 1 {
-            script.remove(0)
+    fn judge(&mut self, url: &str) -> Poll<Option<Judgement>> {
+        self.judged.push(url.to_string());
+        let next = if self.verdicts.len() > 1 {
+            self.verdicts.remove(0)
         } else {
-            script[0].clone()
+            self.verdicts[0].clone()
         };
         Poll::Ready(next.map(|(verdict, addrs)| {
             let within = addrs.join(",");
@@ -208,8 +204,8 @@ impl Line for TestHost {
         }))
     }
 
-    fn send(&self, _ex: &mut Exchange, url: &str) -> Poll<Option<u16>> {
-        self.sent.borrow_mut().push(url.to_string());
+    fn send(&mut self, _ex: &mut Exchange, url: &str) -> Poll<Option<u16>> {
+        self.sent.push(url.to_string());
         Poll::Ready(Some(self.status))
     }
 }
@@ -229,7 +225,7 @@ fn queued(callback: &str) -> Deliveries {
 }
 
 /// One `tick`'s attempt at `now_ns`, settled as the tick settles it.
-fn tick_once(d: &Deliveries, host: &TestHost, now_ns: u64) -> (Attempted, Settled) {
+fn tick_once(d: &Deliveries, host: &mut TestHost, now_ns: u64) -> (Attempted, Settled) {
     let delivery = d.next_due(now_ns).expect("a delivery is due");
     let mut flight = Flight {
         delivery,
@@ -249,11 +245,11 @@ fn tick_once(d: &Deliveries, host: &TestHost, now_ns: u64) -> (Attempted, Settle
 fn a_completed_task_with_a_callback_is_delivered() {
     let callback = "https://hook.caller.test/notify";
     let d = queued(callback);
-    let host = TestHost::answering(vec![Some((DEST_ALLOWED, &[AT_REGISTRATION][..]))], 200);
-    let (end, settled) = tick_once(&d, &host, 0);
+    let mut host = TestHost::answering(vec![Some((DEST_ALLOWED, &[AT_REGISTRATION][..]))], 200);
+    let (end, settled) = tick_once(&d, &mut host, 0);
     assert_eq!(end, Attempted::Delivered);
     assert_eq!(settled, Settled::Done(EV_PUSH_DELIVERED));
-    assert_eq!(*host.sent.borrow(), vec![callback.to_string()]);
+    assert_eq!(host.sent, vec![callback.to_string()]);
     assert_eq!(
         d.rebound(callback, &["198.51.100.9".to_string()]),
         Some(Attempted::Moved),
@@ -267,11 +263,11 @@ fn a_completed_task_with_a_callback_is_delivered() {
 #[test]
 fn a_callback_that_became_internal_after_registration_is_refused_at_delivery() {
     let d = queued("https://hook.caller.test/notify");
-    let host = TestHost::answering(vec![Some((DEST_INTERNAL, &[][..]))], 200);
-    let (end, settled) = tick_once(&d, &host, 0);
+    let mut host = TestHost::answering(vec![Some((DEST_INTERNAL, &[][..]))], 200);
+    let (end, settled) = tick_once(&d, &mut host, 0);
     assert_eq!(end, Attempted::Judged(DEST_INTERNAL));
     assert_eq!(settled, Settled::Done(EV_PUSH_REFUSED), "never retried");
-    assert!(host.sent.borrow().is_empty(), "refused before the socket");
+    assert!(host.sent.is_empty(), "refused before the socket");
 }
 
 /// Across a restart no reached address survives, so the anti-rebinding rule has nothing to compare
@@ -281,10 +277,10 @@ fn the_rebind_is_still_refused_when_no_pin_survives_the_restart() {
     let callback = "https://hook.caller.test/notify";
     let d = queued(callback);
     assert_eq!(d.rebound(callback, &[]), None, "nothing reached: a restart");
-    let host = TestHost::answering(vec![Some((DEST_INTERNAL, &[][..]))], 200);
-    let (end, _) = tick_once(&d, &host, 0);
+    let mut host = TestHost::answering(vec![Some((DEST_INTERNAL, &[][..]))], 200);
+    let (end, _) = tick_once(&d, &mut host, 0);
     assert_eq!(end, Attempted::Judged(DEST_INTERNAL));
-    assert!(host.sent.borrow().is_empty());
+    assert!(host.sent.is_empty());
 }
 
 /// A name that resolves to nothing at delivery, or a judgement that could not be made, is refused:
@@ -293,10 +289,10 @@ fn the_rebind_is_still_refused_when_no_pin_survives_the_restart() {
 fn a_name_that_resolves_to_nothing_at_delivery_time_is_refused() {
     for script in [Some((DEST_UNRESOLVABLE, &[][..])), None] {
         let d = queued("https://hook.caller.test/notify");
-        let host = TestHost::answering(vec![script], 200);
-        let (end, _) = tick_once(&d, &host, 0);
+        let mut host = TestHost::answering(vec![script], 200);
+        let (end, _) = tick_once(&d, &mut host, 0);
         assert_eq!(end, Attempted::Judged(DEST_UNRESOLVABLE));
-        assert!(host.sent.borrow().is_empty());
+        assert!(host.sent.is_empty());
     }
 }
 
@@ -305,15 +301,15 @@ fn a_name_that_resolves_to_nothing_at_delivery_time_is_refused() {
 #[test]
 fn a_private_address_is_refused_with_no_socket() {
     let d = queued("https://hook.caller.test/notify");
-    let host = TestHost::answering(vec![Some((DEST_INTERNAL, &[][..]))], 200);
+    let mut host = TestHost::answering(vec![Some((DEST_INTERNAL, &[][..]))], 200);
     let delivery = d.next_due(0).expect("due");
     let mut flight = Flight {
         delivery,
         exchange: None,
     };
-    let _ = attempt(&host, &d, &mut flight);
+    let _ = attempt(&mut host, &d, &mut flight);
     assert!(flight.exchange.is_none(), "no request was framed");
-    assert!(host.sent.borrow().is_empty(), "no socket");
+    assert!(host.sent.is_empty(), "no socket");
 }
 
 /// A plaintext callback that reached a row is refused at DELIVERY on the host's verdict (the
@@ -322,12 +318,12 @@ fn a_private_address_is_refused_with_no_socket() {
 fn a_plaintext_callback_is_refused_at_delivery() {
     let callback = "http://hook.caller.test/notify";
     let d = queued(callback);
-    let host = TestHost::answering(vec![Some((DEST_PLAINTEXT, &[][..]))], 200);
-    let (end, settled) = tick_once(&d, &host, 0);
+    let mut host = TestHost::answering(vec![Some((DEST_PLAINTEXT, &[][..]))], 200);
+    let (end, settled) = tick_once(&d, &mut host, 0);
     assert_eq!(end, Attempted::Judged(DEST_PLAINTEXT));
     assert_eq!(settled, Settled::Done(EV_PUSH_REFUSED));
-    assert_eq!(*host.judged.borrow(), vec![callback.to_string()]);
-    assert!(host.sent.borrow().is_empty());
+    assert_eq!(host.judged, vec![callback.to_string()]);
+    assert!(host.sent.is_empty());
 }
 
 /// The judge is asked again on the retry: a receiver that failed with a `503` is retried, and the
@@ -335,23 +331,23 @@ fn a_plaintext_callback_is_refused_at_delivery() {
 #[test]
 fn the_guard_is_re_run_on_the_retry() {
     let d = queued("https://hook.caller.test/notify");
-    let host = TestHost::answering(
+    let mut host = TestHost::answering(
         vec![
             Some((DEST_ALLOWED, &[AT_REGISTRATION][..])),
             Some((DEST_INTERNAL, &[][..])),
         ],
         503,
     );
-    let (first, settled) = tick_once(&d, &host, 0);
+    let (first, settled) = tick_once(&d, &mut host, 0);
     assert_eq!(first, Attempted::Status(503));
     let Settled::Retry(at) = settled else {
         panic!("a 503 is retried: {settled:?}");
     };
-    let (second, settled) = tick_once(&d, &host, at);
+    let (second, settled) = tick_once(&d, &mut host, at);
     assert_eq!(second, Attempted::Judged(DEST_INTERNAL));
     assert_eq!(settled, Settled::Done(EV_PUSH_REFUSED));
-    assert_eq!(host.judged.borrow().len(), 2, "judged on every attempt");
-    assert_eq!(host.sent.borrow().len(), 1, "the retry sent nothing");
+    assert_eq!(host.judged.len(), 2, "judged on every attempt");
+    assert_eq!(host.sent.len(), 1, "the retry sent nothing");
 }
 
 /// A DELETED CONFIG TAKES ITS WEBHOOK CREDENTIAL OUT OF PLANE MEMORY (the engine's delete called

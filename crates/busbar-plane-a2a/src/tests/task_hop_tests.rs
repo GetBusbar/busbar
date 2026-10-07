@@ -4,7 +4,7 @@
 //! The task a relayed hop is for, over the test's host records: opened as the served engine's
 //! unary hop opens it (addressed, resumed or minted), and settled on the far end's answer.
 
-use busbar_contract::abi::host::service::{DEST_ALLOWED, DEST_INTERNAL};
+use busbar_contract::abi::host::service::{DEST_ALLOWED, DEST_INTERNAL, DEST_PLAINTEXT};
 use serde_json::json;
 
 use super::*;
@@ -313,11 +313,17 @@ fn refusal_of(opened: Opened) -> (u32, i64, String) {
 
 /// A callback the floor refuses refuses the request `400` (InvalidParams) in the floor's words,
 /// before anything is opened: no id is minted and nothing is written (the engine's inline guard).
+/// The refusal is the host destination judge's verdict (plaintext, an internal literal or name),
+/// worded by the plane.
 #[test]
 fn an_inline_callback_the_floor_refuses_refuses_the_request_before_anything_opens() {
     for (url, verdict, words) in [
-        ("http://hook.example/cb", DEST_ALLOWED, "must be https"),
-        ("https://10.0.0.7/cb", DEST_ALLOWED, "INTERNAL address"),
+        ("http://hook.example/cb", DEST_PLAINTEXT, "must be https"),
+        (
+            "https://10.0.0.7/cb",
+            DEST_INTERNAL,
+            "INTERNAL address 10.0.0.7",
+        ),
         ("https://hook.example/cb", DEST_INTERNAL, "INTERNAL address"),
     ] {
         let mut desk = desk();
