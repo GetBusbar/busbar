@@ -1294,9 +1294,21 @@ impl busbar_kernel::host_services::NestRoute for DoorNests {
             ));
             return;
         };
+        // THE PARENT IS BOUND HERE, on the parent's own crossing while it is in flight, never in the
+        // spawned child: a parent that answers without waiting for its child (a task's
+        // continuation, door_tasks) may end before the child is first polled, and a continuation
+        // runs as a child unit whose parent has exited (BUSBAR-1.6.0.md, `work.*` row note). The
+        // child holds the parent's frame and hold cell for its whole run; whether that cell is still
+        // live is read at the child's accrual and at its exit, never here.
+        let Some(bound) = routes.parent_of(&nest) else {
+            done(busbar_kernel::host_services::NestReply::Unserved(
+                NEST_PARENT_GONE,
+            ));
+            return;
+        };
         drop(
             self.runtime
-                .spawn(async move { done(routes.nested(nest).await) }),
+                .spawn(async move { done(routes.nested(nest, bound).await) }),
         );
     }
 }
@@ -1995,6 +2007,13 @@ impl DoorRequest {
     }
 }
 
+/// A nested unit's parent, bound on the parent's crossing ([`DataRoutes::parent_of`]): the
+/// generation it was served on and its in-flight slot.
+type BoundParent = (
+    Arc<busbar_kernel::state::App>,
+    crate::root::plane_node::Parent,
+);
+
 impl DataRoutes {
     /// ONE DUPLEX SESSION ARRIVAL (K6; ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03, TRANSITIONAL with
     /// the session routes): the caller's head delivered once at `arrive`, as a request's is; the
@@ -2286,12 +2305,25 @@ impl DataRoutes {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// THE PARENT A NESTED UNIT RUNS UNDER, resolved while the parent's crossing is in flight: the
+    /// generation the parent was served on and its in-flight slot (its hold cell), each held by the
+    /// child for its whole run. `None` when the parent is no unit in flight.
+    fn parent_of(&self, nest: &busbar_kernel::host_services::Nest) -> Option<BoundParent> {
+        let app = self.frames_lock().get(&nest.parent).cloned()?;
+        let parent = self
+            .post
+            .node()
+            .parent(busbar_contract::UnitKey::new(nest.parent))?;
+        Some((app, parent))
+    }
+
     /// ONE NESTED UNIT (`unit.nest`): its claim matched on the guest list, driven as a door unit of
     /// the plane that claims it under the parent's principal and generation, a child of the
     /// parent's hold cell, one level deeper; its whole reply read and handed back.
     async fn nested(
         self: Arc<Self>,
         nest: busbar_kernel::host_services::Nest,
+        (app, parent): BoundParent,
     ) -> busbar_kernel::host_services::NestReply {
         use busbar_kernel::guest::{Claimant, Matched};
         use busbar_kernel::host_services::NestReply;
@@ -2308,13 +2340,6 @@ impl DataRoutes {
         };
         let Some((plane, claim)) = door else {
             return NestReply::Unserved(NEST_UNSERVED);
-        };
-        let parent_key = busbar_contract::UnitKey::new(nest.parent);
-        let (Some(app), Some(parent)) = (
-            self.frames_lock().get(&nest.parent).cloned(),
-            self.post.node().parent(parent_key),
-        ) else {
-            return NestReply::Unserved(NEST_PARENT_GONE);
         };
         let principal = match nest.principal.as_deref() {
             Some(key) => PrincipalId::new(key.id.as_str()),
