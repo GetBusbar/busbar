@@ -817,6 +817,14 @@ impl Plant {
 const PLANTED_DEAD: &str = "busbar-selftest-no-such-package";
 const PLANTED_EXCUSED: &str = "busbar-selftest-excused-package";
 const PLANTED_NEVER: &str = "busbar-selftest-never-selected";
+/// The dead name the FILE-SCOPE plants declare in one script and select in another.
+const PLANTED_SCOPED: &str = "busbar-selftest-scoped-package";
+/// One dead name per file shape the walk must open beyond `.yml`, `.sh`, qa `.toml` and xtask `.rs`:
+/// a `.yaml` composite action, a python script, a Makefile and a JSON pipeline `run` value.
+const PLANTED_YAML: &str = "busbar-selftest-yaml-action-package";
+const PLANTED_PY: &str = "busbar-selftest-python-package";
+const PLANTED_MAKE: &str = "busbar-selftest-makefile-package";
+const PLANTED_JSON: &str = "busbar-selftest-json-run-package";
 /// A path this gate does not cover, for the stale-file plant.
 // qa-names: scripts/deleted-by-this-fixture.sh -- xtask/src/gates/package_selectors.rs -- the stale-declaration plant names a covered script that is not there on purpose; a spelling that resolved would prove nothing
 const PLANTED_GONE_FILE: &str = "scripts/deleted-by-this-fixture.sh";
@@ -834,8 +842,87 @@ fn plant_target(cx: &Ctx) -> Option<(String, String)> {
         .map(|f| (f.rel, f.text))
 }
 
+/// TWO DISTINCT covered shell scripts, for the plants that need a declaration in one file and a
+/// selector in another. Derived from the walk for the same reason [`plant_target`] is.
+fn plant_pair(cx: &Ctx) -> Option<((String, String), (String, String))> {
+    let mut scripts = covered(cx)
+        .ok()?
+        .into_iter()
+        .filter(|f| f.rel.starts_with(&format!("{SCRIPT_ROOT}/")) && f.rel.ends_with(".sh"));
+    let a = scripts.next()?;
+    let b = scripts.next()?;
+    Some(((a.rel, a.text), (b.rel, b.text)))
+}
+
 fn plants(cx: &Ctx) -> Vec<Plant> {
     let target = plant_target(cx);
+    let pair = plant_pair(cx);
+
+    // AN EXEMPTION IS SCOPED TO ITS OWN FILE. Script A selects the dead name and carries a valid
+    // declaration naming A; script B selects the SAME dead name and declares nothing. A's site is
+    // excused, B's is not: a declaration keyed on the name alone would silence B too, which is one
+    // written exception excusing every other dead selector of that spelling in the tree.
+    let scoped = pair.as_ref().map(|((a, a_text), (b, b_text))| {
+        let mut ov = Overlay::new();
+        ov.set(
+            a,
+            format!(
+                "{a_text}\ncargo build --locked -p {PLANTED_SCOPED}\n\
+                 {DECL_HASH} {PLANTED_SCOPED}{SEP}{a}{SEP}{PLANTED_REASON}\n"
+            ),
+        );
+        ov.set(
+            b,
+            format!("{b_text}\ncargo build --locked -p {PLANTED_SCOPED}\n"),
+        );
+        ov
+    });
+
+    // A DECLARATION WHOSE OWN FILE NO LONGER SELECTS THE NAME. A declares the dead name for A and
+    // selects nothing; B selects it and carries its own declaration. Every site is excused, so only
+    // the liveness rule can move: A's exemption outlived the site it was written for, and a
+    // selector of the same name in some other file is not that site.
+    let scoped_stale = pair.as_ref().map(|((a, a_text), (b, b_text))| {
+        let mut ov = Overlay::new();
+        ov.set(
+            a,
+            format!("{a_text}\n{DECL_HASH} {PLANTED_SCOPED}{SEP}{a}{SEP}{PLANTED_REASON}\n"),
+        );
+        ov.set(
+            b,
+            format!(
+                "{b_text}\ncargo build --locked -p {PLANTED_SCOPED}\n\
+                 {DECL_HASH} {PLANTED_SCOPED}{SEP}{b}{SEP}{PLANTED_REASON}\n"
+            ),
+        );
+        ov
+    });
+
+    // A DEAD SELECTOR IN A FILE SHAPE A FOUR-EXTENSION WALK NEVER OPENED: a composite action spelt
+    // `.yaml` under `.github/actions`, a python script that builds an argv list, a Makefile recipe,
+    // and the `run` value of a JSON pipeline check. Each is a new file, so the plant proves the walk
+    // finds files it was never told about by name.
+    let mut wider = Overlay::new();
+    wider.set(
+        ".github/actions/selftest-plant/action.yaml",
+        format!(
+            "runs:\n  using: composite\n  steps:\n    - shell: bash\n      run: cargo build --locked -p {PLANTED_YAML}\n"
+        ),
+    );
+    wider.set(
+        "scripts/selftest_plant.py",
+        format!(
+            "import subprocess\nsubprocess.run([\"cargo\", \"build\", \"-p\", \"{PLANTED_PY}\"], check=True)\n"
+        ),
+    );
+    wider.set(
+        "scripts/selftest-plant/Makefile",
+        format!("build:\n\tcargo build --locked -p {PLANTED_MAKE}\n"),
+    );
+    wider.set(
+        "qa/selftest-plant.json",
+        format!("{{\n  \"run\": \"set -e; cargo build --locked -p {PLANTED_JSON}\"\n}}\n"),
+    );
 
     // THE DEFECT THIS GATE IS NAMED FOR, RE-PLANTED: a command selects a package the workspace does
     // not have. This is the shape `cargo xtask txn-fence` carried while reporting a compile fence as
@@ -902,12 +989,45 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
     let mut no_root = Overlay::new();
     no_root.remove(ROOT_MANIFEST);
 
+    let scoped_naming = pair
+        .as_ref()
+        .map(|(_, (b, _))| vec![format!("{b}:"), PLANTED_SCOPED.to_string()])
+        .unwrap_or_else(|| vec![PLANTED_SCOPED.to_string()]);
+    let stale_naming = pair
+        .as_ref()
+        .map(|((a, _), _)| vec![format!("{a}:"), PLANTED_SCOPED.to_string()])
+        .unwrap_or_else(|| vec![PLANTED_SCOPED.to_string()]);
+
     vec![
         Plant {
             label: "a cargo command selects a package this workspace does not have",
             rule: ROW_RESOLVES,
             naming: vec![PLANTED_DEAD.to_string()],
             overlay: dead,
+        },
+        Plant {
+            label: "a declaration in one file does not excuse the same dead selector in another",
+            rule: ROW_RESOLVES,
+            naming: scoped_naming,
+            overlay: scoped,
+        },
+        Plant {
+            label: "a declaration whose own file no longer selects the name is stale",
+            rule: ROW_DECL_LIVE,
+            naming: stale_naming,
+            overlay: scoped_stale,
+        },
+        Plant {
+            label:
+                "a dead selector in a .yaml action, a python script, a Makefile or a JSON run value",
+            rule: ROW_RESOLVES,
+            naming: vec![
+                PLANTED_YAML.to_string(),
+                PLANTED_PY.to_string(),
+                PLANTED_MAKE.to_string(),
+                PLANTED_JSON.to_string(),
+            ],
+            overlay: Some(wider),
         },
         Plant {
             label: "a declared exception outlived the selector it excused",
