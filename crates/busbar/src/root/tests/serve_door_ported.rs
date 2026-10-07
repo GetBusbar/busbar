@@ -1803,40 +1803,4 @@ async fn an_unrelated_apply_reuses_the_warm_connector() {
     assert_eq!(rig.chat().await.0, 200);
 }
 
-/// AN APPLY THAT CHANGES `limits.upstream_request_timeout_secs` TAKES EFFECT: under two seconds a
-/// far end that answers after three is cut; once the apply raises it to ten, the same far end's
-/// answer is the caller's.
-///
-/// Ports legacy `engine/tests/runtime_carry_tests.rs::a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it`
-/// (its rebuild half).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "DIVERGENCE: a config apply re-seals the door over the boot connector (main.rs apply hook, connector::the()), whose transports keep the boot request_timeout_secs; the raised timeout is not in force until restart"]
-async fn an_apply_that_raises_the_upstream_timeout_takes_effect() {
-    let _one = ONE_PUBLISHER.lock().await;
-    let instance = "serve-door-ported-client-rebuild";
-    let _published = Withdrawn(instance);
-    let slow = far_end_recording(Some(3_000), json_reply(200, SERVED)).await;
-    let rig = rig(
-        instance,
-        RigOpts {
-            members: &[(slow.port, 1)],
-            upstream_request_timeout_secs: Some(2),
-            ..RigOpts::default()
-        },
-    )
-    .await;
-    let (status, _, _) = rig.chat().await;
-    assert!(
-        status >= 500,
-        "under two seconds the slow answer is cut: {status}"
-    );
-    let generation = rig.appliers.0[0].current().generation;
-    assert_eq!(apply(&rig, instance, &[slow.port], 10), generation + 1);
-    let (status, _, body) = rig.chat().await;
-    assert_eq!(
-        status,
-        200,
-        "the raised timeout is in force after the apply: {}",
-        String::from_utf8_lossy(&body)
-    );
-}
+// retired: v1.5.5 main.rs:3128-3130 reused the client on every apply; upstream_request_timeout_secs is restart-to-apply (ARCHITECT RULING U11 Q4 2026-10-06)
