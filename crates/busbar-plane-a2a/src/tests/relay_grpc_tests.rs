@@ -504,3 +504,57 @@ fn a_status_handed_on_with_the_last_trailers_ends_the_call() {
         body(&reply)
     );
 }
+
+/// MONEY (this cell touches money: it reads the count the door reports as the hop's billed
+/// `bytes` class, `relay::moved`). A RELAYED gRPC CALL BILLS THE BODIES PREDEV BILLED, BOTH WAYS,
+/// AND NEVER ITS TRAILERS. Predev's hop counted the request body it handed the transport and the
+/// response body the transport handed back (origin/predev `crates/busbar-a2a/src/a2a/relay.rs:1795-1802`,
+/// `add_sent(request.body.len())` + `add_received(resp.body.len())`), where on the gRPC binding the
+/// request body was the length-prefixed message (`relay.rs:1319-1341` `grpc_frame`; the billing
+/// rule, `relay_billing.rs:15-18`) and every header in both directions was excluded
+/// (`relay_billing.rs:23-24`). The lane's grpc transport frames the plane's message itself (one
+/// prefix, even for an empty message), so the hop bills `prefix + message` sent and the prefixed
+/// answer received; the trailers' field block is no payload.
+///
+/// RED before the fix: the hop billed the bare message (5 bytes short) and added the trailers'
+/// field block to the received bytes.
+#[test]
+fn a_grpc_hop_bills_its_framed_request_and_answer_and_never_its_trailers() {
+    use busbar_contract::abi::transport::fields::{LINE_END, SEPARATOR};
+    let mut trailers = b"grpc-status".to_vec();
+    trailers.extend_from_slice(SEPARATOR);
+    trailers.extend_from_slice(b"0");
+    trailers.extend_from_slice(LINE_END);
+    let billed = |asked: &serde_json::Value, answered: &[u8]| {
+        let (mut r, _, message) = dialled(asked, None, false);
+        assert_eq!(r.moved(), 0, "nothing was exchanged yet");
+        let _ = r.on_piece(far(Some(0), &[], false));
+        let _ = r.on_piece(far(None, answered, false));
+        let _ = r.on_far_fields(&trailers, Some(0), false);
+        let _ = r.on_piece(far(None, &[], true));
+        (r.moved(), message.len())
+    };
+    let answer = send_answer(pb::TaskState::Working);
+    let (moved, message) = billed(&submission("SendMessage"), &answer);
+    assert!(message > 0, "the submission carries a message");
+    assert_eq!(
+        moved,
+        (crate::framed::MESSAGE_PREFIX + message + answer.len()) as u64,
+        "the prefixed request message plus the prefixed answer, and not one trailer byte"
+    );
+    // An rpc whose request message is all defaults is zero bytes; the wire still carries its
+    // prefix, as predev's `grpc_frame` wrote it.
+    let card = framed(&pb::AgentCard {
+        name: "planner-extended".into(),
+        ..Default::default()
+    });
+    let asked =
+        json!({ "jsonrpc": "2.0", "id": 7, "method": "GetExtendedAgentCard", "params": {} });
+    let (moved, message) = billed(&asked, &card);
+    assert_eq!(message, 0, "the empty request message");
+    assert_eq!(
+        moved,
+        (crate::framed::MESSAGE_PREFIX + card.len()) as u64,
+        "the empty message's prefix plus the prefixed answer"
+    );
+}
