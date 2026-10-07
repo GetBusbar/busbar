@@ -1471,7 +1471,7 @@ fn test_resolve_provider_from_def() {
 }
 
 // THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B) MOVED to
-// `tests/config_cross_plane.rs::resolve_provider_hook_and_core_fallback_agree` — it calls the REAL
+// `crates/busbar/tests/config_cross_plane.rs::resolve_provider_hook_and_core_fallback_agree` — it calls the REAL
 // `busbar_llm::PLANE_HOOKS.resolve_provider` hook, which only type-checks against core's OWN
 // `ProviderDef`/`ProviderDeploy` when there is ONE `busbar_kernel` in the graph (an integration-test
 // target), not the two copies busbar-kernel's own `#[cfg(test)]` dev-dependency back-edge onto
@@ -3541,7 +3541,7 @@ fn root_settings_doc_lists_only_fields_that_exist() {
 }
 
 // THE PUBLISHED-NAME COLLISION IS A `resolve` ERROR MOVED to
-// `tests/config_cross_plane.rs::resolve_refuses_a_publish_as_collision_so_validate_and_boot_agree`
+// `crates/busbar/tests/config_cross_plane.rs::resolve_refuses_a_publish_as_collision_so_validate_and_boot_agree`
 // — it constructs a REAL `busbar_mcp::mcp::config::ToolsCfg` and hands it to core's `resolve`,
 // which only type-checks with ONE `busbar_kernel` in the graph. See that file's header.
 
@@ -3567,14 +3567,14 @@ fn failover_pools_are_absent_by_default() {
 }
 
 // A member naming nothing... MOVED to
-// `tests/config_cross_plane.rs::a_tool_pool_member_that_names_no_server_is_refused` (needs a
+// `crates/busbar/tests/config_cross_plane.rs::a_tool_pool_member_that_names_no_server_is_refused` (needs a
 // real `busbar_mcp::mcp::config::ToolsCfg`). See that file's header.
 
-// KIND IS INFERRED... MOVED to `tests/config_cross_plane.rs::a_pool_may_not_straddle_two_planes`
+// KIND IS INFERRED... MOVED to `crates/busbar/tests/config_cross_plane.rs::a_pool_may_not_straddle_two_planes`
 // (needs real `busbar_mcp`/`busbar_a2a` config types). See that file's header.
 
 // A one-member pool changes nothing... MOVED to
-// `tests/config_cross_plane.rs::a_failover_pool_needs_two_members` (needs a real
+// `crates/busbar/tests/config_cross_plane.rs::a_failover_pool_needs_two_members` (needs a real
 // `busbar_a2a::a2a::config::AgentsCfg`). See that file's header.
 
 /// `repeatable:` IS THE SAFETY DECLARATION, and the default is that nothing is repeatable. Asserted

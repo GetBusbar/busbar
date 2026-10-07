@@ -496,9 +496,21 @@ plane-decisions = "plane_decisions"
 # repricer and book binding run in every build (ARCHITECT Q1).
 node = "plane_node"
 
+# THE TEST-LINKED PLANES of this crate's cross-plane integration tests (`tests/linked/mod.rs`). Those
+# tests prove the kernel's behaviour against the planes a build links, so they live where a plane may
+# be linked: here, in the composition root, never in the kernel or a cleanliness crate (core names
+# zero plane types, its tests included). Which planes is DATA: `build.rs` turns this list into
+# `$OUT_DIR/test_linked.rs` (a `testkit::TEST_SEAM` entry per crate; a `door:` row is a plane served
+# through its memory-ABI door only, its registry row folded from its Statement as the root folds it),
+# so the tests' sources name no plane. The list is the install order (the planes' layering order).
+[package.metadata.busbar.test-linked]
+planes = ["busbar-llm", "door:busbar-plane-mcp", "busbar-a2a"]
+
 [dev-dependencies]
 # Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
 sha2 = { workspace = true }
+# `tests/plane_integration.rs` reads a plane's admission audience as a URL.
+url = { workspace = true }
 # root_listeners_are_the_connectors.rs: the TLS data door's certificate, generated per run.
 rcgen = { workspace = true, features = ["pem"] }
 # root/tests/connector_h2.rs: the TLS far end the connector dials with the http door's protocol
@@ -514,6 +526,9 @@ async-trait = { workspace = true }
 busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # The served planes' test kits: `testkit::SERVED` (their served-leg witnesses) is `test-support` only.
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
+# The MCP plane's door, a `door:` row of `test-linked` above: linked in every build's tests, whatever
+# plane features the build enables (a single-plane build's tests still install the whole roster).
+busbar-plane-mcp = { path = "../busbar-plane-mcp" }
 busbar-voice = { path = "../busbar-voice", features = ["test-support"] }
 # `root::door_steps` tests: a member bound under an OAuth grant, its credential minted by the real
 # token-style auth plugin through its own need (TODO row 22).

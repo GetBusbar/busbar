@@ -2648,7 +2648,7 @@ fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
 // full config is the only thing that proves the migrator is comprehensive: a code read of what it
 // "thinks" it handles is not enough.
 //
-// MOVED to `tests/config_migrate_cross_plane.rs` (A6/HostCtx dev-dependency-cycle cleanup): the
+// MOVED to `crates/busbar/tests/config_migrate_cross_plane.rs` (A6/HostCtx dev-dependency-cycle cleanup): the
 // fixture's `tools:`/`agents:` blocks need the REAL `busbar_mcp`/`busbar_a2a` planes registered to
 // resolve past `resolve`'s "compiled without the plane that owns it" refusal — a neutral fake plane
 // cannot stand in, since the assertions below read `cfg.tool_pools`/`cfg.agent_pools`, which only

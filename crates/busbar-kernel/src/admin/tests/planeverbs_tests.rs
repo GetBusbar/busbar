@@ -110,7 +110,7 @@ fn the_plane_is_a_parameter_and_never_a_branch() {
 }
 
 // `the_not_found_names_the_plane_s_own_subject` MOVED to
-// `tests/admin_planeverbs_cross_plane.rs`: it renders `to_admin_error("mcp", ...)`/`("a2a", ...)`
+// `crates/busbar/tests/admin_planeverbs_cross_plane.rs`: it renders `to_admin_error("mcp", ...)`/`("a2a", ...)`
 // and asserts the REAL subject-noun prose ("MCP server", "fronted agent") those plane decls carry —
 // naming that real vocabulary here (even via a synthetic `#[cfg(test)]` decl) is exactly what
 // `cargo xtask gate construction`'s `neutral-no-dialect` rule (ceiling 0) forbids in this crate. See
@@ -126,7 +126,7 @@ fn a_resolved_lookup_is_returned_untouched() {
 }
 
 // `the_admin_route_table_method_path_scope_is_byte_identical` and
-// `the_audit_naming_is_derived_from_the_plane` also MOVED to `tests/admin_planeverbs_cross_plane.rs`
+// `the_audit_naming_is_derived_from_the_plane` also MOVED to `crates/busbar/tests/admin_planeverbs_cross_plane.rs`
 // for the same reason as the test above them: both pin the REAL mcp/a2a admin route table and audit
 // vocabulary, which only `plane_decl("mcp")`/`plane_decl("a2a")` over the REAL registered roster can
 // answer — real plane behaviour, not "a plane merely needs to exist".
