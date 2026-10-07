@@ -60,7 +60,7 @@ use busbar_contract::auth::AuthPrincipal;
 use busbar_contract::caps::{Pass, PrincipalId, Route};
 #[cfg(linked_axis_node)]
 use busbar_kernel::plane_driver::{
-    Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, UnitRoute,
+    Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope, UnitRoute,
 };
 #[cfg(linked_axis_node)]
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
@@ -2443,11 +2443,19 @@ fn spent() -> Pick {
 
 #[cfg(linked_axis_node)]
 impl FarEnd for DoorFar<'_, '_> {
-    /// The pool the route the unit named resolved to (its label, or a direct route's lane), as the
-    /// walk is keyed: the scope of the unit's in-session hooks.
-    fn pool(&self, _token: &Pass<Route>) -> Option<String> {
+    /// The route the unit named, as its in-session hooks are scoped: the pool the walk is keyed by
+    /// (its label, or a direct route's lane) and the entry its hooks are filed under (the label, or
+    /// the direct route's member).
+    fn scope(&self, _token: &Pass<Route>) -> Option<RoutedScope> {
         let routed = self.steps.routed()?;
-        Some(egress_pool(self.steps.plane(), &routed))
+        let container = match &routed {
+            (label, _) if !label.is_empty() => label.clone(),
+            (_, members) => members.first().cloned().unwrap_or_default(),
+        };
+        Some(RoutedScope {
+            pool: egress_pool(self.steps.plane(), &routed),
+            container,
+        })
     }
 
     async fn member(&self, token: &Pass<Route>, attempt_no: u32) -> Pick {
