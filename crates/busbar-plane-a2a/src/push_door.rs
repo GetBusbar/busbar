@@ -25,7 +25,9 @@
 use std::task::Poll;
 
 use busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB;
-use busbar_contract::abi::host::service::{ItemSpan, DEST_ALLOWED, DEST_UNRESOLVABLE};
+use busbar_contract::abi::host::service::{
+    ItemSpan, DEST_ALLOWED, DEST_REFUSE_PRIVATE, DEST_UNRESOLVABLE,
+};
 use busbar_contract::abi::mechanism::call::{Outcome, Span};
 use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
@@ -38,6 +40,7 @@ use crate::door::NEED_OPEN_WEB;
 use crate::local::{self, PushConfig};
 use crate::plane_door::A2aDoor;
 use crate::push::{Attempted, Deliveries, Delivery, Owed};
+use crate::records::KIND_PUSH_CONFIG;
 use crate::tasks::{self, Halt, Records, Step, Write};
 use crate::TaskRow;
 
@@ -68,6 +71,21 @@ pub fn queue(deliveries: &Deliveries, row: &TaskRow, config: Option<&PushConfig>
     };
     deliveries.enqueue(delivery, 0);
     true
+}
+
+/// FORGET the webhook credential of every push config `writes` deletes for `caller` (the tombstone
+/// of its task's config record): a secret with no config left to present it for does not stay in
+/// plane memory (the engine's delete dropped it with the config, `pushdeliver::forget`).
+pub fn forget_deleted(deliveries: &Deliveries, caller: &str, writes: &[Write]) {
+    let prefix = tasks::task_key(caller, "");
+    for w in writes
+        .iter()
+        .filter(|w| w.kind == KIND_PUSH_CONFIG && w.value.is_empty())
+    {
+        if let Some(task_id) = w.key.strip_prefix(prefix.as_str()) {
+            deliveries.remember_auth(task_id, None);
+        }
+    }
 }
 
 /// [`queue`] for a relayed piece of `caller`'s that moved `row`: the task's push_config record read
@@ -142,14 +160,22 @@ impl Calls<'_> {
             Err(_) => NO_JITTER,
         }
     }
+}
 
-    /// One attempt of `flight`: its end once known, with the addresses its request reached.
-    fn attempt(
-        &self,
-        deliveries: &Deliveries,
-        flight: &mut Flight,
-    ) -> Poll<(Attempted, Vec<String>)> {
-        let url = flight.delivery.url.clone();
+/// WHAT ONE ATTEMPT ASKS OF THE HOST after its jitter byte, in its one order: the destination judge
+/// over the callback, then the exchange. A seam, so what a verdict stops and what reaches the
+/// receiver hold under a test's host as under the kernel's ([`attempt`]).
+trait Line {
+    /// The destination judge over `url`: its `DEST_*` verdict, the addresses it judged, and the set
+    /// a dial must land within; `None` when nothing was checked.
+    fn judge(&self, url: &str) -> Poll<Option<(u64, Vec<String>, String)>>;
+    /// One exchange of `ex` to `url`: the receiver's status; `None` when the connection or the
+    /// exchange failed.
+    fn send(&self, ex: &mut Exchange, url: &str) -> Poll<Option<u16>>;
+}
+
+impl Line for Calls<'_> {
+    fn judge(&self, url: &str) -> Poll<Option<(u64, Vec<String>, String)>> {
         let absent = Span {
             offset: SPAN_ABSENT,
             len: 0,
@@ -159,47 +185,76 @@ impl Calls<'_> {
             key: absent,
             value: absent,
         }; JUDGED_ADDRESSES];
-        let judged = self.services.dest_judge(
+        // Private reach refused whatever the deployment's private-address setting, as the engine's
+        // delivery guard refused every internal answer with no knob to admit one; the allow-list
+        // stands.
+        let judged = self.services.dest_judge_as(
             self.handle(1),
-            &url,
+            url,
             EGRESS_OPEN_WEB,
+            DEST_REFUSE_PRIVATE,
             Some((&mut bytes[..], &mut spans[..])),
         );
-        let (verdict, addrs, within) = match judged {
-            Poll::Pending => return Poll::Pending,
-            // Nothing was checked, so nothing is allowed.
-            Poll::Ready(Err(_)) => {
-                return Poll::Ready((Attempted::Judged(DEST_UNRESOLVABLE), Vec::new()))
-            }
-            Poll::Ready(Ok(j)) => (
-                j.verdict,
-                j.addresses.names().map(str::to_string).collect::<Vec<_>>(),
-                j.within(),
-            ),
-        };
-        if verdict != DEST_ALLOWED {
-            return Poll::Ready((Attempted::Judged(verdict), Vec::new()));
-        }
-        if let Some(moved) = deliveries.rebound(&url, &addrs) {
-            return Poll::Ready((moved, Vec::new()));
-        }
-        // The credential joins the request only now, after the judge has passed.
-        if flight.exchange.is_none() {
-            match Exchange::request(deliveries.request(&flight.delivery)) {
-                Ok(ex) => flight.exchange = Some(ex.landing_within(within)),
-                // A request busbar cannot frame sends nothing.
-                Err(_) => return Poll::Ready((Attempted::Judged(DEST_UNRESOLVABLE), Vec::new())),
-            }
-        }
-        let Some(ex) = flight.exchange.as_mut() else {
-            return Poll::Ready((Attempted::Transport, Vec::new()));
-        };
-        let mut conn = self.host.connector_from(self.ticket, 2);
-        match exchange(&mut conn, ex, NEED_OPEN_WEB, Some(&url)) {
+        match judged {
             Poll::Pending => Poll::Pending,
-            Poll::Ready(Ok(reply)) => Poll::Ready((Attempted::of_status(reply.status), addrs)),
-            Poll::Ready(Err(_)) => Poll::Ready((Attempted::Transport, addrs)),
+            Poll::Ready(Err(_)) => Poll::Ready(None),
+            Poll::Ready(Ok(j)) => Poll::Ready(Some((
+                j.verdict,
+                j.addresses.names().map(str::to_string).collect(),
+                j.within(),
+            ))),
         }
+    }
+
+    fn send(&self, ex: &mut Exchange, url: &str) -> Poll<Option<u16>> {
+        let mut conn = self.host.connector_from(self.ticket, 2);
+        match exchange(&mut conn, ex, NEED_OPEN_WEB, Some(url)) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(reply)) => Poll::Ready(Some(reply.status)),
+            Poll::Ready(Err(_)) => Poll::Ready(None),
+        }
+    }
+}
+
+/// One attempt of `flight` over `line`: its end once known, with the addresses its request reached.
+/// The destination is judged afresh on EVERY attempt (the engine's delivery re-ran its guard against
+/// a fresh resolution before each one): a refusal, the judge's or the anti-rebinding rule's, ends
+/// the attempt before anything is framed or sent.
+fn attempt(
+    line: &dyn Line,
+    deliveries: &Deliveries,
+    flight: &mut Flight,
+) -> Poll<(Attempted, Vec<String>)> {
+    let url = flight.delivery.url.clone();
+    let (verdict, addrs, within) = match line.judge(&url) {
+        Poll::Pending => return Poll::Pending,
+        // Nothing was checked, so nothing is allowed.
+        Poll::Ready(None) => {
+            return Poll::Ready((Attempted::Judged(DEST_UNRESOLVABLE), Vec::new()))
+        }
+        Poll::Ready(Some(judged)) => judged,
+    };
+    if verdict != DEST_ALLOWED {
+        return Poll::Ready((Attempted::Judged(verdict), Vec::new()));
+    }
+    if let Some(moved) = deliveries.rebound(&url, &addrs) {
+        return Poll::Ready((moved, Vec::new()));
+    }
+    // The credential joins the request only now, after the judge has passed.
+    if flight.exchange.is_none() {
+        match Exchange::request(deliveries.request(&flight.delivery)) {
+            Ok(ex) => flight.exchange = Some(ex.landing_within(within)),
+            // A request busbar cannot frame sends nothing.
+            Err(_) => return Poll::Ready((Attempted::Judged(DEST_UNRESOLVABLE), Vec::new())),
+        }
+    }
+    let Some(ex) = flight.exchange.as_mut() else {
+        return Poll::Ready((Attempted::Transport, Vec::new()));
+    };
+    match line.send(ex, &url) {
+        Poll::Pending => Poll::Pending,
+        Poll::Ready(Some(status)) => Poll::Ready((Attempted::of_status(status), addrs)),
+        Poll::Ready(None) => Poll::Ready((Attempted::Transport, addrs)),
     }
 }
 
@@ -230,7 +285,7 @@ pub(crate) fn tick(plane: &A2aDoor, instance: &Instance<'_, A2aDoor>, now_ns: u6
         ticket,
     };
     let jitter = calls.jitter();
-    match calls.attempt(deliveries, &mut flight) {
+    match attempt(&calls, deliveries, &mut flight) {
         Poll::Pending => {
             instance.park(flight);
             Outcome::Pending

@@ -404,3 +404,25 @@ fn the_framed_line_marks_its_messages_and_a_late_failure() {
     let after = Outbox::framed(part, Rpc::SubscribeToTask).expect("an outbox");
     assert!(after.done && after.bytes.is_empty() && after.final_status.is_some());
 }
+
+/// A NOTIFICATION is the plane's own to acknowledge wherever it arrives, never relayed: `202` and
+/// no body at all, as the engine answered it (`jsonrpc::accepted`). Busbar's extended card is the
+/// plane's own on its own endpoint only; every other request goes on to an agent. RED before the
+/// fix: a notification was kept as a relayed unit with no hop and REFUSED at its piece.
+#[test]
+fn a_notification_is_acknowledged_here_with_a_202_and_no_body() {
+    let notice = Disposition::Notice {
+        method: "message/send".to_string(),
+    };
+    assert!(answered_here(&notice, true), "addressed to an agent");
+    assert!(answered_here(&notice, false), "on the plane's own endpoint");
+    assert!(hop_of(&notice, true, Some(envelope("message/send"))).is_none());
+    assert!(answered_here(&request("GetExtendedAgentCard"), false));
+    assert!(!answered_here(&request("GetExtendedAgentCard"), true));
+    assert!(!answered_here(&request("SendMessage"), false));
+    assert_eq!(
+        crate::task_door::notice_answer(),
+        (crate::arrival::STATUS_ACCEPTED, &b""[..])
+    );
+    assert_eq!(crate::arrival::STATUS_ACCEPTED, 202);
+}

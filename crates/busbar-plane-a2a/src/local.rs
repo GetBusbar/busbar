@@ -72,7 +72,8 @@ pub fn verb_of(method: &str) -> Option<LocalVerb> {
 
 /// The host's reach the verbs need beyond the records: the destination judge.
 pub trait Reach: Records {
-    /// `dest.judge` of `dest` under the open-web class, its name resolved: a `DEST_*` verdict.
+    /// `dest.judge` of `dest` under the open-web class, its name resolved and private reach
+    /// refused whatever the deployment's private-address setting: a `DEST_*` verdict.
     ///
     /// # Errors
     /// [`Halt`].
@@ -406,14 +407,23 @@ pub fn delivery_auth(cfg: &Value) -> Result<Option<DeliveryAuth>, String> {
     }))
 }
 
-/// THE CALLBACK FLOOR: the engine's push-notification guard, its structural half here and its
-/// resolution through the host's destination judge. `Ok` is the URL as registered.
+/// THE CALLBACK FLOOR: the engine's push-notification guard, its WORDS rendered here and its
+/// DECISION the host's. The plane reads the URL only far enough to word a refusal (a string that is
+/// not a URL, or one whose authority names a user, is malformed; one with no host says so); whether
+/// the destination may be reached at all (its scheme, an alternate spelling of an address, an
+/// internal or metadata address, a name that resolves to nothing) is the host's destination judge,
+/// the ONE check every outbound connection passes (`BUSBAR-1.6.0.md` §5, "Destination guard — ONE
+/// check for every outbound connection"), asked here at registration as push delivery asks it again
+/// on every attempt. `Ok` is the URL as registered.
 ///
 /// # Errors
 /// [`Halt`] from the judge; `Ok(Err(words))` for a refused callback, in the guard's words.
 pub fn judge_callback(reach: &mut dyn Reach, url: &str) -> Result<Result<(), String>, Halt> {
-    use busbar_contract::abi::host::service::{DEST_ALLOWED, DEST_NO_ADDRESSES, DEST_UNRESOLVABLE};
-    use busbar_contract::net::{ip_is_internal, is_alternate_ipv4_encoding, parse_url, UrlRefusal};
+    use busbar_contract::abi::host::service::{
+        DEST_ALLOWED, DEST_NO_ADDRESSES, DEST_NO_HOST, DEST_OBFUSCATED, DEST_PLAINTEXT,
+        DEST_SCHEME, DEST_UNRESOLVABLE,
+    };
+    use busbar_contract::net::{parse_url, UrlRefusal};
     let malformed = || Ok(Err(format!("push callback URL is malformed: `{url}`")));
     let Some((scheme, _)) = url.split_once("://") else {
         return malformed();
@@ -431,40 +441,31 @@ pub fn judge_callback(reach: &mut dyn Reach, url: &str) -> Result<Result<(), Str
         _ => return malformed(),
     };
     let host = parts.host.to_ascii_lowercase();
-    if parts.scheme != "https" {
-        return Ok(Err(format!(
+    // The address the refusal names: a literal as the engine printed it, else the host.
+    let shown = host
+        .parse::<std::net::IpAddr>()
+        .map_or_else(|_| host.clone(), |ip| ip.to_string());
+    Ok(match reach.judge(url)? {
+        DEST_ALLOWED => Ok(()),
+        DEST_SCHEME | DEST_PLAINTEXT => Err(format!(
             "push callback scheme `{}` is refused; a callback carries task metadata off-box \
              and must be https",
             parts.scheme
-        )));
-    }
-    if is_alternate_ipv4_encoding(&host) {
-        return Ok(Err(format!(
+        )),
+        DEST_NO_HOST => return malformed(),
+        DEST_OBFUSCATED => Err(format!(
             "push callback host `{host}` is an alternate IPv4 encoding, which resolves to an \
              address a canonical literal check would not see"
-        )));
-    }
-    let internal = |shown: &dyn std::fmt::Display| {
-        format!(
-            "push callback resolves to the INTERNAL address {shown}; delivering there would lend \
-             busbar's network position to the caller"
-        )
-    };
-    if let Ok(literal) = host.parse() {
-        return Ok(if ip_is_internal(&literal) {
-            Err(internal(&literal))
-        } else {
-            Ok(())
-        });
-    }
-    Ok(match reach.judge(url)? {
-        DEST_ALLOWED => Ok(()),
+        )),
         DEST_UNRESOLVABLE | DEST_NO_ADDRESSES => Err(format!(
             "push callback host `{host}` resolved to no addresses; nothing was checked, so \
              nothing is allowed"
         )),
-        // The judge names no address: the host stands where the engine named the address.
-        _ => Err(internal(&host)),
+        // An internal or metadata address, or any refusal the judge has no sentence for here.
+        _ => Err(format!(
+            "push callback resolves to the INTERNAL address {shown}; delivering there would lend \
+             busbar's network position to the caller"
+        )),
     })
 }
 

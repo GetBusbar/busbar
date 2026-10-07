@@ -343,3 +343,20 @@ fn a_dealt_validate_blob_is_unwrapped_to_its_section() {
     assert_eq!(&*crate::door::dealt_section(bare), &bare[..]);
     assert!(crate::door::read_settings(&crate::door::dealt_section(dealt)).is_ok());
 }
+
+/// THE AGENT FEE (the engine's `agents.fees`): the door counts `per_request` and only it, so the
+/// kernel's one rule over declared fee units validates `agents.fees.per_request` and refuses
+/// `agents.fees.per_session` naming `per_request` as the counted list; the fee unit is a billable
+/// class at the index the door reports it under, once per served unit.
+#[test]
+fn the_door_counts_the_per_request_fee_and_never_a_per_session_one() {
+    let same = |a: AbiStr, b: &str| a.ptr == b.as_ptr() && a.len == b.len();
+    assert_eq!(FEE_PER_REQUEST, busbar_contract::plane::PER_REQUEST);
+    assert_ne!(FEE_PER_REQUEST, busbar_contract::plane::PER_SESSION);
+    assert_eq!(FEE_UNITS.len(), 1, "one fee unit");
+    assert!(same(FEE_UNITS[0], FEE_PER_REQUEST));
+    assert!(same(
+        BILLABLE_CLASSES[CLASS_FEE_INDEX as usize].class,
+        FEE_PER_REQUEST
+    ));
+}

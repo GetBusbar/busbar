@@ -15,3 +15,5 @@ task_resource_type = a2a.busbar/task
 # resource names the agent under (`<resource_kind>:<agent id>`).
 audit_action = agent.call
 resource_kind = agent
+# The class a unit's moved request and response body bytes are counted under (meta.rs CLASS_BYTES).
+bytes_class = bytes
