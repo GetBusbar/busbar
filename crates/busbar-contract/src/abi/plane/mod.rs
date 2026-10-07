@@ -1679,6 +1679,16 @@ pub struct OnPieceOut {
     /// plane's declared [`PlaneTail::metric_lanes`]; anything else falls back to the kernel's own
     /// (the member's qualified entry) and is counted refused. A tail addition.
     pub metric_lane: Span,
+    /// THE MEMBER WHOSE WAIT THE REFUSAL ANSWERS, stated on the answer to the [`PIECE_REFUSED`]
+    /// piece the walk's exhaustion hands ([`TAIL_REFUSED_PIECE`], reason `BreakerOpen`): the ONE
+    /// member of the unit's pool the plane may send this unit to (an entry name, as
+    /// [`OnPieceIn::member`] lends it), in the arena; the refusal's `Retry-After` is then that
+    /// member's own cooldown in the pool, never the soonest across the pool's members (the walk's
+    /// figure, which a zero length keeps). Stated on any other answer, or naming no member of the
+    /// unit's pool, it is refused: the unit ends as the plane's fault. UTF-8. A tail addition: a
+    /// plane whose answer stops short of it states none (the host reads an absent tail field as
+    /// zero, `abi::mechanism::call` SIZES).
+    pub wait_member: Span,
 }
 
 /// `refusal`'s `in`.

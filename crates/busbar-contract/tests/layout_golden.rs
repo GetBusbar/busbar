@@ -1857,7 +1857,8 @@ fn compute_layout() -> String {
             final_message,
             final_details,
             metric_pool,
-            metric_lane
+            metric_lane,
+            wait_member
         ]
     );
     record!(

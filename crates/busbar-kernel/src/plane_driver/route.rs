@@ -188,6 +188,15 @@ pub trait FarEnd: Sync {
     fn judged(&self, token: &Pass<Route>, fault: u8) {
         let _ = (token, fault);
     }
+    /// THE WAIT OF ONE MEMBER the plane stated on its answer to the walk's exhausted refused piece
+    /// (`OnPieceOut::wait_member`, the entry name as `OnPieceIn::member` lends it): the whole seconds
+    /// left on `member`'s cell in the pool the unit's walk routes over (at least 1). `None` when
+    /// `member` is no member of that pool, or the far end keeps no walk (the default).
+    fn member_wait(&self, token: &Pass<Route>, member: &str) -> Option<u32> {
+        let _ = (token, member);
+        None
+    }
+
     /// THE PLANE'S COUNTER LABELS for the attempt its answer to the ATTEMPT piece just made
     /// (`OnPieceOut::metric_pool` / `metric_lane`): the walk's counters take them for this attempt
     /// within their bound. The default takes nothing.
@@ -388,7 +397,7 @@ impl Piece {
 /// plane key (a model plane's lane) is lent as it is.
 ///
 /// [`PLANE_LANE_SEP`]: crate::governance::PLANE_LANE_SEP
-fn operator_name(key: &[u8]) -> &[u8] {
+pub(super) fn operator_name(key: &[u8]) -> &[u8] {
     let sep = crate::governance::PLANE_LANE_SEP as u8;
     key.iter()
         .position(|b| *b == sep)
@@ -510,6 +519,7 @@ struct Answer {
     final_details: Span,
     metric_pool: Span,
     metric_lane: Span,
+    wait_member: Span,
 }
 
 impl Answer {
@@ -537,6 +547,7 @@ impl Answer {
             final_details: o.final_details,
             metric_pool: o.metric_pool,
             metric_lane: o.metric_lane,
+            wait_member: o.wait_member,
         }
     }
 }
@@ -578,6 +589,9 @@ pub(crate) struct Pumping<'u> {
     ended: bool,
     /// The record writes the `cancel` that ended the last op carried (SEAM-L(r)).
     cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
+    /// The member whose wait the plane stated its refusal answers (`OnPieceOut::wait_member`), on
+    /// its answer to the walk's exhausted refused piece.
+    wait_member: Option<String>,
 }
 
 impl<'u> Pumping<'u> {
@@ -604,6 +618,7 @@ impl<'u> Pumping<'u> {
             flight: None,
             ended: false,
             cancel_writes: Vec::new(),
+            wait_member: None,
         }
     }
 
@@ -909,7 +924,10 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     if let Err(end) = self.refused_piece(run, ReasonCode::BreakerOpen).await {
                         return end;
                     }
-                    return End::Exhausted(status, retry_after);
+                    return match self.stated_wait(run) {
+                        Ok(wait) => End::Exhausted(status, wait.or(retry_after)),
+                        Err(end) => end,
+                    };
                 }
                 Ok(Pick::Vetoed { status, text }) => return End::Vetoed(status, text),
                 Ok(Pick::Refused(reason)) => {
@@ -994,7 +1012,10 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         if let Err(end) = self.refused_piece(run, ReasonCode::BreakerOpen).await {
                             return end;
                         }
-                        End::Exhausted(status, retry_after)
+                        match self.stated_wait(run) {
+                            Ok(wait) => End::Exhausted(status, wait.or(retry_after)),
+                            Err(end) => end,
+                        }
                     }
                     None => End::Failed(ReasonCode::DestinationUnreachable),
                 };
@@ -1079,6 +1100,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     /// for every other plane; a plane without the bit is sent nothing. `Err` = the unit ended on
     /// the crossing.
     async fn refused_piece(&self, run: &mut Pumping<'_>, reason: ReasonCode) -> Result<(), End> {
+        run.wait_member = None;
         if self.driver.refused_piece {
             let piece = Piece {
                 from: FROM_KERNEL,
@@ -1094,6 +1116,21 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
         }
         Ok(())
+    }
+
+    /// THE WAIT A PLANE STATED its walk's exhausted refusal answers (`OnPieceOut::wait_member`, on
+    /// the refused piece): that member's own cooldown in the unit's pool, in place of the walk's
+    /// soonest across the pool. `Ok(None)` when it stated none (the walk's figure stands); a member
+    /// that is no member of the unit's pool is refused, the unit ending as the plane's fault, never
+    /// read as none.
+    fn stated_wait(&self, run: &mut Pumping<'_>) -> Result<Option<u32>, End> {
+        let Some(member) = run.wait_member.take() else {
+            return Ok(None);
+        };
+        match self.far.member_wait(run.token, &member) {
+            Some(wait) => Ok(Some(wait)),
+            None => Err(End::Failed(ReasonCode::PlanePanic)),
+        }
     }
 
     /// Push one piece: the crossing, the one short re-call, the backpressure loop, the units, and
@@ -1128,6 +1165,19 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             // records the reading of the answer it leaves.
             if piece.from == FROM_FAR_END {
                 self.far.judged(run.token, out.fault);
+            }
+            // THE MEMBER WHOSE WAIT THE REFUSAL ANSWERS, stated on the answer to the walk's exhausted
+            // refused piece and nowhere else (`OnPieceOut::wait_member`): kept for the refusal;
+            // stated anywhere else, or not UTF-8, it is the plane's fault, never ignored.
+            let wait = run.bufs.arena(out.wait_member);
+            if !wait.is_empty() {
+                let exhausted = piece.from == FROM_KERNEL
+                    && piece.flags & PIECE_REFUSED != 0
+                    && piece.reason == reason_code(ReasonCode::BreakerOpen);
+                match std::str::from_utf8(wait) {
+                    Ok(member) if exhausted => run.wait_member = Some(member.to_string()),
+                    _ => return Step::End(End::Failed(ReasonCode::PlanePanic)),
+                }
             }
             // THE ATTEMPT'S COUNTER LABELS, where the plane's answer to its ATTEMPT piece states
             // them: words for the walk's counters to bound, never to trust (a word that is not

@@ -80,6 +80,10 @@ pub struct Request<'a> {
     pub caller: &'a str,
     /// The agent the kernel picked.
     pub member: &'a str,
+    /// The agent the caller ADDRESSED, a fresh task's id is minted for (predev `receive.rs`:
+    /// `a2a-{admitted agent}-…`, the agent admitted, not the pool member the walk placed it on);
+    /// `None` = the member.
+    pub addressed: Option<&'a str>,
     /// Now, in seconds.
     pub now: u64,
 }
@@ -304,7 +308,7 @@ pub fn open(
         (None, None) => {
             let mut random = [0u8; MINT_BYTES];
             reach.random(&mut random)?;
-            let task_id = identity::mint(req.member, random);
+            let task_id = identity::mint(req.addressed.unwrap_or(req.member), random);
             let context_id = if context.is_empty() {
                 task_id.clone()
             } else {

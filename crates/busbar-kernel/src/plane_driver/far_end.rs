@@ -1463,6 +1463,23 @@ impl Drop for EgressFarEnd<'_> {
 }
 
 impl FarEnd for EgressFarEnd<'_> {
+    /// `member`'s cell in the pool the unit's walk routes over: the whole seconds of cooldown it
+    /// has left (at least 1); `None` when `member` is no member of that pool.
+    fn member_wait(&self, token: &Pass<Route>, member: &str) -> Option<u32> {
+        let pool = self.egress.pools.get(&self.route.pool)?;
+        let at = pool
+            .members
+            .iter()
+            .find(|m| super::route::operator_name(m.name.as_bytes()) == member.as_bytes())?;
+        let left = self.egress.breaker.cooldown_remaining(
+            &pool.name,
+            at.destination,
+            self.egress.clock.now_secs(),
+            token,
+        );
+        Some(u32::try_from(left.max(1)).unwrap_or(u32::MAX))
+    }
+
     fn stated(&self, _token: &Pass<Route>, labels: StatedLabels) {
         if let Some(live) = self.lock().live.as_mut() {
             live.stated = Some(labels);

@@ -2735,6 +2735,7 @@ struct bb_plane_OnPieceOut {
     bb_mech_Span final_details;
     bb_mech_Span metric_pool;
     bb_mech_Span metric_lane;
+    bb_mech_Span wait_member;
 };
 
 /* `refusal`'s `in`. */

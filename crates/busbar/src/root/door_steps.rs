@@ -209,6 +209,18 @@ impl DoorPools {
             .unwrap_or(0)
     }
 
+    /// The first pool (in name order) whose members are each admitted on their own grant
+    /// (`member_granted`) that names `entry` among its members: the pool a unit naming `entry`
+    /// routes over.
+    #[must_use]
+    pub fn member_pool(&self, entry: &str) -> Option<&str> {
+        self.pools
+            .iter()
+            .filter(|(name, _)| self.member_granted.contains(*name))
+            .find(|(_, members)| members.iter().any(|m| m == entry))
+            .map(|(name, _)| name.as_str())
+    }
+
     /// The pool `pool` spills into when its members are spent, where its section names one.
     #[must_use]
     pub fn fallback(&self, pool: &str) -> Option<&str> {
@@ -822,7 +834,16 @@ impl Units for DoorSteps<'_> {
                 .collect();
             let mut u = self.lock();
             match reachable.as_slice() {
-                [one] => u.named = Some((ROUTE_DIRECT, Some(one.as_bytes().to_vec()))),
+                // The one entry, routed as an addressed unit naming it is: over the pool of
+                // members each admitted on their own grant that it is a member of, else directly
+                // (predev's unaddressed request reached the same pool walk as an addressed one,
+                // receive.rs:1262-1268 converging at :1839 and :1916).
+                [one] => {
+                    u.named = Some(match self.pools.member_pool(one) {
+                        Some(pool) => (ROUTE_POOL, Some(pool.as_bytes().to_vec())),
+                        None => (ROUTE_DIRECT, Some(one.as_bytes().to_vec())),
+                    });
+                }
                 [] => {}
                 _ => u.reachable = reachable,
             }

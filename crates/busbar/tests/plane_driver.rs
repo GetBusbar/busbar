@@ -827,6 +827,7 @@ fn zero_piece_out() -> OnPieceOut {
         final_details: span,
         metric_pool: span,
         metric_lane: span,
+        wait_member: span,
     }
 }
 

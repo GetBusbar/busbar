@@ -84,6 +84,7 @@ fn opened_with(
         relayed: None,
         caller,
         member: MEMBER,
+        addressed: None,
         now: 300,
     };
     let opened = open(desk, &req, &json!(7), backends, &mut out).unwrap();
@@ -355,6 +356,7 @@ fn an_inline_callback_the_floor_refuses_refuses_the_request_before_anything_open
             relayed: None,
             caller: ALICE,
             member: MEMBER,
+            addressed: None,
             now: 300,
         };
         let opened = open(&mut desk, &req, &json!(7), &|_| None, &mut out).unwrap();
@@ -605,6 +607,7 @@ fn opened_writing(desk: &mut Desk, envelope: &Value) -> (Opened, Vec<Write>) {
         relayed: None,
         caller: ALICE,
         member: MEMBER,
+        addressed: None,
         now: 300,
     };
     let opened = open(desk, &req, &json!(7), &|_| None, &mut out).unwrap();
