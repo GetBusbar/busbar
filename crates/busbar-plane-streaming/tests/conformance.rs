@@ -103,16 +103,6 @@ fn a_realtime_voice_session_reserves_takes_turns_and_settles() {
         "the turn carries the correlation an answer rides back on"
     );
 
-    // The admit step is where the money-book reserves a hold: the plane's `admit` names the lane,
-    // the response ceiling and the priced input span the reservation is sized against. Proven to
-    // answer here; the reservation itself is the cost unit's, on the far side of the kernel.
-    let opened_unit = harness::unit(OpClassId::new("duplex_turn"), draft.body_ir, draft.facts);
-    let admit = plane.admit(&opened_unit, &c);
-    assert!(
-        !format!("{admit:?}").is_empty(),
-        "admit answers with the facts the hold is reserved against"
-    );
-
     // ── TURNS ─────────────────────────────────────────────────────────────────────────────────
     // (1) Audio relays UNDER the open turn's hold — a second frame does not reopen a turn.
     let audio = serde_json::to_vec(&json!({

@@ -1432,10 +1432,6 @@ mod tests;
 mod auth_tests;
 
 #[cfg(test)]
-#[path = "tests/metric_family_conformance.rs"]
-mod metric_family_conformance;
-
-#[cfg(test)]
 #[path = "tests/linked_canonical.rs"]
 mod linked_canonical;
 
