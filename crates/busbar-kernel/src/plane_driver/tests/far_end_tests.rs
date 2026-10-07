@@ -1254,6 +1254,52 @@ async fn a_status_stated_in_the_trailers_is_the_answer_never_a_cut() {
     assert_eq!(r.table.closed.load(Ordering::SeqCst), 1);
 }
 
+/// THE BUDGET UNIT OF A NON-SUCCESS END STATED IN THE TRAILERS IS KEPT (lane owner's ruling,
+/// 2026-10-07): the head spent it as a success, and the end that follows is an ANSWER, settled as a
+/// protocol error carried in a 2xx answer is (spent, never refunded), whether the transport's
+/// reading of the status is the caller's or transient, and whether the plane reads it or the unit
+/// drops first. The baseline settled no such unit: origin/predev's plane breaker cells are never
+/// budgeted (`crates/busbar-kernel/src/store/planes.rs:65-66`, `budget: -1` at `:133`), and its
+/// gRPC hop read no trailer status at all, so the ruling's rule for a case new in the lane applies.
+#[tokio::test]
+async fn a_non_success_end_stated_in_the_trailers_keeps_the_budget_unit_its_head_spent() {
+    for (code, class, fault) in [
+        (5, WireStatusClass::CallerFault, WireFault::Caller),
+        (14, WireStatusClass::FarEndFault, WireFault::Transient),
+    ] {
+        for read in [true, false] {
+            let r = rig(
+                &[(
+                    "a.test",
+                    Script::Ended(code, class, Some(fault), vec![b"msg"]),
+                )],
+                OnExhausted::Status503,
+                None,
+            );
+            let t = token();
+            let far = r.egress.unit(route());
+            let _ = far.member(&t, 1).await;
+            assert!(far.send(&t, request()).await);
+            loop {
+                let p = far.next(&t).await.expect("a piece through the last");
+                if read || !p.last {
+                    far.judged(&t, FAULT_NONE);
+                }
+                if p.last {
+                    break;
+                }
+            }
+            drop(far);
+            assert_eq!(r.book.spent.load(Ordering::SeqCst), 1, "{code} read={read}");
+            assert_eq!(
+                r.book.refunded.load(Ordering::SeqCst),
+                0,
+                "{code} read={read}: the unit is kept"
+            );
+        }
+    }
+}
+
 /// The trailers' status is read by the plane first and the transport second, as a relayed
 /// failure's head is (`FarEnd::judged`): a plane that reads the end as the destination answering
 /// (healthy) records no second success beside the head's; a transport's transient reading of the
