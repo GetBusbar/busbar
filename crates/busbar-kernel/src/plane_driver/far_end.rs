@@ -799,8 +799,16 @@ impl EgressFarEnd<'_> {
         // abandon. A probe moves no money and dispatches nothing a recovery would settle: it
         // writes no record.
         let path = request.target.starts_with(b"/");
-        let unrecorded = path && self.probe_of.is_none() && e.journal.dispatched(&record).is_err();
-        if !path || unrecorded {
+        // A plane field whose name is not an RFC 9110 token is refused the same way: a `:` in a name
+        // (`authorization:x`) is re-read as another field when the framer renders and parses its
+        // head again, which steps around the same-name auth replacement below (whole names).
+        let named = request
+            .fields
+            .iter()
+            .all(|(n, _)| busbar_contract::header::is_header_name_token(n));
+        let unrecorded =
+            path && named && self.probe_of.is_none() && e.journal.dispatched(&record).is_err();
+        if !path || !named || unrecorded {
             let mut w = self.lock();
             if let Some(live) = w.live.as_mut() {
                 live.answered = true;

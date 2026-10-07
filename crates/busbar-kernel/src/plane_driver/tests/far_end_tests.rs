@@ -1027,6 +1027,33 @@ async fn a_target_that_is_not_a_path_is_refused_before_the_dial() {
     assert!(r.book.observed.lock().unwrap().is_empty());
 }
 
+/// A plane field whose name is not an RFC 9110 token never leaves: `authorization:x` = `v` would be
+/// re-read as a second `authorization` (= `x: v`) when the framer renders and parses its own head,
+/// stepping around the same-name auth replacement. The hop is refused before the auth call and the
+/// dial, and nothing is recorded against the member.
+#[tokio::test]
+async fn a_plane_field_name_that_is_not_a_token_is_refused_before_the_dial() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    for name in ["authorization:x", "a b", ""] {
+        let far = r.egress.unit(route());
+        let _ = far.member(&t, 1).await;
+        let mut req = request();
+        req.fields.push((name.as_bytes().to_vec(), b"v".to_vec()));
+        assert!(!far.send(&t, req).await, "{name:?}");
+    }
+    assert!(
+        r.table.opened.lock().unwrap().is_empty(),
+        "no head with a second authorization reached the wire"
+    );
+    assert_eq!(r.auth.calls.load(Ordering::SeqCst), 0);
+    assert!(r.book.observed.lock().unwrap().is_empty());
+}
+
 /// An auth binding that must wait (a refresh that never comes back) is awaited no longer than the
 /// attempt's cap: the attempt ends without a dial, nothing recorded against the member.
 #[tokio::test]
