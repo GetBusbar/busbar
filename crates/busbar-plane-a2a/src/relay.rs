@@ -289,6 +289,60 @@ pub fn target_of(url: &str) -> Option<String> {
     Some(target)
 }
 
+/// WHAT THE FAR END'S ANSWER SAYS ABOUT THE FAR END (the breaker's reading; the engine's
+/// `classify_hop`, read where the answer's structure still exists): a well-formed protocol answer —
+/// a result, or an error the protocol defines, at whatever status it came — is the destination
+/// answering, the WORK failing and not the wire; a `401`/`403` is a hard refusal of busbar itself;
+/// a `5xx` or `429` with no protocol answer in it is transient, as is a `2xx` whose body is not a
+/// usable answer; any other `4xx` is the caller's. An answer this table does not read states
+/// nothing, and the kernel's status table reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reading {
+    /// The destination answered.
+    Healthy,
+    /// The caller's request was refused.
+    Caller,
+    /// A failure the destination may recover from.
+    Transient,
+    /// The destination refuses busbar itself.
+    Hard,
+}
+
+/// The reading of a far end's whole answer at `status`, its body `body`, on `binding`, read as the
+/// answer to `id` ([`Reading`]).
+#[must_use]
+pub fn reading_of(status: u32, body: &[u8], id: &Value, binding: Binding) -> Option<Reading> {
+    if matches!(status, 401 | 403) {
+        return Some(Reading::Hard);
+    }
+    if (200..300).contains(&status) {
+        let answer = match binding {
+            Binding::JsonRpc => read_answer(status, body, id),
+            // A 2xx body that is not JSON cannot be framed: the engine recorded nothing for it.
+            Binding::HttpJson => read_rest_answer(status, body, id)?,
+        };
+        return Some(match answer {
+            Ok(_) | Err(HopRefusal::BackendError) => Reading::Healthy,
+            Err(_) => Reading::Transient,
+        });
+    }
+    // Outside 2xx: an error the protocol defines, correlated to the request, is still the
+    // destination answering (the JSON-RPC binding's error envelope).
+    let protocol = binding == Binding::JsonRpc
+        && body.len() <= MAX_REPLY_BYTES
+        && serde_json::from_slice::<Value>(body)
+            .ok()
+            .is_some_and(|envelope| read_response(&envelope, id).is_ok());
+    if protocol {
+        return Some(Reading::Healthy);
+    }
+    match status {
+        429 | 500..=599 => Some(Reading::Transient),
+        400..=499 => Some(Reading::Caller),
+        _ => None,
+    }
+}
+
 /// ONE UNARY HOP: the caller's request id and negotiated version, and what the current attempt's
 /// far end has said so far.
 #[derive(Debug, Clone)]
@@ -308,6 +362,8 @@ pub struct Relay {
     method: String,
     params: Value,
     events: Option<Events>,
+    /// The reading of the far end's answer, once the answer says enough to read ([`Reading`]).
+    reading: Option<Reading>,
 }
 
 /// How far a hop that expects events has read its far end's answer.
@@ -389,7 +445,15 @@ impl Relay {
             method: String::new(),
             params: Value::Null,
             events: None,
+            reading: None,
         }
+    }
+
+    /// The reading of the far end's answer, once: on the piece that holds the whole answer, or on
+    /// the first event of a stream ([`Reading`]); `None` until then (and for an answer the table
+    /// does not read).
+    pub fn take_reading(&mut self) -> Option<Reading> {
+        self.reading.take()
     }
 
     /// The hop's answer may be a stream of events (the engine's event-stream hop): its attempts
@@ -624,6 +688,7 @@ impl Relay {
                 self.far.clear();
                 self.received = 0;
                 self.instead_sent = false;
+                self.reading = None;
                 match url {
                     Some(url) => self.attempt(url),
                     None => Answer::Refused,
@@ -700,6 +765,10 @@ impl Relay {
             }
         }
         if let Some(events) = self.events.as_mut() {
+            if !events.framed {
+                // THE FIRST EVENT: the destination answered in events.
+                self.reading = Some(Reading::Healthy);
+            }
             events.framed = true;
         }
         let (task_id, context_id, skill) = match &self.task {
@@ -780,6 +849,7 @@ impl Relay {
 
     /// The caller's answer to a far end's whole answer at `status`, read as one document.
     fn whole(&mut self, status: u32) -> Answer {
+        self.reading = reading_of(status, &self.far, &self.id, self.binding);
         let answer = match self.binding {
             Binding::JsonRpc => read_answer(status, &self.far, &self.id),
             Binding::HttpJson => match read_rest_answer(status, &self.far, &self.id) {

@@ -2009,6 +2009,41 @@ mod agent_door {
         assert!(!agent.relayed(), "the fast-failed unit never dialled");
     }
 
+    /// RED (ARCHITECT breaker ruling, the plane's reading): an agent that answers each unit with an
+    /// error the protocol defines — TaskNotFound, under a `502` — is the destination ANSWERING, the
+    /// work failing and not the wire (the engine's `classify_hop`: a well-formed backend error is a
+    /// success to the breaker). Six in a row, past the trip's five outcomes, never open its cell:
+    /// every unit is dialled and answered in the agent's own words.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_agent_answering_protocol_errors_never_trips_its_breaker() {
+        // A build that links no agent door has nothing for this cell to drive.
+        if linked_door().is_none() {
+            return;
+        }
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-breaker-protocol-error";
+        let _published = Published(instance);
+        let mut agent = Agent::start(
+            502,
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"Task not found"}}"#,
+        )
+        .await;
+        let s = served(instance, &agent.entry("planner", "1h"), false, None);
+        approve(&s, "planner").await;
+        for call in 0..6 {
+            let (_, body) = answered(
+                &s.router,
+                rpc("planner", "message/send", SEND, Some(&s.token)),
+            )
+            .await;
+            assert!(
+                !body.contains("breaker_open"),
+                "call {call}: a protocol error is no fault of the agent's: {body}"
+            );
+            assert!(agent.relayed(), "call {call} was dialled: {body}");
+        }
+    }
+
     /// The root cell `egress-auth × a2a-client`: the agent is handed only the credential the egress
     /// plans for its member — none is configured here — and never the caller's own token, which
     /// authenticated the caller to busbar and stops there.

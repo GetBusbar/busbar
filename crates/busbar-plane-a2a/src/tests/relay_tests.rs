@@ -671,3 +671,47 @@ fn an_http_json_far_ends_bare_events_are_read_as_results() {
     assert_eq!(got[0]["id"], 7);
     assert_eq!(got[0]["result"]["id"], "a2a-p-0102030405060708");
 }
+
+/// THE BREAKER'S READING (ARCHITECT ruling: the engine's `classify_hop` table, stated by the plane):
+/// a well-formed protocol answer is the destination answering, at whatever status — a TaskNotFound
+/// error at `502` included — while a `5xx` or `429` with no protocol answer is transient, a
+/// `401`/`403` hard, another `4xx` the caller's, and a `2xx` whose body is no usable answer
+/// transient. Nothing is read before the answer is whole.
+#[test]
+fn the_far_ends_whole_answer_states_the_breakers_reading() {
+    let not_found =
+        br#"{"jsonrpc":"2.0","id":7,"error":{"code":-32001,"message":"Task not found"}}"#;
+    let result = br#"{"jsonrpc":"2.0","id":7,"result":{"kind":"message"}}"#;
+    let cases: &[(u32, &[u8], Option<Reading>)] = &[
+        (200, result, Some(Reading::Healthy)),
+        (200, not_found, Some(Reading::Healthy)),
+        (502, not_found, Some(Reading::Healthy)),
+        (500, not_found, Some(Reading::Healthy)),
+        (502, b"SyntaxError: not JSON", Some(Reading::Transient)),
+        (503, br#"{"error":"down"}"#, Some(Reading::Transient)),
+        (429, b"", Some(Reading::Transient)),
+        (401, not_found, Some(Reading::Hard)),
+        (403, b"", Some(Reading::Hard)),
+        (404, b"no such path", Some(Reading::Caller)),
+        (200, b"not json", Some(Reading::Transient)),
+        (
+            200,
+            br#"{"jsonrpc":"2.0","id":8,"result":{}}"#,
+            Some(Reading::Transient),
+        ),
+        (302, b"", None),
+    ];
+    for (status, body, want) in cases {
+        let mut r = sent();
+        assert_eq!(r.on_piece(far(Some(*status), &[], false)), Answer::Nothing);
+        assert_eq!(r.take_reading(), None, "the head alone states nothing");
+        let _ = r.on_piece(far(None, body, true));
+        assert_eq!(
+            r.take_reading(),
+            *want,
+            "{status} {}",
+            String::from_utf8_lossy(body)
+        );
+        assert_eq!(r.take_reading(), None, "stated once");
+    }
+}
