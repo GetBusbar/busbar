@@ -46,7 +46,8 @@ fn bind(d: &Dispatcher) -> Bind {
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
-        conns: None,
+        // These rows never dial: the door's needs are not declared, bound as a probe.
+        conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
     }
 }
 
@@ -403,9 +404,9 @@ fn assert_the_planes_answers(t: &[String]) {
         "a same-dialect answer is the far end's bytes: {all}"
     );
     assert!(
-        far.contains(r#"units=["0:7:true", "1:3:true", "2:0:true", "3:0:true", "5:1:true"]"#),
+        far.contains(r#"units=["0:7:true", "1:3:true", "2:0:true", "3:0:true", "19:1:true"]"#),
         "the far end's counts, in the tail's class order, then the per-request fee unit a success \
-         reply incurs (owner #77, money-B1): {all}"
+         reply incurs, last after the 15 open classes (owner #77, money-B1; LEDGER-100): {all}"
     );
     let narrow = line(t, "far_end narrow ");
     assert!(

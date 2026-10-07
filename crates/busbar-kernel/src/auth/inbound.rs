@@ -130,7 +130,7 @@ pub struct InboundSchemes {
 impl std::fmt::Debug for InboundSchemes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InboundSchemes")
-            .field("providers", &self.providers.len())
+            .field("configured", &self.providers.len())
             .finish_non_exhaustive()
     }
 }

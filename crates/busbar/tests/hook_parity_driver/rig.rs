@@ -481,7 +481,7 @@ pub(crate) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
                     max_inflight_cap: 64,
                     sink: Arc::new(NoSink),
                     dispatcher: dispatcher.adopter(),
-                    conns: None,
+                    conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
                 },
             )
             .expect("a linked door binds")
@@ -503,7 +503,7 @@ pub(crate) fn dialects() -> Vec<String> {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: None,
+            conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
         },
     )
     .expect("the plane door loads")
@@ -524,7 +524,7 @@ fn door(dispatcher: &Dispatcher, settings: &[u8]) -> Plugin<Plane> {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: None,
+            conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
         },
     )
     .expect("the plane door loads");

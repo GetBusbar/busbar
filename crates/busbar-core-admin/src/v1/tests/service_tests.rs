@@ -2361,8 +2361,8 @@ plugins:
 #[cfg(test)]
 mod dated_rate_card_history {
     use super::*;
+    use busbar_kernel::cost::{Author, CardEntryDraft, History, RateCard, TierRates};
     use busbar_kernel::governance::{GovState, MemoryStore};
-    use busbar_kernel_ledger::cost::{Author, CardEntryDraft, History, RateCard, TierRates};
 
     /// The one priced lane. It is a metering row's `model` and a card entry's lane, spelled once.
     const LANE: &str = "m-priced-chat";
@@ -3043,7 +3043,7 @@ mod usage_as_of {
     use super::dated_rate_card_history::{
         card, gov_with_rows, read_as_of, read_no_source_as_of, source, windows,
     };
-    use busbar_kernel_ledger::cost::{Author, CardEntryDraft, History};
+    use busbar_kernel::cost::{Author, CardEntryDraft, History};
 
     /// An older snapshot prices at the older head, and the same URL asked twice answers the same
     /// thing forever — which is the whole of what a snapshot is for.
@@ -3196,7 +3196,7 @@ mod usage_as_of {
 #[cfg(test)]
 mod one_recorded_usage_every_surface {
     use super::*;
-    use busbar_kernel_ledger::cost::{
+    use busbar_kernel::cost::{
         self as ledger_cost, Author, CardEntryDraft, History, LedgerEntry, RateCard, TierRates,
     };
 
@@ -3593,8 +3593,9 @@ fn every_scripts_path_cited_in_v1_exists() {
 mod plane_fees_on_admin_usage {
     use super::*;
     use busbar_contract::records::RecordStore as _;
+    use busbar_kernel::cost::PlaneFees;
+    use busbar_kernel::governance::PLANE_LANE_SEP;
     use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
-    use busbar_kernel_ledger::cost::{PlaneFees, PLANE_LANE_SEP};
 
     const KEY: &str = "vk_plane_fees";
     /// The pools plane's model and provider, as the rows below name them.
@@ -3765,7 +3766,7 @@ mod plane_fees_on_admin_usage {
     fn the_dated_read_prices_a_planes_row_at_its_own_fee() {
         use busbar_kernel::admin::v1::contract::UsageBreakdown;
         let cost = cost();
-        let history = busbar_kernel_ledger::cost::History::opening(cost.card().clone(), 0);
+        let history = busbar_kernel::cost::History::opening(cost.card().clone(), 0);
         let view = history.current();
         let (_, card) = view.card_at(0).expect("the opening card");
         let price = |lane: &str, requests: u64| {
@@ -3899,7 +3900,7 @@ mod plane_fees_on_admin_usage {
         cost: fn() -> busbar_kernel::cost::CostModel,
         calls: &[Call],
     ) -> (i64, busbar_kernel::admin::v1::contract::UsageView) {
-        use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
+        use busbar_kernel::cost::{plane_fee_lane, PER_SESSION};
         let gov = gov();
         let app = crate::new_test_app()
             .governance(Arc::clone(&gov))
@@ -4112,9 +4113,9 @@ mod plane_fees_on_admin_usage {
     #[test]
     fn the_dated_read_prices_a_rows_classes_as_the_fallback_does() {
         use busbar_kernel::admin::v1::contract::UsageBreakdown;
-        use busbar_kernel_ledger::cost::PER_SESSION;
+        use busbar_kernel::cost::PER_SESSION;
         let cost = carded_cost(70_000, 3, 40);
-        let history = busbar_kernel_ledger::cost::History::opening(cost.card().clone(), 0);
+        let history = busbar_kernel::cost::History::opening(cost.card().clone(), 0);
         let view = history.current();
         let (_, card) = view.card_at(0).expect("the opening card");
         let classes = |pairs: &[(&str, u64)]| -> std::collections::BTreeMap<String, u64> {

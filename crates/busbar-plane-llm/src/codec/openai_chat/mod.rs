@@ -252,8 +252,9 @@ const OPENAI_USAGE_IDENTITY: &str = "openai.usage";
 /// partition `prompt_tokens`, `completion_tokens_details.{reasoning,audio,text,accepted_prediction,
 /// rejected_prediction}_tokens` sit inside `completion_tokens` (OpenAI bills rejected predictions as
 /// completion tokens, and counts them there). `total_tokens` is OpenAI's sum, never a unit: it is
-/// cross-checked against the ledgered classes and a gap is WARN-logged and carried as the usage
-/// identity note, never ledgered.
+/// cross-checked against the ledgered classes, a gap is WARN-logged and carried as the usage
+/// identity note, and a total ABOVE the itemized classes is the open class `unitemized_tokens`
+/// (owner LEDGER-100).
 fn read_openai_usage(
     usage: Option<&serde_json::Value>,
     tier: Option<&serde_json::Value>,
