@@ -603,7 +603,8 @@ extern "C" {
 #define BB_HSVC_OP_TRUST_SERVES UINT32_C(24) /* `trust.serves`. */
 #define BB_HSVC_OP_TRUST_DECIDE UINT32_C(25) /* `trust.decide`. */
 #define BB_HSVC_OP_TRUST_STATE UINT32_C(26) /* `trust.state`. */
-#define BB_HSVC_SERVICES UINT32_C(27) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_SESSION_EMIT UINT32_C(27) /* `session.emit`. */
+#define BB_HSVC_SERVICES UINT32_C(28) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
 #define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
@@ -683,6 +684,7 @@ extern "C" {
 #define BB_HSVC_DISK_FAULTS UINT8_C(7) /* Every [`DiskWritten::faults`] bit. */
 #define BB_HSVC_DISK_OPEN_FAILED UINT64_C(1) /* A FAILED `disk.append`'s `ServiceOut::value`: the file could not be opened for the append. */
 #define BB_HSVC_DISK_APPEND_FAILED UINT64_C(2) /* A FAILED `disk.append`'s `ServiceOut::value`: the file opened, and writing the bytes failed. */
+#define BB_HSVC_CARRIER_SESSION_FIELD "busbar-carrier-session" /* The head field a CARRIER SESSION's arrivals carry, naming the session they arrived over: the */
 
 /* ---- enumerations ---- */
 /* What an op answered. */
@@ -1041,6 +1043,7 @@ typedef struct bb_hsvc_HookCallIn bb_hsvc_HookCallIn;
 typedef struct bb_hsvc_NeedAdmitIn bb_hsvc_NeedAdmitIn;
 typedef struct bb_hsvc_DiskAppendIn bb_hsvc_DiskAppendIn;
 typedef struct bb_hsvc_DiskWritten bb_hsvc_DiskWritten;
+typedef struct bb_hsvc_SessionEmitIn bb_hsvc_SessionEmitIn;
 typedef struct bb_hsvc_HostSlots bb_hsvc_HostSlots;
 
 /* ---- scalar and function-pointer types ---- */
@@ -3681,6 +3684,13 @@ struct bb_hsvc_DiskWritten {
     uint64_t written;
 };
 
+/* [`op::SESSION_EMIT`]'s `in`: write `bytes`, UNSOLICITED, on the open carrier session `session` */
+struct bb_hsvc_SessionEmitIn {
+    bb_hsvc_ServiceHead head;
+    uint64_t session;
+    bb_mech_Blob bytes;
+};
+
 /* THE HOST SERVICES TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is a service */
 struct bb_hsvc_HostSlots {
     uint32_t size;
@@ -3712,9 +3722,10 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn trust_serves;
     bb_hsvc_ServiceFn trust_decide;
     bb_hsvc_ServiceFn trust_state;
+    bb_hsvc_ServiceFn session_emit;
 };
 
-/* ---- layout proof: 268 of 271 structures are pinned by the golden ---- */
+/* ---- layout proof: 269 of 272 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -5780,7 +5791,12 @@ BB_ASSERT(offsetof(bb_hsvc_DiskWritten, rotated) == 4, "bb_hsvc_DiskWritten.rota
 BB_ASSERT(offsetof(bb_hsvc_DiskWritten, faults) == 5, "bb_hsvc_DiskWritten.faults: offset");
 BB_ASSERT(offsetof(bb_hsvc_DiskWritten, _reserved) == 6, "bb_hsvc_DiskWritten._reserved: offset");
 BB_ASSERT(offsetof(bb_hsvc_DiskWritten, written) == 8, "bb_hsvc_DiskWritten.written: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 224, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_SessionEmitIn) == 56, "bb_hsvc_SessionEmitIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_SessionEmitIn) == 8, "bb_hsvc_SessionEmitIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_SessionEmitIn, head) == 0, "bb_hsvc_SessionEmitIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_SessionEmitIn, session) == 24, "bb_hsvc_SessionEmitIn.session: offset");
+BB_ASSERT(offsetof(bb_hsvc_SessionEmitIn, bytes) == 32, "bb_hsvc_SessionEmitIn.bytes: offset");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 232, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -5811,6 +5827,7 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_sight_item) == 192, "bb_hsvc_HostSlo
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_serves) == 200, "bb_hsvc_HostSlots.trust_serves: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_decide) == 208, "bb_hsvc_HostSlots.trust_decide: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_state) == 216, "bb_hsvc_HostSlots.trust_state: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, session_emit) == 224, "bb_hsvc_HostSlots.session_emit: offset");
 #endif
 
 #ifdef __cplusplus

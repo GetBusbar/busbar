@@ -1156,7 +1156,8 @@ mod both_ways {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: None,
+            // The conformance door is driven op by op and opens nothing: bound as a probe.
+            conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
         }
     }
 
@@ -2055,6 +2056,35 @@ mod both_ways {
             &self,
             _: &busbar_contract::services::DiskDest,
             _: Vec<u8>,
+            _: busbar_plugin_loader::dispatch::Later,
+        ) -> busbar_plugin_loader::dispatch::Ran {
+            busbar_plugin_loader::dispatch::Ran::Now(Stored::refused(UNSERVED))
+        }
+        fn verify_lookup(
+            &self,
+            _: &Caller,
+            _: &[u8],
+            _: busbar_plugin_loader::dispatch::Later,
+        ) -> busbar_plugin_loader::dispatch::Ran {
+            busbar_plugin_loader::dispatch::Ran::Now(Stored::refused(UNSERVED))
+        }
+        fn verify_store(&self, _: &Caller, _: &[u8], _: &[u8], _: u64) -> Stored {
+            Stored::refused(UNSERVED)
+        }
+        fn content_scan(
+            &self,
+            _: &Caller,
+            _: Option<u64>,
+            _: &[u8],
+            _: busbar_plugin_loader::dispatch::Later,
+        ) -> busbar_plugin_loader::dispatch::Ran {
+            busbar_plugin_loader::dispatch::Ran::Now(Stored::refused(UNSERVED))
+        }
+        fn hook_call(
+            &self,
+            _: &Caller,
+            _: Option<u64>,
+            _: busbar_contract::services::HookAsk,
             _: busbar_plugin_loader::dispatch::Later,
         ) -> busbar_plugin_loader::dispatch::Ran {
             busbar_plugin_loader::dispatch::Ran::Now(Stored::refused(UNSERVED))
