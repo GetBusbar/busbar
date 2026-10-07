@@ -1155,13 +1155,14 @@ enum Step {
 /// ledger and then by the host's one-time `records.claim` of [`door::KIND_APPROVAL`]. A claim that
 /// pends leaves [`Self::pending`] set; the unit answers PENDING and decides again on the wake, the
 /// claim re-issued under the handle it was first issued under.
-struct DoorSeal<'a> {
-    services: Services,
-    ticket: Ticket,
-    issued: &'a mut u32,
-    claim: &'a mut Option<(String, u32)>,
-    spent: &'a Keyed<String, u64>,
-    pending: bool,
+#[doc(hidden)]
+pub struct DoorSeal<'a> {
+    pub services: Services,
+    pub ticket: Ticket,
+    pub issued: &'a mut u32,
+    pub claim: &'a mut Option<(String, u32)>,
+    pub spent: &'a Keyed<String, u64>,
+    pub pending: bool,
 }
 
 impl DoorSeal<'_> {
@@ -2017,20 +2018,22 @@ fn twin_of(held: &Held, params: Option<&Value>, member: &str) -> Twin {
 }
 
 /// Where busbar's own ask is decided: who asks, under which roots epoch, and on what.
-struct Site<'a> {
-    principal: &'a str,
-    roots_epoch: u64,
-    method: &'a str,
-    server: &'a str,
-    capability: &'a str,
-    rounds: &'a [crate::tools_config::AskRoundCfg],
+#[doc(hidden)]
+pub struct Site<'a> {
+    pub principal: &'a str,
+    pub roots_epoch: u64,
+    pub method: &'a str,
+    pub server: &'a str,
+    pub capability: &'a str,
+    pub rounds: &'a [crate::tools_config::AskRoundCfg],
 }
 
 /// BUSBAR'S OWN ASK for one request ([`crate::ask::decide`]), bound to the unit's principal, the
 /// generation's catalogue and the request's arguments, sealed by `seal` ([`DoorSeal`]); `None` (no
 /// host services) or a host that signs nothing is a deployment with no sealer, and a capability that
 /// asks its caller is refused as one with no signing key refuses it.
-fn decide_ask(
+#[doc(hidden)]
+pub fn decide_ask(
     held: &Held,
     site: Site<'_>,
     params: Option<&Value>,
