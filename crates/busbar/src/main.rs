@@ -779,7 +779,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         .unwrap_or_default();
     // The resolved `providers:` (catalog-merged), as the door planes' members reach them (THE
     // DESIGN §6 step 2), captured before `cfg` is consumed.
-    let door_providers = root::door_steps::provider_routes(&cfg.providers);
+    let door_providers = root::door_steps::provider_routes(
+        &cfg.providers,
+        &config_validate::MetadataPosture::global(&cfg),
+    );
     // The unified `pools:` a named-definition carrier's members resolved to, by the carrier's
     // section key: each door plane's section carries its own pools (DoorPools), captured before
     // `cfg` is consumed.

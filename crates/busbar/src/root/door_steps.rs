@@ -1103,15 +1103,24 @@ pub struct ProviderRoute {
     pub style: Option<String>,
     /// The style's parameters (`token_url`, `scope`, `subject`, where stated).
     pub params: StyleParams,
+    /// The metadata posture its credential's own token endpoint is judged under at the seal
+    /// (`token_uri`, [`StyleParams::token_uri`]).
+    pub metadata: busbar_kernel::config_validate::MetadataPosture,
 }
 
 /// THE PARAMETERS A PROVIDER'S `auth:` STYLE IS OPENED WITH, typed: the three keys a provider states
-/// (`token_url`, `scope`, `subject`), each present only where the operator wrote it. The JSON object
-/// the auth plugin's `open_outbound` reads is built from them at the call, never carried as a bag.
+/// (`token_url`, `scope`, `subject`), each present only where the operator wrote it, and the one its
+/// credential states (`token_uri`, a `jwt-bearer` service account's token endpoint), filled at the
+/// seal once the credential resolves. The JSON object the auth plugin's `open_outbound` reads is
+/// built from them at the call, never carried as a bag.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StyleParams {
     /// `token_url`, where stated.
     pub token_url: Option<String>,
+    /// `token_uri`, the service account's token endpoint (ARCHITECT 2026-10-04 parity ruling, THE
+    /// DESIGN §5 `loopback-allowed`: "auth mint endpoints (`token_url`, `token_uri`)"): the target
+    /// of the serving plugin's `settings.token_uri` need, judged as 1.5.5 judged it.
+    pub token_uri: Option<String>,
     /// `scope`, where stated.
     pub scope: Option<String>,
     /// `subject`, where stated.
@@ -1125,6 +1134,7 @@ impl StyleParams {
         let mut object = serde_json::Map::new();
         for (key, value) in [
             ("token_url", &self.token_url),
+            ("token_uri", &self.token_uri),
             ("scope", &self.scope),
             ("subject", &self.subject),
         ] {
@@ -1148,10 +1158,12 @@ fn style_word(auth: busbar_kernel::config::ProviderAuth) -> &'static str {
 }
 
 /// THE DEPLOYMENT'S PROVIDERS as door planes' members reach them, by name (the catalog-merged
-/// `providers:` the configuration resolved).
+/// `providers:` the configuration resolved), each under its metadata posture in the deployment's
+/// `security` (its own allow-overrides, then the global ones).
 #[must_use]
 pub fn provider_routes(
     providers: &HashMap<String, busbar_kernel::config::ProviderCfg>,
+    security: &busbar_kernel::config_validate::MetadataPosture,
 ) -> BTreeMap<String, ProviderRoute> {
     providers
         .iter()
@@ -1165,9 +1177,11 @@ pub fn provider_routes(
                     style: p.auth.map(|a| style_word(a).to_string()),
                     params: StyleParams {
                         token_url: p.token_url.clone(),
+                        token_uri: None,
                         scope: p.scope.clone(),
                         subject: p.subject.clone(),
                     },
+                    metadata: security.for_provider(p),
                 },
             )
         })
@@ -1736,7 +1750,7 @@ pub fn member_routes(
                 .resolve(&r.provider.credential)
                 .map_err(|e| format!("provider '{}' credential: {e}", r.name))?
         };
-        let settings = r.provider.params.to_json();
+        let settings = sealed_params(&r.name, &r.style, r.provider, &credential)?.to_json();
         let (auth, decl) = reach.auths.serving(&r.style, &settings)?.ok_or_else(|| {
             format!(
                 "member '{}': no linked or dropped-in auth plugin serves the style '{}'",
@@ -1788,6 +1802,30 @@ pub fn member_routes(
         );
     }
     Ok(routes)
+}
+
+/// The `auth:` style whose credential names its own token endpoint: a service account's
+/// `token_uri` (RFC 7523; `jwt-bearer`, 1.5.5's `egress_auth/jwt_bearer.rs`).
+const SERVICE_ACCOUNT_STYLE: &str = "jwt-bearer";
+
+/// THE PARAMETERS PROVIDER `name`'s STYLE IS OPENED WITH AT THE SEAL: those it states, and, for
+/// a service-account credential, its `token_uri` — the target of the serving plugin's mint need —
+/// judged under the provider's metadata posture with 1.5.5's check and words (v1.5.5 `main.rs`:
+/// `provider '<p>' (jwt-bearer auth): <why>`). A credential that is no service account to read
+/// fills nothing: the serving plugin refuses it in its own words at `open_outbound`.
+///
+/// # Errors
+///
+/// The service account's `token_uri` breaks 1.5.5's rule.
+fn sealed_params(
+    name: &str,
+    style: &str,
+    provider: &ProviderRoute,
+    credential: &[u8],
+) -> Result<StyleParams, String> {
+    // RED: the base's behaviour — the stated keys only; the credential's `token_uri` unfilled.
+    let _ = (name, style, SERVICE_ACCOUNT_STYLE, credential);
+    Ok(provider.params.clone())
 }
 
 /// THE BASE URL A NEED'S FRAMER READS: a need over `transport`, a framer composed over the
