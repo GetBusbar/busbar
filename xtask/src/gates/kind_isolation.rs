@@ -9971,8 +9971,8 @@ impl Gate for KindIsolationGate {
             format!("{twin}/tests/conformance.rs"),
             "#[test]\n#[ignore = \"not yet\"]\nfn the_suite() {}\n",
         );
-        let mut ov = Overlay::new();
-        ov.set(
+        let mut ov_async = Overlay::new();
+        ov_async.set(
             format!("{twin}/tests/conformance.rs"),
             "#[tokio::test(flavor = \"multi_thread\")]\nasync fn the_suite() {}\n",
         );
@@ -9981,7 +9981,7 @@ impl Gate for KindIsolationGate {
             subject,
             "a pinned repo whose twin's battery is an async test runs its battery",
             &[ROW_TESTKIT],
-            ov,
+            ov_async,
         ));
         report.push(prove_rows_red(
             cx,
