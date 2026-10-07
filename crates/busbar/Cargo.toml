@@ -490,6 +490,10 @@ rcgen = { workspace = true, features = ["pem"] }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 tokio-rustls = { workspace = true }
+# tests/tls_listener_h2.rs drives the TLS listener as an HTTP/2 client (OWNER RULING Q137).
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http = { workspace = true }
 # The loop-unify shadow-compare test (`root::gauntlet_kernel`) implements a deterministic
 # `GauntletPlane` to drive both the substrate gauntlet and the kernel rider on one input; the trait
 # is `#[async_trait]`, so its test impl needs the macro.

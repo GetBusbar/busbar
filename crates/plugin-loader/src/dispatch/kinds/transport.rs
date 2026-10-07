@@ -33,8 +33,8 @@ use busbar_contract::abi::transport::check::{
 use busbar_contract::abi::transport::{
     self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
     ConnOut, DialIn, EmitIn, EncodeIn, FinishIn, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
-    ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, SettingDecl, ShutIn, TransportTail,
-    WriteIn,
+    ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, SettingDecl, ShutIn, StatusRow,
+    TransportTail, WriteIn,
 };
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
@@ -71,6 +71,9 @@ pub struct TransportFacts {
     /// Its own claim (row `0`) selects on the local PORT a connection arrived on
     /// (`SelectorForm::Port` among its selector forms): a carrier of network addresses.
     pub ported: bool,
+    /// Its status table, row by row: `(claim, lo, hi)`, the code ranges each claim's numbering
+    /// has (`TransportTail::status_rows`); a stream's final status is judged against them.
+    pub status_rows: Vec<(u32, u32, u32)>,
 }
 
 /// A plugin string, interned.
@@ -140,7 +143,14 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         .filter(|(_, row)| row.session == 1)
         .map(|(name, _)| *name)
         .collect();
+    let status: &[StatusRow] = if tail.status_rows_len == 0 {
+        &[]
+    } else {
+        // SAFETY: `check_tail` refused a NULL list with a count; the list is `'static` plugin data.
+        unsafe { std::slice::from_raw_parts(tail.status_rows, tail.status_rows_len) }
+    };
     Ok(TransportFacts {
+        status_rows: status.iter().map(|r| (r.claim, r.lo, r.hi)).collect(),
         role: tail.role,
         claims,
         upgrades,

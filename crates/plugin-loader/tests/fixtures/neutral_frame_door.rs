@@ -16,6 +16,14 @@
 //! `host:port` (or `frame://host:port`). No op pends or asks for a deadline; a full sink is
 //! back-pressure (`YIELD_MORE`). It states the FRAMER role and every carrier op is refused: it
 //! rides whatever carrier the connector dials or accepts with, and is never one.
+//!
+//! ONE STREAM (`SIDE_ACCEPT_STREAM`, ARCHITECT 4l): a framing begun on that side frames one stream
+//! whose head the host's own framer carries. Its messages are one length byte and that many bytes:
+//! `ingest` yields each whole message as a piece on stream `1`; `emit` frames a message (its bytes
+//! once one ends the frame); `refuse` closes the stream with the block `:status: 200`,
+//! `frame-status: <status>`, `frame-reason: <bytes>`; `finish` closes it with the block
+//! `frame-status`, `frame-message`, `frame-details` (hex) from the close's final tail. The claim's
+//! numbering is `frame`, codes `0..=9`.
 
 #![allow(unsafe_code)]
 
@@ -35,9 +43,9 @@ use busbar_contract::abi::sdk::transport::form_codes;
 use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn, ConnOut, DialIn,
     EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
-    ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, ShutIn, TransportTail,
-    WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM, PIECE_END_OF_FRAME, ROLE_FRAMER,
-    UNIT0_FIRST_BYTES, YIELD_ENDED, YIELD_MORE,
+    ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, ShutIn, StatusRow,
+    TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM, PIECE_END_OF_FRAME, ROLE_FRAMER,
+    SIDE_ACCEPT_STREAM, STATUS_OTHER, STATUS_SUCCESS, UNIT0_FIRST_BYTES, YIELD_ENDED, YIELD_MORE,
 };
 use busbar_contract::transport::registry::facts as tfacts;
 use busbar_contract::SelectorForm;
@@ -70,13 +78,29 @@ const CLAIMS: &[Claim] = &[Claim {
     egress_selector_forms: abi_str(""),
     facts: FACTS.as_ptr(),
     facts_len: FACTS.len(),
-    status_namespace: NONE,
+    status_namespace: abi_str(KEY),
     session: 1,
     session_bound: 0,
     unit0_trigger: UNIT0_FIRST_BYTES,
     status_at: 0,
     _reserved: 0,
 }];
+
+/// The claim's numbering: `0` a stream that ended whole, `1..=9` any other end.
+const STATUS_ROWS: &[StatusRow] = &[
+    StatusRow {
+        claim: 0,
+        lo: 0,
+        hi: 0,
+        class: STATUS_SUCCESS as u32,
+    },
+    StatusRow {
+        claim: 0,
+        lo: 1,
+        hi: 9,
+        class: STATUS_OTHER as u32,
+    },
+];
 
 const TAIL: TransportTail = TransportTail {
     head: KindTailHead {
@@ -100,8 +124,8 @@ const TAIL: TransportTail = TransportTail {
     handoff_to: NONE,
     handoff_binding_fact: NONE,
     handshake_frame_kind: NONE,
-    status_rows: std::ptr::null(),
-    status_rows_len: 0,
+    status_rows: STATUS_ROWS.as_ptr(),
+    status_rows_len: STATUS_ROWS.len(),
     settings: std::ptr::null(),
     settings_len: 0,
 };
@@ -131,6 +155,13 @@ struct Framing {
     ended: bool,
     /// Bytes owed to the far side, not yet answered as wire bytes.
     outbound: VecDeque<u8>,
+    /// Begun on `SIDE_ACCEPT_STREAM`: one stream of length-byte messages.
+    stream: bool,
+    /// One stream's message bytes ingested and not yet whole, or emitted and not yet ended.
+    reading: Vec<u8>,
+    writing: Vec<u8>,
+    /// One stream's close was answered (a refusal); `finish` owes nothing more.
+    closed: bool,
 }
 
 fn instance<'a>(p: *mut c_void) -> &'a Instance {
@@ -271,13 +302,16 @@ pub struct Begin;
 impl Slot for Begin {
     type In = BeginIn;
     type Out = FramerOut;
-    fn call(p: *mut c_void, _: &BeginIn, o: &mut FramerOut) -> Outcome {
+    fn call(p: *mut c_void, i: &BeginIn, o: &mut FramerOut) -> Outcome {
         let inst = instance(p);
         let token = inst.next.fetch_add(1, Ordering::Relaxed);
-        inst.framings
-            .lock()
-            .expect("framings")
-            .insert(token, Framing::default());
+        inst.framings.lock().expect("framings").insert(
+            token,
+            Framing {
+                stream: i.side == SIDE_ACCEPT_STREAM,
+                ..Framing::default()
+            },
+        );
         o.framing = token;
         Outcome::Ready
     }
@@ -326,6 +360,12 @@ impl Slot for Ingest {
     type Out = FramerOut;
     fn call(p: *mut c_void, i: &IngestIn, o: &mut FramerOut) -> Outcome {
         let bytes = raw(i.bytes, i.len);
+        let mut framings = instance(p).framings.lock().expect("framings");
+        if let Some(f) = framings.get_mut(&i.framing).filter(|f| f.stream) {
+            f.reading.extend_from_slice(bytes);
+            return f.messages(&i.sink, o);
+        }
+        drop(framings);
         with(p, i.framing, &i.sink, o, |f| {
             f.take_inbound(bytes);
             f.ended |= i.end != 0;
@@ -340,7 +380,19 @@ impl Slot for Emit {
     type Out = FramerOut;
     fn call(p: *mut c_void, i: &EmitIn, o: &mut FramerOut) -> Outcome {
         let bytes = raw(i.bytes, i.len);
-        with(p, i.framing, &i.sink, o, |f| f.outbound.extend(bytes))
+        let ends = i.end_of_frame != 0;
+        with(p, i.framing, &i.sink, o, |f| {
+            if !f.stream {
+                f.outbound.extend(bytes);
+                return;
+            }
+            f.writing.extend_from_slice(bytes);
+            if ends {
+                let message = std::mem::take(&mut f.writing);
+                f.outbound.push_back(message.len() as u8);
+                f.outbound.extend(message);
+            }
+        })
     }
 }
 
@@ -351,7 +403,21 @@ impl Slot for Refuse {
     type Out = FramerOut;
     fn call(p: *mut c_void, i: &RefuseIn, o: &mut FramerOut) -> Outcome {
         let bytes = raw(i.bytes, i.len);
-        with(p, i.framing, &i.sink, o, |f| f.outbound.extend(bytes))
+        let status = i.status;
+        with(p, i.framing, &i.sink, o, |f| {
+            if !f.stream {
+                f.outbound.extend(bytes);
+                return;
+            }
+            f.closed = true;
+            f.outbound.extend(
+                format!(
+                    ":status: 200\r\nframe-status: {status}\r\nframe-reason: {}\r\n",
+                    String::from_utf8_lossy(bytes)
+                )
+                .into_bytes(),
+            );
+        })
     }
 }
 
@@ -376,9 +442,36 @@ impl Slot for Finish {
             .lock()
             .expect("framings")
             .remove(&i.framing);
-        if removed.is_none() {
+        let Some(f) = removed else {
             err(&mut o.head, "finish: no such framing");
             return Outcome::Failed;
+        };
+        if f.stream && !f.closed {
+            // The stream's close, rendered from the close's final tail alone.
+            let all = raw(i.final_bytes, i.final_bytes_len);
+            let at = |s: busbar_contract::abi::mechanism::call::Span| {
+                all.get(s.offset as usize..s.offset as usize + s.len as usize)
+                    .unwrap_or_default()
+            };
+            let details: String = at(i.final_details)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            let block = format!(
+                "frame-status: {}\r\nframe-message: {}\r\nframe-details: {details}\r\n",
+                i.final_status,
+                String::from_utf8_lossy(at(i.final_message))
+            );
+            if block.len() > i.sink.wire_cap {
+                err(
+                    &mut o.head,
+                    "finish: the wire buffer is smaller than the block",
+                );
+                return Outcome::Failed;
+            }
+            // SAFETY: a host buffer of `wire_cap` bytes, checked above.
+            unsafe { std::ptr::copy_nonoverlapping(block.as_ptr(), i.sink.wire, block.len()) };
+            o.yielded.wire_len = block.len() as u64;
         }
         o.yielded.flags = YIELD_ENDED;
         Outcome::Ready
@@ -452,6 +545,37 @@ fn copy_out(from: &mut VecDeque<u8>, to: *mut u8, n: usize) {
 }
 
 impl Framing {
+    /// One stream's whole messages, each a piece on stream `1`, and what is owed the far side.
+    fn messages(&mut self, sink: &FramerSink, o: &mut FramerOut) -> Outcome {
+        let (mut at, mut n) = (0usize, 0usize);
+        while let Some(&len) = self.reading.first() {
+            let len = usize::from(len);
+            if self.reading.len() < 1 + len || at + len > sink.frame_cap || n >= sink.pieces_cap {
+                break;
+            }
+            let message: Vec<u8> = self.reading.drain(..=len).skip(1).collect();
+            // SAFETY: host buffers of `frame_cap` bytes and `pieces_cap` pieces, bounded above.
+            unsafe {
+                std::ptr::copy_nonoverlapping(message.as_ptr(), sink.frame.add(at), len);
+                sink.pieces.add(n).write(FramePiece {
+                    stream: 1,
+                    offset: at as u64,
+                    len: len as u64,
+                    code: 0,
+                    status_class: 0,
+                    flags: PIECE_END_OF_FRAME,
+                    _reserved: 0,
+                    retry_after_secs: 0,
+                });
+            }
+            at += len;
+            n += 1;
+        }
+        o.yielded.frame_len = at as u64;
+        o.yielded.pieces_len = n as u32;
+        Outcome::Ready
+    }
+
     fn take_inbound(&mut self, bytes: &[u8]) {
         self.inbound.extend(bytes);
     }

@@ -382,6 +382,7 @@ extern "C" {
 #define BB_PLANE_ROUTE_SCOPE_SEPARATOR ", " /* What joins the reachable entries a [`ROUTE_SCOPE`] refusal's [`RefusalIn::text`] names. */
 #define BB_PLANE_ROUTE_ONCE UINT8_C(1) /* [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE (ARCHITECT round 4 */
 #define BB_PLANE_ROUTE_SESSION UINT8_C(2) /* [`ArriveOut::route_flags`]: the unit is served as a DUPLEX SESSION (K6; ARCHITECT round 5 */
+#define BB_PLANE_ROUTE_STREAM UINT8_C(4) /* [`ArriveOut::route_flags`]: the caller asked for its answer STREAMED (ARCHITECT Q1 ArriveOut, */
 #define BB_PLANE_FROM_CALLER UINT32_C(0) /* [`OnPieceIn::from`]: the piece is the caller's. */
 #define BB_PLANE_FROM_FAR_END UINT32_C(1) /* [`OnPieceIn::from`]: the piece is the far end's. */
 #define BB_PLANE_FROM_KERNEL UINT32_C(2) /* [`OnPieceIn::from`]: the piece is the kernel's. With [`OnPieceIn::attempt_no`] above `0` it */
@@ -465,6 +466,7 @@ extern "C" {
 #define BB_TRANSPORT_FACT_DECODES_PAYLOAD UINT32_C(2) /* [`TransportTail::facts`]: the framer decodes the payload. */
 #define BB_TRANSPORT_SIDE_ACCEPT UINT32_C(0) /* `side`: the accepting end. */
 #define BB_TRANSPORT_SIDE_DIAL UINT32_C(1) /* `side`: the dialing end. */
+#define BB_TRANSPORT_SIDE_ACCEPT_STREAM UINT32_C(2) /* `side`: the accepting end of ONE STREAM whose connection and head the host's own framer carries */
 #define BB_TRANSPORT_CLOSE_NORMAL UINT32_C(0) /* Close reason: normal. */
 #define BB_TRANSPORT_CLOSE_PEER_CLOSED UINT32_C(1) /* Close reason: the far end closed. */
 #define BB_TRANSPORT_CLOSE_DRAIN UINT32_C(2) /* Close reason: drain. */
@@ -478,6 +480,10 @@ extern "C" {
 #define BB_TRANSPORT_STATUS_CALLER_FAULT UINT8_C(2) /* Status class: the caller's fault. */
 #define BB_TRANSPORT_STATUS_FAR_END_FAULT UINT8_C(3) /* Status class: the far end's fault. */
 #define BB_TRANSPORT_STATUS_OTHER UINT8_C(4) /* Status class: other. */
+#define BB_TRANSPORT_FAULT_NONE UINT8_C(0) /* Fault reading: none stated. The breaker reads an answer with no fault reading as the caller's */
+#define BB_TRANSPORT_FAULT_CALLER UINT8_C(1) /* Fault reading: the caller's own fault. The destination is healthy and nothing is recorded. */
+#define BB_TRANSPORT_FAULT_TRANSIENT UINT8_C(2) /* Fault reading: a transient fault of the destination. Its cell counts it toward a trip, and the */
+#define BB_TRANSPORT_FAULT_HARD UINT8_C(3) /* Fault reading: the destination itself is down for every caller (its credential or its account */
 #define BB_TRANSPORT_STATUS_AT_NONE UINT8_C(0) /* [`Claim::status_at`]: no status. */
 #define BB_TRANSPORT_STATUS_AT_FIRST_FRAME UINT8_C(1) /* [`Claim::status_at`]: the first frame carries the status. */
 #define BB_TRANSPORT_STATUS_AT_TERMINAL UINT8_C(2) /* [`Claim::status_at`]: the terminal frame carries the status. */
@@ -2647,6 +2653,7 @@ struct bb_plane_ArriveOut {
     uint8_t route;
     uint8_t route_flags;
     uint8_t _route_reserved[6];
+    bb_mech_AbiStr affinity;
 };
 
 /* `on_piece`'s `in`. */
@@ -2701,7 +2708,8 @@ struct bb_plane_OnPieceOut {
     bb_mech_Span verb;
     bb_mech_Span target;
     uint32_t need;
-    uint32_t _need_reserved;
+    uint8_t fault;
+    uint8_t _fault_reserved[3];
     bb_mech_Span lane;
     uint32_t final_status;
     uint32_t _final_reserved;
@@ -3199,6 +3207,12 @@ struct bb_transport_FinishIn {
     uint32_t reason;
     uint32_t _reserved;
     bb_transport_FramerSink sink;
+    uint32_t final_status;
+    uint32_t _final_reserved;
+    bb_mech_Span final_message;
+    bb_mech_Span final_details;
+    const uint8_t *final_bytes;
+    size_t final_bytes_len;
 };
 
 /* `detach`'s and `timer`'s `in`. */
@@ -4986,7 +5000,7 @@ BB_ASSERT(offsetof(bb_plane_ArriveIn, body) == 136, "bb_plane_ArriveIn.body: off
 BB_ASSERT(offsetof(bb_plane_ArriveIn, units_buf) == 160, "bb_plane_ArriveIn.units_buf: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveIn, units_cap) == 168, "bb_plane_ArriveIn.units_cap: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveIn, method) == 176, "bb_plane_ArriveIn.method: offset");
-BB_ASSERT(sizeof(bb_plane_ArriveOut) == 168, "bb_plane_ArriveOut: size");
+BB_ASSERT(sizeof(bb_plane_ArriveOut) == 184, "bb_plane_ArriveOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ArriveOut) == 8, "bb_plane_ArriveOut: alignment");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, head) == 0, "bb_plane_ArriveOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, op_class) == 96, "bb_plane_ArriveOut.op_class: offset");
@@ -5003,6 +5017,7 @@ BB_ASSERT(offsetof(bb_plane_ArriveOut, pool) == 144, "bb_plane_ArriveOut.pool: o
 BB_ASSERT(offsetof(bb_plane_ArriveOut, route) == 160, "bb_plane_ArriveOut.route: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, route_flags) == 161, "bb_plane_ArriveOut.route_flags: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, _route_reserved) == 162, "bb_plane_ArriveOut._route_reserved: offset");
+BB_ASSERT(offsetof(bb_plane_ArriveOut, affinity) == 168, "bb_plane_ArriveOut.affinity: offset");
 BB_ASSERT(sizeof(bb_plane_OnPieceIn) == 312, "bb_plane_OnPieceIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_OnPieceIn) == 8, "bb_plane_OnPieceIn: alignment");
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, head) == 0, "bb_plane_OnPieceIn.head: offset");
@@ -5053,7 +5068,8 @@ BB_ASSERT(offsetof(bb_plane_OnPieceOut, arena_needed) == 152, "bb_plane_OnPieceO
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, verb) == 160, "bb_plane_OnPieceOut.verb: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, target) == 168, "bb_plane_OnPieceOut.target: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, need) == 176, "bb_plane_OnPieceOut.need: offset");
-BB_ASSERT(offsetof(bb_plane_OnPieceOut, _need_reserved) == 180, "bb_plane_OnPieceOut._need_reserved: offset");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, fault) == 180, "bb_plane_OnPieceOut.fault: offset");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, _fault_reserved) == 181, "bb_plane_OnPieceOut._fault_reserved: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, lane) == 184, "bb_plane_OnPieceOut.lane: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_status) == 192, "bb_plane_OnPieceOut.final_status: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, _final_reserved) == 196, "bb_plane_OnPieceOut._final_reserved: offset");
@@ -5456,13 +5472,19 @@ BB_ASSERT(offsetof(bb_transport_RefuseIn, len) == 120, "bb_transport_RefuseIn.le
 BB_ASSERT(offsetof(bb_transport_RefuseIn, sink) == 128, "bb_transport_RefuseIn.sink: offset");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, status) == 208, "bb_transport_RefuseIn.status: offset");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, _reserved2) == 212, "bb_transport_RefuseIn._reserved2: offset");
-BB_ASSERT(sizeof(bb_transport_FinishIn) == 184, "bb_transport_FinishIn: size");
+BB_ASSERT(sizeof(bb_transport_FinishIn) == 224, "bb_transport_FinishIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FinishIn) == 8, "bb_transport_FinishIn: alignment");
 BB_ASSERT(offsetof(bb_transport_FinishIn, head) == 0, "bb_transport_FinishIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, framing) == 88, "bb_transport_FinishIn.framing: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, reason) == 96, "bb_transport_FinishIn.reason: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, _reserved) == 100, "bb_transport_FinishIn._reserved: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, sink) == 104, "bb_transport_FinishIn.sink: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_status) == 184, "bb_transport_FinishIn.final_status: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, _final_reserved) == 188, "bb_transport_FinishIn._final_reserved: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_message) == 192, "bb_transport_FinishIn.final_message: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_details) == 200, "bb_transport_FinishIn.final_details: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_bytes) == 208, "bb_transport_FinishIn.final_bytes: offset");
+BB_ASSERT(offsetof(bb_transport_FinishIn, final_bytes_len) == 216, "bb_transport_FinishIn.final_bytes_len: offset");
 BB_ASSERT(sizeof(bb_transport_FramingIn) == 176, "bb_transport_FramingIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FramingIn) == 8, "bb_transport_FramingIn: alignment");
 BB_ASSERT(offsetof(bb_transport_FramingIn, head) == 0, "bb_transport_FramingIn.head: offset");

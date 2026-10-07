@@ -495,7 +495,8 @@ use crate::abi::plane::{
 };
 use crate::abi::transport::{
     AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, Destination, DialIn, EmitIn, EncodeIn,
-    FramePiece, FramerSink, HeadSlots, IngestIn, ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
+    FinishIn, FramePiece, FramerSink, HeadSlots, IngestIn, ListenIn, LocateIn, ReadIn, RefuseIn,
+    WriteIn,
 };
 
 lend! {
@@ -579,7 +580,10 @@ lend! {
         buf(name_buf, name_cap) -> u8;
         buf(alpn_buf, alpn_cap) -> u8;
     }
-    BeginIn { one(facts) -> ConnFacts; }
+    BeginIn {
+        one(facts) -> ConnFacts;
+        list(fields, fields_len) -> Field;
+    }
     IngestIn { bytes(bytes, len); }
     EmitIn { bytes(bytes, len); }
     EncodeIn {
@@ -587,6 +591,7 @@ lend! {
         bytes(body, body_len);
     }
     RefuseIn { bytes(bytes, len); }
+    FinishIn { bytes(final_bytes, final_bytes_len); }
     AdoptIn {
         one(facts) -> ConnFacts;
         bytes(leftover, leftover_len);

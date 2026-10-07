@@ -164,6 +164,7 @@ fn open_stated(
                 role: stated.role,
                 composes_over: stated.composes_over,
                 ported: stated.ported,
+                status_rows: stated.status_rows,
             },
             plugin,
         }),

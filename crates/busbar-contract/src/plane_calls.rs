@@ -271,6 +271,14 @@ pub trait PlaneCalls: Send + Sync {
     /// plane's memory while that answer is the instance's last; `None` when it named none.
     fn arrived_pool(&self, out: &ArriveOut) -> Option<Vec<u8>>;
 
+    /// The sticky-routing key a READY `arrive` stated ([`ArriveOut::affinity`], ARCHITECT Q1
+    /// ArriveOut), copied out of the plane's memory while that answer is the instance's last;
+    /// `None` when it stated none. Opaque: the kernel only hashes it.
+    fn arrived_affinity(&self, out: &ArriveOut) -> Option<Vec<u8>> {
+        let _ = out;
+        None
+    }
+
     /// The words a REFUSED `arrive` stated in its `head.error` (abi/plane "A refused arrival"),
     /// copied out of the plane's memory while that answer is the instance's last; `None` when it
     /// stated none. Opaque: the kernel hands them to the plane's `refusal` unparsed.

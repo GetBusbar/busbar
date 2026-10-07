@@ -159,6 +159,7 @@ impl Dispatched {
             role: stated.role,
             composes_over: stated.composes_over,
             ported: stated.ported,
+            status_rows: stated.status_rows,
         };
         // A carrier moves bytes over the host's I/O (`io.*`): the process's one, the connector's.
         let _ = dispatcher().install_io(busbar_core_connector::hostio::process());
