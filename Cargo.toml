@@ -24,14 +24,8 @@ members = [
     "crates/busbar-plane-streaming",
     "crates/busbar-plane-decisions",
     "crates/plugin-loader",
-    "crates/plane-example",
-    "crates/hooks-ranking",
     "crates/store-memory",
     "crates/busbar-transport-stdio",
-    "crates/busbar-auth-header",
-    "crates/busbar-auth-sigv4",
-    "crates/busbar-auth-oauth",
-    "crates/busbar-auth-webhook-signature",
     "testing/ws-conformance/subject",
     "xtask",
 ]
@@ -102,6 +96,17 @@ busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-expo
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
 busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "b3047ce8748dcb6485f032c9c2c0cfa892ba3966" }
 busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "b3047ce8748dcb6485f032c9c2c0cfa892ba3966" }
+# THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
+# (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split).
+busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "6ede2a5b1a27e6a265e3a76db7e5749cb5abce8a" }
+# THE OAUTH MINTING STYLES (kind: auth): a dev edge only — the root's door_steps tests mint a member's
+# credential through the real plugin's door. One pin.
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "b7d15c7137e890072a4968abc544b0bbfc107f67" }
+# THE RANKING HOOK (kind: hook), pulled at a pinned rev: the logic crate the root links on its hooks
+# axis (feature `hooks-ranking`). The same package at the same rev, under the role the kernel's test
+# build gives it (`fixture-hook`: a kernel source names no plugin). A rev bump moves both lines.
+busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "7e1285e2e3293627723ab2754b9ddbfddeba9c46" }
+fixture-hook = { package = "busbar-hook-ranking", git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "7e1285e2e3293627723ab2754b9ddbfddeba9c46" }
 # ── A2A, from the a2aproject's OWN crates ──────────────────────────────────────────────────────
 # THE OBVIOUS NAME IS THE WRONG ONE. `a2a-rs` on crates.io is `emillindfors/a2a-rs` (MIT, v0.5.0) —
 # a different author entirely. The a2aproject family is the `a2a-*-lf` / `a2a-pb` set, all
@@ -422,3 +427,15 @@ strip = true         # strip symbols from the shipped binary (much smaller; set 
 # panic is left at the default `unwind` ON PURPOSE: a panic in one request task must unwind that
 # task, not abort the whole gateway. `panic = "abort"` would trade per-request isolation for a
 # little size — the wrong trade for a service in the request path.
+
+# xtask, OPTIMIZED IN EVERY DEV BUILD (ARCHITECT 2026-10-07, p6-selftest-memo). `cargo xtask` is
+# `cargo run --package xtask` under the dev profile, so CI's gates and self-tests ran xtask at
+# opt-level 0. Measured on busbar 214678af59, Latchkey large (8 cores), the same four batteries at
+# opt-level 0 -> 2: kind-isolation 925 s -> 170 s, kind-isolation-ship 631 s -> 123 s, ship-ready
+# 127 s -> 23 s, construction 101 s -> 19 s, every per-case verdict line byte-identical; building
+# xtask 67 s -> 71 s. Only xtask itself: its dependencies keep the dev profile. debug-assertions and
+# overflow-checks stay on (they follow the profile, not the opt-level), so the checks a dev build
+# makes are the checks it still makes. The self-test budgets (xtask/src/gates/mod.rs, TAKEN and
+# BUDGET) are measured at this opt-level.
+[profile.dev.package.xtask]
+opt-level = 2
