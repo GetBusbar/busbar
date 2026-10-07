@@ -3028,8 +3028,12 @@ pub(crate) mod door_boundary {
             door_checked > 0,
             "the door's half of the boundary was asserted"
         );
+        // The kernel's own guarded routes (`/stats`, `/v1/models`, `/v1beta/models`): the convenience
+        // body-ingress routes are a plane's and mount only where a plane installs body ingress (the
+        // kernel owns no route that exists for one plugin, BUSBAR-1.6.0.md l.4093), which this rig
+        // does not; a door claims its own paths and is walked in the door arm above.
         assert!(
-            checked >= 4,
+            checked >= 3,
             "the walk covered only {checked} guarded core routes — it is not seeing the router"
         );
         for path in &boot_plugin_paths {

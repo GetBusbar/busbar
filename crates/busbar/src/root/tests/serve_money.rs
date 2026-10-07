@@ -540,8 +540,12 @@ async fn node_boot_hooks_arm() {
     let (status, body) = g.post("/call/direct:m", true).await;
     assert_eq!(
         (status, body.as_str()),
-        (503, "refused:503:breaker_open"),
-        "admitted, then the walk is exhausted"
+        (
+            503,
+            "refused:503:The service is temporarily overloaded. Please retry shortly."
+        ),
+        "admitted, then the walk is exhausted (the shed in 1.5.5's words, as every plane is handed \
+         them: RefusalIn.text is the kernel's own message for the refusal)"
     );
     assert_eq!(g.requests(), 1, "its request was charged at admission");
     assert_eq!(g.post.open_units(), 0, "its node facts closed at its end");
