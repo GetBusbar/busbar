@@ -6,7 +6,7 @@
 //! the bound that refuses at admission, retention swept on submit, and a handle found again after
 //! a restart.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::host::service::{self as svc, MAX_WORK_RECORD, WORK_LIVE, WORK_SETTLED};
@@ -20,7 +20,7 @@ use busbar_contract::services::{Caller, HostServices, Later, Ran, Stored};
 use super::*;
 use crate::governance::MemoryStore;
 use crate::host_records::RecordRows;
-use crate::host_services::{InstanceFacts, KernelServices, Offload, NOT_A_KIND};
+use crate::host_services::{InstanceFacts, KernelServices, Offload, NOT_A_KIND, POOL_REFUSED};
 use crate::host_units::UnitRecord;
 
 struct Mem(Arc<MemoryStore>);
@@ -59,6 +59,19 @@ struct Inline;
 impl Offload for Inline {
     fn run(&self, job: Box<dyn FnOnce() + Send>) {
         job();
+    }
+}
+
+/// Runs every job at once while open; once shut, drops every job unrun, as a pool past its bound
+/// does.
+#[derive(Default)]
+struct Gate(AtomicBool);
+
+impl Offload for Gate {
+    fn run(&self, job: Box<dyn FnOnce() + Send>) {
+        if !self.0.load(Ordering::SeqCst) {
+            job();
+        }
     }
 }
 
@@ -455,6 +468,49 @@ fn a_plane_claiming_lapsed_cannot_settle_a_live_handle() {
         row.as_slice(),
     );
     assert!(held.is_some_and(|w| w.live && w.record == b"asked"));
+}
+
+/// A SETTLE THE POOL REFUSES MOVES NOTHING: the job is dropped unrun, the caller is answered
+/// FAILED, and the book agrees with the store that the handle is live, so the next settle lands.
+#[test]
+fn a_settle_the_pool_refuses_leaves_the_handle_live_in_the_book_and_the_store() {
+    let gate = Arc::new(Gate::default());
+    let r = rig();
+    let s = r.s.with_pool(Arc::clone(&gate) as Arc<dyn Offload>);
+    let r = Rig { s, ..r };
+    let (handle, reference) = open(&r, 1, b"working");
+    gate.0.store(true, Ordering::SeqCst);
+    let refused = settle(&r, "inst", Some(1), handle, b"done");
+    assert_eq!(
+        (refused.outcome, refused.error),
+        (Outcome::Failed, POOL_REFUSED)
+    );
+    let booked = r.s.work().get("inst", handle).expect("still held");
+    assert!(
+        booked.live && booked.record == b"working",
+        "the book holds it live"
+    );
+    let row = r
+        .store
+        .record_get(
+            WORK_SCHEMA,
+            &work_key("inst", &parse_reference(&reference).unwrap()),
+        )
+        .unwrap()
+        .unwrap();
+    let stored = Work::read(&Arc::from("inst"), booked.reference, row.as_slice()).unwrap();
+    assert!(
+        stored.live && stored.record == b"working",
+        "the store holds it live"
+    );
+    // The pool takes jobs again: the settle lands, once.
+    gate.0.store(false, Ordering::SeqCst);
+    let landed = settle(&r, "inst", Some(1), handle, b"done");
+    assert_eq!((landed.outcome, landed.value), (Outcome::Ready, 0));
+    assert_eq!(
+        state_and_record(&find(&r, "inst", 2, &reference)),
+        (WORK_SETTLED, b"done".to_vec())
+    );
 }
 
 #[test]
