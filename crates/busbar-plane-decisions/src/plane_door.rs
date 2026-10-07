@@ -248,6 +248,27 @@ pub fn read_settings(settings: &[u8]) -> Result<DecisionsSection, String> {
     serde_json::from_value(section).map_err(|e| e.to_string())
 }
 
+/// `validate`'s blob: what stage 3g deals a plane (`{<verb>: <section>}`; the kernel's own judges hand
+/// the same shape), read at the `decisions:` section. An empty blob, or one that writes no
+/// `decisions:`, is the empty section.
+///
+/// # Errors
+///
+/// A blob that is not a map of sections, or the section's first broken rule.
+pub fn read_dealt(settings: &[u8]) -> Result<DecisionsSection, String> {
+    if settings.is_empty() {
+        return Ok(DecisionsSection::default());
+    }
+    let value: serde_json::Value = serde_json::from_slice(settings).map_err(|e| e.to_string())?;
+    let serde_json::Value::Object(mut verbs) = value else {
+        return Err("the dealt settings are not a map of the plane's sections".to_string());
+    };
+    match verbs.remove(tail::SECTION_DECLARING) {
+        None | Some(serde_json::Value::Null) => Ok(DecisionsSection::default()),
+        Some(section) => serde_json::from_value(section).map_err(|e| e.to_string()),
+    }
+}
+
 /// ONE GENERATION'S SNAPSHOT for a section with `models` configured models: the claims
 /// [`driven::served_claims`] serves, each an exact target over the claim's transport. It binds no
 /// audience: the operation is served on the plain data plane to a keyed caller, as the llm plane's
@@ -335,7 +356,7 @@ macro_rules! slot {
 slot!(
     /// `validate`: the settings read as the section, or refused in the grammar's words.
     Validate, ValidateIn, OutHead, |_, input, mut out| {
-        match read_settings(input.field(|i| &i.settings).bytes()) {
+        match read_dealt(input.field(|i| &i.settings).bytes()) {
             Ok(_) => Outcome::Ready,
             Err(words) => out.fail(Refusal::refused(words)),
         }

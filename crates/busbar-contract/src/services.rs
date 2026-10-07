@@ -44,6 +44,16 @@ pub struct Reading {
 /// result under the call's handle and wakes its ticket.
 pub type Later = Box<dyn FnOnce(Stored) + Send>;
 
+/// One trust key a plane names (`trust.decide`): a counterparty of the calling instance, and
+/// optionally one item there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrustKeyRef<'a> {
+    /// The counterparty.
+    pub counterparty: &'a str,
+    /// The item there; `None` = the counterparty as a whole.
+    pub item: Option<&'a str>,
+}
+
 /// THE HOST SERVICES, as the kernel implements them. The dispatcher holds one for every instance it
 /// adopts; each slot validates the caller's `in`, applies the mechanism's rules, and calls in here
 /// at most once per completion handle. Every service is required, with no default body (spec
@@ -85,6 +95,64 @@ pub trait HostServices: Send + Sync {
     /// state. READY with a `TRUST_*` verdict.
     fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran;
 
+    /// `trust.sight` with `TRUST_UNREACHABLE`: the plane could not reach `counterparty`. READY with
+    /// the LAST `TRUST_*` verdict, nothing changed. Never pends. Unserved by default.
+    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
+        let _ = (caller, counterparty);
+        Stored::refused(UNSERVED)
+    }
+
+    /// `trust.sight_item`: record the digest `item` of `counterparty` is offered at now (the
+    /// plane's live re-fetch), READY with a `TRUST_*` sighting verdict. Never pends. Unserved by
+    /// default.
+    fn trust_sight_item(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Stored {
+        let _ = (caller, counterparty, item, digest);
+        Stored::refused(UNSERVED)
+    }
+
+    /// `trust.decide`: the operator's decision (`approve`, at `expected` when stated) about the
+    /// calling instance's trust key `counterparty` (`item`: one item there), through the plane's
+    /// own administrative verb. READY with the `TRUST_DECIDED_*` verdict after it, or an
+    /// `UNDECIDED_*`. Never pends. Unserved by default.
+    fn trust_decide(
+        &self,
+        caller: &Caller,
+        key: TrustKeyRef<'_>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Stored {
+        let _ = (caller, key, expected, approve);
+        Stored::refused(UNSERVED)
+    }
+
+    /// `trust.state`: the kernel's trust state of `counterparty` and its items (a `KEY_*` value;
+    /// one span per item, its value `<word>\0<approved>\0<seen>`). Never pends. Unserved by
+    /// default.
+    fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
+        let _ = (caller, counterparty);
+        Stored::refused(UNSERVED)
+    }
+
+    /// `trust.serves`: THE KERNEL'S APPROVE as a query: whether `counterparty` serves `item`
+    /// (`None` = the counterparty as a whole) at `digest` (`None` = its last sighting). READY
+    /// with `DISTRUST_NONE` or the `DISTRUST_*` that refuses it. Never pends. Unserved by default.
+    fn trust_serves(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        let _ = (caller, counterparty, item, digest);
+        Stored::refused(UNSERVED)
+    }
+
     /// `trust.due`: the counterparties of `caller` the kernel's tick marked for re-verification, one
     /// span each (key = the counterparty), drained. Never pends.
     fn trust_due(&self, caller: &Caller) -> Stored;
@@ -104,6 +172,15 @@ pub trait HostServices: Send + Sync {
     /// serves, `None` for a crossing that serves none) is entitled to `target`,
     /// `"<scope_kind>:<name>"`. READY `ENTITLED` or `NOT_ENTITLED`. Never pends.
     fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored;
+
+    /// `session.emit`: write `bytes`, unsolicited, on the open carrier session `session`, outside
+    /// any unit: READY with nothing written back. A session that is not open, or not `caller`'s,
+    /// is REFUSED. Unbilled; the host audits it as a session event under the session's verified
+    /// principal. Never pends. A host that holds no carrier session refuses every one.
+    fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
+        let _ = (caller, session, bytes);
+        Stored::refused(UNSERVED)
+    }
 
     /// `random.fill`: `len` bytes from the kernel's CSPRNG, READY with exactly those bytes; `len`
     /// outside `1..=MAX_RANDOM_FILL` is REFUSED, an OS randomness failure FAILED. Never pends.

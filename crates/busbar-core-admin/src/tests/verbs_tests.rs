@@ -71,7 +71,7 @@ fn make_verbs<G: Governance>(
 ) -> Verbs<G, FakeStore, CountingNonceSource, FakeReplayEncoder> {
     Verbs::new(
         gov,
-        FakeStore,
+        Some(std::sync::Arc::new(FakeStore)),
         CountingNonceSource::new(),
         FakeReplayEncoder,
         CONFIG_CLASS_RULES,
@@ -461,7 +461,7 @@ fn two_mints_with_a_real_nonce_source_produce_different_nonces() {
     let gov = FakeGovernance::new();
     let verbs = Verbs::new(
         gov,
-        FakeStore,
+        Some(std::sync::Arc::new(FakeStore)),
         RecordingNonceSource {
             seen: seen.clone(),
             draws: AtomicU64::new(0),
@@ -548,7 +548,7 @@ fn the_minted_nonce_is_whatever_the_source_gave_and_nothing_else() {
 
     let verbs = Verbs::new(
         FakeGovernance::new(),
-        FakeStore,
+        Some(std::sync::Arc::new(FakeStore)),
         ConstantNonceSource,
         FakeReplayEncoder,
         CONFIG_CLASS_RULES,
@@ -1873,7 +1873,7 @@ fn recovery_verbs() -> Verbs<FakeGovernance, RecordingStore, CountingNonceSource
 {
     Verbs::new(
         FakeGovernance::new(),
-        RecordingStore::new(),
+        Some(std::sync::Arc::new(RecordingStore::new())),
         CountingNonceSource::new(),
         FakeReplayEncoder,
         CONFIG_CLASS_RULES,
@@ -2074,6 +2074,61 @@ fn a_recovery_verb_waits_for_its_approval_under_required_dual_control() {
     )
     .expect("an approved chain break lands");
     assert_eq!(v.store_for_test().reached(), vec!["chain_break"]);
+}
+
+/// A node with NO store (no governance configured) is handed `None`, and each disaster-recovery
+/// verb, once admitted, is refused as a store failure: there is nothing for it to reach. The same
+/// admitted verb over a bound store lands (the tests above), so the refusal is the absence alone.
+#[test]
+fn an_admitted_recovery_verb_on_a_node_with_no_store_is_a_store_failure() {
+    let admin = admin();
+    let v: Verbs<FakeGovernance, RecordingStore, CountingNonceSource, FakeReplayEncoder> =
+        Verbs::new(
+            FakeGovernance::new(),
+            None,
+            CountingNonceSource::new(),
+            FakeReplayEncoder,
+            CONFIG_CLASS_RULES,
+        );
+    let set = || {
+        Some(PostureCtx {
+            operator: OperatorState::Set([0u8; 32]),
+            dual_control: DualControl::Single,
+        })
+    };
+    let refused = [
+        v.chain_break(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            set(),
+            ApprovalState::NotYetApproved,
+        ),
+        v.store_restore(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            set(),
+            ApprovalState::NotYetApproved,
+            "backup-1",
+        ),
+        v.reseal_epoch_floor(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            set(),
+            ApprovalState::NotYetApproved,
+        ),
+    ];
+    for r in refused {
+        assert_eq!(
+            r.expect_err("no store, nothing to reach").reason,
+            crate::refusal::ReasonCode::StoreError
+        );
+    }
 }
 
 /// The group-lookup adapter and the length-framed rotate slot, in their own file.

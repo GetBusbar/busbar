@@ -308,7 +308,17 @@ impl<'a> Inputs<'a> {
     }
 }
 
+/// ONE STORE LEG AT A TIME, per process: [`leg_mint`] is a plain `fn` the bridge calls (it captures
+/// nothing), so its node and counter are process statics, reset at each leg's `open`. The suite's
+/// tests run in parallel threads (the both-ways arm, the RED count arm, the kind-ABI arm), and a leg
+/// opening in one would rewind another's counter mid-leg — the store refuses the replayed op id
+/// (`STORE_OPID_CONFLICT`), a failure of the suite, not of the plugin. Held for the whole leg.
+static LEG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
+    let _one_leg = LEG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let i = Inputs::of(s.kind_inputs(ROOT));
     let settings = leg.settings(s);
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -394,9 +404,17 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("usage after purge", LEASED, || ans(b.get_usage(ub, w)));
 
     // ── metering: add_metering, list_metering, purge_metering_before ──
-    r.line("meter p 3", 1, || ans(b.add_metering(&meter("a", "p", 3))));
-    r.line("meter p 4", 1, || ans(b.add_metering(&meter("a", "p", 4))));
-    r.line("meter q 1", 1, || ans(b.add_metering(&meter("a", "q", 1))));
+    // Metering names a key the script has PUT (the grouped key, still live): a store whose metering
+    // rows reference its keys (a metering -> keys foreign key) holds them.
+    r.line("meter p 3", 1, || {
+        ans(b.add_metering(&meter(i.grouped, "p", 3)))
+    });
+    r.line("meter p 4", 1, || {
+        ans(b.add_metering(&meter(i.grouped, "p", 4)))
+    });
+    r.line("meter q 1", 1, || {
+        ans(b.add_metering(&meter(i.grouped, "q", 1)))
+    });
     r.line("metering", LEASED, || {
         ans(b.list_metering(86_400).map(|mut v| {
             v.sort_by(|x, y| x.provider.cmp(&y.provider));
@@ -624,7 +642,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("metering batch", 1, || {
         ans(block(
             &rt,
-            st.add_metering_batch(op(9), &[meter("z", "p", 1)]),
+            st.add_metering_batch(op(9), &[meter(i.grouped, "p", 1)]),
         ))
     });
     r.line("audit batch fork", 1, || {
