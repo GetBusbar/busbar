@@ -456,13 +456,44 @@ pub struct DoorApply {
     live: std::sync::RwLock<Arc<DoorLive>>,
     /// The plane's driver, which a generation's health probes run their units on (K7).
     driver: Arc<PlaneDriver>,
-    /// The health-probe schedule its generations share, phase-stable across a config apply.
-    probe_schedule: Arc<busbar_kernel::probe::ProbeSchedule>,
+    /// The health-probe schedule its generations share, phase-stable across a config apply that
+    /// keeps the lane table it is indexed by, and that lane table.
+    probes: std::sync::Mutex<(LaneTable, Arc<busbar_kernel::probe::ProbeSchedule>)>,
     /// The scope kinds its Statement declares.
     scope_kinds: Vec<&'static str>,
 }
 
+/// The lane table a probe schedule's deadlines are indexed by
+/// ([`crate::root::model_egress::ModelServing::lane_table`]).
+type LaneTable = Vec<(usize, String, String)>;
+
 impl DoorApply {
+    /// THE PROBE SCHEDULE A GENERATION SEALED OVER `models` RUNS ON (1.5.5 `build`, v1.5.5
+    /// main.rs:3596-3606): the current one, carried, when its lane table is the same; else a fresh
+    /// one, since its deadlines are kept by lane index and another table puts another member at an
+    /// index.
+    fn schedule_for(
+        &self,
+        models: Option<&crate::root::model_egress::ModelServing>,
+    ) -> (LaneTable, Arc<busbar_kernel::probe::ProbeSchedule>) {
+        let table = models.map_or_else(
+            Vec::new,
+            crate::root::model_egress::ModelServing::lane_table,
+        );
+        let held = self
+            .probes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held.0 == table {
+            return (table, Arc::clone(&held.1));
+        }
+        let lanes = models.map_or(0, |m| m.probe_members().0);
+        (
+            table,
+            Arc::new(busbar_kernel::probe::ProbeSchedule::new(lanes)),
+        )
+    }
+
     /// The current generation's pools and egress.
     #[must_use]
     pub fn current(&self) -> Arc<DoorLive> {
@@ -630,7 +661,11 @@ impl DoorAppliers {
                 p.facts.bench_below_trip_threshold,
             ) {
                 Ok(mut live) => {
-                    arm_probes(&p.driver, facts, &mut live, Some(egress), &p.probe_schedule);
+                    let (table, schedule) = p.schedule_for(egress.reach.models);
+                    arm_probes(&p.driver, facts, &mut live, Some(egress), &schedule);
+                    *p.probes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = (table, schedule);
                     *p.live
                         .write()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(live);
@@ -1129,10 +1164,13 @@ pub(crate) fn compose_planes_over(
             );
         }
         let driver = Arc::new(driver);
+        let models = egress.and_then(|e| e.reach.models);
+        let lane_table = models.map_or_else(
+            Vec::new,
+            crate::root::model_egress::ModelServing::lane_table,
+        );
         let probe_schedule = Arc::new(busbar_kernel::probe::ProbeSchedule::new(
-            egress
-                .and_then(|e| e.reach.models)
-                .map_or(0, |m| m.probe_members().0),
+            models.map_or(0, |m| m.probe_members().0),
         ));
         arm_probes(&driver, &served_facts, &mut live, egress, &probe_schedule);
         let facts = live.facts.clone();
@@ -1151,7 +1189,7 @@ pub(crate) fn compose_planes_over(
             reach,
             live: std::sync::RwLock::new(Arc::new(live)),
             driver: Arc::clone(&driver),
-            probe_schedule,
+            probes: std::sync::Mutex::new((lane_table, probe_schedule)),
             scope_kinds: declared.scope_kinds.clone(),
         });
         served.planes.push(ServedPlane {
@@ -2684,8 +2722,13 @@ impl DataRoutes {
                     },
                     |d| d.dialect,
                 );
-                let pool = decoded
-                    .and_then(|d| d.pool)
+                // A pool route is counted under the pool that served it: a budget downgrade's, as
+                // 1.5.5 counted the effective pool (v1.5.5 ingress/dispatch.rs:206, :275).
+                let served_pool = steps.routed().map(|(label, _)| label);
+                let pool = served_pool
+                    .filter(|label| !label.is_empty())
+                    .map(String::into_bytes)
+                    .or_else(|| decoded.and_then(|d| d.pool))
                     .map(|p| String::from_utf8_lossy(&p).into_owned())
                     .filter(|name| {
                         live.pools.pools().contains_key(name)
