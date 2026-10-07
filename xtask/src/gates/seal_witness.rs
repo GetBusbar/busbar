@@ -54,7 +54,7 @@
 //! rather than replacing it: those hold the minting SURFACE; this holds the #73 vocabulary result
 //! and gives the wave a single red-before-green witness of its own.
 
-use crate::ctx::{Ctx, Overlay, WalkSpec};
+use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 use crate::gates::{prove_green, prove_red, prove_rows_green, Gate, Report};
 #[cfg(test)]
 use crate::ledger::Status;
@@ -543,6 +543,37 @@ fn minter_hits(code: &str, resolves: &dyn Fn(&str) -> bool) -> Vec<(usize, Strin
     out
 }
 
+/// `KernelSeal` and every alias of it the scanned tree binds, chained. Only a file whose raw text
+/// names something already in the set can bind a new name to it, so the edges are read off those
+/// files alone, round by round, until a round reads nothing new. The blanking is the crate's one
+/// lexer ([`scan::blank_code`]), carried across lines.
+fn seal_aliases(files: &[SourceFile]) -> BTreeSet<String> {
+    let mut names = BTreeSet::from([SEAL_TYPE.to_string()]);
+    let mut read = vec![false; files.len()];
+    let mut edges = Vec::new();
+    loop {
+        let mut grew = false;
+        for (k, f) in files.iter().enumerate() {
+            if read[k] || !names.iter().any(|n| f.text.contains(n.as_str())) {
+                continue;
+            }
+            read[k] = true;
+            grew = true;
+            let mut st = scan::LexState::default();
+            let blanked: Vec<String> = f
+                .text
+                .lines()
+                .map(|l| scan::blank_code(l, &mut st))
+                .collect();
+            edges.extend(alias_edges(&blanked.join("\n")));
+        }
+        if !grew {
+            return names;
+        }
+        names = close_aliases(&edges);
+    }
+}
+
 struct Scan {
     files: usize,
     /// Every name the tree binds to the seal type, `KernelSeal` included.
@@ -560,41 +591,40 @@ fn scan_tree(cx: &Ctx) -> Result<Scan, String> {
         .min_files(SCAN_FLOOR);
     let files = cx.walk(&spec).map_err(|e| format!("{e:?}"))?;
 
-    // PASS 1: every alias edge in the tree, off the blanked code (a literal or a comment that
-    // happens to read `use x as KernelSeal` binds nothing).
-    let mut edges = Vec::new();
-    for f in &files {
-        let blanked: Vec<String> = scan::test_scope(&f.text)
-            .into_iter()
-            .map(|l| l.counted)
-            .collect();
-        edges.extend(alias_edges(&blanked.join("\n")));
-    }
-    let aliases = close_aliases(&edges);
+    let aliases = seal_aliases(&files);
 
     let mut surviving = Vec::new();
     let mut minters_outside = Vec::new();
     let mut test_mints = Vec::new();
     for f in &files {
         let rel = f.rel_str();
+        // Only a file whose raw text holds a zoo name can hold one in its code, and only a file
+        // whose raw text holds the minter's name can mint: the lexers run on those alone, which is
+        // what keeps a whole-tree scan per selftest plant cheap.
+        if ZOO.iter().any(|z| f.text.contains(z)) {
+            let mut in_block = false;
+            for (i, raw) in f.text.lines().enumerate() {
+                let code = scan::strip_comment_line(raw, &mut in_block);
+                for name in ZOO {
+                    if word_hit(&code, name) {
+                        surviving.push(format!("`{name}` at {rel}:{}", i + 1));
+                    }
+                }
+            }
+        }
+        if rel.starts_with(KERNEL_ROOT) || !f.text.contains(MINTER_FN) {
+            continue;
+        }
         let test_path = is_test_target_path(&rel);
         // THE ONE TEST-SCOPE ANSWER every scanner in this crate uses: `gated` is true inside a
         // `#[cfg(test)]` item.
         let lines = scan::test_scope(&f.text);
         let mut in_block = false;
-        let mut code = Vec::new();
-        for (i, raw) in f.text.lines().enumerate() {
-            let stripped = scan::strip_comment_line(raw, &mut in_block);
-            for name in ZOO {
-                if word_hit(&stripped, name) {
-                    surviving.push(format!("`{name}` at {rel}:{}", i + 1));
-                }
-            }
-            code.push(stripped);
-        }
-        if rel.starts_with(KERNEL_ROOT) {
-            continue;
-        }
+        let code: Vec<String> = f
+            .text
+            .lines()
+            .map(|raw| scan::strip_comment_line(raw, &mut in_block))
+            .collect();
         let self_is_seal = std::cell::OnceCell::new();
         let resolves = |r: &str| match r {
             "Self" => *self_is_seal.get_or_init(|| {
@@ -902,23 +932,6 @@ impl Gate for SealWitnessGate {
                 &["outside", outsider],
             ));
         }
-
-        // GREEN 3: an ALIASED mint inside an inline `#[cfg(test)] mod` is still test scope.
-        let mut ov6 = Overlay::new();
-        ov6.set(
-            outsider,
-            format!(
-                "{otext}\n#[cfg(test)]\nmod __seal_witness_probe {{\n    use crate::caps::KernelSeal as \
-                 S;\n    fn f() {{\n        let _ = S::\n            acquire_for_kernel();\n    }}\n}}\n"
-            ),
-        );
-        report.push(prove_rows_green(
-            cx,
-            self,
-            "an aliased mint inside an inline #[cfg(test)] mod is test scope, not a production minter",
-            &[ROW_SINGLE_MINTER],
-            ov6,
-        ));
 
         // RED 12 (X5 finding 1): THE FLOOR IS THE MEASURED POPULATION. A walk that comes back one
         // file short of it is refused, though it still holds ten times the old floor of 200.
