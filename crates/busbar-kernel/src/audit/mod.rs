@@ -74,96 +74,13 @@ pub const MAX_AUDIT_ENTRIES: usize = 1000;
 
 use std::marker::PhantomData;
 
-/// HOW A RECORD'S FIELDS ARE FRAMED INTO THE DIGEST INPUT.
-///
-/// This is a WIRE FACT of chains that already exist on disk, not a preference. Every framing here is
-/// the one the corresponding records were written with, and the store contract documents the formula
-/// (see `busbar_contract::records::AuditRecord`/`TaskEventRow`). Changing the framing of an existing stream would
-/// make every persisted chain in every deployment fail to verify at the next boot — which is to say
-/// it would report the whole history as TAMPERED. That is the one migration this module may never do
-/// silently, so the framing travels with the record type instead of being unified away.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Framing {
-    /// Every field is prefixed with its big-endian `u64` length, and integers are their 8-byte
-    /// big-endian form. THE FRAMING A NEW RECORD TYPE MUST CHOOSE: length prefixes make the split
-    /// between fields unforgeable regardless of what any field contains, so a caller who can choose
-    /// one field's bytes cannot forge the same byte stream under a different split. A
-    /// separator-joined digest is only safe while no field can contain the separator, which is a
-    /// property of today's fields rather than of the code.
-    LengthPrefixed,
-    /// Fields joined by `|`, integers in decimal. The legacy framing of the admin audit chain and
-    /// one other stream's provenance chain, kept byte-for-byte because their records are already on
-    /// disk.
-    PipeSeparated,
-}
-
-/// THE ONE CANONICALISER. A record feeds its chained fields in through [`Digest::text`] and
-/// [`Digest::num`]; the framing and the hash function are not its business.
-pub(crate) struct Digest {
-    framing: Framing,
-    buf: Vec<u8>,
-    /// PipeSeparated only: whether a separator is owed before the next field.
-    started: bool,
-}
-
-impl Digest {
-    fn new(framing: Framing) -> Self {
-        Digest {
-            framing,
-            buf: Vec::new(),
-            started: false,
-        }
-    }
-
-    fn push(&mut self, bytes: &[u8]) {
-        match self.framing {
-            Framing::LengthPrefixed => {
-                self.buf
-                    .extend_from_slice(&(bytes.len() as u64).to_be_bytes());
-                self.buf.extend_from_slice(bytes);
-            }
-            Framing::PipeSeparated => {
-                if self.started {
-                    self.buf.push(b'|');
-                }
-                self.buf.extend_from_slice(bytes);
-            }
-        }
-        self.started = true;
-    }
-
-    /// Feed one string field.
-    pub(crate) fn text(&mut self, s: &str) -> &mut Self {
-        self.push(s.as_bytes());
-        self
-    }
-
-    /// Feed one integer field.
-    pub(crate) fn num(&mut self, v: u64) -> &mut Self {
-        match self.framing {
-            Framing::LengthPrefixed => self.push(&v.to_be_bytes()),
-            Framing::PipeSeparated => self.push(v.to_string().as_bytes()),
-        }
-        self
-    }
-
-    /// Feed ALREADY-FRAMED raw bytes verbatim — the join primitive for the host-side journal cleave.
-    /// The plane hands a pre-framed content SUFFIX and the host byte-concatenates it after the framed
-    /// prelude, so `sha256_hex(frame_prelude(..) ⧺ suffix)` byte-equals the legacy single-[`Digest`]
-    /// output (the chain-cleave contract). Frame-independent: it appends no
-    /// length prefix and no separator of its own — the suffix already carries the leading `|` a
-    /// PipeSeparated stream owes (Option A). It still flips `started`. ADDITIVE: no existing digest
-    /// calls it, so not a single persisted byte changes.
-    pub(crate) fn raw(&mut self, bytes: &[u8]) -> &mut Self {
-        self.buf.extend_from_slice(bytes);
-        self.started = true;
-        self
-    }
-
-    fn finish(self) -> String {
-        busbar_contract::redacted::sha256_hex(&self.buf)
-    }
-}
+/// HOW A RECORD'S FIELDS ARE FRAMED, AND THE ONE CANONICALISER THAT FRAMES THEM — the audit
+/// unit's, not a copy of it. A framing is a WIRE FACT of chains already on disk (the store contract
+/// documents each formula: `busbar_contract::records::AuditRecord`/`TaskEventRow`), so it travels
+/// with the record type ([`ChainedRecord::framing`]) instead of being unified away; the builder that
+/// applies it is the one [`busbar_kernel_audit::digest::Digest`] the fixed audit record and the
+/// amendment chain hash through too, so no two chains in the node can frame or hash differently.
+pub(crate) use busbar_kernel_audit::digest::{Digest, Framing};
 
 /// Frame a chain record's PRELUDE — `prev_hash`, then `scope` IFF `digests_scope` (some streams omit
 /// it), then `seq` — in `framing`, returning the raw framed bytes. The host owns the prelude; a plane
@@ -184,7 +101,7 @@ pub(crate) fn frame_prelude(
         d.text(s);
     }
     d.num(seq);
-    d.buf
+    d.into_framed()
 }
 
 /// The operator-facing words for one stream: what to call the chain, and what to call the thing a

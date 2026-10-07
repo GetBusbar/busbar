@@ -3179,7 +3179,10 @@ fn a_sealed_chain() -> SealedChain {
 
     let signer = busbar_kernel_audit::AuditSigningKey::from_seed(&[7u8; 32]);
     let mut keys = busbar_kernel_audit::AuditKeySet::new();
-    keys.insert_signer(&signer);
+    keys.insert(
+        busbar_kernel_audit::AuditVerifyingKey::from_hex(&signer.public_key_hex())
+            .expect("a public key"),
+    );
     let mut chain = busbar_kernel_audit::AuditChain::new().signing_with(signer);
 
     let token = an_audit_pass();
