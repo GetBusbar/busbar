@@ -51,8 +51,8 @@ use busbar_contract::hook_calls::{Answered, HookAxis, HookCalls, HookFacts, Pend
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{
-    in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, Dispatcher, EnvelopeSink,
-    Frame, InFrame, Lent, NoSink, OutFrame, Plugin, PluginLogConfig, NO_BLOB,
+    in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher,
+    EnvelopeSink, Frame, InFrame, Lent, NoSink, OutFrame, Plugin, PluginLogConfig, NO_BLOB,
 };
 use crate::PluginRegistry;
 
@@ -745,12 +745,38 @@ fn claims(c: &Candidate, word: &str) -> bool {
     })
 }
 
+/// Whether config naming `module` names the hook candidate `c`: its Statement name, an alias (a
+/// Statement alias, the manifest alias, a former name) or one of the hook words its Statement claims.
+/// The ONE rule [`HookRows`] finds a row by.
+fn answers(c: &Candidate, module: &str) -> bool {
+    c.name == module || c.aliases.iter().any(|a| a == module) || claims(c, module)
+}
+
+/// Whether a DROPPED-IN `kind: hook` row of `registry` answers `module` by the rule the hook axis
+/// opens it by ([`HookRows`]): read off each row's SIGNED manifest and Statement rendering only,
+/// nothing loaded. The pre-flight's half of the claim table boot uses (ARCHITECT Q-P4-13); the
+/// linked half is the root's hook axis.
+#[must_use]
+pub fn dropped_answers(registry: &PluginRegistry, module: &str) -> bool {
+    registry.dropped_hooks().any(|p| {
+        let Ok(Some(stated)) = p.manifest.stated_rendering() else {
+            return false;
+        };
+        let origin = Origin::Dropped {
+            file: p.file.clone(),
+            bytes: Arc::new(Vec::new()),
+        };
+        Candidate::from_manifest(stated, &p.manifest, origin).is_ok_and(|c| answers(&c, module))
+    })
+}
+
 // ── THE HOOK ROWS: the axis the composition root installs ─────────────────────────────────────
 
 /// THE PROCESS'S HOOK PLUGINS, by Statement name and alias: the compiled-in doors and the
 /// dropped-in libraries whose signed manifests state a Statement, each bound on open through the
-/// one loader path and called through the one dispatcher. A linked row answers ahead of a
-/// dropped-in plugin spelling the same word (the boot stages' selection rule).
+/// one loader path and called through the one dispatcher. Two different plugins answering one word
+/// are refused at [`Self::new`] ([`crate::boot::one_owner`], ARCHITECT Q-P4-12); neither door
+/// outranks the other.
 pub struct HookRows {
     candidates: Vec<Candidate>,
     /// The dropped-in rows signed by the release key (a linked row is first-party by construction).
@@ -804,9 +830,9 @@ impl HookRows {
             let Some(stated) = p.manifest.stated_rendering().map_err(named)? else {
                 return Err(named(JSON_HOOK_REFUSED.to_string()));
             };
-            let c = Candidate::from_rendering(
+            let c = Candidate::from_manifest(
                 stated,
-                Some(&p.manifest.alias),
+                &p.manifest,
                 Origin::Dropped {
                     file: p.file.clone(),
                     bytes: Arc::new(p.lib_bytes.clone()),
@@ -818,14 +844,39 @@ impl HookRows {
             }
             candidates.push(c);
         }
+        crate::boot::one_owner(&candidates)?;
         let mut rows = Self::of(candidates, dispatcher);
         rows.first_party = first_party;
         Ok(rows)
     }
 
-    /// The rows `candidates` state (each a `kind: hook` candidate, a linked one ahead of a
-    /// dropped-in one spelling the same word), bound on `dispatcher`. Only a linked row is
-    /// first-party here; [`Self::new`] adds the dropped-in rows the release key signed.
+    /// Each LINKED row answering also to the former names `former_of` gives for any of its words
+    /// (its name or an alias): the names its earlier releases' manifests carried, which a dropped-in
+    /// copy states in its signed manifest (compiled in = dropped in). A row that would then claim a
+    /// word another plugin answers to is refused, as [`Self::new`] refuses it.
+    ///
+    /// # Errors
+    /// The contested word and the two plugins that claim it.
+    pub fn with_former_names(
+        mut self,
+        former_of: impl Fn(&str) -> Vec<String>,
+    ) -> Result<Self, String> {
+        for c in &mut self.candidates {
+            if matches!(c.origin, Origin::Linked(_)) {
+                let words: Vec<String> = std::iter::once(c.name.clone())
+                    .chain(c.aliases.iter().cloned())
+                    .flat_map(|w| former_of(&w))
+                    .collect();
+                *c = c.clone().answering(words);
+            }
+        }
+        crate::boot::one_owner(&self.candidates)?;
+        Ok(self)
+    }
+
+    /// The rows `candidates` state (each a `kind: hook` candidate), bound on `dispatcher`. Only a
+    /// linked row is first-party here; [`Self::new`] adds the dropped-in rows the release key signed
+    /// and refuses two different plugins answering one word.
     #[must_use]
     pub fn of(candidates: Vec<Candidate>, dispatcher: Arc<Dispatcher>) -> Self {
         Self {
@@ -855,19 +906,17 @@ impl HookRows {
     /// its Statement claims (`MARK_WORD_HOOK`: a pool strategy word names the ranking row), a
     /// linked row first.
     fn find(&self, module: &str) -> Option<&Candidate> {
-        self.candidates.iter().find(|c| {
-            c.name == module || c.aliases.iter().any(|a| a == module) || claims(c, module)
-        })
+        self.candidates.iter().find(|c| answers(c, module))
     }
 
-    /// Bind `c` under `label`: an instance only probed binds with no log sink and no connection
-    /// table; one opened to serve binds with both.
+    /// Bind `c` under `label`: an instance only probed binds with no log sink and as a probe
+    /// ([`ConnTable::Probe`]); one opened to serve binds with both.
     fn bind(
         c: &Candidate,
         dispatcher: &Dispatcher,
         label: &str,
         sink: Arc<dyn EnvelopeSink>,
-        conns: Option<Arc<dyn DeclaredConns>>,
+        conns: ConnTable,
     ) -> Result<Plugin<Hook>, String> {
         let bind = Bind {
             instance: Arc::from(label),
@@ -889,7 +938,14 @@ impl HookRows {
 impl HookAxis for HookRows {
     fn probe(&self, module: &str, instance: &str, settings: &serde_json::Value) -> Option<Probed> {
         let c = self.find(module)?;
-        let Ok(p) = Self::bind(c, &self.dispatcher, instance, Arc::new(NoSink), None) else {
+        // A PROBE: validated and read for its facts, never opened; bound with no table.
+        let Ok(p) = Self::bind(
+            c,
+            &self.dispatcher,
+            instance,
+            Arc::new(NoSink),
+            ConnTable::Probe,
+        ) else {
             // It will not load here: its open refuses the boot naming the instance.
             return Some((None, Vec::new()));
         };
@@ -918,7 +974,7 @@ impl HookAxis for HookRows {
                 None => Arc::new(NoSink),
             })
         };
-        let conns = self.conns.map(|table| table());
+        let conns = ConnTable::serving(self.conns.map(|table| table()));
         let plugin = Self::bind(&c, &self.dispatcher, label, sink(label)?, conns.clone())?;
         let rebind = {
             let (dispatcher, label) = (Arc::clone(&self.dispatcher), label.to_string());

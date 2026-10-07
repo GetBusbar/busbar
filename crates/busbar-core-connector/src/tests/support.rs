@@ -83,6 +83,7 @@ impl TestDoor {
                 claims: claims.to_vec(),
                 composes_over: composes_over.to_vec(),
                 upgrades: Vec::new(),
+                status_rows: Vec::new(),
             },
             knobs,
             framings: Mutex::new(HashMap::new()),

@@ -33,8 +33,8 @@ use busbar_contract::abi::transport::check::{
 use busbar_contract::abi::transport::{
     self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
     ConnOut, DialIn, EmitIn, EncodeIn, FinishIn, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
-    ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, SettingDecl, ShutIn, TransportTail,
-    WriteIn,
+    ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, SettingDecl, ShutIn, StatusRow,
+    TransportTail, WriteIn,
 };
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
@@ -65,6 +65,9 @@ pub struct TransportFacts {
     /// list (ARCHITECT Q128 U7). A framer with one adopts the stream another framer hands up at the
     /// upgrade (its `detach`), whatever that framer is.
     pub upgrades: Vec<&'static str>,
+    /// Its status table, row by row: `(claim, lo, hi)`, the code ranges each claim's numbering
+    /// has (`TransportTail::status_rows`); a stream's final status is judged against them.
+    pub status_rows: Vec<(u32, u32, u32)>,
 }
 
 /// WHAT A COMPILED-IN TRANSPORT DOOR STATES, read off its Statement without binding it (no
@@ -130,7 +133,14 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         unsafe { std::slice::from_raw_parts(tail.settings, tail.settings_len) }
     };
     check_settings(settings).map_err(broke)?;
+    let status: &[StatusRow] = if tail.status_rows_len == 0 {
+        &[]
+    } else {
+        // SAFETY: `check_tail` refused a NULL list with a count; the list is `'static` plugin data.
+        unsafe { std::slice::from_raw_parts(tail.status_rows, tail.status_rows_len) }
+    };
     Ok(TransportFacts {
+        status_rows: status.iter().map(|r| (r.claim, r.lo, r.hi)).collect(),
         role: tail.role,
         claims: names
             .iter()

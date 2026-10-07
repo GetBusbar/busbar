@@ -38,7 +38,6 @@ const SCANNED: &[&str] = &[
     "crates/busbar-llm/src",
     "crates/busbar-mcp/src",
     "crates/busbar-a2a/src",
-    "crates/busbar-voice/src",
 ];
 
 /// The shapes a class key enters a usage report through.
@@ -48,6 +47,8 @@ const SHAPES: &[&str] = &[
     "=> Billing::Counted {",
     "usage_units: std::collections::BTreeMap::from(",
     "usage_units: class_counts(",
+    // The streaming door's session sink folds each closed turn's counts into its unit tail.
+    "in class_counts(",
 ];
 
 /// Where a plane's `PlaneDeclaration` (and so its `billable_classes`) is written.
@@ -55,7 +56,9 @@ const DECLARATIONS: &[(&str, &str)] = &[
     ("llm", "crates/busbar-llm/src/lib.rs"),
     ("mcp", "crates/busbar-mcp/src/mcp/mod.rs"),
     ("a2a", "crates/busbar-a2a/src/a2a/mod.rs"),
-    ("streaming", "crates/busbar-voice/src/lib.rs"),
+    // FLIP-STREAMING: the streaming plane is a door; its classes are its Statement's
+    // `BILLABLE_CLASSES` table (`class(<class>, <family>)` rows).
+    ("streaming", "crates/busbar-plane-streaming/src/door.rs"),
 ];
 
 /// One report site: its plane, its file, its shape and how many times the shape occurs there, and
@@ -120,11 +123,12 @@ const SITES: &[Site] = &[
         emits: &["busbar_plane_a2a::meta::CLASS_BYTES"],
         dead: None,
     },
-    // `class_counts` (busbar-plane-streaming's session.rs) names these six.
+    // `class_counts` (busbar-plane-streaming's session.rs) names these six; the door's session
+    // sink reports each closed turn's counts under them.
     Site {
         plane: "streaming",
-        file: "crates/busbar-voice/src/runtime/metering.rs",
-        shape: "usage_units: class_counts(",
+        file: "crates/busbar-plane-streaming/src/session_unit.rs",
+        shape: "in class_counts(",
         occurrences: 1,
         emits: &[
             "busbar_plane_streaming::meta::CLASS_AUDIO_TOKENS_IN",
@@ -175,6 +179,12 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
 /// `busbar_plane_mcp::meta::CLASS_BYTES` is `crates/busbar-plane-mcp/src/meta.rs`'s
 /// `const CLASS_BYTES: … = MeterClassId::new("bytes")` (or `= "bytes"`).
 fn resolve(root: &Path, path: &str) -> Result<String, String> {
+    let (file, src, name) = defining(root, path)?;
+    literal_of(&src, name).ok_or_else(|| format!("{path}: no `const {name}` literal in {file:?}"))
+}
+
+/// The file that defines the item a constant path names, its text, and the item's name.
+fn defining<'p>(root: &Path, path: &'p str) -> Result<(PathBuf, String, &'p str), String> {
     let segments: Vec<&str> = path.split("::").collect();
     let (krate, rest) = segments.split_first().ok_or("an empty path")?;
     let (name, modules) = rest.split_last().ok_or("a path with no constant")?;
@@ -196,7 +206,7 @@ fn resolve(root: &Path, path: &str) -> Result<String, String> {
         .find(|f| f.exists())
         .ok_or_else(|| format!("{path}: no defining file among {candidates:?}"))?;
     let src = std::fs::read_to_string(file).map_err(|e| format!("{path}: {e}"))?;
-    literal_of(&src, name).ok_or_else(|| format!("{path}: no `const {name}` literal in {file:?}"))
+    Ok((file.clone(), src, name))
 }
 
 /// The string literal `const name` is defined as in `src`.
@@ -210,6 +220,61 @@ fn literal_of(src: &str, name: &str) -> Option<String> {
     Some(def[open + 1..open + 1 + close].to_string())
 }
 
+/// A plane DOOR's classes: its Statement's `const BILLABLE_CLASSES: &[BillableClass] = &[ … ]`
+/// table of `class(<class>, <family>)` rows, each class a crate-relative constant path
+/// (`meta::CLASS_X.as_str()`) or a name the file imports (`use busbar_contract::plane::{PER_SESSION,
+/// …}`). `None` when the file holds no such table (a `PlaneDeclaration` file).
+fn door_classes(root: &Path, file: &str, src: &str) -> Result<Option<BTreeSet<String>>, String> {
+    let Some(at) = src.find("const BILLABLE_CLASSES: &[BillableClass] = &[") else {
+        return Ok(None);
+    };
+    let body = &src[at..];
+    let end = body
+        .find("\n];")
+        .ok_or_else(|| format!("{file}: an unterminated BILLABLE_CLASSES"))?;
+    let krate = file
+        .strip_prefix("crates/")
+        .and_then(|r| r.split('/').next())
+        .ok_or_else(|| format!("{file}: not under crates/"))?
+        .replace('-', "_");
+    let mut classes = BTreeSet::new();
+    for line in body[..end].lines() {
+        let Some(row) = line.trim().strip_prefix("class(") else {
+            continue;
+        };
+        let expr = row.split(',').next().unwrap_or("").trim();
+        let expr = expr.trim_end_matches(".as_str()");
+        let path = if let Some(lit) = expr.strip_prefix('"') {
+            classes.insert(lit.trim_end_matches('"').to_string());
+            continue;
+        } else if expr.contains("::") {
+            format!("{krate}::{expr}")
+        } else {
+            let import = src
+                .lines()
+                .filter_map(|l| l.trim().strip_prefix("use "))
+                .find_map(|l| {
+                    let l = l.trim_end_matches(';');
+                    match l.split_once("::{") {
+                        Some((module, names)) => names
+                            .trim_end_matches('}')
+                            .split(',')
+                            .any(|n| n.trim() == expr)
+                            .then(|| format!("{module}::{expr}")),
+                        None => (l.rsplit("::").next() == Some(expr)).then(|| l.to_string()),
+                    }
+                })
+                .ok_or_else(|| format!("{file}: class `{expr}` is neither a path nor imported"))?;
+            import
+        };
+        classes.insert(resolve(root, &path)?);
+    }
+    if classes.is_empty() {
+        return Err(format!("{file}: a BILLABLE_CLASSES table with no rows"));
+    }
+    Ok(Some(classes))
+}
+
 /// The classes a plane's `PlaneDeclaration::billable_classes` names, resolved.
 fn declared(root: &Path, plane: &str) -> Result<BTreeSet<String>, String> {
     let (_, file) = DECLARATIONS
@@ -217,16 +282,52 @@ fn declared(root: &Path, plane: &str) -> Result<BTreeSet<String>, String> {
         .find(|(p, _)| *p == plane)
         .ok_or_else(|| format!("no declaration file for plane {plane}"))?;
     let src = std::fs::read_to_string(root.join(file)).map_err(|e| format!("{file}: {e}"))?;
+    if let Some(classes) = door_classes(root, file, &src)? {
+        return Ok(classes);
+    }
     let start = src
-        .find("billable_classes: &[")
+        .find("billable_classes: &")
         .ok_or_else(|| format!("{file}: no billable_classes"))?;
-    let block = &src[start..];
-    let end = block.find("],").ok_or("an unterminated billable_classes")?;
+    let after = &src[start + "billable_classes: &".len()..];
+    // Either a literal list (`&[ BillableClass { class: … }, … ]`) or a named const table in the
+    // same file (`&LLM_BILLABLE_CLASSES`), whose body states the classes the same way.
+    let block = if after.starts_with('[') {
+        let end = after.find("],").ok_or("an unterminated billable_classes")?;
+        &after[..end]
+    } else {
+        let name: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        let at = src
+            .find(&format!("const {name}:"))
+            .ok_or_else(|| format!("{file}: billable_classes names `{name}`, defined nowhere"))?;
+        let body = &src[at..];
+        let end = body
+            .find("\n};")
+            .ok_or_else(|| format!("{file}: an unterminated `const {name}`"))?;
+        &body[..end]
+    };
     let mut classes = BTreeSet::new();
-    for line in block[..end].lines() {
+    // A table that splices in the codec's open classes (`OPEN_CLASSES[k].0`) declares every one
+    // of them: read that table off its own defining file, by the path the block imports it from.
+    if let Some(at) = block.find("::{OPEN_CLASSES") {
+        let line_start = block[..at]
+            .rfind("use ")
+            .ok_or("an OPEN_CLASSES import with no `use`")?;
+        let module = block[line_start + 4..at].trim();
+        for class in open_classes(root, &format!("{module}::OPEN_CLASSES"))? {
+            classes.insert(class);
+        }
+    }
+    for line in block.lines() {
         let Some(expr) = line.trim().strip_prefix("class:") else {
             continue;
         };
+        // The spliced open classes are read above; `""` is the table's fill before it is written.
+        if expr.trim().starts_with("OPEN_CLASSES[") || expr.trim().starts_with("\"\"") {
+            continue;
+        }
         let expr = expr
             .trim()
             .trim_end_matches(',')
@@ -238,6 +339,62 @@ fn declared(root: &Path, plane: &str) -> Result<BTreeSet<String>, String> {
         });
     }
     Ok(classes)
+}
+
+/// The class of every `(CLASS, family)` row of the `&[(&str, &str)]` table `path` names, each
+/// resolved off the table's own file.
+fn open_classes(root: &Path, path: &str) -> Result<Vec<String>, String> {
+    let (file, src, name) = defining(root, path)?;
+    let at = src
+        .find(&format!("const {name}:"))
+        .ok_or_else(|| format!("{path}: no `const {name}` in {file:?}"))?;
+    let body = &src[at..];
+    let open = body
+        .find("= &[")
+        .ok_or_else(|| format!("{path}: not a table"))?
+        + 4;
+    let end = body[open..]
+        .find("\n];")
+        .ok_or_else(|| format!("{path}: an unterminated table"))?;
+    let mut out = Vec::new();
+    // The rows, line comments dropped (a comment may hold a parenthesis).
+    let rows: String = body[open..open + end]
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for row in rows.split('(').skip(1) {
+        let class = row.split(',').next().unwrap_or("").trim();
+        if class.is_empty() {
+            continue;
+        }
+        out.push(if let Some(lit) = class.strip_prefix('"') {
+            lit.trim_end_matches('"').to_string()
+        } else {
+            match literal_of(&src, class) {
+                Some(lit) => lit,
+                // Defined elsewhere in the same crate and imported (`use crate::a::b::NAME;`).
+                None => {
+                    let krate = path.split("::").next().unwrap_or("");
+                    let import = src
+                        .lines()
+                        .filter_map(|l| l.trim().strip_prefix("use crate::"))
+                        .filter_map(|l| l.strip_suffix(';'))
+                        .find(|l| l.rsplit("::").next() == Some(class))
+                        .ok_or_else(|| {
+                            format!(
+                                "{path}: row `{class}` is neither defined nor imported in {file:?}"
+                            )
+                        })?;
+                    resolve(root, &format!("{krate}::{import}"))?
+                }
+            }
+        });
+    }
+    if out.is_empty() {
+        return Err(format!("{path}: a table with no rows"));
+    }
+    Ok(out)
 }
 
 /// Every finding for `sites` over `found` (file -> shape -> count) — empty is the only good answer.

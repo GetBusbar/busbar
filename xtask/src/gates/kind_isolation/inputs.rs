@@ -594,9 +594,11 @@ fn hidden_sources(
     scanned: &BTreeSet<String>,
     files: &[crate::ctx::SourceFile],
 ) -> Vec<String> {
+    // Each file's compiled set is a pure function of its path and bytes ([`compiled_in`]): read
+    // across the cores, gathered in walk order.
     let mut compiled: Vec<Compiled> = Vec::new();
-    for f in files {
-        compiled.extend(compiled_in(&f.rel_str(), &f.text).iter().cloned());
+    for found in crate::par::par_map(files, |f| compiled_in(&f.rel_str(), &f.text)) {
+        compiled.extend(found.iter().cloned());
     }
 
     // ONE `check-ignore` FOR THE WHOLE COMPILED SET. A tracked path is never reported by git, so

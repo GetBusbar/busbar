@@ -20,8 +20,8 @@ use crate::codec::usage_count::{read_usage, CountRead, CountSlot, UsageCount};
 /// the reserved token classes; `web_search_requests` is the open class `search_units` (one billed
 /// search each, `IrUsage::to_token_usage`). The 5m/1h tiers ride inside `cache_write`, whose rate
 /// card holds one rate (the per-TTL split is escalated, A-F1). `thinking_tokens` is inside
-/// `output_tokens`. `web_fetch_requests` is no unit: Anthropic charges no per-fetch fee, the fetched
-/// content bills as the input tokens it already is.
+/// `output_tokens`. `web_fetch_requests` is the open class `web_fetch_requests` (owner LEDGER-100:
+/// every reported unit is a ledger line; the operator's card prices it, 0 makes it free).
 pub(super) const USAGE: &[UsageCount] = &[
     (CountSlot::Input, CountRead::Zero(&[keys::INPUT_TOKENS])),
     (CountSlot::Output, CountRead::Zero(&[keys::OUTPUT_TOKENS])),
@@ -44,6 +44,10 @@ pub(super) const USAGE: &[UsageCount] = &[
     (
         CountSlot::WebSearchRequests,
         CountRead::Opt(&[super::SERVER_TOOL_USE, super::WEB_SEARCH_REQUESTS]),
+    ),
+    (
+        CountSlot::WebFetchRequests,
+        CountRead::Opt(&[super::SERVER_TOOL_USE, super::WEB_FETCH_REQUESTS]),
     ),
     (
         CountSlot::Reasoning,
@@ -103,11 +107,14 @@ pub(super) fn write_output_tokens_details(usage: &crate::codec::ir::IrUsage) -> 
 
 /// `usage.server_tool_use` — Anthropic's `{web_search_requests, web_fetch_requests}` object when a
 /// server-tool count is known, else the schema's `null` (what a real response carries when no
-/// server tool ran). Required by both `Usage` and `MessageDeltaUsage`. The IR carries only the
-/// web-search count; the schema requires both counters, so `web_fetch_requests` is `0` here.
+/// server tool ran). Required by both `Usage` and `MessageDeltaUsage`. The echo keys on the
+/// web-search count and writes `web_fetch_requests` as `0`, the bytes 1.5.5 wrote; the fetch count
+/// the reader carries (`IrUsageDetail::web_fetch_requests`) is ledgered, not echoed.
 pub(super) fn write_server_tool_use(usage: &crate::codec::ir::IrUsage) -> serde_json::Value {
     match usage.detail.web_search_requests {
-        Some(n) => serde_json::json!({ (super::WEB_SEARCH_REQUESTS): n, "web_fetch_requests": 0 }),
+        Some(n) => {
+            serde_json::json!({ (super::WEB_SEARCH_REQUESTS): n, (super::WEB_FETCH_REQUESTS): 0 })
+        }
         None => serde_json::Value::Null,
     }
 }

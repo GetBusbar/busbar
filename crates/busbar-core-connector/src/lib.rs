@@ -43,6 +43,7 @@
 pub mod compose;
 pub mod dtls;
 pub mod endpoint;
+pub mod framed_stream;
 pub mod framer;
 pub mod guard;
 pub mod io;
@@ -54,9 +55,10 @@ mod program;
 pub mod registry;
 pub mod socket;
 pub mod stream;
-/// The TLS test kit (far ends, the recording TLS fixture server) for this crate's tests that need a
-/// real handshake: TLS stays in the connector, even in a test.
-#[cfg(test)]
+/// The TLS test kit (far ends, the recording TLS fixture server, a private test CA) for this crate's
+/// tests that need a real handshake, and (feature `test-support`) a plugin repo's conformance test:
+/// TLS stays in the connector, even in a test.
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod tls;
 pub mod udp;
@@ -467,6 +469,17 @@ impl Connector {
             .expect("transports")
             .serving(transport)
             .is_some()
+    }
+
+    /// The framer entry that answers `scheme`, where a loaded one does: what frames a stream that
+    /// arrived on that claim (ARCHITECT 4l, [`framed_stream`]).
+    #[must_use]
+    pub fn framer_for(&self, scheme: &str) -> Option<Arc<dyn framer::FramerDoor>> {
+        self.transports
+            .read()
+            .expect("transports")
+            .serving(scheme)
+            .map(|s| Arc::clone(&s.entry.door))
     }
 
     /// Record that `owner` declared `need` over `transport` (a scheme the registry view serves), in

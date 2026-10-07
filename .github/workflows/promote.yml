@@ -12,7 +12,7 @@ on: [pull_request, merge_group]
 concurrency: { group: "promote-${{ github.event.pull_request.number || github.event.merge_group.head_ref }}", cancel-in-progress: "${{ github.event_name == 'pull_request' && github.base_ref != 'dev' }}" }
 permissions: { contents: read }
 env:
-  RELEASE_REF: 1869c0032ecf2cdad8b1153ccf25311cb6baad75
+  RELEASE_REF: e133afa5c03862320ad06fd08c611d018ce0b0cc
   SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
   TO: ${{ github.base_ref || github.event.merge_group.base_ref }}
   BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
@@ -21,13 +21,16 @@ jobs:
     if: github.event_name == 'merge_group' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    outputs: { runner: "${{ steps.pre.outputs.runner }}" }
+    outputs: { runner: "${{ steps.pre.outputs.runner }}", one_runner: "${{ steps.pre.outputs.one_runner }}" }
     steps:
-      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { ref: "${{ env.SHA }}", path: busbar } } # v7
+      # Full history: the pre-flight reads the pull request's diff against BASE_SHA to choose one runner or the matrix.
+      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0 } } # v7
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
       # The pre-flight is busbar-release's Rust CLI (preflight.json is the one list): it sizes the hop
-      # (runner= to $GITHUB_OUTPUT) and runs every pre-flight check against the candidate. Built with no
-      # default features (no GitHub client), as the CLI documents for this job.
+      # (runner= to $GITHUB_OUTPUT), chooses how a pull request into predev runs (one_runner=: ONE runner
+      # when the crates its diff affects are estimated within 20 min, else the shard matrix; OWNER-LOCKED
+      # 2026-10-06) and runs every pre-flight check against the candidate. Built with no default
+      # features (no GitHub client), as the CLI documents for this job.
       # package-selector: busbar-release-cli -- .github/workflows/promote.yml -- the package lives in the busbar-release checkout at RELEASE_REF (working-directory busbar-release), not in this workspace
       - id: pre
         working-directory: busbar-release
@@ -58,16 +61,18 @@ jobs:
           sha256sum busbar > busbar.sha256
           echo "base64-subjects=$(base64 -w0 busbar.sha256)" >> "$GITHUB_OUTPUT"
       - { uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "slsa-artifact-${{ env.SHA }}", path: "slsa/", retention-days: 7, if-no-files-found: error } } # v7.0.1
-  # The hop is SHARDED (ARCHITECT 2026-10-02): four runners each judge one part (`--shard K/4`:
-  # test:workspace's hash partition K, plus the unsplit steps dealt to K; the gates in shard 1, the
-  # oracle and conformance in shard 4). Each builds and runs the candidate's code, so it holds NO write
-  # token (contents read only, no persisted credentials); its report leaves as an artifact. It waits for
-  # slsa-build in a merge group; on a pull request slsa-build is skipped and the shards run.
+  # The merge group's hop, and the predev->dev pull request's, is SHARDED (ARCHITECT 2026-10-02): four
+  # runners each judge one part (`--shard K/4`: test:workspace's hash partition K, plus the unsplit steps
+  # dealt to K; the gates in shard 1, the oracle and conformance in shard 4). Each builds and runs the
+  # candidate's code, so it holds NO write token (contents read only, no persisted credentials); its
+  # report leaves as an artifact. It waits for slsa-build in a merge group. A pull request into predev
+  # runs the shards only when the pre-flight chose the matrix (one_runner=false: every crate affected, or
+  # over 20 min on one runner); otherwise its hop is ONE runner, in the `hop` job below.
   hop-shard:
     name: "hop shard ${{ matrix.shard }}"
     strategy: { fail-fast: false, matrix: { shard: [1, 2, 3, 4] } }
     needs: [preflight, slsa-build]
-    if: ${{ !cancelled() && needs.preflight.result == 'success' && (needs.slsa-build.result == 'success' || needs.slsa-build.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && (needs.slsa-build.result == 'success' || needs.slsa-build.result == 'skipped') && (github.event_name == 'merge_group' || github.base_ref == 'dev' || needs.preflight.outputs.one_runner != 'true') }}
     permissions: { contents: read }
     runs-on: ${{ needs.preflight.outputs.runner }}
     timeout-minutes: 330
@@ -88,18 +93,39 @@ jobs:
       - run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/hop.sh"
         env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}", CARGO_PROFILE_DEV_DEBUG: "0", SHARD: "${{ matrix.shard }}/4" }
       - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "turnstile-report-${{ env.SHA }}-shard${{ matrix.shard }}", path: "artifacts/", if-no-files-found: warn } } # v7.0.1
-  # `hop` (the required check) folds the shards into the hop's ONE verdict: BOARD only when every shard
-  # reported and boarded; a shard that is missing, timed out or INFRA makes it INFRA, never green.
+  # `hop` (the required check) is the hop's ONE verdict. In a merge group and on the predev->dev pull
+  # request it folds the shards: BOARD only when every shard reported and boarded; a shard that is
+  # missing, timed out or INFRA makes it INFRA, never green. A pull request INTO PREDEV whose pre-flight
+  # chose one runner (OWNER-LOCKED 2026-10-06, BUSBAR-1.6.0 Part 6 "Verification runs once per input")
+  # runs it as ONE runner: no shard, no slsa-build; the ladder's predev `enter_pr`, the merge group's
+  # gates and steps scoped to the crates the PR changes plus their reverse dependencies, on the PR merged
+  # onto the base tip, judged no worse than the base the merge group landed in its 4 shards
+  # (BASE_SHARDS). It runs the candidate's code, so it holds no write token either.
   hop:
     needs: [preflight, hop-shard]
     if: ${{ !cancelled() && needs.preflight.result == 'success' }}
     permissions: { contents: read }
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ${{ (github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.preflight.outputs.one_runner == 'true') && needs.preflight.outputs.runner || 'ubuntu-latest' }}
+    timeout-minutes: ${{ (github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.preflight.outputs.one_runner == 'true') && 330 || 30 }}
+    env: { ONE_RUNNER: "${{ github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.preflight.outputs.one_runner == 'true' }}" }
     steps:
+      - if: env.ONE_RUNNER == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0, persist-credentials: false }
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
-      - { continue-on-error: true, uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c, with: { pattern: "turnstile-report-${{ env.SHA }}-shard*", path: shards } } # v8.0.1
+      # No debuginfo in the dev/test builds (as in the shards: the runner's disk).
+      - if: env.ONE_RUNNER == 'true'
+        run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/hop.sh"
+        env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}", CARGO_PROFILE_DEV_DEBUG: "0", BASE_SHARDS: "4" }
+      - if: always() && env.ONE_RUNNER == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: "turnstile-report-${{ env.SHA }}", path: "artifacts/", if-no-files-found: warn }
+      - if: env.ONE_RUNNER != 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { pattern: "turnstile-report-${{ env.SHA }}-shard*", path: shards }
       - name: Fold the shards
+        if: env.ONE_RUNNER != 'true'
         run: |
           mkdir -p merge artifacts
           for k in 1 2 3 4; do

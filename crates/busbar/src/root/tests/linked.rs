@@ -866,22 +866,36 @@ fn a_linked_and_a_dropped_in_plane_serve_one_request_identically() {
 }
 
 /// THE KERNEL SERVES NO EXPORT MODULE OF ITS OWN (K9e-2: its last built-in became a linked sink),
-/// so the refusal of a row "spelling a built-in module" has nothing left to guard and is gone. What
-/// replaces it: every module is a row of the axis, and each LINKED export row answers its own
-/// module ahead of any row a plugins directory drops in under the same alias — a dropped-in row
-/// never takes a module from the sink this build links. RED: without the linked rows, the
-/// dropped-in one answers.
+/// so every module is a row of the axis. ARCHITECT Q-P4-12 (BUSBAR-1.6.0.md:106, "it refuses at boot
+/// when two plugins claim the same thing"): a LINKED export row and a DIFFERENT dropped-in plugin
+/// spelling its module refuse the boot, naming both plugins and the module. No door outranks the
+/// other (compiled in = dropped in), so the ambiguity is never resolved by picking a winner. This
+/// replaces the K9e-2-era rule that the linked row answered ahead. GREEN arm: the linked rows alone
+/// answer their modules, and the dropped-in row alone answers its own.
 #[test]
-fn every_linked_export_row_answers_its_module_ahead_of_a_dropped_in_spelling() {
+fn a_linked_export_row_and_a_different_dropped_in_plugin_spelling_its_module_refuse_the_boot() {
     let release = test_plugins::key(7);
     let doors = crate::LINKED.export_doors.iter().map(|d| (d.name, d.alias));
     for (name, alias) in doors {
         let scan = || export_row_registry(alias, "k9e-dropped", alias, "busbar", &release, vec![]);
-        let rows = linked_exports(crate::LINKED.export_doors).expect("the linked export rows");
-        let both = scan().link(rows).expect("the linked door admits them");
+        let rows = || linked_exports(crate::LINKED.export_doors).expect("the linked export rows");
+        // RED ARM: both doors claim the module, as two different plugins.
+        let refused = scan()
+            .link(rows())
+            .expect_err("a linked row and a different dropped-in plugin claiming one module");
+        assert!(
+            refused.contains("claim conflict")
+                && refused.contains(&format!("'{alias}'"))
+                && refused.contains(name)
+                && refused.contains("k9e-dropped"),
+            "{alias}: {refused}"
+        );
+        // GREEN: each door alone answers.
         let answering = |r: &PluginRegistry| r.resolve(alias).map(|p| p.manifest.name.clone());
-        assert_eq!(answering(&both).as_deref(), Some(name), "{alias}");
-        // RED ARM: the dropped-in row alone answers.
+        let alone = PluginRegistry::empty()
+            .link(rows())
+            .expect("the linked rows alone");
+        assert_eq!(answering(&alone).as_deref(), Some(name), "{alias}");
         assert_eq!(
             answering(&scan()).as_deref(),
             Some("k9e-dropped"),
@@ -1127,7 +1141,7 @@ fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
     let legacy = &native("seam-l-shared")[0];
     let other = &native("seam-l-other")[0];
     let door = &native("seam-l-shared")[0];
-    let rows = doors_own_their_plane_keys(vec![legacy, other, door], &[door]);
+    let rows = doors_own_their_plane_keys(vec![legacy, other, door], &[door]).expect("the fold");
     assert_eq!(rows.len(), 2, "the legacy row yields the shared key");
     assert!(
         std::ptr::eq(rows[0], other),
@@ -1142,6 +1156,100 @@ fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
     assert!(
         std::ptr::eq(*shared, door),
         "the boot fold keeps the door's row"
+    );
+}
+
+/// SEAM-L(s), THE ENGINE RIDES THE KEY: a door taking the key of the legacy row that is the fallback
+/// plane takes over that row's engine (the fallback flag, the runtime it builds and the view the
+/// core's own readers walk) and keeps every other word of its own. RED: the fold dropped the legacy
+/// row whole, so with a linked llm door the node had no fallback runtime and `/metrics` lost its lane
+/// gauges (`metrics_scrape_boot_window` under `--features llm-on-driver`).
+#[test]
+fn a_door_taking_the_fallback_planes_key_keeps_its_engine() {
+    let base = &native("seam-l-engine")[0];
+    let legacy: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
+        declaration: PlaneDeclaration {
+            fallback: true,
+            ..base.declaration
+        },
+        build_runtime: Some(|_, _| Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>),
+        viewer: Some(|_| &busbar_kernel::plane_host::EMPTY_VIEW),
+        ..*base
+    }));
+    let door: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
+        declaration: PlaneDeclaration {
+            config_section: "seam-l-door-section",
+            ..base.declaration
+        },
+        ..*base
+    }));
+    let rows = doors_own_their_plane_keys(vec![legacy, door], &[door]).expect("the fold");
+    assert_eq!(rows.len(), 1, "one row serves the key");
+    let row = rows[0];
+    assert!(!std::ptr::eq(row, legacy), "the door serves the plane");
+    assert_eq!(
+        row.config_section, "seam-l-door-section",
+        "the door's own words stay"
+    );
+    assert!(
+        row.fallback,
+        "the fallback plane is still the fallback plane"
+    );
+    assert!(
+        row.build_runtime.is_some() && row.viewer.is_some(),
+        "the engine's runtime and view ride the key"
+    );
+    let folded = merged_boot_plane_decls(&rows, &[]);
+    let kept = folded
+        .iter()
+        .find(|d| d.key == "seam-l-engine")
+        .expect("the key is registered");
+    assert!(
+        kept.fallback && kept.viewer.is_some(),
+        "the boot fold keeps it"
+    );
+    // A legacy row with no engine leaves the door's row untouched (the shared-key case above).
+    let plain = &native("seam-l-plain")[0];
+    let plain_door = &native("seam-l-plain")[0];
+    let rows =
+        doors_own_their_plane_keys(vec![plain, plain_door], &[plain_door]).expect("the fold");
+    assert!(std::ptr::eq(rows[0], plain_door), "nothing to carry");
+}
+
+/// SEAM-L(s), A FULL CARRY TABLE REFUSES BY NAME: a door taking an engine when every slot already
+/// carries another key's row is a boot refusal naming the door, never a row served without the
+/// engine. Driven on a one-slot table of its own, so the process's table is untouched. RED: the carry
+/// answered "nothing to carry" and the door served its key with no fallback runtime.
+#[test]
+fn a_door_carried_past_the_last_slot_refuses_by_name() {
+    static ONE: [std::sync::OnceLock<PlaneDecl>; 1] = [const { std::sync::OnceLock::new() }; 1];
+    let engine = |key: &'static str| -> (&'static PlaneDecl, &'static PlaneDecl) {
+        let base = &native(key)[0];
+        let legacy: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
+            declaration: PlaneDeclaration {
+                fallback: true,
+                ..base.declaration
+            },
+            viewer: Some(|_| &busbar_kernel::plane_host::EMPTY_VIEW),
+            ..*base
+        }));
+        (legacy, &native(key)[0])
+    };
+    let (legacy, door) = engine("seam-l-full-a");
+    let first = super::doors_own_their_plane_keys_into(&ONE, vec![legacy, door], &[door])
+        .expect("the one slot carries the first door");
+    assert!(first[0].fallback, "the first door carries its engine");
+    let again = super::doors_own_their_plane_keys_into(&ONE, vec![legacy, door], &[door])
+        .expect("the same key answers its row again");
+    assert!(std::ptr::eq(first[0], again[0]), "one row per key");
+    let (legacy, door) = engine("seam-l-full-b");
+    let Err(refusal) = super::doors_own_their_plane_keys_into(&ONE, vec![legacy, door], &[door])
+    else {
+        panic!("no slot is left for a second key, and the fold answered rows");
+    };
+    assert!(
+        refusal.contains("seam-l-full-b") && refusal.contains("1 door planes"),
+        "{refusal}"
     );
 }
 

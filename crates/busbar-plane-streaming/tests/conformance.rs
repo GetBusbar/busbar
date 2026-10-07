@@ -40,7 +40,9 @@ fn bind(d: &Dispatcher, instance: &str) -> Bind {
         max_inflight_cap: 8,
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
-        conns: None,
+        // These rows drive the door's slots and never dial: its needs are not declared, bound
+        // as a probe.
+        conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
     }
 }
 
