@@ -633,10 +633,13 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
         };
         gated.push((name.to_string(), feature.clone()));
     }
+    // Three today: the node (`linked_axis_node`), the admin units (`root-admin`) and the test
+    // harness. A plane served through its door has no root module (FLIP-DECISIONS deleted the
+    // decisions plane's), so the floor counts what is left and still refuses a scan that read none.
     assert!(
-        gated.len() >= 4,
-        "the root declares one feature-gated module per switched plane, or this test is reading \
-         the wrong file: found {gated:?}"
+        gated.len() >= 3,
+        "the root declares its feature-gated modules, or this test is reading the wrong file: \
+         found {gated:?}"
     );
 
     let mut files = Vec::new();
@@ -817,7 +820,7 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     // ORDER-INDEPENDENCE, not decoration: `cfg_with_provider_api_key` names a dialect the fallback
     // plane declares, so the plane is registered here as the boot registers it.
     crate::root::serve::hook_seat_tests::register_pools_door();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = BookDir::new("real-path");
     assert!(
         dir.entries().is_empty(),
@@ -1169,7 +1172,7 @@ fn one_seal_after_two_reloads() {
     use busbar_kernel_wal::RecordClass;
 
     crate::root::serve::hook_seat_tests::register_pools_door();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let dir = BookDir::new("two-reloads");
     let _env = data_dir_env(&dir.0);
     let cfg = || {

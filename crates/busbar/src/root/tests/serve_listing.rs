@@ -221,7 +221,7 @@ async fn a_listing_leaves_the_audit_the_journal_the_ledger_and_the_metrics_as_th
             .count()
     };
     let rows = ring();
-    let families = request_families(&busbar_kernel::metrics::render());
+    let families = request_families(&busbar_kernel::snapshot::render());
     let mut answered = 0;
     for cell in cells().iter().filter(|c| c.key == "open") {
         let (status, _, _) = list(&rig, cell).await;
@@ -241,7 +241,7 @@ async fn a_listing_leaves_the_audit_the_journal_the_ledger_and_the_metrics_as_th
     );
     assert_eq!(ring(), rows, "the kernel's audit log holds no row for it");
     assert_eq!(
-        request_families(&busbar_kernel::metrics::render()),
+        request_families(&busbar_kernel::snapshot::render()),
         families,
         "no request family is counted"
     );

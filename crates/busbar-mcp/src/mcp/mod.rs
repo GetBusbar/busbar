@@ -1276,6 +1276,12 @@ pub(crate) mod test_engine;
 #[path = "tests/config_tests.rs"]
 mod config_tests;
 
+// THE RUNTIME SLOT [`runtime_of`] downcasts holds this plane's own runtime on every App, including
+// one built while the fallback plane registers. See the module header.
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/runtime_slot_tests.rs"]
+mod runtime_slot_tests;
+
 // WHAT SURVIVES THE MOMENT THE DEFENCE FIRES: a quarantine across a restart, the sweep that has to
 // be STARTED for one to be taken at all, and the demoted upstream that must stop being ADVERTISED
 // and not merely stop being dispatchable. Hung here rather than under `connect` or `method` because

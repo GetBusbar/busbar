@@ -26,8 +26,8 @@ use crate::store::{HealthState, LaneData};
 use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, export, failover, governance, handlers,
-    hooks, ingress, ir, json, limits, metrics, net_guard, oauth_as, observability, operation,
-    plane, plugin_routes, profile, proxy, ratelimit, state, store, telemetry, tls, transport,
+    hooks, ingress, ir, json, limits, net_guard, oauth_as, observability, operation, plane,
+    plugin_routes, profile, proxy, ratelimit, snapshot, state, store, telemetry, tls, transport,
     trust,
 };
 use busbar_kernel::plane_host::{
@@ -1694,27 +1694,24 @@ pub fn build_app_from_config(
         }),
     };
 
-    let fallback_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());
     // Compose the fallback plane's runtime slot through that plane's OWN `build_runtime` fn-pointer,
     // exactly as a container plane's runtime is composed above — passing the neutral carrier erased to
     // `&dyn Any` and the prior generation's snapshot through the neutral `PlaneSlots` seam (for the
-    // warm-client / probe-schedule carry-over the plane now owns). GATED on a genuine fallback plane
-    // existing — NOT merely on `fallback_key()` resolving — because `fallback_key()` degrades to the
-    // FIRST registered plane's key when no plane flags itself fallback (the plane suites'
-    // dependency-copy of core, which registers only container planes); writing the slot then would
-    // clobber that sibling's runtime. With the fallback plane's `build_runtime` still `None` no slot is
-    // inserted and `App::llm_runtime` reads the empty default — byte-identical to the featureless
-    // zero-plane boot.
-    if crate::plane::is_fallback(crate::plane::fallback_key()) {
-        if let Some(f) = crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
-            .and_then(|d| d.build_runtime)
-        {
-            let slot = f(
-                &fallback_build_input as &dyn std::any::Any,
-                prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
-            );
-            plane_slots.insert(fallback_runtime_key, slot);
-        }
+    // warm-client / probe-schedule carry-over the plane now owns). The slot KEY and the `build_runtime`
+    // come from ONE resolved decl ([`crate::plane::fallback_decl`]): keying off `fallback_key()` would
+    // degrade to the FIRST registered plane's key when no plane flags itself fallback, and the key and
+    // the runtime read from two registry snapshots could name two different planes — the runtime then
+    // lands under a sibling's key and clobbers that sibling's own runtime. With no fallback plane the
+    // key names no plane (no slot is inserted under it) and `App::llm_runtime` reads the empty
+    // default — byte-identical to the featureless zero-plane boot.
+    let fallback = crate::plane::fallback_decl();
+    let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
+    if let Some(f) = fallback.and_then(|d| d.build_runtime) {
+        let slot = f(
+            &fallback_build_input as &dyn std::any::Any,
+            prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
+        );
+        plane_slots.insert(fallback_runtime_key, slot);
     }
 
     // THE AUTHORIZATION SERVER, built ONCE, and only when the operator asked for one. Everything
@@ -1989,6 +1986,7 @@ pub fn build_app_from_config(
             crate::plane::registry::build_dispatch(
                 crate::plane::registry::plane_decls(),
                 &ref_slots,
+                auth_mw.keys_in_chain,
             )?
         }),
         // THE TYPE-ERASED SLOT MAP ITSELF (Step 2.3). Moved in last: every typed field above that

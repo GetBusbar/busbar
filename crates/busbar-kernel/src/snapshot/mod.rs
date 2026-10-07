@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Prometheus metrics: a process-wide recorder + the `/metrics` exposition.
-//!
-//! `init()` installs a single global `metrics-exporter-prometheus` recorder. Emission sites
-//! across the codebase use the `metrics` facade macros (`counter!`/`histogram!`/`gauge!`), which
-//! route to that recorder. `render()` produces the current Prometheus text exposition, served by
-//! `handler()` on `GET /metrics`.
+//! THE KERNEL'S SNAPSHOT SERVICE (`BUSBAR-1.6.0.md` §5 "/metrics is not in core": the kind-neutral
+//! snapshot service the export kind reads; P2 D4 moved it here from `metrics/`, ARCHITECT Q-D4-METRICS
+//! 2026-10-04): the process recorder ([`source`]) every emission site writes through
+//! the `metrics` facade (`counter!`/`histogram!`/`gauge!`), the scrape-time gauges below, and the
+//! one read of them all — [`snapshot`], the export kind's scrape snapshot. The kernel renders no
+//! exposition: `GET /metrics` hands the snapshot to the export plugin whose sink carries the
+//! `metrics` stream, and serves what that plugin rendered ([`crate::export::scrape`]).
 //!
 //! ## Scrape-time gauges
 //!
-//! Four families of gauges are REFRESHED AT SCRAPE TIME (in `handler()`) from already-available
+//! Four families of gauges are REFRESHED AT SCRAPE TIME (on every scrape) from already-available
 //! in-process reads. They are NOT emitted on the request hot path:
 //!
 //! * **`busbar_key_spend_cents`** — per-virtual-key accumulated spend in the current budget window
@@ -54,30 +55,14 @@ use crate::state::App;
 /// the rest of this module is routing weights, durations and lane health, all legitimate floats.
 mod money;
 
-// ── THE RECORDER INSTALL, RE-EXPORTED BY IDENTITY FROM THE NEUTRAL SUBSTRATE ─────────────────────
-//
-// The opt-in flag, the install, the maintenance drain, the HELP/TYPE registrations, `render()` and
-// every metric NAME moved DOWN to `busbar_kernel::metrics` (all `App`-free; see there). These are
-// the SAME items at their historical `crate::metrics::…` paths — one registry, one exposition — so
-// every core call site below and elsewhere resolves unchanged. The `App`-shaped half
-// (`refresh_scrape_gauges`, `emit_lane_gauges`, the per-request handle caches) stays here.
-// The test-only arg-less initializer carries its historical gate: there is still deliberately no
-// arg-less installer outside tests, so no shipped build path can install metrics without a named
-// retention window.
-// The builder seam and the shipped gauge idle window the reaping battery below drives. Test-only on
-// both sides of the seam, so core's shipped surface gains nothing.
-//
-// `recorder_builder`/`GAUGE_IDLE_TIMEOUT` are defined directly below (unconditionally `pub`) now
-// that busbar-core's substrate is absorbed into this crate; `recorder_internals` re-exports them
-// for the test/`test-support` axis. A `use` here of the same two names, into the very module that
-// defines them, is a leftover from when they lived in a separate `busbar-core` crate — it now
-// collides with their own definitions (E0255) rather than importing anything new.
-// The maintenance drain and the retention decision are driven from PRODUCTION down in the substrate
-// (the maintenance thread and `HistogramSlot::record`); core names them only from the batteries that
-// pin the drain-on-a-timer and the three-state retention truth table, so the re-export is test-only.
-// The scrape-time gauge NAMES: `describe()` registers them down in the substrate and
-// `refresh_scrape_gauges`/`emit_lane_gauges` below emit them here, so this is a module-private
-// `use` — core's own surface gains nothing, exactly as when they were private consts here.
+/// THE HOOK FAMILIES — the hook-reported metrics folded for `/metrics/hooks` (P2 D4).
+pub(crate) mod hooks;
+
+/// THE OBSERVATION SOURCE — the recorder the emission sites write and [`snapshot`] reads.
+mod source;
+/// A test builds its own source to drive one through `metrics::with_local_recorder`.
+#[cfg(any(test, feature = "test-support"))]
+pub use source::Source;
 
 // ─── PER-REQUEST HANDLE CACHE ─────────────────────────────────────────────────────────────────────
 //
@@ -433,12 +418,10 @@ fn emit_lane_gauges(
     }
 }
 
-// `GET /metrics` (the Prometheus text exposition) is no longer served by a core route here: 1.5.3
-// lifted the DISTRIBUTION half out to the `prometheus` exporter, and 1.6.0 made it an export sink
-// on the export axis. The host's scrape ([`crate::export::scrape`]) refreshes the scrape-time
-// gauges via [`refresh_scrape_gauges`], snapshots the SAME registry through [`render`], and serves
-// what that sink renders. COLLECTION (this recorder + the emit sites + the gauge derivation) stays
-// core.
+// `GET /metrics` is not served from here: the host's scrape ([`crate::export::scrape`]) refreshes the
+// scrape-time gauges via [`refresh_scrape_gauges`], reads [`snapshot`], and serves what the export
+// plugin rendered from it. COLLECTION (the recorder, the emit sites, the gauge derivation) is the
+// kernel's; the exposition is the plugin's.
 
 #[cfg(test)]
 #[path = "../tests/metrics_tests.rs"]
@@ -484,18 +467,14 @@ pub const PLUGIN_OBSERVATIONS_DROPPED_TOTAL: &str = "busbar_plugin_observations_
 /// at boot" in docs/operations.md). A torn tail after a crash is NOT counted here.
 pub const JOURNAL_QUARANTINED_TOTAL: &str = "busbar_journal_quarantined_total"; // no labels
 
-// ── THE RECORDER INSTALL (relocated from busbar-core, verbatim) ──────────────────────────────────
+// ── THE RECORDER INSTALL ─────────────────────────────────────────────────────────────────────────
 //
-// The process-global Prometheus recorder — the opt-in decision, the install itself, the retention
-// window, the scrape-independent maintenance drain, the HELP/TYPE registrations and `render()` — is
-// `App`-free: it talks only to `metrics-exporter-prometheus` and to the neutral telemetry bank next
-// door (`crate::telemetry::flush_to_recorder`). It lives here so a plane's tests can install the SAME
-// single registry and read the SAME exposition without naming `busbar-core`. Core's `crate::metrics`
-// re-exports every item below at its historical path, so every existing core call site, every metric
-// NAME and the exposition format are byte-identical; the `App`-shaped half (`refresh_scrape_gauges`
-// and the per-request handle caches) stays in core.
+// The process-global recorder — the opt-in decision, the install itself, the retention window, the
+// scrape-independent maintenance drain and the HELP registrations — is `App`-free: it talks only to
+// [`source`] and to the neutral telemetry bank next door (`crate::telemetry::flush_to_recorder`), so
+// a plane's tests install the SAME single registry and read the SAME snapshot.
 
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use busbar_contract::export_calls::Family;
 use std::time::Duration;
 
 use crate::diag_error;
@@ -503,9 +482,14 @@ use crate::diagnostics::{
     METRICS_MAINTENANCE_THREAD_SPAWN_FAILED, PROMETHEUS_RECORDER_INSTALL_FAILED,
 };
 
-// without panicking: `None` = install was attempted and failed; `Some(handle)` = installed. The
-// `OnceLock` still serializes the single global `install_recorder()` call across threads/tests.
-static HANDLE: OnceLock<Option<PrometheusHandle>> = OnceLock::new();
+/// The installed source: `None` = the install was attempted and failed; `Some` = installed. The
+/// `OnceLock` serializes the single global install across threads and tests.
+static HANDLE: OnceLock<Option<&'static source::Source>> = OnceLock::new();
+
+/// The process's one observation source, held in a `static` for the process's life (the global
+/// recorder borrows it for `'static`), built once by [`init_with`]'s single install. A static, not a
+/// leaked box: nothing is forgotten, the value lives where every other process-global does.
+static SOURCE: OnceLock<source::Source> = OnceLock::new();
 
 /// Whether the operator opted in to metrics (`observability.metrics` present). Set SYNCHRONOUSLY by
 /// [`configure`] at startup, before the router is built, while the recorder install itself happens on
@@ -611,7 +595,7 @@ pub fn retaining_from(handle_installed: Option<bool>, opted_in: impl FnOnce() ->
 pub const REQUESTS_TOTAL: &str = "busbar_requests_total"; // labels: ingress_protocol, pool (bounded), outcome
                                                           // UPSTREAM_ATTEMPTS_TOTAL / UPSTREAM_FAILURES_TOTAL metric NAMES moved DOWN to the neutral substrate
                                                           // alongside their hostless emit fns (`busbar_kernel::telemetry`); re-exported here so this file's
-                                                          // `describe_counter!` registrations and every `crate::metrics::UPSTREAM_*` call site resolve unchanged.
+                                                          // `describe_counter!` registrations and every `crate::snapshot::UPSTREAM_*` call site resolve unchanged.
 pub use crate::telemetry::{UPSTREAM_ATTEMPTS_TOTAL, UPSTREAM_FAILURES_TOTAL}; // labels: pool (bounded), lane[, disposition]
 pub const BREAKER_TRIPS_TOTAL: &str = "busbar_breaker_trips_total"; // labels: pool (bounded), lane
 pub const FAILOVERS_TOTAL: &str = "busbar_failovers_total"; // labels: pool (bounded), reason
@@ -628,8 +612,8 @@ pub const PLANE_REQUESTS_TOTAL: &str = "busbar_plane_requests_total"; // labels:
 pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_seconds"; // histogram; labels: plane, ingress_protocol, pool (bounded)
 
 // The ROUTE_POLICY_{SELECTIONS,REJECTIONS}_TOTAL metric NAMES moved DOWN to the neutral substrate
-// (`busbar_kernel::metrics`) so the LLM plane's `pipeline.rs` emission sites name them via the ABI;
-// re-exported here so the `describe_counter!` registrations below and every `crate::metrics::ROUTE_*`
+// (`busbar_kernel::snapshot`) so the LLM plane's `pipeline.rs` emission sites name them via the ABI;
+// re-exported here so the `describe_counter!` registrations below and every `crate::snapshot::ROUTE_*`
 // call site resolve unchanged. Pure `&str` — no registry moved, scrape byte-identical.
 // ROUTE_POLICY_* are defined at the top of this module.
 
@@ -644,8 +628,8 @@ pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_
 // retirement — the ONE shared 1024-permit tap gate now lives there and emits this counter byte-identically,
 // so core no longer names the const (the string is pinned equal substrate-side).
 
-// The HOOK_CONTENT_TRUNCATED_TOTAL metric NAME moved DOWN to `busbar_kernel::metrics` so the LLM
-// plane's `hooks.rs` emission site names it via the ABI; re-exported here so `crate::metrics::…` call
+// The HOOK_CONTENT_TRUNCATED_TOTAL metric NAME moved DOWN to `busbar_kernel::snapshot` so the LLM
+// plane's `hooks.rs` emission site names it via the ABI; re-exported here so `crate::snapshot::…` call
 // sites resolve unchanged. Unlabeled counter: a hook content projection whose serialized size
 // exceeded `limits.hook_content_max_bytes`, so the content was OMITTED WHOLE (never truncated
 // mid-value) and the hook was sent an empty content projection. A steady non-zero rate means a
@@ -673,9 +657,9 @@ pub const BILLING_TAP_DECODE_FAIL_TOTAL: &str = "busbar_billing_tap_decode_fail_
 // bespoke counter of their own, like the inbound cap) is uniformly observable.
 pub const ADMISSION_DENIED_TOTAL: &str = "busbar_admission_denied_total"; // labels: gate
 
-// The BILLING_TRUNCATED_TOTAL metric NAME moved DOWN to `busbar_kernel::metrics` so the LLM plane's
+// The BILLING_TRUNCATED_TOTAL metric NAME moved DOWN to `busbar_kernel::snapshot` so the LLM plane's
 // `response_body.rs` emission site names it via the ABI; re-exported here so the `init_with` pre-touch
-// (below), the `describe_counter!` registration, and every `crate::metrics::…` call site resolve
+// (below), the `describe_counter!` registration, and every `crate::snapshot::…` call site resolve
 // unchanged. Unlabeled counter: same-protocol non-stream responses whose billing-side buffer hit the
 // translate-body cap before the terminal `usage` block, so token usage could not be parsed and the
 // request billed zero despite a full 2xx reaching the client. An operator alerts on a non-zero rate to
@@ -803,13 +787,6 @@ pub const LANE_AVAILABLE_PERMITS: &str = "busbar_lane_available_permits";
 /// `pool` = configured pool name (bounded), the same convention as the lane gauges.
 pub const POOL_QUEUED: &str = "busbar_pool_queued";
 
-/// Prometheus text exposition format content-type (version 0.0.4), returned by the `/metrics`
-/// scrape handler. Defined as a constant so the string is not duplicated across handler and tests.
-pub const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4";
-
-/// Install the global Prometheus recorder. Idempotent: safe to call once at startup and
-/// repeatedly from tests (the global recorder can only be installed once per process, so the
-/// `OnceLock` guards it). Also registers HELP/TYPE descriptions for the taxonomy.
 /// Install the recorder for an operator who OPTED IN, retaining `buffer` seconds of observations.
 ///
 /// `buffer` is `observability.metrics.buffer_seconds` — a REQUIRED config field, so this value is
@@ -835,11 +812,21 @@ pub fn init_with(buffer: Duration) {
     // store `None` rather than panicking: this runs on a background thread (main.rs) where a
     // panic would be silent, leaving `/metrics` empty with no operator-visible cause. Storing `None`
     // degrades gracefully (empty exposition) AND emits an error log so the cause is discoverable.
-    HANDLE.get_or_init(|| match build_recorder(bucket) {
-        Ok(handle) => {
+    HANDLE.get_or_init(|| {
+        let source =
+            SOURCE.get_or_init(|| source::Source::new(bucket, SUMMARY_BUCKETS, GAUGE_IDLE_TIMEOUT));
+        install(source, bucket)
+    });
+}
+
+/// Make `source` (drained every `bucket`) the process recorder: on success register the taxonomy's
+/// HELP text, pre-touch the one unlabeled 1.5.5 series and start the maintenance drain.
+fn install(source: &'static source::Source, bucket: Duration) -> Option<&'static source::Source> {
+    match metrics::set_global_recorder(source) {
+        Ok(()) => {
             describe();
             // Pre-register the unlabeled counter so `/metrics` is non-empty from the first
-            // scrape. The exporter renders only touched metrics; without this, a freshly
+            // scrape. The source reports only touched metrics; without this, a freshly
             // booted gateway that has served no traffic exposes an EMPTY body, and an
             // operator wiring up Prometheus before sending traffic reasonably concludes
             // the endpoint is broken (found by the acceptance harness, 2026-07-09).
@@ -853,7 +840,7 @@ pub fn init_with(buffer: Duration) {
             // at 0 would expose the series on an idle 1.5.5-style config, which 1.5.5 never did;
             // it is still described (below) and rendered with HELP/TYPE the moment it fires.
             spawn_maintenance(bucket);
-            Some(handle)
+            Some(source)
         }
         Err(e) => {
             diag_error!(
@@ -862,7 +849,7 @@ pub fn init_with(buffer: Duration) {
             );
             None
         }
-    });
+    }
 }
 
 /// Number of rolling buckets the retention window is split across (see [`init_with`]).
@@ -882,30 +869,9 @@ const SUMMARY_BUCKETS: std::num::NonZeroU32 = match std::num::NonZeroU32::new(3)
 /// silently decide how long a deleted key lingers. GAUGES ONLY — expiring a counter would reset it
 /// and break `rate()`, and expiring a histogram would discard its summary.
 ///
-/// A live series can never be caught by this: `refresh_scrape_gauges` runs inside `render`, so every
-/// live gauge is re-set microseconds before it is rendered regardless of the scrape interval.
+/// A live series can never be caught by this: `refresh_scrape_gauges` runs before every scrape's
+/// [`snapshot`], so every live gauge is re-set microseconds before it is read.
 pub const GAUGE_IDLE_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
-
-/// Build the Prometheus recorder with the operator's retention window and install it globally.
-/// Split out of [`init_with`] so the fallible builder chain reads in one place.
-fn build_recorder(
-    bucket: Duration,
-) -> Result<PrometheusHandle, metrics_exporter_prometheus::BuildError> {
-    recorder_builder(bucket, GAUGE_IDLE_TIMEOUT)?.install_recorder()
-}
-
-/// The builder itself, with the idle timeout as a parameter so a test can drive expiry on a short
-/// window instead of the shipped one. Installing is global and once-per-process; building is not,
-/// which is what makes the reaping behaviour testable at all.
-pub fn recorder_builder(
-    bucket: Duration,
-    gauge_idle: Duration,
-) -> Result<PrometheusBuilder, metrics_exporter_prometheus::BuildError> {
-    Ok(PrometheusBuilder::new()
-        .set_bucket_duration(bucket)?
-        .set_bucket_count(SUMMARY_BUCKETS)
-        .idle_timeout(metrics_util::MetricKindMask::GAUGE, Some(gauge_idle)))
-}
 
 /// Test-only entry point: install the recorder with a retention window long enough that no test's
 /// samples age out mid-assertion. Production ALWAYS goes through [`init_with`] with the operator's
@@ -924,11 +890,11 @@ pub fn init() {
 // Two layers buffer raw per-request observations on the way to their bounded aggregate form:
 //   1. the telemetry BANK — each thread appends one `f64` per request to its own sample `Vec`
 //      (`telemetry::HistogramSlot::record`), drained by `telemetry::flush_to_recorder`;
-//   2. the Prometheus recorder — `metrics-exporter-prometheus` parks every histogram sample handed
-//      to it in an `AtomicBucket` (a linked list of 64-slot blocks, ~8.4 B/sample) until something
-//      calls `run_upkeep()`/render, which folds them into the FIXED-SIZE rolling summary.
+//   2. the recorder ([`source`]) — parks every histogram sample handed to it in an `AtomicBucket`
+//      (a linked list of 64-slot blocks) until a drain folds them into the FIXED-SIZE rolling
+//      summary.
 //
-// Both drains used to happen ONLY inside `render()` — i.e. only when a scrape arrived. A gateway
+// Both drains used to happen ONLY inside a scrape. A gateway
 // nobody scrapes therefore retained one f64 per request FOREVER: RSS grew linearly with total
 // requests served (measured: ~23 B/request; 18.1 M requests → +389 MiB, with no plateau and no
 // release when the load stopped), instead of tracking the live working set. That is a leak by any
@@ -949,19 +915,19 @@ pub fn init() {
 /// without rendering. Idempotent and safe to call at any time (a no-op before the recorder is
 /// installed, and when nothing is buffered).
 pub fn drain_pending() {
-    // Test-only: keep `run_upkeep`'s bucket frees on the same thread as the drain that fed them —
+    // Test-only: keep the source's bucket frees on the same thread as the drain that fed them —
     // see `telemetry::drain_serial`. Re-entrant, so the nested `flush_to_recorder` is free.
     #[cfg(any(test, feature = "test-support"))]
     let _serial = crate::telemetry::drain_serial::lock();
     // Outer `None` = `init()` has not run; inner `None` = install failed. Both mean there is no
     // recorder to drain into, and the bank's own emit helpers are no-ops in that state.
-    let Some(Some(handle)) = HANDLE.get() else {
+    let Some(Some(source)) = HANDLE.get() else {
         return;
     };
     // 1. bank → recorder (per-thread sample buffers + counter deltas)
     crate::telemetry::flush_to_recorder();
     // 2. recorder's per-sample buckets → fixed-size distributions
-    handle.run_upkeep();
+    source.drain();
 }
 
 /// Start the maintenance tick. Called once, from the successful branch of [`init`], so every build
@@ -1097,7 +1063,7 @@ fn describe() {
     );
 }
 
-/// True once the global Prometheus recorder is INSTALLED (not merely that `init()` was attempted).
+/// True once the global recorder is INSTALLED (not merely that `init()` was attempted).
 /// Gating handle caching on this guarantees a cached handle can never be bound to the no-op recorder
 /// that stands in before install.
 #[inline]
@@ -1105,34 +1071,27 @@ pub fn recorder_installed() -> bool {
     matches!(HANDLE.get(), Some(Some(_)))
 }
 
-/// Render the current Prometheus exposition text. Empty until `init()` has run.
+/// THE SNAPSHOT the export kind's `scrape` is handed: every family the recorder holds, kind then
+/// name ([`source::Source::snapshot`]). `None` until the recorder is installed (`init()` not yet
+/// run, or its install failed) — "not ready" is never an empty snapshot.
 ///
 /// Flushes the TELEMETRY BANK (per-thread hot-path cells; see `telemetry.rs`) into the recorder
-/// first, so every scrape — and every test that reads the exposition — observes up-to-date totals
-/// for the banked hot-path counters/histograms alongside the macro-emitted ones.
-pub fn render() -> String {
+/// first, so every scrape observes up-to-date totals for the banked hot-path counters/histograms
+/// alongside the macro-emitted ones.
+pub fn snapshot() -> Option<Vec<Family>> {
     // Test-only: a scrape is a drain too — see `telemetry::drain_serial`.
     #[cfg(any(test, feature = "test-support"))]
     let _serial = crate::telemetry::drain_serial::lock();
-    // Outer `None` = `init()` not yet run; inner `None` = recorder install failed. Both render an
-    // empty exposition rather than panicking.
-    match HANDLE.get() {
-        Some(Some(h)) => {
-            crate::telemetry::flush_to_recorder();
-            h.render()
-        }
-        _ => String::new(),
-    }
+    let source = (*HANDLE.get()?)?;
+    crate::telemetry::flush_to_recorder();
+    Some(source.snapshot())
 }
 
-/// THE RECORDER BUILDER'S INTERNALS, revealed to a TEST BUILD ONLY.
-///
-/// `recorder_builder` is deliberately split out of the install so a test can drive gauge expiry on a
-/// short window instead of the shipped one, and `GAUGE_IDLE_TIMEOUT` is the shipped window that same
-/// battery pins. Installing is global and once-per-process; BUILDING is not, which is what makes the
-/// reaping behaviour testable at all — so the two are reachable from a test build and from nowhere
-/// else, on the same test/`test-support` axis the rest of the test surface uses.
+/// TEST VIEW ONLY: the [`snapshot`] as exposition-layout lines
+/// ([`crate::test_support::export_axis::lines`]), so a test asserts on observations by line;
+/// empty before the recorder is installed. Never served — what an operator scrapes is the export
+/// plugin's rendering.
 #[cfg(any(test, feature = "test-support"))]
-pub mod recorder_internals {
-    pub use super::{recorder_builder, GAUGE_IDLE_TIMEOUT};
+pub fn render() -> String {
+    crate::test_support::export_axis::lines(&snapshot().unwrap_or_default())
 }

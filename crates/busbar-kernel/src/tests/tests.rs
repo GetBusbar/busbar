@@ -1560,7 +1560,7 @@ fn secrets_block_rejects_non_secret_kind() {
 /// read.
 #[test]
 fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
-    crate::metrics::init();
+    crate::snapshot::init();
     const SENTINEL: &str = "sk-sentinel-must-never-be-printed";
     let set_var = format!("BUSBAR_TEST_PROVIDER_KEY_SET_{}", std::process::id());
     let unset_var = format!("BUSBAR_TEST_PROVIDER_KEY_UNSET_{}", std::process::id());
@@ -1612,7 +1612,7 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
 /// re-derived here through a lane accessor that exists only for the test.
 #[test]
 fn boot_starts_a_keyless_lane_declared_none() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::none());
     cfg.models
         .insert("m0".to_string(), model_cfg_for_provider("acme"));
@@ -1751,7 +1751,7 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
 /// 1.5.4.
 #[test]
 fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let cfg = || {
         cfg_with_provider_api_key(crate::config::SecretRef::env(
             "BUSBAR_TEST_NO_SUCH_KEY_SESSION_STORE",
@@ -1832,7 +1832,7 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
 /// of them uses this deliberately-illegal number.
 #[test]
 fn a_rejected_config_leaves_no_limits_behind() {
-    crate::metrics::init();
+    crate::snapshot::init();
     // Below `REQUEST_BODY_MAX_BYTES_FLOOR` (64 KiB) — `validate_limits` refuses it, which is the
     // whole point: the refusal happens AFTER the install.
     const ILLEGAL: usize = 4096;
@@ -1879,7 +1879,7 @@ fn a_rejected_config_leaves_no_limits_behind() {
 /// is ever buffered.)
 #[tokio::test]
 async fn oversized_request_413_is_reshaped_on_the_live_stack() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = crate::test_support::TestApp::new().build();
     // A tiny body cap so an ordinary request trips `DefaultBodyLimit`.
     let (router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
@@ -1948,7 +1948,7 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
 /// `busbar;dur=<ms>` shape.
 #[tokio::test]
 async fn server_timing_header_absent_by_default_present_when_enabled() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let client = reqwest::Client::new();
 
     // Default OFF.
@@ -2006,7 +2006,7 @@ async fn server_timing_header_absent_by_default_present_when_enabled() {
 /// into every other test that shares this process.
 #[tokio::test]
 async fn route_policy_headers_absent_by_default_on_the_live_stack() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = crate::test_support::TestApp::new().build();
     let (router, _handle) = crate::build_router_with_limits(app, 1 << 20, 1024, false);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2567,7 +2567,7 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
 /// (learned reliability survives every apply).
 #[test]
 fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let planeless = || {
         cfg_with_provider_api_key(crate::config::SecretRef::env(
             "BUSBAR_TEST_NO_SUCH_KEY_PLANES",
@@ -2650,7 +2650,7 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
 #[tokio::test]
 async fn a_panicking_handler_fails_only_its_own_request() {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = crate::test_support::TestApp::new().build();
     let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));
     async fn boom() -> &'static str {

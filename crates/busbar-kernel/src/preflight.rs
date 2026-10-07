@@ -16,8 +16,8 @@ use crate::diagnostics::{
 use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, export, failover, governance, handlers,
-    hooks, ingress, ir, json, limits, metrics, net_guard, oauth_as, observability, operation,
-    plane, plugin_routes, profile, proxy, state, store, telemetry, tls, transport, trust,
+    hooks, ingress, ir, json, limits, net_guard, oauth_as, observability, operation, plane,
+    plugin_routes, profile, proxy, snapshot, state, store, telemetry, tls, transport, trust,
 };
 
 /// The FLEET DATA DIR the first-party anti-downgrade floor persists under, or `None` when this
@@ -277,7 +277,7 @@ pub(crate) fn builtin_ranking(
         .open(name, name, &serde_json::json!({ "policy": name }), budget)
         .ok()?;
     Some((
-        crate::hooks::plugin::HookPolicy::policy(calls, name),
+        crate::plane_driver::hooks::policy::HookPolicy::policy(calls, name),
         budget,
     ))
 }

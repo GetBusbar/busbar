@@ -609,7 +609,7 @@ fn r1_every_declared_path_resolves_an_admission() {
     let owned = built_slots(&receiving_cfg());
     let slots = slot_refs(&owned);
     let dispatch =
-        build_dispatch(builtin_plane_decls(), &slots).expect("the dispatch table builds");
+        build_dispatch(builtin_plane_decls(), &slots, false).expect("the dispatch table builds");
 
     let mut claimed = 0;
     for decl in builtin_plane_decls() {
@@ -718,7 +718,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
     let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();
     slots.insert("widget", &unit);
 
-    let err = build_dispatch(&[&MOUNTS_BUT_NEVER_ADMITS], &slots)
+    let err = build_dispatch(&[&MOUNTS_BUT_NEVER_ADMITS], &slots, false)
         .expect_err("a plane that mounts a path but binds no admission must refuse boot");
     assert!(
         err.contains("widget"),
@@ -727,6 +727,12 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
     assert!(
         err.contains("bound no admission"),
         "the refusal says what is missing: {err}"
+    );
+    // RED ARM: the key-verify chain admits a DOOR's claims alone; a plane that is not served
+    // through its door is refused whatever the data chain verifies.
+    assert!(
+        build_dispatch(&[&MOUNTS_BUT_NEVER_ADMITS], &slots, true).is_err(),
+        "a non-door plane with no audience is refused even under a key chain"
     );
 
     // The CONTROL: a plane that mounts nothing (claims empty) needs no admission and does NOT refuse.
@@ -775,7 +781,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         retain_verify_gates: None,
         default_section: None,
     };
-    let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots)
+    let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots, false)
         .expect("a plane that claims no path needs no admission");
     assert!(dispatch.mounted_keys().is_empty(), "and it mounts nothing");
 }
@@ -973,7 +979,7 @@ fn r3_no_vocabulary_collision_across_the_mounted_set() {
     let owned = built_slots(&receiving_cfg());
     let slots = slot_refs(&owned);
     let dispatch =
-        build_dispatch(builtin_plane_decls(), &slots).expect("the dispatch table builds");
+        build_dispatch(builtin_plane_decls(), &slots, false).expect("the dispatch table builds");
 
     let mounted_keys = dispatch.mounted_keys();
     let mounted: Vec<&&PlaneDecl> = builtin_plane_decls()
@@ -1019,7 +1025,7 @@ fn r3_no_vocabulary_collision_across_the_mounted_set() {
 fn build_dispatch_matches_the_hand_mounted_table() {
     let owned = built_slots(&receiving_cfg());
     let slots = slot_refs(&owned);
-    let built = build_dispatch(builtin_plane_decls(), &slots).expect("dispatch builds");
+    let built = build_dispatch(builtin_plane_decls(), &slots, false).expect("dispatch builds");
 
     // By hand, through the public `mount`/`admit` API, from each configured plane's OWN object: its
     // claimed doors and its admission.
@@ -1071,7 +1077,8 @@ fn a_delegation_only_multi_binding_plane_mounts_nothing() {
 
     let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();
     slots.insert(agents.key, slot);
-    let dispatch = build_dispatch(builtin_plane_decls(), &slots).expect("no path, no refusal");
+    let dispatch =
+        build_dispatch(builtin_plane_decls(), &slots, false).expect("no path, no refusal");
     assert!(
         dispatch.mounted_keys().is_empty(),
         "a delegation-only deployment claims no path"

@@ -198,7 +198,7 @@ async fn call(
 
 /// The scrape, as `/metrics` renders it.
 fn scrape() -> String {
-    busbar_kernel::metrics::render()
+    busbar_kernel::snapshot::render()
 }
 
 /// The sum of every `busbar_requests_total` series labelled `pool` and `outcome`.

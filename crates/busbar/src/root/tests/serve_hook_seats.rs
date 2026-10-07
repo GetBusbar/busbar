@@ -700,7 +700,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     // deployment writes, and whose declared dialects the deployment's providers name), folded as
     // the boot folds it.
     busbar_kernel::plane::registry::register_test_plane(pools_door_row());
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: false,
         ..Default::default()

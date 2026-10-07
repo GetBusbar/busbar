@@ -1556,7 +1556,7 @@ fn a_caller_leaving_a_stream_whose_translator_gave_up_bills_nothing() {
 
 /// A caller that leaves a reframed stream mid-relay, with no abort, leaves a partial answer whose
 /// streamed units stand: its cancel bills what streamed (Part 2 #62, a mid-stream cut is not a
-/// refund). The door's own cell is `serve_door.rs`
+/// refund). The door's own cell is `serve_tests.rs`
 /// `the_pools_door_bills_a_stream_the_caller_dropped_what_its_readers_counted`.
 #[test]
 fn a_caller_leaving_a_reframed_stream_with_no_abort_bills_what_streamed() {

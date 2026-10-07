@@ -52,7 +52,7 @@ fn grp_principal(id: &str, roles: &[&str]) -> Principal {
 /// (no principal) is full.
 #[test]
 fn admin_scope_resolution() {
-    use crate::admin::v1::contract::{Grants, Scope};
+    use busbar_contract::authz::{Grants, Scope};
     let rb = bindings_for(
         "test-groups-module",
         &[
@@ -123,7 +123,7 @@ fn admin_scope_resolution() {
 /// principal identified by the test-groups-module.
 #[test]
 fn admin_scope_bindings_are_module_scoped() {
-    use crate::admin::v1::contract::{Grants, Scope};
+    use busbar_contract::authz::{Grants, Scope};
     let rb = bindings_for(
         "other-module",
         &[("admins", binding(None, None, Some("full")))],
@@ -712,6 +712,7 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
         let door = super::Door {
             lines: None,
             method: "POST",
+            route: None,
         };
         let body = decode_body(unauthorized_response(&residual_app(), door, path));
         let mut strings = Vec::new();
@@ -767,7 +768,7 @@ fn test_extract_admin_header_token_empty_filtered() {
 async fn forbidden_admin_requests_audit_once_per_window() {
     use crate::test_support::TestApp;
 
-    crate::metrics::init();
+    crate::snapshot::init();
 
     // Unique per test run so concurrently-running tests sharing the process-global `AUDIT` ring
     // cannot be counted here, and this test's own records cannot be miscounted by a sibling.
@@ -867,7 +868,7 @@ async fn serve_app(
 /// `test-scope-module` external-admin stand-in.
 #[tokio::test]
 async fn admin_plugin_full_binding_allows_mutation() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let rb = bindings_for(
         "test-scope-module",
         &[("minters", binding(None, None, Some("full")))],
@@ -907,7 +908,7 @@ async fn admin_plugin_full_binding_allows_mutation() {
 /// read-only grant never satisfies.
 #[tokio::test]
 async fn admin_plugin_readonly_binding_get_ok_post_403() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let rb = bindings_for(
         "test-scope-module",
         &[("viewers", binding(None, None, Some("read-only")))],
@@ -961,7 +962,7 @@ async fn admin_plugin_readonly_binding_get_ok_post_403() {
 /// down to read-only (`Grants::capped_by`).
 #[tokio::test]
 async fn admin_max_admin_scope_caps_binding() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let rb = bindings_for(
         "test-scope-module",
         &[("ops", binding(None, None, Some("full")))],
@@ -997,7 +998,7 @@ async fn admin_max_admin_scope_caps_binding() {
 /// dispatch path.
 #[tokio::test]
 async fn roleless_external_admin_principal_denied() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = crate::test_support::TestApp::new()
         .admin_chain(vec!["ext-admin".to_string()])
         .admin_module("ext-admin", Box::new(RolelessAdminModule))
@@ -1023,7 +1024,7 @@ async fn roleless_external_admin_principal_denied() {
 /// the blocking pool, so `/healthz` (and a concurrent admin request) stay responsive while it sleeps.
 #[tokio::test]
 async fn admin_offload_does_not_stall_healthz() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = crate::test_support::TestApp::new()
         .admin_chain(vec!["slow-oidc".to_string()])
         .admin_module(
@@ -1095,7 +1096,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     use serde_json::json;
     use std::sync::Arc;
 
-    crate::metrics::init();
+    crate::snapshot::init();
 
     // No upstream call is expected on the 401 paths; the plain-token /stats control makes no
     // upstream call either.
@@ -1220,7 +1221,7 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     use serde_json::json;
     use std::sync::Arc;
 
-    crate::metrics::init();
+    crate::snapshot::init();
 
     // No upstream call should happen — auth must reject before routing.
     let state = Arc::new(MockServerState::new());
@@ -1436,7 +1437,7 @@ fn gov_with_aws_key() -> (std::sync::Arc<crate::governance::GovState>, String, S
 #[test]
 fn test_verify_sigv4_ingress_credential_roundtrip_admits_with_govctx() {
     // A request signed with the key's REAL secret verifies and yields the owning (enabled) key.
-    crate::metrics::init();
+    crate::snapshot::init();
     let (gov, akid, secret) = gov_with_aws_key();
     let amzdate = {
         let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
@@ -1466,7 +1467,7 @@ fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admit
     // verifier ran the wire text through the encoder a second time, the canonical query string it
     // reconstructs would diverge from what the client signed, and EVERY request carrying a query
     // parameter that needed escaping (here, a literal '/' in the value) would fail verification.
-    crate::metrics::init();
+    crate::snapshot::init();
     let (gov, akid, secret) = gov_with_aws_key();
     let amzdate = {
         let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
@@ -1513,7 +1514,7 @@ fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admit
 
 #[test]
 fn test_verify_sigv4_ingress_credential_wrong_secret_rejected() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let (gov, akid, _secret) = gov_with_aws_key();
     let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
     let path = "/model/vendor.model/converse";
@@ -1542,7 +1543,7 @@ fn test_verify_sigv4_ingress_credential_wrong_secret_rejected() {
 
 #[test]
 fn test_verify_sigv4_ingress_credential_unknown_access_key_id_rejected() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let (gov, _akid, secret) = gov_with_aws_key();
     let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
     let path = "/model/vendor.model/converse";
@@ -1569,7 +1570,7 @@ fn test_verify_sigv4_ingress_credential_unknown_access_key_id_rejected() {
 
 #[test]
 fn test_verify_sigv4_ingress_credential_expired_date_rejected() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let (gov, akid, secret) = gov_with_aws_key();
     // Sign with a timestamp 10 minutes in the past — outside the ±5min skew window.
     let stale = busbar_kernel::store::now().saturating_sub(sigv4::CLOCK_SKEW_SECS + 60);
@@ -1585,7 +1586,7 @@ fn test_verify_sigv4_ingress_credential_expired_date_rejected() {
 
 #[test]
 fn test_verify_sigv4_ingress_credential_missing_authorization_rejected() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let (gov, _akid, _secret) = gov_with_aws_key();
     // No Authorization header at all.
     let req = Request::builder()
@@ -1598,7 +1599,7 @@ fn test_verify_sigv4_ingress_credential_missing_authorization_rejected() {
 
 #[test]
 fn test_verify_sigv4_ingress_credential_disabled_key_rejected() {
-    crate::metrics::init();
+    crate::snapshot::init();
     use crate::governance::{GovState, MemoryStore, NewKeySpec};
     let store = std::sync::Arc::new(MemoryStore::new());
     let gov = std::sync::Arc::new(GovState::new(store, None).unwrap());
@@ -1635,7 +1636,7 @@ fn test_verify_sigv4_ingress_credential_revoked_key_rejected() {
     // SigV4 admit path resolved purely by AccessKeyId -> key and admitted on `key.enabled` alone,
     // NEVER consulting the denylist — so the revoked key's SigV4 credential kept authenticating.
     // The fix gates the SigV4 admit on `!gov.is_revoked(&key.id)`, mirroring the signed-token path.
-    crate::metrics::init();
+    crate::snapshot::init();
     use crate::governance::{GovState, MemoryStore, NewKeySpec};
     let store = std::sync::Arc::new(MemoryStore::new());
     let gov = std::sync::Arc::new(GovState::new(store, None).unwrap());
@@ -1693,7 +1694,7 @@ fn test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits() {
     // (a) A non-empty body whose bytes hash to the signed `x-amz-content-sha256` is accepted.
     // This exercises the body-integrity bind on a real payload (the roundtrip test signs an empty
     // body): the verifier must re-hash THESE bytes and find they match the signed digest.
-    crate::metrics::init();
+    crate::snapshot::init();
     let (gov, akid, secret) = gov_with_aws_key();
     let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
     let path = "/model/vendor.model/converse";
@@ -1712,7 +1713,7 @@ fn test_verify_sigv4_ingress_credential_tampered_body_rejected() {
     // verifies against the declared `x-amz-content-sha256`, but the bytes no longer hash to it, so
     // the request MUST be rejected — fail-closed — with the SAME opaque `Err(())` as any other
     // failure (no oracle distinguishing "body tampered" from "bad signature").
-    crate::metrics::init();
+    crate::snapshot::init();
     let (gov, akid, secret) = gov_with_aws_key();
     let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
     let path = "/model/vendor.model/converse";
@@ -1736,7 +1737,7 @@ fn test_verify_sigv4_ingress_credential_unsigned_payload_rejected() {
     // a client declaring it did not hash its body cannot authenticate. Sign a request normally,
     // then overwrite the x-amz-content-sha256 header with the sentinel; the body-integrity gate
     // rejects it independently of any signature check, with the same opaque `Err(())`.
-    crate::metrics::init();
+    crate::snapshot::init();
     let (gov, akid, secret) = gov_with_aws_key();
     let (a, _d) = sigv4::format_amz_time(busbar_kernel::store::now());
     let path = "/model/vendor.model/converse";
@@ -1817,7 +1818,7 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
     use serde_json::json;
     use std::sync::Arc;
 
-    crate::metrics::init();
+    crate::snapshot::init();
 
     // No upstream call should happen — auth must reject before routing.
     let state = Arc::new(MockServerState::new());
@@ -1875,8 +1876,8 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
 ///   - a credential no module identifies is denied outright.
 #[test]
 fn test_admin_scope_cap_ceilings_external_module() {
-    use crate::admin::v1::contract::{Grants, Scope};
-    crate::metrics::init();
+    use busbar_contract::authz::{Grants, Scope};
+    crate::snapshot::init();
 
     let mk_app = |cap: Option<&str>, bind_module: &str| {
         let mut app = crate::test_support::TestApp::new().build();
@@ -1930,8 +1931,8 @@ fn test_admin_scope_cap_ceilings_external_module() {
 /// restart opt-in.
 #[test]
 fn test_dry_run_empty_admin_chain_is_not_full() {
-    use crate::admin::v1::contract::{Grants, Scope};
-    crate::metrics::init();
+    use busbar_contract::authz::{Grants, Scope};
+    crate::snapshot::init();
 
     let mut app = crate::test_support::TestApp::new().build();
     let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
@@ -1975,7 +1976,7 @@ async fn structural_sigv4_gate_rejects_without_reading_the_body() {
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    crate::metrics::init();
+    crate::snapshot::init();
 
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
@@ -2117,7 +2118,7 @@ fn dp_ok_state() -> std::sync::Arc<crate::test_support::MockServerState> {
 #[tokio::test]
 async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    crate::metrics::init();
+    crate::snapshot::init();
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, secret) = dp_gov_with_key();
     let key_id = gov.all_keys().unwrap()[0].id.clone();
@@ -2159,7 +2160,7 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
 #[test]
 fn test_1_5_2_keys_arm_is_cache_exempt() {
     use crate::governance::{GovState, MemoryStore, NewKeySpec};
-    crate::metrics::init();
+    crate::snapshot::init();
     let store = std::sync::Arc::new(MemoryStore::new());
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
         &[9u8; 32],
@@ -2550,7 +2551,7 @@ async fn a_data_plane_door_overloaded_or_without_a_verdict_denies_the_chain() {
 async fn a_data_plane_door_overloaded_or_without_a_verdict_answers_the_1_5_5_401() {
     use crate::test_support::{LaneSpec, MockServer, TestApp};
     use busbar_contract::auth_calls::Verified;
-    crate::metrics::init();
+    crate::snapshot::init();
     let server = MockServer::new(dp_ok_state()).await;
     let ask = |auth: AuthMiddleware| {
         let app = TestApp::new()

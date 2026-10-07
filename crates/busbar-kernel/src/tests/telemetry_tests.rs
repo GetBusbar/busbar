@@ -53,9 +53,9 @@ fn lane_protocol() -> &'static str {
 /// be exact (no lost or double-counted deltas).
 #[test]
 fn test_bank_multithread_adds_sum_exactly_under_concurrent_scrape() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let slot = counter_slot(
-        crate::metrics::REQUESTS_TOTAL,
+        crate::snapshot::REQUESTS_TOTAL,
         &[
             ("ingress_protocol", "acme"),
             ("pool", "tel-bank-mt-pool"),
@@ -64,7 +64,7 @@ fn test_bank_multithread_adds_sum_exactly_under_concurrent_scrape() {
     );
     assert!(slot.is_valid(), "slot table must not be full in tests");
     let before = metric_sum(
-        crate::metrics::REQUESTS_TOTAL,
+        crate::snapshot::REQUESTS_TOTAL,
         &[("pool", "tel-bank-mt-pool")],
     );
 
@@ -80,14 +80,14 @@ fn test_bank_multithread_adds_sum_exactly_under_concurrent_scrape() {
     // Concurrent scrapes while the writers run: each render() flushes bank deltas into the
     // recorder. Exactness at the end proves flush never loses or double-counts a delta.
     for _ in 0..50 {
-        let _ = crate::metrics::render();
+        let _ = crate::snapshot::render();
     }
     for w in writers {
         w.join().unwrap();
     }
 
     let after = metric_sum(
-        crate::metrics::REQUESTS_TOTAL,
+        crate::snapshot::REQUESTS_TOTAL,
         &[("pool", "tel-bank-mt-pool")],
     );
     assert_eq!(
@@ -102,18 +102,18 @@ fn test_bank_multithread_adds_sum_exactly_under_concurrent_scrape() {
 #[test]
 fn test_reregistration_same_labels_resolves_same_slot() {
     let labels = [("pool", "tel-rereg-pool"), ("reason", "hard_down")];
-    let a = counter_slot(crate::metrics::FAILOVERS_TOTAL, &labels);
-    let b = counter_slot(crate::metrics::FAILOVERS_TOTAL, &labels);
+    let a = counter_slot(crate::snapshot::FAILOVERS_TOTAL, &labels);
+    let b = counter_slot(crate::snapshot::FAILOVERS_TOTAL, &labels);
     assert_eq!(a, b, "identical counter label sets must share a slot");
 
     let hlabels = [("ingress_protocol", "acme"), ("pool", "tel-rereg-pool")];
-    let h1 = histogram_slot(crate::metrics::REQUEST_DURATION_SECONDS, &hlabels);
-    let h2 = histogram_slot(crate::metrics::REQUEST_DURATION_SECONDS, &hlabels);
+    let h1 = histogram_slot(crate::snapshot::REQUEST_DURATION_SECONDS, &hlabels);
+    let h2 = histogram_slot(crate::snapshot::REQUEST_DURATION_SECONDS, &hlabels);
     assert_eq!(h1, h2, "identical histogram label sets must share a slot");
 
     // Different labels must NOT collide.
     let c = counter_slot(
-        crate::metrics::FAILOVERS_TOTAL,
+        crate::snapshot::FAILOVERS_TOTAL,
         &[("pool", "tel-rereg-pool"), ("reason", "attempt_timeout")],
     );
     assert_ne!(a, c);
@@ -123,7 +123,7 @@ fn test_reregistration_same_labels_resolves_same_slot() {
 /// into the same series, and the exposed total accumulates monotonically across the swap.
 #[test]
 fn test_config_reapply_accumulates_across_generations() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let build = || {
         TestApp::new()
             .lane(LaneSpec::new("tel-gen-model", lane_protocol(), "http://m"))
@@ -134,7 +134,7 @@ fn test_config_reapply_accumulates_across_generations() {
     let gen2 = build(); // the "post-apply" snapshot: same label space, fresh AppSlots
 
     let labels = [("pool", "tel-gen-pool"), ("outcome", "ok")];
-    let before = metric_sum(crate::metrics::REQUESTS_TOTAL, &labels);
+    let before = metric_sum(crate::snapshot::REQUESTS_TOTAL, &labels);
     request_finished(
         &gen1,
         model_plane_key(),
@@ -151,7 +151,7 @@ fn test_config_reapply_accumulates_across_generations() {
         "ok",
         0.002,
     );
-    let after = metric_sum(crate::metrics::REQUESTS_TOTAL, &labels);
+    let after = metric_sum(crate::snapshot::REQUESTS_TOTAL, &labels);
     assert_eq!(
         (after - before).round() as u64,
         2,
@@ -164,7 +164,7 @@ fn test_config_reapply_accumulates_across_generations() {
 /// `busbar_request_duration_seconds` summary (quantile lines + `_sum` + `_count`).
 #[test]
 fn test_request_finished_renders_premigration_names_and_labels() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "tel-parity-model",
@@ -184,11 +184,11 @@ fn test_request_finished_renders_premigration_names_and_labels() {
         "ok",
         0.005,
     );
-    let out = crate::metrics::render();
+    let out = crate::snapshot::render();
 
     let counter_line = out.lines().find(|l| {
         !l.starts_with('#')
-            && l.starts_with(crate::metrics::REQUESTS_TOTAL)
+            && l.starts_with(crate::snapshot::REQUESTS_TOTAL)
             && l.contains(&ingress_label)
             && l.contains("pool=\"tel-parity-pool\"")
             && l.contains("outcome=\"ok\"")
@@ -210,7 +210,7 @@ fn test_request_finished_renders_premigration_names_and_labels() {
     assert!(
         out.lines().any(|l| {
             !l.starts_with('#')
-                && l.starts_with(crate::metrics::REQUEST_DURATION_SECONDS)
+                && l.starts_with(crate::snapshot::REQUEST_DURATION_SECONDS)
                 && l.contains("pool=\"tel-parity-pool\"")
                 && l.contains("quantile=")
         }),
@@ -230,22 +230,22 @@ fn test_request_finished_renders_premigration_names_and_labels() {
 /// into the exact pre-migration series each.
 #[test]
 fn test_engine_helpers_emit_premigration_series() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = TestApp::new()
         .lane(LaneSpec::new("tel-eng-model", lane_protocol(), "http://m"))
         .pool("tel-eng-pool", &[(0, 1)])
         .build();
     let pool = [("pool", "tel-eng-pool")];
 
-    let attempts0 = metric_sum(crate::metrics::UPSTREAM_ATTEMPTS_TOTAL, &pool);
+    let attempts0 = metric_sum(crate::snapshot::UPSTREAM_ATTEMPTS_TOTAL, &pool);
     upstream_attempt(&app, "tel-eng-pool", 0);
     assert_eq!(
-        (metric_sum(crate::metrics::UPSTREAM_ATTEMPTS_TOTAL, &pool) - attempts0).round() as u64,
+        (metric_sum(crate::snapshot::UPSTREAM_ATTEMPTS_TOTAL, &pool) - attempts0).round() as u64,
         1
     );
 
     let failures0 = metric_sum(
-        crate::metrics::UPSTREAM_FAILURES_TOTAL,
+        crate::snapshot::UPSTREAM_FAILURES_TOTAL,
         &[
             ("pool", "tel-eng-pool"),
             ("lane", "tel-eng-model"),
@@ -255,7 +255,7 @@ fn test_engine_helpers_emit_premigration_series() {
     upstream_failure(&app, "tel-eng-pool", 0, crate::proxy::DISPOSITION_TRANSIENT);
     assert_eq!(
         (metric_sum(
-            crate::metrics::UPSTREAM_FAILURES_TOTAL,
+            crate::snapshot::UPSTREAM_FAILURES_TOTAL,
             &[
                 ("pool", "tel-eng-pool"),
                 ("lane", "tel-eng-model"),
@@ -266,10 +266,10 @@ fn test_engine_helpers_emit_premigration_series() {
         1
     );
 
-    let trips0 = metric_sum(crate::metrics::BREAKER_TRIPS_TOTAL, &pool);
+    let trips0 = metric_sum(crate::snapshot::BREAKER_TRIPS_TOTAL, &pool);
     breaker_trip(&app, "tel-eng-pool", 0);
     assert_eq!(
-        (metric_sum(crate::metrics::BREAKER_TRIPS_TOTAL, &pool) - trips0).round() as u64,
+        (metric_sum(crate::snapshot::BREAKER_TRIPS_TOTAL, &pool) - trips0).round() as u64,
         1
     );
 
@@ -278,10 +278,10 @@ fn test_engine_helpers_emit_premigration_series() {
         ("pool", "tel-eng-pool"),
         ("reason", crate::proxy::ERR_NET_TIMEOUT),
     ];
-    let failovers0 = metric_sum(crate::metrics::FAILOVERS_TOTAL, &fo_labels);
+    let failovers0 = metric_sum(crate::snapshot::FAILOVERS_TOTAL, &fo_labels);
     failover(&app, "tel-eng-pool", crate::proxy::ERR_NET_TIMEOUT);
     assert_eq!(
-        (metric_sum(crate::metrics::FAILOVERS_TOTAL, &fo_labels) - failovers0).round() as u64,
+        (metric_sum(crate::snapshot::FAILOVERS_TOTAL, &fo_labels) - failovers0).round() as u64,
         1
     );
 }
@@ -290,14 +290,14 @@ fn test_engine_helpers_emit_premigration_series() {
 /// back to the macro path and still be counted — the bank is a fast path, never a gate.
 #[test]
 fn test_unregistered_pool_falls_back_to_macro_emission() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = TestApp::new()
         .lane(LaneSpec::new("tel-fb-model", lane_protocol(), "http://m"))
         .pool("tel-fb-pool", &[(0, 1)])
         .build();
 
     let labels = [("pool", "tel-fb-unregistered-pool"), ("outcome", "ok")];
-    let before = metric_sum(crate::metrics::REQUESTS_TOTAL, &labels);
+    let before = metric_sum(crate::snapshot::REQUESTS_TOTAL, &labels);
     request_finished(
         &app,
         model_plane_key(),
@@ -306,7 +306,7 @@ fn test_unregistered_pool_falls_back_to_macro_emission() {
         "ok",
         0.001,
     );
-    let after = metric_sum(crate::metrics::REQUESTS_TOTAL, &labels);
+    let after = metric_sum(crate::snapshot::REQUESTS_TOTAL, &labels);
     assert_eq!(
         (after - before).round() as u64,
         1,
@@ -318,9 +318,9 @@ fn test_unregistered_pool_falls_back_to_macro_emission() {
 /// (`_count` advances by exactly the number recorded).
 #[test]
 fn test_histogram_bank_drains_all_thread_samples() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let slot = histogram_slot(
-        crate::metrics::REQUEST_DURATION_SECONDS,
+        crate::snapshot::REQUEST_DURATION_SECONDS,
         &[("ingress_protocol", "acme"), ("pool", "tel-hist-mt-pool")],
     );
     assert!(slot.is_valid());
@@ -352,12 +352,12 @@ fn test_histogram_bank_drains_all_thread_samples() {
 /// pre-migration `busbar_translations_total{from,to}` series.
 #[test]
 fn test_translation_bank_counts_known_protocol_pair() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let (from, to) = shipped_protocols();
     let labels = [("from", from), ("to", to)];
-    let before = metric_sum(crate::metrics::TRANSLATIONS_TOTAL, &labels);
+    let before = metric_sum(crate::snapshot::TRANSLATIONS_TOTAL, &labels);
     translation(from, to);
-    let after = metric_sum(crate::metrics::TRANSLATIONS_TOTAL, &labels);
+    let after = metric_sum(crate::snapshot::TRANSLATIONS_TOTAL, &labels);
     assert_eq!(
         (after - before).round() as u64,
         1,
@@ -366,9 +366,9 @@ fn test_translation_bank_counts_known_protocol_pair() {
 
     // Unknown (plugin) protocol names fall back to the macro and are still counted.
     let fb_labels = [("from", "tel-custom-proto"), ("to", to)];
-    let fb_before = metric_sum(crate::metrics::TRANSLATIONS_TOTAL, &fb_labels);
+    let fb_before = metric_sum(crate::snapshot::TRANSLATIONS_TOTAL, &fb_labels);
     translation("tel-custom-proto", to);
-    let fb_after = metric_sum(crate::metrics::TRANSLATIONS_TOTAL, &fb_labels);
+    let fb_after = metric_sum(crate::snapshot::TRANSLATIONS_TOTAL, &fb_labels);
     assert_eq!((fb_after - fb_before).round() as u64, 1);
 }
 
@@ -449,9 +449,9 @@ fn measure_on_a_fresh_thread() {
         a.saturating_sub(d)
     }
 
-    crate::metrics::init();
+    crate::snapshot::init();
     let slot = histogram_slot(
-        crate::metrics::REQUEST_DURATION_SECONDS,
+        crate::snapshot::REQUEST_DURATION_SECONDS,
         &[
             ("ingress_protocol", "acme"),
             ("pool", "tel-unscraped-recovery-pool"),
@@ -470,7 +470,7 @@ fn measure_on_a_fresh_thread() {
     for _ in 0..PER_INTERVAL {
         slot.record(0.001);
     }
-    crate::metrics::drain_pending();
+    crate::snapshot::drain_pending();
 
     // IDLE baseline.
     let idle = retained();
@@ -480,12 +480,12 @@ fn measure_on_a_fresh_thread() {
     for i in 0..BURST {
         slot.record(0.001);
         if i % PER_INTERVAL == PER_INTERVAL - 1 {
-            crate::metrics::drain_pending();
+            crate::snapshot::drain_pending();
         }
     }
 
     // QUIET: traffic stops, one more maintenance tick lands.
-    crate::metrics::drain_pending();
+    crate::snapshot::drain_pending();
     let recovered = retained().saturating_sub(idle);
 
     // One interval's samples plus allocator slack. Pre-fix this is BURST × ~24 B (tens of MiB) and
@@ -530,10 +530,10 @@ fn measure_on_a_fresh_thread() {
 /// be driven through every state in one run — this is why the decision was factored out as a pure
 /// function in the first place.
 ///
-/// [`retaining`]: crate::metrics::retaining
+/// [`retaining`]: crate::snapshot::retaining
 #[test]
 fn test_retaining_from_truth_table() {
-    use crate::metrics::retaining_from;
+    use crate::snapshot::retaining_from;
 
     // Installed: `opted_in` must not even be CALLED (the real `retaining()` only calls `enabled()`
     // lazily, in the not-yet-resolved branch) — a panicking closure proves that.
@@ -570,9 +570,9 @@ fn test_retaining_from_truth_table() {
 /// `.get_or_init()`) to introspect, so the check itself cannot be the thing that creates it.
 #[test]
 fn test_off_metrics_never_materializes_the_histogram_chunk() {
-    crate::metrics::init(); // registration only; does not affect `record_inner`'s explicit `retaining` arg
+    crate::snapshot::init(); // registration only; does not affect `record_inner`'s explicit `retaining` arg
     let slot = histogram_slot(
-        crate::metrics::REQUEST_DURATION_SECONDS,
+        crate::snapshot::REQUEST_DURATION_SECONDS,
         &[
             ("ingress_protocol", "acme"),
             ("pool", "tel-off-no-materialize-pool"),
@@ -631,7 +631,7 @@ fn test_off_metrics_retains_effectively_nothing_below_the_drain_threshold() {
     }
 
     let slot = histogram_slot(
-        crate::metrics::REQUEST_DURATION_SECONDS,
+        crate::snapshot::REQUEST_DURATION_SECONDS,
         &[
             ("ingress_protocol", "acme"),
             ("pool", "tel-off-retention-pool"),
@@ -644,7 +644,7 @@ fn test_off_metrics_retains_effectively_nothing_below_the_drain_threshold() {
     // off-by-one there would let the measured loop's own push count reach `HIST_DRAIN_THRESHOLD`
     // and trigger the very backstop this test means to stay under).
     let warmup_slot = histogram_slot(
-        crate::metrics::REQUEST_DURATION_SECONDS,
+        crate::snapshot::REQUEST_DURATION_SECONDS,
         &[
             ("ingress_protocol", "acme"),
             ("pool", "tel-off-retention-warmup-pool"),
@@ -679,9 +679,9 @@ fn test_off_metrics_retains_effectively_nothing_below_the_drain_threshold() {
 /// on the flush after the release.
 #[test]
 fn an_exited_threads_bank_is_released_and_its_counts_survive() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let slot = counter_slot(
-        crate::metrics::REQUESTS_TOTAL,
+        crate::snapshot::REQUESTS_TOTAL,
         &[
             ("ingress_protocol", "acme"),
             ("pool", "tel-bank-567-pool"),
@@ -690,7 +690,7 @@ fn an_exited_threads_bank_is_released_and_its_counts_survive() {
     );
     assert!(slot.is_valid(), "slot table must not be full in tests");
     let before = metric_sum(
-        crate::metrics::REQUESTS_TOTAL,
+        crate::snapshot::REQUESTS_TOTAL,
         &[("pool", "tel-bank-567-pool")],
     );
     let banks: Vec<_> = (0..6)
@@ -706,7 +706,7 @@ fn an_exited_threads_bank_is_released_and_its_counts_survive() {
         })
         .collect();
     let first = metric_sum(
-        crate::metrics::REQUESTS_TOTAL,
+        crate::snapshot::REQUESTS_TOTAL,
         &[("pool", "tel-bank-567-pool")],
     );
     for bank in &banks {
@@ -716,7 +716,7 @@ fn an_exited_threads_bank_is_released_and_its_counts_survive() {
         );
     }
     let second = metric_sum(
-        crate::metrics::REQUESTS_TOTAL,
+        crate::snapshot::REQUESTS_TOTAL,
         &[("pool", "tel-bank-567-pool")],
     );
     assert_eq!(

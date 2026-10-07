@@ -23,7 +23,7 @@ use busbar_kernel::governance::{
     GovState, MemoryStore, MeteringDelta, MeteringRow, RecordStore, RecordStoreError,
     RecordStoreResult,
 };
-use busbar_kernel::metrics::{
+use busbar_kernel::snapshot::{
     init, refresh_scrape_gauges, render, LANE_AVAILABLE, LANE_AVAILABLE_PERMITS, LANE_INFLIGHT,
     LANE_RECOVERY_HINT_MS, LANE_STATE, POOL_QUEUED,
 };

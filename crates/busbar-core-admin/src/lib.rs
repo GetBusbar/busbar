@@ -50,6 +50,9 @@ pub mod admin_codec;
 pub mod governance;
 pub mod idempotency;
 pub mod mint;
+// THE PLANE TRUST VERB ENVELOPE (moved from the kernel's `admin::planeverbs`, P2 D4): the core-admin
+// backing [`install`] binds into the kernel's `admin_verbs` seam.
+pub mod planeverbs;
 pub mod posture;
 pub mod rate;
 pub mod refusal;
@@ -82,9 +85,12 @@ mod table_matches_openapi;
 pub use v1::service::mark_start;
 
 /// Register this crate's implementation of the admin-service mount seam
-/// (`busbar_kernel::admin::seam::AdminMountSeam`). Called EXACTLY ONCE, by the composition root
-/// (`crates/busbar`'s `main`), unconditionally — the admin API carries no feature flag at the
-/// composition root; it is always mounted.
+/// (`busbar_kernel::admin::seam::AdminMountSeam`: the mount and the boot record) and
+/// bind this crate's [`planeverbs::CorePlaneAdminEnvelope`] as the self-enveloping plane-verb
+/// backing a plane's `admin-envelope` axis drives. Called by the composition root (`crates/busbar`'s
+/// `main`), unconditionally — the admin API carries no feature flag at the composition root; it is
+/// always mounted. Both registrations are first-wins, so a test binary that installs it more than
+/// once is unaffected.
 pub fn install() {
     busbar_kernel::admin::seam::install_admin_mount_seam(
         busbar_kernel::admin::seam::AdminMountSeam {
@@ -92,6 +98,9 @@ pub fn install() {
             record_boot: seam_record_boot,
         },
     );
+    // The plane trust-verb envelope (moved here from the kernel, P2 D4): bound with the mount it is
+    // served under, so every path that mounts the admin surface has it. Idempotent (first bind wins).
+    busbar_kernel::admin_verbs::install_plane_admin_envelope(&planeverbs::CorePlaneAdminEnvelope);
 }
 
 /// The boot-floor record the seam calls: this app's snapshot as version 0, so the history always has a
@@ -186,19 +195,14 @@ mod test_seams {
         });
     }
 
-    /// A door plane's registry row: a probe of the door bound through the loader's one load
-    /// (`linked_probe`), its facts read as a registration and folded by the kernel
-    /// (`plane::door::fold`) — the path the composition root folds every door candidate by
+    /// A door plane's registry row, folded through the kernel it serves (this crate names no
+    /// loader): the path the composition root folds every door candidate by
     /// (`root::linked::door_rows`).
     fn fold_door(
         label: &str,
         door: busbar_contract::abi::mechanism::door::DoorFn,
     ) -> &'static busbar_kernel::plane::registry::PlaneDecl {
-        use busbar_plugin_loader::dispatch::kinds::plane::{linked_probe, registration};
-        let reg = registration(linked_probe(door, label))
-            .unwrap_or_else(|e| panic!("the test-linked door `{label}` binds: {e}"));
-        busbar_kernel::plane::door::fold(reg)
-            .unwrap_or_else(|e| panic!("the test-linked door `{label}` folds: {e}"))
+        busbar_kernel::test_support::seam::fold_test_door(label, door)
     }
 }
 #[cfg(test)]

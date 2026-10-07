@@ -193,6 +193,16 @@ pub(crate) fn is_fallback(key: &str) -> bool {
         .any(|d| d.key == key && d.fallback)
 }
 
+/// The plane that DECLARES itself the fallback, resolved from ONE read of the plane list, or `None`
+/// when no registered plane flags itself fallback. Unlike [`fallback_key`] it never degrades to a
+/// sibling's key, so App composition derives the fallback runtime's slot key AND the `build_runtime`
+/// that fills it from the same decl: the runtime under `runtime_slot_key(K)` is always plane `K`'s
+/// own state (BUSBAR-1.6.0.md §6). Reading the list once is what makes that hold where the list can
+/// grow between reads (a test binary's `register_test_plane`); production's list is frozen at boot.
+pub(crate) fn fallback_decl() -> Option<&'static registry::PlaneDecl> {
+    registry::plane_decls().iter().copied().find(|d| d.fallback)
+}
+
 /// Every built-in plane's registry key, in layering order. Iterated by dispatch, the config
 /// validator and the candidate projection, so a plane absent from here is a plane that silently
 /// does not exist.

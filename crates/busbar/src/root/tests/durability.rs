@@ -2376,14 +2376,30 @@ fn a_torn_settlement_is_cut_and_its_hold_recovers() {
 /// a restart over a card pricing the class at 3,000 nano-units rebuilds 21,000; a second restart
 /// rebuilds the identical book (replay is idempotent); and a restart over the card with no cell for
 /// the class (the absent-rate rule, #42) refuses the read rather than pricing it at 0.
+///
+/// The fallback plane may be a linked door (FLIP-LLM): its row is the one the boot folds from the
+/// door's Statement (`root::linked::door_rows`), so the linked doors are folded here the same way
+/// and searched beside the linked plane rows.
 #[cfg(linked_every_plane)]
 #[test]
 fn every_fallback_open_class_prices_at_the_card_and_replays_idempotently() {
+    use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
     use busbar_kernel_ledger::cost::LaneClass;
     const RATE: u64 = 3_000;
+    let doors: Vec<&'static busbar_kernel::plane::registry::PlaneDecl> = crate::LINKED
+        .plane_doors
+        .iter()
+        .enumerate()
+        .map(|(i, door)| {
+            let reg = registration(linked_probe(*door, &format!("ledger-100-door-{i}")))
+                .expect("a linked door states its registry facts");
+            busbar_kernel::plane::door::fold(reg).expect("the kernel folds the door's row")
+        })
+        .collect();
     let fallback = crate::LINKED
         .planes
         .iter()
+        .chain(doors.iter().copied())
         .find(|decl| decl.fallback)
         .expect("every plane linked: one declares itself the fallback");
     let open: Vec<&str> = fallback
@@ -2391,6 +2407,9 @@ fn every_fallback_open_class_prices_at_the_card_and_replays_idempotently() {
         .iter()
         .map(|c| c.class)
         .filter(|c| !busbar_contract::records::RESERVED_UNITS.contains(c))
+        // A fee unit is no priced class (SEAM-L(m)): a door plane declares its fee units among its
+        // billable classes, but they are never ledgered as usage and no card prices them.
+        .filter(|c| !fallback.fee_units.contains(c))
         .collect();
     assert!(
         open.len() > 1,

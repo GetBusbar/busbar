@@ -56,7 +56,7 @@
 mod cancel;
 mod epoch;
 mod far_end;
-mod hooks;
+pub(crate) mod hooks;
 mod money;
 mod needs;
 mod probe;
@@ -473,9 +473,10 @@ impl PlaneDriver {
     /// else the listener's own `status` for that answer (the 1.5.5 one: these are the listener's
     /// answers, not a unit's), and passes the TARGET, which the plane renders by its own path rule
     /// (spec Part 3 §12 l.2645); the plane may state the status its rendering carries. `None` when
-    /// the plane renders nothing.
+    /// the plane renders nothing. [`Self::refuse_unitless`] is the same refusal for a door route's
+    /// `401`, at the kernel's own status table and with the reason's own words.
     #[must_use]
-    pub fn refuse_unitless(
+    pub fn refuse_unitless_at(
         &self,
         dialect: u32,
         reason: ReasonCode,
@@ -985,13 +986,6 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             .as_deref()
             .or(steps_words.as_deref())
             .unwrap_or(said.unwrap_or(reason.as_str()).as_bytes());
-        let caps = self.driver.config.caps;
-        let (mut reply, mut fields, mut arena) = (
-            vec![0u8; caps.reply],
-            vec![NO_FIELD; caps.fields],
-            vec![0u8; caps.arena],
-        );
-        let mut records = vec![NO_RECORD; caps.records];
         let mut input = RefusalIn {
             cause: if words.is_some() {
                 REFUSAL_ARRIVE
@@ -1004,41 +998,53 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             dialect,
             reason: reason_code(reason),
             text: AbiStr::over(text),
-            reply_buf: reply.as_mut_ptr(),
-            reply_cap: reply.len(),
-            fields_buf: fields.as_mut_ptr(),
-            fields_cap: fields.len(),
-            arena_buf: arena.as_mut_ptr(),
-            arena_cap: arena.len(),
             unit,
             plane_code: declined.map_or(0, |(code, _)| code),
             retry_after_s,
             target: AbiStr::over(&self.arrival.target),
-            records_buf: records.as_mut_ptr(),
-            records_cap: records.len(),
             ..blank_in()
         };
         // The vetoing hook's name, on a gate refusal alone (absent = NULL otherwise).
         if let Some(hook) = hook {
             input.hook = AbiStr::over(hook.as_bytes());
         }
+        let principal = self.lock().principal.clone();
+        self.driver.render_refusal(input, principal.as_ref())
+    }
+}
+
+impl PlaneDriver {
+    /// THE ONE REFUSAL CROSSING: `input` (every field but the host buffers) through the plane's
+    /// `refusal`, its short buffers re-called at the sizes it asks, its record writes folded under
+    /// `principal`, and its rendering read back. A plane that answers other than READY renders an
+    /// empty body at the kernel's status.
+    fn render_refusal(&self, mut input: RefusalIn, principal: Option<&PrincipalId>) -> Rendered {
+        let status = input.status;
+        let caps = self.config.caps;
+        let (mut reply, mut fields, mut arena) = (
+            vec![0u8; caps.reply],
+            vec![NO_FIELD; caps.fields],
+            vec![0u8; caps.arena],
+        );
+        let mut records = vec![NO_RECORD; caps.records];
+        (input.reply_buf, input.reply_cap) = (reply.as_mut_ptr(), reply.len());
+        (input.fields_buf, input.fields_cap) = (fields.as_mut_ptr(), fields.len());
+        (input.arena_buf, input.arena_cap) = (arena.as_mut_ptr(), arena.len());
+        (input.records_buf, input.records_cap) = (records.as_mut_ptr(), records.len());
         let mut o: RefusalOut = blank_out();
-        let outcome = self
-            .driver
-            .calls
-            .refusal(&mut input, &mut o, &mut |short, i| {
-                reply.resize((short.reply_needed as usize).max(reply.len()), 0);
-                fields.resize((short.fields_needed as usize).max(fields.len()), NO_FIELD);
-                arena.resize((short.arena_needed as usize).max(arena.len()), 0);
-                records.resize(
-                    (short.records_needed as usize).max(records.len()),
-                    NO_RECORD,
-                );
-                (i.records_buf, i.records_cap) = (records.as_mut_ptr(), records.len());
-                (i.reply_buf, i.reply_cap) = (reply.as_mut_ptr(), reply.len());
-                (i.fields_buf, i.fields_cap) = (fields.as_mut_ptr(), fields.len());
-                (i.arena_buf, i.arena_cap) = (arena.as_mut_ptr(), arena.len());
-            });
+        let outcome = self.calls.refusal(&mut input, &mut o, &mut |short, i| {
+            reply.resize((short.reply_needed as usize).max(reply.len()), 0);
+            fields.resize((short.fields_needed as usize).max(fields.len()), NO_FIELD);
+            arena.resize((short.arena_needed as usize).max(arena.len()), 0);
+            records.resize(
+                (short.records_needed as usize).max(records.len()),
+                NO_RECORD,
+            );
+            (i.records_buf, i.records_cap) = (records.as_mut_ptr(), records.len());
+            (i.reply_buf, i.reply_cap) = (reply.as_mut_ptr(), reply.len());
+            (i.fields_buf, i.fields_cap) = (fields.as_mut_ptr(), fields.len());
+            (i.arena_buf, i.arena_cap) = (arena.as_mut_ptr(), arena.len());
+        });
         if outcome != AbiOutcome::Ready {
             return Rendered {
                 status,
@@ -1050,14 +1056,13 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
         // refused, and any put it writes beside it.
         let written = (o.records_written as usize).min(records.len());
         if written != 0 {
-            let principal = self.lock().principal.clone();
             let arena_written = (o.arena_written as usize).min(arena.len());
             let writes = busbar_contract::plane_calls::CancelWrite::owned(
                 &records,
                 written,
                 &arena[..arena_written],
             );
-            self.driver.fold_writes(&writes, principal.as_ref());
+            self.fold_writes(&writes, principal);
         }
         let span = |s: Span| {
             let start = s.offset as usize;
@@ -1079,6 +1084,26 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
                 .unwrap_or_default()
                 .to_vec(),
         }
+    }
+
+    /// A UNIT-LESS REFUSAL (spec Part 3 section 12, "Refusals": "for a refusal with no unit — the
+    /// TARGET, which the plane renders by its own path rule"): `reason`, decided by the kernel before
+    /// any unit exists (an unauthenticated caller at the door), rendered by the plane's `refusal` in
+    /// `dialect` (the matched route's `refusal_dialect`) for `target`, at the status the plane's tail
+    /// states for that dialect and reason, else the kernel's. No unit, no principal, nothing charged.
+    #[must_use]
+    pub fn refuse_unitless(&self, reason: ReasonCode, dialect: u32, target: &[u8]) -> Rendered {
+        let input = RefusalIn {
+            cause: REFUSAL_KERNEL,
+            status: self.config.status(dialect, reason),
+            dialect,
+            reason: reason_code(reason),
+            text: AbiStr::over(reason.as_str().as_bytes()),
+            unit: 0,
+            target: AbiStr::over(target),
+            ..blank_in()
+        };
+        self.render_refusal(input, None)
     }
 }
 

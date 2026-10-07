@@ -852,7 +852,7 @@ fn invoice_micros(
     let at = invoice::row_priced_at_ms(bucket_start_secs, era);
     let (_, card) = view.card_at(at).expect("a card covers every instant");
     let unit = |k: &str| report.usage.usage_units.get(k).copied().unwrap_or(0);
-    let row = busbar_kernel::admin::v1::contract::UsageBreakdown {
+    let row = invoice::UsageBreakdown {
         tokens_input: unit(busbar_contract::records::UNIT_INPUT),
         tokens_output: unit(busbar_contract::records::UNIT_OUTPUT),
         tokens_cache_read: unit(busbar_contract::records::UNIT_CACHE_READ),

@@ -344,7 +344,14 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     {
         if let Some(default_section) = decl.default_section {
             if let Some(dialects) = default_section().known_dialects() {
-                known_protocols.extend(dialects.iter().copied());
+                // A UNION, not an append: a door plane that consumes the connections states the
+                // wire codecs it speaks, which the codec list already carries, and the refusal
+                // lists each protocol once, as 1.5.5's does (oracle cell BOOT-020).
+                for dialect in dialects {
+                    if !known_protocols.contains(dialect) {
+                        known_protocols.push(dialect);
+                    }
+                }
             }
         }
     }

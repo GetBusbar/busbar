@@ -695,10 +695,11 @@ fn a_non_chat_operation_failure_reaches_the_breaker_with_a_status_attributed() {
         raw.retry_after_secs, None,
         "headers are the forwarding layer's to fill in"
     );
-    let sig = busbar_kernel::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
+    use busbar_kernel::breaker as breaker_of_the_kernel;
+    let sig = breaker_of_the_kernel::normalize_raw_error(&raw, &std::collections::HashMap::new());
     assert_eq!(
-        busbar_kernel::breaker::classify(&sig),
-        busbar_kernel::breaker::Disposition::TransientUpstream,
+        breaker_of_the_kernel::classify(&sig),
+        breaker_of_the_kernel::Disposition::TransientUpstream,
         "a status alone is enough for the breaker to classify the attempt"
     );
 }

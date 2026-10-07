@@ -1078,6 +1078,9 @@ fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane::Ingres
 struct Door<'a> {
     lines: Option<&'a dyn crate::guest::ListenerLines>,
     method: &'a str,
+    /// The door route's own refusal, when the request matched a credentialed door route: its
+    /// plane's rendering and the request target it renders for.
+    route: Option<&'a (busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
 }
 
 /// The auth step's DEFAULT denial words: the status, `kind` and message a denial wears where no
@@ -1098,8 +1101,15 @@ const DENIAL_MESSAGE: &str = "authentication failed";
 /// plane answers in its own JSON-RPC shape; with no claimant's line, the listener's default
 /// envelope (`401`, `authentication_error`).
 ///
+/// A DOOR ROUTE's own refusal (`door.route`, spec Part 3 section 12, "Refusals") is the route's
+/// plane rendering it, unit-less, in the route's refusal dialect for the request target (ARCHITECT
+/// rulings 2026-10-05); every other path is rendered through the line it matched.
+///
 /// No unwrap / expect / panic on this request path.
 fn unauthorized_response(app: &crate::state::App, door: Door<'_>, path: &str) -> Response {
+    if let Some((refuse, target)) = door.route {
+        return refuse(busbar_contract::caps::ReasonCode::Unauthenticated, target);
+    }
     crate::ingress::native::native_error(
         door.lines,
         ingress_for_path(app, path),
@@ -1504,8 +1514,8 @@ async fn external_admin_module(
 /// The 503 an admin chain that could not be judged answers, in the frozen v1 envelope
 /// (`{error:{code:"unavailable"}}`).
 fn admin_unavailable_response(why: AdminUnavailable) -> Response {
-    let e = crate::admin::v1::contract::AdminError::Unavailable(why.message().to_string());
-    crate::admin::v1::json::err_json(&e)
+    let e = crate::admin::gate::ApiError::Unavailable(why.message().to_string());
+    crate::admin::gate::err_json(&e)
 }
 
 /// The ADMIN-SCOPE CEILING for an identifying module (`max_admin_scope:`): the operator credential
@@ -1705,7 +1715,7 @@ fn admin_scope_for(
 /// most-frequent error must carry the SAME `{error:{code,message}}` shape tooling branches on;
 /// the data plane keeps protocol-native 401 shaping (`unauthorized_response`).
 fn admin_unauthorized_response() -> Response {
-    let e = crate::admin::v1::contract::AdminError::Unauthorized;
+    let e = crate::admin::gate::ApiError::Unauthorized;
     let body = serde_json::json!({
         "error": { "code": e.code(), "message": e.message() }
     })
@@ -1738,7 +1748,7 @@ fn forbidden_response(needed: busbar_contract::authz::Scope) -> Response {
 /// A 429 in the frozen admin error envelope — the per-principal mutation budget is spent. Carries
 /// `Retry-After: 60` (the fixed window length): a compliant client backs off without guessing.
 fn rate_limited_response() -> Response {
-    let e = crate::admin::v1::contract::AdminError::RateLimited;
+    let e = crate::admin::gate::ApiError::RateLimited;
     let body = serde_json::json!({
         "error": { "code": e.code(), "message": e.message() }
     })
@@ -1803,7 +1813,7 @@ fn unauthorized_with_completion_taps(
         busbar_kernel::proxy::proxy_vocab::fire_stage_taps(
             &app.tap_hooks_response,
             &shape,
-            crate::hooks::wire::HookStageProjection {
+            busbar_contract::hook_wire::HookStageProjection {
                 at: "response",
                 model: None,
                 attempt_number: None,
@@ -1848,9 +1858,21 @@ pub(crate) async fn auth_middleware(
     let mut _mw = crate::profile::start(crate::profile::Stage::MwAuth);
     let path = req.uri().path().to_owned();
     let method = req.method().clone();
+    // THE DOOR ROUTE THIS REQUEST MATCHES, resolved FIRST (spec Part 3 section 12: route, then
+    // authenticate): a `401` this middleware decides on it is rendered by the route's plane.
+    // `(the route's plane rendering, the request target it renders for)`.
+    let route: Option<(busbar_kernel::plane_routes::PlaneRefuseFn, String)> =
+        core_routes.door_refusal(&path, &method).map(|refuse| {
+            let target = req
+                .uri()
+                .path_and_query()
+                .map_or_else(|| path.clone(), |t| t.as_str().to_owned());
+            (refuse.clone(), target)
+        });
     let door = Door {
         lines: lines.as_deref(),
         method: method.as_str(),
+        route: route.as_ref(),
     };
 
     // CORE HTTP ROUTES: every first-party route declared its admission bar at the moment it was
@@ -2002,7 +2024,7 @@ pub(crate) async fn auth_middleware(
             // protocol-shaped body (that shaping is for the DATA plane, whose SDKs parse it).
             AdminDoor::Denied => return Err(admin_unauthorized_response()),
         };
-        let required = crate::admin::v1::contract::required_scope(req.method(), &path);
+        let required = crate::admin::gate::required_scope(req.method(), &path);
         if !scope.allows(required) {
             // Denied authorization is AUDITED (a credential probing beyond its scope is exactly what
             // an operator wants to see) — but at most once per (principal, window). The durable
@@ -2051,7 +2073,7 @@ pub(crate) async fn auth_middleware(
             // predicate, so it can be enumerated and cross-checked against
             // `docs/admin-api.md`'s rate-limit table (see that table's doc comment).
             let rel = path
-                .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
+                .strip_prefix(crate::admin::gate::ADMIN_PREFIX)
                 .unwrap_or(&path);
             let class = crate::ratelimit::classify_mutation(rel);
             let actor = principal
