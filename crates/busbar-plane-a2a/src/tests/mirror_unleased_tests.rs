@@ -47,7 +47,7 @@ impl tracing::Subscriber for WarnCapture {
 /// first emission from this scoped subscriber.
 fn landing(
     answer: impl Fn() -> Result<busbar_contract::abi::sdk::exchange::ExchangeResponse, ConnFailure>,
-) -> (Result<Option<(u16, Vec<u8>)>, Unleased>, Vec<String>) {
+) -> (Landed, Vec<String>) {
     let (sent, heard) = std::sync::mpsc::channel();
     let landed = tracing::subscriber::with_default(WarnCapture(sent), || {
         let first = landed(Binding::JsonRpc, "planner", LIST_TASKS, answer());

@@ -410,7 +410,7 @@ pub(crate) fn drive_originated(
     hop: &mut crate::mirror::Originated,
     method: &str,
     params: &serde_json::Value,
-) -> Poll<Result<Option<(u16, Vec<u8>)>, crate::mirror::Unleased>> {
+) -> Poll<crate::mirror::Landed> {
     use busbar_contract::abi::sdk::exchange::{exchange, Exchange};
     if hop.exchange.is_none() {
         let at = LookAt {

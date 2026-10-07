@@ -165,6 +165,10 @@ pub fn answered(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Unleased;
 
+/// What one originated request came to: its status and body (`None` when it was not answered),
+/// or [`Unleased`].
+pub type Landed = Result<Option<(u16, Vec<u8>)>, Unleased>;
+
 /// WHAT ONE ORIGINATED REQUEST CAME TO, out of its exchange's `answer`: the status and body
 /// [`answered`] reads (`None` for a request that was not answered), or [`Unleased`] for one the host
 /// refused for an unavailable credential, logged as the engine logged a lease it could not mint
@@ -180,7 +184,7 @@ pub fn landed(
         busbar_contract::abi::sdk::exchange::ExchangeResponse,
         busbar_contract::abi::sdk::conn::ConnFailure,
     >,
-) -> Result<Option<(u16, Vec<u8>)>, Unleased> {
+) -> Landed {
     use busbar_contract::abi::sdk::conn::ConnFailure;
     match answer {
         Err(ConnFailure::CredentialUnavailable) => {
