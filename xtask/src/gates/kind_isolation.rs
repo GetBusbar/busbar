@@ -9171,16 +9171,18 @@ impl Gate for KindIsolationGate {
 
         // A PLANE THAT DOES NOT RUN A STEP. The plant removes one step's implementation from a data
         // plane by replacing the file that holds it; the step list is read off the kernel's own
-        // table, so the finding names the step the loop expected.
+        // table, so the finding names the step the loop expected. The subject is a plane with the
+        // legacy face only: a plane that also serves through its door (the flipped ones) is judged
+        // by its door's slots instead, so removing its legacy file leaves the door face standing.
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-plane-mcp/src/tool_plane.rs");
+        ov.remove("crates/busbar-plane-streaming/src/plane.rs");
         report.push(prove_rows_red(
             cx,
             subject,
             "a data plane that implements none of the strict step list",
             &[ROW_STEPS],
             ov,
-            &["missing-step", "busbar-plane-mcp"],
+            &["missing-step", "busbar-plane-streaming"],
         ));
 
         // A PLANE THAT RUNS THE KERNEL'S DECISION, both ways the ruling names: an `approve` of its
