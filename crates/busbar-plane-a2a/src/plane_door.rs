@@ -1419,7 +1419,7 @@ pub(crate) fn verdict(plane: &A2aDoor, agent: &str) -> u64 {
 /// AN ARRIVAL ADDRESSED TO `member` STATES ITS TRUST FACTS (the agent, as the counterparty, ARCHITECT
 /// FLIP-A2A): the kernel's Approve judges them and refuses an agent its trust book does not serve
 /// (`untrusted`, rendered by `refusal` in the admission's words). Only an agent the book serves is
-/// held to the plane's own admission here ([`admit_unit`]: its suspension and its card's fit), so
+/// held to the plane's own admission here ([`admit_unit`]: its card's fit), so
 /// trust is judged before the fit, as 1.5.5's admission ordered them.
 fn admit_addressed(
     plane: &A2aDoor,
@@ -1429,7 +1429,7 @@ fn admit_addressed(
     out: &mut Out<'_, ArriveOut>,
 ) -> Result<(), arrival::Refusal> {
     // The trust facts ride an ADMITTED arrival only: a refusal about the entry states none
-    // (abi/plane "A refused arrival"), so the plane's own refusal (a suspension, the card's fit)
+    // (abi/plane "A refused arrival"), so the plane's own refusal (the card's fit)
     // is stated after its standing and never beside it.
     if verdict(plane, member) == busbar_contract::abi::host::service::DISTRUST_NONE {
         admit_unit(plane, (member, def), Some(member), generation, envelope)?;
@@ -1439,8 +1439,7 @@ fn admit_addressed(
 }
 
 /// THE ADMISSION AND THE CATALOGUE (the engine's `receive::admit`, after the kernel's identity and
-/// grant), for a unit routed to `member` (`def`): an agent the anomaly breaker suspended, or one
-/// the KERNEL'S TRUST BOOK does not serve ([`verdict`]: never approved, or quarantined), is refused
+/// grant), for a unit routed to `member` (`def`): an agent the KERNEL'S TRUST BOOK does not serve ([`verdict`]: never approved, or quarantined), is refused
 /// in the admission's words ([`crate::trust::not_serving`]); one with no held card, or whose held
 /// card the request's shape (`envelope`) does not fit, is excluded from the catalogue — addressed,
 /// the catalogue's refusal naming the exclusion (`403`, [`crate::skill::refusal`]), routed by
@@ -1452,24 +1451,10 @@ pub(crate) fn admit_unit(
     generation: u64,
     envelope: Option<&serde_json::Value>,
 ) -> Result<Option<String>, arrival::Refusal> {
-    use crate::trust::{not_serving, state_of, State, NOT_SERVING_STATUS, UNTRUSTED_STATUS};
-    let standing = plane.trust.get(&member.to_string());
-    if let Some(reason) = standing.as_ref().and_then(|s| s.suspension.as_deref()) {
-        return Err(not_serving(
-            addressed,
-            State::Suspended,
-            Some(reason),
-            NOT_SERVING_STATUS,
-        ));
-    }
+    use crate::trust::{not_serving, state_of, UNTRUSTED_STATUS};
     let distrust = verdict(plane, member);
     if distrust != busbar_contract::abi::host::service::DISTRUST_NONE {
-        return Err(not_serving(
-            addressed,
-            state_of(distrust),
-            None,
-            UNTRUSTED_STATUS,
-        ));
+        return Err(not_serving(addressed, state_of(distrust), UNTRUSTED_STATUS));
     }
     let excluded = |unfit: crate::skill::Unfit| match addressed {
         Some(_) => crate::skill::refusal(&unfit),
@@ -2168,7 +2153,6 @@ slot!(
                     Some(crate::trust::not_serving(
                         Some(&agent),
                         crate::trust::state_of(u64::from(given.trust)),
-                        None,
                         given.status,
                     ))
                 })
@@ -2819,14 +2803,13 @@ fn verify_on_call(
     let Some(now_ms) = reach.now_ms() else {
         return Poll::Ready(false);
     };
-    // SERVING is the kernel's verdict on the agent's key, and not a suspension of the plane's.
+    // SERVING is the kernel's verdict on the agent's key.
     // A CARD THE LAST LOOK COULD NOT REACH OR VERIFY FAILS THE HOP CLOSED (ARCHITECT 2026-10-07,
     // predev baseline: `receive::verify_agent_on_call` recorded `Error`, which its hop gate refused):
     // the hop is refused here without asking `trust.serves`, and the kernel's last verdict, which
     // the look's `trust.unreachable` kept, is left untouched.
     let serves = |standing: &crate::trust::Standing| {
-        standing.suspension.is_none()
-            && !matches!(standing.sighting, crate::trust::Sighting::Failed(_))
+        !matches!(standing.sighting, crate::trust::Sighting::Failed(_))
             && verdict(plane, member) == busbar_contract::abi::host::service::DISTRUST_NONE
     };
     // A UNIT WAITING ON ANOTHER'S LOOK takes its verdict, never a look of its own — unless that
@@ -3071,13 +3054,7 @@ slot!(
             }
         };
         let mut standing = plane.trust.get(&name).unwrap_or_default();
-        let state_now = |plane: &A2aDoor, standing: &crate::trust::Standing| {
-            if standing.suspension.is_some() {
-                crate::trust::State::Suspended
-            } else {
-                crate::trust::state_of(verdict(plane, &name))
-            }
-        };
+        let state_now = |plane: &A2aDoor| crate::trust::state_of(verdict(plane, &name));
         let Some(claimed) = claimed else {
             // A PREVIEW DECIDES NOTHING: the key stands where the book has it.
             if let Some(card) = looked.card {
@@ -3085,7 +3062,7 @@ slot!(
             }
             let view = crate::trust::connect_view(
                 &name,
-                state_now(plane, &standing),
+                state_now(plane),
                 &looked.sighting,
             );
             standing.sighting = looked.sighting;
@@ -3113,7 +3090,7 @@ slot!(
         }
         let view = crate::trust::registration_view(
             &name,
-            state_now(plane, &standing),
+            state_now(plane),
             &looked.sighting,
         );
         standing.sighting = looked.sighting;

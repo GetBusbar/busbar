@@ -3,7 +3,7 @@
 
 //! The trust surface, plane side, against the served engine's words: the card fetch's refusals,
 //! the verification per mechanism, the kernel's verdict in the admission's words, the `connect`
-//! view, the cadence and the suspension. The DECISION (approval, quarantine) is the
+//! view and the cadence. The DECISION (approval, quarantine) is the
 //! kernel's trust book's, tested there and end to end on the root's agent door.
 
 use serde_json::json;
@@ -210,13 +210,6 @@ fn the_connect_view_is_a_preview_of_the_card_under_the_key_s_state() {
     assert_eq!(failed["state"], "error", "a failed contact reads as error");
     assert_eq!(failed["failure"], "down");
     assert_eq!(failed["fingerprint"], Value::Null);
-    let suspended: Value = serde_json::from_str(&connect_view(
-        "planner",
-        State::Suspended,
-        &Sighting::Failed("down".to_string()),
-    ))
-    .unwrap();
-    assert_eq!(suspended["state"], "suspended", "a suspension outranks it");
 }
 
 #[test]
@@ -303,7 +296,7 @@ fn def_of(pin: AgentPinCfg, cadence: serde_json::Value) -> AgentDefCfg {
 
 #[test]
 fn a_unit_whose_agent_is_not_serving_is_refused_in_the_engine_s_words() {
-    let addressed = not_serving(Some("planner"), State::Pending, None, UNTRUSTED_STATUS);
+    let addressed = not_serving(Some("planner"), State::Pending, UNTRUSTED_STATUS);
     assert_eq!(addressed.status, 403, "the kernel's trust refusal");
     assert_eq!(
         serde_json::to_value(addressed.envelope()).unwrap()["error"]["message"],
@@ -311,7 +304,7 @@ fn a_unit_whose_agent_is_not_serving_is_refused_in_the_engine_s_words() {
     );
     assert_eq!(addressed.envelope()["id"], Value::Null);
     assert_eq!(addressed.envelope()["error"]["code"], -32004);
-    let scoped = not_serving(None, State::Quarantined, None, UNTRUSTED_STATUS);
+    let scoped = not_serving(None, State::Quarantined, UNTRUSTED_STATUS);
     assert_eq!(scoped.status, 400);
     assert_eq!(
         scoped.envelope()["error"]["message"],
@@ -354,21 +347,6 @@ fn settling_stamps_the_look_and_records_what_it_observed() {
         "a failed contact is recorded, never read as unchanged"
     );
     assert_eq!(ledger.last_checked_ms, Some(2_000));
-}
-
-#[test]
-fn a_suspension_refuses_in_the_admission_s_words_naming_its_reason() {
-    let refusal = not_serving(
-        Some("planner"),
-        State::Suspended,
-        Some("vendor breach notice"),
-        NOT_SERVING_STATUS,
-    );
-    assert_eq!(refusal.status, 503);
-    assert_eq!(
-        refusal.envelope()["error"]["message"],
-        "fronted agent `planner` is not serving (Suspended): vendor breach notice"
-    );
 }
 
 #[test]

@@ -27,7 +27,7 @@
 //!   the operator approves the key on the generic core-admin `/admin/trust`; a changed card is
 //!   quarantined. The plane holds no approval of its own.
 //! * **The state** an operator reads off `connect` is the kernel's verdict in words ([`state_of`]);
-//!   a suspension the standing carries is `suspended`; a failed contact is `error`.
+//!   a failed contact is `error`.
 
 use std::collections::BTreeMap;
 
@@ -143,8 +143,6 @@ pub enum State {
     Approved,
     /// The last sighting differs from the lock.
     Quarantined,
-    /// Taken out of service whatever its card (the standing's suspension).
-    Suspended,
     /// The last contact failed.
     Error,
 }
@@ -157,14 +155,13 @@ impl State {
             State::Pending => "pending",
             State::Approved => "approved",
             State::Quarantined => "quarantined",
-            State::Suspended => "suspended",
             State::Error => "error",
         }
     }
 }
 
 /// ONE REGISTRATION'S TRUST, as the plane holds it in memory: the last sighting, the
-/// re-verification ledger verify-on-call keeps, and its suspension.
+/// re-verification ledger verify-on-call keeps.
 /// What the registration is trusted to SERVE is not here: it is the kernel's trust book.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Standing {
@@ -172,8 +169,6 @@ pub struct Standing {
     pub sighting: Sighting,
     /// When verify-on-call last looked.
     pub ledger: Ledger,
-    /// Why it was taken out of service, when it was; resuming is an operator's act.
-    pub suspension: Option<String>,
 }
 
 /// THE RE-VERIFICATION LEDGER of one registration (the served engine's `reverify::Ledger`): when
@@ -242,36 +237,23 @@ pub fn state_of(distrust: u64) -> State {
 
 /// THE REFUSAL OF A UNIT WHOSE AGENT IS NOT SERVING, in the served engine's words, at `status`:
 /// addressed to the agent (`addressed`), its admission refusal (`-32004`, `fronted agent `<id>` is
-/// not serving (<state>)[: <suspension>]`); routed by the caller's scope, the catalogue's (an agent
-/// that is not serving is in no caller's catalogue, so none reaches: `400`, `-32004`). The kernel's
-/// trust refusal is [`UNTRUSTED_STATUS`]; the standing's own suspension is
-/// [`NOT_SERVING_STATUS`].
+/// not serving (<state>)`); routed by the caller's scope, the catalogue's (an agent that is not
+/// serving is in no caller's catalogue, so none reaches: `400`, `-32004`). The kernel's trust
+/// refusal is [`UNTRUSTED_STATUS`].
 #[must_use]
-pub fn not_serving(
-    addressed: Option<&str>,
-    state: State,
-    reason: Option<&str>,
-    status: u32,
-) -> crate::arrival::Refusal {
-    match (addressed, reason) {
-        (Some(agent), Some(reason)) => crate::arrival::kernel_refusal(
-            status,
-            &format!("fronted agent `{agent}` is not serving ({state:?}): {reason}"),
-        ),
-        (Some(agent), None) => crate::arrival::kernel_refusal(
+pub fn not_serving(addressed: Option<&str>, state: State, status: u32) -> crate::arrival::Refusal {
+    match addressed {
+        Some(agent) => crate::arrival::kernel_refusal(
             status,
             &format!("fronted agent `{agent}` is not serving ({state:?})"),
         ),
-        (None, _) => crate::arrival::scope_refusal(""),
+        None => crate::arrival::scope_refusal(""),
     }
 }
 
 /// The status a unit is refused with when the kernel's trust book does not trust its agent
 /// (`untrusted`: never approved, or quarantined).
 pub const UNTRUSTED_STATUS: u32 = 403;
-
-/// The status a unit addressed to an agent that is not serving is refused with.
-pub const NOT_SERVING_STATUS: u32 = 503;
 
 // ── THE FETCH ────────────────────────────────────────────────────────────────────────────────────
 
@@ -714,7 +696,7 @@ pub fn verify(
 
 /// THE TRUST VIEW of one registered agent, field for field the served engine's: what both verbs
 /// answer with. Its `state` is the kernel's verdict on the agent's trust key (or the plane's own
-/// `suspended`/`error`); the approval it reads against is the KERNEL'S (ARCHITECT FLIP-A2A), which
+/// `error`); the approval it reads against is the KERNEL'S (ARCHITECT FLIP-A2A), which
 /// pins the card's fingerprint and not its skills, so the per-skill queue (`added`, `changed`,
 /// `removed`) is always empty and `pin_changed` says the kernel quarantined a moved card.
 #[derive(serde::Serialize)]
@@ -732,7 +714,7 @@ struct TrustView<'a> {
 }
 
 fn view(name: &str, state: State, sighting: &Sighting) -> String {
-    let state = if sighting.failure().is_some() && state != State::Suspended {
+    let state = if sighting.failure().is_some() {
         State::Error
     } else {
         state
