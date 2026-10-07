@@ -297,7 +297,7 @@ impl<'r> ExportRows<'r> {
         self.registry
             .linked()
             .iter()
-            .any(|p| p.manifest.alias == module)
+            .any(|p| p.manifest.config_names().any(|n| n == module))
     }
 
     /// Whether `module` names a FIRST-PARTY row: linked, or dropped in signed by the release key.
