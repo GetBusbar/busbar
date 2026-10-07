@@ -747,6 +747,8 @@ const TOOL_USE_ID: &str = "tool_use_id";
 const USER_ID: &str = "user_id";
 /// Wire word `web_search_requests`.
 const WEB_SEARCH_REQUESTS: &str = "web_search_requests";
+/// `usage.server_tool_use.web_fetch_requests`.
+const WEB_FETCH_REQUESTS: &str = "web_fetch_requests";
 
 /// Anthropic citation `type` tag values (the `type` field on each citation object).
 const CITATION_TYPE_CHAR: &str = "char_location";

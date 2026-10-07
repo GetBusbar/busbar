@@ -3160,9 +3160,9 @@ fn vocab_lines(rel: &str, text: &str) -> std::sync::Arc<Vec<VocabLine>> {
     }
     #[cfg(test)]
     READINGS.with(|n| n.set(n.get() + 1));
-    let lines: Vec<VocabLine> = scan::production_lines(text)
-        .into_iter()
-        .map(|(lineno, code)| VocabLine::new(lineno, scan::blank_literals(&code)))
+    let lines: Vec<VocabLine> = production_code(text)
+        .iter()
+        .map(|l| VocabLine::new(l.lineno, l.blanked.clone()))
         .collect();
     let lines = std::sync::Arc::new(lines);
     memo.lock()
@@ -3274,10 +3274,24 @@ fn rule_vocab(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row 
 
     let mut offenders: Vec<String> = Vec::new();
     let mut scanned = 0usize;
-    for f in &files {
+    // Fixtures are not the kind's shipped surface, on the same terms every sibling gate uses.
+    let is_fixture = |rel: &str| {
+        rel.contains("/tests/") || rel.ends_with("_test.rs") || rel.ends_with("_tests.rs")
+    };
+    // EVERY FILE THE LOOP BELOW READS IS LEXED FIRST, across the cores: [`vocab_lines`] is a pure
+    // function of the path and the bytes, and the lexing is most of this row's cost. The loop then
+    // reads each file's lines in walk order, exactly as it did when it lexed them itself.
+    let lexed = crate::par::par_map(&files, |f| {
         let rel = f.rel_str();
-        // Fixtures are not the kind's shipped surface, on the same terms every sibling gate uses.
-        if rel.contains("/tests/") || rel.ends_with("_test.rs") || rel.ends_with("_tests.rs") {
+        let dir = owning_dir(&rel)?;
+        (!is_fixture(&rel)
+            && kind_of.contains_key(dir.as_str())
+            && by_dir.contains_key(dir.as_str()))
+        .then(|| vocab_lines(&rel, &f.text))
+    });
+    for (f, lexed) in files.iter().zip(lexed) {
+        let rel = f.rel_str();
+        if is_fixture(&rel) {
             continue;
         }
         let Some(dir) = owning_dir(&rel) else {
@@ -3291,7 +3305,7 @@ fn rule_vocab(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row 
         };
         let banned = banned_for(kind, planes);
         scanned += 1;
-        let lines = vocab_lines(&rel, &f.text);
+        let lines = lexed.expect("every file that reaches here was lexed above");
         for line in lines.iter() {
             if every_path_simple && line.toks.is_empty() {
                 continue;
@@ -4081,12 +4095,12 @@ fn use_alias(code: &str) -> Option<(String, String)> {
 fn impl_heads(text: &str) -> Vec<String> {
     let mut aliases: BTreeMap<String, String> = BTreeMap::new();
     let mut joined = String::new();
-    for (_, code) in scan::production_lines(text) {
-        let code = scan::blank_literals(&code);
-        if let Some((tr, alias)) = use_alias(&code) {
+    for line in production_code(text).iter() {
+        let code = &line.blanked;
+        if let Some((tr, alias)) = use_alias(code) {
             aliases.insert(alias, tr);
         }
-        joined.push_str(&code);
+        joined.push_str(code);
         joined.push(' ');
     }
     let b = joined.as_bytes();
@@ -4157,12 +4171,15 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
         conformance: BTreeSet::new(),
         conformance_dead: BTreeSet::new(),
     };
-    for f in &files {
+    // Each file's facts are a pure function of its path and bytes (see [`source_facts`]), so they
+    // are read across the cores and folded here in walk order, as the serial loop folded them.
+    let read = crate::par::par_map(&files, |f| {
         let rel = f.rel_str();
-        let Some(dir) = owning_dir(&rel) else {
-            continue;
-        };
+        let dir = owning_dir(&rel)?;
         let facts = source_facts(&rel, &dir, &f.text);
+        Some((dir, facts))
+    });
+    for (dir, facts) in read.into_iter().flatten() {
         if let Some(live) = facts.live {
             if live > 0 {
                 idx.conformance.insert(dir.clone());
@@ -4202,6 +4219,54 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
         }
     }
     Ok(idx)
+}
+
+/// One production line of a source file: [`scan::production_lines`]'s line number and code, and
+/// the same code with its literal contents blanked ([`scan::blank_literals`]).
+struct ProductionLine {
+    lineno: usize,
+    code: String,
+    blanked: String,
+}
+
+/// THE FILE'S PRODUCTION LINES, LEXED ONCE PER RUN AND SHARED BY EVERY RULE THAT READS THEM.
+///
+/// The vocabulary row, the impl-head and door-tail readings of the source index, the
+/// registration row and the control path each lexed the same file through
+/// [`scan::production_lines`] (and most of them through [`scan::blank_literals`] after it) on their
+/// own: five lexes of every source file per run. The lexing is a pure function of the bytes, so it
+/// is done once and remembered under a hash of them; each reader takes exactly the lines and the
+/// blanking it took before.
+fn production_code(text: &str) -> std::sync::Arc<Vec<ProductionLine>> {
+    use std::hash::{Hash, Hasher};
+    static MEMO: std::sync::OnceLock<
+        std::sync::Mutex<BTreeMap<u64, std::sync::Arc<Vec<ProductionLine>>>>,
+    > = std::sync::OnceLock::new();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    let key = h.finish();
+    let memo = MEMO.get_or_init(Default::default);
+    if let Some(found) = memo
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+    {
+        return std::sync::Arc::clone(found);
+    }
+    let lines = std::sync::Arc::new(
+        scan::production_lines(text)
+            .into_iter()
+            .map(|(lineno, code)| ProductionLine {
+                lineno,
+                blanked: scan::blank_literals(&code),
+                code,
+            })
+            .collect::<Vec<_>>(),
+    );
+    memo.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key, std::sync::Arc::clone(&lines));
+    lines
 }
 
 /// WHAT ONE FILE CONTRIBUTES TO THE SOURCE INDEX — a pure function of its path and its bytes.
@@ -4275,8 +4340,8 @@ fn source_facts(rel: &str, dir: &str, text: &str) -> std::sync::Arc<SourceFacts>
         kinds = door_kind_marks(text);
         if rel == format!("{dir}/src/lib.rs") {
             let mut found = Vec::new();
-            for (_, code) in scan::production_lines(text) {
-                let t = code.trim();
+            for line in production_code(text).iter() {
+                let t = line.code.trim();
                 let body = t
                     .strip_prefix("pub mod ")
                     .or_else(|| t.strip_prefix("mod "));
@@ -4409,10 +4474,10 @@ fn pinned_exemplars(
 /// `verify_tail`). The contract's own `struct` declarations and its `const fn` builders are not
 /// tails.
 fn door_tails(text: &str) -> usize {
-    scan::production_lines(text)
-        .into_iter()
-        .filter(|(_, code)| {
-            let t = code.trim();
+    production_code(text)
+        .iter()
+        .filter(|line| {
+            let t = line.code.trim();
             let transport = t.contains("TransportTail {") && !t.contains("struct TransportTail");
             let auth =
                 t.contains("const ") && (t.contains(": &AuthTail =") || t.contains(": AuthTail ="));
@@ -5244,8 +5309,9 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
             if !is_shipped_source(&rel) {
                 continue;
             }
-            for (lineno, code) in scan::production_lines(&f.text) {
-                let lower = scan::blank_literals(&code).to_lowercase();
+            for line in production_code(&f.text).iter() {
+                let lineno = line.lineno;
+                let lower = line.blanked.to_lowercase();
                 for w in UPSTREAM_WORDS {
                     // busbar-core-connector OPENS the real connections, so its connection/TLS
                     // vocabulary is in-role, not control-path debt ([`CONNECTOR_INROLE_WORDS`]);
@@ -5581,11 +5647,11 @@ fn wires_named_in(rel: &str, text: &str, needles: &[(String, String, String)]) -
         return std::sync::Arc::clone(found);
     }
     let mut hit: BTreeSet<String> = BTreeSet::new();
-    for (_, code) in scan::production_lines(text) {
+    for line in production_code(text).iter() {
         if hit.len() == needles.len() {
             break;
         }
-        let lower = scan::blank_literals(&code).to_lowercase();
+        let lower = line.blanked.to_lowercase();
         for (name, path, sym) in needles {
             if !hit.contains(name) && lower.contains(path.as_str()) && word_ci(&lower, sym) {
                 hit.insert(name.clone());
@@ -5716,19 +5782,23 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
             )
         })
         .collect();
-    let mut sites: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for f in &files {
+    // Each file is read on its own bytes ([`wires_named_in`]), across the cores, and its wires are
+    // filed in walk order.
+    let named = crate::par::par_map(&files, |f| {
         let rel = f.rel_str();
         if !is_shipped_source(&rel) {
-            continue;
+            return None;
         }
-        let Some(dir) = owning_dir(&rel) else {
-            continue;
-        };
+        let dir = owning_dir(&rel)?;
         if kind_of.get(dir.as_str()) == Some(&"transport") {
-            continue;
+            return None;
         }
-        for name in wires_named_in(&rel, &f.text, &needles).iter() {
+        let names = wires_named_in(&rel, &f.text, &needles);
+        Some((rel, names))
+    });
+    let mut sites: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (rel, names) in named.into_iter().flatten() {
+        for name in names.iter() {
             sites.entry(name.clone()).or_default().insert(rel.clone());
         }
     }
@@ -6246,57 +6316,72 @@ impl Gate for KindIsolationGate {
             return Verdict::of(vec![rule_write(cx, &crates, &reg)]);
         }
 
-        let mut rows = vec![
-            rule_name(&crates, &planes, &ports, &reg),
-            rule_deps(cx, &crates, &reg, Half::Shipped, self.ship),
-            rule_deps(cx, &crates, &reg, Half::Test, self.ship),
+        // EVERY RULE READS THE SAME CENSUS AND WRITES NOTHING, so they run across the cores and
+        // their rows are taken back IN THIS ORDER — the order the serial run emitted them in.
+        let (ship, matrix_gating) = (self.ship, self.matrix_gating);
+        let (crates, planes, ports, reg) = (&crates, &planes, &ports, &reg);
+        type Rule<'r> = &'r (dyn Fn() -> Vec<Row> + Sync);
+        let rules: &[Rule] = &[
+            &|| vec![rule_name(crates, planes, ports, reg)],
+            &|| vec![rule_deps(cx, crates, reg, Half::Shipped, ship)],
+            &|| vec![rule_deps(cx, crates, reg, Half::Test, ship)],
             // #40(a) IS A CLOSURE, AND UNTIL THIS ROW NOTHING HERE COMPUTED ONE. See [`closure`].
-            closure::rule_closure(cx, &crates),
-            inputs::rule_inputs(cx, &crates, &planes, &reg),
-            rule_vocab(cx, &crates, &planes),
-            rule_registry(cx, &crates, &reg, self.ship),
-            rule_steps(cx, &crates),
-            rule_wires(cx, &crates),
-            truths::rule_truths(cx, &kind_names(), &crates),
-            matrix::rule_matrix(cx, &crates, &reg, self.ship, self.matrix_gating),
-        ];
-        // THE SOURCE INDEX IS BUILT FOR BOTH REGISTRATIONS NOW. It was the ship twin's private
-        // input, because the two rows that read it are ship criteria — but `:faces` is not a ship
-        // criterion. A wire that implements `Plane` is a plane at the type level on the commit that
-        // lands it, and a rule that only says so at release time is a rule that says so too late.
-        match index_sources(cx) {
-            Ok(mut idx) => {
-                rows.push(rule_faces(&crates, &idx, &reg, self.ship));
-                if self.ship {
-                    let pinned = pinned_exemplars(cx, &crates, &mut idx);
-                    rows.push(rule_shape(&crates, &idx, &pinned));
-                    rows.push(rule_testkit(&crates, &idx));
+            &|| vec![closure::rule_closure(cx, crates)],
+            &|| vec![inputs::rule_inputs(cx, crates, planes, reg)],
+            &|| vec![rule_vocab(cx, crates, planes)],
+            &|| vec![rule_registry(cx, crates, reg, ship)],
+            &|| vec![rule_steps(cx, crates)],
+            &|| vec![rule_wires(cx, crates)],
+            &|| vec![truths::rule_truths(cx, &kind_names(), crates)],
+            &|| vec![matrix::rule_matrix(cx, crates, reg, ship, matrix_gating)],
+            // THE SOURCE INDEX IS BUILT FOR BOTH REGISTRATIONS NOW. It was the ship twin's private
+            // input, because the two rows that read it are ship criteria — but `:faces` is not a
+            // ship criterion. A wire that implements `Plane` is a plane at the type level on the
+            // commit that lands it, and a rule that only says so at release time is a rule that
+            // says so too late.
+            &|| match index_sources(cx) {
+                Ok(mut idx) => {
+                    let mut rows = vec![rule_faces(crates, &idx, reg, ship)];
+                    if ship {
+                        let pinned = pinned_exemplars(cx, crates, &mut idx);
+                        rows.push(rule_shape(crates, &idx, &pinned));
+                        rows.push(rule_testkit(crates, &idx));
+                    }
+                    rows
                 }
-            }
-            Err(e) => {
-                let why = format!(
-                    "{e} — the source index is these rows' own input, and an index that did not \
-                     read is not an index that found nothing wrong."
-                );
-                rows.push(Row::fail(
-                    ROW_FACES,
-                    "the source index did not run",
-                    why.clone(),
-                ));
-                if self.ship {
-                    rows.push(Row::fail(
-                        ROW_SHAPE,
+                Err(e) => {
+                    let why = format!(
+                        "{e} — the source index is these rows' own input, and an index that did \
+                         not read is not an index that found nothing wrong."
+                    );
+                    let mut rows = vec![Row::fail(
+                        ROW_FACES,
                         "the source index did not run",
                         why.clone(),
-                    ));
-                    rows.push(Row::fail(ROW_TESTKIT, "the source index did not run", why));
+                    )];
+                    if ship {
+                        rows.push(Row::fail(
+                            ROW_SHAPE,
+                            "the source index did not run",
+                            why.clone(),
+                        ));
+                        rows.push(Row::fail(ROW_TESTKIT, "the source index did not run", why));
+                    }
+                    rows
                 }
-            }
-        }
-        if self.ship {
-            rows.push(rule_drain(&crates, &reg));
-            rows.push(rule_control(cx, &crates));
-        }
+            },
+            &|| {
+                if ship {
+                    vec![rule_drain(crates, reg), rule_control(cx, crates)]
+                } else {
+                    Vec::new()
+                }
+            },
+        ];
+        let rows: Vec<Row> = crate::par::par_map(rules, |rule| rule())
+            .into_iter()
+            .flatten()
+            .collect();
         Verdict::of(rows)
     }
 

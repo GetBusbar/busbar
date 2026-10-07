@@ -162,8 +162,10 @@ impl ClientCreds {
                 body.chars().take(200).collect::<String>()
             ));
         }
-        let tok: TokenResponse =
-            serde_json::from_str(&body).map_err(|e| format!("token response JSON invalid: {e}"))?;
+        // Decoded straight into `Redacted`; a decode failure withholds the decoder's text, which can
+        // quote the token (`super::json_err`).
+        let tok: super::TokenResponse =
+            serde_json::from_str(&body).map_err(super::json_err("token response JSON invalid"))?;
         Ok(CachedToken::new(
             tok.access_token,
             // saturating_add: `expires_in` is attacker-influenced (comes off the token endpoint), so a
@@ -171,16 +173,6 @@ impl ClientCreds {
             now.saturating_add(tok.expires_in),
         ))
     }
-}
-
-#[derive(serde::Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    #[serde(
-        default = "super::default_expires_in",
-        deserialize_with = "super::deserialize_expires_in"
-    )]
-    expires_in: u64,
 }
 
 #[cfg(test)]

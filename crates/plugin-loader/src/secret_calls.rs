@@ -446,9 +446,10 @@ impl SecretAxis for SecretRows {
             let material = match settings.get(&key) {
                 None => Vec::new(),
                 Some(v) => {
-                    let r = serde_json::from_value::<SecretRef>(v.clone()).map_err(|e| {
-                        format!("secrets.{module}.settings.{key}: not a secret reference: {e}")
-                    })?;
+                    // The decoder's own text is withheld: the value may be the secret itself.
+                    let r = serde_json::from_value::<SecretRef>(v.clone()).map_err(
+                        crate::boot::not_a_reference(format!("secrets.{module}.settings.{key}")),
+                    )?;
                     resolve(&r).map_err(|e| format!("secrets.{module}.settings.{key}: {e}"))?
                 }
             };
