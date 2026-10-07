@@ -71,12 +71,12 @@
 //! AN ON-DEMAND style (ARCHITECT ruling, the on-demand outbound script): `fields`(S) on a ticket
 //! before the first `tick` 1 → PENDING, and a second ticket's `fields`(S) while it waits 1 → PENDING,
 //! no exchange yet; `tick` → EXACTLY ONE exchange, and both waiting calls READY with the same token
-//! (`expect_fields`; 3 crossings: the tick, the two resumed calls — SINGLE-FLIGHT); ticket-less
+//! (`expect_fields`; the tick is the one first invocation, the two calls resume — SINGLE-FLIGHT); ticket-less
 //! `fields`(S) ×2 still ONE exchange; `outbound_ready` 1; a `tick` before S's expiry makes NO
 //! exchange (nothing is refreshed ahead); `fields`(S2) on a ticket → PENDING, one `drive`, EXACTLY
-//! ONE new exchange (its own cell), READY with `second_scope_fields` (3 crossings); `fields`(S) on a
+//! ONE new exchange (its own cell), READY with `second_scope_fields` (2 first invocations: the call and the drive; the call resumes); `fields`(S) on a
 //! ticket at an instant past S's token's expiry → PENDING, one `drive`, EXACTLY ONE new exchange,
-//! READY with `expired_fields` (3 crossings). Then the FAILING endpoint: `fields`(S) on a ticket
+//! READY with `expired_fields` (2 first invocations, as above). Then the FAILING endpoint: `fields`(S) on a ticket
 //! answers the declared `refusal` after EXACTLY ONE attempt (NO RETRY: the endpoint's hit count is 1).
 //!
 //! THE RED ARMS ([`red_outbound_wrong_byte`], [`red_outbound_double_fetch`]): the real door
@@ -112,7 +112,7 @@ use busbar_contract::transport::ConnFacts;
 
 use super::super::{
     bind, called, close, crossings, dispatcher, input, json, open_with, output, ready_step,
-    real_door, validate, Fold, Leg, Recorder, Restated, Subject,
+    real_door, validate, Counts, Fold, Leg, Recorder, Restated, Subject,
 };
 use super::{secret, stated, undeclared, Stated};
 use crate::dispatch::kinds::auth::Auth;
@@ -907,12 +907,11 @@ impl OnTicket {
     }
 }
 
-/// Wait until `counter` has advanced past `from` by `n` crossings (or [`TICK_WAIT`] passed).
-fn crossed(counter: &std::sync::atomic::AtomicU64, from: u64, n: u64) {
+/// Wait until `counter` has advanced past `from` by `n` first-invocation crossings (or
+/// [`TICK_WAIT`] passed).
+fn crossed(counter: &Counts<'_>, from: u64, n: u64) {
     let until = std::time::Instant::now() + TICK_WAIT;
-    while counter.load(std::sync::atomic::Ordering::SeqCst) < from + n
-        && std::time::Instant::now() < until
-    {
+    while counter.read().0 < from + n && std::time::Instant::now() < until {
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -1025,9 +1024,9 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
                     .expect("the instance's driver ticket is minted");
                 // SINGLE-FLIGHT: two calls wait on S before anything drives the exchange.
                 let first = r.step(&label("fields on a ticket, before any exchange"), 1, || {
-                    let from = counter.load(std::sync::atomic::Ordering::SeqCst);
+                    let from = counter.read().0;
                     let mut t = submit_fields(&p, &d, handle, &x.head, flags, point);
-                    crossed(counter, from, 1);
+                    crossed(&counter, from, 1);
                     let waits = if t.waiting() {
                         "waiting"
                     } else {
@@ -1039,9 +1038,9 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
                     &label("fields on a second ticket, while the first waits"),
                     1,
                     || {
-                        let from = counter.load(std::sync::atomic::Ordering::SeqCst);
+                        let from = counter.read().0;
                         let mut t = submit_fields(&p, &d, handle, &x.head, flags, point);
-                        crossed(counter, from, 1);
+                        crossed(&counter, from, 1);
                         let waits = if t.waiting() {
                             "waiting"
                         } else {
@@ -1050,7 +1049,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
                         (format!("{waits} exchanges={}", e.count()), t)
                     },
                 );
-                r.line(&label("tick: the exchange"), 3, || {
+                r.line(&label("tick: the exchange"), 1, || {
                     let (line, _) = tick_driver(&p, &d, driver, T0);
                     let a = first.answered();
                     let b = second.answered();
@@ -1068,14 +1067,14 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
                     format!("{line} exchanges={}", e.count())
                 });
                 let s2 = x.head.with_extension(auth::EXT_SCOPE, &od.second_scope);
-                r.line(&label("fields on a ticket, the second scope"), 3, || {
+                r.line(&label("fields on a ticket, the second scope"), 2, || {
                     let a = submit_fields(&p, &d, handle, &s2, flags, point).answered();
                     format!("{a} exchanges={}", e.count())
                 });
                 let expired = x.head.at(epoch_now().saturating_add(m.expires_in + 1));
                 r.line(
                     &label("fields on a ticket, past the first token's expiry"),
-                    3,
+                    2,
                     || {
                         let a = submit_fields(&p, &d, handle, &expired, flags, point).answered();
                         format!("{a} exchanges={}", e.count())
@@ -1164,7 +1163,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
                 let (line, _) = tick_driver(&q, &d, driver, T0);
                 format!("{line} exchanges={}", failing.count())
             });
-            rq.line(&label("failing endpoint: fields"), 3, || {
+            rq.line(&label("failing endpoint: fields"), 2, || {
                 submit_fields(&q, &d, hq, &x.head, flags, point).answered()
             });
             // NO RETRY: whatever the instance would do next on its own, it does not exchange again.
