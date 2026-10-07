@@ -335,3 +335,38 @@ fn the_plane_names_no_money_and_no_decision() {
         "the plane names money or decisions: {offenders:?}"
     );
 }
+
+/// No code in this crate routes a call to another plane, and none implements the unserved plane
+/// traits (finding 12; BUSBAR-1.6.0.md Law 11 "routes no call to another plane on the content's
+/// say-so", and "a capability that is never constructed does not ship").
+///
+/// The door is the only thing this crate serves. A destination that opens a child unit of ANOTHER
+/// plane (`NestedPlane`), the operation class a sampling ask was answered as (`SAMPLING_OP`), and a
+/// `Plane`/`SessionPlane` impl nothing constructs are the struck route and the dead machinery that
+/// carried it. This is a source scan, the pure-deletion plant: it fails while any of them exists.
+#[test]
+fn no_code_routes_a_call_to_another_plane_or_implements_the_unserved_plane_traits() {
+    let forbidden = [
+        "NestedPlane",
+        "SAMPLING_OP",
+        "impl Plane for",
+        "impl SessionPlane for",
+    ];
+    let mut offenders = Vec::new();
+    walk(&src_dir(), &mut |path, text| {
+        for (n, line) in text.lines().enumerate() {
+            if is_comment(line) {
+                continue;
+            }
+            for name in forbidden {
+                if line.contains(name) {
+                    offenders.push(format!("{}:{}: {name}", path.display(), n + 1));
+                }
+            }
+        }
+    });
+    assert!(
+        offenders.is_empty(),
+        "the crate carries the struck cross-plane route or a plane impl nothing serves: {offenders:?}"
+    );
+}
