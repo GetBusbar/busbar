@@ -18,11 +18,13 @@
 //! liveness (a row whose path-prefix names nothing is RED), and `scan-complete` (a lexer that lost
 //! string state, or a file that would not read, is a broken instrument and not a count).
 //!
-//! REPORT-ONLY BY DEFAULT, exactly as the script was: the three check rows are PASS rows whose
-//! detail carries the violation list (and `cargo xtask gate secret-hygiene` prints the report to
-//! stderr). `SECRET_GATE_REPORT_ONLY=0` makes any violation a FAIL — the owner-locked #53 release
-//! blocker. The floor, the allowlist liveness and scan-complete rows fail in BOTH modes: a broken
-//! instrument is not "report-only".
+//! BLOCKING BY DEFAULT — the owner-locked #53 release blocker, armed once the tree measured zero
+//! violations: any Check 1/2/3 violation FAILS its row (and `cargo xtask gate secret-hygiene`
+//! prints the report to stderr either way). `SECRET_GATE_REPORT_ONLY=1` is the one explicit escape,
+//! kept from the script (where it was the default): the three check rows become PASS rows whose
+//! detail carries the violation list. `SECRET_GATE_REPORT_ONLY=0` (the script's arming value) is
+//! still accepted and simply blocks. The floor, the allowlist liveness and scan-complete rows fail
+//! in BOTH modes: a broken instrument is not "report-only".
 //!
 //! The scanners are hand ports of the script's awk programs (byte-oriented, like `LC_ALL=C awk`),
 //! quirks included: the same lexer, the same brace-depth stack, the same statement windows.
@@ -1702,7 +1704,7 @@ fn check_row(id: &str, title: &str, lines: &[String], measured: bool, blocking: 
             id,
             title,
             format!(
-                "{} violation(s) (SECRET_GATE_REPORT_ONLY=0): {} — wrap each secret VALUE in busbar_contract::Redacted<T>; log a SecretRef/id, never .expose_secret() output; for a Check-3 hit REDACT AT THE FORMAT SITE, never delete the diagnostic",
+                "{} violation(s) (BLOCKING, #53; SECRET_GATE_REPORT_ONLY=1 is the report-only escape): {} — wrap each secret VALUE in busbar_contract::Redacted<T>; log a SecretRef/id, never .expose_secret() output; for a Check-3 hit REDACT AT THE FORMAT SITE, never delete the diagnostic",
                 lines.len(),
                 lines.join(" | ")
             ),
@@ -1712,7 +1714,7 @@ fn check_row(id: &str, title: &str, lines: &[String], measured: bool, blocking: 
             id,
             title,
             format!(
-                "{} violation(s), REPORT-ONLY (SECRET_GATE_REPORT_ONLY=0 makes this row FAIL): {}",
+                "{} violation(s), REPORT-ONLY (SECRET_GATE_REPORT_ONLY=1; the default, blocking, makes this row FAIL): {}",
                 lines.len(),
                 lines.join(" | ")
             ),
@@ -1896,14 +1898,14 @@ fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> 
     let blocking = cx.clone().secret_gate_blocking(true);
 
     report.push(prove_green(
-        &quiet,
+        &blocking,
         gate,
-        "the tree is green in the default REPORT-ONLY mode: every row passes (violations are carried, not failed)",
+        "the tree is green in the default BLOCKING mode: zero violations, every row passes (#53 armed)",
         &[ROW_FLOOR, ROW_ALLOW, ROW_SCAN, ROW_C1, ROW_C2, ROW_C3],
     ));
 
     // THE SANDBOX BASE: one clean production file and one allowlisted field, so a plant is judged
-    // against a green tree under SECRET_GATE_REPORT_ONLY=0.
+    // against a green tree in the default blocking mode.
     let mut base = Overlay::new();
     base.set(
         format!("{SANDBOX_ROOT}/src/lib.rs"),
@@ -1935,6 +1937,16 @@ fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> 
         &[ROW_C1],
         plant("c1_red", fixtures::C1_RED),
         &["api_key", "secret", "c1_red.rs:2", "c1_red.rs:6"],
+    ));
+    // THE ESCAPE: the same plant under SECRET_GATE_REPORT_ONLY=1 is CARRIED, not failed — the row
+    // passes (its detail still names every violation). The pair with the RED case above proves the
+    // default is what blocks, not the plant.
+    report.push(prove_rows_green(
+        &quiet,
+        &SANDBOX,
+        "REPORT-ONLY escape (SECRET_GATE_REPORT_ONLY=1): the SAME bare fields pass the check row, carried not failed",
+        &[ROW_C1],
+        plant("c1_red", fixtures::C1_RED),
     ));
     report.push(prove_rows_green(
         &base_cx,

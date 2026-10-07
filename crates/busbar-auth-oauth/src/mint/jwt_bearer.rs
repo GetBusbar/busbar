@@ -76,9 +76,12 @@ fn parse_service_account(
     credential: &str,
 ) -> Result<(ServiceAccount, ring::signature::RsaKeyPair), String> {
     let sa_json = read_credential(credential)?;
-    let sa: ServiceAccount = serde_json::from_str(&sa_json)
-        .map_err(|e| format!("service-account JSON is invalid: {e}"))?;
-    let der = pem_to_pkcs8_der(&sa.private_key)?;
+    // The decoder's own text is withheld (`json_err`): a data error quotes the offending value, and
+    // the value here may be the private key.
+    let sa: ServiceAccount = serde_json::from_str(&sa_json).map_err(
+        crate::token_response::json_err("service-account JSON is invalid"),
+    )?;
+    let der = pem_to_pkcs8_der(sa.private_key.expose_secret())?;
     let key_pair = ring::signature::RsaKeyPair::from_pkcs8(&der)
         .map_err(|e| format!("service-account private_key is not a valid PKCS#8 RSA key: {e}"))?;
     Ok((sa, key_pair))
@@ -252,7 +255,9 @@ fn b64url(bytes: &[u8]) -> String {
 #[derive(serde::Deserialize)]
 struct ServiceAccount {
     client_email: String,
-    private_key: String,
+    /// The RSA signing key, decoded straight into `Redacted`; exposed only to the PEM parse.
+    #[serde(deserialize_with = "crate::token_response::deserialize_redacted")]
+    private_key: busbar_contract::redacted::Redacted<String>,
     #[serde(default = "default_token_uri")]
     token_uri: String,
 }

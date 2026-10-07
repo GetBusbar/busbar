@@ -64,7 +64,7 @@ fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
                     max_inflight_cap: 64,
                     sink: Arc::new(NoSink),
                     dispatcher: probe.adopter(),
-                    conns: None,
+                    conns: crate::root::loader::dispatch::ConnTable::Probe,
                 },
             )
             .expect("a linked door binds")
@@ -604,7 +604,9 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+            conns: crate::root::loader::dispatch::ConnTable::Host(
+                Arc::clone(&connector) as Arc<dyn DeclaredConns>
+            ),
         },
     )
     .expect("the linked door binds");
@@ -818,7 +820,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         Arc::clone(&dispatcher),
         crate::LINKED.auths,
         None,
-        None,
+        crate::root::loader::dispatch::ConnTable::NoNeeds,
     ));
     let models = crate::root::model_egress::ModelServing {
         pools: model_pools,

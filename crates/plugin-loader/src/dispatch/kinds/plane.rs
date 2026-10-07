@@ -476,7 +476,7 @@ pub fn linked_probe(
                 max_inflight_cap: 64,
                 sink: Arc::new(crate::dispatch::NoSink),
                 dispatcher: dispatcher.adopter(),
-                conns: None,
+                conns: crate::dispatch::ConnTable::Probe,
             },
         )
         .map_err(|e| format!("{e:?}"))

@@ -82,7 +82,6 @@ use busbar_contract::plane::PlaneMeta;
 use busbar_contract::upstream::Disposition;
 use serde_json::Value;
 
-use crate::codec::ir::rerank::SEARCH_UNITS_CLASS;
 use crate::dialect::DIALECTS;
 use crate::exchange::arrive::{self, envelope_for, Arrived, Declined};
 use crate::exchange::attempt::{self, stream_intent, FarRequest};
@@ -168,11 +167,10 @@ const DIALECT_NAMES: &[AbiStr] = &[
 ];
 const OP_CLASSES: &[OpClass] = &[op(0), op(1), op(2), op(3), op(4), op(5), op(6)];
 /// THE OPEN CLASSES a far end counts beside its tokens, each `(class, family)`: every name the
-/// reply can report in its open counts, enumerated from the codec (a counted billing names its
-/// class there, and only a rerank's search units do: `codec/ir/rerank.rs`, priced under
-/// `rate_card.<model>.units`), so no reported count is dropped. They follow the token classes in
-/// the tail's billable classes.
-pub const OPEN_CLASSES: &[(&str, &str)] = &[(SEARCH_UNITS_CLASS, "units")];
+/// reply can report in its open counts, enumerated from the codec (`codec/ir/open_class.rs`, each
+/// priced under `rate_card.<model>.units`), so no reported count is dropped (owner LEDGER-100).
+/// They follow the token classes in the tail's billable classes.
+pub use crate::codec::ir::open_class::OPEN_CLASSES;
 
 const fn open_class(k: usize) -> BillableClass {
     BillableClass {
@@ -195,6 +193,20 @@ const BILLABLE_CLASSES: &[BillableClass] = &[
     billable(2),
     billable(3),
     open_class(0),
+    open_class(1),
+    open_class(2),
+    open_class(3),
+    open_class(4),
+    open_class(5),
+    open_class(6),
+    open_class(7),
+    open_class(8),
+    open_class(9),
+    open_class(10),
+    open_class(11),
+    open_class(12),
+    open_class(13),
+    open_class(14),
     BillableClass {
         class: abi_str(FEE_CLASS),
         family: abi_str("request"),
