@@ -140,7 +140,10 @@ impl AuthRows {
             .linked()
             .iter()
             .filter(|p| p.manifest.kind == AUTH)
-            .any(|p| p.manifest.alias == module || stated_aliases(p).iter().any(|a| a == module))
+            .any(|p| {
+                p.manifest.config_names().any(|n| n == module)
+                    || stated_aliases(p).iter().any(|a| a == module)
+            })
     }
 
     /// THE OPERATOR CREDENTIAL'S ROW: the auth row whose Statement states `FACT_OPERATOR`, as its

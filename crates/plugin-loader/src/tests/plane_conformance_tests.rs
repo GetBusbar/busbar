@@ -94,6 +94,7 @@ fn plane_manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     }
 }
 

@@ -1586,7 +1586,7 @@ the host never runs a service twice. `HostTables.conns` is swapped to the connec
 | verify | `verify.lookup`, `verify.store` | the host-side verify cache with single-flight leadership: hit, lead (the plane fetches and stores) or follow |
 | entitlement | `entitlement.check` | caller→target entitlement (the catalogue visibility filter) |
 | content | `content.scan` | in-session content governance: a piece of content passes the gate that governs it |
-| hook | `hook.call` | a hook stage run for an in-session sub-operation, over the hook kind's own `RequestView` |
+| hook | `hook.call` | a hook stage run for an in-session sub-operation, over the hook kind's own ~~`RequestView`~~ `PromptView`, a rewrite chain resuming at `from` (SUPERSEDED 2026-10-05 by the H2 ruling at :1616: op 17 is a gate or a rewrite over `PromptView`, resumed with `from: u32`) |
 | auth | `auth.call(point, …)` | a transport's call to the auth bound to its line or binding, owner-scoped; may pend; completion-handle and short-buffer rules apply |
 
 **The short-buffer rule for services.** The caller is the plugin, so a service writes its result

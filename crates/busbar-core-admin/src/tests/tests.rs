@@ -7209,6 +7209,7 @@ fn admin_test_tarball_versioned(name: &str, alias: &str, version: &str) -> Vec<u
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     };
     busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
 }
@@ -7368,6 +7369,7 @@ fn admin_test_tarball_kind(name: &str, alias: &str, kind: &str) -> Vec<u8> {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     };
     busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
 }
@@ -7511,6 +7513,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     };
     let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();
     // Write directly to disk (not via `POST /plugins`) so `hook_env.registry` — which the
@@ -7623,6 +7626,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     };
     let tarball_with =
         busbar_plugin_loader::tarball::package(&m_with, "lib.so", &lib_with).unwrap();
@@ -7656,6 +7660,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     };
     let tarball_without =
         busbar_plugin_loader::tarball::package(&m_without, "lib.so", &lib_without).unwrap();
@@ -7900,6 +7905,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     };
     let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();
     let file = "acme-store-withschema.tar.gz";
@@ -8015,6 +8021,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     };
     let bad_tarball = busbar_plugin_loader::tarball::package(&bad_m, "lib.so", &bad_lib).unwrap();
     let bad_dir = std::env::temp_dir().join(format!(
