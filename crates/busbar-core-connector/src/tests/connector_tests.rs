@@ -1265,18 +1265,24 @@ fn a_dialled_exchange_relays_empty_messages_and_completes_only_on_the_end_flag()
             let mut hold = [0_u8; 1];
             let _ = s.read(&mut hold).await;
         });
-        let view = Transports::new(vec![Entry {
-            door: Arc::new(TestDoor::new(
-                "messages",
-                &["messages"],
-                &[],
-                crate::support::Knobs {
-                    messages: Some(crate::compose::EXCHANGE_STREAM),
-                    ..crate::support::Knobs::default()
-                },
-            )),
-            alpn: Vec::new(),
-        }])
+        let view = Transports::new(vec![
+            Entry {
+                door: Arc::new(TestDoor::new(
+                    "messages",
+                    &["messages"],
+                    &[],
+                    crate::support::Knobs {
+                        messages: Some(crate::compose::EXCHANGE_STREAM),
+                        ..crate::support::Knobs::default()
+                    },
+                )),
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: Arc::new(TestDoor::identity("carrier")),
+                alpn: Vec::new(),
+            },
+        ])
         .unwrap();
         let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_| {}));
         c.declare_over(OWNER, NeedId(0), "messages")

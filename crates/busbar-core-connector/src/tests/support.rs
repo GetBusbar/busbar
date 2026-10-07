@@ -97,13 +97,15 @@ impl TestDoor {
         knobs: Knobs,
     ) -> Self {
         // A knob only a framer answers (a secure target, a protocol offer, a head, text frames, a
-        // silence deadline, another authority) states the entry a FRAMER: a carrier frames nothing.
+        // silence deadline, another authority, scripted messages) states the entry a FRAMER: a
+        // carrier frames nothing.
         let frames = knobs.secure_name.is_some()
             || knobs.offer.is_some()
             || knobs.head
             || knobs.text
             || knobs.silence.is_some()
-            || knobs.authority.is_some();
+            || knobs.authority.is_some()
+            || knobs.messages.is_some();
         Self {
             facts: DoorFacts {
                 name: name.to_owned(),
