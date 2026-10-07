@@ -291,19 +291,24 @@ impl Gate for ShipReadyGate {
 
         // The two gates that OWN the evidence, run once each. Their `--selftest` is the expensive
         // half; a single `run()` over the tree is not, which is what makes reading them here
-        // affordable rather than a second implementation of the same rules.
-        let construction = crate::gates::execute(
-            &crate::gates::construction::ConstructionGate as &dyn Gate,
-            cx,
-        );
+        // affordable rather than a second implementation of the same rules. They read the same
+        // tree and share nothing they write, so they run side by side (as the self-test runner
+        // runs cases over one `Ctx`): this gate costs the dearer of the two, not their sum.
+        let ship_gate = crate::gates::kind_isolation::KindIsolationGate::ship();
+        let (construction, ship) = std::thread::scope(|scope| {
+            let ship = scope.spawn(|| crate::gates::execute(&ship_gate as &dyn Gate, cx));
+            let construction = crate::gates::execute(
+                &crate::gates::construction::ConstructionGate as &dyn Gate,
+                cx,
+            );
+            let ship = ship.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
+            (construction, ship)
+        });
         let mut rows = vec![standing_row(
             &target,
             CONSTRUCTION_STANDING_REDS,
             &construction,
         )];
-
-        let ship_gate = crate::gates::kind_isolation::KindIsolationGate::ship();
-        let ship = crate::gates::execute(&ship_gate as &dyn Gate, cx);
         rows.push(ship_twin_row(&ship));
 
         Verdict::of(rows)
