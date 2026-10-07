@@ -12,7 +12,9 @@
     "mandatory_header: [path, [[header, value]], protocol] — a mandatory header beats path ordering.",
     "residual: [path, protocol] — the headerless residual classifier.",
     "residual_live: [path, protocol] — the positive control that proves the residual fold is live.",
-    "residual_none: paths that name no dialect (the paths other planes mount at among them)."
+    "residual_none: paths that name no dialect (the paths other planes mount at among them).",
+    "fallback_native_404: {path, body_key, headers} — the fallback 404 on a dialect's path no plane",
+    "  mounts: a JSON body carrying body_key, and every one of headers."
   ],
   "protocol_order": ["anthropic", "openai", "gemini", "bedrock", "responses", "cohere"],
   "streaming_content_types": ["application/vnd.amazon.eventstream", "text/event-stream"],
@@ -58,5 +60,10 @@
     ["/v1/models/gemini-pro:countTokens", "gemini"]
   ],
   "residual_live": ["/v1/models/gpt-4o", "openai"],
-  "residual_none": ["/", "/stats", "/mcp", "/mcp/anything", "/a2a", "/totally/unknown/path", "/model/foo/bar"]
+  "residual_none": ["/", "/stats", "/mcp", "/mcp/anything", "/a2a", "/totally/unknown/path", "/model/foo/bar"],
+  "fallback_native_404": {
+    "path": "/model/some.model/converse",
+    "body_key": "__type",
+    "headers": ["x-amzn-requestid", "x-amzn-errortype"]
+  }
 }
