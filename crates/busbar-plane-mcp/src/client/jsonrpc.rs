@@ -108,10 +108,13 @@ impl OutboundRequest {
 /// swap would advertise an ask busbar then refuses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AdvertisedCaps {
-    /// Declare `roots`: the operator granted it AND declared its satisfier.
+    /// Declare `roots`: the operator lets this server put the ask to callers AND this caller
+    /// declared it can answer one (the ask is relayed to it, never answered by busbar).
     pub roots: bool,
-    /// Declare `sampling`: the operator granted it AND declared its satisfier.
+    /// Declare `sampling`: as `roots`.
     pub sampling: bool,
+    /// Declare `elicitation`: as `roots`.
+    pub elicitation: bool,
     /// The CALLER asked for progress, so busbar's own token rides `_meta`. Read by the caller from
     /// its per-request progress slot and handed in, so this builder reads no task state.
     pub progress: bool,
@@ -129,11 +132,11 @@ pub struct AdvertisedCaps {
 /// the engine's `mcp::method` `inputResponses` sites. `None` is every first round and every call whose
 /// upstream asked nothing, and produces a byte-identical request to what this builder always sent.
 /// `advertise` declares the client capabilities in `_meta`. Each flag is TRUE exactly when the
-/// registration holds the matching grant AND the operator declared its satisfier
-/// (`tools.<server>.roots` / `tools.<server>.sampling`) — the two facts that make busbar genuinely
-/// able to answer, because MRTR forbids a server sending an ask the client has not declared, and
-/// declaring a capability busbar would then refuse invites an upstream to build a call sequence
-/// around a refusal.
+/// registration holds the matching grant (the operator lets this server put that ask to callers) AND
+/// the caller declared the capability — the two facts that make the ask answerable, by the caller
+/// it is relayed to (Law 11: busbar answers none itself). MRTR forbids a server sending an ask the
+/// client has not declared, and declaring one that would then be refused invites an upstream to
+/// build a call sequence around a refusal.
 pub fn tools_call(
     url: &str,
     key: &ToolKey,
@@ -161,6 +164,9 @@ pub fn tools_call(
     }
     if advertise.sampling {
         capabilities.insert("sampling".to_string(), serde_json::json!({}));
+    }
+    if advertise.elicitation {
+        capabilities.insert("elicitation".to_string(), serde_json::json!({}));
     }
     let capabilities = serde_json::Value::Object(capabilities);
     let mut body = serde_json::json!({

@@ -269,14 +269,22 @@ const ROSTER: &[Plane] = &[
                the plane-free node its units are handed to (`root/plane_node.rs`, on the `node` \
                axis)",
     },
+    // RE-POINTED TO THE DOOR SHAPE (P3 DEL-MCP, ARCHITECT 2026-10-05): the legacy engine
+    // `busbar-mcp` is deleted and the plane is served through its memory-ABI door alone — the
+    // `plane-mcp-door = "busbar-plane-mcp"` row on the `plane-door` axis (crates/busbar/Cargo.toml).
+    // Its unit path is the door arm, as the decisions plane's is. `registered` for a door row is
+    // ruled on p3-reach-door (a `plane-door` row counts as registered for any plane) and is not
+    // decided here.
     Plane {
         key: "mcp",
         on_disk: "mcp",
         module: "units_mcp",
-        linked_crate: "busbar-mcp",
+        linked_crate: "busbar-plane-mcp",
         register_tokens: &["McpPlane"],
-        note: "extracted to `busbar-mcp`; served on the kernel loop by the #28 rider, and \
-               `root/units_mcp.rs` is the superseded pre-unification module",
+        note:
+            "a DOOR plane since P3 DEL-MCP: served through its memory-ABI door (`plane-mcp-door`, \
+               the `plane-door` row linking `busbar-plane-mcp`); the engine `busbar-mcp` and the \
+               superseded `root/units_mcp.rs` are deleted",
     },
     Plane {
         key: "a2a",
@@ -1755,7 +1763,6 @@ const AXIS_ITEMS: &[(&str, &[&str])] = &[
     ("ws-arrivals", &["install_ws_arrivals"]),
     ("on-host", &["on_host"]),
     ("compose", &["compose"]),
-    ("stdio-serve", &["stdio_serve"]),
 ];
 
 /// The registration axes the manifest's `[package.metadata.busbar.linked-axes]` row lists for the
@@ -3208,7 +3215,7 @@ const FIXTURE_GREEN_KERNEL: &str =
 const FIXTURE_GREEN_DECISION: &str =
     include_str!("../../fixtures/reachability-green/crates/busbar/src/root/plane_decisions.rs");
 const A2A_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_a2a::PLANE_KEY);\n";
-const MCP_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_mcp::PLANE_KEY);\n";
+const MCP_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_plane_mcp::PLANE_KEY);\n";
 const VOICE_FLIP_LINE: &str = "    flip_session_to_kernel(busbar_voice::PLANE_KEY);\n";
 const INSTALL_CALL_LINE: &str = "    root::gauntlet_install::install();\n";
 
@@ -3362,7 +3369,7 @@ fn flips_in_a_colliding_uncalled_fn() -> Overlay {
     ov
 }
 
-/// mcp's flip removed, and `crates/busbar-mcp/src/linked.rs` exporting a `Units` impl — built in its
+/// mcp's flip removed, and `crates/busbar-plane-mcp/src/linked.rs` exporting a `Units` impl — built in its
 /// `PLANE_HOOKS` (on mcp's plane axis) when `built`, in a function nothing exported calls otherwise.
 fn mcp_by_linked_export(built: bool) -> Overlay {
     let hooks = if built {
@@ -3373,7 +3380,7 @@ fn mcp_by_linked_export(built: bool) -> Overlay {
     let mut ov = Overlay::new();
     ov.set(INSTALL_RS, FIXTURE_GREEN_INSTALL.replace(MCP_FLIP_LINE, ""));
     ov.set(
-        "crates/busbar-mcp/src/linked.rs",
+        "crates/busbar-plane-mcp/src/linked.rs",
         format!(
             "pub struct McpLinkedUnit {{\n    n: u64,\n}}\n\n\
              impl busbar_kernel::teller::Units for McpLinkedUnit {{\n    fn drive(&self) -> u64 {{\n        self.n\n    }}\n}}\n\n\

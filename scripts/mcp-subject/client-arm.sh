@@ -52,15 +52,11 @@ transcript="${MCP_FAKE_TRANSCRIPT:-}"
 # WRITTEN ATOMICALLY, for the reason `seam-arm.sh` gives: the upstream reads this file on every
 # request, and a half-written file reads as "no mode armed", i.e. as the honest baseline. An attack
 # silently downgraded to a control is the one failure mode here that produces a false GREEN.
-tmp="$control.$$"
-node -e '
-  const fs = require("node:fs");
-  fs.writeFileSync(process.argv[1], JSON.stringify({
-    mode: process.argv[2],
-    transcript: process.argv[3] || null,
-  }));
-' "$tmp" "$mode" "$transcript"
-mv -f "$tmp" "$control"
+# ARMED BY THE SEAM'S OWN ARM SCRIPT, in its arm-only form, so the client and seam legs arm one way:
+# the attack, written atomically, after the verification window is waited out. See seam-arm.sh,
+# "EACH SCENARIO MEETS ITS OWN ATTACK", for why the wait exists and where each attack lands.
+MCP_FAKE_MODE="$mode" MCP_FAKE_TRANSCRIPT="$transcript" \
+  bash "$(dirname "$0")/seam-arm.sh" --arm-only "$control" "$url"
 
 # THE REQUEST ENVELOPE THIS REVISION REQUIRES, IN FULL, AND EVERY LINE OF IT IS LOAD-BEARING.
 #
