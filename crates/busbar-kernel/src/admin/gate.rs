@@ -47,23 +47,12 @@ pub const PATH_PLUGINS_INSPECT: &str = "/plugins/inspect";
 // equals the bar this one function ENFORCES (`busbar_kernel::admin_verbs` documents the invariant),
 // so they name it across the honest crate boundary. A pure `(method, path) → Scope` function with no
 // state to leak.
+//
+// ONE MATRIX: this is `busbar_kernel_scope::admin_required_scope`, the only copy, which the root's
+// approve step calls too (Q128 kernel-scope: one home per fact). Two enforced copies agreed only
+// until the next change to one of them.
 pub fn required_scope(method: &axum::http::Method, path: &str) -> busbar_contract::authz::Scope {
-    use axum::http::Method;
-    use busbar_contract::authz::Scope;
-    if method == Method::GET || method == Method::HEAD {
-        return Scope::ReadOnly;
-    }
-    // Match RELATIVE to the one true prefix so the matrix can never drift from the mount grammar.
-    // A path outside the prefix (impossible for a mounted admin route) fails closed to `full`.
-    let rel = path.strip_prefix(ADMIN_PREFIX).unwrap_or(path);
-    // `POST /config/validate` (and `POST /plugins/inspect`) are STATELESS DRY-RUNS — reads in POST
-    // clothing (the body is the config to lint / tarball to preview, far past URL length limits). A
-    // read-only CI token must be able to lint configs.
-    if rel == PATH_CONFIG_VALIDATE || rel == PATH_PLUGINS_INSPECT {
-        return Scope::ReadOnly;
-    }
-    // Every other mutation (and any non-read extension method) is full-only.
-    Scope::Full
+    busbar_kernel_scope::admin_required_scope(method.as_str(), path)
 }
 
 /// THE ANSWERS THE KERNEL GIVES ON THE NATIVE-API ROOT ITSELF, in the frozen v1 error envelope.

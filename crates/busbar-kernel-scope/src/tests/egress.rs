@@ -50,7 +50,6 @@ struct QueueEgress {
 
 impl EgressSubject for QueueEgress {
     type Grant = QueueGrant;
-    const REQUIRE_LIVE_KEY: bool = true;
 
     fn grants_required(&self) -> Vec<Requirement<QueueGrant>> {
         vec![
@@ -172,13 +171,6 @@ fn a_third_plane_costs_a_grant_kind_and_nothing_else() {
             "the refusal must name the caller and the destination: {rendered}"
         );
     }
-
-    // AUDITED: the refusal carries core's one audit spelling, so no record type and no resource
-    // spelling is written for this plane. That it lands on core's hash chain tamper-evidently is
-    // `busbar-kernel`'s `audit/tests/chain_tests.rs::an_egress_refusal_is_audited_on_the_chain`.
-    let refusal = authorise(&key_with("k-queue", &[]), a_queue(), 0).expect_err("no grants at all");
-    assert_eq!(refusal.audit_resource(), "queue_broker:kafka-prod");
-    assert_eq!(refusal.caller(), "k-queue");
 }
 
 // ══ THE GATE'S OWN CHECKS ════════════════════════════════════════════════════════════════════════
@@ -236,29 +228,49 @@ fn a_key_expires_at_its_expiry_rather_than_after_it() {
     );
 }
 
-/// A PLANE THAT DOES NOT REQUIRE LIVENESS DOES NOT GET IT IMPOSED. The MCP plane's egress has never
-/// consulted key liveness, and the unification must not have quietly started: a gate that refuses
-/// MORE after a refactor is still a behaviour change nobody asked for.
+/// EVERY PLANE GETS THE LIVENESS CHECK, AND NO PLANE CAN SWITCH IT OFF (THE DESIGN §1: every plane
+/// gets every capability; Q128 kernel-scope). The gate used to offer a per-plane `REQUIRE_LIVE_KEY`
+/// opt-out and one plane shipped with it off, so a key past its own `expires_at` still had busbar's
+/// outbound credential spent for it on that plane while its sibling refused the same key. A subject
+/// states its grants and nothing else, and a dead key is refused for it like for any other.
 #[test]
-fn a_plane_whose_policy_omits_liveness_does_not_have_it_imposed() {
-    /// The same three requirements, with the liveness rule OFF.
-    struct LivenessOff(QueueEgress);
-    impl EgressSubject for LivenessOff {
+fn every_plane_gets_the_liveness_check_and_none_can_switch_it_off() {
+    /// A subject that states only its grants — all the trait lets a plane state.
+    #[derive(Debug)]
+    struct GrantsOnly(QueueEgress);
+    impl EgressSubject for GrantsOnly {
         type Grant = QueueGrant;
-        const REQUIRE_LIVE_KEY: bool = false;
         fn grants_required(&self) -> Vec<Requirement<QueueGrant>> {
             self.0.grants_required()
         }
     }
 
-    let mut key = a_fully_granted_caller();
-    key.enabled = false;
-    key.deleted_at = Some(1);
-    key.expires_at = Some(1);
-    assert!(
-        authorise(&key, LivenessOff(a_queue()), 1_000).is_ok(),
-        "a plane that does not ask for the liveness check must not receive it"
-    );
+    for (what, mutate) in [
+        (
+            "disabled",
+            Box::new(|k: &mut busbar_contract::records::VirtualKey| k.enabled = false)
+                as Box<dyn Fn(&mut busbar_contract::records::VirtualKey)>,
+        ),
+        (
+            "tombstoned",
+            Box::new(|k: &mut busbar_contract::records::VirtualKey| k.deleted_at = Some(1)),
+        ),
+        (
+            "expired",
+            Box::new(|k: &mut busbar_contract::records::VirtualKey| k.expires_at = Some(1)),
+        ),
+    ] {
+        let mut key = a_fully_granted_caller();
+        mutate(&mut key);
+        assert_eq!(
+            authorise(&key, GrantsOnly(a_queue()), 1_000)
+                .expect_err("a key that is not live obtains no grant on any plane"),
+            EgressRefusal::KeyNotLive {
+                caller: key.id.clone()
+            },
+            "a {what} key must be refused as NOT LIVE on every plane"
+        );
+    }
 }
 
 /// EVERY REQUIREMENT IS CHECKED, not just the first. A gate that stopped after one check would let a
