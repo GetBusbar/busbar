@@ -1341,6 +1341,12 @@ mod plane_plugin {
 
     /// The generation snapshot `open` publishes.
     pub const SNAPSHOT: &PlaneSnapshot = &PlaneSnapshot {
+        resource_facts: Blob {
+            ptr: std::ptr::null(),
+            len: 0,
+            fmt: crate::abi::mechanism::call::BLOB_ABSENT,
+            flags: 0,
+        },
         size: size_of::<PlaneSnapshot>() as u32,
         _reserved: 0,
         generation: 7,
@@ -1372,6 +1378,21 @@ mod plane_plugin {
         fn call(_: *mut c_void, _: &PlaneOpenIn, out: &mut PlaneOpenOut) -> Outcome {
             out.snapshot = SNAPSHOT;
             Outcome::Ready
+        }
+    }
+
+    /// `cancel`: the plane's own `in`/`out` (the lifecycle's embedded first).
+    pub struct Cancel;
+    impl Slot for Cancel {
+        type In = crate::abi::plane::PlaneCancelIn;
+        type Out = crate::abi::plane::PlaneCancelOut;
+        fn call(
+            _: *mut c_void,
+            input: &crate::abi::plane::PlaneCancelIn,
+            out: &mut crate::abi::plane::PlaneCancelOut,
+        ) -> Outcome {
+            out.cancel.disposition = input.cancel.ticket.slot + 6;
+            Outcome::Failed
         }
     }
 

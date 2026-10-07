@@ -58,14 +58,15 @@ use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
 
 pub use answer::{Answer, Context};
+pub use kinds::plane::PlaneCancel;
 pub use load::{
     load_dropped, load_dropped_bytes, load_linked, rendering_of, rendering_of_library, LinkedRow,
     LoadError, ManifestFacts,
 };
 pub use log_file::{LogLevel, PluginLogConfig, PluginLogSink};
 pub use plugin::{
-    Bind, Called, Diagnostic, Dropped, EnvelopeSink, Metric, NoSink, Plugin, Recall, MAX_LOG_BYTES,
-    MAX_LOG_RECORDS,
+    install_member_secrets, Bind, Called, Diagnostic, Dropped, EnvelopeSink, MemberSecretFn,
+    Metric, NoSink, Plugin, Recall, MAX_LOG_BYTES, MAX_LOG_RECORDS,
 };
 pub use services::{HostServices, Later, Ran, Reading, Stored};
 pub use ticket::{Completions, Redeem};
@@ -148,6 +149,50 @@ pub trait Kind: Send + Sync + 'static {
             },
             out_head(),
         ))
+    }
+
+    /// A `cancel` frame of this kind: the kind's own `cancel` `in`/`out` (a plane's carries record
+    /// buffers, SEAM-L(r)); a kind whose `cancel` is the lifecycle's answers `CancelIn`/`CancelOut`.
+    fn cancel_frame() -> Box<dyn CancelFrame> {
+        Box::new(cancel_frame(Ticket::NONE))
+    }
+}
+
+/// A `cancel` frame, kind-erased: the kind's own `in`/`out` ([`Kind::cancel_frame`]), the
+/// lifecycle's embedded first, so every kind's head is filled the same way.
+pub trait CancelFrame: Send {
+    /// Stamp the frame for one `cancel` of `ticket` at deadline class `class` and answer its
+    /// heads, `in` first, then `out` and the `out`'s size.
+    fn prepare(&mut self, ticket: Ticket, class: u8) -> (*mut InHead, *mut OutHead, u32);
+
+    /// The disposition its answer carried.
+    fn disposition(&self) -> u32;
+
+    /// The record writes its READY answer carried (a plane's, SEAM-L(r)); none for a kind whose
+    /// `cancel` writes none.
+    fn writes(&self) -> Vec<busbar_contract::plane_calls::CancelWrite> {
+        Vec::new()
+    }
+}
+
+impl CancelFrame for Frame<CancelIn, CancelOut> {
+    fn prepare(&mut self, ticket: Ticket, class: u8) -> (*mut InHead, *mut OutHead, u32) {
+        self.input = CancelIn {
+            head: in_head(),
+            ticket,
+        };
+        self.out = CancelOut {
+            head: out_head(),
+            disposition: 0,
+            _reserved: 0,
+        };
+        self.input.head.size = size_of::<CancelIn>() as u32;
+        self.input.head.deadline_class = class;
+        self.heads()
+    }
+
+    fn disposition(&self) -> u32 {
+        self.out.disposition
     }
 }
 

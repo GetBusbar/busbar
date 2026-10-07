@@ -401,6 +401,7 @@ pub(crate) fn build_rewrite_request<'a>(
         // set to read candidate-phase catalog signals from, and no request-phase compute fn is
         // wired to this builder in this pass. Empty (never allocated).
         signals: Default::default(),
+        session: None,
     }
 }
 
@@ -690,6 +691,7 @@ pub(crate) async fn decide_policy_order(
         // Request-phase catalog signals: none wired to the decide path in this pass (the existing
         // core fields above already cover every request-shape signal a route policy reads today).
         signals: Default::default(),
+        session: None,
     };
 
     // "Decision observability": the config generation's declared-signal

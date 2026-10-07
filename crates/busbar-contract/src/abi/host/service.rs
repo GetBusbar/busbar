@@ -308,19 +308,29 @@ pub struct DestJudgeIn {
     pub dest: AbiStr,
     /// The egress class whose rules apply; `0` = the host's default.
     pub egress_class: u32,
-    /// [`DEST_RESOLVE`].
+    /// [`DEST_RESOLVE`] | [`DEST_REFUSE_PRIVATE`] | [`DEST_EXPLAIN`].
     pub flags: u32,
     /// Appended: where the judged addresses go under [`DEST_RESOLVE`], one span each (key = the
-    /// address as text, an IP literal without port or brackets; value absent). Written only on
+    /// address as text, an IP literal without port or brackets; value absent). On
     /// [`DEST_ALLOWED`]: every address the judgement admitted, in the resolver's order, the first
     /// the one a dial pins. The set a plane hands back as `EstablishIn::within`, so the judge, its
-    /// overlap check and the dial see one address set. Without [`DEST_RESOLVE`] nothing is written.
+    /// overlap check and the dial see one address set. On a refusal, nothing, unless
+    /// [`DEST_EXPLAIN`] asks for what decided it. Without [`DEST_RESOLVE`] nothing is written.
     pub into: ServiceBufs,
 }
 
 /// [`DestJudgeIn::flags`]: resolve a name and judge every address it answers, and write the
 /// addresses judged into [`DestJudgeIn::into`]; without it the judgement is the name's alone.
 pub const DEST_RESOLVE: u32 = 1;
+/// [`DestJudgeIn::flags`]: refuse every private address (and loopback name) under this judgement,
+/// whatever the deployment's private-address setting and the class: the caller's own
+/// configuration forbids the reach. The metadata refusal and the allow-list stand as they are.
+pub const DEST_REFUSE_PRIVATE: u32 = 2;
+/// [`DestJudgeIn::flags`], with [`DEST_RESOLVE`]: on a refusal an address or the resolution
+/// decided, write ONE span into [`DestJudgeIn::into`] naming what decided it (key = the refused
+/// address as text for [`DEST_INTERNAL`] / [`DEST_METADATA`]; the resolver's own reason for
+/// [`DEST_UNRESOLVABLE`]; value absent). A refusal the name alone decided writes nothing.
+pub const DEST_EXPLAIN: u32 = 4;
 
 /// `dest.judge` verdict: admissible.
 pub const DEST_ALLOWED: u64 = 0;
@@ -585,6 +595,12 @@ pub struct EntitlementCheckIn {
 pub const NOT_ENTITLED: u64 = 0;
 /// `entitlement.check`: entitled.
 pub const ENTITLED: u64 = 1;
+
+/// [`op::ENTITLEMENT_CHECK`]'s target that asks whether the unit's PRINCIPAL STILL STANDS: the host
+/// re-resolves it live (gone, disabled, expired, or a role binding withdrawn is not entitled). Every
+/// other target is judged against the principal as re-resolved now, never the one admitted (a
+/// long-lived response re-asks per frame, ARCHITECT round 4 Q-L3B-SURFACES (a)).
+pub const ENTITLEMENT_STANDING: &str = "standing:";
 
 // ── random ────────────────────────────────────────────────────────────────────────────────────
 

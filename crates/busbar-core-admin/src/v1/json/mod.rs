@@ -408,7 +408,7 @@ fn finish_admin_reply(
     };
     match reply {
         AdminReply::Prebuilt(resp) => resp,
-        AdminReply::Refused(e) => err_json(&crate::planeverbs::to_admin_error(plane, name, e)),
+        AdminReply::Refused(e) => crate::planeverbs::refusal_response(plane, name, e),
         AdminReply::Applied(body) => {
             record_audit(audit::OUTCOME_APPLIED);
             // Byte-identical to `ok_json(StatusCode::OK, &view)`: same status, same content type, and the
@@ -422,7 +422,7 @@ fn finish_admin_reply(
         }
         AdminReply::Rejected(e) => {
             record_audit(audit::OUTCOME_REJECTED);
-            err_json(&crate::planeverbs::to_admin_error(plane, name, e))
+            crate::planeverbs::refusal_response(plane, name, e)
         }
     }
 }

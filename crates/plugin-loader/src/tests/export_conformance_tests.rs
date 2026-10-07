@@ -289,7 +289,7 @@ impl HostServices for DiskHost {
             mono_ns: 0,
         }
     }
-    fn dest_judge(&self, _: &str, _: u32, _: bool, _: Option<Later>) -> Ran {
+    fn dest_judge(&self, _: &str, _: u32, _: u32, _: Option<Later>) -> Ran {
         Ran::Now(Stored::refused(NO_SERVICE))
     }
     fn records_get(&self, _: &Caller, _: &str, _: &[u8], _: Later) -> Ran {

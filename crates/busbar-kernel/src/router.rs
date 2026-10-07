@@ -313,8 +313,13 @@ pub fn build_router_with_limits(
     // exercises the whole surface. Production never does this — `build_split_routers_with_limits`
     // mounts admin on its OWN router served on a separate listener. Both planes' plugin routes are
     // mounted here (the combined router IS both listeners).
-    let (router, core_routes) =
-        base_data_router(&plugin_routes, &plane_slots, oauth_as.as_ref(), Vec::new());
+    let (router, core_routes) = base_data_router(
+        &plugin_routes,
+        &plane_slots,
+        oauth_as.as_ref(),
+        Vec::new(),
+        Vec::new(),
+    );
     let router = crate::admin::seam::mount_admin(router);
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
@@ -342,6 +347,7 @@ pub(crate) fn base_data_router(
     >,
     oauth_as: Option<&std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
+    sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
 ) -> (
     Router<std::sync::Arc<state::AppHandle>>,
     crate::core_routes::CoreRouteTable,
@@ -444,6 +450,21 @@ pub(crate) fn base_data_router(
     for spec in doors {
         router = mount_plane_route(router, std::sync::Arc::clone(&unslotted), spec);
     }
+    // THE DOOR PLANES' SESSION ROUTES (ARCHITECT Q-L5B-SESSION-SERVE, 2026-10-03; TRANSITIONAL:
+    // deleted when INBOUND-LISTEN's accepted::Caller serves): each claim the root serves as a duplex
+    // session, mounted at construction at its bar, its upgrade answered once the handler admitted it.
+    // A build without the `duplex-ws` capability has no upgrade to answer and mounts none.
+    #[cfg(feature = "duplex-ws")]
+    for spec in sessions {
+        router = mount_plane_session(router, std::sync::Arc::clone(&unslotted), spec);
+    }
+    #[cfg(not(feature = "duplex-ws"))]
+    if !sessions.is_empty() {
+        tracing::warn!(
+            routes = sessions.len(),
+            "door session routes are not mounted: this build has no duplex upgrade"
+        );
+    }
     // THE PLANES' INBOUND WS-ACCEPT ARRIVALS, drained from the neutral substrate registry the
     // composition root installed (`install_ws_arrivals`). Behind the neutral `duplex-ws` feature: the
     // default/shipped money-path build compiles neither this line nor `mount_ws_arrivals`, so the
@@ -533,6 +554,10 @@ fn mount_plane_route(
             // The plane never sees the caller's credential: the headers the gate consumed go here,
             // before the context — and the HOT request head built from it — exists (#65, #40(b)).
             auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
+            let caller_credential = consumed
+                .as_deref()
+                .and_then(|c| c.caller.as_ref())
+                .map(auth::CallerCredential::lend);
             let handler = handler.clone();
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
@@ -563,11 +588,93 @@ fn mount_plane_route(
                     caller_principal,
                     gov,
                     principal: principal.map(|axum::extract::Extension(p)| p),
+                    caller_credential,
                     engine,
                     host,
                     slot,
                 };
                 handler(ctx).await
+            }
+        },
+    )
+}
+
+/// Mount ONE door plane SESSION route (ARCHITECT Q-L5B-SESSION-SERVE; TRANSITIONAL: deleted when
+/// INBOUND-LISTEN's accepted::Caller serves): a GET at the spec's path and bar, recorded in the
+/// `CoreRouteTable` by the same act as a data route, whose handler is a CORE-owned axum closure over the
+/// same extractors [`mount_plane_route`] reads plus the WS upgrade. The plane's handler is handed the
+/// [`busbar_kernel::plane_routes::PlaneReqCtx`] (its body empty) and answers before any upgrade: a
+/// refusal goes out as it is; an admission is bridged onto its pipe
+/// ([`busbar_kernel::ingress::duplex_ws::bridge`]).
+#[cfg(feature = "duplex-ws")]
+fn mount_plane_session(
+    router: crate::core_routes::CoreRouter,
+    slot: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    spec: busbar_kernel::plane_routes::PlaneSessionSpec,
+) -> crate::core_routes::CoreRouter {
+    use busbar_contract::abi::mechanism::route::RouteMethod;
+    let busbar_kernel::plane_routes::PlaneSessionSpec {
+        path,
+        auth,
+        handler,
+    } = spec;
+    let ctx_path = path.clone();
+    router.route(
+        path,
+        RouteMethod::Get,
+        auth,
+        move |upgrade: axum::extract::ws::WebSocketUpgrade,
+              axum::extract::State(handle): axum::extract::State<
+            std::sync::Arc<state::AppHandle>,
+        >,
+              raw_params: axum::extract::RawPathParams,
+              uri: axum::http::Uri,
+              gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
+              principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
+              consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
+              mut headers: axum::http::HeaderMap| {
+            // As for a data route: the plane never sees the credential the gate consumed; it is
+            // lent to a passthrough member only.
+            auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
+            let caller_credential = consumed
+                .as_deref()
+                .and_then(|c| c.caller.as_ref())
+                .map(auth::CallerCredential::lend);
+            let handler = handler.clone();
+            let slot = slot.clone();
+            let ctx_path = ctx_path.clone();
+            let path_params: Vec<(String, String)> = raw_params
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            async move {
+                let gov = gov.map(|axum::extract::Extension(g)| g);
+                let caller_principal = gov
+                    .as_ref()
+                    .and_then(|g| g.key.as_ref().map(|k| k.id.clone()));
+                let host = crate::plane_host::engine_host_from_handle(&handle);
+                let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = handle;
+                let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
+                    path: ctx_path,
+                    uri,
+                    method: RouteMethod::Get,
+                    headers,
+                    body: axum::body::Bytes::new(),
+                    path_params,
+                    caller_principal,
+                    gov,
+                    principal: principal.map(|axum::extract::Extension(p)| p),
+                    engine,
+                    host,
+                    slot,
+                    caller_credential,
+                };
+                match handler(ctx).await {
+                    busbar_kernel::plane_routes::SessionAnswer::Refused(response) => response,
+                    busbar_kernel::plane_routes::SessionAnswer::Accepted(pipe) => {
+                        busbar_kernel::ingress::duplex_ws::bridge(upgrade, pipe)
+                    }
+                }
             }
         },
     )
@@ -1053,6 +1160,27 @@ pub fn build_split_routers_serving(
     max_inbound_concurrent: usize,
     server_timing_enabled: bool,
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
+    build_split_routers_serving_sessions(
+        app,
+        doors,
+        Vec::new(),
+        request_body_max_bytes,
+        max_inbound_concurrent,
+        server_timing_enabled,
+    )
+}
+
+/// [`build_split_routers_serving`], with the door planes' SESSION routes (`sessions`) mounted beside
+/// their data routes at the data router's construction (ARCHITECT Q-L5B-SESSION-SERVE; TRANSITIONAL:
+/// deleted when INBOUND-LISTEN's accepted::Caller serves).
+pub fn build_split_routers_serving_sessions(
+    app: std::sync::Arc<state::App>,
+    doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
+    sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+    request_body_max_bytes: usize,
+    max_inbound_concurrent: usize,
+    server_timing_enabled: bool,
+) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
     // Capture the plugin route table before `app` moves into the handle.
     let plugin_routes = app.plugin_routes.clone();
     let plane_slots = app.plane_slots.clone();
@@ -1060,8 +1188,13 @@ pub fn build_split_routers_serving(
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // DATA plane: protocols + health/metrics/stats + the `none`/`key`-auth plugin routes, NO admin
     // mount and NO admin-auth plugin routes (those are physically absent from the data listener).
-    let (data, data_core_routes) =
-        base_data_router(&plugin_routes, &plane_slots, oauth_as.as_ref(), doors);
+    let (data, data_core_routes) = base_data_router(
+        &plugin_routes,
+        &plane_slots,
+        oauth_as.as_ref(),
+        doors,
+        sessions,
+    );
     let data = apply_common_layers(
         data,
         data_core_routes,
@@ -1152,3 +1285,7 @@ mod router_doc_tests;
 #[cfg(test)]
 #[path = "tests/router_door_tests.rs"]
 mod router_door_tests;
+
+#[cfg(all(test, feature = "duplex-ws"))]
+#[path = "tests/router_session_tests.rs"]
+mod router_session_tests;

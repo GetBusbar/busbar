@@ -20,13 +20,12 @@ use busbar_contract::abi::plane::{
     RefusalStatus, ServeIn, ServeOut,
 };
 use busbar_contract::plane_calls::{
-    Answered, Grow, InstanceDecl, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
+    Answered, CancelWrite, Cancelled, Grow, InstanceDecl, Lent, PieceInFlight, PlaneCalls,
+    ServeInFlight,
 };
 
 use super::kinds::plane::Plane;
-use super::{
-    cancel_frame, in_head, now_ns, Dispatcher, Done, Frame, InFrame, OutFrame, Plugin, Reply,
-};
+use super::{in_head, now_ns, Dispatcher, Done, Frame, InFrame, OutFrame, Plugin, Reply};
 
 /// One open plane instance, the dispatcher that adopted it, and the worker its unit tickets are
 /// minted on.
@@ -91,6 +90,10 @@ impl PlaneCalls for PlaneInstance {
         crate::dispatch::plugin::copy_str(out.pool)
     }
 
+    fn arrived_refusal(&self, out: &ArriveOut) -> Option<Vec<u8>> {
+        crate::dispatch::plugin::copy_str(out.head.error)
+    }
+
     fn refusal(
         &self,
         input: &mut RefusalIn,
@@ -109,10 +112,16 @@ impl PlaneCalls for PlaneInstance {
         self.pure(slot::PROJECT, input, out, grow)
     }
 
-    fn cancel(&self, ticket: Ticket) -> Option<u32> {
-        let mut frame = cancel_frame(ticket);
-        let called = self.plugin.call(life::CANCEL, &mut frame);
-        (called.outcome == Outcome::Ready).then_some(frame.out.disposition)
+    fn cancel(&self, ticket: Ticket) -> Option<Cancelled> {
+        use super::CancelFrame as _;
+        // The plane's own `cancel` frame, its record buffers lent (SEAM-L(r)).
+        let mut cancel = super::PlaneCancel::new();
+        let _ = cancel.prepare(ticket, 0);
+        let called = self.plugin.call(life::CANCEL, cancel.frame());
+        (called.outcome == Outcome::Ready).then(|| Cancelled {
+            disposition: cancel.disposition(),
+            writes: cancel.writes(),
+        })
     }
 
     fn mint(&self) -> Option<Ticket> {
@@ -261,5 +270,12 @@ impl PieceInFlight for InFlight<OnPieceIn, OnPieceOut> {
 
     fn out(&self) -> Option<OnPieceOut> {
         self.answer_out()
+    }
+
+    fn cancel_writes(&self) -> Vec<CancelWrite> {
+        self.done
+            .as_ref()
+            .map(|d| d.cancel_writes.clone())
+            .unwrap_or_default()
     }
 }

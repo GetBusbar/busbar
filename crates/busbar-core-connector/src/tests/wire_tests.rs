@@ -383,11 +383,10 @@ fn a_unit0_refusal_whose_send_fails_still_finalises_and_returns_the_error() {
         let w = wire();
         let (_client, server, _l) = pair(&w).await;
         let held = w.get(server.id()).expect("held");
-        held.socket()
-            .unwrap()
-            .get_ref()
-            .shutdown(std::net::Shutdown::Write)
-            .unwrap();
+        let Some(Io::Socket(sock)) = held.socket() else {
+            panic!("an accepted connection is on the host's socket");
+        };
+        sock.get_ref().shutdown(std::net::Shutdown::Write).unwrap();
         assert!(!held.closed.load(Ordering::Acquire));
         let refusal = busbar_contract::unit::Refusal {
             step: busbar_contract::unit::Step::Arrival,
@@ -506,4 +505,104 @@ fn the_read_chunk_is_sixteen_kib_and_debug_names_the_wire() {
     let shown = format!("{:?}", *wire());
     assert!(shown.contains("HostWire"), "{shown}");
     assert!(shown.contains("bytes"), "{shown}");
+}
+
+/// RED (SEAM-4f): an entry that COMPOSES OVER a layer is served here built over that layer: it
+/// answers the layer it was built over (what the registry's boot check holds against its
+/// declaration), refuses to be built over one it does not declare, and ADOPTS the stream the layer
+/// under it hands up — what the lower framer held first — framing both ways from there; a stream
+/// handed up by another layer is a handoff mismatch.
+#[test]
+fn a_composing_entry_adopts_the_stream_its_lower_layer_hands_up() {
+    worker().block_on(async {
+        let upper = || Arc::new(TestDoor::new("msg", &["msg"], &["bytes"], Knobs::default()));
+        assert!(
+            HostWire::new(upper()).is_err(),
+            "not over the host's socket"
+        );
+        assert!(HostWire::composed(upper(), Some("other")).is_err());
+        assert!(HostWire::composed(Arc::new(TestDoor::identity("bytes")), None).is_err());
+        let composed = HostWire::composed(upper(), Some("bytes")).expect("built over bytes");
+        assert_eq!(composed.composed_over(), Some("bytes"));
+        assert_eq!(composed.key(), "msg");
+
+        let lower = wire();
+        let (client, server, _l) = pair(&lower).await;
+        lower
+            .write(&client, StreamId(0), ScratchBytes::new(b"early"), false)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let raw = lower.detach(&server).expect("hands up");
+        let adopted = composed
+            .adopt_from(raw, Vec::new(), None)
+            .await
+            .expect("adopted");
+        assert_eq!(read_n(&composed, &adopted, 5).await, b"early");
+        composed
+            .write(&adopted, StreamId(0), ScratchBytes::new(b"over"), false)
+            .await
+            .unwrap();
+        assert_eq!(read_n(&lower, &client, 4).await, b"over");
+        composed.close(adopted, CloseReason::Normal);
+
+        let (_c2, s2, _l2) = pair(&lower).await;
+        let raw = lower.detach(&s2).expect("hands up");
+        let other = RawStream::new("other", raw.peer().to_owned(), raw.into_io());
+        assert_eq!(
+            composed.adopt_from(other, Vec::new(), None).await.err(),
+            Some(TransportError::HandoffMismatch)
+        );
+    });
+}
+
+/// RED (SEAM-4n, ARCHITECT ruling): a dialled framing is begun with the FULL target its need
+/// declared (`scheme://host:port/path`), never the bare authority; the socket goes to the authority
+/// the entry's own `locate` reads off that target. A target that asks for connection security is
+/// refused before any socket exists (this wire secures nothing).
+#[test]
+fn a_dialled_framing_is_begun_with_the_full_declared_target() {
+    worker().block_on(async {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr: &'static str = Box::leak(l.local_addr().unwrap().to_string().into_boxed_str());
+        let door = Arc::new(TestDoor::new(
+            "bytes",
+            &["bytes"],
+            &[],
+            Knobs {
+                authority: Some(addr),
+                ..Knobs::default()
+            },
+        ));
+        let w = HostWire::new(Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>).unwrap();
+        let target = format!("bytes://{addr}/the/declared/path?q=1");
+        let (dialled, far) = tokio::join!(w.dial_target(&target), l.accept());
+        dialled.expect("dialled at the authority locate read off the target");
+        far.expect("the far end was reached at that authority");
+        assert_eq!(
+            door.begun_targets.lock().unwrap().last().map(Vec::as_slice),
+            Some(target.as_bytes()),
+            "the framer was handed the whole declared target"
+        );
+
+        let secure = Arc::new(TestDoor::new(
+            "bytes",
+            &["bytes"],
+            &[],
+            Knobs {
+                authority: Some(addr),
+                secure_name: Some("localhost"),
+                ..Knobs::default()
+            },
+        ));
+        let w = HostWire::new(Arc::clone(&secure) as Arc<dyn crate::framer::FramerDoor>).unwrap();
+        assert_eq!(
+            w.dial_target(&target).await.err(),
+            Some(TransportError::AddressRefused)
+        );
+        assert!(
+            secure.begun_targets.lock().unwrap().is_empty(),
+            "nothing began"
+        );
+    });
 }

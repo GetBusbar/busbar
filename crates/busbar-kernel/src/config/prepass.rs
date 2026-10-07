@@ -265,7 +265,17 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
     fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
         let (key, lifted) = (self.key, self.lifted);
         match self.dest {
-            Dest::Endpoint => EndpointSection::deserialize(de)?.bank(lifted),
+            Dest::Endpoint => {
+                // An endpoint block is a section its plane owns, so it is kept as written too
+                // ([`DeployCfg::declared_raw`]): its plane's door opens with it beside its settings.
+                let section = serde_yaml::Value::deserialize(de)?;
+                if !section.is_null() {
+                    lifted.declared_raw.insert(key, section.clone());
+                }
+                EndpointSection::deserialize(section)
+                    .map_err(D::Error::custom)?
+                    .bank(lifted);
+            }
             Dest::OauthAs => Option::<serde_yaml::Value>::deserialize(de)?.bank(lifted),
             Dest::Tools => lift_plane::<ToolsSection, D>(key, de, lifted)?,
             Dest::Agents => lift_plane::<AgentsSection, D>(key, de, lifted)?,
@@ -305,6 +315,9 @@ fn lift_plane<'de, S: LiftableSection + for<'a> Deserialize<'a>, D: Deserializer
     lifted: &mut Lifted,
 ) -> Result<(), D::Error> {
     let section = plane_remainder::<D>(section_key, de, lifted)?;
+    // A named-map section is a declaring section its plane owns the grammar of, so it is kept as
+    // written too ([`DeployCfg::declared_raw`]): the settings its plane's door opens with.
+    lifted.declared_raw.insert(section_key, section.clone());
     S::deserialize(section)
         .map_err(D::Error::custom)?
         .bank(lifted);
