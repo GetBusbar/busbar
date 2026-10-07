@@ -583,6 +583,26 @@ mod door {
         }
     }
 
+    /// How many times [`LifecycleClose`] took its token back.
+    static LIFECYCLE_CLOSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    /// The `close` that goes with [`LifecycleOpen`]: its instance is a token, not a box, so its
+    /// `close` takes the token back and frees nothing (the host closes the live instance of an
+    /// `open` it judged FAULT after the plugin answered READY).
+    struct LifecycleClose;
+    impl Slot for LifecycleClose {
+        type In = busbar_contract::abi::mechanism::call::InHead;
+        type Out = busbar_contract::abi::mechanism::call::OutHead;
+        fn call(
+            _: *mut std::ffi::c_void,
+            _: &busbar_contract::abi::mechanism::call::InHead,
+            _: &mut busbar_contract::abi::mechanism::call::OutHead,
+        ) -> Outcome {
+            LIFECYCLE_CLOSES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Outcome::Ready
+        }
+    }
+
     /// A call capture for the hand-built table entry below: one slot per thread, as `plugin_door!`
     /// expands for a plugin's own image.
     struct TestCapture;
@@ -606,6 +626,7 @@ mod door {
         };
         let mut ops = ops;
         ops.head.open = kind_op::<Lifecycle, LifecycleOpen, TestCapture, { life::OPEN }>();
+        ops.head.close = kind_op::<Lifecycle, LifecycleClose, TestCapture, { life::CLOSE }>();
         let ops: &'static plane::Ops = Box::leak(Box::new(ops));
         Box::leak(Box::new(Door {
             ops: std::ptr::from_ref(ops).cast(),
@@ -620,6 +641,12 @@ mod door {
         let mut o = open_frame(1);
         assert_eq!(red.call(life::OPEN, &mut o).outcome, Outcome::Fault);
         assert!(o.out.snapshot.is_null(), "no snapshot reached the host");
+        assert_eq!(
+            LIFECYCLE_CLOSES.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the host closed the instance its FAULTed open left the plugin holding"
+        );
+        assert!(!red.is_open());
 
         let green = linked();
         let mut o = open_frame(1);

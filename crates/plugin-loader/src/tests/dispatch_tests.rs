@@ -690,6 +690,455 @@ fn red_an_open_reason_longer_than_the_buffer_lent_is_fault() {
     assert!(!p.is_open());
 }
 
+/// RED (loader-PL1 #6): an `open` that PENDS and then answers FAULT on its RESUME leaves no
+/// instance published (THE DESIGN §11.13; [`Plugin::is_open`]: "`open` answered READY"). The
+/// restated `open` mints its box and pends; while it is in flight the instance is not open and a
+/// non-lifecycle op is refused. Resumed, it frees the box (as the SDK frees a half-open box on any
+/// outcome but READY/PENDING) and answers FAULT: the instance is not open, and neither a `close`
+/// nor a `tick` ever hands the plugin the freed pointer.
+mod open_faults_on_its_resume {
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    use busbar_contract::abi::mechanism::call::{DeadlineClass, InHead, Op, Outcome, RawOutcome};
+    use busbar_contract::abi::mechanism::door::Door;
+    use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpsHead};
+    use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket, WakeFn};
+
+    use super::{
+        bind, close_frame, config, crossings, frame, open_frame, plug, quiet, until, TestKind,
+        TICK, WAIT,
+    };
+    use crate::dispatch::{load_linked, Dispatcher, LinkedRow};
+
+    static REAL: Mutex<Option<OpsHead>> = Mutex::new(None);
+    static SLOT: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+    /// The box the resumed `open` freed.
+    static FREED: AtomicUsize = AtomicUsize::new(0);
+    /// Crossings that were handed the freed box.
+    static STALE: AtomicU32 = AtomicU32::new(0);
+    /// The pended `open`'s wake, its context and its ticket.
+    static WAKE: Mutex<Option<(WakeFn, usize, Ticket)>> = Mutex::new(None);
+
+    fn real() -> OpsHead {
+        REAL.lock().unwrap().expect("the door was restated")
+    }
+
+    fn freed(instance: *mut c_void) -> bool {
+        !instance.is_null() && instance as usize == FREED.load(Ordering::SeqCst)
+    }
+
+    /// Fresh: the real `open` mints the box, then the op answers PENDING without a wake (the test
+    /// wakes it). Resumed on the box: the box is freed and the op answers FAULT.
+    extern "C" fn open(
+        instance: *mut c_void,
+        input: *const c_void,
+        out: *mut c_void,
+    ) -> RawOutcome {
+        let ops = real();
+        if !instance.is_null() {
+            let close: Op = ops.close.expect("the test plugin closes");
+            close(instance, input, out);
+            FREED.store(instance as usize, Ordering::SeqCst);
+            return RawOutcome::of(Outcome::Fault);
+        }
+        let open: Op = ops.open.expect("the test plugin opens");
+        let opened = open(instance, input, out);
+        if opened != RawOutcome::of(Outcome::Ready) {
+            return opened;
+        }
+        // SAFETY: the host hands `open` an `OpenIn` (leading with its head) and an `OpenOut`.
+        unsafe {
+            let ticket = (*input.cast::<InHead>()).ticket;
+            let tables = &*(*input.cast::<OpenIn>()).host;
+            let wake = tables.wake.expect("the host hands a wake");
+            *WAKE.lock().unwrap() = Some((wake, tables.ctx.ptr as usize, ticket));
+            (*out.cast::<busbar_contract::abi::mechanism::call::OutHead>()).outcome =
+                RawOutcome::of(Outcome::Pending);
+        }
+        RawOutcome::of(Outcome::Pending)
+    }
+
+    /// The real `close`, unless it is handed the freed box.
+    extern "C" fn close(
+        instance: *mut c_void,
+        input: *const c_void,
+        out: *mut c_void,
+    ) -> RawOutcome {
+        if freed(instance) {
+            STALE.fetch_add(1, Ordering::SeqCst);
+            return RawOutcome::of(Outcome::Fault);
+        }
+        real().close.expect("the test plugin closes")(instance, input, out)
+    }
+
+    /// The real `tick`, unless it is handed the freed box.
+    extern "C" fn tick(
+        instance: *mut c_void,
+        input: *const c_void,
+        out: *mut c_void,
+    ) -> RawOutcome {
+        if freed(instance) {
+            STALE.fetch_add(1, Ordering::SeqCst);
+            return RawOutcome::of(Outcome::Fault);
+        }
+        real().tick.expect("the test plugin ticks")(instance, input, out)
+    }
+
+    extern "C" fn door() -> *const Door {
+        let have = SLOT.load(Ordering::SeqCst);
+        if !have.is_null() {
+            return have;
+        }
+        // SAFETY: the test plugin's door and its lifecycle table are `'static`.
+        let real: Door = unsafe { plug::busbar_plugin_door().read_unaligned() };
+        // SAFETY: as above.
+        let ops: OpsHead = unsafe { real.ops.read_unaligned() };
+        *REAL.lock().unwrap() = Some(ops);
+        let ops: &'static OpsHead = Box::leak(Box::new(OpsHead {
+            open: Some(open),
+            close: Some(close),
+            tick: Some(tick),
+            ..ops
+        }));
+        let door = Box::into_raw(Box::new(Door { ops, ..real }));
+        SLOT.store(door, Ordering::SeqCst);
+        door
+    }
+
+    #[test]
+    fn red_an_open_that_faults_on_its_resume_leaves_no_instance() {
+        let d = Dispatcher::new(config());
+        let row = LinkedRow::of(door).expect("the restated door states itself");
+        let p = load_linked::<TestKind>(&row, bind(quiet())).expect("it loads");
+
+        let t = d.mint(0).expect("a ticket");
+        let reply = d.submit(&p, t, slot::OPEN, open_frame(), DeadlineClass::Call, 0);
+        until("the open pends", || d.is_pending(t));
+        // While it is in flight (asserted last, so the FAULT arm below is the one a regression
+        // names first).
+        let open_in_flight = p.is_open();
+        let other = d.mint(1).expect("a ticket");
+        let ticked_in_flight = d
+            .submit(&p, other, TICK, frame(plug::COUNT), DeadlineClass::Call, 0)
+            .wait(WAIT)
+            .expect("the tick answers")
+            .outcome;
+
+        let (wake, ctx, ticket) = WAKE.lock().unwrap().take().expect("the open pended");
+        wake(
+            HostCtx {
+                ptr: ctx as *mut c_void,
+            },
+            ticket,
+        );
+        let opened = reply.wait(WAIT).expect("the open answers");
+        assert_eq!(opened.outcome, Outcome::Fault);
+        assert_ne!(FREED.load(Ordering::SeqCst), 0, "the resume freed the box");
+        d.recycle(t);
+        assert!(
+            !p.is_open(),
+            "an open that FAULTed on its resume is not open"
+        );
+
+        let before = crossings(&p);
+        let closed = d
+            .submit(
+                &p,
+                other,
+                slot::CLOSE,
+                close_frame(),
+                DeadlineClass::Call,
+                0,
+            )
+            .wait(WAIT)
+            .expect("the close answers");
+        assert_eq!(closed.outcome, Outcome::Refused, "nothing is open to close");
+        let ticked = d
+            .submit(&p, other, TICK, frame(plug::COUNT), DeadlineClass::Call, 0)
+            .wait(WAIT)
+            .expect("the tick answers");
+        assert_eq!(ticked.outcome, Outcome::Refused, "nothing is open to tick");
+        assert_eq!(
+            p.call(slot::CLOSE, &mut close_frame()).outcome,
+            Outcome::Refused
+        );
+        assert_eq!(
+            crossings(&p),
+            before,
+            "nothing crossed after the failed open"
+        );
+        assert_eq!(
+            STALE.load(Ordering::SeqCst),
+            0,
+            "the freed box never reached the plugin"
+        );
+        d.recycle(other);
+        assert!(!open_in_flight, "an open in flight is not open");
+        assert_eq!(
+            ticked_in_flight,
+            Outcome::Refused,
+            "a non-lifecycle op is refused while the open is in flight"
+        );
+    }
+}
+
+/// RED (loader-PL1 #6, no leak): an `open` that leaves the plugin holding a live box it will never
+/// be asked to close — one the plugin answered READY or PENDING but the host judged FAULT (a
+/// PENDING on a ticket-less crossing; a READY whose mirror disagrees), or a pended one the host
+/// cancelled (a deadline, a client drop). The host closes the box once the open is over: a
+/// counting plugin's instances opened minus closed is 0, nothing is published as open, a late
+/// caller's `close` is refused, and no box is ever closed twice. The tests share the counting
+/// door, so they run one at a time ([`SERIAL`]).
+mod open_left_live_is_closed {
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU8, Ordering};
+    use std::sync::Mutex;
+
+    use busbar_contract::abi::mechanism::call::{DeadlineClass, Op, OutHead, Outcome, RawOutcome};
+    use busbar_contract::abi::mechanism::door::Door;
+    use busbar_contract::abi::mechanism::lifecycle::{slot, OpsHead};
+    use busbar_contract::abi::mechanism::ticket::Ticket;
+
+    use super::{bind, close_frame, config, open_frame, plug, quiet, until, TestKind, WAIT};
+    use crate::dispatch::{load_linked, now_ns, Dispatcher, LinkedRow, Plugin};
+
+    /// One test at a time over the shared counts.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    static REAL: Mutex<Option<OpsHead>> = Mutex::new(None);
+    static SLOT: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+    /// The boxes the plugin minted and has not closed.
+    static LIVE: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    /// `close`s handed a box that is not live (closed twice, or never minted).
+    static STALE: AtomicU32 = AtomicU32::new(0);
+    /// How the restated `open` answers once it minted its box.
+    static MODE: AtomicU8 = AtomicU8::new(PEND);
+    /// PENDING (the host FAULTs it on a ticket-less crossing).
+    const PEND: u8 = 0;
+    /// READY, with a mirror that says FAILED (the host FAULTs the disagreement).
+    const MISMATCH: u8 = 1;
+
+    fn real() -> OpsHead {
+        REAL.lock().unwrap().expect("the door was restated")
+    }
+
+    fn opened_minus_closed() -> usize {
+        LIVE.lock().unwrap().len()
+    }
+
+    /// The real `open` mints a box (counted), then the op answers as [`MODE`] says.
+    extern "C" fn open(
+        instance: *mut c_void,
+        input: *const c_void,
+        out: *mut c_void,
+    ) -> RawOutcome {
+        let opened = real().open.expect("the test plugin opens")(instance, input, out);
+        if opened != RawOutcome::of(Outcome::Ready) {
+            return opened;
+        }
+        // SAFETY: the host hands `open` an `OpenOut`, leading with its head.
+        unsafe {
+            let o = &mut *out.cast::<busbar_contract::abi::mechanism::lifecycle::OpenOut>();
+            LIVE.lock().unwrap().push(o.instance as usize);
+            if MODE.load(Ordering::SeqCst) == MISMATCH {
+                o.head.outcome = RawOutcome::of(Outcome::Failed);
+                return RawOutcome::of(Outcome::Ready);
+            }
+            o.head.outcome = RawOutcome::of(Outcome::Pending);
+        }
+        RawOutcome::of(Outcome::Pending)
+    }
+
+    /// The real `close` of a live box (counted); any other box is never touched.
+    extern "C" fn close(
+        instance: *mut c_void,
+        input: *const c_void,
+        out: *mut c_void,
+    ) -> RawOutcome {
+        let mut live = LIVE.lock().unwrap();
+        let Some(at) = live.iter().position(|b| *b == instance as usize) else {
+            STALE.fetch_add(1, Ordering::SeqCst);
+            // SAFETY: the host's `out`, leading with its head.
+            unsafe { (*out.cast::<OutHead>()).outcome = RawOutcome::of(Outcome::Ready) };
+            return RawOutcome::of(Outcome::Ready);
+        };
+        live.swap_remove(at);
+        let close: Op = real().close.expect("the test plugin closes");
+        close(instance, input, out)
+    }
+
+    extern "C" fn door() -> *const Door {
+        let have = SLOT.load(Ordering::SeqCst);
+        if !have.is_null() {
+            return have;
+        }
+        // SAFETY: the test plugin's door and its lifecycle table are `'static`.
+        let real: Door = unsafe { plug::busbar_plugin_door().read_unaligned() };
+        // SAFETY: as above.
+        let ops: OpsHead = unsafe { real.ops.read_unaligned() };
+        *REAL.lock().unwrap() = Some(ops);
+        let ops: &'static OpsHead = Box::leak(Box::new(OpsHead {
+            open: Some(open),
+            close: Some(close),
+            ..ops
+        }));
+        let door = Box::into_raw(Box::new(Door { ops, ..real }));
+        SLOT.store(door, Ordering::SeqCst);
+        door
+    }
+
+    #[test]
+    fn red_an_open_the_host_judged_fault_is_closed_never_leaked() {
+        let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let d = Dispatcher::new(config());
+        let row = LinkedRow::of(door).expect("the restated door states itself");
+
+        // A ticket-less `open` that answers PENDING: the host FAULTs it.
+        MODE.store(PEND, Ordering::SeqCst);
+        let p = load_linked::<TestKind>(&row, bind(quiet())).expect("it loads");
+        assert_eq!(
+            p.call(slot::OPEN, &mut open_frame()).outcome,
+            Outcome::Fault
+        );
+        assert_eq!(
+            opened_minus_closed(),
+            0,
+            "the host closes the live box of a PENDING it judged FAULT"
+        );
+        assert!(!p.is_open());
+        assert_eq!(
+            p.call(slot::CLOSE, &mut close_frame()).outcome,
+            Outcome::Refused,
+            "nothing is left to close"
+        );
+
+        // A ticketed `open` that answers READY under a mirror that disagrees: the host FAULTs it.
+        MODE.store(MISMATCH, Ordering::SeqCst);
+        let p = load_linked::<TestKind>(&row, bind(quiet())).expect("it loads");
+        let t = d.mint(0).expect("a ticket");
+        let done = d
+            .submit(&p, t, slot::OPEN, open_frame(), DeadlineClass::Call, 0)
+            .wait(WAIT)
+            .expect("the open answers");
+        d.recycle(t);
+        assert_eq!(done.outcome, Outcome::Fault);
+        assert_eq!(
+            opened_minus_closed(),
+            0,
+            "the host closes the live box of a READY it judged FAULT"
+        );
+        assert!(!p.is_open());
+        assert_eq!(
+            p.call(slot::CLOSE, &mut close_frame()).outcome,
+            Outcome::Refused,
+            "nothing is left to close"
+        );
+        assert_eq!(STALE.load(Ordering::SeqCst), 0, "no box is closed twice");
+    }
+
+    /// A ticketed `open` that pends (no wake comes), ended by the host: `cancel` then `close`.
+    fn pended(d: &Dispatcher) -> (Plugin<TestKind>, Ticket) {
+        MODE.store(PEND, Ordering::SeqCst);
+        let row = LinkedRow::of(door).expect("the restated door states itself");
+        let p = load_linked::<TestKind>(&row, bind(quiet())).expect("it loads");
+        let t = d.mint(0).expect("a ticket");
+        (p, t)
+    }
+
+    #[test]
+    fn red_a_cancelled_pended_open_is_closed_once() {
+        let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let d = Dispatcher::new(config());
+
+        // Its deadline passes while it pends: the host cancels it.
+        let (p, t) = pended(&d);
+        let deadline = now_ns() + 50_000_000;
+        let done = d
+            .submit(
+                &p,
+                t,
+                slot::OPEN,
+                open_frame(),
+                DeadlineClass::Call,
+                deadline,
+            )
+            .wait(WAIT)
+            .expect("the cancelled open answers");
+        d.recycle(t);
+        assert_eq!(done.outcome, Outcome::Failed, "the kind's timeout outcome");
+        assert_eq!(
+            opened_minus_closed(),
+            0,
+            "the host closes the half-open box of an open it cancelled at its deadline"
+        );
+        assert!(!p.is_open());
+
+        // Its client goes away while it pends: the host cancels it.
+        let (p, t) = pended(&d);
+        let reply = d.submit(&p, t, slot::OPEN, open_frame(), DeadlineClass::Call, 0);
+        until("the open pends", || d.is_pending(t));
+        d.drop_client(t);
+        let done = reply.wait(WAIT).expect("the dropped open answers");
+        d.recycle(t);
+        assert_eq!(done.outcome, Outcome::Failed, "the kind's timeout outcome");
+        assert_eq!(
+            opened_minus_closed(),
+            0,
+            "the host closes the half-open box of an open whose client went away"
+        );
+        assert!(!p.is_open());
+        assert_eq!(STALE.load(Ordering::SeqCst), 0, "no box is closed twice");
+    }
+
+    #[test]
+    fn red_a_late_close_after_the_auto_close_is_refused_never_double_freed() {
+        let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let d = Dispatcher::new(config());
+        let (p, t) = pended(&d);
+        let deadline = now_ns() + 50_000_000;
+        let done = d
+            .submit(
+                &p,
+                t,
+                slot::OPEN,
+                open_frame(),
+                DeadlineClass::Call,
+                deadline,
+            )
+            .wait(WAIT)
+            .expect("the cancelled open answers");
+        d.recycle(t);
+        assert_eq!(done.outcome, Outcome::Failed);
+        let stale = STALE.load(Ordering::SeqCst);
+
+        // The caller that never got an instance closes anyway, on a ticket and without one.
+        let t = d.mint(1).expect("a ticket");
+        let closed = d
+            .submit(&p, t, slot::CLOSE, close_frame(), DeadlineClass::Call, 0)
+            .wait(WAIT)
+            .expect("the close answers");
+        d.recycle(t);
+        assert_eq!(
+            closed.outcome,
+            Outcome::Refused,
+            "the host already closed the box"
+        );
+        assert_eq!(
+            p.call(slot::CLOSE, &mut close_frame()).outcome,
+            Outcome::Refused
+        );
+        assert_eq!(
+            STALE.load(Ordering::SeqCst),
+            stale,
+            "the box is never closed twice"
+        );
+        assert_eq!(opened_minus_closed(), 0);
+        assert!(!p.is_open());
+    }
+}
+
 #[test]
 fn red_outcome_mismatch_unknown_byte_and_pending_on_none_are_fault() {
     let d = Dispatcher::new(config());

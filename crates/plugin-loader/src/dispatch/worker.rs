@@ -1040,6 +1040,7 @@ impl Worker {
                 cur.pending = false;
                 let inst = cur.meta.instance.clone();
                 let class = cur.meta.class;
+                let op_slot = cur.meta.slot;
                 let timeout = inst.timeout;
                 if inst.faulted.load(Ordering::Acquire) {
                     self.end(&mut st, idx, Crossed::host(Outcome::Fault), env);
@@ -1051,6 +1052,27 @@ impl Worker {
                 let heads = frame.prepare(ticket, class as u8);
                 let budget = env.budgets.of(slot::CANCEL, class);
                 let (mut st, c) = self.cross(st, &inst, slot::CANCEL, heads, budget)?;
+                // A cancelled `open` that pended will never answer: the plugin still holds its
+                // half-open box, and no caller will close an instance that never opened. The host
+                // closes it here, once, inside the open's own lifecycle exclusion (given back by
+                // `end` below); a later caller's `close` finds nothing and is refused.
+                if op_slot == slot::OPEN
+                    && inst.half_open()
+                    && !inst.faulted.load(Ordering::Acquire)
+                {
+                    let (mut input, mut out) = (in_head(), out_head());
+                    let heads = (&raw mut input, &raw mut out, size_of::<OutHead>() as u32);
+                    let budget = env.budgets.of(slot::CLOSE, class);
+                    let (back, closed) = self.cross(st, &inst, slot::CLOSE, heads, budget)?;
+                    st = back;
+                    if closed.outcome != Outcome::Ready {
+                        tracing::warn!(
+                            plugin = %inst.name(),
+                            outcome = ?closed.outcome,
+                            "the close of a cancelled open's half-open box did not answer READY"
+                        );
+                    }
+                }
                 // The op answers the kind's timeout with `cancel`'s disposition and the writes it
                 // carried; a `cancel` that FAULTed makes the op FAULT.
                 let ended = if c.outcome == Outcome::Fault {
