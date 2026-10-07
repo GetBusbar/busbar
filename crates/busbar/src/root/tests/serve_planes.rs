@@ -34,8 +34,9 @@ pub(super) fn post() -> Arc<NodeEndPost> {
 }
 
 /// THE ADMIN TABLE IS THE PROCESS'S ONE: every test that publishes a plane's admin routes holds
-/// this while its plane is published, and withdraws it ([`Published`]) before letting go.
-pub(super) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// this while its plane is published, and withdraws it ([`Published`]) before letting go. It is
+/// the root's one lock over the process-wide admin surfaces ([`crate::root::PUBLISHING`]).
+pub(super) use crate::root::PUBLISHING;
 
 /// A published instance, withdrawn from the admin table when the test lets go of it.
 pub(super) struct Published(pub(super) &'static str);

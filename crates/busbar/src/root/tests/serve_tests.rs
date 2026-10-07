@@ -3506,7 +3506,13 @@ mod agent_door {
         assert_eq!(status, StatusCode::OK, "approved, served: {body}");
         assert!(agent.relayed());
 
-        s.handle.swap(Arc::clone(&s.app));
+        // The swap runs every registered plane declaration's `on_swap`; a legacy plane another
+        // test registered process-wide would read a runtime slot this composition never seeded, so
+        // the swap sees exactly this composition's planes (the door serves none of them).
+        {
+            let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::empty();
+            s.handle.swap(Arc::clone(&s.app));
+        }
         let (status, body) = answered(&s.router, send()).await;
         assert_eq!(
             status,

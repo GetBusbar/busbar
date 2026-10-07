@@ -143,7 +143,9 @@ fn the_planes_declare_thirty_five_claims() {
             (key.to_string(), n.parse().expect("a claim count"))
         })
         .collect();
-    assert_eq!(pinned.len(), 5, "five planes are pinned: {pinned:?}");
+    // Four rows: a plane served through its door claims through its door snapshot, not this
+    // table (FLIP-DECISIONS, FLIP-A2A), so its row left the fixture with its claims.
+    assert_eq!(pinned.len(), 4, "four planes are pinned: {pinned:?}");
     for (key, n) in &pinned {
         assert_eq!(
             count(key),

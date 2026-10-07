@@ -1059,6 +1059,9 @@ fn a_q71_node_trusting(
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
+    // The operator audit ring is the process's one: the plane-door cells that decide trust keys
+    // seal rows on it too, so this count runs under the root's admin-surface lock.
+    let _one = crate::root::PUBLISHING.lock().await;
     use busbar_contract::services::{Caller, HostServices, Later};
     use busbar_kernel::host_services::{InstanceFacts, KernelServices};
     use busbar_kernel::trust::book::{Distrust, TrustFacts};
