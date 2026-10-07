@@ -138,7 +138,7 @@ fn screening_gate(token: &str) -> busbar_kernel::test_support::TestApp {
 }
 
 /// [`governed_with`], with `screen` configured; the door plane's driver binds the LIVE
-/// generation's hooks ([`super::DoorHooks`]) as the boot's does.
+/// generation's hooks ([`super::HookStage`]) as the boot's does.
 fn governed_hooked(
     instance: &'static str,
     keys_chain: bool,
@@ -232,18 +232,25 @@ fn governed_hooked(
         .iter()
         .fold(app, |app, (name, cfg)| app.group(name, cfg.clone()));
     let app = app.governance(Arc::clone(&gov)).cost(cost).build();
-    let live = Arc::new(std::sync::OnceLock::new());
-    let hooks = super::DoorHooks {
-        boot: Arc::clone(&app),
-        live: Arc::clone(&live),
+    // The hook stage reads the generation current when a unit binds, as the boot's reads its swap
+    // handle; this rig's config applies replace the generation in a cell.
+    let current = Arc::new(std::sync::Mutex::new(Arc::clone(&app)));
+    let reads = Arc::clone(&current);
+    let hooks = super::HookStage {
+        host: Arc::new(move || {
+            busbar_kernel::plane_host::engine_host(&reads.lock().expect("unpoisoned"))
+        }),
+        gov: Arc::clone(&gov),
     };
     let mut served = compose_planes(
         &[(instance.to_string(), plane)],
         &dispatcher,
         &services,
         &sections,
+        None,
         &move || Arc::clone(&one),
-        (None, Some(&hooks)),
+        None,
+        Some(&hooks),
     )
     .expect("the door plane composes");
     served.post = Some(Arc::clone(&post));
@@ -251,13 +258,6 @@ fn governed_hooked(
         .expect("its claims mount");
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), routes, 1 << 20, 0, false);
-    // As the boot does once the routers exist: units bind the live generation's hooks from now on
-    // (the boot reads its swap handle; this rig, a cell its config applies replace).
-    let current = Arc::new(std::sync::Mutex::new(Arc::clone(&app)));
-    let reads = Arc::clone(&current);
-    let source: super::LiveGeneration =
-        Arc::new(move || Arc::clone(&reads.lock().expect("unpoisoned")));
-    assert!(live.set(source).is_ok());
     Some(Governed {
         _published: Published(instance),
         router,

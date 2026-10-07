@@ -82,7 +82,7 @@ impl HostServices for Inner {
             mono_ns: 22,
         }
     }
-    fn dest_judge(&self, _: &str, _: u32, _: bool, _: Option<Later>) -> Ran {
+    fn dest_judge(&self, _: &str, _: u32, _: u32, _: Option<Later>) -> Ran {
         Ran::Now(Stored::ready(1))
     }
     fn records_get(&self, _: &Caller, _: &str, _: &[u8], _: Later) -> Ran {
@@ -187,7 +187,7 @@ fn the_services_delegate_and_serve_the_read() {
         limit: 0,
     };
     let values: Vec<u64> = [
-        now(s.dest_judge("x", 0, false, None)),
+        now(s.dest_judge("x", 0, 0, None)),
         now(s.records_get(&caller, "k", b"key", Box::new(|_| {}))),
         now(s.records_list(&caller, list, Box::new(|_| {}))),
         now(s.records_claim(&caller, "k", b"key", 1, Box::new(|_| {}))),

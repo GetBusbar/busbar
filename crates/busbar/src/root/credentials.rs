@@ -122,8 +122,8 @@ impl HostServices for CredentialServices {
         self.inner.now()
     }
 
-    fn dest_judge(&self, dest: &str, class: u32, resolve: bool, later: Option<Later>) -> Ran {
-        self.inner.dest_judge(dest, class, resolve, later)
+    fn dest_judge(&self, dest: &str, class: u32, flags: u32, later: Option<Later>) -> Ran {
+        self.inner.dest_judge(dest, class, flags, later)
     }
 
     fn records_get(&self, caller: &Caller, kind: &str, key: &[u8], later: Later) -> Ran {

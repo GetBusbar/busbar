@@ -102,6 +102,10 @@ pub struct PlaneReqCtx {
     pub gov: Option<busbar_contract::records::PlaneRequestCtx>,
     /// The middleware-resolved auth principal, or `None` on a `RouteAuth::None` route.
     pub principal: Option<busbar_contract::auth::AuthPrincipal>,
+    /// The caller's verified credential as the auth gate extracted it, lent for the host's egress
+    /// alone (a passthrough member's outbound auth call); `None` when the caller presented none or
+    /// the route bypassed the gate. A plane handler never reads it.
+    pub caller_credential: Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
     /// The live engine handle, type-erased. The core adapter erases the router's `Arc<AppHandle>`
     /// state here; a plane still coupled to the engine downcasts it (a transitional reach that the
     /// per-subsystem App-sever removes), but the SEAM names no core type.
@@ -115,4 +119,56 @@ pub struct PlaneReqCtx {
     /// The plane's own per-generation runtime slot (the same `Arc<dyn Any>` the plane's `build` fn
     /// produced), so the handler reads its plane state without a host round-trip.
     pub slot: Arc<dyn Any + Send + Sync>,
+}
+
+// ── SESSION ROUTES (TRANSITIONAL: deleted when INBOUND-LISTEN's accepted::Caller serves) ─────────
+
+/// One frame toward a session route's caller: its bytes, and whether they are ONE text message
+/// (the plane answered `PIECE_OUT_TEXT`); otherwise one binary message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionOut {
+    /// The bytes.
+    pub bytes: Vec<u8>,
+    /// One text message.
+    pub text: bool,
+}
+
+/// THE CALLER'S SIDE OF AN ADMITTED SESSION ROUTE, as the core adapter carries it over today's
+/// hyper upgrade (ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03, the `IngressCaller` pattern): each
+/// message the caller sends goes into `from_caller` (dropped when the caller closes); every frame the
+/// session writes comes out of `to_caller` (the socket closes when its sender is dropped).
+#[derive(Debug)]
+pub struct SessionPipe {
+    /// The caller's messages, one per message, text or binary, as bytes.
+    pub from_caller: tokio::sync::mpsc::Sender<Vec<u8>>,
+    /// The frames toward the caller.
+    pub to_caller: tokio::sync::mpsc::Receiver<SessionOut>,
+}
+
+/// What a session route's handler answers, before any upgrade: refused with a finished response (no
+/// socket ever binds), or admitted with the pipe the upgraded socket is bridged onto.
+pub enum SessionAnswer {
+    /// Refused before the upgrade: this response goes out as it is.
+    Refused(PlaneResponse),
+    /// Admitted: the core answers the upgrade and bridges the socket onto this pipe.
+    Accepted(SessionPipe),
+}
+
+/// The boxed future a session route's handler returns.
+pub type PlaneSessionFuture = Pin<Box<dyn Future<Output = SessionAnswer> + Send>>;
+
+/// One session route's HANDLER: a neutral async fn over the route's [`PlaneReqCtx`] (its body empty:
+/// an upgrade carries none).
+pub type PlaneSessionFn = Arc<dyn Fn(PlaneReqCtx) -> PlaneSessionFuture + Send + Sync>;
+
+/// One SESSION route a door plane's claim declares: its path and admission bar (recorded in the
+/// `CoreRouteTable` exactly as a data route's), answered on GET by an upgrade the core adapter
+/// accepts only once the handler admitted the session.
+pub struct PlaneSessionSpec {
+    /// The exact axum path pattern.
+    pub path: String,
+    /// The admission bar the core auth middleware enforces before the handler runs.
+    pub auth: RouteAuth,
+    /// The handler.
+    pub handler: PlaneSessionFn,
 }

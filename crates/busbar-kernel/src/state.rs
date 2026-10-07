@@ -802,7 +802,14 @@ pub struct AppHandle {
     /// host. Bound once by the composition root ([`attach_on_swap`](Self::attach_on_swap)), which is
     /// the one place allowed to name the plane that owns them; unbound, a swap re-attaches nothing.
     attach: std::sync::OnceLock<fn(&Arc<dyn busbar_kernel::plane_host::EngineHost>)>,
+    /// What every [`swap`](Self::swap) tells of the generation it installed: the composition root's
+    /// served door planes, each refreshed onto a new generation of its section (ARCHITECT
+    /// Q-DEL-A2A-APPLY; THE DESIGN §11: plugin memory is "valid to its next refresh generation").
+    appliers: std::sync::Mutex<Vec<Applier>>,
 }
+
+/// One thing told of every generation a [`AppHandle::swap`] installs.
+pub type Applier = Box<dyn Fn(&Arc<App>) + Send + Sync>;
 
 impl AppHandle {
     pub fn new(app: Arc<App>) -> Self {
@@ -812,7 +819,17 @@ impl AppHandle {
             swapping: std::sync::atomic::AtomicBool::new(false),
             snapshot_host: std::sync::Mutex::new(None),
             attach: std::sync::OnceLock::new(),
+            appliers: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Tell `applier` of every generation a later [`swap`](Self::swap) installs (a config apply,
+    /// reload or mutation), after it is installed.
+    pub fn on_apply(&self, applier: Applier) {
+        self.appliers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(applier);
     }
 
     /// Bind what every [`swap`](Self::swap) runs against the incoming generation's host before the
@@ -915,6 +932,16 @@ impl AppHandle {
             attach(&host);
         }
         self.set_snapshot_host(host);
+        // EVERY APPLY IS A NEW GENERATION for the composition root's served door planes: each is
+        // refreshed onto the installed generation's section (its plugin memory resets with it).
+        for applier in self
+            .appliers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+        {
+            applier(&next);
+        }
     }
 
     /// Commit a live-config mutation as PERSIST-then-SWAP, FAIL-CLOSED — the ONE sanctioned way to
