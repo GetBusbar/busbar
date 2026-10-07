@@ -209,6 +209,22 @@ fn stats(plugin: &Plugin<Plane>) -> [u64; cases::stat::COUNT] {
             route: 0,
             route_flags: 0,
             _route_reserved: [0; 6],
+            affinity: busbar_contract::abi::mechanism::call::AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            trust_counterparty: busbar_contract::abi::mechanism::call::AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            trust_item: busbar_contract::abi::mechanism::call::AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
+            trust_digest: busbar_contract::abi::mechanism::call::AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
         },
     );
     assert_eq!(
@@ -380,6 +396,22 @@ fn zero_arrive_out() -> ArriveOut {
         route: 0,
         route_flags: 0,
         _route_reserved: [0; 6],
+        affinity: busbar_contract::abi::mechanism::call::AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        trust_counterparty: busbar_contract::abi::mechanism::call::AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        trust_item: busbar_contract::abi::mechanism::call::AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        trust_digest: busbar_contract::abi::mechanism::call::AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
     }
 }
 
@@ -746,7 +778,8 @@ fn zero_piece_out() -> OnPieceOut {
         verb: span,
         target: span,
         need: 0,
-        _need_reserved: 0,
+        fault: 0,
+        _fault_reserved: [0; 3],
         lane: span,
         final_status: 0,
         _final_reserved: 0,

@@ -501,6 +501,10 @@ struct Relay {
     asked: Option<(Value, u32, crate::ask::ChildLeg)>,
     /// The handle number that opening was issued under.
     work_slot: Option<u32>,
+    /// When the round's request was handed to the kernel's walk, on the kernel's monotonic clock
+    /// (ms): what tells a walk that spent the server's `timeout:` on a dispatched call from one
+    /// that dispatched nothing ([`timed_out`]).
+    dispatched_ms: Option<u64>,
 }
 
 /// The most progress frames one request relays: a progress stream is untrusted upstream input,
@@ -550,6 +554,46 @@ fn clock_s(services: Option<Services>, ticket: Ticket, unit: &mut CallUnit) -> O
         .clock_now(handle)
         .ok()
         .map(|r| r.wall_ns / 1_000_000_000)
+}
+
+/// The kernel's monotonic clock (`clock.now`), whole milliseconds, on a fresh handle of the unit's
+/// ticket; `None` when the host serves no clock.
+fn mono_ms(services: Option<Services>, ticket: Ticket, unit: &mut CallUnit) -> Option<u64> {
+    let services = services?;
+    let handle = CompletionHandle {
+        ticket,
+        seq: unit.issued,
+        _reserved: 0,
+    };
+    unit.issued += 1;
+    services
+        .clock_now(handle)
+        .ok()
+        .map(|r| r.mono_ns / 1_000_000)
+}
+
+/// WHETHER THE WALK SPENT THE SERVER'S `timeout:` ON A DISPATCHED CALL (ARCHITECT ruling on the
+/// timed-out answer): the unit handed its relayed request to the walk, and at least the server's
+/// own attempt bound has passed since — the member was dialled and did not answer within it. A walk
+/// that refused at its first pick dispatched nothing (no request was handed over), and a dial that
+/// failed fails at once, well inside the bound: both keep the not-dispatched words.
+fn timed_out(services: Option<Services>, ticket: Ticket, unit: &mut CallUnit) -> bool {
+    let Some((sent, server)) = unit
+        .relay
+        .as_ref()
+        .and_then(|r| Some((r.dispatched_ms?, r.admitted.entry.server.clone())))
+    else {
+        return false;
+    };
+    let Some(bound) = unit
+        .held
+        .as_ref()
+        .and_then(|h| h.section.servers.get(&server))
+        .map(crate::tools_config::McpServerDefCfg::timeout_ms)
+    else {
+        return false;
+    };
+    mono_ms(services, ticket, unit).is_some_and(|now| now.saturating_sub(sent) >= bound)
 }
 
 /// THE CALL LOG RECORD of one call, as it is written to the host's record seam: the call kind,
@@ -1299,7 +1343,9 @@ fn verify_on_call(
                 // The verify fetch carries the member's down-scope (token_exchange) or the caller's
                 // lent credential (passthrough) through the connector binding (Q-L3B-DOOR-EXCHANGE).
                 let url = def.url.clone();
-                let timeout_ms = leg_timeout_ms(def);
+                // The fetch is bounded by the server's own `timeout:` (ARCHITECT timeout ruling):
+                // an upstream is not trusted to answer.
+                let timeout_ms = def.timeout_ms();
                 let scope = crate::tool_scope::exchanges(
                     def,
                     held.section.effective_upstream_credentials(server),
@@ -1341,10 +1387,140 @@ fn verify_on_call(
             unit.verified = Some(sighting);
             return Looked::Pending;
         }
+        sight_items(
+            &services,
+            ticket,
+            &mut unit.issued,
+            &held.catalogue,
+            server,
+            obs,
+        );
+    } else if matches!(sighting, Sighting::Failed(_)) {
+        // AN UNREACHABLE RE-FETCH (ARCHITECT Q3 (c)): reported to the kernel as such; the kernel
+        // keeps its last verdict and changes nothing (no drift, no quarantine from unreachability),
+        // and the call fails as an upstream failure (`trust_of`).
+        let handle = CompletionHandle {
+            ticket,
+            seq: SIGHT_SEQ,
+            _reserved: 0,
+        };
+        if services.trust_unreachable(handle, server).is_pending() {
+            unit.verified = Some(sighting);
+            return Looked::Pending;
+        }
     }
     plane.sightings.insert(server.to_string(), sighting);
     plane.checked.insert(server.to_string(), now_ms);
     Looked::Fresh
+}
+
+/// EACH TOOL'S SIGHTING (ARCHITECT Q3): the digest the live list offers each of `server`'s
+/// catalogue tools at, recorded by the kernel under the registration and the tool's trust key (its
+/// `tools_allow` name). Never pends; a tool the list no longer offers has nothing to sight.
+fn sight_items(
+    services: &busbar_contract::abi::sdk::services::Services,
+    ticket: Ticket,
+    seq: &mut u32,
+    catalogue: &crate::catalogue::Catalogue,
+    server: &str,
+    obs: &crate::trust::Observation,
+) {
+    for entry in catalogue.tools_of(server) {
+        let Some(digest) = obs.capabilities.get(&entry.tool) else {
+            continue;
+        };
+        let handle = CompletionHandle {
+            ticket,
+            seq: *seq,
+            _reserved: 0,
+        };
+        *seq = seq.wrapping_add(1);
+        // An unserved book leaves the item unsighted, which `trust.serves` refuses.
+        let _ = services.trust_sight_item(handle, server, &entry.tool, digest);
+    }
+}
+
+/// THE KERNEL'S TRUST STATE of registration `server` (`trust.state`), item by item, as the admin
+/// views render it. A host that answers no trust service holds nothing.
+fn kernel_items(plane: &McpDoor, ticket: Ticket, server: &str) -> Vec<crate::trust::KernelItem> {
+    use busbar_contract::abi::sdk::services::ServiceError;
+    let Some(services) = plane.services else {
+        return Vec::new();
+    };
+    let handle = CompletionHandle {
+        ticket,
+        seq: STATE_SEQ,
+        _reserved: 0,
+    };
+    let read = |bytes: usize, spans: usize| {
+        let mut buf = vec![0_u8; bytes];
+        let mut items = vec![door_tasks::blank(); spans];
+        services
+            .trust_state(handle, server, &mut buf, &mut items)
+            .map(|state| {
+                state
+                    .items()
+                    .map(|i| crate::trust::KernelItem {
+                        item: i.item.to_string(),
+                        word: i.state.to_string(),
+                        approved: i.approved.map(str::to_string),
+                    })
+                    .collect::<Vec<_>>()
+            })
+    };
+    match read(16 * 1024, 128) {
+        Ok(items) => items,
+        // The short-buffer rule: once more, at the size the host asked for.
+        Err(ServiceError::Short { bytes, items }) => read(
+            usize::try_from(bytes).unwrap_or(usize::MAX),
+            usize::try_from(items).unwrap_or(usize::MAX),
+        )
+        .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// THE KERNEL'S APPROVE ON ONE TOOL, as the route leg asks it (ARCHITECT Q3; the kernel loop's
+/// Approve step): `trust.serves` over the tool's registration (the counterparty) and its trust key
+/// (the tool as `tools_allow` names it, the upstream's own spelling), at its last sighting. The door
+/// judges nothing: the one fact it renders on its own is that its last re-fetch could not reach
+/// the server (the call then fails as an upstream failure). A host that answers no trust service
+/// serves nothing (fail closed).
+fn trust_of(
+    plane: &McpDoor,
+    ticket: Ticket,
+    issued: &mut u32,
+    entry: &crate::catalogue::ToolEntry,
+) -> crate::call::Trust {
+    use crate::call::Trust;
+    if let Some(crate::trust::Sighting::Failed(reason)) = plane.sightings.get(&entry.server) {
+        return Trust::Unreached(reason);
+    }
+    let Some(services) = plane.services else {
+        return Trust::Verdict(busbar_contract::abi::host::service::DISTRUST_UNKNOWN);
+    };
+    let handle = CompletionHandle {
+        ticket,
+        seq: *issued,
+        _reserved: 0,
+    };
+    *issued += 1;
+    match services.trust_serves(handle, &entry.server, Some(&entry.tool), None) {
+        Ok(code) => Trust::Verdict(code),
+        // A book that does not answer serves nothing (fail closed).
+        Err(_) => Trust::Verdict(busbar_contract::abi::host::service::DISTRUST_UNKNOWN),
+    }
+}
+
+/// Whether a verdict hides a tool from a listing: its server is quarantined, or the tool is offered
+/// at another digest than the one approved (the rug-pull). A tool waiting on the operator stays
+/// listed, so the caller can see what exists.
+fn hides(trust: &crate::call::Trust) -> bool {
+    use busbar_contract::abi::host::service::{DISTRUST_CHANGED, DISTRUST_QUARANTINED};
+    matches!(
+        trust,
+        crate::call::Trust::Verdict(DISTRUST_QUARANTINED | DISTRUST_CHANGED)
+    )
 }
 
 fn answer_body(
@@ -1472,6 +1648,55 @@ fn answer_body(
             }
         }
     }
+    // THE KERNEL'S APPROVE, asked on the route leg after the re-fetch (ARCHITECT Q3): the called
+    // tool's verdict, and on a listing every granted tool's, each its own `trust.serves`.
+    let verdict = named_tool.as_ref().and_then(|_| {
+        let entry = params
+            .as_ref()
+            .and_then(|p| p.get("name"))
+            .and_then(Value::as_str)
+            .and_then(|name| held.catalogue.tool(name))?;
+        Some((
+            entry.namespaced.clone(),
+            trust_of(plane, ticket, &mut unit.issued, entry),
+        ))
+    });
+    let listing = matches!(&disposition, Disposition::Request { row, .. }
+        if row.op == crate::tool_ops::OP_TOOLS_LIST);
+    let mut hidden = std::collections::BTreeSet::new();
+    if listing {
+        let entitled = |kind: &str, name: &str| {
+            unit.entitled
+                .get(&format!("{kind}:{name}"))
+                .copied()
+                .unwrap_or(false)
+        };
+        let listed: Vec<crate::catalogue::ToolEntry> = held
+            .catalogue
+            .tools_for(&entitled)
+            .into_iter()
+            .cloned()
+            .collect();
+        for entry in &listed {
+            // A tool is judged changed only against a sighting: one its server was never seen to
+            // offer is listed (the caller sees what exists; a call is refused on its own verdict).
+            let sighted = matches!(
+                plane.sightings.get(&entry.server),
+                Some(crate::trust::Sighting::Seen(_))
+            );
+            let trust = trust_of(plane, ticket, &mut unit.issued, entry);
+            let changed_unsighted = !sighted
+                && matches!(
+                    trust,
+                    crate::call::Trust::Verdict(
+                        busbar_contract::abi::host::service::DISTRUST_CHANGED
+                    )
+                );
+            if hides(&trust) && !changed_unsighted {
+                hidden.insert(entry.namespaced.clone());
+            }
+        }
+    }
     let mut seal = services.map(|services| DoorSeal {
         services,
         ticket,
@@ -1511,10 +1736,10 @@ fn answer_body(
                 seal.as_mut(),
             )
         };
-        let refused_as = |entry: &crate::catalogue::ToolEntry| {
-            let def = held.section.servers.get(&entry.server)?;
-            let last = plane.sightings.get(&entry.server).unwrap_or_default();
-            crate::trust::refused_as(def, &last, &entry.tool)
+        let mut trust = |entry: &crate::catalogue::ToolEntry| match &verdict {
+            Some((item, trust)) if *item == entry.namespaced => trust.clone(),
+            // The catalogue resolved another entry than the one asked about: nothing serves it.
+            _ => crate::call::Trust::Verdict(busbar_contract::abi::host::service::DISTRUST_UNKNOWN),
         };
         let admission = crate::call::admit_trusted(
             &held.catalogue,
@@ -1522,7 +1747,7 @@ fn answer_body(
             params.as_ref(),
             &header,
             &admit,
-            &refused_as,
+            &mut trust,
             &|entry: &crate::catalogue::ToolEntry| {
                 held.section
                     .servers
@@ -1535,7 +1760,7 @@ fn answer_body(
             return Some(Step::Pending);
         }
         return Some(match admission {
-            Admission::Asked(body, line) => {
+            Admission::Asked(body, line) | Admission::Unreached(body, line) => {
                 unit.pending = Some(
                     Pending::answer(200, body, unit.framing.as_ref(), &[]).logged(
                         Some(&line),
@@ -1666,26 +1891,20 @@ fn answer_body(
                         exchange_scope(services, ticket, unit, &held, &member, &relay.admitted);
                     scoped(&mut outbound.fields, relay.scope.as_deref());
                 }
+                relay.dispatched_ms = mono_ms(services, ticket, unit);
                 unit.pending = Some(Pending::far(outbound).laned(&relay.admitted.entry.namespaced));
                 unit.relay = Some(relay);
                 Step::Write
             }
         });
     }
-    // A tool whose live sighting is quarantined is hidden from the listing.
-    let quarantined = |entry: &crate::catalogue::ToolEntry| {
-        held.section.servers.get(&entry.server).is_some_and(|def| {
-            let last = plane.sightings.get(&entry.server).unwrap_or_default();
-            matches!(last, crate::trust::Sighting::Seen(_))
-                && crate::trust::refused_as(def, &last, &entry.tool) == Some("quarantined")
-        })
-    };
+    // A tool the kernel's verdict hides ([`hides`]) is gone from the listing.
     let answer = crate::answer::answer(
         &disposition,
         params.as_ref(),
         &held.catalogue,
         &admit,
-        quarantined,
+        |entry: &crate::catalogue::ToolEntry| hidden.contains(&entry.namespaced),
     );
     // Busbar's ask of its caller for a prompt is audited (asked, or its answer refused).
     let mut audit = None;
@@ -2117,6 +2336,7 @@ impl Relay {
             scope: None,
             asked: None,
             work_slot: None,
+            dispatched_ms: None,
         }
     }
 }
@@ -2725,15 +2945,33 @@ slot!(
                 // engine's `503`, `-32030`, its sentence and data, and the wait the kernel's cell
                 // knows as `Retry-After`.
                 retry_after = Some(given.retry_after_s);
+                // The same `-32030` either way; only the account of what happened differs: a call
+                // that WAS dispatched and spent the server's `timeout:` says so, and "did not
+                // dispatch" stays the words of the paths that dispatched nothing.
+                let expired = instance.get().is_some_and(|plane| {
+                    plane.units.with(&given.unit, |unit| {
+                        unit.is_some_and(|unit| timed_out(plane.services, given.head.ticket, unit))
+                    })
+                });
+                let message = if expired {
+                    format!(
+                        "MCP server `{server}` is unavailable: it did not answer this call within \
+                         the server's timeout; busbar dispatched it and stopped waiting. Retry after \
+                         {}s.",
+                        given.retry_after_s
+                    )
+                } else {
+                    format!(
+                        "MCP server `{server}` is unavailable: its circuit breaker is open after \
+                         repeated failures; busbar did not dispatch this call. Retry after {}s.",
+                        given.retry_after_s
+                    )
+                };
                 let refusal = crate::tool_arrival::Refusal {
                     status: STATUS_UNAVAILABLE_UPSTREAM,
                     id: unit_id.clone(),
                     code: crate::codec::CODE_UPSTREAM_UNAVAILABLE,
-                    message: format!(
-                        "MCP server `{server}` is unavailable: its circuit breaker is open after \
-                         repeated failures; busbar did not dispatch this call. Retry after {}s.",
-                        given.retry_after_s
-                    ),
+                    message,
                     data: Some(serde_json::json!({
                         "reason": "upstream_unavailable",
                         "server": server,
@@ -2859,6 +3097,10 @@ const SIGHT_SEQ: u32 = 1 << 30;
 
 /// The completion handle a `connect`'s clock reading is issued on: past `trust.sight`'s.
 const CONNECT_CLOCK_SEQ: u32 = SIGHT_SEQ + 1;
+/// The handle seq an admin view reads the kernel's trust state on (`trust.state`).
+const STATE_SEQ: u32 = SIGHT_SEQ + 2;
+/// The first handle seq `connect`'s per-tool sightings (`trust.sight_item`) take.
+const ITEM_SEQ: u32 = SIGHT_SEQ + 3;
 
 /// The first handle verify-on-call's fetch numbers its connector services from on a unit's ticket:
 /// clear of the unit's own handles (counted from `0`) and of the further rounds'.
@@ -2909,24 +3151,6 @@ fn exchange_at(
 
 /// The JSON-RPC id a `connect`'s `tools/list` carries: one request, correlated by this id.
 const CONNECT_REQUEST_ID: u64 = 1;
-
-/// The documented default of a registration's `timeout:` (docs/mcp.md: `30s`), in milliseconds: the
-/// budget of one outbound leg when the operator states none.
-const DEFAULT_LEG_TIMEOUT_MS: u64 = 30_000;
-
-/// THE BUDGET OF ONE OUTBOUND LEG to registration `def`, milliseconds: its configured `timeout:`
-/// (validated at boot, `0` refused there), else [`DEFAULT_LEG_TIMEOUT_MS`]. It rides the leg's
-/// request head as `timeout_ms` and the host clamps it to the op's deadline class (ARCHITECT ruling
-/// on `timeout:`; BUSBAR-1.6.0.md, deadline classes). Used by the tool-list re-check on the call path
-/// (verify-on-call) and by the operator's `connect`: an upstream is not trusted to answer, and a
-/// fetch the operator bounded at ten seconds may not hang for thirty.
-pub(crate) fn leg_timeout_ms(def: &crate::tools_config::McpServerDefCfg) -> u64 {
-    def.timeout
-        .as_deref()
-        .and_then(|t| busbar_contract::duration::parse_duration_secs(t).ok())
-        .filter(|secs| *secs > 0)
-        .map_or(DEFAULT_LEG_TIMEOUT_MS, |secs| secs.saturating_mul(1000))
-}
 
 /// THE SIGHTING a `connect`'s exchange landed: the server's tool list re-hashed, or why the contact
 /// failed, in the served engine's words.
@@ -3008,11 +3232,13 @@ slot!(
         let last = plane.sightings.get(name).unwrap_or_default();
         match verb {
             "changes" => {
-                let view = crate::trust::trust_view(name, &def, &last);
+                let items = kernel_items(plane, instance.ticket(), name);
+                let view = crate::trust::trust_view(name, &def, &last, &items);
                 return served(&input, &mut out, 200, view.as_bytes(), JSON, 0);
             }
             "health" => {
-                let view = crate::trust::health_view(name, &def, &last);
+                let items = kernel_items(plane, instance.ticket(), name);
+                let view = crate::trust::health_view(name, &last, &items);
                 return served(&input, &mut out, 200, view.as_bytes(), JSON, 0);
             }
             "connect" => {}
@@ -3079,7 +3305,10 @@ slot!(
                                 .map(|(n, v)| (n.as_bytes().to_vec(), v.as_bytes().to_vec()))
                                 .collect(),
                             body: request.body,
-                            timeout_ms: leg_timeout_ms(&def),
+                            // An upstream is not trusted to answer, and an operator verb that
+                            // hangs is one that gets killed and retried: the server's own
+                            // `timeout:` bounds the fetch.
+                            timeout_ms: def.timeout_ms(),
                         })
                         .map(|e| e.as_member(name.as_str()))
                     }
@@ -3106,18 +3335,27 @@ slot!(
         };
         // THE KERNEL'S TRUST BOOK records the observed catalogue (it stamps the re-verification
         // clock); the answer is the plane's comparison, which is what the operator is looking at.
-        if let (Sighting::Seen(obs), Some(services)) = (&sighting, plane.services) {
+        if let Some(services) = plane.services {
             let handle = CompletionHandle {
                 ticket: instance.ticket(),
                 seq: SIGHT_SEQ,
                 _reserved: 0,
             };
-            if services
-                .trust_sight(handle, name, &crate::trust::catalogue_hash(obs))
-                .is_pending()
-            {
+            let sighted = match &sighting {
+                Sighting::Seen(obs) => {
+                    services.trust_sight(handle, name, &crate::trust::catalogue_hash(obs))
+                }
+                // An unreachable server is reported as such: the kernel keeps its last verdict.
+                Sighting::Failed(_) => services.trust_unreachable(handle, name),
+                Sighting::Never => std::task::Poll::Ready(Ok(0)),
+            };
+            if sighted.is_pending() {
                 instance.park(Sighted(sighting));
                 return Outcome::Pending;
+            }
+            if let Sighting::Seen(obs) = &sighting {
+                let mut seq = ITEM_SEQ;
+                sight_items(&services, instance.ticket(), &mut seq, &held.catalogue, name, obs);
             }
         }
         plane.sightings.insert(name.clone(), sighting.clone());
@@ -3134,7 +3372,8 @@ slot!(
                 plane.checked.insert(name.clone(), now.wall_ns / 1_000_000);
             }
         }
-        let view = crate::trust::trust_view(name, &def, &sighting);
+        let items = kernel_items(plane, instance.ticket(), name);
+        let view = crate::trust::trust_view(name, &def, &sighting, &items);
         served(&input, &mut out, 200, view.as_bytes(), JSON, AUDIT_APPLIED)
     }
 );

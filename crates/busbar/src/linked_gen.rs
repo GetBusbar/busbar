@@ -49,7 +49,6 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("on-host", "on_host", "on_host"),
     ("compose", "compose", "compose"),
     ("cli-help", "cli_help", "CLI_HELP"),
-    ("exports", "exports", "EXPORT"),
     ("stores", "stores", "STORE"),
     // The hook axis: each linked `kind: hook` row's door (`plugin_door!`), the same door its
     // dropped-in build exports.
@@ -391,7 +390,9 @@ pub(crate) fn linked_source(
         if !is_door {
             continue;
         }
-        if let Some(path) = metadata_value(manifest, "package.metadata.busbar.linked-declares", feature) {
+        if let Some(path) =
+            metadata_value(manifest, "package.metadata.busbar.linked-declares", feature)
+        {
             out.push_str(&format!("({krate:?}, {entry}::door, {path}), "));
         }
     }
@@ -473,7 +474,10 @@ pub(crate) fn linked_source(
         .iter()
         .filter(|(_, a)| a.iter().any(|x| x == TRANSPORT_AXIS))
     {
-        if axes.iter().any(|x| x == DOOR_AXIS || x == CONNECTOR_DOOR_AXIS) {
+        if axes
+            .iter()
+            .any(|x| x == DOOR_AXIS || x == CONNECTOR_DOOR_AXIS)
+        {
             out.push_str(&format!("({e}::KEY, {e}::door), "));
         }
     }

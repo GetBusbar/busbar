@@ -150,12 +150,20 @@ pub mod op {
     pub const TRUST_VERIFY: u32 = 20;
     /// `records.secret`.
     pub const RECORDS_SECRET: u32 = 21;
+    /// `disk.append`.
+    pub const DISK_APPEND: u32 = 22;
+    /// `trust.sight_item`.
+    pub const TRUST_SIGHT_ITEM: u32 = 23;
+    /// `trust.serves`.
+    pub const TRUST_SERVES: u32 = 24;
+    /// `trust.state`.
+    pub const TRUST_STATE: u32 = 25;
     /// `session.emit`.
-    pub const SESSION_EMIT: u32 = 22;
+    pub const SESSION_EMIT: u32 = 26;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 23;
+pub const SERVICES: u32 = 27;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
 /// an index past the table.
@@ -171,6 +179,9 @@ pub const fn may_pend(service: u32) -> bool {
             | op::RANDOM_FILL
             | op::NEED_ADMIT
             | op::TRUST_VERIFY
+            | op::TRUST_SIGHT_ITEM
+            | op::TRUST_SERVES
+            | op::TRUST_STATE
             | op::SESSION_EMIT
     ) && service < SERVICES
 }
@@ -466,7 +477,9 @@ pub struct WorkResumeIn {
 // ── trust ─────────────────────────────────────────────────────────────────────────────────────
 
 /// [`op::TRUST_SIGHT`]'s `in`: report a counterparty's catalogue hash; the kernel judges it.
-/// `value` = a `TRUST_*` verdict.
+/// `value` = a `TRUST_*` verdict. With [`TRUST_UNREACHABLE`] the plane reports it could not reach
+/// the counterparty to look: the kernel answers its LAST verdict and changes nothing (the hash is
+/// unread and may be empty), and the plane fails its call as an upstream failure.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct TrustSightIn {
@@ -476,7 +489,16 @@ pub struct TrustSightIn {
     pub counterparty: AbiStr,
     /// Its catalogue hash.
     pub catalogue_hash: AbiStr,
+    /// [`TRUST_REACHED`] | [`TRUST_UNREACHABLE`]; any other value is a fault.
+    pub outcome: u32,
+    /// Alignment padding.
+    pub _outcome_reserved: u32,
 }
+
+/// [`TrustSightIn::outcome`]: the plane reached the counterparty and reports what it serves.
+pub const TRUST_REACHED: u32 = 0;
+/// [`TrustSightIn::outcome`]: the plane could not reach the counterparty; nothing is sighted.
+pub const TRUST_UNREACHABLE: u32 = 1;
 
 /// [`op::TRUST_DUE`]'s `in`: the counterparties the kernel's `tick` marked for re-verification,
 /// one span each (key = the counterparty). Never pends.
@@ -497,6 +519,83 @@ pub const TRUST_SAME: u64 = 2;
 pub const TRUST_DRIFTED: u64 = 3;
 /// `trust.sight` verdict: the counterparty is quarantined.
 pub const TRUST_QUARANTINED: u64 = 4;
+
+/// [`op::TRUST_SIGHT_ITEM`]'s `in`: report the digest ONE ITEM of a counterparty (a tool, a skill:
+/// the plane's own per-item trust key) is offered at now, from the plane's live re-fetch; the
+/// kernel records it and answers a `TRUST_*` sighting verdict (`TRUST_NEW` the first sighting,
+/// `TRUST_SAME` the same digest as the last, `TRUST_DRIFTED` another, `TRUST_QUARANTINED` when
+/// the counterparty is). Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TrustSightItemIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The counterparty.
+    pub counterparty: AbiStr,
+    /// The item, opaque to the kernel.
+    pub item: AbiStr,
+    /// Its digest now, opaque to the kernel.
+    pub digest: AbiStr,
+}
+
+/// [`op::TRUST_SERVES`]'s `in`: the KERNEL'S APPROVE as a query (ARCHITECT 2026-10-06: trust is
+/// the kernel's Approve step), for a plane's route leg after its live re-fetch: whether the
+/// counterparty serves `item` at `digest` (absent = the item's last sighting). `value` =
+/// [`DISTRUST_NONE`] (it serves) or the `DISTRUST_*` that refuses it. Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TrustServesIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The counterparty.
+    pub counterparty: AbiStr,
+    /// The item; absent = the counterparty as a whole.
+    pub item: AbiStr,
+    /// The digest it is offered at now; absent = its last sighting.
+    pub digest: AbiStr,
+}
+
+/// THE ONE TRUST VOCABULARY (`trust.serves`'s value, and `abi::plane::RefusalIn::trust`): it serves.
+pub const DISTRUST_NONE: u64 = 0;
+/// The instance declares no such counterparty.
+pub const DISTRUST_UNKNOWN: u64 = 1;
+/// The counterparty was never sighted: nothing is pinned to judge by.
+pub const DISTRUST_UNSIGHTED: u64 = 2;
+/// The counterparty is quarantined: its last sighting drifted from its pin.
+pub const DISTRUST_QUARANTINED: u64 = 3;
+/// The item is known (sighted) and was never approved: a known item ungranted (a 403's case).
+pub const DISTRUST_NOT_APPROVED: u64 = 4;
+/// The item is offered at another digest than the one approved (or at none).
+pub const DISTRUST_CHANGED: u64 = 5;
+/// The item was never sighted at this counterparty: an unknown item (a 404's case).
+pub const DISTRUST_UNKNOWN_ITEM: u64 = 6;
+
+/// [`op::TRUST_STATE`]'s `in`: the KERNEL'S TRUST STATE of one counterparty and its items, as the
+/// core-admin `GET /api/v1/admin/trust` lists it, for a plane's own administrative views. `value` =
+/// the counterparty's `KEY_*` state; one span per item, in item order: key = the item, value =
+/// `<state word>\0<approved digest or empty>\0<last sighted digest or empty>`, the word one of
+/// `new`, `same`, `drifted`, `quarantined`, `approved`. Short-buffer rule. Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TrustStateIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The counterparty.
+    pub counterparty: AbiStr,
+    /// Where the items go.
+    pub into: ServiceBufs,
+}
+
+/// `trust.state`'s value: sighted (or declared) and never approved, or revoked: refused.
+pub const KEY_NEW: u64 = 1;
+/// `trust.state`'s value: approved, and its last sighting is what was approved.
+pub const KEY_SAME: u64 = 2;
+/// `trust.state`'s value: approved, and its last sighting moved from it: refused until re-approved.
+pub const KEY_DRIFTED: u64 = 3;
+/// `trust.state`'s value: quarantined: refused until re-approved (or its pin is seen again).
+pub const KEY_QUARANTINED: u64 = 4;
+/// `trust.state`'s value: approved, and not sighted since.
+pub const KEY_APPROVED: u64 = 5;
 
 /// [`op::TRUST_VERIFY`]'s `in`: verify a document's detached signatures against the root key the
 /// kernel holds for `counterparty` (the operator's out-of-band material its declared pin names).
@@ -697,6 +796,68 @@ pub struct NeedAdmitIn {
     pub _reserved: u32,
 }
 
+// ── disk ──────────────────────────────────────────────────────────────────────────────────────
+
+/// [`op::DISK_APPEND`]'s `in`: append `bytes` to the local file the host maps the calling
+/// instance's `dest_key` to (THE DESIGN, the host-owned bounded disk lane: the ONE exception to "no
+/// blocking", scoped to the file export sink and the SQLite store; host service `disk.append`:
+/// `{dest_key, bytes} -> {written, rotated}`, may pend, write-behind class).
+///
+/// The plugin names a destination KEY, never a path: the host maps the key to the path the
+/// operator's configuration of the calling instance gives a destination its manifest declares, and
+/// applies ROTATION itself, so no path and no rotation parameter comes from the plugin. The append
+/// runs on the host's bounded disk lane: it may pend (the ticket is woken when the append is done),
+/// and is callable only inside a ticketed op. On READY and on FAILED the host writes a
+/// [`DiskWritten`] into `result`: what the rotation before this append did, and on READY the whole of
+/// `bytes` landed.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct DiskAppendIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The destination key, one the calling instance's manifest declares.
+    pub dest_key: AbiStr,
+    /// The bytes to append, unchanged.
+    pub bytes: Blob,
+    /// Where the host writes the result.
+    pub result: *mut DiskWritten,
+}
+
+/// `disk.append`'s result, written by the host into [`DiskAppendIn::result`] on READY and FAILED.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiskWritten {
+    /// `size_of::<DiskWritten>()`.
+    pub size: u32,
+    /// [`DISK_ROTATED`] when the host rotated the file (renamed it to its first archive) before
+    /// this append, else `0`.
+    pub rotated: u8,
+    /// The steps of that rotation that failed: [`DISK_RETENTION_FAILED`] | [`DISK_SHIFT_FAILED`] |
+    /// [`DISK_RENAME_FAILED`]; `0` = none (or no rotation ran).
+    pub faults: u8,
+    /// Alignment padding.
+    pub _reserved: [u8; 2],
+    /// The bytes appended: `bytes.len` on READY, `0` otherwise.
+    pub written: u64,
+}
+
+/// [`DiskWritten::rotated`]: the host rotated the file before appending.
+pub const DISK_ROTATED: u8 = 1;
+/// [`DiskWritten::faults`]: dropping the oldest archive failed (the archive series may exceed the
+/// host's retention).
+pub const DISK_RETENTION_FAILED: u8 = 1;
+/// [`DiskWritten::faults`]: shifting an archive up one slot failed (it was left in place).
+pub const DISK_SHIFT_FAILED: u8 = 2;
+/// [`DiskWritten::faults`]: renaming the live file to its first archive failed (the append went to
+/// the live file, which keeps growing; nothing was truncated).
+pub const DISK_RENAME_FAILED: u8 = 4;
+/// Every [`DiskWritten::faults`] bit.
+pub const DISK_FAULTS: u8 = DISK_RETENTION_FAILED | DISK_SHIFT_FAILED | DISK_RENAME_FAILED;
+/// A FAILED `disk.append`'s `ServiceOut::value`: the file could not be opened for the append.
+pub const DISK_OPEN_FAILED: u64 = 1;
+/// A FAILED `disk.append`'s `ServiceOut::value`: the file opened, and writing the bytes failed.
+pub const DISK_APPEND_FAILED: u64 = 2;
+
 // ── carrier sessions ──────────────────────────────────────────────────────────────────────────
 
 /// The head field a CARRIER SESSION's arrivals carry, naming the session they arrived over: the
@@ -791,6 +952,14 @@ pub struct HostSlots {
     pub trust_verify: Option<ServiceFn>,
     /// [`op::RECORDS_SECRET`], in [`RecordsSecretIn`].
     pub records_secret: Option<ServiceFn>,
+    /// [`op::DISK_APPEND`], in [`DiskAppendIn`].
+    pub disk_append: Option<ServiceFn>,
+    /// [`op::TRUST_SIGHT_ITEM`], in [`TrustSightItemIn`]. A tail addition.
+    pub trust_sight_item: Option<ServiceFn>,
+    /// [`op::TRUST_SERVES`], in [`TrustServesIn`]. A tail addition.
+    pub trust_serves: Option<ServiceFn>,
+    /// [`op::TRUST_STATE`], in [`TrustStateIn`]. A tail addition.
+    pub trust_state: Option<ServiceFn>,
     /// [`op::SESSION_EMIT`], in [`SessionEmitIn`].
     pub session_emit: Option<ServiceFn>,
 }
@@ -836,6 +1005,28 @@ pub fn check_bufs(into: &ServiceBufs) -> Result<(), Fault> {
 pub const fn check_records_claim_in(i: &RecordsClaimIn) -> Result<(), Fault> {
     if i.ttl_ms == 0 {
         return Err(fault(Rule::Missing, "records_claim.ttl_ms"));
+    }
+    Ok(())
+}
+
+/// The host's check of a `disk.append` `in`: a key is named, neither the key nor the bytes come as a
+/// count behind NULL, the bytes fit one answer's bound, and there is a result slot.
+///
+/// # Errors
+///
+/// [`Rule::NullWithCount`]; [`Rule::Missing`] for an absent key or result slot; [`Rule::OverMax`]
+/// for bytes over [`MAX_BYTES`].
+pub fn check_disk_append_in(i: &DiskAppendIn) -> Result<(), Fault> {
+    check::text(i.dest_key, "disk_append.dest_key")?;
+    if i.dest_key.len == 0 {
+        return Err(fault(Rule::Missing, "disk_append.dest_key"));
+    }
+    check::listed(i.bytes.ptr, i.bytes.len, "disk_append.bytes")?;
+    if i.bytes.len as u64 > MAX_BYTES {
+        return Err(fault(Rule::OverMax, "disk_append.bytes"));
+    }
+    if i.result.is_null() {
+        return Err(fault(Rule::Missing, "disk_append.result"));
     }
     Ok(())
 }
@@ -1156,6 +1347,60 @@ pub fn check_trust_sight(
     )
 }
 
+/// `trust.sight_item`'s answer: a sighting verdict.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_trust_sight_item(
+    i: &TrustSightItemIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    answer(
+        ret,
+        &i.head,
+        out,
+        bare(op::TRUST_SIGHT_ITEM, (TRUST_NEW, TRUST_QUARANTINED)),
+    )
+}
+
+/// `trust.serves`'s answer: [`DISTRUST_NONE`] or a `DISTRUST_*`.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_trust_serves(
+    i: &TrustServesIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    answer(
+        ret,
+        &i.head,
+        out,
+        bare(op::TRUST_SERVES, (DISTRUST_NONE, DISTRUST_UNKNOWN_ITEM)),
+    )
+}
+
+/// `trust.state`'s answer: a `KEY_*` state, and the items into the caller's buffers.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_trust_state(
+    i: &TrustStateIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    answer(
+        ret,
+        &i.head,
+        out,
+        into(op::TRUST_STATE, i.into, (KEY_NEW, KEY_APPROVED)),
+    )
+}
+
 /// `trust.due`'s answer.
 ///
 /// # Errors
@@ -1309,6 +1554,62 @@ pub fn check_trust_verify(
     let names = matches!(out.value, SIGNED_ALGORITHM | SIGNED_CRITICAL);
     if ret.outcome() == Outcome::Ready && (out.items != 0 || (out.len != 0 && !names)) {
         return Err(fault(Rule::Contradiction, "trust_verify.out.len"));
+    }
+    Ok(filled)
+}
+
+/// `disk.append`'s answer: the common rules; on READY or FAILED a [`DiskWritten`] of this layout's
+/// size, `rotated` a known value and `faults` known bits; on READY `written` the WHOLE of `bytes` (an
+/// append lands whole or answers otherwise); on FAILED `written` `0` and `value` one of
+/// [`DISK_OPEN_FAILED`] / [`DISK_APPEND_FAILED`].
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_disk_append(
+    i: &DiskAppendIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    let filled = answer(ret, &i.head, out, bare(op::DISK_APPEND, (0, 0)))?;
+    let outcome = ret.outcome();
+    if !matches!(outcome, Outcome::Ready | Outcome::Failed) {
+        return Ok(filled);
+    }
+    if outcome == Outcome::Failed {
+        check::code(
+            out.value,
+            DISK_OPEN_FAILED,
+            DISK_APPEND_FAILED,
+            "disk_append.out.value",
+        )?;
+    }
+    if i.result.is_null() {
+        return Err(fault(Rule::NullWithCount, "disk_append.result"));
+    }
+    // SAFETY: the caller's own result slot, checked non-NULL.
+    let w = unsafe { core::ptr::read_unaligned(i.result) };
+    if w.size as usize != core::mem::size_of::<DiskWritten>() {
+        return Err(fault(Rule::Foreign, "disk_append.result.size"));
+    }
+    check::code(
+        u64::from(w.rotated),
+        0,
+        u64::from(DISK_ROTATED),
+        "disk_append.result.rotated",
+    )?;
+    check::bits(
+        u64::from(w.faults),
+        u64::from(DISK_FAULTS),
+        "disk_append.result.faults",
+    )?;
+    let whole = if outcome == Outcome::Ready {
+        i.bytes.len as u64
+    } else {
+        0
+    };
+    if w.written != whole {
+        return Err(fault(Rule::Contradiction, "disk_append.result.written"));
     }
     Ok(filled)
 }

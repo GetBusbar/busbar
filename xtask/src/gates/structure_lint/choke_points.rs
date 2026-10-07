@@ -128,8 +128,10 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         //         cleanup / 0600 mode) its author forgot.
         //
         //         LEDGERED EXEMPTION, `fs::rename`, for the request-log sink's rotate-by-rename,
-        //         which the plugin host performs for an export destination
-        //         (`crates/plugin-loader/src/host.rs`): rotation renames a file whose bytes are
+        //         which the plugin host performs for a plugin log file
+        //         (`crates/plugin-loader/src/host.rs`) and the kernel's disk lane for an export
+        //         destination (`crates/busbar-kernel/src/host_disk.rs`, `disk.append`, ARCHITECT
+        //         ruling Q-C1-FILE): rotation renames a file whose bytes are
         //         already fully on disk, and `fs::rename` moves a directory entry without touching
         //         them, so there is no torn state to protect. LEDGERED EXEMPTION, `sync_[ad]` and
         //         `create_dir_all`, for the WAL: it is a SIBLING durability primitive, not a
@@ -157,6 +159,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                     &[
                         "crates/busbar-kernel-wal/src/durable.rs".into(),
                         "crates/plugin-loader/src/host.rs".into(),
+                        "crates/busbar-kernel/src/host_disk.rs".into(),
                     ],
                 )
                 .core_tier(),
@@ -338,9 +341,13 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         ChokeRow {
             id: "I-trust-serve-derivation".into(),
             tag: "TRUST-COMPARISON-BYPASS".into(),
-            owner: format!("{substrate}/trust/mod.rs (Approval::serves)"),
-            class_test: format!("{mcp}/tests/trust_gate_tests.rs::the_routed_gate_answers_exactly_what_the_deleted_inline_decision_answered"),
-            remedy: "ask crate::trust::Approval::serves; never re-derive the answer from the raw registration fields".into(),
+            // ARCHITECT Q3: the trust decision is the kernel's Approve. A plane states its facts
+            // (item approvals as a declared trust key, sightings) and asks `trust.serves`, which is
+            // `TrustBook::judge`; the engine's routed gate and its class test are deleted, and the
+            // class test is ported to the kernel against a neutral double of the declared facts.
+            owner: format!("{substrate}/trust/book.rs (TrustBook::judge, the kernel's Approve; Approval::serves for a whole-catalogue pin)"),
+            class_test: format!("{substrate}/trust/tests/serve_gate_tests.rs::the_kernels_approve_answers_exactly_what_the_deleted_inline_decision_answered"),
+            remedy: "state the facts and ask the kernel (trust.serves / TrustBook::judge, or Approval::serves); never re-derive the answer from the raw registration fields".into(),
             rules: vec![
                 BanRule::new(
                     r"schema_hash[[:space:]]*\.is_some",

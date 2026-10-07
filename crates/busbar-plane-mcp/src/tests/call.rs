@@ -127,19 +127,103 @@ fn an_unknown_and_an_ungranted_tool_read_the_same_and_log_apart() {
     assert_eq!(line.expect("logged").reason, "not_granted");
 }
 
+/// THE KERNEL'S VERDICT, RENDERED (ARCHITECT Q3): the door judges no trust; it renders what the
+/// kernel's Approve (`trust.serves`) answered for the called tool. An item never sighted is not
+/// found, as an unknown name is; a known one the operator has not approved is refused; every other
+/// distrust is refused under its own reason; a server the re-fetch could not reach fails the call
+/// as an upstream failure (a tool error), never sent.
 #[test]
-fn a_tool_with_no_approved_hash_does_not_serve() {
-    let (r, line) = refused(admit_call(
+fn the_kernels_trust_verdict_is_rendered_and_never_judged_here() {
+    use busbar_contract::abi::host::service as svc;
+    let cases: [(Trust, Option<(u32, &str)>); 8] = [
+        (Trust::Verdict(svc::DISTRUST_NONE), None),
+        (
+            Trust::Verdict(svc::DISTRUST_UNKNOWN_ITEM),
+            Some((404, "unknown_tool")),
+        ),
+        (
+            Trust::Verdict(svc::DISTRUST_NOT_APPROVED),
+            Some((403, "not_approved")),
+        ),
+        (
+            Trust::Verdict(svc::DISTRUST_CHANGED),
+            Some((403, "quarantined")),
+        ),
+        (
+            Trust::Verdict(svc::DISTRUST_QUARANTINED),
+            Some((403, "quarantined")),
+        ),
+        (
+            Trust::Verdict(svc::DISTRUST_UNSIGHTED),
+            Some((403, "pending")),
+        ),
+        (
+            Trust::Verdict(svc::DISTRUST_UNKNOWN),
+            Some((403, "not_serving")),
+        ),
+        (
+            Trust::Unreached("down".to_string()),
+            Some((200, "upstream_failed")),
+        ),
+    ];
+    for (trust, want) in cases {
+        let mut asked = Vec::new();
+        let admission = admit_trusted(
+            &catalogue(),
+            &json!(1),
+            Some(&params("fs_draft", json!({}))),
+            &no_header,
+            &everyone,
+            &mut |entry: &ToolEntry| {
+                asked.push((entry.server.clone(), entry.tool.clone()));
+                trust.clone()
+            },
+            &|_| false,
+            &mut proceed,
+        );
+        assert_eq!(
+            asked,
+            [("fs".to_string(), "draft".to_string())],
+            "the verdict is asked once, of the called tool's registration and trust key"
+        );
+        match want {
+            None => {
+                go(admission);
+            }
+            Some((200, reason)) => match admission {
+                Admission::Unreached(body, line) => {
+                    let body: Value = serde_json::from_slice(&body).expect("json");
+                    assert_eq!(body["result"]["isError"], json!(true), "a tool error");
+                    assert_eq!(line.reason, reason);
+                    assert_eq!(line.outcome, "refused", "never sent");
+                }
+                other => panic!("the unreached call is a tool error: {other:?}"),
+            },
+            Some((status, reason)) => {
+                let (r, line) = refused(admission);
+                assert_eq!(r.status, status, "{trust:?}");
+                assert_eq!(r.data, Some(json!({ "reason": reason })), "{trust:?}");
+                assert_eq!(line.expect("logged").reason, reason, "{trust:?}");
+            }
+        }
+    }
+}
+
+/// The verdict is asked only of a tool the caller is granted: an ungranted call is not found before
+/// the kernel is asked anything.
+#[test]
+fn the_verdict_is_asked_only_after_the_grants() {
+    let (r, _) = refused(admit_trusted(
         &catalogue(),
         &json!(1),
         Some(&params("fs_draft", json!({}))),
         &no_header,
-        &everyone,
+        &|_, _| false,
+        &mut |_| panic!("the kernel is asked about an ungranted call"),
+        &|_| false,
         &mut proceed,
     ));
-    assert_eq!(r.status, 403);
-    assert_eq!(r.data, Some(json!({ "reason": "not_approved" })));
-    assert_eq!(line.expect("logged").reason, "not_approved");
+    assert_eq!(r.status, 404);
 }
 
 #[test]

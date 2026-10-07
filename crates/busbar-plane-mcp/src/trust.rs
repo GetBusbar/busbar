@@ -13,9 +13,10 @@
 //! * **The observation** is a live `tools/list`, each tool re-hashed here from the definition the
 //!   upstream sent ([`tool_digest`]: name, description and input schema, length-framed, the schema in
 //!   canonical JSON), never a digest the upstream supplied.
-//! * **The state** is derived on every read, never stored: a failed contact is `error`; no root is
-//!   `pending`; a sighting that disagrees with the approval is `quarantined`; anything else (no
-//!   sighting yet, or one that agrees) is `approved`. Only `approved` serves.
+//! * **The verdicts are the kernel's** (ARCHITECT Q3): the plane sights the catalogue
+//!   (`trust.sight`) and each tool (`trust.sight_item`), the kernel's Approve answers every call
+//!   (`trust.serves`), and these views read the kernel's trust state (`trust.state`). A failed
+//!   contact is the one plane fact a view renders on its own (`error`).
 //!
 //! The kernel's trust book records each sighting's catalogue hash ([`catalogue_hash`],
 //! `trust.sight`), which stamps the server's re-verification clock; the operator's view and the
@@ -161,46 +162,26 @@ pub enum Sighting {
     Seen(Observation),
 }
 
-/// The operator's standing decision about one registration.
+/// ONE ITEM OF THE KERNEL'S TRUST STATE (`trust.state`, ARCHITECT Q3): the kernel owns every
+/// approval and every verdict; the plane's views read them, they derive none.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Approval {
-    /// An authenticity root is declared (a root mechanism with its key).
-    pub rooted: bool,
-    /// `tool -> approved digest`; an allowed tool with no digest is absent (pending).
-    pub capabilities: BTreeMap<String, String>,
+pub struct KernelItem {
+    /// The item (the tool, as `tools_allow` names it).
+    pub item: String,
+    /// Its state word: `new`, `same`, `drifted`, `quarantined` or `approved`.
+    pub word: String,
+    /// The digest the kernel holds it approved at; `None` = none.
+    pub approved: Option<String>,
 }
 
-impl Approval {
-    /// The approval the registration `def` declares.
-    #[must_use]
-    pub fn of(def: &McpServerDefCfg) -> Self {
-        let rooted = def.pin.mechanism.is_a_root()
-            && def.pin.key.as_deref().is_some_and(|k| !k.trim().is_empty());
-        if !rooted {
-            return Self::default();
-        }
-        Self {
-            rooted,
-            capabilities: def
-                .tools_allow
-                .iter()
-                .filter_map(|(tool, allow)| {
-                    let hash = allow.schema_hash.as_deref().map(str::trim)?;
-                    (!hash.is_empty()).then(|| (tool.clone(), hash.to_string()))
-                })
-                .collect(),
-        }
-    }
-}
-
-/// The derived trust state.
+/// The view's state word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
-    /// No authenticity root: nothing approved, nothing served.
+    /// Nothing is approved: nothing served.
     Pending,
-    /// Rooted, and the last sighting (if any) agrees with the approval. Serves.
+    /// Something is approved, and the kernel holds no drift on what the server offers. Serves.
     Approved,
-    /// Rooted, but the last sighting disagrees with the approval.
+    /// The kernel holds a tool drifted or quarantined, or the server offers what nothing approved.
     Quarantined,
     /// The last contact failed.
     Error,
@@ -219,12 +200,12 @@ impl State {
     }
 }
 
-/// The changes queue: what the last sighting changed relative to the approval.
+/// The changes queue: what the server offers now against what the kernel holds approved.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Drift {
-    /// Offered now, never ruled on.
+    /// Offered now, approved at nothing.
     pub added: Vec<String>,
-    /// Approved, but offered at another digest: the rug-pull row.
+    /// Approved, and the kernel holds it drifted (or quarantined): the rug-pull row.
     pub changed: Vec<String>,
     /// Approved, and no longer offered.
     pub removed: Vec<String>,
@@ -236,39 +217,44 @@ impl Drift {
     }
 }
 
-/// The changes queue of `sighting` against `approval`; empty with no successful sighting.
+/// The changes queue of `sighting` against the kernel's `items`; empty with no successful
+/// sighting. The verdict on a tool offered at another digest is the kernel's word, never a
+/// comparison here.
 #[must_use]
-pub fn drift(approval: &Approval, sighting: &Sighting) -> Drift {
+pub fn drift(items: &[KernelItem], sighting: &Sighting) -> Drift {
     let Sighting::Seen(obs) = sighting else {
         return Drift::default();
     };
+    let held = |name: &str| items.iter().find(|i| i.item == name);
     let mut d = Drift::default();
-    for (name, digest) in &obs.capabilities {
-        match approval.capabilities.get(name) {
-            Some(approved) if approved == digest => {}
-            Some(_) => d.changed.push(name.clone()),
-            None => d.added.push(name.clone()),
+    for name in obs.capabilities.keys() {
+        match held(name) {
+            Some(i) if i.word == "drifted" || i.word == "quarantined" => {
+                d.changed.push(name.clone())
+            }
+            Some(i) if i.approved.is_some() => {}
+            _ => d.added.push(name.clone()),
         }
     }
-    for name in approval.capabilities.keys() {
-        if !obs.capabilities.contains_key(name) {
-            d.removed.push(name.clone());
+    for i in items {
+        if i.approved.is_some() && !obs.capabilities.contains_key(&i.item) {
+            d.removed.push(i.item.clone());
         }
     }
     d
 }
 
-/// The derived state. Order is precedence: a failed contact is never reported as trust; an unrooted
-/// registration is pending whatever else is true of it; quarantine is the presence of drift.
+/// The view's state. Order is precedence: a failed contact is never reported as trust; nothing
+/// approved is pending; drift is quarantine.
 #[must_use]
-pub fn state(approval: &Approval, sighting: &Sighting) -> State {
+pub fn state(items: &[KernelItem], sighting: &Sighting) -> State {
     if matches!(sighting, Sighting::Failed(_)) {
         return State::Error;
     }
-    if !approval.rooted {
+    if !items.iter().any(|i| i.approved.is_some()) {
         return State::Pending;
     }
-    if drift(approval, sighting).is_empty() {
+    if drift(items, sighting).is_empty() {
         State::Approved
     } else {
         State::Quarantined
@@ -327,23 +313,28 @@ struct HealthView<'a> {
     observed_tools: usize,
 }
 
-/// The trust view of registration `name` (`def`) under `sighting`, serialized in declaration order.
+/// The trust view of registration `name` (`def`) under `sighting` and the kernel's trust state of
+/// it (`items`), serialized in declaration order.
 #[must_use]
-pub fn trust_view(name: &str, def: &McpServerDefCfg, sighting: &Sighting) -> String {
-    let approval = Approval::of(def);
-    let d = drift(&approval, sighting);
-    let mut capabilities: BTreeMap<&str, CapabilityView<'_>> = approval
-        .capabilities
+pub fn trust_view(
+    name: &str,
+    def: &McpServerDefCfg,
+    sighting: &Sighting,
+    items: &[KernelItem],
+) -> String {
+    let d = drift(items, sighting);
+    let mut capabilities: BTreeMap<&str, CapabilityView<'_>> = items
         .iter()
-        .map(|(tool, digest)| {
-            (
-                tool.as_str(),
+        .filter_map(|i| {
+            let digest = i.approved.as_deref()?;
+            Some((
+                i.item.as_str(),
                 CapabilityView {
-                    tool,
+                    tool: &i.item,
                     status: "approved",
                     approved_digest: Some(digest),
                 },
-            )
+            ))
         })
         .collect();
     for tool in def.tools_allow.keys() {
@@ -355,7 +346,7 @@ pub fn trust_view(name: &str, def: &McpServerDefCfg, sighting: &Sighting) -> Str
     }
     let view = TrustView {
         name,
-        state: state(&approval, sighting).word(),
+        state: state(items, sighting).word(),
         pin_mechanism: def.pin.mechanism.token(),
         pin_changed: false,
         added: d.added,
@@ -368,10 +359,11 @@ pub fn trust_view(name: &str, def: &McpServerDefCfg, sighting: &Sighting) -> Str
     serde_json::to_string(&view).unwrap_or_default()
 }
 
-/// The health view of registration `name` (`def`) under `sighting`, serialized in declaration order.
+/// The health view of registration `name` under `sighting` and the kernel's trust state of it
+/// (`items`), serialized in declaration order.
 #[must_use]
-pub fn health_view(name: &str, def: &McpServerDefCfg, sighting: &Sighting) -> String {
-    let derived = state(&Approval::of(def), sighting);
+pub fn health_view(name: &str, sighting: &Sighting, items: &[KernelItem]) -> String {
+    let derived = state(items, sighting);
     let view = HealthView {
         name,
         state: derived.word(),
@@ -381,25 +373,6 @@ pub fn health_view(name: &str, def: &McpServerDefCfg, sighting: &Sighting) -> St
         observed_tools: observed(sighting),
     };
     serde_json::to_string(&view).unwrap_or_default()
-}
-
-/// THE DISPATCH GATE'S QUESTION about one tool of a registration under its last sighting: `None`
-/// when it serves, else the state word it is refused as. A server that is not approved serves
-/// nothing; an approved one serves a tool only at its approved digest (the live one when sighted).
-#[must_use]
-pub fn refused_as(def: &McpServerDefCfg, sighting: &Sighting, tool: &str) -> Option<&'static str> {
-    let approval = Approval::of(def);
-    let derived = state(&approval, sighting);
-    if derived != State::Approved {
-        return Some(derived.word());
-    }
-    match sighting {
-        Sighting::Seen(obs) => {
-            let approved = approval.capabilities.get(tool)?;
-            (obs.capabilities.get(tool) != Some(approved)).then_some(State::Quarantined.word())
-        }
-        _ => None,
-    }
 }
 
 #[cfg(test)]

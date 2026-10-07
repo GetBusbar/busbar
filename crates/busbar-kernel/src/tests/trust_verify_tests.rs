@@ -43,6 +43,7 @@ fn entry(root_key: Option<String>, root: bool) -> TrustEntry {
             ttl_ms: 0,
             recovery_backoff_ms: 0,
         },
+        approved: Default::default(),
     }
 }
 

@@ -14,6 +14,7 @@ use busbar_contract::abi::host::service::{
 };
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::Filled;
+use busbar_contract::services::DiskDest;
 
 use super::*;
 
@@ -34,6 +35,8 @@ struct Provider {
     filled: AtomicUsize,
     /// Every `records.secret` read that reached the provider, as `kind:id`.
     secrets: Mutex<Vec<String>>,
+    /// Every `disk.append` that reached the provider: the destination and the bytes.
+    appended: Mutex<Vec<(DiskDest, Vec<u8>)>>,
 }
 
 impl Provider {
@@ -132,6 +135,28 @@ impl HostServices for Provider {
     fn trust_due(&self, c: &Caller) -> Stored {
         self.saw(c, "trust.due", b"");
         Stored::ready(0)
+    }
+
+    /// One item `t` approved at `d1`, sighted at `d2`: drifted; the counterparty the same.
+    fn trust_state(&self, c: &Caller, counterparty: &str) -> Stored {
+        self.saw(c, "trust.state", counterparty.as_bytes());
+        let value = b"drifted\0d1\0d2";
+        let mut stored = Stored::ready(svc::KEY_SAME);
+        stored.bytes = [&b"t"[..], value].concat();
+        stored.spans = vec![ItemSpan {
+            key: Span { offset: 0, len: 1 },
+            value: Span {
+                offset: 1,
+                len: value.len() as u32,
+            },
+        }];
+        stored
+    }
+
+    /// The last verdict, never a sighting: `TRUST_SAME`.
+    fn trust_unreached(&self, c: &Caller, counterparty: &str) -> Stored {
+        self.saw(c, "trust.unreached", counterparty.as_bytes());
+        Stored::ready(svc::TRUST_SAME)
     }
 
     /// Answers the payload's length as the verdict, and the counterparty as the bytes.
@@ -234,6 +259,27 @@ impl HostServices for Provider {
     fn work_resume(&self, c: &Caller, unit: Option<u64>, handle: u64, _: Later) -> Ran {
         self.saw(c, "work.resume", format!("{unit:?} {handle}").as_bytes());
         Ran::Now(Stored::ready(0))
+    }
+
+    /// The disk-lane double: records the append and answers through `later` — READY with the
+    /// file rotated first, or, for a path ending `.fail`, FAILED at the open step.
+    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
+        self.appended.lock().unwrap().push((dest.clone(), bytes));
+        let failing = dest.path.ends_with(".fail");
+        later(
+            DiskReport {
+                step: if failing { svc::DISK_OPEN_FAILED } else { 0 },
+                rotated: true,
+                faults: 0,
+                error: if failing {
+                    "No such file or directory"
+                } else {
+                    ""
+                },
+            }
+            .stored(),
+        );
+        Ran::Later
     }
 }
 
@@ -423,6 +469,10 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.need_admit,
         HOST_SLOTS.trust_verify,
         HOST_SLOTS.records_secret,
+        HOST_SLOTS.disk_append,
+        HOST_SLOTS.trust_sight_item,
+        HOST_SLOTS.trust_serves,
+        HOST_SLOTS.trust_state,
         HOST_SLOTS.session_emit,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
@@ -445,6 +495,10 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
                 busbar_contract::conn::ConnError::UndeclaredNeed.text(),
                 "service {service}"
             );
+        } else if service == op::TRUST_STATE {
+            // A read names its buffers: an all-zero `in` names none, which the host faults before
+            // the provider.
+            assert_eq!(ret.outcome(), Outcome::Failed, "service {service}");
         } else if service == op::SESSION_EMIT {
             // An emit naming no session and nothing to write is refused before the provider.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
@@ -1315,5 +1369,172 @@ fn unit_nest_reaches_the_kernel_with_the_unit_its_crossing_serves() {
             "unit.nest",
             b"Some(11) POST /child ask".to_vec()
         )]
+    );
+}
+
+/// A `disk.append` `in` naming `key`, appending `bytes`, its result into `result`.
+fn disk_in(
+    key: &'static str,
+    bytes: &'static [u8],
+    seq: u32,
+    result: &mut svc::DiskWritten,
+) -> svc::DiskAppendIn {
+    svc::DiskAppendIn {
+        head: head(op::DISK_APPEND, TICKET, seq, size_of::<svc::DiskAppendIn>()),
+        dest_key: AbiStr {
+            ptr: key.as_ptr(),
+            len: key.len(),
+        },
+        bytes: Blob {
+            ptr: bytes.as_ptr(),
+            len: bytes.len(),
+            fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+            flags: 0,
+        },
+        result: std::ptr::from_mut(result),
+    }
+}
+
+fn call_disk(ctx: HostCtx, i: &svc::DiskAppendIn) -> (RawOutcome, ServiceOut) {
+    let mut o = blank();
+    let ret = HOST_SLOTS.disk_append.unwrap()(ctx, std::ptr::from_ref(i).cast(), &mut o);
+    (ret, o)
+}
+
+fn blank_written() -> svc::DiskWritten {
+    svc::DiskWritten {
+        size: 0,
+        rotated: 0,
+        faults: 0,
+        _reserved: [0; 2],
+        written: 0,
+    }
+}
+
+/// THE DESTINATION RULE (THE DESIGN §11.12 `disk.append`): an instance appends only to the
+/// destinations its manifest declares (granted by the opener), at the path its settings bound; a key
+/// it was not granted, or one its settings leave unset, is REFUSED before the kernel sees anything.
+/// A granted, bound key reaches the kernel's disk lane with the bound path and the bytes unchanged,
+/// and the lane's report lands in the caller's result slot (READY: the whole of the bytes; FAILED:
+/// the step in `value`, nothing written). RED: before the slot, `disk.append` was no slot at all.
+#[test]
+fn disk_append_writes_only_to_a_granted_bound_destination() {
+    let d = double();
+    let mut w = blank_written();
+    // The double's instance was granted no destination.
+    let (ret, o) = call_disk(d.ctx, &disk_in("path", b"line\n", 0, &mut w));
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_DESTINATION);
+    assert!(d.route.provider.appended.lock().unwrap().is_empty());
+
+    // An instance granted `path`, its settings binding it.
+    let wake: &'static InstanceWake = Box::leak(Box::default());
+    let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
+    assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
+    assert!(wake.destinations.set(vec!["path".to_string()]).is_ok());
+    let ctx = HostCtx {
+        ptr: std::ptr::from_ref(wake).cast_mut().cast(),
+    };
+    // Granted, not yet bound (its settings set no path): refused.
+    let (ret, o) = call_disk(ctx, &disk_in("path", b"line\n", 0, &mut w));
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_DESTINATION);
+    let bound = DiskDest {
+        key: "path".into(),
+        path: "/var/log/busbar/requests.jsonl".into(),
+        rotate_at: Some(1024 * 1024),
+        keep: busbar_contract::services::DISK_KEEP,
+    };
+    wake.bound.write().unwrap().push(bound.clone());
+    // A key the instance was not granted, even with a path under it.
+    let (ret, o) = call_disk(ctx, &disk_in("other", b"line\n", 0, &mut w));
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_DESTINATION);
+    assert!(d.route.provider.appended.lock().unwrap().is_empty());
+
+    let i = disk_in("path", b"line\n", 0, &mut w);
+    let (ret, o) = call_disk(ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert!(svc::check_disk_append(&i, ret, &o).is_ok());
+    assert_eq!((w.rotated, w.faults, w.written), (svc::DISK_ROTATED, 0, 5));
+    assert_eq!(
+        d.route.provider.appended.lock().unwrap().as_slice(),
+        &[(bound, b"line\n".to_vec())]
+    );
+
+    // The lane's FAILED report: the step in `value`, nothing appended, the rotation reported.
+    wake.bound.write().unwrap()[0].path = "/nowhere/requests.fail".into();
+    let mut w = blank_written();
+    let i = disk_in("path", b"line\n", 1, &mut w);
+    let (ret, o) = call_disk(ctx, &i);
+    assert_eq!(ret.outcome(), Outcome::Failed);
+    assert_eq!(o.value, svc::DISK_OPEN_FAILED);
+    assert_eq!(error(&o), "No such file or directory");
+    assert!(svc::check_disk_append(&i, ret, &o).is_ok());
+    assert_eq!((w.rotated, w.written), (svc::DISK_ROTATED, 0));
+}
+
+/// `trust.sight` WITH `TRUST_UNREACHABLE` (ARCHITECT 2026-10-06): the plane could not reach the
+/// counterparty; the kernel answers its last verdict and nothing is sighted (the hash is unread,
+/// and may be empty). RED: an outcome the vocabulary does not hold is FAULT, and reaches nothing.
+#[test]
+fn an_unreachable_sighting_reaches_the_last_verdict_and_an_unknown_outcome_is_fault() {
+    let d = double();
+    let sight = |outcome: u32| svc::TrustSightIn {
+        head: head(op::TRUST_SIGHT, TICKET, 0, size_of::<svc::TrustSightIn>()),
+        counterparty: text("peer"),
+        catalogue_hash: text(""),
+        outcome,
+        _outcome_reserved: 0,
+    };
+    let call = |i: &svc::TrustSightIn| {
+        let mut o = blank();
+        let ret = HOST_SLOTS.trust_sight.unwrap()(d.ctx, std::ptr::from_ref(i).cast(), &mut o);
+        (ret, o)
+    };
+    let unreached = sight(svc::TRUST_UNREACHABLE);
+    let (ret, o) = call(&unreached);
+    assert_eq!((ret.outcome(), o.value), (Outcome::Ready, svc::TRUST_SAME));
+    assert!(svc::check_trust_sight(&unreached, ret, &o).is_ok());
+    let (ret, _) = call(&sight(svc::TRUST_UNREACHABLE + 1));
+    assert_eq!(ret.outcome(), Outcome::Fault);
+    let seen = d.route.provider.scoped.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![("double".to_string(), "trust.unreached", b"peer".to_vec())]
+    );
+}
+
+/// `trust.state` OVER THE SDK: the counterparty's state and its items, read through the
+/// caller's buffers under the short-buffer rule (a short buffer is `Short`, the re-call on the same
+/// handle reads the stored answer), and the kernel was asked once.
+#[test]
+fn the_sdk_trust_state_reads_the_kernels_items_under_the_short_buffer_rule() {
+    use busbar_contract::abi::sdk::{ServiceError, TrustItem};
+    let d = double();
+    let s = sdk(&d);
+    let (mut buf, mut spans) = ([0u8; 4], [NO_SPAN; 4]);
+    assert!(matches!(
+        s.trust_state(ticketed(0), "peer", &mut buf, &mut spans),
+        Err(ServiceError::Short { .. })
+    ));
+    let (mut buf, mut spans) = ([0u8; 32], [NO_SPAN; 4]);
+    let state = s
+        .trust_state(ticketed(0), "peer", &mut buf, &mut spans)
+        .expect("the stored answer");
+    assert_eq!(state.state, svc::KEY_SAME);
+    assert_eq!(
+        state.items().collect::<Vec<_>>(),
+        vec![TrustItem {
+            item: "t",
+            state: "drifted",
+            approved: Some("d1"),
+            seen: Some("d2"),
+        }]
+    );
+    let seen = d.route.provider.scoped.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![("double".to_string(), "trust.state", b"peer".to_vec())]
     );
 }

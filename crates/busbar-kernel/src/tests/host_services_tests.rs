@@ -170,6 +170,7 @@ fn rig() -> Rig {
                         ttl_ms: 100,
                         recovery_backoff_ms: 0,
                     },
+                    approved: Default::default(),
                 },
             )],
             scope_kinds: vec!["group".into(), "item".into()],
@@ -421,6 +422,93 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_A_COUNTERPARTY));
 }
 
+/// THE OPERATOR'S TRUST DECISIONS (`/api/v1/admin/trust`) ARE KEPT: approving a drifted
+/// counterparty re-pins it at what it now reports and clears its durable demotion, a restart
+/// replays the approval over the declared pin, and an unreachable sighting answers the last
+/// verdict without changing it. An unknown key is no key.
+#[test]
+fn the_operators_trust_decisions_are_kept_and_replayed_at_a_restart() {
+    use crate::trust::book::Decision;
+    let r = rig();
+    let me = caller("inst");
+    assert_eq!(
+        run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
+        svc::TRUST_DRIFTED
+    );
+    assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_QUARANTINED);
+    let row = r.s.trust_decide("inst/cp", Decision::Approve).unwrap();
+    assert_eq!(row.approved.as_deref(), Some("moved"));
+    assert!(
+        r.s.demotions.get().unwrap().record.list().is_empty(),
+        "the approval clears the demotion"
+    );
+    assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_SAME);
+    let fresh = restarted(&r);
+    fresh.admit("inst", trusting(Some("fp"))).unwrap();
+    assert_eq!(
+        run(|l| fresh.trust_sight(&me, "cp", "moved", l)).value,
+        svc::TRUST_SAME,
+        "the kept approval, over the declared pin"
+    );
+    assert_eq!(
+        fresh.trust_decide("inst/nobody", Decision::Revoke),
+        Err(TrustRefused::NoSuchKey)
+    );
+    let s = fresh.trust_unreached(&caller("nowhere"), "cp");
+    assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
+}
+
+/// `trust.state` (the plane's administrative views): the counterparty's `KEY_*` state and one
+/// span per item, `<word>\0<approved>\0<seen>`, as `GET /api/v1/admin/trust` lists them; an
+/// undeclared counterparty is refused, as is an instance never admitted.
+#[test]
+fn trust_state_answers_the_counterparty_and_its_items_as_the_admin_list_does() {
+    use crate::trust::book::Decision;
+    let r = rig();
+    let me = caller("inst");
+    assert_eq!(
+        r.s.trust_state(&me, "cp").value,
+        svc::KEY_APPROVED,
+        "declared pin"
+    );
+    run(|l| r.s.trust_sight(&me, "cp", "fp", l));
+    assert_eq!(
+        r.s.trust_sight_item(&me, "cp", "t", "d1").value,
+        svc::TRUST_NEW
+    );
+    r.s.trust_decide("inst/cp/t", Decision::Approve).unwrap();
+    assert_eq!(
+        r.s.trust_sight_item(&me, "cp", "u", "e1").value,
+        svc::TRUST_NEW
+    );
+    let state = r.s.trust_state(&me, "cp");
+    assert_eq!(state.value, svc::KEY_SAME);
+    let items: Vec<(String, String)> = state
+        .spans
+        .iter()
+        .map(|s| {
+            let at = |sp: busbar_contract::abi::mechanism::call::Span| {
+                String::from_utf8(
+                    state.bytes[sp.offset as usize..(sp.offset + sp.len) as usize].to_vec(),
+                )
+                .unwrap()
+            };
+            (at(s.key), at(s.value))
+        })
+        .collect();
+    assert_eq!(
+        items,
+        vec![
+            ("t".to_string(), "same\0d1\0d1".to_string()),
+            ("u".to_string(), "new\0\0e1".to_string()),
+        ]
+    );
+    let s = r.s.trust_state(&me, "nobody");
+    assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_A_COUNTERPARTY));
+    let s = r.s.trust_state(&caller("nowhere"), "cp");
+    assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
+}
+
 #[test]
 fn a_durable_demotion_is_replayed_at_admit() {
     let r = rig();
@@ -443,6 +531,7 @@ fn a_durable_demotion_is_replayed_at_admit() {
                             ttl_ms: 0,
                             recovery_backoff_ms: 0,
                         },
+                        approved: Default::default(),
                     },
                 )],
                 ..InstanceFacts::default()
@@ -539,6 +628,7 @@ fn trusting(pin: Option<&str>) -> InstanceFacts {
                     ttl_ms: 0,
                     recovery_backoff_ms: 0,
                 },
+                approved: Default::default(),
             },
         )],
         ..InstanceFacts::default()

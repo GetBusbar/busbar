@@ -279,6 +279,8 @@ fn linked_axis_cfgs(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (Vec<Stri
         cfg_of(PLANE_DOOR_AXIS),
     ];
     declared.extend(AXES.iter().map(|(axis, _, _)| cfg_of(axis)));
+    // The memory-ABI export axis: what a test that documents the linked sinks' declarations needs.
+    declared.push(cfg_of(EXPORT_DOOR_AXIS));
     let mut set: Vec<String> = Vec::new();
     for (feature, axes) in metadata_map(manifest, "package.metadata.busbar.linked-axes") {
         if !enabled(&feature) {

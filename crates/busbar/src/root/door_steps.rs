@@ -63,6 +63,9 @@ pub struct DoorPools {
     /// The pools whose members the plane admits each on its own grant (`member_granted`): the
     /// pool's name is no grant of its own.
     member_granted: std::collections::BTreeSet<String>,
+    /// Each entry's reserved `timeout:`, in milliseconds, where it writes one
+    /// (`busbar_contract::section::ENTRY_TIMEOUT_KEY`): its member's attempt bound.
+    timeouts: BTreeMap<String, u64>,
 }
 
 /// A resolved route: its pool label (empty for a direct route) and its member entries.
@@ -78,10 +81,10 @@ impl DoorPools {
         let key = |k: &serde_yaml::Value| k.as_str().map(str::to_owned);
         // A model-serving section's entries are its `models` map's; any other section's are its own
         // top-level registrations.
-        let entries = match map
+        let models = map
             .get(RESERVED_MODELS_KEY)
-            .and_then(serde_yaml::Value::as_mapping)
-        {
+            .and_then(serde_yaml::Value::as_mapping);
+        let entries: Vec<String> = match models {
             Some(models) => models.keys().filter_map(key).collect(),
             None => map
                 .keys()
@@ -134,12 +137,34 @@ impl DoorPools {
                     .collect()
             })
             .unwrap_or_default();
+        // THE ENTRY'S ATTEMPT BOUND (ARCHITECT timeout ruling; R2-G "per-member ... timeout"): its
+        // reserved `timeout:`, read the one way the kernel judged it at load, for every plane alike.
+        let timeouts = entries
+            .iter()
+            .filter_map(|entry| {
+                let written = models
+                    .unwrap_or(map)
+                    .get(entry.as_str())?
+                    .get(busbar_contract::section::ENTRY_TIMEOUT_KEY)?
+                    .as_str()?;
+                let ms = busbar_contract::section::entry_timeout_ms(written).ok()?;
+                Some((entry.clone(), ms))
+            })
+            .collect();
         DoorPools {
             entries,
             pools,
             fallbacks,
             member_granted,
+            timeouts,
         }
+    }
+
+    /// The attempt bound of `entry`'s member, milliseconds: its reserved `timeout:`; `None` = the
+    /// walk's own budget bounds it.
+    #[must_use]
+    pub fn timeout_ms(&self, entry: &str) -> Option<u64> {
+        self.timeouts.get(entry).copied()
     }
 
     /// The route an arrival named (ARCHITECT Q-SW6 amended by Q-FL3): a POOL route walks the named
@@ -1002,7 +1027,11 @@ pub fn compose_egress(
             .map_err(|e| format!("member '{entry}': its private reach could not be sealed: {e}"))?;
         let destination = busbar_contract::dest::DestinationId::new(id);
         let name = plane_lane(&facts.plane, entry);
-        members.insert(entry.clone(), Member::new(destination, name.clone(), 1));
+        // The member's attempt bound is its entry's `timeout:` (ARCHITECT timeout ruling): every
+        // attempt the walk makes to it, alone or in a pool, is held to it.
+        let mut member = Member::new(destination, name.clone(), 1);
+        member.attempt_timeout_ms = pools.timeout_ms(entry);
+        members.insert(entry.clone(), member);
         sealed.insert(destination, route);
         names.push((destination, name));
     }

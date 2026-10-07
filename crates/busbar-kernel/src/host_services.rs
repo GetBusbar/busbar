@@ -58,7 +58,7 @@ use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::RecordStore;
 use busbar_contract::services::{
-    merge_list, Caller, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    merge_list, Caller, DiskDest, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
 };
 
 /// The refusal of a record write past the write queue's bound.
@@ -72,7 +72,9 @@ use crate::host_work::{
     WorkBook, WorkBounds, WORK_SCHEMA,
 };
 use crate::plane::quarantine::DemotionRecord;
-use crate::trust::book::{Effect, Sight, TrustBook, Unjudged};
+use crate::trust::book::{
+    Decision, Distrust, Effect, KeyRow, KeyState, Sight, TrustBook, TrustFacts, Undecided, Unjudged,
+};
 use crate::trust::section::TrustEntry;
 use crate::trust::signed;
 
@@ -558,6 +560,8 @@ pub struct KernelServices {
     /// over its live snapshot; unattached, the principal admitted is the one judged.
     standing: OnceLock<Standing>,
     nested: Arc<crate::pump::NestedPool>,
+    /// The bounded disk lane `disk.append` runs on (THE DESIGN §11.11 R4).
+    disk: crate::host_disk::DiskLane,
     /// THE OPEN CARRIER SESSIONS (`session.emit`), by number: the instance each serves, its
     /// verified principal and the writer its unsolicited output goes to.
     sessions: Mutex<HashMap<u64, CarrierSession>>,
@@ -634,6 +638,7 @@ impl KernelServices {
                 NEST_CONCURRENCY,
                 NEST_DEPTH_MAX as usize + 1,
             )),
+            disk: crate::host_disk::DiskLane::default(),
             sessions: Mutex::default(),
         }
     }
@@ -854,6 +859,16 @@ impl KernelServices {
             |d| (d.record.list(), *d.default_instance == *instance),
         );
         let mut instances = self.lock_instances();
+        // The operator's kept trust decisions replay at the instance's FIRST admit only: a re-admit
+        // keeps them in its state, and one whose declared pin changed is the operator's re-approval.
+        let decided = if instances.contains_key(instance) {
+            Vec::new()
+        } else {
+            self.demotions
+                .get()
+                .map(|d| d.record.decisions())
+                .unwrap_or_default()
+        };
         if let Some(domain) = facts.signing.as_ref().map(|s| s.domain.as_str()) {
             let holder = instances.iter().find(|(label, f)| {
                 &***label != instance && f.signing.as_ref().is_some_and(|s| s.domain == domain)
@@ -895,8 +910,76 @@ impl KernelServices {
                 }
             }
         }
+        self.trust.admit_decided(instance, &decided);
         instances.insert(key, Arc::new(facts));
         Ok(())
+    }
+
+    /// THE KERNEL'S APPROVE over the trust facts a plane stated for a unit of `instance`
+    /// ([`TrustBook::judge`]; ARCHITECT 2026-10-06: trust is the kernel's Approve step).
+    ///
+    /// # Errors
+    ///
+    /// The [`Distrust`] that refuses the unit.
+    pub fn trust_judge(&self, instance: &str, facts: &TrustFacts<'_>) -> Result<(), Distrust> {
+        self.trust.judge(instance, facts)
+    }
+
+    /// EVERY TRUST KEY and its state (`GET /api/v1/admin/trust`; [`TrustBook::rows`]).
+    #[must_use]
+    pub fn trust_rows(&self) -> Vec<KeyRow> {
+        self.trust.rows()
+    }
+
+    /// THE OPERATOR'S DECISION about the trust key `key`, `<instance>/<counterparty>[/<item>]`
+    /// (`POST /api/v1/admin/trust/approve` and `/revoke`; [`TrustBook::decide`]): matched against
+    /// the keys [`Self::trust_rows`] lists, so a label or name holding a `/` is never split wrong.
+    /// The decision is kept durably before it answers; approving a counterparty also clears its
+    /// durable demotion. Idempotent.
+    ///
+    /// # Errors
+    ///
+    /// [`TrustRefused::NoSuchKey`] for a key no admitted instance has,
+    /// [`TrustRefused::NothingSighted`] for an approval with nothing to approve at, and
+    /// [`TrustRefused::Store`] (the store's words) when the decision could not be kept.
+    pub fn trust_decide(&self, key: &str, decision: Decision) -> Result<KeyRow, TrustRefused> {
+        let found = self
+            .trust
+            .rows()
+            .into_iter()
+            .find(|r| r.key() == key)
+            .ok_or(TrustRefused::NoSuchKey)?;
+        let (row, fact) = self
+            .trust
+            .decide(
+                &found.instance,
+                &found.counterparty,
+                found.item.as_deref(),
+                decision,
+            )
+            .map_err(|why| match why {
+                Undecided::NoSuchKey => TrustRefused::NoSuchKey,
+                Undecided::NothingSighted => TrustRefused::NothingSighted,
+            })?;
+        if let Some(d) = self.demotions.get() {
+            d.record
+                .keep_decision(&fact, (self.wall_ms)() / 1000)
+                .map_err(TrustRefused::Store)?;
+            if fact.item.is_none() && decision == Decision::Approve {
+                let cleared = |server: &str| {
+                    crate::plane::quarantine::settle(
+                        &d.record,
+                        server,
+                        crate::trust::TrustState::Approved,
+                    );
+                };
+                cleared(&demotion_key(&fact.instance, &fact.counterparty));
+                if *d.default_instance == *fact.instance {
+                    cleared(&fact.counterparty);
+                }
+            }
+        }
+        Ok(row)
     }
 
     /// The record of every unit in flight, which the unit's admission writes and its end removes.
@@ -1282,6 +1365,17 @@ fn span(key_off: usize, key_len: usize, value_off: usize, value_len: usize) -> I
     }
 }
 
+/// Why an operator's trust decision was not made ([`KernelServices::trust_decide`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrustRefused {
+    /// No admitted instance has the key.
+    NoSuchKey,
+    /// The key was never sighted (nor declared) at anything to approve.
+    NothingSighted,
+    /// The decision could not be kept; the store's words, for the node's log.
+    Store(String),
+}
+
 /// The separator between the instance label and the counterparty in a demotion row's key: the
 /// ASCII unit separator, which no configured label carries.
 pub const DEMOTION_SEP: char = '\u{1f}';
@@ -1534,6 +1628,13 @@ impl HostServices for KernelServices {
         Ran::Now(Stored::refused(NO_CREDENTIAL_SOURCE))
     }
 
+    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
+        match self.disk.submit(dest.clone(), bytes, later) {
+            Ok(()) => Ran::Later,
+            Err(report) => Ran::Now(report.stored()),
+        }
+    }
+
     fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
         let open = self
             .sessions
@@ -1572,6 +1673,83 @@ impl HostServices for KernelServices {
             bytes,
             ..Stored::ready(0)
         }
+    }
+
+    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
+        match self.trust.last_verdict(&caller.instance, counterparty) {
+            Ok(sight) => Stored::ready(sight_code(sight)),
+            Err(Unjudged::UnknownInstance) => Stored::refused(NOT_ADMITTED),
+            Err(Unjudged::UnknownCounterparty) => Stored::refused(NOT_A_COUNTERPARTY),
+        }
+    }
+
+    fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
+        let rows: Vec<KeyRow> = self
+            .trust
+            .rows()
+            .into_iter()
+            .filter(|r| *r.instance == *caller.instance && r.counterparty == counterparty)
+            .collect();
+        let Some(whole) = rows.iter().find(|r| r.item.is_none()) else {
+            return Stored::refused(if self.facts(caller).is_some() {
+                NOT_A_COUNTERPARTY
+            } else {
+                NOT_ADMITTED
+            });
+        };
+        let mut stored = Stored::ready(key_code(whole.state));
+        let cap = usize::try_from(MAX_SPANS).unwrap_or(usize::MAX);
+        for row in rows.iter().filter(|r| r.item.is_some()).take(cap) {
+            let item = row.item.as_deref().unwrap_or_default();
+            let value = format!(
+                "{}\0{}\0{}",
+                row.state.word(),
+                row.approved.as_deref().unwrap_or_default(),
+                row.seen.as_deref().unwrap_or_default()
+            );
+            let off = stored.bytes.len();
+            stored.bytes.extend_from_slice(item.as_bytes());
+            stored.bytes.extend_from_slice(value.as_bytes());
+            stored
+                .spans
+                .push(span(off, item.len(), off + item.len(), value.len()));
+        }
+        stored
+    }
+
+    fn trust_sight_item(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Stored {
+        match self
+            .trust
+            .sight_item(&caller.instance, counterparty, item, digest)
+        {
+            Ok(sight) => Stored::ready(sight_code(sight)),
+            Err(Unjudged::UnknownInstance) => Stored::refused(NOT_ADMITTED),
+            Err(Unjudged::UnknownCounterparty) => Stored::refused(NOT_A_COUNTERPARTY),
+        }
+    }
+
+    fn trust_serves(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        let facts = TrustFacts {
+            counterparty,
+            item,
+            digest,
+        };
+        Stored::ready(match self.trust.judge(&caller.instance, &facts) {
+            Ok(()) => svc::DISTRUST_NONE,
+            Err(why) => distrust_code(why),
+        })
     }
 
     fn trust_due(&self, caller: &Caller) -> Stored {
@@ -1902,3 +2080,40 @@ mod trust_verify_tests;
 #[cfg(test)]
 #[path = "tests/host_nest_tests.rs"]
 mod host_nest_tests;
+
+/// The `KEY_*` value (`trust.state`) a [`KeyState`] is answered as.
+#[must_use]
+pub fn key_code(state: KeyState) -> u64 {
+    match state {
+        KeyState::New => svc::KEY_NEW,
+        KeyState::Same => svc::KEY_SAME,
+        KeyState::Drifted => svc::KEY_DRIFTED,
+        KeyState::Quarantined => svc::KEY_QUARANTINED,
+        KeyState::Approved => svc::KEY_APPROVED,
+    }
+}
+
+/// The `TRUST_*` sighting verdict a [`Sight`] is answered as.
+#[must_use]
+pub fn sight_code(sight: Sight) -> u64 {
+    match sight {
+        Sight::New => svc::TRUST_NEW,
+        Sight::Same => svc::TRUST_SAME,
+        Sight::Drifted => svc::TRUST_DRIFTED,
+        Sight::Quarantined => svc::TRUST_QUARANTINED,
+    }
+}
+
+/// The `DISTRUST_*` code (the one trust vocabulary: `trust.serves`'s value and a refused unit's
+/// `RefusalIn::trust`) a [`Distrust`] is.
+#[must_use]
+pub fn distrust_code(why: Distrust) -> u64 {
+    match why {
+        Distrust::Unknown => svc::DISTRUST_UNKNOWN,
+        Distrust::Unsighted => svc::DISTRUST_UNSIGHTED,
+        Distrust::Quarantined => svc::DISTRUST_QUARANTINED,
+        Distrust::NotApproved => svc::DISTRUST_NOT_APPROVED,
+        Distrust::Changed => svc::DISTRUST_CHANGED,
+        Distrust::UnknownItem => svc::DISTRUST_UNKNOWN_ITEM,
+    }
+}

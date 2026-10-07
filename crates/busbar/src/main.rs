@@ -296,8 +296,9 @@ fn register_planes() {
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
     // manifest note on the `busbar-core-oauth2` dependency), before any config loads. Mirrors
     // `install_planes` immediately above for the same reason: one composition root, one
-    // registration, before the first `App` is built.
-    busbar_core_oauth2::install();
+    // registration, before the first `App` is built. Its document fetch rides the one connector,
+    // read when a fetch needs it (`root::connector::AuthServerConns`).
+    busbar_core_oauth2::install::<root::connector::AuthServerConns>();
     // Register the admin API service's mount seam (`busbar_kernel::admin::seam`) — the composition
     // root is the one place entitled to name `busbar-admin`, exactly as it names `busbar-core-oauth2`
     // above. Unconditional: the admin surface carries no feature flag at this layer; core mounts it
@@ -333,6 +334,12 @@ static WORKERS: std::sync::LazyLock<(usize, Vec<String>)> =
     std::sync::LazyLock::new(resolve_worker_threads);
 
 fn main() {
+    // THE `log` BRIDGE, before anything can run a compiled-in plugin's door: that door's call
+    // capture installs the same `LogTracer` in this image on first use, so the host takes the one
+    // `log` logger slot first (`observability::init_log_bridge`). The subscriber goes up in `run()`.
+    if let Err(e) = busbar_kernel::observability::init_log_bridge() {
+        eprintln!("busbar: the `log` bridge is not installed: {e}");
+    }
     // THE PROCESS'S ONE DISPATCHER, first: full-size (one plugin worker per data worker) before any
     // plugin of any kind binds — the planes and transports registered just below included — and
     // handed to the transport doors (`root::doors`), which bind on it.
@@ -617,7 +624,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // request-path logging is captured.
     // `--mcp-stdio` reserves stdout for the MCP channel, so its logs move to stderr — see
     // `init_logging`'s `stdout_reserved`.
-    busbar_kernel::observability::init_logging(stdio_serve_requested(std::env::args()));
+    if let Err(e) =
+        busbar_kernel::observability::init_logging(stdio_serve_requested(std::env::args()))
+    {
+        eprintln!("busbar: tracing subscriber already initialized: {e}");
+    }
 
     // First line in the logs: which build is running. Operators need this to confirm a deploy /
     // correlate logs to a release without shelling in to run `--version`.
@@ -1109,6 +1120,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                 units.admin.records = Some(root::units_admin::live_records(std::sync::Arc::clone(
                     &app_handle,
                 )));
+                // ARCHITECT 2026-10-06: the trust verbs read and decide over the kernel's trust
+                // book — the composed services, reached through the late install.
+                let late = std::sync::Arc::clone(&late_services);
+                units.admin.trust = std::sync::Arc::new(move || late.kernel());
                 // The root breaker is the kernel's own: one cell set on the node, read through the
                 // live snapshot so an apply's rebuilt store is the one it observes into.
                 units.breaker = root::adapters::BreakerAdapter::over_kernel(

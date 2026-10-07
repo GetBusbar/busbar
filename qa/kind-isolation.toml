@@ -443,13 +443,6 @@ kind = "plane"
 crate = "busbar-llm"
 kind = "transport"
 
-
-
-
-[[cell]]
-crate = "busbar-core-oauth2"
-kind = "plane"
-
 [[cell]]
 crate = "busbar-plane-a2a"
 kind = "legacy"
@@ -509,9 +502,6 @@ kind = "store"
 [[cell]]
 crate = "busbar-store-memory"
 kind = "plane"
-
-
-
 
 [[cell]]
 crate = "busbar-transport-stdio"

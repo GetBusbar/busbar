@@ -170,11 +170,10 @@ subject_write_config() {
 {}
 YAML
   cat > "$dir/config.yaml" <<YAML
-# The store is named (Q-STORE (B): a config with no store: block is refused); the RAM store is what a
-# 1.5.x config without one ran on.
-store: { module: memory }
 listen: "127.0.0.1:$data_port"
 admin_listen: "127.0.0.1:$admin_port"
+# A config names its store (Q-STORE = (B), THE DESIGN §4): the compiled-in RAM store.
+store: { module: memory }
 providers: {}
 models: {}
 pools: {}
