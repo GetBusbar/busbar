@@ -250,9 +250,17 @@ fn mount(cx: &Ctx) -> Arc<Overlay> {
             for (rel, text) in crate_files(&p.dir) {
                 ov.set(format!("{at}/{rel}"), text);
             }
+            // Only the twin's Rust sources are laid, and no manifest: a laid twin is two facts
+            // about its logic crate, never a crate the census could discover on its own.
             if let Some(twin) = twin_of(p) {
                 for (rel, text) in crate_files(&twin) {
-                    ov.set(format!("{}/{rel}", twin_dir(&p.name)), text);
+                    let source = rel.ends_with(".rs")
+                        && ["src/", "examples/", "tests/"]
+                            .iter()
+                            .any(|d| rel.starts_with(d));
+                    if source {
+                        ov.set(format!("{}/{rel}", twin_dir(&p.name)), text);
+                    }
                 }
             }
         }

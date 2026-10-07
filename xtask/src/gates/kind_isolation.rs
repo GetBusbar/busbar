@@ -4007,7 +4007,10 @@ fn live_battery_entries(text: &str) -> (usize, usize) {
     let is_attr = |l: &String| l.trim_start().starts_with("#[");
     let (mut live, mut ignored) = (0usize, 0usize);
     for (i, l) in lines.iter().enumerate() {
-        if !l.trim_start().starts_with("#[test]") {
+        // An async entry is an entry: `#[tokio::test]` (with or without its runtime arguments) is a
+        // test `cargo test` runs exactly as it runs `#[test]`.
+        let t = l.trim_start();
+        if !(t.starts_with("#[test]") || t.starts_with("#[tokio::test")) {
             continue;
         }
         let mut lo = i;
@@ -9968,6 +9971,18 @@ impl Gate for KindIsolationGate {
             format!("{twin}/tests/conformance.rs"),
             "#[test]\n#[ignore = \"not yet\"]\nfn the_suite() {}\n",
         );
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{twin}/tests/conformance.rs"),
+            "#[tokio::test(flavor = \"multi_thread\")]\nasync fn the_suite() {}\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a pinned repo whose twin's battery is an async test runs its battery",
+            &[ROW_TESTKIT],
+            ov,
+        ));
         report.push(prove_rows_red(
             cx,
             subject,
