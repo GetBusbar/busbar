@@ -24,36 +24,31 @@
 //! | the correlated response | returned to the caller; the exchange ends |
 //! | a notification busbar knows | the effect in [`NotificationEffect`], then keep reading |
 //! | a notification busbar does not know | counted and dropped, then keep reading — never adopted |
-//! | a request busbar knows | ANSWERED on the child's stdin, then keep reading |
+//! | `ping` | ANSWERED on the child's stdin, then keep reading |
+//! | a granted authority ask | RELAYED to busbar's caller, who answers it (Law 11) |
+//! | an ungranted authority ask | refused on the child's stdin, then keep reading |
 //! | a request busbar does not know | answered `-32601`, then keep reading |
 //!
 //! A request left unanswered is a child blocked forever on a reply, which presents as a hang — the
 //! same failure mode a piped-and-undrained stderr produces, and it is refused for the same reason.
 //!
-//! ## THE THREE AUTHORITY ASKS ARE DENY-BY-DEFAULT, AND THEY TERMINATE HERE
+//! ## THE THREE AUTHORITY ASKS ARE THE CALLER'S, BEHIND A DENY-BY-DEFAULT GRANT
 //!
-//! `sampling/createMessage`, `elicitation/create` and `roots/list` are the three ways a peer asks
-//! busbar to spend BUSBAR'S own authority: an LLM completion on busbar's pools and budget, a human's
-//! attention, and the disclosure of filesystem structure. Arriving over a child's stdout does not
-//! make them cheaper than arriving inline in an `InputRequiredResult`, so they get the same gate:
-//! `super::jsonrpc::ServerRequestGrants`, all-false unless an operator set them.
+//! `sampling/createMessage`, `elicitation/create` and `roots/list` are asks for something only the
+//! caller has: an LLM completion, a human's attention, the disclosure of filesystem structure.
+//! Busbar answers none of them on the caller's behalf (Law 11): a granted ask goes to the caller of
+//! the call the child is serving as plane traffic (BUSBAR-1.6.0 Part 3 B.3 item 10), and the
+//! caller's answer comes back to the child under its own request id. Arriving over a child's stdout
+//! does not make an ask cheaper than arriving inline in an `InputRequiredResult`, so it gets the
+//! same gate: `super::jsonrpc::ServerRequestGrants`, all-false unless an operator set them, read as
+//! a RELAY PERMISSION.
 //!
-//! And they get the same TWO REFUSALS the server plane already distinguishes
-//! (the engine's `mcp::method`'s satisfier), because "it was refused" tells an operator nothing about
-//! which thing refused it:
-//!
-//! - **[`AskOutcome::Ungranted`]** — the operator has not granted this server that authority. The
+//! - **[`AskOutcome::Relay`]** — the operator lets this server put that ask to its callers.
+//! - **[`AskOutcome::Ungranted`]** — it does not. The ask is refused on the child's input
+//!   (`ask_ungranted`): busbar enforcing the operator's policy, not answering for the caller. The
 //!   remedy is `tools.<server>.grants.<kind>: true`.
-//! - **[`AskOutcome::Unsatisfiable`]** — the grant IS held and busbar has no satisfier for that ask
-//!   on this leg. The remedy is not a config key, and telling an operator to set one they have
-//!   already set is worse than saying nothing.
 //!
-//! Both are refusals; neither is ever PROXIED OUTWARD to busbar's own caller. That is the rule
-//! `super::jsonrpc`'s header states and it does not weaken because the peer is local: proxying it
-//! would launder a child process's demand for authority through the party the caller actually
-//! trusts.
-//!
-//! ## `ping` IS ANSWERED, and it is the one that is not a gate
+//! ## `ping` IS ANSWERED, and it is the one that is not an ask
 //!
 //! A ping carries no authority, discloses nothing, and its whole purpose is to let a peer tell a
 //! live process from a wedged one. Refusing it would make busbar look dead to every child that
@@ -79,12 +74,12 @@ use super::jsonrpc::ServerRequestGrants;
 /// specification's, not busbar's, so there is no busbar decision here for the two copies to drift on.
 const METHOD_NOT_FOUND: i64 = -32601;
 
-/// The code busbar answers an authority ask it will not satisfy with.
+/// The code busbar refuses an authority ask it will not relay with.
 ///
 /// `-32001`, in the implementation-defined server-error range, and NOT `-32601`: the method is
 /// recognised and implemented, and the answer is a policy decision. Telling a child "no such method"
 /// when the truth is "you may not have that" would send its author looking for a version mismatch.
-const ASK_REFUSED: i64 = -32001;
+pub const ASK_REFUSED: i64 = -32001;
 
 /// ONE MESSAGE A CHILD SENT, classified.
 ///
@@ -299,14 +294,13 @@ fn request_of(method: &str) -> Option<ServerRequestVerb> {
     })
 }
 
-/// WHY an authority ask was answered the way it was. Two refusals, deliberately distinguishable —
-/// see the module header for the two different operator remedies.
+/// WHAT BECOMES OF an authority ask: relayed to the caller, or refused by the operator's grant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AskOutcome {
+    /// The grant is held: the ask goes to busbar's caller, who answers it.
+    Relay,
     /// No grant. The remedy is `tools.<server>.grants.<kind>: true`.
     Ungranted,
-    /// The grant is held and busbar has no satisfier for this ask on this leg.
-    Unsatisfiable,
 }
 
 /// DECIDE an authority ask against the operator's per-server grants.
@@ -317,41 +311,50 @@ pub enum AskOutcome {
 /// end of a stream that has no end.
 pub fn decide_ask(ask: super::jsonrpc::ServerAsk, grants: &ServerRequestGrants) -> AskOutcome {
     if grants.allows(ask) {
-        AskOutcome::Unsatisfiable
+        AskOutcome::Relay
     } else {
         AskOutcome::Ungranted
     }
 }
 
-/// THE REPLY BUSBAR WRITES BACK on the child's stdin, as one JSON-RPC response value.
-///
-/// Total over [`ServerRequestVerb`] and over both [`AskOutcome`] arms, so every request a child can
-/// send has an answer and none of them can be reached by forgetting to write one.
+/// THE REPLY BUSBAR WRITES BACK on the child's stdin, as one JSON-RPC response value: `ping`'s empty
+/// result, or an ungranted ask's refusal. `None` for a granted ask: it is the caller's to answer,
+/// and busbar writes nothing in its place (Law 11).
 pub fn answer(
     id: &serde_json::Value,
     verb: ServerRequestVerb,
     grants: &ServerRequestGrants,
     server: &str,
-) -> serde_json::Value {
+) -> Option<serde_json::Value> {
     let Some(ask) = verb.ask() else {
         // `ping`. An empty result is the whole of the specified answer.
-        return serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": {} });
+        return Some(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": {} }));
     };
     let kind = ask.key();
-    let message = match decide_ask(ask, grants) {
-        AskOutcome::Ungranted => format!(
-            "server `{server}` asked busbar to satisfy `{kind}` and its registry entry carries no \
-             `{kind}` grant; the ask terminates at busbar and is not proxied to busbar's caller. \
-             Set `tools.{server}.grants.{kind}: true` if the operator intends this server to spend \
-             that authority."
-        ),
-        AskOutcome::Unsatisfiable => format!(
-            "busbar holds the `{kind}` grant for server `{server}` but has no satisfier for that \
-             ask on the stdio leg in this release; the ask terminates here and is not proxied to \
-             busbar's caller."
-        ),
-    };
-    error_reply(id, ASK_REFUSED, message)
+    match decide_ask(ask, grants) {
+        AskOutcome::Relay => None,
+        AskOutcome::Ungranted => Some(refused(
+            id,
+            "ask_ungranted",
+            format!(
+                "server `{server}` asked for `{kind}` and its registry entry carries no `{kind}` \
+                 grant, so the ask is not relayed to busbar's caller. Set \
+                 `tools.{server}.grants.{kind}: true` if the operator intends this server to put \
+                 that ask to its callers."
+            ),
+        )),
+    }
+}
+
+/// A REFUSAL of an ask of the child's own, written on its input: `-32001`, `message`, and the audit
+/// reason word in `data` (the operator's grant, the round cap, or a relay the deployment cannot
+/// carry).
+pub fn refused(id: &serde_json::Value, reason: &str, message: String) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": { "code": ASK_REFUSED, "message": message, "data": { "reason": reason } },
+    })
 }
 
 /// The `-32601` a child gets for a request busbar does not implement.

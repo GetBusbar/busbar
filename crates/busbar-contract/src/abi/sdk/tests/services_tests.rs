@@ -81,6 +81,8 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         trust_sight_item: None,
         trust_serves: None,
         trust_decide: None,
+        trust_state: None,
+        session_emit: None,
     }
 }
 

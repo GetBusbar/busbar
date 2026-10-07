@@ -72,8 +72,8 @@ fn the_configuration_schema_is_a_document() {
 #[test]
 fn every_class_is_reachable_from_the_vocabulary() {
     for op in McpPlane::OP_CLASSES {
-        let from_a_method = crate::ops::METHODS.iter().any(|m| m.op == *op);
-        let from_a_notice = *op == crate::ops::OP_NOTIFICATION;
+        let from_a_method = crate::tool_ops::METHODS.iter().any(|m| m.op == *op);
+        let from_a_notice = *op == crate::tool_ops::OP_NOTIFICATION;
         assert!(
             from_a_method || from_a_notice,
             "{op} is declared but nothing produces it"

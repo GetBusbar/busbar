@@ -27,9 +27,12 @@ path = "src/lib.rs"
 # THE TEST-LINKED PLANES (SEAM-T, N02 ruling): the dev-dependency plane crates the cross-plane
 # integration tests install and loop. build.rs emits `$OUT_DIR/test_linked.rs` from this list and
 # `tests/linked/mod.rs` includes it, so the tests' sources name none of these crates; they address a
-# plane by what its declaration states, read back from the registry.
+# plane by what its declaration states, read back from the registry. A `door:` row is a plane crate
+# served through its memory-ABI door only: build.rs emits its `plane_door::door` and
+# `tests/linked/mod.rs` folds its registry row from its Statement, as the composition root does
+# (`root::linked::door_rows`). The list is the install order (the planes' layering order).
 [package.metadata.busbar]
-test-linked = ["busbar-llm", "busbar-mcp", "busbar-a2a"]
+test-linked = ["busbar-llm", "busbar-a2a"]
 
 [dependencies]
 # ── ABSORBED from the pre-1.6.0 busbar-kernel crate (W4.a #19/#37) ────────────────────────────────
@@ -250,7 +253,7 @@ jsonrpc-ingress = []
 # FORWARDS to substrate: the relocated `admin::v1` data helpers (`NamedDefView`'s `schemars` derive
 # and `set_response_schema`) live behind substrate's matching feature, and core re-exports them, so
 # enabling this must enable substrate's so the re-exported view keeps its schema impl in lock-step.
-openapi-schema = ["dep:schemars", "busbar-llm/openapi-schema", "busbar-mcp/openapi-schema", "busbar-a2a/openapi-schema"]
+openapi-schema = ["dep:schemars", "busbar-llm/openapi-schema", "busbar-a2a/openapi-schema"]
 loom-model = ["dep:loom"]
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
 # the bin enables it from its [dev-dependencies] edge only. The contract's test double (its warn
@@ -275,7 +278,6 @@ sha2 = { workspace = true }
 # crate's own `--lib` App-tests run there too (v2 resolver feature unification) — the mechanism that
 # keeps the full plane suite in the exact command CI runs, with the dual-compile gone.
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
-busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
 # THE a2a CODEC'S EDGE IS GONE WITH THE CRATE (#39). Its batteries did not go with it: the RFC 8785
 # canonicalization vectors and the anomaly cells are `busbar-plane-a2a`'s now and are UNCONDITIONAL
 # there (a plane is featureless on purpose), so `cargo test --workspace` runs them without any edge

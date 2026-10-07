@@ -117,7 +117,9 @@ use busbar_contract::services::{
 
 mod outbound;
 
-pub use outbound::{red_outbound_double_fetch, red_outbound_wrong_byte};
+pub use outbound::{
+    red_outbound_double_fetch, red_outbound_writes_nothing, red_outbound_wrong_byte,
+};
 
 use super::{
     bind_far, called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh,

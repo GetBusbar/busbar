@@ -56,6 +56,18 @@ fn the_need_is_the_tails() {
     assert_eq!(STATEMENT.sections_len, 1 + tail::SECTIONS_CONSUMED.len());
 }
 
+/// `validate` reads the blob stage 3g deals (`{decisions: <section>}`): the section inside it is
+/// judged (a typo refused), a blob that writes no `decisions:` is the empty section, and the bare
+/// section is not the dealt shape.
+#[test]
+fn validate_reads_the_dealt_blob_at_its_section() {
+    assert!(read_dealt(b"").is_ok());
+    assert!(read_dealt(br#"{}"#).is_ok());
+    assert!(read_dealt(br#"{"decisions":{"models":{"jev":{"provider":"typesafe"}}}}"#).is_ok());
+    assert!(read_dealt(br#"{"decisions":{"modles":{}}}"#).is_err());
+    assert!(read_dealt(br#"[]"#).is_err());
+}
+
 /// THE SPEC'S BLOB SHAPE (`BUSBAR-1.6.0.md` section 4): the section under its own verb, `{decisions:
 /// <section>}`, is read as the section; so is the bare section; and the wrapped section is judged
 /// by the same grammar (a typo inside it is refused, naming the member).
