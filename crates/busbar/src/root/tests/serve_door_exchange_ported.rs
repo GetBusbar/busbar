@@ -761,26 +761,19 @@ async fn every_credential_carrier_is_admitted_and_a_bad_one_reads_the_native_401
 /// same-dialect request, end to end.
 const FORWARD_PASSTHROUGH_MAX_ALLOCS: u64 = 107;
 
-/// The process's allocation requests so far, as jemalloc counts them (every arena, small and large).
-#[cfg(not(target_env = "msvc"))]
-fn allocation_requests() -> Result<u64, String> {
-    use tikv_jemalloc_ctl::{epoch, Access as _, AsName as _};
-    epoch::advance().map_err(|e| format!("epoch: {e}"))?;
-    let read = |name: &'static [u8]| -> Result<u64, String> {
-        name.name().read().map_err(|e| format!("{e}"))
-    };
-    Ok(read(b"stats.arenas.4096.small.nrequests\0")?
-        + read(b"stats.arenas.4096.large.nrequests\0")?)
-}
-
 /// One warmed same-dialect request through the door, end to end, stays under the committed
-/// allocation bound.
+/// allocation bound. Measured as the legacy gate measured it: this test binary's global allocator
+/// is the kernel's per-thread allocation counter over jemalloc (`main.rs`, `cfg(test)` only), the
+/// runtime is one thread (so the far end and the egress run on the measured thread), the front
+/// door is open and no hook is bound (the legacy gate drove the engine with neither), and the
+/// minimum over four warmed requests is the measure.
 ///
 /// Ports legacy `crates/busbar-llm/src/engine/tests/alloc_gate_tests.rs::alloc_gate_openai_passthrough_forward`.
 #[cfg(not(target_env = "msvc"))]
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "DIVERGENCE: the root binary has no allocation counter (its jemalloc is built without stats, so stats.arenas.*.nrequests is unknown); the 107-allocation whole-path bound cannot be measured on the door path until the root arms one"]
+#[ignore = "QUESTION: measured on the door, one warmed same-dialect request allocates 694 times (min of four, open door, no hook), over the legacy bound 107 the legacy engine met; the bound is not raised here"]
 async fn one_warmed_same_dialect_request_stays_under_the_allocation_bound() {
+    use busbar_kernel::test_support::counting_alloc;
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "door-ported-alloc";
     let _published = Withdrawn(instance);
@@ -789,17 +782,32 @@ async fn one_warmed_same_dialect_request_stays_under_the_allocation_bound() {
         instance,
         RigOpts {
             members: &[(far.port, 1)],
+            open: true,
+            hookless: true,
             ..RigOpts::default()
         },
     )
     .await;
-    assert_eq!(rig.chat().await.0, 200, "the warm-up");
+    let body = || {
+        serde_json::to_vec(&serde_json::json!({"model": "p", "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}]}))
+        .expect("json")
+    };
+    let ct = ("content-type", "application/json");
+    let (status, _, answer) = raw(&rig, "/v1/chat/completions", &[ct], body()).await;
+    assert_eq!(
+        status,
+        200,
+        "the warm-up: {}",
+        String::from_utf8_lossy(&answer)
+    );
     let mut min = u64::MAX;
     for _ in 0..4 {
-        let before = allocation_requests().expect("the allocator counts its allocations");
-        assert_eq!(rig.chat().await.0, 200);
-        let after = allocation_requests().expect("the allocator counts its allocations");
-        min = min.min(after - before);
+        counting_alloc::reset();
+        let (status, _, _) = raw(&rig, "/v1/chat/completions", &[ct], body()).await;
+        let allocations = counting_alloc::count();
+        assert_eq!(status, 200);
+        min = min.min(allocations);
     }
     println!("door same-dialect request: min allocations = {min}");
     assert!(

@@ -484,9 +484,6 @@ struct UnitState {
     started: Option<u64>,
     /// The answer the driver's re-call is owed.
     pending: Option<Pending>,
-    /// `project` found the body unreadable: the unit's refusal reads the previous release's
-    /// unreadable-body sentence.
-    unreadable: bool,
     /// The far end's last cumulative counts, as the unit last reported them.
     reported: Vec<UnitCount>,
     /// The caller was answered under a success status: the request's fee unit was incurred.
@@ -506,7 +503,6 @@ impl UnitState {
             reply: None,
             started: None,
             pending: None,
-            unreadable: false,
             reported: Vec::new(),
             fee: false,
         }
@@ -1325,9 +1321,7 @@ slot!(
                 // A model that resolved to no destination reads the previous release's not-found
                 // sentence, which names the model the caller asked for; every other refusal reads
                 // the kernel's own text.
-                let unreadable = held.as_ref().is_some_and(|u| u.unreadable);
                 let text = match arrived {
-                    _ if unreadable => project::UNREADABLE_BODY_MESSAGE.to_string(),
                     Some(a) if given.reason == crate::refusal::reason::NO_DESTINATION => {
                         refuse::model_not_found(
                             &a.model,
@@ -1413,8 +1407,8 @@ slot!(
     /// the host's arena and its turns in the host's turn buffer; with a request-stage hook's
     /// rewrite, the rewrite applied to the unit's request first (kept as the unit's request, so
     /// every attempt is written from it), the rewritten body answered and THAT body projected. A
-    /// body the operation's reader refuses is REFUSED, and the unit's refusal then reads the
-    /// previous release's unreadable-body sentence.
+    /// body the operation's reader cannot read projects nothing: an arrived unit is never refused
+    /// here.
     Project, ProjectIn, ProjectOut, |instance, input, mut out| {
         let Some(door) = instance.get() else {
             return Outcome::Failed;
@@ -1431,15 +1425,7 @@ slot!(
         } else {
             project::apply_rewrite(arrived, rewrite)
         };
-        let view = match project::project(arrived) {
-            Ok(view) => view,
-            Err(project::Unreadable) => {
-                if let Some(unit) = units.get_mut(&given.unit) {
-                    unit.unreadable = true;
-                }
-                return Outcome::Refused;
-            }
-        };
+        let view = project::project(arrived);
         let dialect = arrived.dialect;
         let pool = arrived.model.clone();
         drop(units);
