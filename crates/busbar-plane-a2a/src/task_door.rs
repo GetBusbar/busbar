@@ -815,8 +815,10 @@ fn refresh_listed<'h>(
                     });
                     return Err(Halt::Pending);
                 }
-                Poll::Ready(answered) => {
-                    let done = (hop.seq, answered);
+                // A listing refused for the agent's unavailable credential made no hop and
+                // refreshes nothing, as the engine's `originate` returned `None` (logged there).
+                Poll::Ready(landed) => {
+                    let done = (hop.seq, landed.ok().flatten());
                     plane.units.with(&unit, |u| {
                         if let Some(u) = u {
                             u.pass.listed = Some(done.clone());

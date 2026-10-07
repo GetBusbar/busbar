@@ -54,9 +54,10 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use busbar_contract::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, RandomIn,
-    ReplyIn, ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, REPLY_ACK,
-    REPLY_BODY, REPLY_END, REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES,
-    UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF, WITHIN_SEPARATOR,
+    ReplyIn, ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn,
+    CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE, REPLY_ACK, REPLY_BODY, REPLY_END, REPLY_HEAD,
+    REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF,
+    WITHIN_SEPARATOR,
 };
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
@@ -134,7 +135,9 @@ impl Answer {
         }
     }
 
-    /// A connection table's refusal, as the plugin reads it.
+    /// A connection table's refusal, as the plugin reads it. An unavailable credential is a refusal
+    /// that names its own cause ([`CAUSE_CREDENTIAL_UNAVAILABLE`] in `value`), so the plugin can
+    /// tell it from the target's, the egress rules' or the far end's.
     const fn of(e: ConnError) -> Self {
         let outcome = match e {
             ConnError::Pending => Outcome::Pending,
@@ -142,9 +145,17 @@ impl Answer {
             ConnError::NotOwner
             | ConnError::UndeclaredNeed
             | ConnError::Refused
-            | ConnError::Unarmed => Outcome::Refused,
+            | ConnError::Unarmed
+            | ConnError::CredentialUnavailable => Outcome::Refused,
         };
-        Self::with(outcome, e.text())
+        let value = match e {
+            ConnError::CredentialUnavailable => CAUSE_CREDENTIAL_UNAVAILABLE,
+            _ => CAUSE_NONE,
+        };
+        Self {
+            value,
+            ..Self::with(outcome, e.text())
+        }
     }
 
     /// A connection table's refusal of `conn`, naming why the connection failed where the table
@@ -941,7 +952,8 @@ extern "C" fn write_request(
                         table.auth_of(id, *need, target)
                     };
                     // A binding re-resolved per request answers this request's handle; one whose
-                    // credential is unavailable refuses the request, nothing presented.
+                    // credential is unavailable refuses the request under its own cause, nothing
+                    // presented.
                     let handle = bound.as_ref().and_then(|b| match &b.per_request {
                         Some(per) => per.handle_now(),
                         None => Some(b.handle),
@@ -950,7 +962,9 @@ extern "C" fn write_request(
                         None => {
                             open_with(table, id, *need, (target, within, member), &h, body, &[])
                         }
-                        Some(_) if handle.is_none() => Conn::Failed(ConnError::Refused),
+                        Some(_) if handle.is_none() => {
+                            Conn::Failed(ConnError::CredentialUnavailable)
+                        }
                         Some(binding) => match auth_request(&binding, &h, target, body, scope) {
                             None => Conn::Failed(ConnError::Refused),
                             Some(request) => {

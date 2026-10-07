@@ -100,9 +100,6 @@ pub enum Opened {
         instead: Option<Vec<u8>>,
         /// The push callback the request carried inline, registered on the task.
         callback: Option<Callback>,
-        /// The task as a request addressing it read it, as the record that holds it (none for a
-        /// task the opening wrote: its writes hold it).
-        read: Option<Write>,
     },
     /// The hop does not go ahead: the caller's whole answer.
     Refused(Reply),
@@ -172,10 +169,8 @@ pub fn open(
     };
     let url = callback.as_ref().map(|c| c.url.as_str());
     let mut addressed = None;
-    let mut read = None;
     for named in identity::named_tasks(req.envelope) {
         if let Some(held) = or_absent(tasks::get(reach, req.caller, named, req.now), None)? {
-            read = tasks::as_read(req.caller, &held);
             addressed = Some(held.row);
             break;
         }
@@ -294,7 +289,6 @@ pub fn open(
         task,
         instead,
         callback,
-        read,
     })
 }
 
@@ -420,47 +414,6 @@ pub fn settle(
         }
     }
     Ok(moved)
-}
-
-/// THE RECORDS A STEP THAT CANNOT REACH THE HOST SEES: nothing but what it is handed, every claim
-/// its own. For a task only the step's own unit is changing: the hop that opened or addressed it,
-/// refused before it dialled, in the same instant.
-struct Unhosted;
-
-impl Records for Unhosted {
-    fn get(&mut self, _: &str, _: &str) -> Result<Option<Vec<u8>>, Halt> {
-        Ok(None)
-    }
-
-    fn list(&mut self, _: &str, _: &str) -> Result<Vec<(String, Vec<u8>)>, Halt> {
-        Ok(Vec::new())
-    }
-
-    fn claim(&mut self, _: &str, _: &str, _: u64) -> Result<bool, Halt> {
-        Ok(true)
-    }
-}
-
-/// END `task` `failed` WITHOUT THE HOST (the door's `refusal` is ticketless): over `opened`, the
-/// records that held the task as its hop's opening left it (the writes the opening made, or the row
-/// it read), `caller`'s task moves to `failed` at `now` as [`settle`] moves it on
-/// [`Settled::Failed`] (the engine's `end_task` under `fail_task`). The record writes, and the row
-/// as it moved (`None`, with no writes, when it could not: a terminal task stays as it is, as the
-/// engine's illegal transition left it).
-#[must_use]
-pub fn fail_unhosted(
-    task: &TaskHop,
-    opened: &[Write],
-    caller: &str,
-    now: u64,
-) -> (Vec<Write>, Option<TaskRow>) {
-    let mut host = Unhosted;
-    let mut seen = tasks::Staged::new(&mut host, opened);
-    let mut out = Vec::new();
-    match settle(&mut seen, task, &Settled::Failed, caller, now, &mut out) {
-        Ok(Some(row)) => (out, Some(row)),
-        _ => (Vec::new(), None),
-    }
 }
 
 #[cfg(test)]

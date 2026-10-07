@@ -58,7 +58,7 @@ impl<'a> HostWire<'a> {
 
 /// The connection error a host refusal names: its text is the table's own (`ConnError::text`).
 fn error_of(f: &ConnFailure) -> ConnError {
-    const ALL: [ConnError; 8] = [
+    const ALL: [ConnError; 9] = [
         ConnError::Pending,
         ConnError::Timeout,
         ConnError::Closed,
@@ -67,11 +67,13 @@ fn error_of(f: &ConnFailure) -> ConnError {
         ConnError::Refused,
         ConnError::Fault,
         ConnError::Unarmed,
+        ConnError::CredentialUnavailable,
     ];
     match f {
         ConnFailure::Unarmed => ConnError::Unarmed,
         ConnFailure::NoTicket => ConnError::Pending,
         ConnFailure::Fault => ConnError::Fault,
+        ConnFailure::CredentialUnavailable => ConnError::CredentialUnavailable,
         ConnFailure::Failed(t) => ALL
             .into_iter()
             .find(|e| e.text() == t)

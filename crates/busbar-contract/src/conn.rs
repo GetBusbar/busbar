@@ -139,6 +139,10 @@ pub enum ConnError {
     /// The plugin was handed no connection table: its host's open/refresh tables gave THIS instance
     /// none. Decided per instance, never per image.
     Unarmed,
+    /// The credential the request is sent with, re-resolved for this request, is unavailable:
+    /// nothing was presented and nothing was sent. A cause of its own so the plugin can tell a
+    /// vanished secret from a refusal by the target, the egress rules or the far end.
+    CredentialUnavailable,
 }
 
 impl ConnError {
@@ -154,6 +158,9 @@ impl ConnError {
             Self::Refused => "the connection was refused",
             Self::Fault => "the host failed the connection call",
             Self::Unarmed => "this plugin was handed no connection table",
+            Self::CredentialUnavailable => {
+                "the request's credential is unavailable; nothing was sent"
+            }
         }
     }
 }

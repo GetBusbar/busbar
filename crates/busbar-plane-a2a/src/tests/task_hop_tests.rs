@@ -577,7 +577,7 @@ fn a_far_end_id_equal_to_busbars_needs_no_translation() {
     let (_, instead) = hop(opened_with(&mut desk, &get_task, ALICE, &same));
     assert_eq!(instead, None, "the caller's bytes go on unchanged");
 }
-// ── a hop the kernel refused before it dialled: the task ended without the host ────────────────
+// ── a hop the kernel refused before it dialled ─────────────────────────────────────────────────
 
 /// Open `envelope` for Alice at 300: what opened, and the record writes the opening made (applied).
 fn opened_writing(desk: &mut Desk, envelope: &Value) -> (Opened, Vec<Write>) {
@@ -594,81 +594,71 @@ fn opened_writing(desk: &mut Desk, envelope: &Value) -> (Opened, Vec<Write>) {
     (opened, out)
 }
 
-/// RED-BEFORE-GREEN for the credential refusal (`credential_unavailable`): the door's `refusal` is
-/// ticketless, so it ends the task over the records the hop's opening left, never the host. Those
-/// writes are byte-for-byte the ones [`settle`] makes over the host itself on `Settled::Failed`
-/// (the engine's `fail_task`): for a task the hop minted (its opening's writes hold it), and for one
-/// a request addressed (the row the opening read holds it); a task already terminal stays as it is,
-/// nothing written, as the engine's illegal transition left it.
-#[test]
-fn a_task_ended_without_the_host_is_written_as_the_host_would_end_it() {
-    // MINTED: the opening wrote it.
-    let mut d = desk();
-    let (fresh, writes) = opened_writing(&mut d, &send(json!({})));
-    let Opened::Hop { task, read, .. } = fresh else {
-        panic!("refused");
-    };
-    assert_eq!(
-        read, None,
-        "a minted task is held by the opening's own writes"
-    );
-    let (unhosted, moved) = fail_unhosted(&task, &writes, ALICE, 300);
-    let mut hosted = Vec::new();
-    let row = settle(
-        &mut d.book,
-        &task,
-        &Settled::Failed,
-        ALICE,
-        300,
-        &mut hosted,
-    )
-    .unwrap()
-    .expect("it moved");
-    assert!(!unhosted.is_empty());
-    assert_eq!(
-        unhosted, hosted,
-        "the same writes the host's own settle makes"
-    );
-    assert_eq!(moved.as_ref(), Some(&row));
-    assert_eq!(row.state, "failed");
+// ── a refused hop's task end, racing another writer of the task ───────────────────────────────
 
-    // ADDRESSED: the opening wrote nothing; the row it read holds the task.
+/// End the refused hop's `task` failed, as the door ends it on the refused piece, on the unit's
+/// own ticket: [`settle`] on `Settled::Failed` over the host's records (`plane_door::settle_task`).
+fn ended_on_refusal(d: &mut Desk, task: &TaskHop) -> Vec<Write> {
+    let mut out = Vec::new();
+    settle(&mut d.book, task, &Settled::Failed, ALICE, 300, &mut out).unwrap();
+    out
+}
+
+/// A HOP REFUSED FOR AN UNAVAILABLE CREDENTIAL ENDS ITS TASK WITHOUT LOSING ANOTHER WRITER'S
+/// CHANGE (the engine's `end_task`, origin/predev `crates/busbar-a2a/src/a2a/receive.rs:3485-3500`:
+/// `TASKS.transition` under the task's own lock, `crates/busbar-kernel/src/plane/handle_engine.rs:
+/// 711-736`). Another unit moves the addressed task between the hop's opening and its refusal; the
+/// end is chained after that move: the other writer's event stands, the failure is the next one,
+/// and the task as held is failed with the chain's tail on the failure.
+#[test]
+fn a_refused_hops_task_end_keeps_a_concurrent_writers_change() {
     let mut d = desk();
     let get_task =
         json!({ "jsonrpc": "2.0", "id": 7, "method": "GetTask", "params": { "id": "t1" } });
-    let (addressed, writes) = opened_writing(&mut d, &get_task);
-    let Opened::Hop { task, read, .. } = addressed else {
+    let (addressed, _) = opened_writing(&mut d, &get_task);
+    let Opened::Hop { task, .. } = addressed else {
         panic!("refused");
     };
-    assert!(task.addressed);
-    assert!(writes.is_empty());
-    let read = read.expect("the addressed task's row, as read");
-    let (unhosted, moved) = fail_unhosted(&task, std::slice::from_ref(&read), ALICE, 300);
-    // RED: with nothing handed to it, the step cannot see the task and ends nothing.
-    assert_eq!(fail_unhosted(&task, &[], ALICE, 300), (Vec::new(), None));
-    let mut hosted = Vec::new();
-    settle(
-        &mut d.book,
-        &task,
-        &Settled::Failed,
-        ALICE,
-        300,
-        &mut hosted,
-    )
-    .unwrap();
-    assert_eq!(unhosted, hosted);
-    assert_eq!(moved.expect("it moved").state, "failed");
+    let next = get(&mut d.book, ALICE, "t1", 300)
+        .unwrap()
+        .unwrap()
+        .next_seq;
 
-    // TERMINAL: already ended, so nothing moves and nothing is written.
-    d.book.apply(&hosted);
-    let mut read_again = Vec::new();
-    let held = get(&mut d.book, ALICE, "t1", 300).unwrap().unwrap();
-    read_again.extend(crate::tasks::as_read(ALICE, &held));
+    // ANOTHER UNIT moves the task while the refused hop is handled: it wins the next sequence.
+    let mut theirs = Vec::new();
+    let other = Step {
+        caller: ALICE,
+        request_id: "another-unit",
+        now: 300,
+    };
+    crate::tasks::transition(&mut d.book, &other, "t1", TaskState::Working, &mut theirs)
+        .unwrap()
+        .expect("it moved");
+    d.book.apply(&theirs);
+    let their_event = d
+        .book
+        .value(KIND_TASK_EVENT, &event_key(ALICE, "t1", next))
+        .cloned()
+        .expect("their event");
+
+    let ours = ended_on_refusal(&mut d, &task);
+    d.book.apply(&ours);
+
     assert_eq!(
-        fail_unhosted(&task, &read_again, ALICE, 301),
-        (Vec::new(), None)
+        d.book
+            .value(KIND_TASK_EVENT, &event_key(ALICE, "t1", next))
+            .cloned(),
+        Some(their_event),
+        "the other writer's event stands"
     );
+    let failed = event(&d, "t1", next + 1);
+    assert_eq!(failed.state, "failed", "the failure is the next event");
+    let held = get(&mut d.book, ALICE, "t1", 300).unwrap().unwrap();
+    assert_eq!(held.row.state, "failed");
+    assert_eq!(held.next_seq, next + 2);
+    assert_eq!(held.tail_hash, failed.hash);
 }
+
 // ── ported from the engine's `relay_stream_tests` ──────────────────────────────────────────────
 
 /// Put `caller`'s `task` on [`MEMBER`] and walk it through `states` at 150.
@@ -848,4 +838,66 @@ fn a_streamed_artifact_advances_the_durable_resume_cursor() {
         row.state, "completed",
         "the terminal event lands on the task"
     );
+}
+
+// ── a hop that left and heard nothing back: its task end, racing another writer of the task ───
+
+/// End `task`, whose hop left and heard nothing back, failed, as the door ends it on the refused
+/// piece, on the unit's own ticket: [`settle`] on `Settled::Failed` over the host's records
+/// (`plane_door::settle_task`).
+fn ended_after_no_answer(d: &mut Desk, task: &TaskHop) -> Vec<Write> {
+    ended_on_refusal(d, task)
+}
+
+/// A HOP THAT LEFT AND HEARD NOTHING BACK ENDS THE TASK IT OPENED WITHOUT LOSING ANOTHER WRITER'S
+/// CHANGE (the engine's `refuse_hop` on `RelayRefusal::Transport`, origin/predev
+/// `crates/busbar-a2a/src/a2a/receive.rs:3325` and its `fail_task` arm `:3463-3471`, then
+/// `end_task` `:3485-3500`: `TASKS.transition` under the task's own lock,
+/// `crates/busbar-kernel/src/plane/handle_engine.rs:711-736`). Another unit moves the task the hop
+/// minted between its opening and the end; the end is chained after that move: the other writer's
+/// event stands, the failure is the next one, and the task as held is failed with the chain's tail
+/// on the failure.
+#[test]
+fn a_hop_that_heard_nothing_back_ends_its_task_keeping_a_concurrent_writers_change() {
+    let mut d = desk();
+    let (fresh, _) = opened_writing(&mut d, &send(json!({})));
+    let Opened::Hop { task, .. } = fresh else {
+        panic!("refused");
+    };
+    let id = task.task_id.clone();
+    let next = get(&mut d.book, ALICE, &id, 300).unwrap().unwrap().next_seq;
+
+    // ANOTHER UNIT moves the task while the hop's end is made: it wins the next sequence.
+    let mut theirs = Vec::new();
+    let other = Step {
+        caller: ALICE,
+        request_id: "another-unit",
+        now: 300,
+    };
+    crate::tasks::transition(&mut d.book, &other, &id, TaskState::Working, &mut theirs)
+        .unwrap()
+        .expect("it moved");
+    d.book.apply(&theirs);
+    let their_event = d
+        .book
+        .value(KIND_TASK_EVENT, &event_key(ALICE, &id, next))
+        .cloned()
+        .expect("their event");
+
+    let ours = ended_after_no_answer(&mut d, &task);
+    d.book.apply(&ours);
+
+    assert_eq!(
+        d.book
+            .value(KIND_TASK_EVENT, &event_key(ALICE, &id, next))
+            .cloned(),
+        Some(their_event),
+        "the other writer's event stands"
+    );
+    let failed = event(&d, &id, next + 1);
+    assert_eq!(failed.state, "failed", "the failure is the next event");
+    let held = get(&mut d.book, ALICE, &id, 300).unwrap().unwrap();
+    assert_eq!(held.row.state, "failed");
+    assert_eq!(held.next_seq, next + 2);
+    assert_eq!(held.tail_hash, failed.hash);
 }
