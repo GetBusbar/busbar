@@ -28,6 +28,8 @@ use crate::root::plane_node::{Node, NodeEndPost};
 pub(super) struct Governed {
     _published: Published,
     pub(super) router: axum::Router,
+    /// The test plane's driver, for a test that reloads its generation while a unit is in flight.
+    pub(super) driver: Arc<busbar_kernel::plane_driver::PlaneDriver>,
     post: Arc<NodeEndPost>,
     money: Arc<PlaneMoney>,
     gov: Arc<GovState>,
@@ -163,6 +165,7 @@ fn governed_over(
     )
     .expect("the door plane composes");
     served.post = Some(Arc::clone(&post));
+    let driver = Arc::clone(&served.planes[0].driver);
     // The framer of the test plane's framed claim: the neutral frame door, dropped in (ARCHITECT
     // 4l); no other claim of the test plane is one a framer answers.
     served.framers = Some(neutral_framers());
@@ -179,6 +182,7 @@ fn governed_over(
     Some(Governed {
         _published: Published(instance),
         router,
+        driver,
         post,
         money,
         gov,

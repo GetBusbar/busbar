@@ -873,6 +873,11 @@ extern "C" fn on_piece(
                 // reply whose head and first message already reached the caller.
                 return say(out, Outcome::Failed);
             }
+            if head.as_slice() == b"/framed/drain" {
+                // `/framed/drain` PENDS its re-call and never wakes it: the unit, its head and
+                // first message already with the caller, waits there until the kernel cuts it.
+                return say(out, Outcome::Pending);
+            }
         }
         match i.from {
             FROM_KERNEL if i.attempt_no > 0 => {
@@ -915,9 +920,10 @@ extern "C" fn on_piece(
                     std::ptr::copy_nonoverlapping(u.body.as_ptr(), i.reply_buf, n);
                     o.emitted = n as u64;
                     o.flags = EMIT_DONE | EMIT_MESSAGE_END;
-                    if head.as_slice() == b"/framed/fail" {
-                        // `/framed/fail`: the head and the one message, the reply not done; it
-                        // asks to be re-called for more, and that re-call fails the unit.
+                    if head.as_slice() == b"/framed/fail" || head.as_slice() == b"/framed/drain" {
+                        // `/framed/fail` and `/framed/drain`: the head and the one message, the
+                        // reply not done; each asks to be re-called for more, and that re-call
+                        // fails the unit (`/framed/fail`) or pends until the kernel cuts it.
                         o.flags = EMIT_MESSAGE_END;
                         o.more = 1;
                         u.more_from = Some(i.from);
