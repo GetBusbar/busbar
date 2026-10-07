@@ -655,8 +655,9 @@ fn a_refused_hops_task_end_keeps_a_concurrent_writers_change() {
     assert_eq!(failed.state, "failed", "the failure is the next event");
     let held = get(&mut d.book, ALICE, "t1", 300).unwrap().unwrap();
     assert_eq!(held.row.state, "failed");
+    // The failure is the chain's tail: the door holds no tail hash of its own, since the host seals
+    // the chain on the record path (B1 ruling 1, coordinator 2026-10-07).
     assert_eq!(held.next_seq, next + 2);
-    assert_eq!(held.tail_hash, failed.hash);
 }
 
 // ── ported from the engine's `relay_stream_tests` ──────────────────────────────────────────────
@@ -898,6 +899,7 @@ fn a_hop_that_heard_nothing_back_ends_its_task_keeping_a_concurrent_writers_chan
     assert_eq!(failed.state, "failed", "the failure is the next event");
     let held = get(&mut d.book, ALICE, &id, 300).unwrap().unwrap();
     assert_eq!(held.row.state, "failed");
+    // The failure is the chain's tail: the door holds no tail hash of its own, since the host seals
+    // the chain on the record path (B1 ruling 1, coordinator 2026-10-07).
     assert_eq!(held.next_seq, next + 2);
-    assert_eq!(held.tail_hash, failed.hash);
 }
