@@ -968,7 +968,8 @@ fn a_refused_hops_journal_line_names_the_backend_and_the_callers_answer_does_not
         .banner()
         .to_string();
     let other = b"data: {\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{}}\n\n";
-    let cases: Vec<(&str, String, Box<dyn FnOnce() -> Reply>)> = vec![
+    type Run = Box<dyn FnOnce() -> Reply>;
+    let cases: Vec<(&str, String, Run)> = vec![
         (
             "a task-less hop's backend status",
             submission.clone(),

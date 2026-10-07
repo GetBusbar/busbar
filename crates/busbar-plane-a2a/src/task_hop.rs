@@ -26,8 +26,8 @@
 //! door ([`Callback`]), which holds it in plane memory as the engine's delivery does.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 
+use busbar_contract::abi::sdk::publish::Keyed;
 use serde_json::Value;
 
 use crate::a2a::task::{plan_transition, Direction, Task, TaskState};
@@ -357,34 +357,33 @@ fn translated(
     }))
 }
 
-/// The four error-once latches of the refused record writes, one per condition as predev held them
+/// The error-once latches of the refused record writes, one per condition as predev held them
 /// (`receive.rs` `RELAYED_OUTCOME_UNRECORDED_WARNED`, `STREAM_OUTCOME_UNRECORDED_WARNED`,
 /// `RESUME_CURSOR_UNRECORDED_WARNED`, `FAILURE_UNRECORDED_WARNED`): a store outage persists across
 /// every relayed outcome, so the first refusal of a kind is an error and the rest hold at debug.
-pub(crate) struct Latches {
-    relayed: AtomicBool,
-    streamed: AtomicBool,
-    cursor: AtomicBool,
-    failure: AtomicBool,
+/// Plane memory of the door instance (a restart forgets it), never a process global.
+#[derive(Debug, Default)]
+pub struct Latches {
+    tripped: Keyed<u8, ()>,
 }
 
 impl Latches {
-    pub(crate) const fn new() -> Self {
-        Self {
-            relayed: AtomicBool::new(false),
-            streamed: AtomicBool::new(false),
-            cursor: AtomicBool::new(false),
-            failure: AtomicBool::new(false),
-        }
+    /// No latch tripped.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Trip latch `kind`; `true` when this is the first trip.
+    fn first(&self, kind: u8) -> bool {
+        self.tripped.with_all(|m| m.insert(kind, ()).is_none())
     }
 }
 
-static LATCHES: Latches = Latches::new();
-
 /// Emit the diagnostic at error the first time `latch` is tripped and at debug after that.
 macro_rules! latched {
-    ($latch:expr, $diag:expr, $($rest:tt)*) => {
-        if !$latch.swap(true, Ordering::Relaxed) {
+    ($latches:expr, $kind:expr, $diag:expr, $($rest:tt)*) => {
+        if $latches.first($kind) {
             busbar_contract::diag_error!($diag, $($rest)*)
         } else {
             busbar_contract::diag_debug!($diag, $($rest)*)
@@ -410,14 +409,14 @@ impl Refused {
         use crate::diagnostics::{A2A_FAILURE_UNRECORDED, A2A_RELAYED_OUTCOME_UNRECORDED};
         match self {
             Self::Relayed => latched!(
-                latches.relayed,
+                latches, 0,
                 A2A_RELAYED_OUTCOME_UNRECORDED,
                 task = %task,
                 error = %error,
                 "a2a: the relayed task's outcome could not be recorded"
             ),
             Self::Streamed(state) => latched!(
-                latches.streamed,
+                latches, 1,
                 A2A_RELAYED_OUTCOME_UNRECORDED,
                 task = %task,
                 state = %state.as_str(),
@@ -425,14 +424,14 @@ impl Refused {
                 "a2a: a streamed task transition could not be recorded"
             ),
             Self::Failure => latched!(
-                latches.failure,
+                latches, 2,
                 A2A_FAILURE_UNRECORDED,
                 task = %task,
                 error = %error,
                 "a2a: a failed task could not be recorded as failed"
             ),
             Self::Cursor => latched!(
-                latches.cursor,
+                latches, 3,
                 A2A_RELAYED_OUTCOME_UNRECORDED,
                 task = %task,
                 error = %error,
@@ -448,6 +447,8 @@ impl Refused {
 /// the writes `out` already holds. Answers the row as it moved (what a push notification about the
 /// move carries), or `None` when nothing moved.
 ///
+/// A write the store refuses is journaled through `latches` (error once per kind, debug after).
+///
 /// # Errors
 /// [`Halt::Pending`] when a records call pends.
 pub fn settle(
@@ -457,6 +458,7 @@ pub fn settle(
     caller: &str,
     now: u64,
     out: &mut Vec<Write>,
+    latches: &Latches,
 ) -> Result<Option<TaskRow>, Halt> {
     let (to, artifact) = match settled {
         Settled::Reported { state, .. } if *state == TaskState::Submitted => return Ok(None),
@@ -486,7 +488,7 @@ pub fn settle(
                     Settled::Reported { .. } => Refused::Relayed,
                     Settled::Event { .. } => Refused::Streamed(to),
                 };
-                refused.report(&LATCHES, &task.task_id, &words);
+                refused.report(latches, &task.task_id, &words);
             }
             Ok(row) => {
                 out.extend(step);
@@ -502,7 +504,7 @@ pub fn settle(
         };
         match bumped {
             Err(Halt::Pending) => return Err(Halt::Pending),
-            Err(Halt::Failed(words)) => Refused::Cursor.report(&LATCHES, &task.task_id, &words),
+            Err(Halt::Failed(words)) => Refused::Cursor.report(latches, &task.task_id, &words),
             Ok(_) => out.extend(step),
         }
     }

@@ -250,7 +250,16 @@ fn a_held_task_id_whose_far_end_id_is_known_is_sent_on_as_the_far_ends() {
 
 fn settled(desk: &mut Desk, task: &TaskHop, how: &Settled) -> usize {
     let mut out = Vec::new();
-    settle(&mut desk.book, task, how, ALICE, 400, &mut out).unwrap();
+    settle(
+        &mut desk.book,
+        task,
+        how,
+        ALICE,
+        400,
+        &mut out,
+        &Latches::new(),
+    )
+    .unwrap();
     desk.book.apply(&out);
     out.len()
 }
@@ -281,7 +290,16 @@ fn the_answer_records_the_reported_state_and_a_failed_hop_ends_the_task_failed()
         BOB,
     ));
     let mut out = Vec::new();
-    settle(&mut desk.book, &other, &Settled::Failed, BOB, 400, &mut out).unwrap();
+    settle(
+        &mut desk.book,
+        &other,
+        &Settled::Failed,
+        BOB,
+        400,
+        &mut out,
+        &Latches::new(),
+    )
+    .unwrap();
     desk.book.apply(&out);
     let row = get(&mut desk.book, BOB, &other.task_id, 400)
         .unwrap()
@@ -600,7 +618,16 @@ fn opened_writing(desk: &mut Desk, envelope: &Value) -> (Opened, Vec<Write>) {
 /// own ticket: [`settle`] on `Settled::Failed` over the host's records (`plane_door::settle_task`).
 fn ended_on_refusal(d: &mut Desk, task: &TaskHop) -> Vec<Write> {
     let mut out = Vec::new();
-    settle(&mut d.book, task, &Settled::Failed, ALICE, 300, &mut out).unwrap();
+    settle(
+        &mut d.book,
+        task,
+        &Settled::Failed,
+        ALICE,
+        300,
+        &mut out,
+        &Latches::new(),
+    )
+    .unwrap();
     out
 }
 
@@ -942,7 +969,15 @@ fn refused_settle(how: &Settled) -> (Result<Option<TaskRow>, Halt>, usize, Vec<S
     let (sent, heard) = std::sync::mpsc::channel();
     let mut out = Vec::new();
     let answer = tracing::subscriber::with_default(Capture(sent), || {
-        settle(&mut desk.book, &task, how, BOB, 400, &mut out)
+        settle(
+            &mut desk.book,
+            &task,
+            how,
+            BOB,
+            400,
+            &mut out,
+            &Latches::new(),
+        )
     });
     let lines = heard.try_iter().map(|(_, line)| line).collect();
     (answer, out.len(), lines)
@@ -999,7 +1034,7 @@ fn a_transition_the_store_refuses_is_surfaced_and_the_answer_stands() {
             &crate::diagnostics::A2A_RELAYED_OUTCOME_UNRECORDED,
             &[
                 "a streamed task transition could not be recorded",
-                "state=\"working\"",
+                "state=working",
             ],
         ),
         (
