@@ -14107,6 +14107,7 @@ async fn named_map_app_opts(
         let ctx = busbar_kernel::plane::registry::BuildCtx {
             endpoint_slot: None,
             agent_defs: cfg.as_any(),
+            tool_defs: &(),
             public_url: Some("https://busbar.example"),
             prior: None,
         };

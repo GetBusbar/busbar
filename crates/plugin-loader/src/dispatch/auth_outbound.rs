@@ -248,8 +248,14 @@ impl Lend {
     /// The `in` naming this memory under `handle`.
     fn input(&mut self, handle: u64) -> FieldsIn {
         let r = &self.request;
+        let mut head = in_head();
+        // The call's extensions blob (the per-call scope, when the request stated one), lent with
+        // the rest of the request's bytes.
+        if !r.extensions.is_empty() {
+            head.extensions = blob(&r.extensions, BLOB_OCTETS, 0);
+        }
         FieldsIn {
-            head: in_head(),
+            head,
             handle,
             mode: if r.caller_credential.is_some() {
                 MODE_PASSTHROUGH
@@ -328,6 +334,7 @@ fn copy(r: &FieldsRequest) -> FieldsRequest {
         timestamp: r.timestamp,
         headers: r.headers.clone(),
         caller_credential: r.caller_credential.clone(),
+        extensions: r.extensions.clone(),
     }
 }
 
