@@ -436,6 +436,56 @@ fn a_sweep_settles_a_handle_whose_units_have_ended() {
     );
 }
 
+/// A HANDLE READ BACK FROM THE STORE has no unit in this process until its owner finds it: the
+/// owner's find records the finding unit, so while that unit runs another principal's settle is
+/// refused; a find does not displace a resuming unit still in flight.
+#[test]
+fn the_owners_find_scopes_the_settle_of_a_handle_read_from_the_store() {
+    let store = Arc::new(MemoryStore::new());
+    let before = rig_over(Arc::clone(&store), WorkBounds::default());
+    let (_, reference) = open(&before, 1, b"park");
+    drop(before);
+    // A new process over the same store: alice's unit 2 finds it.
+    let after = rig_over(store, WorkBounds::default());
+    let found = find(&after, "inst", 2, &reference);
+    assert_eq!(state_and_record(&found), (WORK_LIVE, b"park".to_vec()));
+    let refused = settle(&after, "inst", Some(3), found.value, b"swept");
+    assert_eq!(
+        (refused.outcome, refused.error),
+        (Outcome::Refused, refusal::NOT_A_HANDLE)
+    );
+    // Bob's find answers alike and records nothing: once alice's unit ends, the sweep settles it.
+    assert_eq!(
+        find(&after, "inst", 3, &reference),
+        Stored::ready(svc::ABSENT)
+    );
+    after.s.units().ended(2);
+    let swept = settle(&after, "inst", Some(3), found.value, b"swept");
+    assert_eq!((swept.outcome, swept.value), (Outcome::Ready, 0));
+
+    // In one process: a handle resumed by a unit still in flight stays that unit's, though
+    // another of alice's units finds it and ends.
+    let r = rig();
+    let (handle, reference) = open(&r, 1, b"working");
+    let bound = run(|l| r.s.work_resume(&caller("inst"), Some(2), handle, l));
+    assert_eq!(bound.outcome, Outcome::Ready);
+    r.s.units().admitted(
+        4,
+        UnitRecord {
+            principal: Some(key("alice")),
+            depth: 0,
+        },
+    );
+    assert_eq!(find(&r, "inst", 4, &reference).value, handle);
+    r.s.units().ended(4);
+    r.s.units().ended(1);
+    let refused = settle(&r, "inst", Some(3), handle, b"swept");
+    assert_eq!(
+        (refused.outcome, refused.error),
+        (Outcome::Refused, refusal::NOT_A_HANDLE)
+    );
+}
+
 /// THE KERNEL JUDGES LAPSE, NEVER THE PLANE: a plane's own deadline passing and the record it
 /// settles with saying "lapsed" move nothing while the handle's unit is in flight.
 #[test]
