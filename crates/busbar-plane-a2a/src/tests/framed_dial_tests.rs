@@ -141,8 +141,10 @@ fn block(fields: &[(&str, &str)]) -> Vec<u8> {
     out
 }
 
-/// THE STATUS THE TRAILERS STATE: the code the host passes beside them, else the details'
-/// `google.rpc.Status` with its `ErrorInfo`; trailers that say neither state nothing.
+/// THE STATUS THE TRAILERS STATE: the code the host passes beside them (the kernel hands on the
+/// status the transport read off them), with the `ErrorInfo` of the details' `google.rpc.Status`.
+/// The details never state the code: trailers handed on with no status state nothing, whatever
+/// their details say (RED: the details' own code was read as the call's status).
 #[test]
 fn the_trailers_state_the_calls_status_and_its_error_info() {
     use base64::Engine as _;
@@ -166,18 +168,25 @@ fn the_trailers_state_the_calls_status_and_its_error_info() {
     );
     let details = base64::engine::general_purpose::STANDARD_NO_PAD.encode(refused.details());
     let trailers = block(&[("x-other", "1"), (DETAILS_FIELD, &details)]);
-    let got = ended(&trailers, None).expect("the details state the status");
+    assert_eq!(
+        ended(&trailers, None),
+        None,
+        "the details are no status of their own"
+    );
+    let got = ended(&trailers, Some(Code::NotFound as u32)).expect("the stated status");
     assert_eq!(got.code, Code::NotFound as u32);
     assert_eq!(
         got.info.as_ref().map(|i| i.reason.as_str()),
         Some("TASK_NOT_FOUND")
     );
     assert_eq!(got.a2a_code(), Some(-32001));
-    // A padded value reads the same; a code the host states wins.
+    // A padded value reads the same; the code is the one the host states, never the details'.
     let padded = base64::engine::general_purpose::STANDARD.encode(refused.details());
+    let stated = ended(&block(&[(DETAILS_FIELD, &padded)]), Some(14)).expect("stated");
+    assert_eq!(stated.code, 14);
     assert_eq!(
-        ended(&block(&[(DETAILS_FIELD, &padded)]), Some(5)).map(|e| e.code),
-        Some(5)
+        stated.info.map(|i| i.reason),
+        Some("TASK_NOT_FOUND".to_string())
     );
     assert_eq!(ended(&block(&[("x-other", "1")]), None), None);
 }
