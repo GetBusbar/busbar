@@ -1602,6 +1602,7 @@ fn model_cfg_for_provider(provider: &str) -> crate::config::ModelCfg {
         attempt_timeout_ms: None,
         reasoning: None,
         prompt_caching: None,
+        protocol: None,
     }
 }
 
