@@ -112,7 +112,7 @@ fn parts_of(record: &Record) -> Result<Vec<RecordBytes>, String> {
 /// Wait for `fut` on this thread: the store's calls are futures the dispatcher completes on its own
 /// workers, and the two callers here (the boot's read and the lane's worker) are threads that may
 /// wait. Never called on a runtime worker's request path.
-fn wait_for<F: Future>(fut: F) -> F::Output {
+pub(super) fn wait_for<F: Future>(fut: F) -> F::Output {
     struct Unpark(std::thread::Thread);
     impl Wake for Unpark {
         fn wake(self: Arc<Self>) {
@@ -527,7 +527,7 @@ impl JournalLane {
 
 /// Run a wait that blocks this thread: on a multi-threaded runtime's worker it first hands the
 /// worker's other tasks on, so no task queued behind it waits on the store.
-fn off_runtime<T>(wait: impl FnOnce() -> T) -> T {
+pub(super) fn off_runtime<T>(wait: impl FnOnce() -> T) -> T {
     match tokio::runtime::Handle::try_current() {
         Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
             tokio::task::block_in_place(wait)

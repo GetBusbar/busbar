@@ -2703,3 +2703,128 @@ fn a_full_lane_refuses_new_money_and_drops_no_record() {
         "every record the journal sealed is in the store, once"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// H3 follow-up (ARCHITECT 2026-10-07): THE DEPLOYMENT KEYSET AND THE NODE'S IDENTITY IN THE STORE
+// ---------------------------------------------------------------------------------------------
+
+/// A book over `slots` as node `node`, its deployment keyset bound the way the boot binds it.
+fn keyed_store_book(slots: &crate::root::store_double::RecordSlots, node: u64) -> Durability {
+    let mut durability = store_book(slots, node);
+    crate::root::keyset::bind(
+        &mut durability,
+        None,
+        &token(),
+        StepName::Meter,
+        1_700_000_000,
+    )
+    .expect("the keyset binds over the store");
+    durability
+}
+
+/// **A RESTART OVER THE SAME STORE VERIFIES THE PRIOR BOOT'S RECORDS** (ARCHITECT 2026-10-07 H3
+/// ruling, follow-up (1)): with no data directory the deployment keyset is kept in the store and
+/// read back, so the audit records a predecessor signed verify under the key this boot holds, and
+/// `/admin/verify`'s walks find nothing.
+///
+/// RED before the follow-up: the keyset was minted per process, so the resumed records named a key
+/// this boot did not hold and every one was a finding.
+#[test]
+fn a_restart_over_the_same_store_verifies_the_prior_boots_records() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    {
+        let mut durability = keyed_store_book(&slots, 21);
+        for unit in 1..=3 {
+            durability
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        assert!(durability.audit_records.iter().all(|r| r.key_id.is_some()));
+        drained(&durability);
+    }
+    let restarted = keyed_store_book(&slots, 21);
+    assert_eq!(restarted.audit_records.len(), 3, "the prior boot's records");
+    assert_eq!(
+        restarted.retained_audit_findings(),
+        Vec::<String>::new(),
+        "the prior boot's records verify under the key the store kept"
+    );
+    let (calls, own, keys) = restarted
+        .stored_walk_inputs()
+        .expect("a book over the store");
+    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    assert_eq!(walk.findings, Vec::<String>::new());
+}
+
+/// **TWO NODES ON ONE STORE NEVER COLLIDE, AND VERIFY WALKS BOTH CHAINS** (ARCHITECT 2026-10-07 H3
+/// ruling, follow-up (2)): each host takes its own stable id from the store's node registry, a
+/// restart on the same host takes the same one back, each node resumes exactly its own chain, and
+/// the walk `/admin/verify` makes reads and verifies both — and names an edit made to the other
+/// node's chain in the store.
+///
+/// RED before the follow-up: every node wrote as node 0, so the second node's records overwrote the
+/// first's in the store.
+#[test]
+fn two_nodes_on_one_store_never_collide_and_verify_walks_both_chains() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let a = node_id(slots.calls().as_ref(), "host-a").expect("an id for host-a");
+    let b = node_id(slots.calls().as_ref(), "host-b").expect("an id for host-b");
+    assert_ne!(a, b, "two hosts, two identities");
+    assert_ne!(a, 0);
+    assert_eq!(
+        node_id(slots.calls().as_ref(), "host-a").expect("again"),
+        a,
+        "a restart on the same host takes the same id back"
+    );
+    {
+        let mut first = keyed_store_book(&slots, a);
+        let mut second = keyed_store_book(&slots, b);
+        for unit in 1..=2 {
+            first
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        for unit in 1..=5 {
+            second
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        drained(&first);
+        drained(&second);
+    }
+    let first = keyed_store_book(&slots, a);
+    let second = keyed_store_book(&slots, b);
+    assert_eq!(first.audit_records.len(), 2, "node a resumes its own chain");
+    assert_eq!(
+        second.audit_records.len(),
+        5,
+        "node b resumes its own chain"
+    );
+    assert!(
+        first.restart_findings.is_empty(),
+        "{:?}",
+        first.restart_findings
+    );
+    assert!(
+        second.restart_findings.is_empty(),
+        "{:?}",
+        second.restart_findings
+    );
+
+    let (calls, own, keys) = first.stored_walk_inputs().expect("a book over the store");
+    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    let mut both = vec![a, b];
+    both.sort_unstable();
+    assert_eq!(walk.chains, both, "the walk reads both chains");
+    assert_eq!(walk.findings, Vec::<String>::new(), "and both verify");
+
+    slots.corrupt(JOURNAL_SCHEMA, &part_key(b, 2, 0));
+    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    assert!(
+        walk.findings
+            .iter()
+            .any(|f| f.starts_with(&format!("node {b}:"))),
+        "an edit to the other node's stored chain is a finding on this node's verify: {:?}",
+        walk.findings
+    );
+}

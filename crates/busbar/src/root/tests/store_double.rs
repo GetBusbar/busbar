@@ -48,6 +48,18 @@ impl RecordSlots {
         self.puts.load(Ordering::Acquire)
     }
 
+    /// Flip the last byte of the row at `(schema, key)`: an edit made to the store behind the node.
+    pub(crate) fn corrupt(&self, schema: &str, key: &[u8]) {
+        let mut rows = self.rows.lock().unwrap_or_else(|p| p.into_inner());
+        let at = (schema.to_string(), key.to_vec());
+        let row = rows.get(&at).expect("the row is there").as_slice().to_vec();
+        let mut edited = row;
+        if let Some(last) = edited.last_mut() {
+            *last ^= 0xff;
+        }
+        rows.insert(at, RecordBytes::new(edited).expect("the same length"));
+    }
+
     /// How many rows the store holds under `schema`.
     pub(crate) fn rows_under(&self, schema: &str) -> usize {
         self.rows

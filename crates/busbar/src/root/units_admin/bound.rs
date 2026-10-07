@@ -162,6 +162,14 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
             .into_iter()
             .map(|finding| format!("audit chain: {finding}")),
     );
+    // EVERY CHAIN THE STORE KEEPS, this node's and its peers', walked and verified against the
+    // deployment keyset: a chain on the store that does not verify is a finding wherever it is.
+    findings.extend(
+        ledger
+            .stored_chain_findings()
+            .into_iter()
+            .map(|finding| format!("stored chain: {finding}")),
+    );
     answer(&serde_json::json!({
         "checkpoints": checkpoints.len(),
         "since": since.map(|c| serde_json::json!({

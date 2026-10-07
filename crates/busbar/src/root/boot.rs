@@ -773,6 +773,12 @@ pub fn compose_book(
         now,
     )
     .map_err(|e| e.to_string())?;
+    // The opening is sealed under the identity the journal writes as: the node's stable id, or the
+    // one a data directory's chain was written under.
+    let mig = &super::migration::MigrationConfig {
+        node: durability.journal.node(),
+        ..mig.clone()
+    };
     let migration = {
         let (mut records, signer) =
             durability.migration_records_signed(token, busbar_contract::caps::StepName::Meter);
@@ -830,7 +836,16 @@ pub fn book(
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let adapter = super::loader::store_adapter::StoreAdapter::native(gov.store());
-    let mig = super::migration::config_from(&app.cost, now);
+    // THIS NODE'S STABLE IDENTITY (ARCHITECT 2026-10-07 H3 ruling, follow-up): the id the store's
+    // node registry keeps for this host, minted into it on the host's first boot. Its journal
+    // records are keyed by it, so two nodes on one store never write under one identity.
+    let node =
+        super::durability::node_id(lane.calls().as_ref(), &super::durability::host_identity())
+            .map_err(|why| format!("this node's identity in the store `{store}`: {why}"))?;
+    let mig = super::migration::MigrationConfig {
+        node,
+        ..super::migration::config_from(&app.cost, now)
+    };
     let token = super::kernel::new_kernel().durability_token();
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
     let (durability, rows, migration) = compose_book(&adapter, lane, data_dir, &mig, now, &token)?;

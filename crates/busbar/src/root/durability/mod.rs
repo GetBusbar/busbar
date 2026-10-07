@@ -135,6 +135,11 @@ pub use store_chain::{read_chain, JournalLane, ACK_DEADLINE, RECORD_SLOTS};
 #[cfg(test)]
 pub use store_chain::{part_key, JOURNAL_SCHEMA};
 
+/// Who a node is and the key it signs with, kept in the configured store: the node registry, the
+/// deployment keyset, and the walk `/admin/verify` makes of every stored chain.
+mod store_identity;
+pub use store_identity::{host_identity, keep_keyset, node_id, stored_keyset, walk_stored_chains};
+
 /// The node amendment journal bound to the chain: each sealed amendment journalled, and the node
 /// journal rebuilt from the chain at boot. A private child module, as `replay` is.
 mod amend;
@@ -339,6 +344,25 @@ impl Durability {
     #[must_use]
     pub fn lane(&self) -> Option<&JournalLane> {
         self.lane.as_ref()
+    }
+
+    /// What `/admin/verify` needs to walk every chain the store keeps, taken under the book's lock
+    /// so the walk itself runs without it: the store's calls, this node's id and the keys this
+    /// node signs with. `None` on a book with no store behind it.
+    #[must_use]
+    pub fn stored_walk_inputs(
+        &self,
+    ) -> Option<(
+        std::sync::Arc<dyn busbar_contract::store_calls::StoreCalls>,
+        u64,
+        busbar_kernel_audit::AuditKeySet,
+    )> {
+        let lane = self.lane.as_ref()?;
+        Some((
+            lane.calls(),
+            self.journal.node(),
+            seal::keyset_of(&self.record),
+        ))
     }
 
     /// Whether the store is where this journal's durability is: no disk, and a lane to the store.
@@ -2354,7 +2378,10 @@ fn build_inner(
         // No disk and no store behind the shipper: the chain lives as long as the process.
         (None, None) => Journal::memory_buffered_to(node, shipper, clock),
         // The operator asked for a journal on this node's own disk. This call is that decision.
-        (Some(dir), _) => Journal::in_directory(node, dir, shipper, clock)?,
+        // Over the store, a directory that already holds a chain keeps the identity it was
+        // written under.
+        (Some(dir), Some(_)) => Journal::in_directory_adopting(node, dir, shipper, clock)?,
+        (Some(dir), None) => Journal::in_directory(node, dir, shipper, clock)?,
     };
 
     let mut durability = Durability {

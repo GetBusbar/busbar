@@ -409,6 +409,13 @@ pub trait LedgerView: Send + Sync {
         Vec::new()
     }
 
+    /// What a walk of EVERY CHAIN THE CONFIGURED STORE KEEPS finds — this node's and every other
+    /// node's the registry names — each journal chain and the audit records on it, signatures
+    /// included, against the deployment keyset. Empty for a view with no store behind it.
+    fn stored_chain_findings(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// [`LedgerView::verify_snapshot`] with the anchor's head, all as of one moment. `None`
     /// is "this view holds no anchor", which the verifier writes down as such; the default is that.
     fn verify_snapshot_anchored(
@@ -717,6 +724,14 @@ impl LedgerView for NodeLedger {
 
     fn retained_audit_findings(&self) -> Vec<String> {
         self.lock().retained_audit_findings()
+    }
+
+    /// The inputs under the book's lock, the walk (which reads the store) without it.
+    fn stored_chain_findings(&self) -> Vec<String> {
+        let Some((calls, own, keys)) = self.lock().stored_walk_inputs() else {
+            return Vec::new();
+        };
+        crate::root::durability::walk_stored_chains(calls.as_ref(), own, &keys).findings
     }
 
     /// All three under ONE hold of the lock a seal takes, so a checkpoint sealed between reads
