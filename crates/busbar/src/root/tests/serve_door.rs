@@ -869,6 +869,125 @@ async fn a_door_planes_tripped_member_is_on_the_metrics_scrape() {
     }
 }
 
+/// Every label value on one exposition line, unescaped (`\\`, `\"`, `\n`) as the text format
+/// escapes them; empty for a comment or a sample with no labels.
+#[cfg(feature = "plane-decisions")]
+fn label_values(line: &str) -> Vec<String> {
+    let Some((_, rest)) = line.split_once('{') else {
+        return Vec::new();
+    };
+    let mut values = Vec::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        if c != '"' {
+            if c == '}' {
+                break;
+            }
+            continue;
+        }
+        let mut value = String::new();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => match chars.next() {
+                    Some('n') => value.push('\n'),
+                    Some(other) => value.push(other),
+                    None => break,
+                },
+                '"' => break,
+                other => value.push(other),
+            }
+        }
+        values.push(value);
+    }
+    values
+}
+
+#[cfg(feature = "plane-decisions")]
+/// NO LABEL ON `/metrics` CARRIES A CONTROL BYTE OR THE LANE SEPARATOR, WHATEVER THE FAMILY: every
+/// door plane this build composes serves keyed traffic with governance on (the plane serving the
+/// `pools` map through its rig, the decisions door through its served route), the scrape gauges
+/// are refreshed over both generations, and every sample line of the one exposition is scanned
+/// label by label. The money gauge's `model` label is each plane's own: the llm plane's bare model
+/// (1.5.5's bytes), and the decisions door's section alone for its fee lane (it bills no token
+/// class; an entry's `"<section>/<entry>"` is pinned by the kernel's `metrics::money::tests`). Covers
+/// the two planes this base serves through doors; mcp, a2a and streaming are still HOT-lane here
+/// and join the scan when their flips land. RED: the money ledger's lane key rendered verbatim
+/// (`busbar_bucket_tokens{..,model="<plane>\u{1f}",..}`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_label_on_the_scrape_carries_a_control_byte_or_the_lane_separator() {
+    let _one = PUBLISHING.lock().await;
+    let (llm_instance, door_instance) = ("scrape-labels-llm", "scrape-labels-decisions");
+    let _llm_published = Published(llm_instance);
+    let _door_published = Published(door_instance);
+    busbar_kernel::metrics::init();
+
+    // THE PLANE SERVING THE `pools` MAP: one keyed chat completion on pool `p` (model `m0`).
+    let far = far_end_answering(200, SERVED_BY_TWIN).await;
+    let llm = rig(
+        llm_instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            budget_cents: Some(1_000),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(llm.chat().await.0, 200, "the llm plane served");
+    assert_eq!(llm.ledger_after(1).await.3, 1, "its unit settled");
+
+    // THE DECISIONS DOOR: one keyed call on its claim.
+    let (port, _heard) = far_end().await;
+    let door = serve_over(&crate::LINKED, door_instance, port).await;
+    assert_eq!(
+        send(&door.router, CLAIMED, Some(&door.token))
+            .await
+            .status(),
+        StatusCode::OK,
+        "the decisions door served"
+    );
+
+    // The scrape, refreshed over both generations (bounded: a unit's line settles write-behind).
+    // The decisions door bills a per-request fee and no token class, so its token rows are its fee
+    // lane's: labelled by its section. (An entry's `<section>/<entry>` label is pinned by the kernel's
+    // `metrics::money::tests`.)
+    let fee = door.section.to_string();
+    let money = |scrape: &str, model: &str| {
+        scrape.lines().any(|l| {
+            l.starts_with("busbar_bucket_tokens{") && l.contains(&format!("model=\"{model}\""))
+        })
+    };
+    let mut scrape = String::new();
+    for _ in 0..200 {
+        busbar_kernel::metrics::refresh_scrape_gauges(&llm.app);
+        busbar_kernel::metrics::refresh_scrape_gauges(&door.handle.load());
+        scrape = busbar_kernel::metrics::render();
+        if money(&scrape, "m0") && money(&scrape, &fee) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    // THE CLASS: no label value of any sample line carries a control byte or the separator.
+    let mut scanned = 0usize;
+    for line in scrape.lines().filter(|l| !l.starts_with('#')) {
+        for value in label_values(line) {
+            scanned += 1;
+            assert!(
+                !value.bytes().any(|b| b < 0x20) && !value.contains(PLANE_LANE_SEP),
+                "a label value carries a control byte or the lane separator ({value:?}): {line}"
+            );
+        }
+    }
+    assert!(scanned > 0, "the scrape had labels to scan:\n{scrape}");
+    assert!(
+        money(&scrape, "m0"),
+        "the llm plane's money row, under its bare model:\n{scrape}"
+    );
+    assert!(
+        money(&scrape, &fee),
+        "the decisions door's fee lane, under its section:\n{scrape}"
+    );
+}
+
 // ── THE DOOR SERVING THE `pools` MAP: ITS CAPABILITY CELLS (Q128 U14) ───────────────────────────
 //
 // The capability-equality matrix's root column for this plane, witnessed on its door path: each
