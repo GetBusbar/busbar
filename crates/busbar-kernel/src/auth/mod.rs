@@ -1840,6 +1840,22 @@ fn unauthorized_with_completion_taps(
     unauthorized_response(app, path, door)
 }
 
+/// EVERY CREDENTIAL CARRIER THE CONFIGURED GATE READS on one request: the data-plane carriers
+/// (whichever one carried this request's token, and the SigV4 signature on `Authorization`), the
+/// admin carriers when an admin chain is configured, and the DPoP proof — on the data plane once
+/// it was proven, and always on the admin plane, whose door judges none and whose routes' planes
+/// have no use for one. The host strips all of them before any plane sees the request.
+pub(crate) fn gate_consumed(app: &App, is_admin: bool, dpop_proven: bool) -> ConsumedCredentials {
+    let mut consumed = ConsumedCredentials::carrying(&CLIENT_TOKEN_CARRIERS);
+    if !app.admin_chain.is_empty() {
+        consumed.carry(&ADMIN_TOKEN_CARRIERS);
+    }
+    if dpop_proven || is_admin {
+        consumed.carry(&[dpop::DPOP_HEADER]);
+    }
+    consumed
+}
+
 /// Axum middleware layer that validates auth before routing.
 // Both arms are `Response` (axum requires the Err arm to be an IntoResponse we can return
 // directly); `Response` exceeds clippy's result_large_err threshold but boxing it would break the
@@ -1964,17 +1980,10 @@ pub(crate) async fn auth_middleware(
             }
         }
     };
-    // EVERY CREDENTIAL CARRIER THE CONFIGURED GATE READS — the data-plane carriers (whichever one
-    // carried this request's token, and the SigV4 signature on `Authorization`), and the admin
-    // carriers when an admin chain is configured — with the caller's token as a ref. Handed on with
-    // the request so the host strips all of them before any plane sees it (`caller_credential`).
-    let mut consumed = ConsumedCredentials::carrying(&CLIENT_TOKEN_CARRIERS);
-    if !app.admin_chain.is_empty() {
-        consumed.carry(&ADMIN_TOKEN_CARRIERS);
-    }
-    if dpop_proven {
-        consumed.carry(&[dpop::DPOP_HEADER]);
-    }
+    // EVERY CREDENTIAL CARRIER THE CONFIGURED GATE READS ([`gate_consumed`]), with the caller's
+    // token as a ref. Handed on with the request so the host strips all of them before any plane
+    // sees it (`caller_credential`).
+    let mut consumed = gate_consumed(&app, is_admin, dpop_proven);
     consumed.caller = client_token.clone().map(CallerCredential);
 
     // Thread the caller's token into request extensions for passthrough forwarding, using the same
