@@ -189,6 +189,14 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     // STRUCK. Five 2026-09-25 (owner ruling 2026-09-08) and four 2026-09-26 (#77(9), owner answer
     // Q71(1)) are deleted; four 2026-09-26 (owner answer Q71(2): verify, plane_facts,
     // plane_record_write, commit_upgrade) are bound and served.
+    //
+    // THE KERNEL-LEDGER SURVIVORS, 2026-10-07 (Q128, kernel-ledger audit finding 3; finding 1 for
+    // the retirement row): kept, not wired, each row's `switch` says what retires it. The rest of
+    // that sweep is deleted, not registered (see qa/unconstructed.toml).
+    "ledger-recording-rows",
+    "ledger-history-opening",
+    "ledger-is-dual-writing",
+    "ledger-book-retirement",
 ];
 
 /// The per-capability row id.

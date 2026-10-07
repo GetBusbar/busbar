@@ -239,7 +239,7 @@ why       = "Every deployed node seals an audit chain and ledger checkpoints; wi
 [[capability]]
 id        = "ledger-recording-rows"
 built     = "crates/busbar-kernel-ledger/src/legacy.rs"
-symbol    = "RecordingRows"
+symbol    = "new"
 construct = ["RecordingRows::new("]
 scope     = ["crates"]
 why       = "A per-posting dual-write recorder that grows by one posting per settlement for the life of the process; production binds SummedRows. It ships only because the root's and the kernel's test batteries, in other crates, record through it, and the root implements its read seam for it."
