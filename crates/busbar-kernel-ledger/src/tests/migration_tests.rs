@@ -128,12 +128,12 @@ fn a_serving_deployment() -> SeededRows {
                 dimension: CapDimension::Requests,
                 amount: 512,
             },
-            window_figure("team-a", 86_400, "gpt-4", "input", 6_000),
-            window_figure("team-a", 86_400, "gpt-4", "output", 2_500),
-            window_figure("team-a", 86_400, "claude", "input", 500),
-            meter_figure("team-a", 86_400, "gpt-4", "vendor-a", "input", 4_000),
-            meter_figure("team-a", 86_400, "gpt-4", "azure", "input", 2_000),
-            window_figure("team-b", 86_400, "gpt-4", "input", 40),
+            window_figure("team-a", 86_400, "lane-4", "input", 6_000),
+            window_figure("team-a", 86_400, "lane-4", "output", 2_500),
+            window_figure("team-a", 86_400, "lane-c", "input", 500),
+            meter_figure("team-a", 86_400, "lane-4", "vendor-a", "input", 4_000),
+            meter_figure("team-a", 86_400, "lane-4", "vendor-b", "input", 2_000),
+            window_figure("team-b", 86_400, "lane-4", "input", 40),
         ],
         unreadable: Vec::new(),
         reads: std::cell::Cell::new(0),
@@ -184,7 +184,7 @@ fn the_opening_figures_are_the_legacy_figures_exactly() {
             totals,
             "team-a",
             CapDimension::Class("input".into()),
-            BucketScope::Pool("lane:gpt-4".into()),
+            BucketScope::Pool("lane:lane-4".into()),
             86_400,
         )
         .settled,
@@ -197,7 +197,7 @@ fn the_opening_figures_are_the_legacy_figures_exactly() {
             totals,
             "team-a",
             CapDimension::Class("output".into()),
-            BucketScope::Pool("lane:gpt-4".into()),
+            BucketScope::Pool("lane:lane-4".into()),
             86_400,
         )
         .settled,
@@ -209,7 +209,7 @@ fn the_opening_figures_are_the_legacy_figures_exactly() {
             totals,
             "team-a",
             CapDimension::Class("input".into()),
-            meter_pool_scope("gpt-4", "vendor-a"),
+            meter_pool_scope("lane-4", "vendor-a"),
             86_400,
         )
         .settled,
@@ -220,7 +220,7 @@ fn the_opening_figures_are_the_legacy_figures_exactly() {
             totals,
             "team-a",
             CapDimension::Class("input".into()),
-            meter_pool_scope("gpt-4", "azure"),
+            meter_pool_scope("lane-4", "vendor-b"),
             86_400,
         )
         .settled,
@@ -342,8 +342,8 @@ fn a_store_with_nothing_in_it_opens_at_zero_and_still_seals() {
 #[test]
 fn a_metering_row_with_no_provider_does_not_fold_into_the_window_row() {
     let figures = vec![
-        window_figure("team-a", 10, "gpt-4", "input", 100),
-        meter_figure("team-a", 10, "gpt-4", "", "input", 100),
+        window_figure("team-a", 10, "lane-4", "input", 100),
+        meter_figure("team-a", 10, "lane-4", "", "input", 100),
     ];
     let totals = opening_totals(&figures).expect("two figures fold");
     assert_eq!(
@@ -362,8 +362,8 @@ fn a_metering_row_with_no_provider_does_not_fold_into_the_window_row() {
 #[test]
 fn two_rows_for_one_balance_sum() {
     let figures = vec![
-        window_figure("team-a", 10, "gpt-4", "input", 100),
-        window_figure("team-a", 10, "gpt-4", "input", 25),
+        window_figure("team-a", 10, "lane-4", "input", 100),
+        window_figure("team-a", 10, "lane-4", "input", 25),
     ];
     let totals = opening_totals(&figures).expect("two figures fold");
     assert_eq!(totals.len(), 1);
@@ -373,8 +373,8 @@ fn two_rows_for_one_balance_sum() {
 /// B01 — TWO PROVIDERS WHOSE COMPOSITE KEYS COLLIDE UNDER A BARE DELIMITER KEEP SEPARATE BALANCES.
 ///
 /// The metering pool joins two components that are both free text read off the previous release's
-/// rows. Joined on a slash — `format!("meter:{lane}/{provider}")` — the lane `gpt/4` with provider
-/// `vendor-a` and the lane `gpt` with provider `4/vendor-a` both spell `meter:gpt/4/vendor-a`. They are
+/// rows. Joined on a slash — `format!("meter:{lane}/{provider}")` — the lane `lane/4` with provider
+/// `vendor-a` and the lane `lane` with provider `4/vendor-a` both spell `meter:lane/4/vendor-a`. They are
 /// two different rows charged to two different providers, and one key means ONE balance holding
 /// their SUM: two customers' money in one bucket, opened as a single wrong number with nothing left
 /// to compare it against. Length-framing each component fixes the boundary with a count the rows
@@ -384,10 +384,10 @@ fn two_rows_for_one_balance_sum() {
 /// only compared strings would still pass a framing that separated the keys but merged the figures.
 #[test]
 fn two_providers_that_collide_across_a_bare_delimiter_keep_their_own_opening_balances() {
-    // `"gpt/4" + "vendor-a"` and `"gpt" + "4/vendor-a"` — one string under the old join, two rows here.
+    // `"lane/4" + "vendor-a"` and `"lane" + "4/vendor-a"` — one string under the old join, two rows here.
     let figures = vec![
-        meter_figure("team-a", 86_400, "gpt/4", "vendor-a", "input", 4_000),
-        meter_figure("team-a", 86_400, "gpt", "4/vendor-a", "input", 25),
+        meter_figure("team-a", 86_400, "lane/4", "vendor-a", "input", 4_000),
+        meter_figure("team-a", 86_400, "lane", "4/vendor-a", "input", 25),
     ];
     let totals = opening_totals(&figures).expect("two figures open");
 
@@ -395,37 +395,37 @@ fn two_providers_that_collide_across_a_bare_delimiter_keep_their_own_opening_bal
         totals.len(),
         2,
         "two metering rows for two different (lane, provider) pairs are two balances, not one \
-         holding their sum — a bare `/` join spells both as `meter:gpt/4/vendor-a`"
+         holding their sum — a bare `/` join spells both as `meter:lane/4/vendor-a`"
     );
 
     let first = figures_for(
         &totals,
         "team-a",
         CapDimension::Class("input".into()),
-        meter_pool_scope("gpt/4", "vendor-a"),
+        meter_pool_scope("lane/4", "vendor-a"),
         86_400,
     );
     let second = figures_for(
         &totals,
         "team-a",
         CapDimension::Class("input".into()),
-        meter_pool_scope("gpt", "4/vendor-a"),
+        meter_pool_scope("lane", "4/vendor-a"),
         86_400,
     );
 
     assert_eq!(
         first.settled, 4_000,
-        "the `gpt/4` lane's provider opens at its OWN amount, not at the merged 4_025"
+        "the `lane/4` lane's provider opens at its OWN amount, not at the merged 4_025"
     );
     assert_eq!(
         second.settled, 25,
-        "and so does the `4/vendor-a` provider on the `gpt` lane"
+        "and so does the `4/vendor-a` provider on the `lane` lane"
     );
 
     // The framing itself: the two keys are distinct, and neither is the merged spelling.
     assert_ne!(
-        meter_pool_scope("gpt/4", "vendor-a"),
-        meter_pool_scope("gpt", "4/vendor-a"),
+        meter_pool_scope("lane/4", "vendor-a"),
+        meter_pool_scope("lane", "4/vendor-a"),
         "a delimiter inside a component must not be able to move the boundary onto its neighbour"
     );
 }
@@ -585,8 +585,8 @@ fn a_marker_that_cannot_be_written_is_an_error() {
 #[test]
 fn figures_that_do_not_fit_are_refused() {
     let figures = vec![
-        window_figure("team-a", 10, "gpt-4", "input", i128::MAX),
-        window_figure("team-a", 10, "gpt-4", "input", 1),
+        window_figure("team-a", 10, "lane-4", "input", i128::MAX),
+        window_figure("team-a", 10, "lane-4", "input", 1),
     ];
     assert!(matches!(
         opening_totals(&figures),
