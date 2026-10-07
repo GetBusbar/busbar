@@ -5046,8 +5046,8 @@ mod agent_door {
 
     /// THE `rejected` HALF of predev's `breaker_fastfail_tests.rs::battery` (lines 329-338), on one
     /// binding: trip the agent, then a fresh submission is refused `503` + `Retry-After`, never
-    /// dials, names the task it opened (`ResourceInfo`, `a2a.busbar/task`), and `tasks/get` on that
-    /// id answers `rejected`, the spec's "we did not accept this work", never `failed`. R-REJECTED,
+    /// dials, names the task it opened (`ResourceInfo`, `a2a.busbar/task`), and the store's row for that
+    /// id is `rejected`, the spec's "we did not accept this work", never `failed`. R-REJECTED,
     /// coordinator 2026-10-07: the refused piece reaches the plane with nothing sent, and the plane
     /// opens the task and settles it.
     async fn rejected_battery(
@@ -5108,22 +5108,27 @@ mod agent_door {
         assert!(body.contains("breaker_open"), "[{line}] {body}");
         assert!(!agent(), "[{line}] a tripped agent is never dialled");
         let task = refused_task_id(&body);
-        let get = format!(r#"{{"id":"{task}"}}"#);
-        let (status, held) =
-            answered(&s.router, rpc("planner", "tasks/get", &get, Some(&s.token))).await;
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "[{line}] the named task resolves: {held}"
-        );
-        let doc: serde_json::Value = serde_json::from_str(&held).expect("a task");
-        let state = doc["result"]["status"]["state"]
+        // The row the refusal names, read from busbar's own store as predev's cell read it
+        // (`TASKS.get_unscoped`): `ListTasks` is answered by the plane from the caller's task
+        // records. (`tasks/get` is relayed to the agent, as predev relayed `GetTask`, so with the
+        // breaker open it is refused in the breaker's words and cannot read the row.)
+        let (status, listed) =
+            answered(&s.router, rpc("planner", "ListTasks", "{}", Some(&s.token))).await;
+        assert_eq!(status, StatusCode::OK, "[{line}] {listed}");
+        let listed: serde_json::Value = serde_json::from_str(&listed).expect("a listing");
+        let row = listed["result"]["tasks"]
+            .as_array()
+            .and_then(|tasks| tasks.iter().find(|t| t["id"] == task.as_str()))
+            .unwrap_or_else(|| {
+                panic!("[{line}] the named task must resolve in the store: {listed}")
+            });
+        let state = row["status"]["state"]
             .as_str()
             .unwrap_or_default()
             .to_ascii_lowercase();
         assert!(
             state.contains("rejected"),
-            "[{line}] a breaker refusal is `rejected`, never `failed`: {held}"
+            "[{line}] a breaker refusal is `rejected`, never `failed`: {row}"
         );
     }
 

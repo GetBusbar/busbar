@@ -1097,9 +1097,12 @@ fn an_opening_states_the_engines_answer_should_the_store_refuse_its_writes() {
         Opened::Hop { unrecorded, .. } => unrecorded,
         Opened::Refused(reply) => panic!("refused: {reply:?}"),
     };
-    let mut first = desk();
+    // Each stage opens on a fresh desk: the constructor is kept under its own name, since the
+    // desks below shadow `desk`.
+    let new_desk = desk;
+    let mut desk = new_desk();
     let fresh = unrecorded(opened(
-        &mut first,
+        &mut desk,
         &send(json!({ "message": { "messageId": "m" } })),
         ALICE,
     ))
@@ -1111,7 +1114,7 @@ fn an_opening_states_the_engines_answer_should_the_store_refuse_its_writes() {
             "error": { "code": -32603, "message": "the task could not be recorded" } })
     );
 
-    let mut desk = desk();
+    let mut desk = new_desk();
     let mut out = Vec::new();
     let at = Step {
         caller: ALICE,
@@ -1145,7 +1148,7 @@ fn an_opening_states_the_engines_answer_should_the_store_refuse_its_writes() {
         } })
     );
 
-    let mut desk = desk();
+    let mut desk = new_desk();
     let addressed = unrecorded(opened(
         &mut desk,
         &send(json!({
