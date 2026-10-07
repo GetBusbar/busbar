@@ -377,6 +377,8 @@ boot.refusal|BOOT-092|validate
 boot.refusal|BOOT-093|validate
 boot.refusal|BOOT-100|validate
 boot.refusal|BOOT-101|validate
+boot.refusal|BOOT-102|validate
+boot.refusal|BOOT-103|validate
 boot.refusal|BOOT-105a|validate
 boot.refusal|BOOT-105b|validate
 boot.refusal|BOOT-105c|validate

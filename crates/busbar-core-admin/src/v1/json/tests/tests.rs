@@ -88,7 +88,7 @@ fn openapi_doc_is_31_and_v1_prefixed() {
         "discovery doc is OpenAPI 3.1"
     );
     assert_eq!(doc["info"]["version"], env!("CARGO_PKG_VERSION"));
-    let prefix = format!("{}/", busbar_kernel::admin::v1::contract::ADMIN_PREFIX);
+    let prefix = format!("{}/", crate::v1::contract::ADMIN_PREFIX);
     for path in doc["paths"].as_object().unwrap().keys() {
         assert!(
             path.starts_with(&prefix),
@@ -133,9 +133,7 @@ fn openapi_paths_annotate_required_scope() {
     // and enforces the auth middleware, so comparing the annotation against a call to that same
     // function is a tautology: editing the matrix moves both sides together and can never fail.
     fn expected_scope(method: &str, path: &str) -> &'static str {
-        use busbar_kernel::admin::v1::contract::{
-            ADMIN_PREFIX, PATH_CONFIG_VALIDATE, PATH_PLUGINS_INSPECT,
-        };
+        use crate::v1::contract::{ADMIN_PREFIX, PATH_CONFIG_VALIDATE, PATH_PLUGINS_INSPECT};
         if method == "get" || method == "head" {
             return "read-only";
         }
@@ -216,11 +214,12 @@ fn openapi_operations_carry_stable_operation_ids() {
     // one of them noticing the other: 76 was correct for either section alone and wrong for both
     // together.
     //
-    // 98 = those 81 + the 17 operations the 1.6.0 closed verb table adds, every one with its effect
-    // bound since owner answer Q71(2) (9 money-governance verbs, 5 ledger views, 3 audit-chain
-    // reads), which the node's administrative loop answers and which the one document describes
-    // (items 45/46: no side-car document).
-    assert_eq!(checked, 98, "expected exactly 98 admin operations");
+    // 101 = those 81 + the 20 operations the 1.6.0 closed verb table adds, every one with its
+    // effect bound since owner answer Q71(2) (9 money-governance verbs, 5 ledger views, 3
+    // audit-chain reads) and the ARCHITECT's 2026-10-06 trust verbs (`GET /trust`,
+    // `POST /trust/approve`, `POST /trust/revoke`), which the node's administrative loop answers
+    // and which the one document describes (items 45/46: no side-car document).
+    assert_eq!(checked, 101, "expected exactly 101 admin operations");
     // Spot-check the exact naming scheme against a few representative paths.
     assert_eq!(
         doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
@@ -301,7 +300,7 @@ fn openapi_error_enum_matches_admin_error_codes() {
         AdminError::not_found(""),
         AdminError::Unauthorized,
         AdminError::Forbidden {
-            needed: busbar_kernel::admin::v1::contract::Scope::Full,
+            needed: crate::v1::contract::Scope::Full,
         },
         AdminError::MethodNotAllowed,
         AdminError::Validation(String::new()),
@@ -567,7 +566,7 @@ fn openapi_every_operation_has_a_typed_response_schema() {
 /// enum can no longer be right while a per-endpoint response set is wrong.
 #[test]
 fn err_kind_bridges_every_admin_error_variant() {
-    use busbar_kernel::admin::v1::contract::taxonomy::{err_kind_of, ErrKind};
+    use crate::v1::contract::taxonomy::{err_kind_of, ErrKind};
     let declarable = [
         (AdminError::not_found(""), ErrKind::NotFound),
         (AdminError::Validation(String::new()), ErrKind::Validation),
@@ -578,7 +577,7 @@ fn err_kind_bridges_every_admin_error_variant() {
         (AdminError::Conflict(String::new()), ErrKind::Conflict),
         (
             AdminError::Forbidden {
-                needed: busbar_kernel::admin::v1::contract::Scope::Full,
+                needed: crate::v1::contract::Scope::Full,
             },
             ErrKind::Forbidden,
         ),
@@ -617,11 +616,9 @@ fn err_kind_bridges_every_admin_error_variant() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn declared_errors_is_total_and_well_formed() {
-    use busbar_kernel::admin::v1::contract::taxonomy::{
-        declared_errors, declared_responses, MethodTag,
-    };
+    use crate::v1::contract::taxonomy::{declared_errors, declared_responses, MethodTag};
     let doc = openapi_doc_seamed();
-    let prefix = busbar_kernel::admin::v1::contract::ADMIN_PREFIX;
+    let prefix = crate::v1::contract::ADMIN_PREFIX;
     for (path, methods) in doc["paths"].as_object().expect("paths") {
         let rel = path.strip_prefix(prefix).unwrap_or(path);
         for (key, op) in methods.as_object().expect("methods") {
@@ -769,13 +766,14 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
     );
     assert_eq!(
-        declared, 32,
-        "32 mutating operations take a body; a change here is a deliberate API change. 32 = 22 \
+        declared, 34,
+        "34 mutating operations take a body; a change here is a deliberate API change. 34 = 22 \
          + each plane section's PUT and PATCH-settings (both DELETEs are bodyless, above) + the \
          agents plane's approve verb, whose body carries the fingerprint the \
-         operator is attesting they read + the five 1.6.0 kernel verbs that read one \
-         (`store-restore`, `adjust`, `ledger/amend-rate-history`, and since owner answer Q71(2) \
-         `plane-record-write` and `commit-upgrade`)"
+         operator is attesting they read + the seven 1.6.0 kernel verbs that read one \
+         (`store-restore`, `adjust`, `ledger/amend-rate-history`, since owner answer Q71(2) \
+         `plane-record-write` and `commit-upgrade`, and the ARCHITECT's 2026-10-06 \
+         `trust/approve` and `trust/revoke`, whose body names the trust key)"
     );
 }
 

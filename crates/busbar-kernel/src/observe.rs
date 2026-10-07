@@ -9,16 +9,15 @@
 //!
 //! ## One validator, for every kind
 //!
-//! The entries are validated by [`crate::hooks::wire::parse_status_metrics`] — the SAME function,
+//! The entries are validated by [`busbar_contract::hook_wire::reply::parse_status_metrics`] — the SAME function,
 //! not a copy of it. That function is the 1.5.5 hook validator, byte for byte: it caps entries at 64
 //! and labels at 8, enforces `^[a-z][a-z0-9_]{0,63}$` on every name and label key, requires every
 //! number to be finite, sanitizes and length-bounds every string, and DROPS a malformed entry whole
 //! while its siblings survive. #85 says hook's path is the model; using the model means calling it,
 //! not reimplementing it beside it.
 //!
-//! *(Its name still says `hook` because it still lives under `hooks::wire`. Moving it to a neutral
-//! home is a rename owed once the hook module is folded — the hook kind is a 1.6.0 FUNCTIONAL FIXED
-//! POINT, so relocating its code is a thing to do deliberately and not as a rider on this.)*
+//! *(Its name still says `hook`: it is the hook reply wire, which P2 D4 moved from the kernel's
+//! `hooks::wire` to the contract's `hook_wire::reply`, unchanged.)*
 //!
 //! ## What the host REFUSES, and why each refusal exists
 //!
@@ -33,7 +32,7 @@
 //!
 //! ## Where this lives
 //!
-//! A submodule of [`crate::metrics`], because deciding what a plugin is allowed to have put into the
+//! A submodule of [`crate::snapshot`], because deciding what a plugin is allowed to have put into the
 //! recorder is that module's business and this is installed from its `configure`. The file is at
 //! `src/observe.rs` regardless — a module's home in the tree says what it belongs to; its home on
 //! disk says nothing.
@@ -70,7 +69,7 @@ const RESERVED_PREFIX: &str = "busbar_";
 /// view of request content from smuggling it into a scrape), and anything in the reserved
 /// [`RESERVED_PREFIX`] namespace.
 pub(crate) fn admits_metric_name(name: &str) -> bool {
-    crate::hooks::wire::valid_metric_name(name) && !name.starts_with(RESERVED_PREFIX)
+    busbar_contract::hook_wire::reply::valid_metric_name(name) && !name.starts_with(RESERVED_PREFIX)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -86,7 +85,7 @@ pub(crate) fn admits_metric_name(name: &str) -> bool {
 /// resource exhaustion reachable from an untrusted plugin, which is the class the dep-wall and the
 /// capability-ABI exist to close everywhere else.
 ///
-/// 64 is [`crate::hooks::wire::MAX_HOOK_METRICS`]'s number, deliberately: that is the per-reply cap a
+/// 64 is [`busbar_contract::hook_wire::reply::MAX_HOOK_METRICS`]'s number, deliberately: that is the per-reply cap a
 /// hook has lived inside since 1.5.0, so it is a bound a real plugin has already been shown to fit.
 pub(crate) const MAX_SERIES_PER_PLUGIN: usize = 64;
 
@@ -225,7 +224,7 @@ pub(crate) fn admits_cardinality_opaque(plugin: &str, series: &str, labels: &[u8
 /// process's recorder and diagnostics path.
 ///
 /// Zero-sized. It holds no state because it owns none: the recorder it writes to is the
-/// process-global one ([`crate::metrics`]) and the catalogue it resolves against is static.
+/// process-global one ([`crate::snapshot`]) and the catalogue it resolves against is static.
 pub struct KernelPluginObserver;
 
 /// WHAT THE LOADER GRANTED AT OPEN, as the kernel's observer asks it: whether a plugin was opened
@@ -241,9 +240,9 @@ pub trait Grants: Send + Sync {
 
 impl KernelPluginObserver {
     /// Count `observations` plugin back-channels the loader's bounded intake dropped
-    /// ([`crate::metrics::PLUGIN_OBSERVATIONS_DROPPED_TOTAL`]).
+    /// ([`crate::snapshot::PLUGIN_OBSERVATIONS_DROPPED_TOTAL`]).
     pub fn dropped(&self, observations: u64) {
-        metrics::counter!(crate::metrics::PLUGIN_OBSERVATIONS_DROPPED_TOTAL)
+        metrics::counter!(crate::snapshot::PLUGIN_OBSERVATIONS_DROPPED_TOTAL)
             .increment(observations);
     }
 
@@ -297,7 +296,7 @@ fn fold_metrics(grants: &dyn Grants, plugin: &str, raw: &[serde_json::Value]) {
     }
     // THE ONE VALIDATOR (see the module doc). Everything after this line is working with entries
     // that are already name-checked, finite, bounded and sanitized.
-    for m in crate::hooks::wire::parse_status_metrics(raw) {
+    for m in busbar_contract::hook_wire::reply::parse_status_metrics(raw) {
         // THE FIRST-PARTY NAMESPACE (K9a S1): a series the loader GRANTED this plugin at open — a
         // first-party plugin's declared series, of its declared type — is the host's to render as
         // declared: it may be reserved, and it carries no provenance label.
@@ -375,7 +374,10 @@ fn warn_cardinality_once(plugin: &str, series: &str) {
 /// uniqueness, and a duplicate label name is a parse error that costs the whole scrape rather than
 /// the one sample. Exactly the rule `hooks::scrape::render_labels` applies, and for exactly that
 /// reason.
-fn labels_for(plugin: Option<&str>, m: &crate::hooks::wire::HookMetric) -> Vec<metrics::Label> {
+fn labels_for(
+    plugin: Option<&str>,
+    m: &busbar_contract::hook_wire::reply::HookMetric,
+) -> Vec<metrics::Label> {
     let provenance = plugin.map(|p| metrics::Label::new(PLUGIN_LABEL, p.to_string()));
     let mut labels: Vec<metrics::Label> = provenance.into_iter().collect();
     if let Some(own) = &m.labels {
@@ -425,16 +427,17 @@ fn fold_diagnostics(grants: &dyn Grants, plugin: &str, raw: &[serde_json::Value]
             crate::diagnostics::emit(diag, tracing_level(level), &d.message, &fields);
             continue;
         }
-        let message = crate::hooks::wire::sanitize_cap(&d.message, MAX_DIAG_MESSAGE_CHARS);
+        let message =
+            busbar_contract::hook_wire::reply::sanitize_cap(&d.message, MAX_DIAG_MESSAGE_CHARS);
         let fields = d
             .fields
             .iter()
             .take(MAX_DIAG_FIELDS)
-            .filter(|(k, _)| crate::hooks::wire::valid_metric_name(k))
+            .filter(|(k, _)| busbar_contract::hook_wire::reply::valid_metric_name(k))
             .map(|(k, v)| {
                 format!(
                     "{k}={}",
-                    crate::hooks::wire::sanitize_cap(v, MAX_DIAG_FIELD_CHARS)
+                    busbar_contract::hook_wire::reply::sanitize_cap(v, MAX_DIAG_FIELD_CHARS)
                 )
             })
             .collect::<Vec<_>>()

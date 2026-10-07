@@ -1137,7 +1137,7 @@ fn pkce_code_challenge_is_s256_of_verifier() {
 /// stays exempt; `/metrics` still 401s; and the bypass is EXACT-MATCH (no `/auth` prefix over-match).
 #[tokio::test]
 async fn auth_token_bypasses_middleware_exact_match() {
-    crate::metrics::init();
+    crate::snapshot::init();
     // A chain that 401s every un-exempt request: the built-in `keys` verifier with no key presented.
     let mut cfg = crate::config::AuthCfg::default_none();
     cfg.chain = vec![crate::config::AuthChainEntry::bare("keys")];
@@ -1196,7 +1196,7 @@ async fn auth_token_bypasses_middleware_exact_match() {
 
 #[tokio::test]
 async fn auth_token_absent_from_admin_router() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = crate::test_support::TestApp::new()
         .admin_chain(vec![]) // open admin posture so a hit would reach a handler, not 401
         .public_url("https://busbar.example.com")
@@ -1244,7 +1244,7 @@ async fn auth_token_absent_from_admin_router() {
 /// generated at mount time exists to make impossible.
 #[tokio::test]
 async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = crate::test_support::TestApp::new()
         .keys_chain() // a CLOSED data-plane posture: no credential ⇒ 401
         .public_url("https://busbar.example.com")
@@ -1296,7 +1296,7 @@ async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
 /// undeclared method on a declared-open path takes the normal bar.
 #[tokio::test]
 async fn core_route_bypass_is_exact_in_path_and_method() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let mut cfg = crate::config::AuthCfg::default_none();
     cfg.chain = vec![crate::config::AuthChainEntry::bare("keys")];
     let auth = std::sync::Arc::new(crate::auth::AuthMiddleware::new_builtin(&cfg));
@@ -1780,4 +1780,198 @@ async fn callback_security_check_failed_renders_the_state_mismatch_bytes() {
         a, b,
         "one page for a state mismatch and a failed security check"
     );
+}
+
+// ── THE LOGIN ON THE AUTH KIND'S DOOR ─────────────────────────────────────────────────────────────
+//
+// A login plugin on the door (an IdP module the auth axis opened) makes its own token exchange over
+// its own need with the client secret it was lent at `open`, and binds the IdP's answer to the
+// login's nonce itself (THE DESIGN 6.7). The core still mints PKCE/state/nonce, checks `state`
+// against the cookie before anything is asked, hands the plugin ONE `complete_login` carrying the
+// cookie's state and nonce, and renders the plugin's answer exactly as the cold hop loop renders
+// the same outcome.
+
+/// A door stand-in: answers `begin_login`/`complete_login` from fixed outcomes, recording every
+/// `complete_login` it was handed.
+struct DoorLogin {
+    begin: LoginOutcome,
+    complete: LoginOutcome,
+    seen: std::sync::Mutex<Vec<busbar_contract::auth_calls::LoginCallback>>,
+}
+
+impl DoorLogin {
+    fn new(complete: LoginOutcome) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            begin: LoginOutcome::Authorize("https://idp.example.com/authorize?x=1".into()),
+            complete,
+            seen: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for DoorLogin {
+    fn name(&self) -> &str {
+        "door-login"
+    }
+    fn facts(&self) -> u32 {
+        0
+    }
+    fn verify_now(
+        &self,
+        _: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        None
+    }
+    fn verify(
+        &self,
+        _: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        unreachable!("the login flow never verifies")
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+    fn login_kind(&self) -> Option<LoginKind> {
+        Some(LoginKind::Redirect)
+    }
+    fn begin_login(&self, _: BeginLogin) -> Box<dyn busbar_contract::auth_calls::LoginCall> {
+        Box::new(busbar_contract::auth_calls::LoginSettled(Some(
+            self.begin.clone(),
+        )))
+    }
+    fn complete_login(
+        &self,
+        request: busbar_contract::auth_calls::LoginCallback,
+    ) -> Box<dyn busbar_contract::auth_calls::LoginCall> {
+        self.seen.lock().unwrap().push(request);
+        Box::new(busbar_contract::auth_calls::LoginSettled(Some(
+            self.complete.clone(),
+        )))
+    }
+}
+
+fn door_app(door: std::sync::Arc<DoorLogin>) -> std::sync::Arc<crate::state::App> {
+    crate::test_support::TestApp::new()
+        .public_url("https://busbar.example.com")
+        .login_method_door("idp", door, LoginKind::Redirect, true)
+        .build()
+}
+
+fn door_cookie() -> LoginCookie {
+    LoginCookie {
+        method: "idp".into(),
+        code_verifier: "the-verifier".into(),
+        state: "st".into(),
+        nonce: "the-core-nonce".into(),
+        refresh: false,
+    }
+}
+
+/// `begin` on the door 302s to the plugin's authorize URL and sets the login cookie, as the cold
+/// lane does.
+#[tokio::test]
+async fn a_door_login_begins_with_the_plugins_authorize_url() {
+    let app = door_app(DoorLogin::new(LoginOutcome::Reject));
+    let resp = begin(&app, "idp", false).await;
+    assert_eq!(resp.status().as_u16(), 302);
+    assert_eq!(
+        resp.headers().get(header::LOCATION).unwrap(),
+        "https://idp.example.com/authorize?x=1"
+    );
+    assert!(resp
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .any(|v| v.to_str().unwrap_or("").starts_with("busbar_login=")));
+}
+
+/// The callback hands the door ONE `complete_login` carrying the code, the redirect URI, the PKCE
+/// verifier and the cookie's state and nonce (the plugin binds the IdP's answer to the nonce).
+#[tokio::test]
+async fn a_door_callback_hands_the_plugin_the_cookies_state_and_nonce() {
+    let door = DoorLogin::new(LoginOutcome::Reject);
+    let app = door_app(door.clone());
+    let resp = callback(
+        &app,
+        &cred_handle(&app),
+        Some(door_cookie().encode()),
+        "the-code".into(),
+        Some("st".into()),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 401, "a declined login");
+    let seen = door.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "one complete_login, no hop loop: {seen:?}");
+    assert_eq!(seen[0].state, "st");
+    assert_eq!(seen[0].nonce.as_deref(), Some("the-core-nonce"));
+    assert_eq!(seen[0].login.code.as_deref(), Some("the-code"));
+    assert_eq!(
+        seen[0].login.redirect_uri.as_deref(),
+        Some("https://busbar.example.com/auth/token")
+    );
+    assert_eq!(seen[0].login.code_verifier.as_deref(), Some("the-verifier"));
+    assert!(
+        seen[0].login.token_response.is_none(),
+        "the core runs no token exchange for a door plugin"
+    );
+}
+
+/// RED: a callback whose `state` is not the cookie's never reaches the door.
+#[tokio::test]
+async fn a_door_callback_with_a_foreign_state_asks_the_plugin_nothing() {
+    let door = DoorLogin::new(LoginOutcome::Identify(Principal::from_id("alice")));
+    let app = door_app(door.clone());
+    let resp = callback(
+        &app,
+        &cred_handle(&app),
+        Some(door_cookie().encode()),
+        "the-code".into(),
+        Some("FOREIGN".into()),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 400);
+    assert!(door.seen.lock().unwrap().is_empty());
+}
+
+/// Every door answer renders the page the cold hop loop renders for the same outcome: a failed
+/// security check, an unreachable IdP, a declined login, and an identity with no self-serve grant.
+#[tokio::test]
+async fn a_door_callback_renders_each_answer_as_the_cold_loop_does() {
+    for (outcome, status, heading) in [
+        (
+            LoginOutcome::SecurityCheckFailed,
+            400,
+            "Sign-in couldn't be verified",
+        ),
+        (LoginOutcome::Reject, 401, "Sign-in was declined"),
+        (
+            LoginOutcome::Identify(Principal::from_id("alice")),
+            403,
+            "No access yet",
+        ),
+    ] {
+        let app = door_app(DoorLogin::new(outcome.clone()));
+        let resp = callback(
+            &app,
+            &cred_handle(&app),
+            Some(door_cookie().encode()),
+            "the-code".into(),
+            Some("st".into()),
+        )
+        .await;
+        assert_eq!(resp.status().as_u16(), status, "{outcome:?}");
+        assert_branded_error_page(&body_of(resp), heading);
+    }
+    let app = door_app(DoorLogin::new(LoginOutcome::Outage));
+    let unreachable = callback(
+        &app,
+        &cred_handle(&app),
+        Some(door_cookie().encode()),
+        "the-code".into(),
+        Some("st".into()),
+    )
+    .await;
+    let cold = provider_unreachable();
+    assert_eq!(unreachable.status(), cold.status());
+    assert_eq!(body_of(unreachable), body_of(cold));
 }

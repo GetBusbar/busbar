@@ -74,7 +74,7 @@ use std::time::Duration;
 use busbar_contract::abi::host::conn::connector::{
     DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
-use busbar_contract::abi::host::service::DEST_PLAINTEXT;
+use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_PLAINTEXT, DEST_UNRESOLVABLE};
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::transport::{ROLE_CARRIER, ROLE_FRAMER};
 use busbar_contract::conn::{
@@ -200,9 +200,46 @@ fn class_admits(egress_class: u32, secure: bool, within: &[IpAddr], addr: Socket
     (within.is_empty() || within.contains(&addr.ip()))
         && match egress_class {
             EGRESS_OPEN_WEB => secure,
-            EGRESS_LOOPBACK_ALLOWED => secure || addr.ip().is_loopback(),
+            EGRESS_LOOPBACK_ALLOWED => secure || guard::is_loopback(addr.ip()),
             _ => true,
         }
+}
+
+/// WHAT A JUDGEMENT THAT PENDED ON A RESOLUTION ANSWERS THE CONNECTION'S CALLER (ARCHITECT parity
+/// ruling A1). A name that did not resolve ([`DEST_UNRESOLVABLE`]), or resolved to no address
+/// ([`DEST_NO_ADDRESSES`]), is a FAILED connection, the same failure a dial that found no far end
+/// is ([`ConnError::Fault`], a FAILED outcome to a plugin): 1.5.5 held "a resolution FAILURE is not
+/// a rejection. A collector whose DNS is briefly down is an availability event, not a security one"
+/// (v1.5.5 `crates/busbar/src/observability.rs:588-590`, `otlp_resolves_to_internal`; its test
+/// `otlp_resolve_check_allows_a_name_that_does_not_resolve`, `:1482-1490`), and its exporter
+/// failed that batch and sent the next. Every other verdict is the guard's refusal
+/// ([`ConnError::Refused`], a REFUSED outcome, which a sink reads as the run's answer). A verdict
+/// decided at once is never a resolution's ([`DialJudge::judge_dial`]), so only a pended one is
+/// read here.
+fn pended_verdict(v: Verdict) -> ConnError {
+    match v {
+        DEST_UNRESOLVABLE | DEST_NO_ADDRESSES => ConnError::Fault,
+        _ => ConnError::Refused,
+    }
+}
+
+/// THE HEAD A PLUGIN WROTE, held to 1.5.5's rule for a plugin-described request (ARCHITECT parity
+/// ruling A5; v1.5.5 `crates/busbar/src/auth/token.rs:805` `FORBIDDEN_HOP_HEADERS`, `:893-907`
+/// `sanitize_hop_header`): a CR, LF or NUL in the target, a head word, a field name or a field
+/// value, or a field that states the message's own framing (`content-length`,
+/// `transfer-encoding`, any case), refuses the whole open before anything is dialled or sent. The
+/// framer writes the framing for the bytes it sends; a plugin's own would describe another wire.
+fn head_is_refused(desc: &OpenDesc<'_>) -> bool {
+    const FRAMING: [&str; 2] = ["content-length", "transfer-encoding"];
+    let breaks = |b: &[u8]| b.iter().any(|c| matches!(c, b'\r' | b'\n' | b'\0'));
+    breaks(desc.target.as_bytes())
+        || breaks(desc.method)
+        || breaks(desc.head_target)
+        || desc.fields.iter().any(|(name, value)| {
+            breaks(name.as_bytes())
+                || breaks(value)
+                || FRAMING.iter().any(|f| name.trim().eq_ignore_ascii_case(f))
+        })
 }
 
 /// What the connector holds for one declared need: the entry serving its transport, resolved once
@@ -841,7 +878,7 @@ impl Connector {
                 Some(got) => got,
             }
         };
-        let addr = got.map_err(|_| ConnError::Refused)?;
+        let addr = got.map_err(pended_verdict)?;
         let secure = j.planned.as_ref().is_some_and(Planned::secure);
         if !class_admits(j.egress_class, secure, &j.within, addr) {
             // The refusal stays the connection's answer.
@@ -1344,6 +1381,9 @@ impl Conns for Connector {
         desc: &OpenDesc<'_>,
     ) -> Result<ConnId, ConnError> {
         self.slab.check_need(caller, need)?;
+        if head_is_refused(desc) {
+            return Err(ConnError::Refused);
+        }
         // A need declared without a transport (an inbound need) dials nothing.
         let DeclaredNeed {
             door,
