@@ -1603,21 +1603,21 @@ fn token_exchange_binding(
     }))
 }
 
-/// THE `upstream_credential:` BINDING of the registration `registration` (`entry`): busbar's own
-/// credential for the member, its `secret` reference resolved here (the plane validates the block
-/// and never resolves it: `BUSBAR-1.6.0.md` Part 3 section 4, "credentials are auth objects, never a
-/// host-minted header"), opened by the auth plugin serving the style its `placement` names:
-/// `bearer` (absent = it) presents `authorization: Bearer <secret>`, `{header: <name>}` presents
-/// the secret verbatim in that header (the `api-key` style over that header). The kernel presents
-/// it on every request to the member through the auth kind's per-request call. `None` when the
-/// registration states no such block.
+/// THE `upstream_credential:` BINDING of the registration `registration` (the member
+/// `member_name`): busbar's own credential for the member, its `secret` reference resolved here
+/// (the plane validates the block and never resolves it: `BUSBAR-1.6.0.md` Part 3 section 4,
+/// "credentials are auth objects, never a host-minted header"), opened by the auth plugin serving
+/// the style its `placement` names: `bearer` (absent = it) presents `authorization: Bearer
+/// <secret>`, `{header: <name>}` presents the secret verbatim in that header (the `api-key` style
+/// over that header). The kernel presents it on every request to the member through the auth
+/// kind's per-request call. `None` when the registration states no such block.
 ///
 /// # Errors
 ///
 /// The block is malformed, its secret does not resolve, or no auth plugin serves or will bind the
 /// style: the load is refused, naming the member.
 fn upstream_credential_binding(
-    entry: &str,
+    member_name: &str,
     registration: &serde_yaml::Value,
     reach: &DoorReach<'_>,
 ) -> Result<Option<busbar_kernel::plane_driver::AuthBinding>, String> {
@@ -1635,50 +1635,63 @@ fn upstream_credential_binding(
     let secret: busbar_contract::secret_ref::SecretRef = block
         .get(CREDENTIAL_SECRET_KEY)
         .cloned()
-        .ok_or_else(|| format!("member '{entry}': its upstream credential states no secret"))
+        .ok_or_else(|| {
+            format!(
+                "member '{member_name}': its `{UPSTREAM_CREDENTIAL_KEY}` states no \
+                 `{CREDENTIAL_SECRET_KEY}`"
+            )
+        })
         .and_then(|v| {
-            serde_yaml::from_value(v)
-                .map_err(|e| format!("member '{entry}': its upstream credential's secret: {e}"))
+            // The decoder's own error is NOT carried: its input is where an operator pastes the
+            // secret itself, and a decoder names what it could not read (a flow map `{sk-...}` is
+            // an "unknown field" quoting it). The refusal names the binding and the shapes.
+            serde_yaml::from_value(v).map_err(|_| {
+                format!(
+                    "member '{member_name}': its \
+                     `{UPSTREAM_CREDENTIAL_KEY}.{CREDENTIAL_SECRET_KEY}` is not a secret \
+                     reference (the value is not echoed): use {{ env: <VAR> }}, \
+                     {{ file: <path> }} or {{ module: <secret-module>, settings: {{…}} }}"
+                )
+            })
         })?;
-    let (style, settings) = match block.get(CREDENTIAL_PLACEMENT_KEY) {
-        None => (BEARER_STYLE, serde_json::json!({})),
-        Some(p) if p.as_str() == Some(PLACEMENT_BEARER) => (BEARER_STYLE, serde_json::json!({})),
+    let (style, header) = match block.get(CREDENTIAL_PLACEMENT_KEY) {
+        None => (BEARER_STYLE, None),
+        Some(p) if p.as_str() == Some(PLACEMENT_BEARER) => (BEARER_STYLE, None),
         Some(p) => match p
             .get(PLACEMENT_HEADER_KEY)
             .and_then(serde_yaml::Value::as_str)
         {
-            Some(header) if !header.is_empty() => (
-                HEADER_STYLE,
-                serde_json::json!({ PLACEMENT_HEADER_KEY: header }),
-            ),
+            Some(header) if !header.is_empty() => (HEADER_STYLE, Some(header.to_string())),
             _ => {
                 return Err(format!(
-                    "member '{entry}': its upstream credential's placement is neither \
+                    "member '{member_name}': its upstream credential's placement is neither \
                      `{PLACEMENT_BEARER}` nor `{{{PLACEMENT_HEADER_KEY}: <name>}}`"
                 ))
             }
         },
     };
+    let settings = placement_settings(header.as_deref());
     let credential = busbar_contract::redacted::Redacted::new(
         reach
             .secrets
             .resolve_string(&secret)
             .map_err(|e| {
                 format!(
-                    "member '{entry}': busbar's own upstream credential for it cannot resolve: {e}"
+                    "member '{member_name}': busbar's own upstream credential for it cannot \
+                     resolve: {e}"
                 )
             })?
             .into_bytes(),
     );
     let (auth, decl) = reach.auths.serving(style, &settings)?.ok_or_else(|| {
         format!(
-            "member '{entry}': no linked or dropped-in auth plugin serves the style '{style}' its \
-             upstream credential is presented under"
+            "member '{member_name}': no linked or dropped-in auth plugin serves the style \
+             '{style}' its upstream credential is presented under"
         )
     })?;
     let handle = auth
         .open_outbound(style, credential.expose_secret(), &settings)
-        .map_err(|e| format!("member '{entry}' {e}"))?;
+        .map_err(|e| format!("member '{member_name}' {e}"))?;
     // RE-RESOLVED ON EVERY HOP, as the previous plane read it: the binding holds the reference and
     // the digest of the value its handle was opened with, never the value.
     let per_hop = PerHop {
@@ -1686,7 +1699,7 @@ fn upstream_credential_binding(
         secrets: Arc::clone(&reach.secrets),
         auth: Arc::clone(&auth),
         style,
-        settings,
+        header,
         held: Mutex::new((
             busbar_contract::abi::sdk::digest::sha256(credential.expose_secret()),
             handle,
@@ -1703,18 +1716,28 @@ fn upstream_credential_binding(
     }))
 }
 
+/// THE OUTBOUND SETTINGS an `upstream_credential:` placement opens its style under: none for
+/// `bearer`, `{header: <name>}` for a named header. Built from the typed placement each time a
+/// binding opens, so no binding holds a settings bag.
+fn placement_settings(header: Option<&str>) -> serde_json::Value {
+    header.map_or_else(
+        || serde_json::json!({}),
+        |name| serde_json::json!({ busbar_contract::section::PLACEMENT_HEADER_KEY: name }),
+    )
+}
+
 /// A REGISTRATION'S OWN CREDENTIAL, RE-RESOLVED ON EVERY HOP (`upstream_credential:`): the
-/// reference, the secret seam it resolves through, the auth instance and style it is bound under,
-/// and, under one lock, the SHA-256 of the value the current handle was opened with beside that
-/// handle. A hop re-resolves the value and re-opens the binding only when its digest changed, so
-/// handles grow by rotations and never by hops; the value itself is dropped once compared or
-/// opened, never kept.
+/// reference, the secret seam it resolves through, the auth instance, the style it is bound under
+/// and the header a named-header placement names, and, under one lock, the SHA-256 of the value
+/// the current handle was opened with beside that handle. A hop re-resolves the value and re-opens
+/// the binding only when its digest changed, so handles grow by rotations and never by hops; the
+/// value itself is dropped once compared or opened, never kept.
 struct PerHop {
     secret: busbar_contract::secret_ref::SecretRef,
     secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
     auth: Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
     style: &'static str,
-    settings: serde_json::Value,
+    header: Option<String>,
     held: Mutex<([u8; 32], u64)>,
 }
 
@@ -1730,7 +1753,7 @@ impl std::fmt::Debug for PerHop {
         f.debug_struct("PerHop")
             .field("secret", &"<redacted; re-resolved per hop>")
             .field("style", &self.style)
-            .field("settings", &self.settings)
+            .field("header", &self.header)
             .field("handle", &handle)
             .finish_non_exhaustive()
     }
@@ -1749,7 +1772,11 @@ impl busbar_contract::auth_calls::PerRequestHandle for PerHop {
         if !busbar_contract::redacted::constant_time_eq(&held.0, &digest) {
             let handle = self
                 .auth
-                .open_outbound(self.style, value.expose_secret(), &self.settings)
+                .open_outbound(
+                    self.style,
+                    value.expose_secret(),
+                    &placement_settings(self.header.as_deref()),
+                )
                 .ok()?;
             *held = (digest, handle);
         }
