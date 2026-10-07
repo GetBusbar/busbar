@@ -178,7 +178,6 @@ fn the_kernels_trust_verdict_is_rendered_and_never_judged_here() {
                 asked.push((entry.server.clone(), entry.tool.clone()));
                 trust.clone()
             },
-            &|_| false,
             &mut proceed,
         );
         assert_eq!(
@@ -220,7 +219,6 @@ fn the_verdict_is_asked_only_after_the_grants() {
         &no_header,
         &|_, _| false,
         &mut |_| panic!("the kernel is asked about an ungranted call"),
-        &|_| false,
         &mut proceed,
     ));
     assert_eq!(r.status, 404);
@@ -344,6 +342,83 @@ fn an_answer_binds_only_what_was_asked_and_never_a_sent_argument() {
         &everyone,
         &mut proceed,
     ));
+}
+
+/// `fs_read_file` admitted with `arguments`, then judged by `judge` ([`judge_arguments`]).
+fn judged(arguments: Value, judge: &mut dyn FnMut(&ToolEntry, &str) -> Option<u64>) -> Admission {
+    let p = params("fs_read_file", arguments);
+    let header = |name: &str| (name == "mcp-param-path").then(|| "/a".to_string());
+    let admission = admit_call(
+        &catalogue(),
+        &json!(7),
+        Some(&p),
+        &header,
+        &everyone,
+        &mut proceed,
+    );
+    judge_arguments(admission, judge)
+}
+
+/// THE ARGUMENT GUARD ASKS THE HOST (BUSBAR-1.6.0.md Appendix C B.3 item 11, `dest.judge`): every
+/// host the arguments name is put to the judge for the called tool, an IPv6 literal bracketed as
+/// `dest.judge` reads it, and the host's verdict alone decides. A host the plane holds no rule
+/// about is refused when the judge refuses it, in the guard's bytes; one the judge admits is sent.
+#[test]
+fn the_hosts_verdict_decides_an_argument_url() {
+    let arguments = json!({ "path": "/a", "fetch": "http://public.example/x", "peer": "https://[2001:db8::1]:8443/" });
+    let mut asked = Vec::new();
+    let a = go(judged(arguments.clone(), &mut |entry, dest| {
+        asked.push((entry.tool.clone(), dest.to_string()));
+        Some(busbar_contract::abi::host::service::DEST_ALLOWED)
+    }));
+    assert_eq!(
+        a.arguments, arguments,
+        "admitted, the arguments are sent as they came"
+    );
+    asked.sort();
+    assert_eq!(
+        asked,
+        [
+            ("read_file".to_string(), "[2001:db8::1]".to_string()),
+            ("read_file".to_string(), "public.example".to_string()),
+        ],
+        "each host is asked of the host, once, for the called tool"
+    );
+
+    let (r, line) = refused(judged(arguments, &mut |_, dest| {
+        Some(if dest == "public.example" {
+            busbar_contract::abi::host::service::DEST_METADATA
+        } else {
+            busbar_contract::abi::host::service::DEST_ALLOWED
+        })
+    }));
+    assert_eq!((r.status, r.code), (403, crate::codec::CODE_REFUSED));
+    assert_eq!(r.data, Some(json!({ "reason": "tool_argument_refused" })));
+    assert!(
+        r.message.starts_with("tool argument /fetch carries a URL"),
+        "{}",
+        r.message
+    );
+    let line = line.expect("logged");
+    assert_eq!(
+        (line.outcome, line.reason.as_str()),
+        ("refused", "tool_argument_refused")
+    );
+}
+
+/// A host that gives no verdict (it serves no `dest.judge`, or the judgement failed) refuses the
+/// value rather than admitting it unjudged; arguments naming no host never ask it.
+#[test]
+fn a_host_that_gives_no_verdict_refuses_the_argument() {
+    let (r, _) = refused(judged(
+        json!({ "path": "/a", "fetch": "https://public.example/" }),
+        &mut |_, _| None,
+    ));
+    assert_eq!(r.status, 403);
+    assert!(r.message.contains("could not be checked"), "{}", r.message);
+    go(judged(json!({ "path": "/a" }), &mut |_, dest| {
+        panic!("no host is named, yet `{dest}` was asked")
+    }));
 }
 
 fn admitted() -> AdmittedCall {

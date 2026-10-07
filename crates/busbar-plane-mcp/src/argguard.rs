@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ARGUMENT HALF OF THE DISPATCH SSRF GUARD: a schema-aware walk of the nested per-request
-//! `tools/call` arguments, judging every URL and every host they carry.
+//! `tools/call` arguments, finding every URL and every host they carry and asking the host's ONE
+//! destination judge (`dest.judge`, BUSBAR-1.6.0.md Appendix C B.3 item 11) about each. The plane
+//! reads the value; the deployment's egress rules decide it.
 //!
 //! ## The gap this closes, stated as the live consequence
 //!
@@ -48,6 +50,10 @@
 //!
 //! ## What this module deliberately does NOT do
 //!
+//! - **No host rules of its own.** The scheme allowlist and the host reader are the walk's; every
+//!   verdict on a host is `dest.judge`'s, under the deployment's egress rules (its allow-list, the
+//!   metadata hosts, the private-address setting), so an argument and the connector's dial are
+//!   judged by the same guard.
 //! - **No DNS.** The transport guard resolves and PINS because busbar is the party that connects.
 //!   For an argument busbar is NOT the connecting party: the upstream resolves the name itself,
 //!   later, from its own resolver. A lookup here would therefore be advisory at best — trivially
@@ -65,19 +71,16 @@
 //!   busbar's own upstream credential rides that request. No busbar credential rides a tool
 //!   argument, so the rule does not transfer and is not applied.
 
-use busbar_contract::net::{
-    extract_normalized_host, host_is_cloud_metadata, host_is_private_or_loopback,
-    is_alternate_ipv4_encoding, scheme_is,
+use busbar_contract::abi::host::service::{
+    DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, DEST_NO_HOST, DEST_OBFUSCATED,
 };
+use busbar_contract::net::{extract_normalized_host, scheme_is};
 use serde_json::Value;
 
-/// The registration's addressing policy the walk judges under: `allow_private` (the server's own
-/// opt-in to internal hosts) widens the internal-address rule and nothing else.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SsrfPolicy {
-    /// Internal (private, loopback, link-local) hosts are admitted; cloud metadata never is.
-    pub allow_private: bool,
-}
+/// THE HOST'S JUDGE, as the walk asks it: one host an argument names (an IPv6 literal bracketed,
+/// as `dest.judge` reads a `host[:port]`), answered with the host's `DEST_*` verdict, or `None`
+/// when the host gave none (the value is then refused: fail closed).
+pub type Judge<'a> = dyn FnMut(&str) -> Option<u64> + 'a;
 
 /// How deep into the ARGUMENT value the walk goes before refusing. Arguments arrive as already
 /// parsed JSON, so this is a floor under stack safety rather than the primary bound; exceeding it
@@ -125,15 +128,18 @@ pub enum ArgWhy {
     Scheme(String),
     /// The value has no host component to judge.
     NoHost(String),
-    /// The host is a cloud-metadata endpoint — by address, by an alternate encoding of one, or by
-    /// one of the metadata DNS names. Refused unconditionally, `allow_private` or not.
+    /// `dest.judge` answered `DEST_METADATA`: a cloud-metadata endpoint, by name, address or the
+    /// deployment's own list. Refused unconditionally, `allow_private` or not.
     CloudMetadata(String),
-    /// The host is an alternate IPv4 encoding (`2130706433`, `0x7f000001`, `127.1`) that a
-    /// resolver expands but a canonical IP-literal check misses.
+    /// `dest.judge` answered `DEST_OBFUSCATED`: an alternate IPv4 encoding (`2130706433`,
+    /// `0x7f000001`, `127.1`) that a resolver expands but a canonical IP-literal check misses.
     ObfuscatedHost(String),
-    /// The host is internal — loopback, RFC-1918, link-local, CGNAT, unique-local, the `localhost`
-    /// family, or an IPv4-mapped IPv6 spelling of any of them.
+    /// `dest.judge` answered `DEST_INTERNAL`: an internal host the egress rules do not admit here.
     InternalHost(String),
+    /// `dest.judge` refused the host with another `DEST_*` verdict.
+    Refused(String, u64),
+    /// The host gave no verdict (it serves no `dest.judge`, or the judgement failed).
+    Unjudged(String),
     /// The argument nested deeper than the walk will follow.
     DepthExceeded,
 }
@@ -161,7 +167,17 @@ impl std::fmt::Display for ArgWhy {
             ArgWhy::InternalHost(h) => write!(
                 f,
                 "`{h}` is an internal address; set this server's `allow_private` if reaching \
-                 internal hosts through its tools is deliberate"
+                 internal hosts through its tools is deliberate (the deployment's destination \
+                 rules still apply)"
+            ),
+            ArgWhy::Refused(h, verdict) => write!(
+                f,
+                "`{h}` is refused by the deployment's destination rules (verdict {verdict})"
+            ),
+            ArgWhy::Unjudged(h) => write!(
+                f,
+                "`{h}` could not be checked against the deployment's destination rules, so it is \
+                 refused"
             ),
             ArgWhy::DepthExceeded => write!(
                 f,
@@ -239,10 +255,15 @@ impl ArgScan {
 ///
 /// Fails on the first refusal rather than collecting all of them, because the call is refused
 /// either way and the operator's question is "why was this refused", which one named field answers.
-pub fn guard(schema: &Value, arguments: &Value, policy: SsrfPolicy) -> Result<ArgScan, ArgRefusal> {
+/// Every host found is asked of `judge` ([`Judge`]).
+pub fn guard(
+    schema: &Value,
+    arguments: &Value,
+    mut judge: impl FnMut(&str) -> Option<u64>,
+) -> Result<ArgScan, ArgRefusal> {
     let mut scan = ArgScan::default();
     let mut pointer = String::new();
-    walk(&[schema], arguments, &mut pointer, 0, policy, &mut scan)?;
+    walk(&[schema], arguments, &mut pointer, 0, &mut judge, &mut scan)?;
     Ok(scan)
 }
 
@@ -254,7 +275,7 @@ fn walk(
     value: &Value,
     pointer: &mut String,
     depth: usize,
-    policy: SsrfPolicy,
+    judge: &mut Judge<'_>,
     scan: &mut ArgScan,
 ) -> Result<(), ArgRefusal> {
     if depth > MAX_VALUE_DEPTH {
@@ -272,7 +293,7 @@ fn walk(
                 pointer.push_str(&escape_token(k));
                 let child = child_for_key(schemas, k);
                 let child_refs: Vec<&Value> = child;
-                walk(&child_refs, v, pointer, depth + 1, policy, scan)?;
+                walk(&child_refs, v, pointer, depth + 1, judge, scan)?;
                 pointer.truncate(mark);
             }
             Ok(())
@@ -284,12 +305,12 @@ fn walk(
                 pointer.push_str(&i.to_string());
                 let child = child_for_index(schemas, i);
                 let child_refs: Vec<&Value> = child;
-                walk(&child_refs, v, pointer, depth + 1, policy, scan)?;
+                walk(&child_refs, v, pointer, depth + 1, judge, scan)?;
                 pointer.truncate(mark);
             }
             Ok(())
         }
-        Value::String(s) => judge_string(schemas, s, pointer, policy, scan),
+        Value::String(s) => judge_string(schemas, s, pointer, judge, scan),
         _ => Ok(()),
     }
 }
@@ -299,14 +320,14 @@ fn judge_string(
     schemas: &[&Value],
     s: &str,
     pointer: &str,
-    policy: SsrfPolicy,
+    judge: &mut Judge<'_>,
     scan: &mut ArgScan,
 ) -> Result<(), ArgRefusal> {
     scan.strings_seen += 1;
     let trimmed = s.trim();
     if let Some((format, kind)) = first_urlish(schemas) {
         scan.declared_judged += 1;
-        return judge_argument(kind, trimmed, policy).map_err(|why| ArgRefusal {
+        return judge_argument(kind, trimmed, judge).map_err(|why| ArgRefusal {
             pointer: pointer.to_string(),
             declared_format: Some(format),
             why,
@@ -314,7 +335,7 @@ fn judge_string(
     }
     if starts_with_http(trimmed) {
         scan.undeclared_judged += 1;
-        return judge_argument(Urlish::AbsoluteUrl, trimmed, policy).map_err(|why| ArgRefusal {
+        return judge_argument(Urlish::AbsoluteUrl, trimmed, judge).map_err(|why| ArgRefusal {
             pointer: pointer.to_string(),
             declared_format: None,
             why,
@@ -331,9 +352,9 @@ fn starts_with_http(v: &str) -> bool {
     lower.starts_with("http://") || lower.starts_with("https://")
 }
 
-fn judge_argument(kind: Urlish, value: &str, policy: SsrfPolicy) -> Result<(), ArgWhy> {
+fn judge_argument(kind: Urlish, value: &str, judge: &mut Judge<'_>) -> Result<(), ArgWhy> {
     match kind {
-        Urlish::AbsoluteUrl => judge_absolute(value, policy),
+        Urlish::AbsoluteUrl => judge_absolute(value, judge),
         Urlish::Reference => {
             // A scheme-relative reference (`//169.254.169.254/x`) inherits the base scheme and
             // names a host, so it is judged as one. A path-relative reference names no host and
@@ -341,10 +362,10 @@ fn judge_argument(kind: Urlish, value: &str, policy: SsrfPolicy) -> Result<(), A
             if let Some(rest) = value.strip_prefix("//") {
                 let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
                 let host = authority.rsplit('@').next().unwrap_or(authority);
-                return judge_host(strip_port(host), policy);
+                return judge_host(strip_port(host), judge);
             }
             if value.contains("://") {
-                return judge_absolute(value, policy);
+                return judge_absolute(value, judge);
             }
             Ok(())
         }
@@ -352,22 +373,21 @@ fn judge_argument(kind: Urlish, value: &str, policy: SsrfPolicy) -> Result<(), A
             // A `hostname`/`ipv4`/`ipv6`-declared field is supposed to carry a bare host, but
             // nothing stops a caller writing a full absolute URL into it instead. Left to
             // `judge_host` as-is, a value like `https://169.254.169.254/x` is not a syntactically
-            // valid host, so the metadata/private/obfuscation checks below (which read it as an
-            // opaque host string) miss the address entirely — the scheme and path are noise to
-            // them, not a signal to strip. Any embedded `://` means this is actually a URL wearing
+            // valid host, so the judge (reading it as an opaque host string) would miss the
+            // address entirely — the scheme and path are noise to it, not a signal to strip. Any embedded `://` means this is actually a URL wearing
             // a `hostname` declaration, so it is judged as one (scheme allowlist + host judgement
             // on the REAL host), the same authority the `Reference` arm above already gives a
             // scheme-relative value.
             if value.contains("://") {
-                return judge_absolute(value, policy);
+                return judge_absolute(value, judge);
             }
-            judge_host(value, policy)
+            judge_host(value, judge)
         }
     }
 }
 
 /// An absolute URL: the scheme allowlist, then the host.
-fn judge_absolute(url: &str, policy: SsrfPolicy) -> Result<(), ArgWhy> {
+fn judge_absolute(url: &str, judge: &mut Judge<'_>) -> Result<(), ArgWhy> {
     if !scheme_is(url, "http") && !scheme_is(url, "https") {
         return Err(ArgWhy::Scheme(url.to_string()));
     }
@@ -376,29 +396,28 @@ fn judge_absolute(url: &str, policy: SsrfPolicy) -> Result<(), ArgWhy> {
     // percent-decode that a connecting stack applies. Re-deriving any of that here would be a
     // second copy of a guard that already exists.
     let host = extract_normalized_host(url).ok_or_else(|| ArgWhy::NoHost(url.to_string()))?;
-    judge_host(&host, policy)
+    judge_host(&host, judge)
 }
 
-/// THE HOST JUDGEMENT, composed from the shared primitives rather than hand-rolled.
-///
-/// Order is load-bearing. Metadata first and unconditionally, so an `allow_private` server cannot
-/// reach the one endpoint whose whole value to an attacker is that it hands out credentials.
-/// Obfuscated encodings next and also unconditionally, matching `busbar_kernel::net_guard::judge_host_name`
-/// as `super::ssrf::precheck` does: a value
-/// spelled so the check cannot read it is refused rather than guessed at. Internal addressing last,
-/// because that is the one an operator can legitimately opt into.
-fn judge_host(raw: &str, policy: SsrfPolicy) -> Result<(), ArgWhy> {
+/// THE HOST, ASKED OF THE HOST'S ONE JUDGE (`dest.judge`, BUSBAR-1.6.0.md Appendix C B.3 item 11):
+/// the plane reads the host and holds no rule about it. `judge`'s verdict is rendered as the
+/// refusal; a host that gave none refuses the value.
+fn judge_host(raw: &str, judge: &mut Judge<'_>) -> Result<(), ArgWhy> {
     let host = normalize_host(raw).ok_or_else(|| ArgWhy::NoHost(raw.to_string()))?;
-    if host_is_cloud_metadata(&host) {
-        return Err(ArgWhy::CloudMetadata(host));
+    let dest = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.clone()
+    };
+    match judge(&dest) {
+        Some(DEST_ALLOWED) => Ok(()),
+        Some(DEST_METADATA) => Err(ArgWhy::CloudMetadata(host)),
+        Some(DEST_OBFUSCATED) => Err(ArgWhy::ObfuscatedHost(host)),
+        Some(DEST_INTERNAL) => Err(ArgWhy::InternalHost(host)),
+        Some(DEST_NO_HOST) => Err(ArgWhy::NoHost(host)),
+        Some(verdict) => Err(ArgWhy::Refused(host, verdict)),
+        None => Err(ArgWhy::Unjudged(host)),
     }
-    if is_alternate_ipv4_encoding(&host) {
-        return Err(ArgWhy::ObfuscatedHost(host));
-    }
-    if !policy.allow_private && host_is_private_or_loopback(&host) {
-        return Err(ArgWhy::InternalHost(host));
-    }
-    Ok(())
 }
 
 /// Normalize a bare host the same way a URL's host component is normalized, by routing it through

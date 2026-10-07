@@ -414,7 +414,6 @@ pub fn admit_call(
         header,
         admit,
         &mut |_| Trust::Verdict(DISTRUST_NONE),
-        &|_| false,
         ask,
     )
 }
@@ -519,12 +518,7 @@ fn trust_refusal(
 /// kernel's Approve said of it ([`Trust`], `trust.serves` over the tool's registration and trust
 /// key after the door's re-fetch sighted it), rendered by [`trust_refusal`]. Asked after the name
 /// and the grants, before the header mirror and the ask: a refused dispatch never reaches the wire.
-///
-/// THE ARGUMENT GUARD ([`crate::argguard`]) judges the arguments that go out (the caller's, with
-/// the operator-bounded answers merged) against the tool's approved input schema, under the
-/// registration's `allow_private` (`allow_private` answers it for the tool): a URL or host the
-/// call carries to an internal or metadata address is refused before the call is sent.
-#[allow(clippy::too_many_arguments)] // `admit`'s five, the trust gate and the addressing policy
+/// The arguments it admits are judged next, by [`judge_arguments`].
 pub fn admit_trusted(
     catalogue: &Catalogue,
     id: &Value,
@@ -532,7 +526,6 @@ pub fn admit_trusted(
     header: &impl Fn(&str) -> Option<String>,
     admit: &impl Fn(&str, &str) -> bool,
     trust: &mut dyn FnMut(&ToolEntry) -> Trust,
-    allow_private: &dyn Fn(&ToolEntry) -> bool,
     ask: &mut dyn FnMut(&ToolEntry, &Value) -> crate::ask::AskDecision,
 ) -> Admission {
     let Some(name) = params.and_then(|p| p.get("name")).and_then(Value::as_str) else {
@@ -700,28 +693,6 @@ pub fn admit_trusted(
             );
         }
     }
-    // THE ARGUMENT GUARD, on the arguments that go out. A tool that declared no schema is walked
-    // against `{"type": "object"}`: the walk is value-driven, so declaring no schema narrows what it
-    // calls "declared" and nothing else.
-    let schema = entry
-        .input_schema
-        .clone()
-        .unwrap_or_else(|| json!({ "type": "object" }));
-    let policy = crate::argguard::SsrfPolicy {
-        allow_private: allow_private(entry),
-    };
-    if let Err(refused) = crate::argguard::guard(&schema, &arguments, policy) {
-        return Admission::Refused(
-            error(
-                STATUS_FORBIDDEN,
-                id,
-                crate::codec::CODE_REFUSED,
-                refused.to_string(),
-                Some(json!({ "reason": REASON_TOOL_ARGUMENT_REFUSED })),
-            ),
-            line(REASON_TOOL_ARGUMENT_REFUSED),
-        );
-    }
     Admission::Go(AdmittedCall {
         entry: entry.clone(),
         arguments,
@@ -734,6 +705,44 @@ pub fn admit_trusted(
         sent_digest,
         relay,
     })
+}
+
+/// THE ARGUMENT GUARD ([`crate::argguard`]) on an admitted call: the arguments that go out (the
+/// caller's, with the operator-bounded answers merged) are walked against the tool's approved input
+/// schema, and every URL or host they carry is asked of the host's ONE destination judge: `judge`
+/// answers `dest.judge`'s verdict for the tool and the host (BUSBAR-1.6.0.md Appendix C B.3 item
+/// 11), `None` when it gave none. A refused one refuses the call before it is sent. A tool that
+/// declared no schema is walked against `{"type": "object"}`: the walk is value-driven, so declaring
+/// no schema narrows what it calls "declared" and nothing else. Any other admission is unchanged.
+pub fn judge_arguments(
+    admission: Admission,
+    judge: &mut dyn FnMut(&ToolEntry, &str) -> Option<u64>,
+) -> Admission {
+    let Admission::Go(admitted) = admission else {
+        return admission;
+    };
+    let entry = &admitted.entry;
+    let schema = entry
+        .input_schema
+        .clone()
+        .unwrap_or_else(|| json!({ "type": "object" }));
+    match crate::argguard::guard(&schema, &admitted.arguments, |dest| judge(entry, dest)) {
+        Ok(_) => Admission::Go(admitted),
+        Err(refused) => Admission::Refused(
+            error(
+                STATUS_FORBIDDEN,
+                &admitted.id,
+                crate::codec::CODE_REFUSED,
+                refused.to_string(),
+                Some(json!({ "reason": REASON_TOOL_ARGUMENT_REFUSED })),
+            ),
+            Some(CallLine::resolved(
+                entry,
+                vocab::OUTCOME_REFUSED,
+                REASON_TOOL_ARGUMENT_REFUSED,
+            )),
+        ),
+    }
 }
 
 /// What busbar declares to `def`'s server for `admitted`'s call: each ask kind the operator lets the
