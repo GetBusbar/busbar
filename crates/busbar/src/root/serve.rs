@@ -2856,7 +2856,8 @@ fn framed_by(
 #[path = "serve_lines.rs"]
 pub mod lines;
 
-#[cfg(linked_axis_node)]
+// The framed-stream path (ARCHITECT 4l) is reached from every build's data routes, so it compiles
+// in every build, not only one whose linked plane rides the node axis.
 #[path = "serve_framed.rs"]
 mod serve_framed;
 
