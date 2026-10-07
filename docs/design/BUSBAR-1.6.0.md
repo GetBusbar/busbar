@@ -3467,7 +3467,7 @@ typedef uint8_t (*bb_op)(void* instance, const void* in, void* out);   /* extern
 | `open(host tables, settings blob, secrets, gen)` | boot, control lane | may return not-ready |
 | `refresh(gen)` | reload | may return not-ready |
 | `retire(gen)` | after RCU drain | |
-| `tick(now)` | kernel clock | returns the next tick time |
+| `tick(now)` | kernel clock, and every driver-ticket wake after its `drive` | returns the next tick time; `0` = no tick until the next wake (R-PUSH) |
 | `drive(driver)` | a driver ticket woke | §A.4.3 |
 | `cancel(ticket, out bb_cancel_out)` | deadline, or client drop on request-path ops only | out carries a kind disposition |
 | `release(lease)` | host done with off-path/secret bytes | |
@@ -4556,6 +4556,7 @@ ARCHITECT RULINGS from DRIVER-REVIEW (binding on v2):
 - R-L DAG: K1/K2 ARE TD 4/23/24 (no new names — reuse TD numbering); K3 IS TD 13-17's consumer, not a re-do.
   Critical path: M1(landed) -> M1-async -> P1 -> K1 -> {K2->K5, TD13-17->K3, M3-store->K4} -> MCP-1; FOLD-MCP phase A alongside.
   Folds still wait for TD 23 (F2). STRM row: key `streaming`, proof = conformance rig + money suites (Q96).
+- R-PUSH (coordinator 2026-10-07): a driver-ticket wake re-polls tick; next_tick_ns 0 = no tick until the next wake
 
 ### OWNER 2026-09-28: HTTP/2 is a DESIGN question (ARCHITECT's), not a rules question.
 Settled: h1/h2 framing lives in the http TRANSPORT plugin; host (kernel+connector) keeps OS socket/readiness (io.*), TLS, ALPN, pools.

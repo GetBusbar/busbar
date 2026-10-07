@@ -499,18 +499,59 @@ async fn the_kernel_ticks_a_plane_on_its_driver_ticket_at_each_next_tick() {
     }
 }
 
-/// A plane that answers `next_tick_ns = 0` is ticked once and never again.
+/// A plane that answers `next_tick_ns = 0` and never wakes its driver ticket is ticked once and
+/// never again (R-PUSH: `0` names no tick until a wake, and no wake comes). The llm and decisions
+/// planes answer `0` and never wake, so this is their count.
 #[tokio::test]
 async fn no_tick_follows_a_tick_that_asks_for_none() {
     for way in ways() {
         let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
         let plugin = load(way, &dispatcher);
         let driver = driver_of(&plugin, dispatcher.clone());
-        tokio::time::timeout(Duration::from_secs(5), driver.ticks())
-            .await
-            .expect("the schedule ends at next_tick_ns = 0");
-        tokio::time::sleep(Duration::from_millis(60)).await;
+        parks_after_one_tick(&driver).await;
         assert_eq!(ticked(&plugin)[plane::Ticked::Ticks as usize], 1, "{way:?}");
+    }
+}
+
+/// The schedule after an answer of `0` (R-PUSH): one tick, then parked on a wake that does not come.
+async fn parks_after_one_tick(driver: &PlaneDriver) {
+    let run = tokio::time::timeout(Duration::from_millis(300), driver.ticks()).await;
+    assert!(run.is_err(), "the schedule parks on an answer of 0");
+}
+
+/// R-PUSH through the real loader: a wake of the driver ticket runs `drive` and then re-polls
+/// `tick`, though the last answer was `0`. RED on the base: the schedule had ended.
+#[tokio::test]
+async fn a_wake_of_the_driver_ticket_runs_drive_then_ticks_again() {
+    for way in ways() {
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let plugin = load(way, &dispatcher);
+        let driver = driver_of(&plugin, dispatcher.clone());
+        let waker = async {
+            let ticks = || ticked(&plugin)[plane::Ticked::Ticks as usize];
+            while ticks() < 1 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            let ticket = ticked(&plugin)[plane::Ticked::Ticket as usize];
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            assert_eq!(ticks(), 1, "{way:?}: no tick without a wake");
+            wake(&plugin, ticket_of(ticket));
+            while ticks() < 2 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            assert!(
+                stats(&plugin)[cases::stat::DRIVES] >= 1,
+                "{way:?}: drive ran before the tick"
+            );
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                () = driver.ticks() => panic!("{way:?}: the schedule ended at 0"),
+                () = waker => {}
+            }
+        })
+        .await
+        .expect("the wake ticked again");
     }
 }
 
@@ -612,9 +653,7 @@ async fn a_read_inside_tick_pends_on_the_driver_ticket_and_resumes_through_drive
         let plugin = load_over(way, &dispatcher, Arc::new(NoSink), Some(far.clone()));
         arrive_at(&plugin, "/tick-read");
         let driver = driver_of(&plugin, dispatcher.clone());
-        tokio::time::timeout(Duration::from_secs(5), driver.ticks())
-            .await
-            .expect("one tick");
+        parks_after_one_tick(&driver).await;
         let t = ticked(&plugin);
         assert_eq!(
             t[plane::Ticked::ReadPended as usize],
@@ -656,9 +695,7 @@ async fn a_tick_forgets_what_the_last_cycle_kept_on_the_driver_ticket() {
         let driver = driver_of(&plugin, dispatcher.clone());
         for _ in 0..2 {
             arrive_at(&plugin, "/tick-read");
-            tokio::time::timeout(Duration::from_secs(5), driver.ticks())
-                .await
-                .expect("one tick");
+            parks_after_one_tick(&driver).await;
         }
         assert_eq!(
             *far.opened.lock().unwrap(),
@@ -1234,9 +1271,7 @@ async fn unsolicited_output_reaches_the_caller_through_the_instances_one_driver_
     for way in ways() {
         let r = rig(way, BufferCaps::default(), cases::Book::default());
         // The plane learns its driver ticket from its first tick.
-        tokio::time::timeout(Duration::from_secs(5), r.driver.ticks())
-            .await
-            .expect("one tick");
+        parks_after_one_tick(&r.driver).await;
         let far = cases::Far::new(&[SEALED], &[b"x"]);
         let caller = Scripted::new([Line::Send(b"push:hello"), Line::Hear("hello")]);
         let ended = tokio::time::timeout(Duration::from_secs(5), async {

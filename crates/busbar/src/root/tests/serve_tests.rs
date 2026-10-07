@@ -1288,6 +1288,34 @@ mod agent_door {
             requests,
             facing,
             None,
+            false,
+        )
+    }
+
+    /// [`served_trusting`] with boot's tick schedule spawned over the door (`Served::spawn_ticks`,
+    /// as `main` runs it once the app is built), the deployment's `advanced.allow_destinations`
+    /// naming `allow`: the cells that read a delivery the door makes on its own.
+    fn served_pushing(
+        instance: &'static str,
+        section: &str,
+        allow: Vec<String>,
+        root: Vec<u8>,
+    ) -> Served {
+        served_core(
+            instance,
+            section,
+            busbar_kernel::config::Destinations {
+                block_private_addresses: true,
+                allow,
+                ..Default::default()
+            },
+            None,
+            Some(root),
+            None,
+            None,
+            Facing::Routes,
+            None,
+            true,
         )
     }
 
@@ -1357,6 +1385,7 @@ mod agent_door {
             None,
             Facing::Routes,
             Some(priced),
+            false,
         )
     }
 
@@ -1372,6 +1401,7 @@ mod agent_door {
         requests: Option<u64>,
         facing: Facing,
         priced: Option<&Priced>,
+        ticking: bool,
     ) -> Served {
         // The caller's group, when it is limited: `requests` requests in all.
         let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = requests
@@ -1609,6 +1639,9 @@ mod agent_door {
         )
         .expect("the agent door composes");
         composed.post = Some(post);
+        if ticking {
+            composed.spawn_ticks();
+        }
         // THE DOOR'S FACING, as boot's `build_dispatch` reads it off the door: each claim mounted
         // at its literal prefix, and the audience and metadata document its snapshot states.
         let facing_of: Vec<(Vec<String>, busbar_kernel::plane::PlaneAdmission)> =
@@ -6709,6 +6742,142 @@ mod agent_door {
                     .to_string(),
             ))
             .expect("a request")
+    }
+
+    /// **A PUSHED STATE REACHES THE CALLER'S OWN WEBHOOK THROUGH BUSBAR, END TO END.** The caller
+    /// registers its webhook (a loopback https receiver, with a bearer credential) on its task; the
+    /// deployment's own `advanced.allow_destinations` names `127.0.0.1`, the one operator route that
+    /// admits a loopback destination to the callback judge and the delivery's dial (the same
+    /// allow-list `connector.rs`'s `a_provider_without_an_allowlist_entry_is_refused_a_private_address`
+    /// holds); the agent then pushes the task's ending to busbar's own callback with the capability
+    /// busbar registered with it, and busbar delivers to the CALLER's webhook, presenting the
+    /// caller's own credential, through the tick schedule boot spawns. No delivery is driven by the
+    /// test: it waits, boundedly, and a silence is a failure. R-PUSH: the delivery is attempted on
+    /// the driver-ticket wake the queueing makes, within a second of the push (predev spawned it at
+    /// once); RED on the base, where the schedule had ended at boot and nothing was ever delivered.
+    /// Ported from busbar-a2a a2a/tests/pushback_tests.rs::a_pushed_state_reaches_the_callers_own_webhook_through_busbar.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_pushed_state_reaches_the_callers_own_webhook_through_busbar() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-push-delivery";
+        let _published = Published(instance);
+        let tls = AgentTls::new();
+        tls.rekey();
+        let mut hook = Agent::start_over(200, "{}", Some(tls.acceptor())).await;
+        let mut agent =
+            Agent::start_answering(200, Arc::new(|r: &str| far_answer(r, "working", "working")))
+                .await;
+        let s = served_pushing(
+            instance,
+            &agent.entry("planner", "1h"),
+            vec!["127.0.0.1".to_string()],
+            tls.root.clone(),
+        );
+        approve(&s, "planner").await;
+        let task = open_task(&s).await;
+        let config = serde_json::json!({
+            "taskId": task, "id": "caller-config",
+            "url": format!("https://127.0.0.1:{}/hook", hook.port),
+            "authentication": { "scheme": "Bearer", "credentials": "caller-secret" },
+        })
+        .to_string();
+        let (status, body) = answered(
+            &s.router,
+            rpc(
+                "planner",
+                "CreateTaskPushNotificationConfig",
+                &config,
+                Some(&s.token),
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the operator-listed callback: {body}"
+        );
+        assert!(
+            !body.contains("error"),
+            "the allow-listed loopback callback is registered: {body}"
+        );
+        let token = token_sent(&heard(&mut agent));
+        let (status, body) = answered(&s.router, push(&token, "completed")).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "the push is taken: {body}");
+        let delivered = tokio::time::timeout(std::time::Duration::from_secs(1), hook.heard.recv())
+            .await
+            .expect("busbar made no delivery for a pushed state within a second of the push")
+            .expect("the webhook heard");
+        assert!(
+            delivered.starts_with("POST /hook"),
+            "the delivery goes to the caller's own webhook path: {delivered}"
+        );
+        let head = delivered.to_ascii_lowercase();
+        assert!(
+            head.contains("authorization: bearer caller-secret"),
+            "the caller's own webhook credential is presented at the caller's own webhook: {delivered}"
+        );
+    }
+
+    /// **A TRANSITION BUSBAR LEARNS ON A REFRESH REACHES THE CALLER'S WEBHOOK AT ONCE.** The agent
+    /// moved the task on out of band; the caller's next list asks the agent, the row moves, and the
+    /// notification the move owes is delivered to the caller's registered webhook with its own
+    /// credential, within a second of the list's answer (R-PUSH: the queueing wakes the driver
+    /// ticket, so the delivery does not wait for a scheduled tick; RED on the base, where the
+    /// schedule had ended at boot).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refreshed_transition_reaches_the_callers_own_webhook_at_once() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-refresh-delivery";
+        let _published = Published(instance);
+        let tls = AgentTls::new();
+        tls.rekey();
+        let mut hook = Agent::start_over(200, "{}", Some(tls.acceptor())).await;
+        let mut agent = Agent::start_answering(
+            200,
+            Arc::new(|r: &str| far_answer(r, "working", "completed")),
+        )
+        .await;
+        let s = served_pushing(
+            instance,
+            &agent.entry("planner", "1h"),
+            vec!["127.0.0.1".to_string()],
+            tls.root.clone(),
+        );
+        approve(&s, "planner").await;
+        let task = open_task(&s).await;
+        let config = serde_json::json!({
+            "taskId": task, "id": "caller-config",
+            "url": format!("https://127.0.0.1:{}/hook", hook.port),
+            "authentication": { "scheme": "Bearer", "credentials": "caller-secret" },
+        })
+        .to_string();
+        let (status, body) = answered(
+            &s.router,
+            rpc(
+                "planner",
+                "CreateTaskPushNotificationConfig",
+                &config,
+                Some(&s.token),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "the config is registered: {body}");
+        let _ = heard(&mut agent);
+        let _ = listed_state(&s, &task).await;
+        let delivered = tokio::time::timeout(std::time::Duration::from_secs(1), hook.heard.recv())
+            .await
+            .expect("busbar made no delivery for a refreshed move within a second")
+            .expect("the webhook heard");
+        assert!(
+            delivered.starts_with("POST /hook"),
+            "the delivery goes to the caller's own webhook path: {delivered}"
+        );
+        assert!(
+            delivered
+                .to_ascii_lowercase()
+                .contains("authorization: bearer caller-secret"),
+            "the caller's own webhook credential is presented: {delivered}"
+        );
     }
 
     /// The state the caller's own list shows for `task`.
