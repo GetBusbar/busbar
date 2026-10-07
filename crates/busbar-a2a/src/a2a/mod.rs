@@ -194,7 +194,6 @@ pub const PLANE_HOOKS: PlaneHooks = PlaneHooks {
     viewer: None,
     retain_verify_gates: Some(a2a_retain_verify_gates),
     default_section: Some(a2a_default_section),
-    resolve_provider: None,
     // NOTHING TO CARRY ACROSS A SWAP. The A2A plane's runtime object (`A2aPlane`) is rebuilt from
     // `agents:`/`public_url` on every apply, and its durable task table is restored at boot
     // through `hydrate`, not reconciled here — so there is no engine-owned live object that

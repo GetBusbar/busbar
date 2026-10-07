@@ -232,7 +232,6 @@ pub const PLANE_HOOKS: PlaneHooks = PlaneHooks {
     viewer: None,
     retain_verify_gates: Some(mcp_retain_verify_gates),
     default_section: Some(mcp_default_section),
-    resolve_provider: None,
 };
 
 /// VALIDATE ONE `tools:` NAMED-DEFINITION DOCUMENT — the MCP plane's half of

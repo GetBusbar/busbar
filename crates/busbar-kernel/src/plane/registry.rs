@@ -1135,33 +1135,6 @@ plane_behaviour! {
     /// registry section (the LLM / `proto` planes).
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     default_section: Option<fn() -> Box<dyn crate::plane::config::PlaneCfg>>,
-
-    /// MERGE ONE PROVIDER'S CATALOG DEFINITION (`providers.yaml`, [`crate::config::providers::ProviderDef`])
-    /// WITH ITS OPERATOR DEPLOYMENT (`config.yaml`'s `providers:` entry,
-    /// [`crate::config::providers::ProviderDeploy`]) INTO THE RESOLVED
-    /// [`crate::config::providers::ProviderCfg`] a lane is built from — the providers/models/pools
-    /// LOGIC seam (1.6.0 pools stage-B). `busbar_kernel::config::resolve` calls this at the EXACT point
-    /// the per-deployment merge always ran (right after the catalog lookup, itself unconditional core
-    /// orchestration — "provider referenced but not found in providers.yaml" stays a core error), so
-    /// the merged fields and their precedence (deployment override wins, catalog default otherwise)
-    /// are byte-identical to the pre-seam inline merge. Pure — no I/O, no `errors` side channel, so it
-    /// cannot itself reorder or add a validation error.
-    ///
-    /// `providers`/`pools` are `CORE_OWNED_CONCRETE_SECTIONS` and are NEVER evicted from
-    /// `DeployCfg`/`RootCfg` (see that constant's doc) — unlike `tools:`/`agents:`/`mcp:`, a
-    /// `providers:` entry is parsed and merged UNCONDITIONALLY, whether or not any plane is
-    /// installed. So `None` (no plane implements the hook — an llm-plane-absent build) is not an
-    /// "absent config section" refusal the way it is for a container plane's endpoint block: `resolve`
-    /// falls back to its OWN byte-identical copy of this same merge, so a build compiled without the
-    /// LLM plane keeps merging providers exactly as every prior release has, rather than silently
-    /// dropping configured providers out of `RootCfg::providers`.
-    #[allow(clippy::type_complexity)]
-    resolve_provider: Option<
-        fn(
-            &crate::config::providers::ProviderDef,
-            &crate::config::providers::ProviderDeploy,
-        ) -> crate::config::providers::ProviderCfg,
-    >,
 }
 
 // ── TEST-SUPPORT PLANE REGISTRATION (the neutral seam) ─────────────────────────────────────────────

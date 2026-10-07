@@ -126,7 +126,6 @@ fn render(row: &PlaneDecl) -> String {
         "{:?} wire={:?} claims={:?} admission={:?} build={} hooks={optional:?}",
         row.declaration,
         (row.wire_format_names)(),
-        row.resolve_provider.is_some(),
         (row.claims)(&()),
         (row.admission)(&()),
         (row.build)(&ctx).is_some(),

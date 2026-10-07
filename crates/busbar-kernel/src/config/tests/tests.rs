@@ -1470,13 +1470,6 @@ fn test_resolve_provider_from_def() {
     );
 }
 
-// THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B) MOVED to
-// `tests/config_cross_plane.rs::resolve_provider_hook_and_core_fallback_agree` — it calls the REAL
-// `busbar_llm::PLANE_HOOKS.resolve_provider` hook, which only type-checks against core's OWN
-// `ProviderDef`/`ProviderDeploy` when there is ONE `busbar_kernel` in the graph (an integration-test
-// target), not the two copies busbar-kernel's own `#[cfg(test)]` dev-dependency back-edge onto
-// busbar-llm produces. See that file's header for the full rationale.
-
 /// A provider credential is a SECRET REFERENCE, never an inline literal. A plain-string
 /// `api_key:` (the pre-1.0 inline-key shape) is REJECTED AT PARSE (SecretRef deserializes only
 /// from a map), and the removed `api_key_env:` spelling is an unknown-field error.
@@ -4071,7 +4064,6 @@ static CARD_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::P
     viewer: None,
     retain_verify_gates: None,
     default_section: None,
-    resolve_provider: None,
 };
 
 /// THE #43 ENFORCEMENT: the section value handed to the plane carries the plane's own settings and
@@ -4228,7 +4220,6 @@ const fn requiring_plane(required: &'static [&'static str]) -> crate::plane::reg
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
-        resolve_provider: None,
     }
 }
 

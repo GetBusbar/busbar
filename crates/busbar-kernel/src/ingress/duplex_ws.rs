@@ -335,13 +335,12 @@ pub struct WsArrivalSpec {
 
 /// THE PROCESS-WIDE INSTALLED WS ARRIVALS — set once by the composition root
 /// ([`install_ws_arrivals`]), read (cloned) by the core router at build ([`take_ws_arrivals`]). A
-/// `OnceLock<Vec<_>>`, mirroring `ingress::arrival::install_path_ingress`: the composition root
+/// `OnceLock<Vec<_>>`, set once: the composition root
 /// ASSEMBLES it from whichever duplex-plane crates are linked, install-once + read-many so a test that
 /// builds several routers each mounts the same arrivals.
 static INSTALLED_WS_ARRIVALS: std::sync::OnceLock<Vec<WsArrivalSpec>> = std::sync::OnceLock::new();
 
-/// INSTALL THE INBOUND WS-ACCEPT ARRIVALS — the composition root's one write, mirroring
-/// [`crate::ingress::arrival::install_path_ingress`]. First-writer-wins (idempotent): a second call is
+/// INSTALL THE INBOUND WS-ACCEPT ARRIVALS — the composition root's one write. First-writer-wins (idempotent): a second call is
 /// ignored rather than panicking, so a test harness that composes twice does not abort. Only the
 /// composition root (or a test) calls this; a build with no duplex plane never does, and
 /// [`take_ws_arrivals`] then yields nothing.

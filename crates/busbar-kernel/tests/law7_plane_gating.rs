@@ -77,7 +77,6 @@ static PROBE: PlaneDecl = PlaneDecl {
     viewer: None,
     retain_verify_gates: None,
     default_section: None,
-    resolve_provider: None,
 };
 
 /// Run hydrate + start over an App whose configured plane sections are exactly `sections`, and

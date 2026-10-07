@@ -1068,7 +1068,6 @@ pub fn door_breaker(
     for p in planes.filter(|p| p.manifest.kind == busbar_contract::abi::mechanism::kind::PLANE) {
         let Some(stated) = p
             .manifest
-    resolve_provider: None,
             .stated()
             .map_err(|e| format!("plugin '{}': {e}", p.manifest.name))?
         else {

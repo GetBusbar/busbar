@@ -26,13 +26,9 @@
 //! core's own test set named in a `tests/` file the lint excludes and handed to the substrate through
 //! its `set_test_builtins` hook) and the `cfg(test)` accessors that seed it.
 //!
-//! The composition root's two-seam write, `install_protocols_with_path_ingress`, is NOT here. It was,
-//! and the reason given was that it named "the core-only `Arrival`" — but that type relocated to
-//! `busbar_kernel::ingress::arrival::PathIngress` and core's spelling of it had become a `pub use`
-//! of the substrate's. With both halves neutral the fold is neutral, so it lives at
-//! `super::installed::install_protocols_with_path_ingress`, beside the two seams it folds, and
-//! the composition root names no retiring crate to register a protocol. No shim is left here: a
-//! re-export would be the same reach under a longer name.
+//! The composition root's protocol write, `install_protocols`, is NOT here: it lives on the
+//! substrate beside the registry it fills, and the composition root names no retiring crate to
+//! register a protocol.
 
 // WHICH INBOUND AUTH SCHEME a protocol's clients present. DECLARED metadata, never a branch: the
 // verification itself stays in the auth layer. Relocated to the neutral `busbar_kernel::proto`
@@ -59,9 +55,9 @@ pub use busbar_contract::protocol::{
 // The detection/lookup accessors get a `cfg(test)` veneer below (they seed the substrate's core-test
 // built-in hook); the type and the pure boot fold are direct re-exports.
 //
-// `install_protocols` and `first_path_model_without_arrival` are NOT re-exported. They had one caller
-// each and it was the two-seam fold, which now lives on the substrate beside them; an alias kept here
-// for nobody would be exactly the longer-named reach this cut removed.
+// `install_protocols` is NOT re-exported: its one caller is the composition root, which names it on
+// the substrate; an alias kept here for nobody would be exactly the longer-named reach this cut
+// removed.
 pub use super::installed::{merged_boot_decls, Registry};
 
 /// The extracted-dialect built-in list for core's OWN test binary — each shipped plugin crate's own

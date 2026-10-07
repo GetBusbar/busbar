@@ -6023,7 +6023,6 @@ static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::
     viewer: None,
     retain_verify_gates: None,
     default_section: None,
-    resolve_provider: None,
 };
 
 /// One declared billable class in `family`.

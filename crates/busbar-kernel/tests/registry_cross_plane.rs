@@ -107,7 +107,6 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     viewer: None,
     retain_verify_gates: None,
     default_section: None,
-    resolve_provider: None,
 };
 
 fn installed() -> Vec<&'static PlaneDecl> {
@@ -409,7 +408,6 @@ static ALPHA_CLAIMS_FOO: PlaneDecl = PlaneDecl {
         fee_units: &[],
         ..WIDGET_PLANE.declaration
     },
-    resolve_provider: None,
     ..WIDGET_PLANE
 };
 
@@ -421,7 +419,6 @@ static BETA_CLAIMS_FOO: PlaneDecl = PlaneDecl {
         fee_units: &[],
         ..WIDGET_PLANE.declaration
     },
-    resolve_provider: None,
     ..WIDGET_PLANE
 };
 
@@ -434,7 +431,6 @@ static GAMMA_CLAIMS_RATE_CARD: PlaneDecl = PlaneDecl {
         fee_units: &[],
         ..WIDGET_PLANE.declaration
     },
-    resolve_provider: None,
     ..WIDGET_PLANE
 };
 
@@ -476,7 +472,6 @@ static ONE_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
         fee_units: &[],
         ..WIDGET_PLANE.declaration
     },
-    resolve_provider: None,
     ..WIDGET_PLANE
 };
 
@@ -488,7 +483,6 @@ static TWO_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
         fee_units: &[],
         ..WIDGET_PLANE.declaration
     },
-    resolve_provider: None,
     ..WIDGET_PLANE
 };
 
@@ -718,7 +712,6 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
-        resolve_provider: None,
     };
     let unit = ();
     let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();
@@ -780,7 +773,6 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
-        resolve_provider: None,
     };
     let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots)
         .expect("a plane that claims no path needs no admission");
@@ -845,7 +837,6 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
-        resolve_provider: None,
     };
     let ctx = busbar_kernel::plane::registry::BootCtx::stub();
 
@@ -902,7 +893,6 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
-        resolve_provider: None,
     };
     busbar_kernel::boot::run_start_hooks(&[&STARTS_CLEAN, &WIDGET_PLANE], &ctx)
         .expect("an Ok start and a None-start plane do not refuse boot");
@@ -957,7 +947,6 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
-        resolve_provider: None,
     };
     let ctx = busbar_kernel::plane::registry::BootCtx::stub();
 

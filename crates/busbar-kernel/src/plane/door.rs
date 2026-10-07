@@ -776,7 +776,6 @@ impl HookRow {
             viewer: None,
             retain_verify_gates: None,
             default_section: Some(self.default_section),
-            resolve_provider: None,
         }
     }
 }

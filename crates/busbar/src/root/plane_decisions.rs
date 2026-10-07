@@ -199,7 +199,6 @@ pub const PLANE_HOOKS: busbar_kernel::plane::registry::PlaneHooks =
         // `DecisionsSection::default()` rather than falling back to the neutral raw capture — the
         // carrier's type must not depend on whether the operator wrote the block.
         default_section: Some(decisions_default_section),
-        resolve_provider: None,
     };
 
 // THE DECISIONS PLANE'S LINKED ENTRY is this module: [`PLANE_DECLARATION`] and [`PLANE_HOOKS`] on

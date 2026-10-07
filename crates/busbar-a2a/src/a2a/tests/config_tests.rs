@@ -88,7 +88,6 @@ static POOLS_PLANE_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
         viewer: None,
         retain_verify_gates: None,
         default_section: None,
-        resolve_provider: None,
     };
 
 /// This plane's declared pin, read by the ONE reader every plane uses. The wrapper exists only so

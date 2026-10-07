@@ -5,8 +5,8 @@
 //! (`ProviderDef`, from providers.yaml), the operator deployment (`ProviderDeploy`, from
 //! config.yaml), the resolved section the runtime reads (`ProviderCfg`), the active-health block and
 //! the per-provider auth-style selector (`ProviderAuth`). The kernel parses the section into these
-//! and hands each entry to the plane's `resolve_provider` hook (or its own plane-absent fallback
-//! merge); the lane-capability keys they carry are [`crate::ir::lane_caps`]'s.
+//! and merges each entry with its own provider merge (`merge_provider_fallback`); the
+//! lane-capability keys they carry are [`crate::ir::lane_caps`]'s.
 //!
 //! Moved VERBATIM back from `busbar-substrate-values` when that crate was deleted (#83a SD-8): same
 //! type names, field names, order, types and serde attributes, so every parse, every refusal text and

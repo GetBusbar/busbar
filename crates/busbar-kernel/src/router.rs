@@ -353,9 +353,6 @@ pub(crate) fn base_data_router(
     crate::core_routes::CoreRouteTable,
 ) {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-    // A door plane whose claim is the whole tree (`/` and every path under it) claims the
-    // convenience surfaces' paths too, so the kernel mounts none of its own there.
-    let door_claims_root = doors.iter().any(|d| d.path.starts_with("/{*"));
     // EVERY core route is mounted through `CoreRouter::route`, which takes the handler and the
     // admission bar in ONE act (`core_routes`): a route the auth middleware knows nothing about is
     // not a thing this function can produce.
@@ -425,26 +422,6 @@ pub(crate) fn base_data_router(
             RouteAuth::Key,
             endpoints::list_models_v1beta,
         );
-    // THE CONVENIENCE SURFACES hand their unit to a body-model arrival, so they are mounted only
-    // where a plane registered one and no door plane claims the whole tree (a plane served through
-    // its door parses these paths itself).
-    let router = if crate::ingress::arrival::any_body_ingress() && !door_claims_root {
-        router
-            .route(
-                "/{name}/v1/messages",
-                RouteMethod::Post,
-                RouteAuth::Key,
-                ingress::named,
-            )
-            .route(
-                "/{provider}/{model}/v1/messages",
-                RouteMethod::Post,
-                RouteAuth::Key,
-                ingress::adhoc,
-            )
-    } else {
-        router
-    };
     // THE PLANES' DATA ROUTES, contributed through the registry rather than named here. For every
     // registered plane with a `mount` fn AND a runtime object this generation (its slot), the plane's
     // own `mount` mounts its routes from that slot, each door opening only when that plane's own

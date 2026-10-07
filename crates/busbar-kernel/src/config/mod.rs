@@ -2017,12 +2017,14 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
     })
 }
 
-/// THE CORE-RESIDENT FALLBACK for `PlaneDecl::resolve_provider` (1.6.0 pools stage-B) — byte-identical
-/// to `busbar_llm::engine::build_runtime::resolve_provider`, kept here for the build with no plane
-/// implementing the hook. `providers:`/`pools:` are `CORE_OWNED_CONCRETE_SECTIONS` and are parsed and
-/// merged UNCONDITIONALLY (never gated on plane presence, unlike `tools:`/`agents:`/`mcp:`), so an
-/// llm-plane-absent build must keep merging providers exactly as every prior release has rather than
-/// silently dropping configured providers out of `RootCfg::providers`. See
+/// THE PROVIDER MERGE (1.6.0 pools stage-B): one provider's catalog definition (`providers.yaml`) and
+/// its operator deployment (`config.yaml`'s `providers:` entry) into the resolved `ProviderCfg` — the
+/// deployment override wins, the catalog default otherwise. Core's own, and the only merge: no plane
+/// installs a merge of its own any more, so the registry row carries no hook for it.
+/// `providers:`/`pools:` are `CORE_OWNED_CONCRETE_SECTIONS` and are parsed and merged
+/// UNCONDITIONALLY (never gated on plane presence, unlike `tools:`/`agents:`/`mcp:`), so every build
+/// keeps merging providers exactly as every prior release has rather than silently dropping
+/// configured providers out of `RootCfg::providers`. See
 /// `crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS`'s doc for why this section never evicts.
 pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -> ProviderCfg {
     // Merge error_map: def's map with deployment override taking precedence
@@ -2102,18 +2104,6 @@ pub fn resolve(
     // own settings refusal, raised by the sink while `resolve_export` validates it.)
     let mut resolved_providers: HashMap<String, ProviderCfg> = HashMap::new();
 
-    // THE PLANE HOOK (1.6.0 pools stage-B): the per-provider catalog/deployment MERGE is the LLM
-    // plane's own logic (`PlaneDecl::resolve_provider`), resolved ONCE here — not per-provider — since
-    // it is a pure fn pointer and every iteration of the loop below reads the identical value. `None`
-    // when no plane implements the hook (an llm-plane-absent build): `providers:`/`pools:` are
-    // `CORE_OWNED_CONCRETE_SECTIONS` (never gated on plane presence, unlike `tools:`/`agents:`/`mcp:`),
-    // so a build compiled without the LLM plane must keep merging providers exactly as every prior
-    // release has — `merge_provider_fallback` is core's own byte-identical copy of the same merge,
-    // kept for exactly that build.
-    let resolve_provider_hook =
-        crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
-            .and_then(|d| d.resolve_provider);
-
     for (deploy_name, deploy_cfg) in &deploy.providers {
         // Look up the provider definition by name
         let Some(def) = defs.get(deploy_name) else {
@@ -2124,11 +2114,10 @@ pub fn resolve(
             continue;
         };
 
-        let merged = match resolve_provider_hook {
-            Some(f) => f(def, deploy_cfg),
-            None => merge_provider_fallback(def, deploy_cfg),
-        };
-        resolved_providers.insert(deploy_name.clone(), merged);
+        resolved_providers.insert(
+            deploy_name.clone(),
+            merge_provider_fallback(def, deploy_cfg),
+        );
     }
 
     // 1.5.3 NAMED-HOOKS: build the runtime hook registry from the top-level `hooks:` DEFINITION map

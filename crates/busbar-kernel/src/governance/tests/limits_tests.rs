@@ -1263,7 +1263,6 @@ static TOKEN_FAMILY_PLANE: crate::plane::registry::PlaneDecl = crate::plane::reg
     viewer: None,
     retain_verify_gates: None,
     default_section: None,
-    resolve_provider: None,
 };
 
 /// A `tokens:` cap counts EVERY class a plane declares in the token family, not only the reserved

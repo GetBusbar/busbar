@@ -158,7 +158,6 @@ pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::re
     viewer: None,
     retain_verify_gates: None,
     default_section: None,
-    resolve_provider: None,
 };
 
 /// SAY, IN ONE LINE, THAT THIS TEST NEEDS A PLANE TO EXIST — not what it does, only that config

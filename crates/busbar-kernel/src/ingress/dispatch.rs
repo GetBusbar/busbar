@@ -16,7 +16,7 @@ use super::*;
 /// per-path protocol routes: the Router does DUMB protocol identification from (path, headers); the
 /// identified protocol's RequestHandler reads path+body and decides the operation; the operation's
 /// OperationHandler does the rest. `main.rs` keeps explicit routes ONLY for busbar's own API (health/metrics/
-/// admin/discovery + the named/adhoc conveniences) — a new protocol touches the Router ID ladder, a
+/// admin/discovery) — a new protocol touches the Router ID ladder, a
 /// RequestHandler, and its OperationHandlers, never this dispatch and never `main.rs`.
 ///
 /// Path-model protocols delegate to their own protocol arms wholesale (path-model parsing, streaming
@@ -27,9 +27,9 @@ pub(crate) async fn protocol_dispatch(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     OriginalUri(uri): OriginalUri,
     method: axum::http::Method,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
-    consumed: Option<axum::extract::Extension<crate::auth::ConsumedCredentials>>,
-    mut headers: HeaderMap,
+    axum::extract::Extension(_gov): axum::extract::Extension<crate::governance::GovCtx>,
+    _consumed: Option<axum::extract::Extension<crate::auth::ConsumedCredentials>>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let path = uri.path().to_string();
@@ -71,61 +71,8 @@ pub(crate) async fn protocol_dispatch(
             }
         }
     }
-    // THE PATH-MODEL ARRIVAL, RESOLVED FROM THE DECLARATION rather than from the protocol's NAME.
-    //
-    // This was a `match` over protocol name, one arm per path-model protocol — the last protocol-name
-    // comparisons left in core after `proto::registry` turned the protocol axis into data. They
-    // survived the registry unit because removing them needs an INGRESS on the declaration, which
-    // is a mount-table question, and the mount table is what `crate::ingress::protocol` settled.
-    // A protocol that parses its model out of the URL now DECLARES the function that does it; core
-    // reads `path_ingress` and calls it, and a new dialect with a path model joins by declaring one.
-    //
-    // THE FUTURE IS STILL BOXED, and for the reason the arms were: in a `match`, every arm's future
-    // is inlined into the dispatch coroutine's union, so each path-model protocol's arm (several KB
-    // each) inflated the future EVERY request carried even when the traffic was another dialect. A
-    // function pointer returning a boxed future keeps that allocation on the requests that take it
-    // and nowhere else — and it is now the DECLARATION's boxing rather than this function's.
-    // The arrival is resolved from the core-owned, protocol-name-keyed side-table rather than off the
-    // declaration: `path_ingress` split off `ProtocolDecl` when the decl relocated to
-    // `busbar-substrate` (it named the core-only `Arrival`, which the neutral leaf cannot). Same fn
-    // pointer, same boxing, same by-name resolution — see `crate::ingress::arrival::path_ingress_for`.
-    //
-    // Body-model protocols keep the model IN THE BODY, so the universal resolution + forward tail
-    // (the generic `operation_ingress` → the one engine) RELOCATED into the extracted plane crate that
-    // owns it. That plane's universal body-arrival is resolved by protocol name the same way, AFTER
-    // the path-model table, and handed the same neutral arrival — the two aliases are one `fn` type,
-    // so one arm serves both and core names no plane-specific type. No plane linked (core booted
-    // plane-agnostic) → the honest no-handler 404 below.
-    let ingress =
-        crate::ingress::path_ingress_for(proto).or_else(|| crate::ingress::body_ingress_for(proto));
-    if let Some(ingress) = ingress {
-        // Mint the neutral arrival the dialect crate receives: its own URL-parsing reads
-        // `path`/`uri`/`headers`/`body` directly, and it reaches core's resolution/forward pipeline
-        // through `host`, threading the core-only `App`/`GovCtx`/`CallerToken` back opaquely as `ctx`
-        // — so it names no `busbar_kernel::` item and core names no dialect.
-        let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(
-            crate::ingress::arrival_host::ArrivalPayload {
-                host: crate::plane_host::engine_host(&app),
-                gov,
-                caller_token: consumed.as_ref().and_then(|c| c.caller.clone()),
-            },
-        );
-        // Identified (above, off the request as it arrived), the plane never sees the credential
-        // the gate consumed — it carries the ref in the payload instead (#65, #40(b)).
-        crate::auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
-        // The plane ANSWERS (#28); this handler is the outer one that serves the answer.
-        return ingress(busbar_kernel::ingress::arrival::Arrival {
-            host: std::sync::Arc::new(crate::ingress::arrival_host::CoreArrivalHost),
-            ctx,
-            path,
-            model_hint: None,
-            uri,
-            headers,
-            body,
-        })
-        .await
-        .into_response();
-    }
+    // No arrival answers here: a plane serves its own paths through its door, mounted ahead of
+    // this fallback, so a protocol path no claim took is the honest no-handler 404.
     crate::fallback_error_response(
         &app.planes,
         &path,

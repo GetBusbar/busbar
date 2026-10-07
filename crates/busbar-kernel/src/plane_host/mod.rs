@@ -449,69 +449,6 @@ pub fn clock_now_ms_over(app: &App) -> u64 {
     }) / 1_000_000
 }
 
-/// Synthesize ONE non-streaming chat completion by driving `body` through the ENTIRE resolved ingress
-/// pipeline over the live `app`, returning the raw wire outcome — the core-resident veneer behind
-/// [`EngineHost::synthesize_completion`](busbar_kernel::plane_host::EngineHost::synthesize_completion).
-/// This is the ONLY place the `ingress::operation_resolved` + `handlers::chat` + `proxy::LazyBody`
-/// reaches now live: an extracted plane hands a NEUTRAL request (gov + model + body bytes) and gets a
-/// NEUTRAL [`HostCompletion`](busbar_kernel::plane_host::HostCompletion) (status + body bytes) back,
-/// never naming a core type.
-///
-/// A line-for-line lift of the former `mcp::sampling::complete`'s pre-response body: the argument
-/// tuple handed to `operation_resolved` is preserved BYTE-IDENTICALLY — the chat `proto` is the
-/// registry's residual-default dialect (read by NAME, so this neutral core spells none),
-/// [`Transport::Http`](crate::transport::Transport), the `handlers::chat(proto, Http)` op,
-/// `caller_token = None`, `model_not_found_message = None`, `charged_at = busbar_kernel::store::now()` (whole
-/// SECONDS, the same source [`clock_now_secs_over`] scales to), and `LazyBody::parse` over the SAME
-/// bytes — so governance attribution and metering are unchanged. The async future stays `Send`: it
-/// only `.await`s the native core async fn; no `HostCtx` is minted here, and any minted inside
-/// `operation_resolved`'s own frames is consumed there, never crossing this `.await`.
-pub async fn synthesize_completion_over(
-    app: Arc<App>,
-    gov: &crate::governance::PlaneRequestCtx,
-    model: &str,
-    body: bytes::Bytes,
-    max_body_bytes: usize,
-) -> Result<busbar_kernel::plane_host::HostCompletion, busbar_kernel::plane_host::CompletionRefusal>
-{
-    // FRESH headers, not the inbound request's: the caller's own headers carry affinity keys and
-    // per-request parameters addressed to the caller's request, and replaying them onto a leg the
-    // caller did not compose would let one exchange steer another.
-    let mut headers = axum::http::HeaderMap::new();
-    headers.insert(
-        axum::http::header::CONTENT_TYPE,
-        axum::http::HeaderValue::from_static("application/json"),
-    );
-    // The resolved-completion synthesizer (`operation_resolved` over the residual-default chat
-    // dialect, `LazyBody::parse` over these bytes, `model` explicit, `caller_token = None`) reads the
-    // LLM routing tables and RELOCATED into the LLM plane; core reaches it through the neutral
-    // resolved-completion seam, threading `App`/`GovCtx` back opaquely as [`ArrivalCtx`]. `None` is
-    // the all-planes-off deletion configuration: with no LLM plane installed there is no chat dialect
-    // to drive, and the caller gets that as a neutral refusal it words in its own vocabulary.
-    let Some(synth) = busbar_kernel::ingress::arrival::completion_ingress() else {
-        return Err(busbar_kernel::plane_host::CompletionRefusal::NotInstalled);
-    };
-    let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(
-        crate::ingress::arrival_host::ArrivalPayload {
-            host: engine_host(&app),
-            gov: gov.clone(),
-            caller_token: None,
-        },
-    );
-    let response = synth(busbar_kernel::ingress::arrival::CompletionArrival {
-        ctx,
-        model: model.to_string(),
-        headers,
-        body,
-    })
-    .await;
-    let status = response.status().as_u16();
-    let body = axum::body::to_bytes(response.into_body(), max_body_bytes)
-        .await
-        .map_err(|e| busbar_kernel::plane_host::CompletionRefusal::BodyUnread(e.to_string()))?;
-    Ok(busbar_kernel::plane_host::HostCompletion { status, body })
-}
-
 /// Core's implementation of the neutral [`EngineHost`](busbar_kernel::plane_host::EngineHost)
 /// seam over the live [`App`]. A plane holds this behind an
 /// `Arc<dyn busbar_kernel::plane_host::EngineHost>` and calls typed, safe methods on it INSTEAD of
@@ -1334,18 +1271,18 @@ impl busbar_kernel::plane_host::AdmissionHost for EngineHostImpl {
 impl busbar_kernel::plane_host::CompletionHost for EngineHostImpl {
     async fn synthesize_completion(
         &self,
-        gov: &busbar_contract::records::PlaneRequestCtx,
-        model: &str,
-        body: bytes::Bytes,
-        max_body_bytes: usize,
+        _gov: &busbar_contract::records::PlaneRequestCtx,
+        _model: &str,
+        _body: bytes::Bytes,
+        _max_body_bytes: usize,
     ) -> Result<
         busbar_kernel::plane_host::HostCompletion,
         busbar_kernel::plane_host::CompletionRefusal,
     > {
-        // The veneer keeps the `ingress::operation_resolved` + `handlers::chat` + `proxy::LazyBody`
-        // reaches in core; it only `.await`s the native async fn, so no `HostCtx` crosses the
-        // `.await` and the future stays `Send`.
-        synthesize_completion_over(Arc::clone(&self.app), gov, model, body, max_body_bytes).await
+        // No linked plane installs a resolved-completion synthesizer (the seam left with the engine
+        // that installed it), so there is no dialect to drive: the caller gets the neutral refusal
+        // and words it in its own vocabulary.
+        Err(busbar_kernel::plane_host::CompletionRefusal::NotInstalled)
     }
 }
 

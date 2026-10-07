@@ -6,23 +6,12 @@ use std::time::Instant;
 
 use axum::{
     body::Bytes,
-    extract::{OriginalUri, Path},
+    extract::OriginalUri,
     http::{HeaderMap, StatusCode},
     response::Response,
 };
 
 use crate::state::App;
-
-// The body-model arrival catch-all resolves straight off the installed table (the composition root
-// wrote it via `install_body_ingress`) or the test hook (`set_test_body_ingress`). Core's OWN
-// `#[cfg(test)]` binary used to auto-seed the test hook here with the extracted dialects'
-// `BODY_INGRESS` slice — the A6/HostCtx dev-dependency-cycle cleanup removed that (it named
-// `busbar_llm` directly, which only type-checks with ONE `busbar_kernel` in the graph): a test that
-// needs a real body-model arrival now registers it itself
-// (`busbar_kernel::ingress::arrival::set_test_body_ingress(|| busbar_llm::BODY_INGRESS)`, idempotent,
-// first-wins) from an integration-test target, exactly the posture an external `test-support`
-// consumer already used — so this neutral source names no dialect crate under any build surface.
-pub(crate) use busbar_kernel::ingress::arrival::{body_ingress_for, path_ingress_for};
 
 /// enforce a virtual key's allowed-pools list against the resolved target pool. No-op
 /// when governance is off (`gov.key` is None) or the key allows all pools. Returns a 403 response
@@ -656,10 +645,6 @@ pub mod jsonrpc;
 #[path = "tests/terminal_tests.rs"]
 mod terminal_tests;
 
-/// THE NEUTRAL PATH-MODEL ARRIVAL SEAM — the `ArrivalHost` ABI a URL-model dialect calls to reach the
-/// core request pipeline, and the protocol-name-keyed side-table the composition root registers those
-/// arrivals through. Absorbed from busbar-substrate (W4.b P2).
-pub mod arrival;
 /// THE NEUTRAL INBOUND BYTE-DUPLEX TRANSPORT — the byte half of a single full-duplex channel.
 /// Absorbed from busbar-substrate (W4.b P2).
 pub mod byte_duplex;
@@ -679,12 +664,8 @@ pub mod dispatch;
 // `protocol_dispatch` is the axum catch-all fallback the core router mounts and nothing outside core
 // names, so it stays crate-private — keeping the confidential `CallerToken` it takes off the public
 // seam. (The universal resolved-op ingress it used to hold — `operation_resolved`/`operation_ingress`
-// — RELOCATED into the plane that owns it; core reaches it only through the neutral body-arrival seam.)
+// — RELOCATED into the plane that owns it.)
 pub(crate) use dispatch::protocol_dispatch;
-/// CORE'S IMPL of the neutral [`busbar_kernel::ingress::arrival::ArrivalHost`] — the request-pipeline
-/// seam a path-model dialect crate (one that parses its model out of the URL, living outside core)
-/// calls back through. Core owns the resolution/forward/error-shaping; the dialect owns its URL parsing.
-pub mod arrival_host;
 
 /// Build the human-readable message for a model/pool-miss 404. `model_not_found_message` is a
 /// dialect's PRE-SHAPED body in its own native vocabulary — built by the arrival that owns the request
@@ -732,133 +713,4 @@ pub fn percent_decode(s: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
-}
-
-// POST /<name>/v1/messages — name resolves to a pool (weighted) or a single model. The pool/model
-// routing + forward logic RELOCATED into the plane that owns it; this core shell mints the neutral
-// arrival (reconstructing the URL the convenience route pinned) and hands it to the plane's
-// universal body-arrival, exactly as `protocol_dispatch` does for a body-model hit. Core names no
-// plane-specific type; no plane linked → the honest no-handler 404.
-#[tracing::instrument(level = "debug", name = "named", skip_all, fields(pool = %name))]
-pub(crate) async fn named(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
-    Path(name): Path<String>,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
-    consumed: Option<axum::extract::Extension<crate::auth::ConsumedCredentials>>,
-    mut headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    // The plane never sees the credential the gate consumed (#65, #40(b)).
-    crate::auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
-    // The dialect the `/v1/messages` convenience surface speaks, resolved from the registry (the
-    // dialect whose `residual_claims` predicate claims that path — Anthropic Messages), so core names
-    // no dialect. `""` when no such dialect is registered.
-    let proto = crate::proto::residual_dialect_for_path("/v1/messages").unwrap_or("");
-    delegate_body_arrival(
-        app,
-        gov,
-        consumed.and_then(|axum::extract::Extension(c)| c.caller),
-        proto,
-        format!("/{name}/v1/messages"),
-        // The `named` convenience surface routes by the PATH name (a pool or model), NOT a body
-        // `model` — so thread it as the model hint the universal ingress resolves against.
-        Some(name),
-        headers,
-        body,
-    )
-    .await
-}
-
-/// Mint the neutral body-model arrival for a convenience surface (`named`/`adhoc`) and hand it to the
-/// owning plane's universal body-arrival, resolved by protocol name — mirroring
-/// [`dispatch::protocol_dispatch`]'s body-model arm. The pool/model routing + forward logic the
-/// surface used to run inline now lives in the extracted plane crate; core threads its
-/// `App`/`GovCtx`/caller-token back opaquely through the
-/// [`arrival_host::ArrivalPayload`]. No plane linked → the honest no-handler 404.
-#[allow(clippy::too_many_arguments)]
-async fn delegate_body_arrival(
-    app: Arc<App>,
-    gov: crate::governance::GovCtx,
-    caller: Option<crate::auth::CallerCredential>,
-    proto: &'static str,
-    path: String,
-    model_hint: Option<String>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    if let Some(body_ingress) = crate::ingress::body_ingress_for(proto) {
-        let uri = path.parse::<axum::http::Uri>().unwrap_or_default();
-        let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(
-            crate::ingress::arrival_host::ArrivalPayload {
-                host: crate::plane_host::engine_host(&app),
-                gov,
-                caller_token: caller,
-            },
-        );
-        return body_ingress(busbar_kernel::ingress::arrival::Arrival {
-            host: std::sync::Arc::new(crate::ingress::arrival_host::CoreArrivalHost),
-            ctx,
-            path,
-            model_hint,
-            uri,
-            headers,
-            body,
-        })
-        .await
-        .into_response();
-    }
-    crate::proxy::ingress_error(
-        proto,
-        StatusCode::NOT_FOUND,
-        crate::proxy::KIND_NOT_FOUND,
-        "This endpoint does not support that operation.",
-    )
-}
-
-// POST /<provider>/<model>/v1/messages — ad-hoc direct. Same relocation as `named`.
-#[tracing::instrument(level = "debug", name = "adhoc", skip_all, fields(provider = %provider, model = %model))]
-pub async fn adhoc(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
-    Path((provider, model)): Path<(String, String)>,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
-    consumed: Option<axum::extract::Extension<crate::auth::ConsumedCredentials>>,
-    mut headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    // The plane never sees the credential the gate consumed (#65, #40(b)).
-    crate::auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
-    // The dialect the `/v1/messages` convenience surface speaks, resolved from the registry (see
-    // `named`); `""` when no such dialect is registered.
-    let proto = crate::proto::residual_dialect_for_path("/v1/messages").unwrap_or("");
-    // ADHOC PROVIDER MATCH (pre-relocation `adhoc`'s Some(i)-wrong-provider arm): the path names BOTH a
-    // provider and a model, and a configured model reached under the WRONG provider is a client error,
-    // not a route to that model's real provider. Read the neutral routing view: a model that IS
-    // configured but whose lane's provider differs from the path provider → the anthropic-shaped 400.
-    // A model MISS falls through to the universal ingress, which renders the same not-found 404.
-    {
-        let view = app.engine_tables_view();
-        if let Some(idx) = view.model_index(&model) {
-            if !view.lane_view(idx).is_some_and(|l| l.provider == provider) {
-                return crate::proxy::ingress_error(
-                    proto,
-                    StatusCode::BAD_REQUEST,
-                    crate::proxy::KIND_INVALID_REQUEST,
-                    &not_found_message(&model, None),
-                );
-            }
-        }
-    }
-    delegate_body_arrival(
-        app,
-        gov,
-        consumed.and_then(|axum::extract::Extension(c)| c.caller),
-        proto,
-        format!("/{provider}/{model}/v1/messages"),
-        // The `adhoc` surface names the model in the PATH (with the provider verified above); thread the
-        // model as the hint the universal ingress resolves against.
-        Some(model),
-        headers,
-        body,
-    )
-    .await
 }

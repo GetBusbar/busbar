@@ -799,20 +799,6 @@ pub struct AppHandle {
     /// Debug-only overlap detector for [`swap`](Self::swap) — see the convention note there.
     #[cfg(debug_assertions)]
     swapping: std::sync::atomic::AtomicBool,
-    /// THE COMPOSITION-ROOT-OWNED per-generation ENGINE HOST — the `Arc<dyn EngineHost>` the active
-    /// health probers hold a `Weak` to (App-retype WEDGE 2f). The probers re-anchor on THIS host, not on
-    /// `Arc<App>`, so the plane's health module names no core `App` type; the handle owns it here so a
-    /// [`swap`](Self::swap) can DROP the retiring generation's host, making every stale prober's
-    /// `Weak::upgrade` fail (they exit) instead of pinning the old snapshot alive. `None` until the
-    /// composition root binds the boot host ([`set_snapshot_host`](Self::set_snapshot_host)); a
-    /// featureless (no-plane) or non-probing deployment simply never sets it. The `Arc<dyn EngineHost>`
-    /// holds an `Arc<App>` clone of its generation — dropping it on swap releases that reference so the
-    /// old `App` frees once its in-flight requests drain, exactly as the old `Weak<App>` prober did.
-    snapshot_host: std::sync::Mutex<Option<Arc<dyn busbar_kernel::plane_host::EngineHost>>>,
-    /// What re-attaches the per-generation workers (the active health probers) to a NEW generation's
-    /// host. Bound once by the composition root ([`attach_on_swap`](Self::attach_on_swap)), which is
-    /// the one place allowed to name the plane that owns them; unbound, a swap re-attaches nothing.
-    attach: std::sync::OnceLock<fn(&Arc<dyn busbar_kernel::plane_host::EngineHost>)>,
     /// What every [`swap`](Self::swap) tells of the generation it installed: the composition root's
     /// served door planes, each refreshed onto a new generation of its section (ARCHITECT
     /// Q-DEL-A2A-APPLY; THE DESIGN §11: plugin memory is "valid to its next refresh generation").
@@ -828,8 +814,6 @@ impl AppHandle {
             current: arc_swap::ArcSwap::new(app),
             #[cfg(debug_assertions)]
             swapping: std::sync::atomic::AtomicBool::new(false),
-            snapshot_host: std::sync::Mutex::new(None),
-            attach: std::sync::OnceLock::new(),
             appliers: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -841,23 +825,6 @@ impl AppHandle {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(applier);
-    }
-
-    /// Bind what every [`swap`](Self::swap) runs against the incoming generation's host before the
-    /// outgoing one is dropped — the composition root passes the plane's prober spawner, so the
-    /// probers the swap retires are replaced by probers on the snapshot that replaced them. First
-    /// binding wins: there is one set of per-generation workers per process.
-    pub fn attach_on_swap(&self, attach: fn(&Arc<dyn busbar_kernel::plane_host::EngineHost>)) {
-        let _ = self.attach.set(attach);
-    }
-
-    /// Bind the composition-root-owned ENGINE HOST for the CURRENT generation — the host the active
-    /// health probers hold a `Weak` to (App-retype WEDGE 2f). Called once at boot after the probers are
-    /// spawned against this same host, so the handle owns the only strong reference the probers depend
-    /// on: a later [`swap`](Self::swap) drops it, and every stale prober exits (its `Weak` fails to
-    /// upgrade). Replacing an existing binding drops the prior host, retiring that generation's probers.
-    pub fn set_snapshot_host(&self, host: Arc<dyn busbar_kernel::plane_host::EngineHost>) {
-        *self.snapshot_host.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
     }
 
     /// The current `App` snapshot as an OWNED `Arc` (one refcount bump). For a caller that only
@@ -875,14 +842,7 @@ impl AppHandle {
     }
 
     /// Atomically replace the current snapshot (the admin config-mutation seam: reload, apply, and every
-    /// hook/auth mutation). Re-spawns the health probers against `next`, through the spawner the
-    /// composition root bound with [`attach_on_swap`](Self::attach_on_swap): probers hold a `Weak` to
-    /// their generation's host and exit once it drops, so EVERY swap must re-attach them —
-    /// otherwise the first admin mutation replaces the boot App, the boot App drops as in-flight requests
-    /// drain, its probers exit, and active/dead health probing silently STOPS even though lanes/health are
-    /// unchanged (before 1.4.0 only reload/apply re-spawned; the six hook/auth-mutation swaps did not).
-    /// Doing it in `swap` itself makes it impossible for a future swap site to forget.
-    /// Also lets each PLANE carry its engine-owned live state across the apply, through the plane's
+    /// hook/auth mutation). Lets each PLANE carry its engine-owned live state across the apply, through the plane's
     /// own [`PlaneDecl::on_swap`](crate::plane::registry::PlaneDecl::on_swap) hook. Today exactly one
     /// registered plane has such state: it RETIRES every out-of-process member connection whose
     /// registration is gone from `next`. Same reasoning as the probers, one plane over: that plane's
@@ -929,20 +889,6 @@ impl AppHandle {
             }
         }
         self.current.store(next.clone());
-        // RETIRE the OUTGOING generation's engine host (App-retype WEDGE 2f). The active health probers
-        // hold a `Weak<dyn EngineHost>` to the composition-root-owned host of the snapshot they were
-        // spawned against; dropping it here makes their `Weak::upgrade` fail, so they exit rather than
-        // probe a retired snapshot — the SAME no-strong-ref-across-reload guarantee the old `Weak<App>`
-        // gave, now anchored on the host holder. We re-bind the host for `next` so the invariant "the
-        // handle owns a host per current generation" holds, and RE-SPAWN the probers against it first
-        // (item 552: no plane's `on_swap` did, so the first admin mutation stopped health probing for
-        // the life of the process). The spawner is the composition root's binding, so core still
-        // names no plane's `spawn_probers`.
-        let host = crate::plane_host::engine_host(&next);
-        if let Some(attach) = self.attach.get() {
-            attach(&host);
-        }
-        self.set_snapshot_host(host);
         // EVERY APPLY IS A NEW GENERATION for the composition root's served door planes: each is
         // refreshed onto the installed generation's section (its plugin memory resets with it).
         for applier in self

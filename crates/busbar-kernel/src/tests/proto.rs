@@ -2,32 +2,7 @@
 //! implementation and nothing else; still a direct child module, so `use super::*` reaches what it
 //! always did.
 //!
-//! ONE assertion, and it is the whole reason the fold exists: a declaration whose model is in the URL
-//! path must arrive with an arrival. The success path is NOT tested here — both installs behind it are
-//! set-once per process and this crate's test binary is shared — and it does not need to be: the two
-//! installs are the leaf's and this crate's own, each already covered where it is defined. What is only
-//! true HERE is that the parity is checked BEFORE either of them, so the refusal leaves both seams
-//! unwritten rather than one of the two.
-
-use super::*;
-
-/// The one field this fold reads that is not the neutral zero. Everything else comes from the
-/// leaf's own name-only row ([`ProtocolDecl::named`]), so a field added to the declaration is added
-/// in one place and this fixture does not have to be found and edited to stay compiling.
-static URL_MODEL_WITHOUT_ARRIVAL: ProtocolDecl = ProtocolDecl {
-    has_model_in_url: true,
-    ..ProtocolDecl::named("telex")
-};
-
-/// A path-model declaration installed with NO arrival would resolve no arrival and fall through to the
-/// body-model branch — a silent, 404-shaped wrong answer on a protocol the operator did install. The
-/// fold refuses the boot instead, and refuses it BEFORE either seam is written: this test's process
-/// never reaches `install_protocols`, so a panic here is the guard and not an install.
-#[test]
-#[should_panic(expected = "registered no path_ingress arrival")]
-fn a_url_model_declaration_without_its_arrival_refuses_the_boot() {
-    install_protocols_with_path_ingress(vec![&URL_MODEL_WITHOUT_ARRIVAL], Vec::new());
-}
+//! The kernel's registry machinery, over synthetic declarations (below).
 
 // ══ THE KERNEL'S REGISTRY MACHINERY, OVER SYNTHETIC DECLARATIONS ═════════════════════════════════
 //
@@ -422,44 +397,6 @@ mod registry_fold {
         assert!(
             empty.decl("anthropic").is_none(),
             "an empty registry resolves NO name — including one the built-ins declare today"
-        );
-    }
-
-    /// THE BOOT PARITY RULE THE COMPOSITION ROOT ASSERTS (Batch C-6). A declaration whose model is in the
-    /// URL (`has_model_in_url`) MUST register a `path_ingress` arrival, or a request naming its URL model
-    /// silently falls through to the body-model branch — a wrong-behavior 404-shaped bug, not a compile
-    /// error. `install_protocols_with_path_ingress` panics on it at boot; here we drive the pure guard
-    /// (`first_path_model_without_arrival`) red-then-green so the invariant is proven without touching the
-    /// process singletons the installer writes.
-    #[test]
-    fn a_url_model_protocol_without_a_registered_arrival_is_caught() {
-        // A path-model fixture: same shape as gemini/bedrock in the one fact that matters here.
-        const URL_MODEL_DECL: ProtocolDecl = ProtocolDecl {
-            has_model_in_url: true,
-            ..TELEX_DECL
-        };
-        let decls: &[&'static ProtocolDecl] = &[&URL_MODEL_DECL];
-
-        // RED: the URL-model protocol declared, but no arrival registered → the guard names it.
-        assert_eq!(
-            crate::proto::first_path_model_without_arrival(decls, &[]),
-            Some("telex"),
-            "a has_model_in_url decl with no arrival must be reported by name"
-        );
-
-        // GREEN: register the arrival by the SAME name → the guard is satisfied.
-        assert_eq!(
-            crate::proto::first_path_model_without_arrival(decls, &["telex"]),
-            None,
-            "once its arrival is registered under the same name, the parity rule holds"
-        );
-
-        // A body-model protocol (has_model_in_url == false) needs no arrival and is never reported.
-        let body_model: &[&'static ProtocolDecl] = &[&TELEX_DECL];
-        assert_eq!(
-            crate::proto::first_path_model_without_arrival(body_model, &[]),
-            None,
-            "a body-model protocol declares no URL model, so it needs no arrival"
         );
     }
 }

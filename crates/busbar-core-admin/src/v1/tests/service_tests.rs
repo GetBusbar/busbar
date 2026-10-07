@@ -3654,7 +3654,6 @@ mod plane_fees_on_admin_usage {
                 viewer: None,
                 retain_verify_gates: None,
                 default_section: None,
-                resolve_provider: None,
             }
         };
     }

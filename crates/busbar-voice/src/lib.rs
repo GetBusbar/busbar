@@ -396,7 +396,6 @@ pub const PLANE_HOOKS: PlaneHooks = PlaneHooks {
     // `mcp_default_section`). The kernel's declared-section carrier holds no entry for an absent
     // section; this hook is what that absence means to the plane.
     default_section: Some(config::streams_default_section),
-    resolve_provider: None,
 };
 
 /// THE VOICE PLANE'S PROTOCOL DECLARATION — a `ProtocolDecl` with `codec: None`, re-exported at the
