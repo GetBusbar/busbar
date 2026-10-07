@@ -3276,6 +3276,12 @@ mod money_tests;
 #[path = "tests/serve_hook_seats.rs"]
 mod hook_seat_tests;
 
+// The previous release's engine tests whose behaviour the kernel owns, on the door serving the
+// `pools` map, where a kernel unit test cannot express them.
+#[cfg(all(test, linked_fold_on_driver, linked_axis_node))]
+#[path = "tests/serve_door_kernel_ported.rs"]
+mod door_kernel_ported_tests;
+
 #[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_framed.rs"]
 mod framed_tests;
