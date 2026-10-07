@@ -318,6 +318,9 @@ unsafe impl<T, P: Send + Sync> Sync for Generation<T, P> {}
 /// request keeps reading the generation it arrived under while a refresh publishes the next one.
 pub struct Generations<T: Publish, P = ()> {
     live: Mutex<Vec<Generation<T, P>>>,
+    /// Alive while these generations are: an answer that published from them is FAULT when they
+    /// are gone by the time the body returns (`abi::sdk::out::Holders`).
+    pub(crate) alive: crate::abi::sdk::out::Alive,
 }
 
 impl<T: Publish, P> std::fmt::Debug for Generations<T, P> {
@@ -348,6 +351,7 @@ impl<T: Publish, P> Generations<T, P> {
     pub const fn new() -> Self {
         Self {
             live: Mutex::new(Vec::new()),
+            alive: crate::abi::sdk::out::Alive::new(),
         }
     }
 

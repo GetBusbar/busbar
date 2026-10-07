@@ -15,7 +15,8 @@
 //! Every later call reads it with [`Instance::get`], as `&T`: ops on distinct tickets run
 //! concurrently on one instance (`abi::mechanism::lifecycle`, CONCURRENCY), so the SDK never hands out
 //! `&mut T` — a state that changes holds its own locks or atomics. When `close` answers READY the
-//! SDK drops the state (its `Drop` runs); a `close` answering anything else leaves it in place,
+//! SDK drops the state (its `Drop` runs; a `Drop` that panics is caught and `close` still answers
+//! READY, since the box is gone either way); a `close` answering anything else leaves it in place,
 //! since the host keeps calling an instance whose `close` was not READY. So the body never frees
 //! it, and nothing can free it twice or use it after.
 //!
@@ -39,11 +40,12 @@
 //! than another type's bytes.
 
 use std::any::{Any, TypeId};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::mem::size_of;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::abi::mechanism::call::{InHead, OutHead, Outcome, FLAG_RESUME};
@@ -51,7 +53,7 @@ use crate::abi::mechanism::lifecycle::{slot, CancelIn, OpenIn, OpenOut, Validate
 use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::door::{AbiIn, AbiOut, Entry};
 use crate::abi::sdk::lent::Lent;
-use crate::abi::sdk::out::{Kept, Out, Reason, Reporting};
+use crate::abi::sdk::out::{holders_live, Holders, Kept, Out, Reason, Reporting};
 
 /// What each ticket's op parked, by ticket.
 type Parked = HashMap<Ticket, Box<dyn Any + Send + Sync>>;
@@ -376,14 +378,21 @@ impl<S: SafeSlot> Entry for Safe<S> {
         };
         // What the body reports is built here and handed to the instance when it returns.
         let reporting: Reporting = Cell::new(None);
+        // What its answer leased or published from, checked when it returns.
+        let holders: Holders = RefCell::new(Vec::new());
         let written = match parked {
-            Some(h) => Out::kept(&mut *out, &h.kept, &reporting),
+            Some(h) => Out::kept(&mut *out, &h.kept, &reporting, &holders),
             // SAFETY: `input` is the trampoline's copy of the host's `in` for slot `index`.
-            None => Out::lent(&mut *out, unsafe { lent_reason(index, input) }),
+            None => Out::lent(&mut *out, unsafe { lent_reason(index, input) }, &holders),
         };
         // SAFETY: `input` is the trampoline's copy of the host's `in`, whose every pointer is
         // valid for the call (`Entry::enter`'s contract), and it lives until this returns.
-        let answered = S::call(handle, unsafe { Lent::new(input) }, written);
+        let mut answered = S::call(handle, unsafe { Lent::new(input) }, written);
+        if !holders_live(&holders) {
+            // The answer names memory a lease table or published generations held, and that
+            // table went with the body (one it made for itself): the host must read none of it.
+            answered = Outcome::Fault;
+        }
         let reported = reporting.take();
         let kept_report = reported.is_some();
         if let (Some(h), Some(r)) = (parked, reported) {
@@ -459,7 +468,14 @@ impl<S: SafeSlot> Entry for Safe<S> {
                 }
                 // SAFETY: the SDK's `Tagged<S::State>` box from `open`; `close` answered READY with
                 // no other op in flight, so the host never passes it again (the call contract).
-                drop(unsafe { Box::from_raw(instance.cast::<Tagged<S::State>>()) });
+                let gone = unsafe { Box::from_raw(instance.cast::<Tagged<S::State>>()) };
+                // The state's `Drop` is plugin code and may panic. The box is deallocated during
+                // that unwind all the same, so the answer stays READY: a FAULT here would tell the
+                // host the instance is still live while its memory is gone. A payload is leaked,
+                // not dropped, since its own `Drop` may panic again.
+                if let Err(payload) = catch_unwind(AssertUnwindSafe(move || drop(gone))) {
+                    std::mem::forget(payload);
+                }
             }
             _ => {}
         }
