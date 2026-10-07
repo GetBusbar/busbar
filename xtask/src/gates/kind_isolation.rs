@@ -7138,44 +7138,56 @@ impl Gate for KindIsolationGate {
             // A TEST-LINKED DOOR (ARCHITECT 2026-10-03, L3B-MCP round 4 Q-L3B-GATES (1)) is exempt
             // only while its row states the drain and its crate's `test-linked` list names the
             // door: the kernel's row with its drain struck, or the kernel no longer naming the door,
-            // is the edge's own verdict again, and red.
-            let door_row =
-                "drain   = \"test-only: the test-linked door moves to the plugin repo in W4 \
-                            (OWNER BUSBAR-CI-PLUGIN-AGNOSTIC); no production edge\"";
-            let mut ov = Overlay::new();
-            ov.set(
-                REGISTRY_FILE,
-                cx.read(REGISTRY_FILE).unwrap_or_default().replacen(
-                    door_row,
-                    "drain   = \"none\"",
-                    1,
-                ),
-            );
+            // is the edge's own verdict again, and red. The tree has no test-linked door since the
+            // kernel's plane tests moved to the composition root (ARCHITECT: core names zero plane
+            // types, its tests included), so each case plants the whole shape — the kernel's
+            // `door:` row, its `[dev-dependencies]` edge and its `[[dep]]` row — and then breaks
+            // one part of it.
+            let kernel = "crates/busbar-kernel/Cargo.toml";
+            let door_drain = "test-only: the test-linked door moves to the plugin repo in W4 \
+                              (OWNER BUSBAR-CI-PLUGIN-AGNOSTIC); no production edge";
+            let planted_door = |linked_row: &str, drain: &str| {
+                let manifest = cx.read(kernel).unwrap_or_default();
+                let manifest = manifest
+                    .replacen(
+                        "test-linked = [\"busbar-llm\", \"busbar-a2a\"]",
+                        &format!("test-linked = [\"busbar-llm\", \"{linked_row}\", \"busbar-a2a\"]"),
+                        1,
+                    )
+                    .replacen(
+                        "[dev-dependencies]\n",
+                        "[dev-dependencies]\nbusbar-plane-mcp = { path = \"../busbar-plane-mcp\" }\n",
+                        1,
+                    );
+                let registry = format!(
+                    "{}\n\n[[dep]]\nfrom    = \"busbar-kernel\"\nto      = \"busbar-plane-mcp\"\n\
+                     half    = \"test\"\ncount   = \"1\"\nverdict = \"{TEST_LINKED_DOOR_VERDICT}\"\n\
+                     cite    = \"ARCHITECT 2026-10-03 L3B-MCP round 4 Q-L3B-GATES (1)\"\n\
+                     why     = \"busbar-kernel names busbar-plane-mcp: declared dev in the test \
+                     graph (dev-dependencies), 1 declaration(s) at this commit.\"\n\
+                     drain   = \"{drain}\"\n",
+                    cx.read(REGISTRY_FILE).unwrap_or_default().trim_end()
+                );
+                let mut ov = Overlay::new();
+                ov.set(kernel, manifest);
+                ov.set(REGISTRY_FILE, registry);
+                ov
+            };
             report.push(prove_rows_red(
                 cx,
                 subject,
                 "a test-linked door's row that states no drain is not a test-linked door",
                 &[ROW_TEST_DEPS],
-                ov,
+                planted_door("door:busbar-plane-mcp", "none"),
                 &["unsupported-verdict", "busbar-kernel -> busbar-plane-mcp"],
             ));
-            let mut ov = Overlay::new();
-            let kernel = "crates/busbar-kernel/Cargo.toml";
-            ov.set(
-                kernel,
-                cx.read(kernel).unwrap_or_default().replacen(
-                    "\"door:busbar-plane-mcp\"",
-                    "\"busbar-plane-mcp\"",
-                    1,
-                ),
-            );
             report.push(prove_rows_red(
                 cx,
                 subject,
                 "a plane crate the kernel's `test-linked` list does not name as a door is no \
                  test-linked door",
                 &[ROW_TEST_DEPS],
-                ov,
+                planted_door("busbar-plane-mcp", door_drain),
                 &["unsupported-verdict", "busbar-kernel -> busbar-plane-mcp"],
             ));
 
