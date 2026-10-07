@@ -485,6 +485,11 @@ struct Serving {
     plane: String,
     /// The node's book: the journal, the ledger and the audit chain its units seal onto.
     book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
+    /// The governance book the caller's key is charged on, and that key.
+    gov: Arc<GovState>,
+    key: String,
+    /// The app the data router serves (its cost model prices the key's usage).
+    app: Arc<busbar_kernel::state::App>,
 }
 
 impl Serving {
@@ -570,6 +575,18 @@ async fn serve_limited(
     port: u16,
     limits: Vec<busbar_kernel::config::groups::LimitCfg>,
 ) -> Serving {
+    serve_governed(linked, instance, port, limits, 0).await
+}
+
+/// [`serve_limited`], the plane stating its own per-request fee (its section's reserved
+/// `fees.per_request`, #47), in minor units.
+async fn serve_governed(
+    linked: &crate::root::linked::Linked,
+    instance: &str,
+    port: u16,
+    limits: Vec<busbar_kernel::config::groups::LimitCfg>,
+    fee: i64,
+) -> Serving {
     // The scrape sink's `/metrics` is mounted on a test app built with the recorder installed.
     busbar_kernel::snapshot::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
@@ -629,7 +646,18 @@ async fn serve_limited(
     } else {
         CostModel::resolve_parts(None, 1, &groups)
     };
-    let (_key, token) = gov
+    let cost = if fee == 0 {
+        cost
+    } else {
+        cost.with_plane_fees(&busbar_kernel::config::PlaneFeesMap::from([(
+            plane.name().to_string(),
+            busbar_kernel_ledger::cost::PlaneFees {
+                per_request: fee,
+                per_session: 0,
+            },
+        )]))
+    };
+    let (key, token) = gov
         .mint_signed(
             NewKeySpec {
                 name: "decider".to_string(),
@@ -724,7 +752,7 @@ async fn serve_limited(
         .build();
     let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
     let (router, _admin, handle) =
-        busbar_kernel::build_split_routers_serving(app, doors, 1 << 20, 0, false);
+        busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
     Serving {
         router,
         token: token.expose_secret().to_string(),
@@ -732,6 +760,9 @@ async fn serve_limited(
         egress,
         plane,
         book: Arc::clone(&book.durability),
+        gov,
+        key: key.id.to_string(),
+        app,
     }
 }
 
@@ -1298,4 +1329,112 @@ async fn a_decisions_provider_is_handed_the_planned_credential_and_never_the_cal
         !head.contains(CALLER_SECRET),
         "nor a key the caller sent: {head}"
     );
+}
+
+/// A budget limit of `amount` minor units per `per`, on the caller's group.
+fn budget_of(
+    amount: u64,
+    per: busbar_kernel::config::groups::LimitWindow,
+) -> busbar_kernel::config::groups::LimitCfg {
+    busbar_kernel::config::groups::LimitCfg {
+        metric: busbar_kernel::config::groups::LimitMetric::Budget,
+        amount,
+        per: Some(per),
+        scope: None,
+        on_exhaust: None,
+        downgrade_to: None,
+        admission: None,
+        on_exhaustion: None,
+    }
+}
+
+/// One call to the door, its answer read to its end: the status, the `Retry-After` it named, and
+/// whether the far end heard it.
+async fn call_through(
+    serving: &Serving,
+    heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+) -> (StatusCode, Option<String>, bool) {
+    let response = send(&serving.router, CLAIMED, Some(&serving.token)).await;
+    let status = response.status();
+    let wait = response
+        .headers()
+        .get("retry-after")
+        .map(|v| v.to_str().expect("a header value").to_string());
+    let _ = axum::body::to_bytes(response.into_body(), 1 << 16)
+        .await
+        .expect("the body");
+    (status, wait, heard.try_recv().is_ok())
+}
+
+/// GOVERNANCE-BUDGET: a decisions unit's spend (the plane's own per-request fee, its section's
+/// `fees.per_request`) is charged to the presenting key, and the key's group BUDGET refuses the unit
+/// past it before its dial, 429, naming in `Retry-After` the seconds until the budget's window rolls,
+/// as the llm plane names them (1.5.5's governance refusal). A window that never rolls (`per:
+/// total`) names no wait. RED: a driver that drops the governance refusal's wait, or a decisions
+/// renderer that does not render it, answers the refusal with no `Retry-After`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
+    use busbar_kernel::config::groups::LimitWindow;
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-door-budget";
+    let _published = Published(instance);
+    let (port, mut heard) = far_end().await;
+    let serving = serve_governed(
+        &crate::LINKED,
+        instance,
+        port,
+        vec![budget_of(1, LimitWindow::Hour)],
+        1,
+    )
+    .await;
+
+    let (status, wait, reached) = call_through(&serving, &mut heard).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "within its budget the unit is served"
+    );
+    assert!(reached, "and dispatched");
+    assert_eq!(wait, None, "a served unit names no wait");
+    let usage = serving
+        .gov
+        .usage_for(&serving.app.cost, &serving.key, busbar_kernel::store::now())
+        .expect("a read")
+        .expect("the key exists");
+    assert_eq!(usage.requests, 1, "its spend is the presenting key's");
+
+    let (status, wait, reached) = call_through(&serving, &mut heard).await;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "past its budget the unit is refused"
+    );
+    assert!(!reached, "before its dial");
+    let secs: u64 = wait
+        .expect("the refusal names its wait")
+        .parse()
+        .expect("whole seconds");
+    assert!(
+        (1..=3600).contains(&secs),
+        "the seconds until the hour's window rolls: {secs}"
+    );
+    drop(serving);
+
+    // A budget whose window never rolls names no wait, as 1.5.5 named none.
+    let instance = "serve-door-budget-total";
+    let _published = Published(instance);
+    let (port, mut heard) = far_end().await;
+    let serving = serve_governed(
+        &crate::LINKED,
+        instance,
+        port,
+        vec![budget_of(1, LimitWindow::Total)],
+        1,
+    )
+    .await;
+    assert_eq!(call_through(&serving, &mut heard).await.0, StatusCode::OK);
+    let (status, wait, reached) = call_through(&serving, &mut heard).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(!reached);
+    assert_eq!(wait, None, "a total never rolls: no wait is named");
 }

@@ -549,6 +549,14 @@ pub trait DriverSteps: Units {
     fn refusal_words(&self, _reason: ReasonCode) -> Option<Vec<u8>> {
         None
     }
+
+    /// THE WAIT the steps' own refusal with `reason` named (a limit on a rolling window names the
+    /// seconds until it rolls), handed to the plane's `refusal` as
+    /// [`busbar_contract::abi::plane::RefusalIn::retry_after_s`] beside the reason, as data: the
+    /// plane renders it in its dialect, or does not. `None` = the refusal names no wait.
+    fn refusal_retry_after(&self, _reason: ReasonCode) -> Option<u32> {
+        None
+    }
 }
 
 /// A refusal or failure the plane rendered, for the caller.
@@ -778,7 +786,13 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             (None, Some((_, status))) => status,
             (None, None) => self.driver.config.status(dialect, reason),
         };
-        let retry_after_s = walk.and_then(|(_, r)| r).unwrap_or(0);
+        // The walk's terminal names its own wait; every other refusal the wait the steps' own
+        // refusal named, if it named one.
+        let retry_after_s = match walk {
+            Some((_, wait)) => wait,
+            None => self.steps.refusal_retry_after(reason),
+        }
+        .unwrap_or(0);
         let steps_words = if words.is_none() {
             self.steps.refusal_words(reason)
         } else {

@@ -377,6 +377,9 @@ struct DoorUnit {
     recorded: Option<u64>,
     /// A `ROUTE_SCOPE` unit several entries reach: those entries, named in its refusal's words.
     reachable: Vec<String>,
+    /// The wait its governance refusal named (a limit on a rolling window), with that refusal's
+    /// reason: handed to the plane's rendering of that refusal, as data.
+    waited: Option<(ReasonCode, u32)>,
 }
 
 /// ONE UNIT'S KERNEL STEPS (see the module doc), lent to the plane driver for the unit's life.
@@ -603,6 +606,13 @@ impl DriverSteps for DoorSteps<'_> {
         self.lock().expected = units.to_vec();
     }
 
+    fn refusal_retry_after(&self, reason: ReasonCode) -> Option<u32> {
+        // The governance refusal's wait, for that refusal alone.
+        self.lock()
+            .waited
+            .and_then(|(refused, secs)| (refused == reason).then_some(secs))
+    }
+
     fn refusal_words(&self, reason: ReasonCode) -> Option<Vec<u8>> {
         // A unit routed by scope that no one entry reached: the entries that reached it (none, or
         // several), so the plane words which (abi/plane `ROUTE_SCOPE`).
@@ -786,6 +796,9 @@ impl Units for DoorSteps<'_> {
             Admission::Keyed if !local => {
                 if let Some(key) = self.key.clone() {
                     if let Err(refusal) = self.charge(ctx, &key) {
+                        self.lock().waited = refusal
+                            .retry_after_secs()
+                            .map(|secs| (refusal.reason(), secs));
                         return SeatVerdict::refuse(token, refusal);
                     }
                 }

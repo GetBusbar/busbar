@@ -328,12 +328,11 @@
     {
       "capability": "hooks-tap",
       "plane": "decisions",
-      "state": "missing",
-      "note": "the door refuses `project` (it binds no hook view and never reads the decision content, the PII witness), so no observe or transform hook runs over this plane's payloads; whether a decisions.hooks attach is owed a view is open",
+      "state": "not-applicable",
+      "reason": "Law 11 (BUSBAR-1.6.0.md: busbar does not interpret or act on the data it carries; coordinator ruling 2026-10-07): the decisions door declares no hook seat (busbar-plane-decisions lib.rs) and binds no hook view: its `project` is refused because the plane never reads the decision content, the PII witness (plane_door.rs, the `project` slot). Its tail states flags 0, never TAIL_HOOKS_GATED (plane_door.rs TAIL), and the serve path binds a plane's hook stage only for a tail that states it (root/serve.rs compose_planes_over). With no projection there is no payload for a tap to observe or transform. `decisions.hooks` stays accepted exactly as today: 1.5.5 (a71b21e9fa) had no decisions section at all (its DeployCfg is deny_unknown_fields and names none), so there is no 1.5.5 behaviour to keep or refuse.",
       "root": {
-        "state": "none",
-        "leg": "root-decisions",
-        "reason": "no leg cell attaches a hook to decisions.hooks, and the door binds no hook view, so nothing runs a tap over a decisions unit through the driver"
+        "state": "not-applicable",
+        "leg": "root-decisions"
       }
     },
     {
@@ -398,12 +397,11 @@
     {
       "capability": "hooks-gate",
       "plane": "decisions",
-      "state": "missing",
-      "note": "no test attaches a gate hook to decisions.hooks and watches the kernel's gate refuse a decisions unit before dispatch; the door binds no hook view (`project` is refused)",
+      "state": "not-applicable",
+      "reason": "Law 11 (BUSBAR-1.6.0.md: busbar does not interpret or act on the data it carries; coordinator ruling 2026-10-07): the decisions door declares no hook seat (busbar-plane-decisions lib.rs) and binds no hook view (`project` refused, plane_door.rs), and its tail never states TAIL_HOOKS_GATED (plane_door.rs TAIL, flags 0), so the serve path binds no gate stage for it (root/serve.rs compose_planes_over binds a plane's gates and rewrites only for a tail that states the gate-first order). A gate decides over the projected request and this plane projects none, so there is nothing for hooks::gate to decide on. `decisions.hooks` stays accepted exactly as today: 1.5.5 (a71b21e9fa) had no decisions section at all (its DeployCfg is deny_unknown_fields and names none), so there is no 1.5.5 behaviour to keep or refuse.",
       "root": {
-        "state": "none",
-        "leg": "root-decisions",
-        "reason": "no leg cell attaches a gate hook, so the driver's hook stage is never asked to refuse a decisions unit before its dial"
+        "state": "not-applicable",
+        "leg": "root-decisions"
       }
     },
     {
@@ -535,12 +533,13 @@
     {
       "capability": "governance-budget",
       "plane": "decisions",
-      "state": "missing",
-      "note": "the plane's own battery proves the metering surface (units reported on success, none on error: tests/jev.rs::billable_success_metering_surface_reports_usage_on_success_and_nothing_on_error), not the budget; the spend is the kernel's, proven on the door path (root)",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_decisions_unit_past_its_budget_is_refused_with_a_retry_after",
+      "note": "a decisions unit's spend (the plane's own fees.per_request, #47) is charged to the presenting key on the governance book, and the key's group budget refuses the unit past it before its dial, 429, with Retry-After naming the seconds until the window rolls; a per: total budget names none, as 1.5.5's governance refusal named none (v1.5.5 ingress/mod.rs: 'total never rolls: no header'). The wait travels as data from door_steps' refusal_for through the plane driver (DriverSteps::refusal_retry_after, RefusalIn.retry_after_s) to the plane's renderer, which spells the header. With billing off (no card, no fee) neither this plane nor llm prices a spend, so neither refuses on a budget. Watched red: a driver that drops the steps' wait (plane_driver/mod.rs render_as) and, separately, a decisions renderer that does not render it (plane_door.rs refusal slot) each answer the refusal with no Retry-After.",
       "root": {
         "state": "proven",
         "leg": "root-decisions",
-        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_claimed_request_is_served_through_the_door_and_its_money_posted"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_decisions_unit_past_its_budget_is_refused_with_a_retry_after"
       }
     },
     {
