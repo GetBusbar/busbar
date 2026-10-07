@@ -317,7 +317,7 @@ fn a_dial_targets_cut_is_the_authority_the_host_readers_read() {
     ] {
         let cut = cut_target(target).unwrap_or_else(|e| panic!("{target:?}: {e}"));
         assert_eq!(
-            (cut.host_port.as_str(), cut.path.as_str()),
+            (&*cut.host_port, &*cut.path),
             (host_port, path),
             "{target:?}"
         );

@@ -42,6 +42,7 @@
 //! [`PollConns`], the auth binding the contract's [`OutboundAuth`], and both are handed in by the
 //! composition root.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -411,12 +412,11 @@ struct State {
     unread: Option<Unread>,
 }
 
-/// A success answer that ended at the far end before the plane read its last piece.
+/// A success answer that ended at the far end before the plane read its last piece: the settled
+/// attempt's pool and member, kept (not copied) for the plane's reading of it.
 struct Unread {
     pool: String,
-    /// The pool the breaker's trip is counted under.
-    metric_pool: String,
-    destination: DestinationId,
+    member: Member,
     /// One unit of lifetime budget was spent on the success.
     spent: bool,
     /// A byte of the streamed answer was delivered.
@@ -608,12 +608,13 @@ fn join(base: &str, target: &[u8]) -> String {
 /// is the one the dial reaches: it ends where the dialled host ends (a `\` is a `/`, so
 /// `https://a.example\@b.example/` names `a.example`) and it never carries a userinfo, as 1.5.5's
 /// signing host did (v1.5.5 `crates/busbar/src/proxy/egress.rs:18-52`). Empty when the target cuts
-/// to no authority, which the connector refuses to dial.
-fn split(url: &str) -> (String, String) {
+/// to no authority, which the connector refuses to dial. Both borrow `url` wherever the cut reads
+/// them as written there.
+fn split(url: &str) -> (Cow<'_, str>, Cow<'_, str>) {
     match busbar_contract::net::cut_target(url) {
         Ok(cut) if !cut.path.is_empty() => (cut.host_port, cut.path),
-        Ok(cut) => (cut.host_port, "/".to_owned()),
-        Err(_) => (String::new(), "/".to_owned()),
+        Ok(cut) => (cut.host_port, Cow::Borrowed("/")),
+        Err(_) => (Cow::Borrowed(""), Cow::Borrowed("/")),
     }
 }
 
@@ -674,9 +675,13 @@ impl EgressFarEnd<'_> {
     /// still owns, a budget unit a delivery that did not complete spent, and a dispatch record no
     /// answer settled.
     fn settle(&self, w: &mut State) {
-        let Some(mut live) = w.live.take() else {
-            return;
-        };
+        drop(self.settled(w));
+    }
+
+    /// [`Self::settle`], answering what is left of the settled attempt (its pool and member among
+    /// it) to a caller that keeps some of it.
+    fn settled(&self, w: &mut State) -> Option<Live> {
+        let mut live = w.live.take()?;
         let e = self.egress;
         if let Some(conn) = live.conn.take() {
             let _closed = e.conns.close(e.caller, conn);
@@ -699,6 +704,7 @@ impl EgressFarEnd<'_> {
             e.journal.abandoned(&live.record);
         }
         drop(live.permit.take());
+        Some(live)
     }
 
     fn metric_pool<'m>(pool: &'m str, member: &'m Member) -> &'m str {
@@ -1310,6 +1316,7 @@ impl EgressFarEnd<'_> {
     /// reading of the answer says otherwise ([`Self::judge`]).
     fn end(&self, clean: bool) -> FarPiece {
         let mut w = self.lock();
+        // A clean success's budget standing, kept for the plane's reading of it.
         let mut unread = None;
         if let Some(live) = w.live.as_mut() {
             if !clean && live.spent && !live.delivered {
@@ -1319,19 +1326,21 @@ impl EgressFarEnd<'_> {
                 self.egress.breaker.refund_budget(live.member.destination);
             }
             if clean && live.answered && live.error_left.is_none() && self.probe_of.is_none() {
-                unread = Some(Unread {
-                    pool: live.pool.clone(),
-                    metric_pool: Self::metric_pool(&live.pool, &live.member).to_string(),
-                    destination: live.member.destination,
-                    spent: live.spent,
-                    delivered: live.delivered,
-                });
+                unread = Some((live.spent, live.delivered));
             }
             live.spent = false;
             live.ended = true;
         }
-        self.settle(&mut w);
-        w.unread = unread;
+        let settled = self.settled(&mut w);
+        w.unread = match (unread, settled) {
+            (Some((spent, delivered)), Some(live)) => Some(Unread {
+                pool: live.pool,
+                member: live.member,
+                spent,
+                delivered,
+            }),
+            _ => None,
+        };
         FarPiece {
             last: true,
             ..FarPiece::default()
@@ -1367,17 +1376,10 @@ impl EgressFarEnd<'_> {
             FAULT_HARD => Some(Outcome::HardDown),
             _ => None,
         };
-        let e = self.egress;
         let mut w = self.lock();
-        let reading = match w.live.as_mut() {
+        match w.live.as_mut() {
             Some(live) if live.answered && !live.ended && live.error_left.is_none() => {
-                let reading = Unread {
-                    pool: live.pool.clone(),
-                    metric_pool: Self::metric_pool(&live.pool, &live.member).to_string(),
-                    destination: live.member.destination,
-                    spent: live.spent,
-                    delivered: live.delivered,
-                };
+                let (spent, delivered) = (live.spent, live.delivered);
                 if failed.is_some() || done {
                     // Settled here: the unit given back below on a fault, kept otherwise.
                     live.spent = false;
@@ -1386,23 +1388,44 @@ impl EgressFarEnd<'_> {
                     // The plane's reply is complete: the rest of the far end's answer is never read.
                     live.ended = true;
                 }
-                Some(reading)
+                if let Some(outcome) = failed {
+                    let refund = spent && !delivered && !billed;
+                    self.fault_read(token, &live.pool, &live.member, outcome, refund);
+                }
             }
-            Some(_) => None,
-            None => w.unread.take(),
-        };
-        if let (Some(u), Some(outcome)) = (&reading, failed) {
-            if e.breaker
-                .observe(&u.pool, u.destination, outcome, e.clock.now_secs(), token)
-            {
-                e.telemetry.breaker_trip(&u.metric_pool, u.destination);
-            }
-            if u.spent && !u.delivered && !billed {
-                e.breaker.refund_budget(u.destination);
+            Some(_) => {}
+            None => {
+                if let (Some(u), Some(outcome)) = (w.unread.take(), failed) {
+                    let refund = u.spent && !u.delivered && !billed;
+                    self.fault_read(token, &u.pool, &u.member, outcome, refund);
+                }
             }
         }
         if done && w.live.as_ref().is_some_and(|l| l.ended) {
             self.settle(&mut w);
+        }
+    }
+
+    /// A fault the plane read on `member`'s success answer through `pool` ([`Self::judge`]): the
+    /// compensating outcome recorded against the member, and the budget unit given back when the
+    /// answer came to nothing (`refund`).
+    fn fault_read(
+        &self,
+        token: &Pass<Route>,
+        pool: &str,
+        member: &Member,
+        outcome: Outcome,
+        refund: bool,
+    ) {
+        let e = self.egress;
+        if e.breaker
+            .observe(pool, member.destination, outcome, e.clock.now_secs(), token)
+        {
+            e.telemetry
+                .breaker_trip(Self::metric_pool(pool, member), member.destination);
+        }
+        if refund {
+            e.breaker.refund_budget(member.destination);
         }
     }
 
