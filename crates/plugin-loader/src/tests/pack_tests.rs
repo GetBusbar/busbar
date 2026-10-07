@@ -1107,3 +1107,31 @@ fn the_ref_resolver_caps_its_own_depth() {
     });
     validate_secret_fields(&shallow).expect("an ordinary nested schema still validates");
 }
+
+/// ONE VERSION PER PLUGIN: a `--version` the plugin's Statement does not state is refused, naming
+/// both (RED); the version it states packs (GREEN).
+#[test]
+fn pack_refuses_a_version_the_statement_does_not_state() {
+    // A plugin's Statement, rendered as its door renders it.
+    let st = busbar_contract::abi::sdk::door::statement("pack-version-witness", "1.5.0", 1);
+    // SAFETY: `st` is a well-formed Statement of 'static strings and empty lists.
+    let stated =
+        unsafe { busbar_contract::abi::mechanism::rendering::render(&st) }.expect("it renders");
+    let r = busbar_contract::abi::mechanism::rendering::read(&stated).expect("it reads back");
+    super::statement_version_is(&stated, &r.version).expect("its own version packs");
+    assert_eq!(
+        super::stated_version(&stated).as_deref(),
+        Ok(r.version.as_str()),
+        "an absent --version is the Statement's"
+    );
+    let refused =
+        super::statement_version_is(&stated, "999.0.0").expect_err("another version is refused");
+    assert!(
+        refused.contains("--version 999.0.0") && refused.contains(&format!("({})", r.version)),
+        "names both versions: {refused}"
+    );
+    assert!(
+        super::statement_version_is(b"not a rendering", &r.version).is_err(),
+        "an unreadable rendering is refused, never passed"
+    );
+}
