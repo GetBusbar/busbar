@@ -104,12 +104,22 @@ fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == "--safe-mode")
 }
 
-/// Whether `--mcp-stdio` was passed: boot everything, bind NOTHING, and serve the plane claiming
-/// the stdio transport on the process's own stdin/stdout (see `root::serve::lines`). A scanner like
+/// Whether a flag a linked plane declares was passed (its `Flags:` rows, `root::cli::help_rows`):
+/// boot everything, bind NOTHING, and serve the plane claiming the line carrier on the process's own
+/// stdin/stdout (see `root::serve::lines`). The root names no flag of its own here: the plane states
+/// its spelling, and the root reads it off the plane's declared rows. A scanner like
 /// `safe_mode_requested` rather than a `handle_cli_flags` exit arm, because it modifies how `run()`
 /// serves rather than replacing the run.
-fn stdio_serve_requested(mut args: impl Iterator<Item = String>) -> bool {
-    args.any(|a| a == "--mcp-stdio") // noun-neutrality: frozen-literal pinned-by=crates/busbar/tests/mcp_stdio_serve.rs operator CLI flag (CHANGELOG 1.6.0)
+fn stdio_serve_requested(args: impl Iterator<Item = String>) -> bool {
+    line_serve_requested(&root::cli::help_rows(), args)
+}
+
+/// [`stdio_serve_requested`] over the `Flags:` rows `planes` declare.
+fn line_serve_requested(
+    planes: &[&[root::linked::CliHelpRow]],
+    mut args: impl Iterator<Item = String>,
+) -> bool {
+    args.any(|a| root::cli::is_plane_flag(planes, &a))
 }
 
 /// Cap on `advanced.worker_threads`/`TOKIO_WORKER_THREADS` (see the `.min(MAX_WORKER_THREADS)` call in
@@ -622,8 +632,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Install the tracing subscriber now (stderr fmt always; the `traces` record producer for the
     // export sinks subscribed to it, the `otlp` module's among them) so all subsequent startup and
     // request-path logging is captured.
-    // `--mcp-stdio` reserves stdout for the MCP channel, so its logs move to stderr — see
-    // `init_logging`'s `stdout_reserved`.
+    // A plane's line-serve flag reserves stdout for the plane's channel, so its logs move to
+    // stderr — see `init_logging`'s `stdout_reserved`.
     if let Err(e) =
         busbar_kernel::observability::init_logging(stdio_serve_requested(std::env::args()))
     {
@@ -1206,7 +1216,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // is the plane hook's, propagated through `start_planes`.
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
 
-    // THE STDIO SERVE MODE (`--mcp-stdio`). The SAME boot ran above — config load, plugin
+    // THE STDIO SERVE MODE (a plane's declared line-serve flag). The SAME boot ran above — config load, plugin
     // preflight, governance, the flusher and the refresh jobs — and the SAME dispatch will serve
     // every frame; what changes is only the transport: busbar is somebody's CHILD PROCESS here, so
     // it binds no listener at all (a child that opened ports would be a network server its
