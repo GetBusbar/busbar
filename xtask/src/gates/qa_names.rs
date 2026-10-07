@@ -1552,6 +1552,29 @@ fn anchor(cx: &Ctx, want: impl Fn(&Name) -> bool) -> Option<(String, String, Nam
     None
 }
 
+/// The second file of the file-scope plants: a covered `qa/*.toml` that exists only in an
+/// [`Overlay`]. The bare file name carries no `/`, so it is no name and needs no declaration.
+const PLANTED_SCOPE_FILE_NAME: &str = "zzz-qa-names-scope-plant.toml";
+
+/// A planted name's file, that file's text, and the name a phantom is planted beside.
+type Anchor = (String, String, Name);
+
+/// TWO anchors in two DIFFERENT covered `qa/*.toml` files, for the plants that write a declaration
+/// in one file and the same name in another. A is the first real file carrying an array item the
+/// plant can sit beside; B is a planted file whose one array holds A's own (live) value under a
+/// path key, so the same phantom lands beside a live name in each. Both TOML, so both take the `#`
+/// declaration spelling.
+fn anchor_pair(cx: &Ctx, want: impl Fn(&Name) -> bool) -> Option<(Anchor, Anchor)> {
+    let a = anchor(cx, |n| !is_rust(&n.file) && want(n))?;
+    let b_rel = format!("{QA_ROOT}/{PLANTED_SCOPE_FILE_NAME}");
+    let b_text = format!("[selftest]\nscan_roots = [\"{}\"]\n", a.2.text);
+    let (names, _) = scan(&b_rel, &b_text, &top_level_dirs(cx));
+    let b_at = names
+        .into_iter()
+        .find(|n| n.in_array && n.line > 0 && want(n))?;
+    Some((a, (b_rel, b_text, b_at)))
+}
+
 fn beside(cx: &Ctx, want: impl Fn(&Name) -> bool, phantom: &str) -> Option<Overlay> {
     let (rel, text, at) = anchor(cx, want)?;
     let planted = plant_beside(&text, &at, phantom)?;
@@ -1680,6 +1703,63 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
         );
         Some(ov)
     });
+
+    // AN EXEMPTION IS SCOPED TO ITS OWN FILE. File A writes the dead path beside a real one and
+    // declares it FOR A; file B writes the same dead path and declares nothing. A's site is excused
+    // and B's is not: a declaration keyed on the spelling alone would silence B too, which is one
+    // written exception excusing every other dead name of that spelling in the tree.
+    let live_path = |n: &Name| n.class == Class::Path && !n.is_glob();
+    let pair = anchor_pair(cx, live_path);
+    let scoped = pair
+        .as_ref()
+        .and_then(|((a, a_text, a_at), (b, b_text, b_at))| {
+            let a_planted = plant_beside(a_text, a_at, &planted_path())?;
+            let b_planted = plant_beside(b_text, b_at, &planted_path())?;
+            let mut ov = Overlay::new();
+            ov.set(
+                a,
+                format!(
+                    "{a_planted}\n{DECL} {}{SEP}{a}{SEP}{PLANTED_REASON}\n",
+                    planted_path()
+                ),
+            );
+            ov.set(b, b_planted);
+            Some(ov)
+        });
+    let scoped_naming = pair
+        .as_ref()
+        .map(|(_, (b, _, b_at))| vec![format!("{b}:{} `{}`", b_at.line, planted_path())])
+        .unwrap_or_else(|| vec![planted_path()]);
+
+    // A DECLARATION WHOSE OWN FILE NO LONGER WRITES THE NAME. A declares the dead path for A and
+    // writes nothing; B writes it and carries its own declaration. Every site is excused, so only
+    // the liveness rule can move: A's exemption outlived the site it was written for, and the same
+    // spelling in some other file is not that site.
+    let scoped_stale = pair
+        .as_ref()
+        .and_then(|((a, a_text, _), (b, b_text, b_at))| {
+            let b_planted = plant_beside(b_text, b_at, &planted_path())?;
+            let mut ov = Overlay::new();
+            ov.set(
+                a,
+                format!(
+                    "{a_text}\n{DECL} {}{SEP}{a}{SEP}{PLANTED_REASON}\n",
+                    planted_path()
+                ),
+            );
+            ov.set(
+                b,
+                format!(
+                    "{b_planted}\n{DECL} {}{SEP}{b}{SEP}{PLANTED_REASON}\n",
+                    planted_path()
+                ),
+            );
+            Some(ov)
+        });
+    let stale_naming = pair
+        .as_ref()
+        .map(|((a, _, _), _)| vec![format!("{a}:"), planted_path()])
+        .unwrap_or_else(|| vec![planted_path()]);
 
     // THE SCAN THAT MATCHED NOTHING. Every covered file is still THERE and still walked, and the
     // kind table is still readable — so every other rule passes, vacuously, which is exactly what a
@@ -1818,6 +1898,18 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
             rule: ROW_GLOB,
             naming: vec!["matches nothing".to_string()],
             overlay: empty_kind,
+        },
+        Plant {
+            label: "a declaration in one file does not excuse the same dead name in another",
+            rule: ROW_PATH,
+            naming: scoped_naming,
+            overlay: scoped,
+        },
+        Plant {
+            label: "a declaration whose own file no longer writes the name is stale",
+            rule: ROW_DECL_LIVE,
+            naming: stale_naming,
+            overlay: scoped_stale,
         },
         Plant {
             label: "a declared exception outlived the name it excused",
