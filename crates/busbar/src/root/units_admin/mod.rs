@@ -364,7 +364,8 @@ pub trait LedgerView: Send + Sync {
     ///
     /// A refused row moves no balance — [`Durability::post_counts`] is why one can exist at all
     /// without a figure behind it — so it is invisible to [`LedgerView::ledger_rows`], which only
-    /// ever walks settled balances, and to a booked line the totals derivation prices. A served
+    /// ever walks settled balances; the totals derivation would price its counts at whatever the
+    /// card now says rather than refuse them as the book does. A served
     /// totals or reconciliation figure that silently skipped such a row would be exactly the silent
     /// zero #42 forbids, just moved from the pricing read to the admin read beside it. So the two
     /// reads ask this FIRST and refuse the whole read (`GovernanceError::Store`, the same path
@@ -550,7 +551,8 @@ impl NodeLedger {
     /// model.** The reconciliation identity compares this against the PREVIOUS release's rows,
     /// which that release derived at settlement and never reprices, so both sides of it have to be
     /// read at the same vintage. The totals view reaches it only through [`totals_rows`], and only
-    /// where the view has no line to convert — see [`derived_totals_rows`].
+    /// where the view's counted lines cannot be priced or are not the whole of the book's money —
+    /// see [`derived_totals_rows`] and [`LedgerView::booked_lines`].
     fn rows_of(durability: &crate::root::durability::Durability) -> LedgerSnapshot {
         use crate::root::ledger_identity::{LedgerRow, RowKey};
 
@@ -665,33 +667,33 @@ impl LedgerView for NodeLedger {
 
     /// The deployment's dated history, pinned — a relay and no more.
     ///
-    /// The holder is the root's ([`crate::root::kernel::ROOT_CARD`]), the history is the ledger's,
-    /// and this method adds nothing to either. Pinned rather than borrowed, so a config apply
-    /// landing between two rows of one response cannot price the first half of the table against
-    /// one history and the second half against another.
+    /// The history this node's book is rebuilt against at boot, read off the book itself: on a
+    /// production node that is the root's holder ([`crate::root::kernel::ROOT_CARD`]), so the
+    /// figure this read derives and the figure a restart rebuilds come from one history. This
+    /// method adds nothing to it. Pinned rather than borrowed, so a config apply landing between
+    /// two rows of one response cannot price the first half of the table against one history and
+    /// the second half against another.
     fn rate_history(&self) -> Option<crate::root::kernel::PinnedHistory> {
-        crate::root::kernel::ROOT_CARD.pin()
+        self.lock().pinned_history()
     }
 
-    /// SEAM `booked-lines`, UNFILLED ON THIS NODE, and named rather than faked.
+    /// SEAM `booked-lines`, FED FROM THE BOOK'S COUNTED LINES (audit root-R1 #6; ARCHITECT
+    /// 2026-10-07 H6 retention ruling).
     ///
-    /// The node's book keeps BALANCES — a budget, a drawn figure, a settled figure per bucket,
-    /// dimension, scope and window — and a balance is not a quantity. There is no `tokens_input` in
-    /// it to hand back, and there is no arrival instant either: [`busbar_contract::caps::Posted`]
-    /// takes the usage report to decide its flags and keeps none of its lines, so what reaches the
-    /// book is three figures and a principal. The quantities live on the sealed facts line the
-    /// metering step writes at the end of a unit, and the ledger row that carries them into the
-    /// book is the landing this method is waiting for; until it arrives, this answers with nothing
-    /// it has.
+    /// Every posting the node journals with a unit's counts — the late arm's settlement, its counts
+    /// row, a recovered hold's checkpoint — is kept on the book as the counts, the balance and
+    /// window, the fee count and the instant they price at, and rebuilt from the chain at boot
+    /// ([`crate::root::durability::Durability::booked_lines`]). This hands them over as booked
+    /// lines, so the totals read prices each at the card in force at ITS arrival: a signed
+    /// back-dated correction moves the next read with no restart, and a restart over the same chain
+    /// answers the same lines. Nothing is replayed here (audit M11), and no price is on any line.
     ///
-    /// **Answering with nothing is the whole point of the seam being here rather than absent.** The
-    /// alternative — handing the book's settled figure over as if it were a set of lines — would
-    /// put a number in front of the derivation that no rate row produced and that no rate row added
-    /// later could ever move, which is precisely the stored price #77(3) forbids. The fallback the
-    /// empty answer selects is honest about being the previous release's arithmetic; a fabricated
-    /// line would not be.
+    /// EMPTY where the lines are not the whole of the book's money — a figure on a balance with no
+    /// counts behind it, or a class no booked line can name — and the read then answers the book's
+    /// balance, as [`derived_totals_rows`] documents. A posting with no counts and no figure (the
+    /// overdraft carry, a voided recovery) is no line and moves nothing either way.
     fn booked_lines(&self) -> Vec<busbar_kernel_ledger::Posting> {
-        Vec::new()
+        self.lock().booked_lines().unwrap_or_default()
     }
 
     /// Off the same lock every other read of this node's durability takes, so a row posted between
@@ -2098,17 +2100,18 @@ fn render_ledger_view(
     Ok(match verb {
         // THE MONEY IS DERIVED HERE, NOT READ. The rows the totals view renders are the lines
         // priced through the dated history at each line's OWN arrival instant (#77(3)/#79), and
-        // the book's balance only where this view has no line to resolve. The reconciliation arm
-        // below deliberately keeps [`LedgerView::ledger_rows`]: the identity it computes is against
-        // the PREVIOUS release's rows, which are what that release's read-time derivation produced
-        // at settlement and are never repriced, so the two sides of it have to be read at the same
-        // vintage or an amendment would report every row on a healthy node as out.
+        // the book's balance only where this view has no line it can resolve in full. The
+        // reconciliation arm below deliberately keeps [`LedgerView::ledger_rows`]: the identity it
+        // computes is against the PREVIOUS release's rows, which are what that release's read-time
+        // derivation produced at settlement and are never repriced, so the two sides of it have to
+        // be read at the same vintage or an amendment would report every row on a healthy node as
+        // out.
         KernelVerb::GetLedgerTotals => {
-            // A refused counts row (#42) moves no balance, so it is invisible to both arms of
-            // `totals_rows` — the derivation prices booked lines and the balance fallback walks
-            // settled cells, and a refused row is neither. Ask FIRST and refuse the whole read
-            // rather than serve a table quietly missing the row: the same `Store` path 69c58179a
-            // refuses an out-of-range figure through.
+            // A refused counts row (#42) moves no balance, so the balance fallback cannot see it,
+            // and the derivation would price it at whatever the card now says rather than refuse
+            // it as the book does. Ask FIRST and refuse the whole read rather than serve a table
+            // quietly missing the row or pricing it past its refusal: the same `Store` path
+            // 69c58179a refuses an out-of-range figure through.
             if view.has_refused_rows() {
                 return Err(busbar_core_admin::GovernanceError::Store);
             }
@@ -2219,10 +2222,10 @@ fn hex32(bytes: &[u8; 32]) -> String {
 /// from, and the book's balance where it has none.
 ///
 /// The fallback is the previous release's arithmetic and is named as such rather than presented as
-/// the model. It is what the read answers for a view with no dated history to resolve against and
-/// no per-line record to resolve — a node whose book keeps balances and nothing finer, which is
-/// every node until the sealed facts line lands in the book. It is NOT the statement that a stored
-/// sum is the money; it is the honest answer of a view that has nothing to convert.
+/// the model. It is what the read answers for a view with no dated history to resolve against, no
+/// counted line to resolve, a line its card cannot price, or a figure no counted line accounts for.
+/// It is NOT the statement that a stored sum is the money; it is the honest answer of a view that
+/// has nothing it can convert in full.
 fn totals_rows(view: &dyn LedgerView) -> crate::root::ledger_identity::LedgerSnapshot {
     derived_totals_rows(view).unwrap_or_else(|| view.ledger_rows())
 }
@@ -2236,7 +2239,8 @@ fn totals_rows(view: &dyn LedgerView) -> crate::root::ledger_identity::LedgerSna
 /// - no dated history — a node that has resolved no configuration yet, which is a node with no
 ///   entry a line could resolve to, not a node whose lines are free;
 /// - an empty snapshot — the same, one step further in;
-/// - no booked lines — a view whose ledger keeps balances and nothing finer;
+/// - no booked lines — a view whose ledger keeps balances and nothing finer, or whose lines are
+///   not the whole of its money (a node's book holding a figure with no counts behind it);
 /// - **a hole**: any line the snapshot could not price at all. That is a refusal and never a zero,
 ///   because pricing a gap in the record as a free request is exactly the silent zero #42 forbids,
 ///   so the whole read falls back rather than one row quietly costing nothing. `totals_as_of`

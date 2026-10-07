@@ -6055,3 +6055,349 @@ fn commit_upgrade_answers_only_once_the_store_kept_its_record() {
     );
     assert!(taking.rows_under(crate::root::durability::JOURNAL_SCHEMA) >= 1);
 }
+
+// ---------------------------------------------------------------------------------------------
+// H6 (audit root-R1 #6; ARCHITECT 2026-10-07 H6 retention ruling): THE NODE'S TOTALS READ PRICES
+// THE BOOK'S COUNTED LINES AT READ TIME (BUSBAR-1.6.0.md §7)
+// ---------------------------------------------------------------------------------------------
+
+/// How long a test waits for the write-behind lane to hand the store what it holds.
+#[cfg(feature = "root-admin")]
+const H6_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A dated history of the test's own, opened by a card pricing `A_LANE` input at 2 micro-units a
+/// unit and no flat fee. Its own rather than the root's, so no other test's applies reach it.
+#[cfg(feature = "root-admin")]
+fn h6_history() -> Arc<crate::root::kernel::RootHistory> {
+    let history = Arc::new(crate::root::kernel::RootHistory::default());
+    history.apply(a_card_at(2.0, 0), 1_000);
+    history
+}
+
+/// A node book with no data directory whose chain `slots` keeps, as the production boot builds one
+/// over the configured store, pricing against `history`.
+#[cfg(feature = "root-admin")]
+fn h6_book(
+    slots: &crate::root::store_double::RecordSlots,
+    history: &Arc<crate::root::kernel::RootHistory>,
+) -> Arc<Mutex<crate::root::durability::Durability>> {
+    let lane = crate::root::durability::JournalLane::start(slots.calls(), "memory")
+        .expect("the lane starts");
+    let source = Arc::clone(history);
+    Arc::new(Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            0,
+            lane,
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            Box::new(move || source.pin()),
+            None,
+        )
+        .expect("the store reads back"),
+    ))
+}
+
+/// The balance a bucket's units settle onto.
+#[cfg(feature = "root-admin")]
+fn h6_key(bucket: &str) -> busbar_kernel_ledger::totals::TotalsKey {
+    busbar_kernel_ledger::totals::TotalsKey::new(
+        busbar_kernel_ledger::totals::BucketId::new(bucket),
+        busbar_kernel_ledger::totals::CapDimension::NanoUnits,
+        busbar_kernel_ledger::totals::BucketScope::All,
+    )
+}
+
+/// Settle one unit the way the late arm does: `input` units on `lane`, arrived at `A_LINE_MS` in
+/// the window `A_DAY`, posted at `settled` nano-units — the figure the card in force priced it at —
+/// and journalled WITH its counts. `mono` names the unit.
+#[cfg(feature = "root-admin")]
+fn h6_settle_counted(
+    book: &Arc<Mutex<crate::root::durability::Durability>>,
+    bucket: &str,
+    lane: &str,
+    input: u64,
+    settled: u64,
+    mono: u64,
+) {
+    use crate::root::durability::{PostingStamp, Settling, UnitCounts};
+    use busbar_contract::caps::{DurableWrite, HoldAccrual, Posted, PrincipalId, WriteMoney};
+    let ledger = busbar_kernel::test_support::tokens::grant::<WriteMoney>();
+    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
+    let posted = Posted::settle_late(
+        HoldAccrual::after_terminal(PrincipalId::new(bucket), settled, &ledger),
+        &ledger,
+    );
+    let counts = UnitCounts {
+        lane: lane.to_string(),
+        fee_count: 0,
+        classes: std::collections::BTreeMap::from([(
+            busbar_kernel_ledger::cost::CLASS_INPUT.to_string(),
+            input,
+        )]),
+    };
+    let key = h6_key(bucket);
+    book.lock()
+        .expect("unpoisoned")
+        .settle_counted(
+            &Settling {
+                key: &key,
+                window: A_DAY,
+                durability: &token,
+                step: busbar_contract::caps::StepName::Meter,
+                stamp: PostingStamp {
+                    rate_card_version: 0,
+                    wall: A_DAY,
+                    mono,
+                },
+            },
+            posted,
+            &counts,
+            A_LINE_MS,
+        )
+        .expect("the journal takes it");
+}
+
+/// Settle one unit with a FIGURE and no counts: a settlement whose writer knew no counts.
+#[cfg(feature = "root-admin")]
+fn h6_settle_uncounted(
+    book: &Arc<Mutex<crate::root::durability::Durability>>,
+    bucket: &str,
+    settled: u64,
+    mono: u64,
+) {
+    use crate::root::durability::{PostingStamp, Settling};
+    use busbar_contract::caps::{DurableWrite, HoldAccrual, Posted, PrincipalId, WriteMoney};
+    let ledger = busbar_kernel::test_support::tokens::grant::<WriteMoney>();
+    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
+    let posted = Posted::settle_late(
+        HoldAccrual::after_terminal(PrincipalId::new(bucket), settled, &ledger),
+        &ledger,
+    );
+    let key = h6_key(bucket);
+    book.lock()
+        .expect("unpoisoned")
+        .settle_posted(
+            &Settling {
+                key: &key,
+                window: A_DAY,
+                durability: &token,
+                step: busbar_contract::caps::StepName::Meter,
+                stamp: PostingStamp {
+                    rate_card_version: 0,
+                    wall: A_DAY,
+                    mono,
+                },
+            },
+            posted,
+        )
+        .expect("the journal takes it");
+}
+
+/// A signed, back-dated correction covering the instant every fixture unit arrived at, pricing
+/// `A_LANE` input at `nanos_per_unit`, appended long after the units settled.
+#[cfg(feature = "root-admin")]
+fn h6_correct(history: &crate::root::kernel::RootHistory, nanos_per_unit: u64) {
+    history
+        .amend(
+            &crate::root::kernel::Correction {
+                effective_from: A_LINE_MS,
+                effective_until: Some(A_LINE_MS + 86_400_000),
+                appended_at: A_LINE_MS + 60_000,
+                author: busbar_kernel_ledger::cost::Author::Amend {
+                    operator_fingerprint: "op-1".to_string(),
+                    reason_hash: [9u8; 32],
+                },
+                cells: vec![(
+                    busbar_kernel_ledger::cost::LaneClass::new(
+                        A_LANE,
+                        busbar_kernel_ledger::cost::CLASS_INPUT,
+                    ),
+                    nanos_per_unit,
+                )],
+                fee: Some(0),
+            },
+            |_, _| Ok::<(), ()>(()),
+        )
+        .expect("the history has an opening entry to correct");
+}
+
+/// The totals document the node's OWN ledger view serves over `book`, as bytes, through the whole
+/// loop.
+#[cfg(feature = "root-admin")]
+fn h6_totals_bytes(book: &Arc<Mutex<crate::root::durability::Durability>>) -> Vec<u8> {
+    let legacy: Arc<dyn LegacyRowsRead> =
+        Arc::new(busbar_kernel_ledger::legacy::RecordingRows::new());
+    let mut units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
+        .with_ledger_view(Arc::new(NodeLedger::new(Arc::clone(book), legacy)));
+    let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
+        .answer(a_ledger_request("/api/v1/admin/ledger/totals"));
+    assert_eq!(
+        answer.status,
+        200,
+        "the totals view did not answer: {}",
+        String::from_utf8_lossy(&answer.body)
+    );
+    answer.body
+}
+
+/// The rows of that document, keyed by bucket.
+#[cfg(feature = "root-admin")]
+fn h6_rows(
+    book: &Arc<Mutex<crate::root::durability::Durability>>,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    let doc: serde_json::Value =
+        serde_json::from_slice(&h6_totals_bytes(book)).expect("the totals response is JSON");
+    doc["rows"]
+        .as_array()
+        .expect("a rows array")
+        .iter()
+        .map(|row| {
+            (
+                row["bucket"].as_str().expect("a bucket").to_string(),
+                row.clone(),
+            )
+        })
+        .collect()
+}
+
+/// **A SIGNED BACK-DATED CORRECTION MOVES THE NODE'S OWN TOTALS ON THE NEXT READ, WITH NO
+/// RESTART** (BUSBAR-1.6.0.md §7; audit root-R1 #6).
+///
+/// One unit settles 1,000,000 input units with its counts at 2 micro-units a unit. A correction
+/// appended afterwards prices the interval it arrived in at 4: the next read answers 4,000,000,000
+/// nano-units, and the book's settled balance is untouched — the money moved and no posted figure
+/// did.
+///
+/// RED before the fix: `NodeLedger::booked_lines` answered nothing, so the read fell back to the
+/// book's balance and went on answering the 2,000,000,000 the unit settled at.
+#[cfg(feature = "root-admin")]
+#[test]
+fn h6_a_back_dated_correction_moves_the_node_totals_on_the_next_read_without_a_restart() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let history = h6_history();
+    let book = h6_book(&slots, &history);
+    h6_settle_counted(&book, "team-a", A_LANE, 1_000_000, 2_000_000_000, 1);
+
+    let before = h6_rows(&book);
+    assert_eq!(before.len(), 1, "one unit, one row: {before:?}");
+    assert_eq!(before["team-a"]["day"], A_DAY);
+    assert_eq!(before["team-a"]["priced_nanos"], "2000000000");
+
+    h6_correct(&history, 4_000);
+
+    let after = h6_rows(&book);
+    assert_eq!(
+        after["team-a"]["priced_nanos"], "4000000000",
+        "a back-dated correction must move the next read of the node's totals: {after:?}"
+    );
+    assert_eq!(after["team-a"]["priced_micros"], "4000000");
+    assert_eq!(
+        book.lock()
+            .expect("unpoisoned")
+            .settled_read(&h6_key("team-a"), A_DAY)
+            .expect("no refused row"),
+        2_000_000_000,
+        "the correction moved the book's settled balance; it must move only the read"
+    );
+}
+
+/// **THE SAME READ ANSWERS THE SAME BYTES BEFORE AND AFTER A RESTART OVER THE SAME CHAIN.**
+///
+/// The counted lines are appended as they are journalled and rebuilt from the chain at boot, so
+/// the read is one derivation either side of the restart. Here the chain is kept by the configured
+/// store (no data directory, H3), and the restart is a fresh book over the same store.
+///
+/// RED before the fix: before the restart the read answered the settled balance (2,000,000,000),
+/// after it the balance a replay re-derived at the corrected card (4,000,000,000) — the same
+/// endpoint, the same chain, two amounts.
+#[cfg(feature = "root-admin")]
+#[test]
+fn h6_the_node_totals_answer_the_same_bytes_before_and_after_a_restart() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let history = h6_history();
+    let book = h6_book(&slots, &history);
+    h6_settle_counted(&book, "team-a", A_LANE, 1_000_000, 2_000_000_000, 1);
+    h6_settle_counted(&book, "team-b", A_LANE, 250_000, 500_000_000, 2);
+    h6_correct(&history, 4_000);
+
+    let before = h6_totals_bytes(&book);
+    assert!(
+        book.lock()
+            .expect("unpoisoned")
+            .lane()
+            .expect("a book over the store has a lane")
+            .drain(H6_WAIT),
+        "the store took the chain"
+    );
+    drop(book);
+
+    let restarted = h6_book(&slots, &history);
+    let after = h6_totals_bytes(&restarted);
+    assert_eq!(
+        String::from_utf8_lossy(&before),
+        String::from_utf8_lossy(&after),
+        "the same chain must answer the same totals either side of a restart"
+    );
+    let rows = h6_rows(&restarted);
+    assert_eq!(rows["team-a"]["priced_nanos"], "4000000000");
+    assert_eq!(rows["team-b"]["priced_nanos"], "1000000000");
+}
+
+/// **A LINE ITS CARD CANNOT PRICE, OR A FIGURE NO COUNTS STAND BEHIND, SERVES THE BOOK'S BALANCE —
+/// NEVER A ZERO AND NEVER A TABLE WITH A ROW MISSING** (#42; `derived_totals_rows`).
+///
+/// A guard on the two ways the counted lines are not the whole of the money: a line on a lane the
+/// card names nothing for (a hole is a refusal, so the derivation refuses for the whole read), and
+/// a settlement whose writer posted a figure with no counts (nothing to price, so the lines do not
+/// cover the book). Either way the read answers the balance, every row in it. This passes before
+/// the fix as well, where every read was the balance; after it, it pins the fallback.
+#[cfg(feature = "root-admin")]
+#[test]
+fn h6_an_unpriceable_line_or_an_uncounted_figure_serves_the_balance_never_zero() {
+    // A line the card cannot price.
+    let slots = crate::root::store_double::RecordSlots::new();
+    let history = h6_history();
+    let book = h6_book(&slots, &history);
+    h6_settle_counted(&book, "team-a", A_LANE, 1_000_000, 2_000_000_000, 1);
+    h6_settle_counted(
+        &book,
+        "team-b",
+        "lane-the-card-does-not-name",
+        1_000_000,
+        3_000_000_000,
+        2,
+    );
+    h6_correct(&history, 4_000);
+    let rows = h6_rows(&book);
+    assert_eq!(rows.len(), 2, "every row is served: {rows:?}");
+    assert_eq!(
+        rows["team-b"]["priced_nanos"], "3000000000",
+        "an unpriceable line serves the balance, never zero"
+    );
+    assert_eq!(
+        rows["team-a"]["priced_nanos"], "2000000000",
+        "one hole refuses the derivation for the whole read: one vintage per response"
+    );
+
+    // A figure with no counts behind it.
+    let slots = crate::root::store_double::RecordSlots::new();
+    let history = h6_history();
+    let book = h6_book(&slots, &history);
+    h6_settle_counted(&book, "team-a", A_LANE, 1_000_000, 2_000_000_000, 1);
+    h6_settle_uncounted(&book, "team-c", 700_000_000, 2);
+    h6_correct(&history, 4_000);
+    let rows = h6_rows(&book);
+    assert_eq!(
+        rows.len(),
+        2,
+        "the uncounted figure's row is served: {rows:?}"
+    );
+    assert_eq!(rows["team-c"]["priced_nanos"], "700000000");
+    assert_eq!(
+        rows["team-a"]["priced_nanos"], "2000000000",
+        "a figure with no counts behind it means the lines are not the whole of the money: the \
+         whole read is the balance"
+    );
+}
