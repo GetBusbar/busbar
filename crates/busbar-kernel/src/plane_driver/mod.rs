@@ -302,6 +302,29 @@ impl std::fmt::Debug for PlaneDriver {
     }
 }
 
+/// What ended the schedule's wait.
+enum Cause {
+    /// The deadline the last answer named came.
+    Timer,
+    /// A wake of the driver ticket ran its `drive`.
+    Woke,
+}
+
+/// The earlier of two tick deadlines, `0` naming none.
+const fn earlier(a: u64, b: u64) -> u64 {
+    match (a, b) {
+        (0, b) => b,
+        (a, 0) => a,
+        (a, b) => {
+            if a < b {
+                a
+            } else {
+                b
+            }
+        }
+    }
+}
+
 impl PlaneDriver {
     /// The driver of one open plane instance, reached through `calls`: the instance admitted to
     /// `services` from what it declares and its configured `section` (its key and value), then its
@@ -363,23 +386,62 @@ impl PlaneDriver {
     }
 
     /// THE INSTANCE'S TICK SCHEDULE, on its driver ticket: `tick` at once, then at each
-    /// `next_tick_ns` it answers, on the dispatcher's clock; it ends when an answer names `0`, or
-    /// is not READY or PENDING, or no driver ticket was minted. It waits on the runtime's timer
-    /// (as the route's deadline does) and holds no `max_inflight` slot.
+    /// `next_tick_ns` it answers, on the dispatcher's clock, and again after every wake of the
+    /// driver ticket (R-PUSH, spec :2603-2606, :3470): a wake runs `drive` as it does, and then the
+    /// schedule re-polls `tick`, the sleeping timer re-armed to the earlier of its deadline and the
+    /// new answer. An answer of `0` names no tick until the next wake; it is not "never". It ends
+    /// when an answer is not READY or PENDING, or no driver ticket was minted, or nothing is left
+    /// to wait on (no deadline, and no wake channel). It waits on the runtime's timer (as the
+    /// route's deadline does) and holds no `max_inflight` slot.
     pub async fn ticks(&self) {
         let Some(driver) = self.driver else {
             return;
         };
         let mut at = 0;
+        let mut cause = Cause::Timer;
         loop {
+            self.services.mark_due();
+            let Some(next) = self.calls.tick(driver, self.calls.now_ns()).await else {
+                return;
+            };
+            at = match cause {
+                Cause::Timer => next,
+                Cause::Woke => earlier(at, next),
+            };
+            let Some(woken) = self.await_tick(at).await else {
+                return;
+            };
+            cause = woken;
+        }
+    }
+
+    /// What the schedule waits on after an answer: `at` (`0` = no deadline) on the dispatcher's
+    /// clock, or a wake of the driver ticket. `None` when neither can come.
+    async fn await_tick(&self, at: u64) -> Option<Cause> {
+        let timer = async {
+            if at == 0 {
+                std::future::pending::<()>().await;
+            }
             let now = self.calls.now_ns();
             if at > now {
                 tokio::time::sleep(std::time::Duration::from_nanos(at - now)).await;
             }
-            self.services.mark_due();
-            match self.calls.tick(driver, self.calls.now_ns()).await {
-                Some(next) if next != 0 => at = next,
-                _ => return,
+        };
+        let woke = self.calls.woke();
+        tokio::pin!(timer, woke);
+        let mut channel = true;
+        loop {
+            tokio::select! {
+                () = &mut timer => return Some(Cause::Timer),
+                alive = &mut woke, if channel => {
+                    if alive {
+                        return Some(Cause::Woke);
+                    }
+                    channel = false;
+                    if at == 0 {
+                        return None;
+                    }
+                }
             }
         }
     }

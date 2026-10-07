@@ -18,7 +18,7 @@ mod cases;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
@@ -194,12 +194,22 @@ struct Double {
     /// Each `tick`'s `now_ns`, and the period the next one is asked for (`0` = none).
     ticks: Mutex<Vec<u64>>,
     tick_every_ns: AtomicU64,
+    /// Whether it has a wake channel (R-PUSH), and its driver ticket's wakes: a wake has run
+    /// `drive`, so the schedule re-polls `tick`.
+    wake: Arc<WakeLine>,
     /// What it declares for its admission.
     declared: InstanceDecl,
     /// Its duplex sessions (a `/session` arrival states `ROUTE_SESSION`): see [`Sessions`].
     sessions: Arc<Sessions>,
     /// The reason of every refused piece (`PIECE_REFUSED`) it was handed.
     refused: Mutex<Vec<u32>>,
+}
+
+/// The double's driver-ticket wake line (R-PUSH): off, it has no wake channel.
+#[derive(Default)]
+struct WakeLine {
+    channel: AtomicBool,
+    told: tokio::sync::Notify,
 }
 
 /// The double's sessions: the streams open, the caller pieces each read (stream, bytes), the
@@ -890,6 +900,17 @@ impl PlaneCalls for Double {
         Box::pin(std::future::ready(Some(next)))
     }
 
+    fn woke(&self) -> Pin<Box<dyn Future<Output = bool> + Send>> {
+        let line = Arc::clone(&self.wake);
+        Box::pin(async move {
+            if !line.channel.load(Ordering::SeqCst) {
+                return false;
+            }
+            line.told.notified().await;
+            true
+        })
+    }
+
     /// The streams its ticks named, waiting until one is.
     fn ready(&self) -> Pin<Box<dyn Future<Output = Vec<u64>> + Send>> {
         let sessions = Arc::clone(&self.sessions);
@@ -1354,7 +1375,8 @@ fn the_driver_mints_the_instance_s_one_driver_ticket_and_recycles_it() {
 }
 
 /// `tick` runs at once, then at the `next_tick_ns` each answer names, never before it; an answer of
-/// `0` ends the schedule (spec :3288, B.3.7).
+/// `0` ends the schedule of a plane with no wake channel (spec :3288, B.3.7); with one it waits on a
+/// wake (R-PUSH, the cells below).
 #[tokio::test]
 async fn the_driver_ticks_at_each_next_tick_and_stops_at_none() {
     let (plane, _book, driver) = driven(20_000_000);
@@ -2406,4 +2428,78 @@ async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() 
         "a walk that exhausted before any request went out hands no refused piece"
     );
     assert_eq!(unsent.written.value, svc::ABSENT);
+}
+
+/// R-PUSH (spec :2603-2606, :3470): `next_tick_ns = 0` names no tick until the next wake of the
+/// driver ticket, not "never": a plane whose `tick` answered `0` is ticked again after it wakes its
+/// driver ticket. RED on the base: the schedule ended at the `0` answer.
+#[tokio::test]
+async fn a_wake_of_the_driver_ticket_re_polls_tick_after_an_answer_of_none() {
+    let (plane, _book, driver) = driven(0);
+    plane.wake.channel.store(true, Ordering::SeqCst);
+    let waker = async {
+        let ticks = || plane.ticks.lock().unwrap().len();
+        while ticks() < 1 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(ticks(), 1, "no tick without a wake after an answer of 0");
+        plane.wake.told.notify_one();
+        while ticks() < 2 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        plane.wake.told.notify_one();
+        while ticks() < 3 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            () = driver.ticks() => panic!("the schedule ended at the answer of 0 while a wake could come"),
+            () = waker => {}
+        }
+    })
+    .await
+    .expect("each wake ticks once");
+}
+
+/// A plane that answers `0` and never wakes its driver ticket is ticked exactly once: the
+/// behaviour of the planes that keep no push queue (R-PUSH changes nothing for them).
+#[tokio::test]
+async fn an_answer_of_none_with_no_wake_ticks_once_and_stays_quiet() {
+    let (plane, _book, driver) = driven(0);
+    plane.wake.channel.store(true, Ordering::SeqCst);
+    let run = tokio::time::timeout(Duration::from_millis(150), driver.ticks()).await;
+    assert!(
+        run.is_err(),
+        "the schedule waits on a wake that never comes"
+    );
+    assert_eq!(plane.ticks.lock().unwrap().len(), 1, "one tick, no more");
+}
+
+/// A wake re-arms the timer to the earlier of its deadline and the new answer: a wake whose tick
+/// answers a nearer time is ticked at that time, not at the old deadline.
+#[tokio::test]
+async fn a_wake_re_arms_the_sleeping_timer_to_the_earlier_deadline() {
+    let (plane, _book, driver) = driven(2_000_000_000);
+    plane.wake.channel.store(true, Ordering::SeqCst);
+    let waker = async {
+        while plane.ticks.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        // The next answer is 20 ms out; the old deadline (2 s) stands until the wake.
+        plane.tick_every_ns.store(20_000_000, Ordering::SeqCst);
+        plane.wake.told.notify_one();
+        while plane.ticks.lock().unwrap().len() < 4 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::select! {
+            () = driver.ticks() => panic!("the schedule ended"),
+            () = waker => {}
+        }
+    })
+    .await
+    .expect("the wake brought the timer in from 2 s to 20 ms");
 }

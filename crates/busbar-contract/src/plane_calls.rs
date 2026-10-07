@@ -350,12 +350,22 @@ pub trait PlaneCalls: Send + Sync {
 
     /// Lifecycle `tick` at `now_ns`, submitted on `driver` (the instance's driver ticket, which
     /// its head carries, so a service that pends inside `tick` is woken through `drive`): the
-    /// `next_tick_ns` a READY or PENDING answer names (`0` = none), or `None` for any other answer.
+    /// `next_tick_ns` a READY or PENDING answer names (`0` = no tick scheduled until the driver
+    /// ticket's next wake, R-PUSH), or `None` for any other answer.
     fn tick(
         &self,
         driver: Ticket,
         now_ns: u64,
     ) -> Pin<Box<dyn Future<Output = Option<u64>> + Send>>;
+
+    /// THE DRIVER TICKET'S WAKES (R-PUSH): resolves `true` once a wake of the instance's driver
+    /// ticket has run its `drive`, one resolution per run (wakes that land together may share one);
+    /// the host then re-polls `tick`. `false` when the instance has no wake channel (it is not
+    /// open, or the calls have none): nothing will wake it, and a schedule waiting only on a wake
+    /// ends. The default has no channel.
+    fn woke(&self) -> Pin<Box<dyn Future<Output = bool> + Send>> {
+        Box::pin(std::future::ready(false))
+    }
 
     /// THE READY SESSIONS (R-B): the streams the instance's `drive` named on its driver ticket
     /// since the last call, each once, waiting until one is named. Empty when the instance is not

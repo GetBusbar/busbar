@@ -478,6 +478,8 @@ pub(crate) struct Current {
 pub(crate) struct Driven {
     names: Mutex<Vec<u64>>,
     told: tokio::sync::Notify,
+    /// A wake's `drive` ran: the host re-polls `tick` (R-PUSH).
+    woke: tokio::sync::Notify,
 }
 
 impl Driven {
@@ -495,6 +497,16 @@ impl Driven {
         if !names.is_empty() {
             self.told.notify_one();
         }
+    }
+
+    /// A wake of the driver ticket has run its `drive`.
+    fn drove(&self) {
+        self.woke.notify_one();
+    }
+
+    /// Waits until a wake's `drive` has run, once per run; never parks a thread.
+    pub(crate) async fn woken(&self) {
+        self.woke.notified().await;
     }
 
     /// Every name held, once one is; never parks a thread.
@@ -1084,6 +1096,9 @@ impl Worker {
                 let (mut st, c) = self.cross(st, &inst, slot::DRIVE, heads, budget)?;
                 if c.outcome == Outcome::Ready {
                     inst.driven.name(frame.named());
+                }
+                if c.outcome != Outcome::Pending {
+                    inst.driven.drove();
                 }
                 let e = &mut st.entries[idx as usize];
                 if e.generation == generation {
