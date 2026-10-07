@@ -591,9 +591,11 @@ impl DoorApply {
         } else {
             serde_json::to_vec(section).map_err(|e| format!("its section: {e}"))?
         };
+        let affinity = pool_affinity(&self.served_facts, section)?;
         crate::root::loader::dispatch::kinds::plane::refresh_door(
             &self.plugin,
             &settings,
+            &affinity,
             generation,
         )?;
         let pools = DoorPools::of(section);
@@ -695,11 +697,18 @@ impl DoorAppliers {
                     continue;
                 }
             };
+            let affinity = match pool_affinity(facts, section) {
+                Ok(affinity) => affinity,
+                Err(e) => {
+                    tracing::error!(plane = name, error = %e, "door plane's new configuration is not JSON; it keeps serving the previous one");
+                    continue;
+                }
+            };
             let walked = walked_section(facts, section, sections);
             let now = p.current();
             let next = now.generation + 1;
             if let Err(e) = crate::root::loader::dispatch::kinds::plane::refresh_door(
-                &p.plugin, &settings, next,
+                &p.plugin, &settings, &affinity, next,
             ) {
                 tracing::error!(plane = name, error = %e, "door plane did not refresh onto the new configuration; it keeps serving the previous one");
                 continue;
@@ -1079,8 +1088,10 @@ pub(crate) fn compose_planes_over(
                 Some(((*name).to_string(), value))
             })
             .collect();
-        let snapshot =
-            open(plugin, &settings, public_url, &owned).map_err(|e| format!("{instance}: {e}"))?;
+        let affinity =
+            pool_affinity(&served_facts, section).map_err(|e| format!("{instance}: {e}"))?;
+        let snapshot = open(plugin, &settings, public_url, &owned, &affinity)
+            .map_err(|e| format!("{instance}: {e}"))?;
         let section = &walked;
         let calls = Arc::new(PlaneInstance::new(
             plugin.clone(),
@@ -1474,13 +1485,31 @@ fn walked_section(
     }
 }
 
+/// THE POOL AFFINITY PROJECTION a door plane is handed beside its settings at `open` and `refresh`
+/// (`busbar_contract::abi::plane::PlaneRefreshIn::pool_affinity`), read by the kernel off its
+/// declaring `section` ([`busbar_kernel::config_validate::deal::crossing`]): JSON; empty when no
+/// pool names a header.
+fn pool_affinity(
+    facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+    section: &serde_yaml::Value,
+) -> Result<Vec<u8>, String> {
+    let value = serde_json::to_value(section).map_err(|e| format!("its section: {e}"))?;
+    let (_, affinity) = busbar_kernel::config_validate::deal::crossing(facts.section, value);
+    if affinity.is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::to_vec(&affinity).map_err(|e| format!("its pool affinity: {e}"))
+}
+
 /// `open` the plane, generation 1, its settings `section` as JSON, the deployment's `public_url`
-/// (absent = none stated) and its `owned` sections; the snapshot it published.
+/// (absent = none stated), its `owned` sections and its `pool_affinity` projection (empty = none);
+/// the snapshot it published.
 fn open(
     plugin: &DoorPlane,
     section: &serde_yaml::Value,
     public_url: Option<&str>,
     owned: &serde_json::Map<String, serde_json::Value>,
+    pool_affinity: &[u8],
 ) -> Result<OwnedSnapshot, String> {
     // The reserved `work:` bounds are core-owned: the kernel reads them; the plane never sees them.
     let mut section = section.clone();
@@ -1529,6 +1558,20 @@ fn open(
                 },
                 len: owned.len(),
                 fmt: if owned.is_empty() {
+                    busbar_contract::abi::mechanism::call::BLOB_ABSENT
+                } else {
+                    BLOB_JSON
+                },
+                flags: 0,
+            },
+            pool_affinity: Blob {
+                ptr: if pool_affinity.is_empty() {
+                    std::ptr::null()
+                } else {
+                    pool_affinity.as_ptr()
+                },
+                len: pool_affinity.len(),
+                fmt: if pool_affinity.is_empty() {
                     busbar_contract::abi::mechanism::call::BLOB_ABSENT
                 } else {
                     BLOB_JSON

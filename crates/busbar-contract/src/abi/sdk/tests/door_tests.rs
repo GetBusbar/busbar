@@ -1315,7 +1315,7 @@ mod plane_plugin {
     use super::*;
     use crate::abi::plane::{ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut};
     use crate::abi::plane::{PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut};
-    use crate::abi::plane::{PlaneRefreshOut, PlaneSnapshot};
+    use crate::abi::plane::{PlaneRefreshIn, PlaneRefreshOut, PlaneSnapshot};
     use crate::abi::plane::{ProjectIn, ProjectOut, ServeIn, ServeOut};
 
     macro_rules! answers {
@@ -1337,7 +1337,7 @@ mod plane_plugin {
     answers!(Hydrate, GenIn, OutHead, Outcome::Ready);
     answers!(Start, GenIn, OutHead, Outcome::Ready);
     answers!(Project, ProjectIn, ProjectOut, Outcome::Ready);
-    answers!(Refresh, RefreshIn, PlaneRefreshOut, Outcome::Failed);
+    answers!(Refresh, PlaneRefreshIn, PlaneRefreshOut, Outcome::Failed);
 
     /// The generation snapshot `open` publishes.
     pub const SNAPSHOT: &PlaneSnapshot = &PlaneSnapshot {

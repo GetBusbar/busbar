@@ -53,20 +53,18 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::abi::mechanism::door::{
     KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
 };
-use busbar_contract::abi::mechanism::lifecycle::{
-    GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
-};
+use busbar_contract::abi::mechanism::lifecycle::{GenIn, ReleaseIn, TickIn, TickOut, ValidateIn};
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
-    PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
-    PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
-    CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END,
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    PIECE_CUT, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, REFUSAL_GATE,
-    ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_POOL, SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK,
-    TAIL_PROBES, UNITS_FLOOR, UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK,
-    VERDICT_RETRY,
+    PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshIn, PlaneRefreshOut,
+    PlaneSnapshot, PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut,
+    UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PROBE, EMIT_DONE,
+    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
+    INGRESS_RESPONSE_STREAM, PIECE_CUT, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
+    PRINCIPAL_REQUIRED, REFUSAL_GATE, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_POOL, SHAPE_PIECEWISE,
+    SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR, UNITS_REPORTED, VERDICT_HARD,
+    VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, AUDIT_NONE, RECORD_AUDIT};
@@ -1103,7 +1101,9 @@ slot!(
     /// `open`: the instance, its host clock, and the first generation's tables and snapshot.
     Open, PlaneOpenIn, PlaneOpenOut, |instance, input, mut out| {
         let open = input.field(|i| &i.open);
-        let shaping = match read_settings(open.field(|o| &o.settings).bytes()) {
+        let shaping = match read_settings(open.field(|o| &o.settings).bytes())
+            .and_then(|s| s.with_affinity(input.field(|i| &i.pool_affinity).bytes()))
+        {
             Ok(shaping) => shaping,
             Err(words) => return open_failed(open, &mut out, |o| &o.open.err_len, &words),
         };
@@ -1128,11 +1128,15 @@ slot!(
 
 slot!(
     /// `refresh`: the new tables judged, and the next generation's snapshot.
-    Refresh, RefreshIn, PlaneRefreshOut, |instance, input, mut out| {
+    Refresh, PlaneRefreshIn, PlaneRefreshOut, |instance, input, mut out| {
         let Some(door) = instance.get() else {
             return Outcome::Failed;
         };
-        let shaping = match read_settings(input.field(|i| &i.settings).bytes()) {
+        let affinity = input.field(|i| &i.pool_affinity).bytes();
+        let input = input.field(|i| &i.refresh);
+        let shaping = match read_settings(input.field(|i| &i.settings).bytes())
+            .and_then(|s| s.with_affinity(affinity))
+        {
             Ok(shaping) => shaping,
             Err(words) => return out.fail(Refusal::refused(words)),
         };

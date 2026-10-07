@@ -38,14 +38,12 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outco
 use busbar_contract::abi::mechanism::door::{
     KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
 };
-use busbar_contract::abi::mechanism::lifecycle::{
-    GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
-};
+use busbar_contract::abi::mechanism::lifecycle::{GenIn, ReleaseIn, TickIn, TickOut, ValidateIn};
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
-    PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
-    PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
-    CANCEL_ABORTED, CLAIM_EXACT, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
+    PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshIn, PlaneRefreshOut,
+    PlaneSnapshot, PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut,
+    UnitCount, CANCEL_ABORTED, CLAIM_EXACT, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
     FROM_KERNEL, INGRESS_REQUEST_RESPONSE, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
     PRINCIPAL_OPTIONAL, PRINCIPAL_REQUIRED, ROUTE_DIRECT, SHAPE_WHOLE, UNITS_REPORTED,
 };
@@ -333,10 +331,11 @@ slot!(
 
 slot!(
     /// `refresh`: the new section judged, and the next generation's snapshot.
-    Refresh, RefreshIn, PlaneRefreshOut, |instance, input, mut out| {
+    Refresh, PlaneRefreshIn, PlaneRefreshOut, |instance, input, mut out| {
         let Some(plane) = instance.get() else {
             return Outcome::Failed;
         };
+        let input = input.field(|i| &i.refresh);
         let section = match read_settings(input.field(|i| &i.settings).bytes()) {
             Ok(section) => section,
             Err(words) => return out.fail(Refusal::refused(words)),

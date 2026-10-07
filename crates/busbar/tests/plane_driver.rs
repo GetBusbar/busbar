@@ -147,6 +147,7 @@ fn load_open(
                 len: 0,
             },
             owned: NO_BLOB,
+            pool_affinity: NO_BLOB,
         },
         PlaneOpenOut {
             open: OpenOut {

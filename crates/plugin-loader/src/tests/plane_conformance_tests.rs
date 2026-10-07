@@ -1749,9 +1749,9 @@ mod door {
             assert_eq!(first.claims[0].target, "/echo");
             assert!(first.admin_routes.is_empty());
 
-            let mut r: Frame<RefreshIn, PlaneRefreshOut> = Frame::new(z(), z());
-            (r.input.head, r.out.head) = (in_head(), out_head());
-            r.input.generation = 2;
+            let mut r: Frame<plane::PlaneRefreshIn, PlaneRefreshOut> = Frame::new(z(), z());
+            (r.input.refresh.head, r.out.head) = (in_head(), out_head());
+            r.input.refresh.generation = 2;
             let (c, second) = p.refresh(&mut r);
             assert_eq!(c.outcome, Outcome::Ready);
             let second = second.expect("a READY refresh's snapshot is copied");

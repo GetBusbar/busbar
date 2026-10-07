@@ -475,6 +475,59 @@ pub fn strip(verb: &str, mut section: Value, reserved: &mut Vec<(Vec<String>, Va
     section
 }
 
+/// THE CROSSING (P1b; spec Part 1 §4 :561-570): `section`, the value the document writes under
+/// `verb`, as a plugin is handed it at `open` and `refresh`: through [`strip`], the one strip, its
+/// reserved core-owned sub-keys taken off; beside it, the kernel's POOL AFFINITY projection read off
+/// what the strip took ([`pool_affinity`]).
+#[must_use]
+pub fn crossing(verb: &str, section: Value) -> (Value, Map<String, Value>) {
+    let mut reserved = Vec::new();
+    let stripped = strip(verb, section, &mut reserved);
+    let affinity = pool_affinity(verb, &reserved);
+    (stripped, affinity)
+}
+
+/// THE POOL AFFINITY PROJECTION (ARCHITECT P1b 2026-10-07): `affinity` is a reserved core-owned
+/// sub-key, so the kernel reads each pool's (`config::pools::AffinityCfg`) off what [`strip`] took
+/// under `verb` — the pools of the root `pools:` section, or the pools under a declared verb's
+/// reserved `pools` — and hands the plane, beside its settings, the resolved directive of each pool
+/// whose affinity names a header: `{"<pool>": {"header_name": "<header>"}}`
+/// (`busbar_contract::abi::plane::POOL_AFFINITY_HEADER_NAME`). A pool whose affinity names none is
+/// absent (the plane's default header). No plane is named: any section's pools are read the same.
+#[must_use]
+pub fn pool_affinity(verb: &str, reserved: &[(Vec<String>, Value)]) -> Map<String, Value> {
+    use busbar_contract::abi::plane::POOL_AFFINITY_HEADER_NAME;
+    use busbar_contract::section::RESERVED_POOLS_KEY;
+    const AFFINITY: &str = "affinity";
+    let pools_at: &[&str] = if verb == RESERVED_POOLS_KEY {
+        &[RESERVED_POOLS_KEY]
+    } else {
+        &[verb, RESERVED_POOLS_KEY]
+    };
+    let mut out = Map::new();
+    for (path, value) in reserved {
+        let [head @ .., pool, key] = path.as_slice() else {
+            continue;
+        };
+        if key != AFFINITY
+            || head.len() != pools_at.len()
+            || head.iter().zip(pools_at).any(|(a, b)| a != b)
+        {
+            continue;
+        }
+        let header = serde_json::from_value::<crate::config::pools::AffinityCfg>(value.clone())
+            .ok()
+            .and_then(|a| a.header_name);
+        if let Some(header) = header {
+            out.insert(
+                pool.clone(),
+                serde_json::json!({ POOL_AFFINITY_HEADER_NAME: header }),
+            );
+        }
+    }
+    out
+}
+
 /// One pool at `at`: its reserved keys, then each member's (a member written as a map).
 fn strip_pool(pool: &mut Value, at: &[String], reserved: &mut Vec<(Vec<String>, Value)>) {
     let Some(map) = pool.as_object_mut() else {

@@ -427,6 +427,7 @@ extern "C" {
 #define BB_PLANE_PIN_FINGERPRINT UINT32_C(1) /* [`TrustKey::flags`], on a [`TRUST_PIN`] key only: the pin object may also carry `fingerprint`. */
 #define BB_PLANE_MECHANISM_ROOT UINT32_C(1) /* [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key */
 #define BB_PLANE_MECHANISM_PEER_KEY UINT32_C(2) /* [`PinMechanism::flags`], on a root only: the mechanism's key material is the FAR END'S KEY, a pin */
+#define BB_PLANE_POOL_AFFINITY_HEADER_NAME "header_name" /* The member of a pool's entry in the pool affinity projection ([`PlaneOpenIn::pool_affinity`], */
 
 /* transport */
 #define BB_TRANSPORT_MAX_PIECES UINT64_C(4096) /* The most frame pieces one framer answer may produce. */
@@ -908,6 +909,7 @@ typedef struct bb_plane_Claim bb_plane_Claim;
 typedef struct bb_plane_AdminRoute bb_plane_AdminRoute;
 typedef struct bb_plane_PlaneSnapshot bb_plane_PlaneSnapshot;
 typedef struct bb_plane_PlaneOpenIn bb_plane_PlaneOpenIn;
+typedef struct bb_plane_PlaneRefreshIn bb_plane_PlaneRefreshIn;
 typedef struct bb_plane_PlaneOpenOut bb_plane_PlaneOpenOut;
 typedef struct bb_plane_PlaneRefreshOut bb_plane_PlaneRefreshOut;
 typedef struct bb_plane_OutField bb_plane_OutField;
@@ -2559,6 +2561,13 @@ struct bb_plane_PlaneOpenIn {
     bb_mech_OpenIn open;
     bb_mech_AbiStr public_url;
     bb_mech_Blob owned;
+    bb_mech_Blob pool_affinity;
+};
+
+/* The plane's `refresh` `in`: the lifecycle's, plus the kernel's pool affinity projection. */
+struct bb_plane_PlaneRefreshIn {
+    bb_mech_RefreshIn refresh;
+    bb_mech_Blob pool_affinity;
 };
 
 /* The plane's `open` `out`: the lifecycle's, plus the first generation's snapshot. */
@@ -3641,7 +3650,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn disk_append;
 };
 
-/* ---- layout proof: 264 of 267 structures are pinned by the golden ---- */
+/* ---- layout proof: 265 of 268 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -4842,11 +4851,16 @@ BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, openapi) == 48, "bb_plane_PlaneSnapsh
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, audience) == 72, "bb_plane_PlaneSnapshot.audience: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, resource_metadata) == 88, "bb_plane_PlaneSnapshot.resource_metadata: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, resource_facts) == 104, "bb_plane_PlaneSnapshot.resource_facts: offset");
-BB_ASSERT(sizeof(bb_plane_PlaneOpenIn) == 200, "bb_plane_PlaneOpenIn: size");
+BB_ASSERT(sizeof(bb_plane_PlaneOpenIn) == 224, "bb_plane_PlaneOpenIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneOpenIn) == 8, "bb_plane_PlaneOpenIn: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneOpenIn, open) == 0, "bb_plane_PlaneOpenIn.open: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneOpenIn, public_url) == 160, "bb_plane_PlaneOpenIn.public_url: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneOpenIn, owned) == 176, "bb_plane_PlaneOpenIn.owned: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneOpenIn, pool_affinity) == 200, "bb_plane_PlaneOpenIn.pool_affinity: offset");
+BB_ASSERT(sizeof(bb_plane_PlaneRefreshIn) == 160, "bb_plane_PlaneRefreshIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneRefreshIn) == 8, "bb_plane_PlaneRefreshIn: alignment");
+BB_ASSERT(offsetof(bb_plane_PlaneRefreshIn, refresh) == 0, "bb_plane_PlaneRefreshIn.refresh: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneRefreshIn, pool_affinity) == 136, "bb_plane_PlaneRefreshIn.pool_affinity: offset");
 BB_ASSERT(sizeof(bb_plane_PlaneOpenOut) == 120, "bb_plane_PlaneOpenOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneOpenOut) == 8, "bb_plane_PlaneOpenOut: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneOpenOut, open) == 0, "bb_plane_PlaneOpenOut.open: offset");

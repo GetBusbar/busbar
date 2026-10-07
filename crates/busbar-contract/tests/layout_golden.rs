@@ -1748,8 +1748,13 @@ fn compute_layout() -> String {
             resource_facts
         ]
     );
-    record!(s, pkind::PlaneOpenIn, [open, public_url, owned]);
+    record!(
+        s,
+        pkind::PlaneOpenIn,
+        [open, public_url, owned, pool_affinity]
+    );
     record!(s, pkind::PlaneOpenOut, [open, snapshot]);
+    record!(s, pkind::PlaneRefreshIn, [refresh, pool_affinity]);
     record!(s, pkind::PlaneRefreshOut, [head, snapshot]);
     record!(s, pkind::UnitCount, [class, source, amount]);
     record!(s, pkind::OutField, [name, value]);
