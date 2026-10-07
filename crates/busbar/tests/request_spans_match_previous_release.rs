@@ -22,16 +22,18 @@
 //! and close regardless). One request of each shape is sent: a chat completion through a pool whose
 //! member fails and which spills into its fallback pool (`forward` + `forward_once`), the same one
 //! streamed, the two path-named surfaces, and the three path-model dialect surfaces. The collector's
-//! spans must carry the names above, with the fields the export vocabulary carries (`pool`,
-//! `ingress`, `op`, `lane`, `provider`, `model`). The correlation id is not in the export
+//! `forward` and `forward_once` spans must carry the fields the export vocabulary carries (`pool`,
+//! `ingress`, `op`, `lane`). The correlation id is not in the export
 //! vocabulary and nothing on the request path logs an event under the span, so it is proven
 //! in-process by the kernel's driver tests (`busbar-kernel` `tests/support/plane_driver_hook_cases.rs`,
 //! `a_unit_no_hook_binds_carries_one_correlation_id_on_its_request_span` and
 //! `a_hooked_unit_carries_its_hooks_correlation_id_on_its_request_span`).
 //!
-//! `forward` and `forward_once` are the kernel's and the composition root's, and are asserted. The
-//! five surface spans are opened plane-side and are dropped by the plugin call capture before they
-//! reach the host: that test is ignored as the QUESTION it states.
+//! This test asserts `forward` and `forward_once`, the spans the kernel and the composition root
+//! open. The five surface spans (`named`, `adhoc`, `gemini_ingress`, `bedrock_converse`,
+//! `bedrock_converse_stream`) are opened plane-side in the arrival reader; carrying them from the
+//! plugin call capture to the host's export is the follow-up ARCHITECT RULING D1 2026-10-06 (A)
+//! names, and their proof lands with it.
 //!
 //! RED (before the ruling): the door opened `forward` with no `op` and recorded its `pool` and
 //! `ingress` after the export had read the span's fields, never recorded `request_id` on it, and
@@ -54,17 +56,6 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
-
-/// The span names 1.5.5's request path emitted (module doc).
-const PREVIOUS_RELEASE_SPANS: &[&str] = &[
-    "forward",
-    "forward_once",
-    "named",
-    "adhoc",
-    "gemini_ingress",
-    "bedrock_converse",
-    "bedrock_converse_stream",
-];
 
 fn fixture_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!(
@@ -322,49 +313,4 @@ fn the_request_path_emits_the_previous_release_request_spans_with_their_fields()
             && under_forward(&spans, s)),
         "every degraded attempt's span carries its lane and sits under the request span: {once:#?}"
     );
-}
-
-/// The spans 1.5.5 opened per surface: `named{pool}`, `adhoc{provider, model}`, `gemini_ingress`,
-/// `bedrock_converse` and `bedrock_converse_stream`, each under the request span. The plane opens
-/// them in its arrival reader (ARCHITECT RULING D1 2026-10-06: plane-side, so the kernel and the root
-/// stay neutral), but every plugin slot body runs under the plugin-log call capture, the thread's
-/// scoped dispatcher for the call (`busbar-contract` `abi/sdk/door.rs:409-410`), whose `new_span`
-/// keeps nothing (`abi/sdk/capture.rs:147-151`): a span the plane opens never reaches the host's
-/// subscriber or its trace export. Carrying it across needs a change to the call capture under
-/// `busbar-contract/src/abi`, an ABI decision the ruling does not settle.
-#[test]
-#[ignore = "QUESTION (ARCHITECT RULING D1 2026-10-06): a plane-side span is dropped by the door's \
-            call capture (busbar-contract abi/sdk/capture.rs:147-151) and never reaches the export"]
-fn the_request_path_emits_the_previous_release_surface_spans() {
-    let Some((spans, _log)) = drive(PREVIOUS_RELEASE_SPANS) else {
-        return;
-    };
-    // The route spans, with the names and the provider and model they carried.
-    assert!(
-        named(&spans, "named")
-            .iter()
-            .any(|s| attr(s, "pool") == Some("main") && under_forward(&spans, s)),
-        "{:#?}",
-        named(&spans, "named")
-    );
-    assert!(
-        named(&spans, "adhoc")
-            .iter()
-            .any(|s| attr(s, "provider") == Some("mock")
-                && attr(s, "model") == Some("m-a")
-                && under_forward(&spans, s)),
-        "{:#?}",
-        named(&spans, "adhoc")
-    );
-    for name in [
-        "gemini_ingress",
-        "bedrock_converse",
-        "bedrock_converse_stream",
-    ] {
-        assert!(
-            named(&spans, name).iter().any(|s| under_forward(&spans, s)),
-            "{name}: {:#?}",
-            named(&spans, name)
-        );
-    }
 }
