@@ -133,6 +133,16 @@ pub trait DialJudge: Send + Sync {
     ) -> Option<Result<SocketAddr, Verdict>> {
         self.judge_dial(dest, class, done)
     }
+
+    /// THE STATIC ARM ALONE: the refusal `dest` (`host:port`) meets under class `class` before any
+    /// resolution (the guard's name arm: a metadata name, an obfuscated literal, ...), or `None`
+    /// when nothing static refuses it. Never resolves. A pinned need's admission at declare asks
+    /// it ([`Connector::admits_pinned`]); every dial still meets the whole judgement. The default
+    /// knows no static refusal.
+    fn judge_static(&self, dest: &str, class: u32) -> Option<Verdict> {
+        let _ = (dest, class);
+        None
+    }
 }
 
 /// Any function of the judge's shape is a judge: [`process::judge`] joins the deployment's one
@@ -195,6 +205,14 @@ impl DialJudge for LiteralsOnly {
 /// THE LANDING RULE rides with it: a dial stated `within` an address set (`EstablishIn::within`)
 /// lands only on an address in it, so a name that resolves elsewhere since the plugin judged it
 /// is refused at the connect, before any byte is written; an empty set states no pin.
+/// THE SCHEME RULE THE TARGET DECIDES ALONE, before any judgement: open-web dials over connection
+/// security only. An open holds its target to it ([`Conns::open`]), and so does a pinned need's
+/// admission at declare ([`Connector::admits_pinned`]); loopback-allowed's plaintext-to-loopback
+/// rule needs the pinned address and is [`class_admits`]'s.
+fn scheme_admits(egress_class: u32, secure: bool) -> bool {
+    egress_class != EGRESS_OPEN_WEB || secure
+}
+
 fn class_admits(egress_class: u32, secure: bool, within: &[IpAddr], addr: SocketAddr) -> bool {
     (within.is_empty() || within.contains(&addr.ip()))
         && match egress_class {
@@ -613,6 +631,56 @@ impl Connector {
                 members: None,
             }),
         );
+        Ok(())
+    }
+
+    /// THE ADMISSION OF A PINNED TARGET (FAIL-CLOSED: the verdict `need_admit` reports is the one
+    /// every dial of the need meets). A need whose config names its target is judged at declare on
+    /// the facts that need no resolution, by the same rules an open and a dial apply: the entry's
+    /// endpoint checks ([`Planned::locate`]'s), the scheme by class ([`scheme_admits`]), the guard's
+    /// static arm under the class the dial is judged in ([`guard::judged_class`],
+    /// [`DialJudge::judge_static`]), and, for an IP literal, the whole judgement and
+    /// [`class_admits`] on the address it pins. A name is resolved by no one here: its addresses
+    /// stay the dial's to judge.
+    fn admits_pinned(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        target: &str,
+        egress_class: u32,
+    ) -> Result<(), ConnError> {
+        let door = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .map(|n| Arc::clone(&n.door))
+            .ok_or(ConnError::Refused)?;
+        endpoint::check(target).map_err(|_| ConnError::Refused)?;
+        let located = framer::locate(door.as_ref(), target).map_err(|_| ConnError::Refused)?;
+        endpoint::check(&located.authority).map_err(|_| ConnError::Refused)?;
+        if !scheme_admits(egress_class, located.secure) {
+            return Err(ConnError::Refused);
+        }
+        let judged_class = guard::judged_class(egress_class, true);
+        if self
+            .judge
+            .judge_static(&located.authority, judged_class)
+            .is_some()
+        {
+            return Err(ConnError::Refused);
+        }
+        if socket::address_of(&located.authority).is_some() {
+            // A literal answers at once: nothing resolves, and nothing is left pending.
+            match self
+                .judge
+                .judge_dial(&located.authority, judged_class, Box::new(|_| {}))
+            {
+                Some(Ok(addr)) if class_admits(egress_class, located.secure, &[], addr) => {}
+                Some(_) => return Err(ConnError::Refused),
+                None => {}
+            }
+        }
         Ok(())
     }
 
@@ -1207,9 +1275,14 @@ impl DeclaredConns for Connector {
                     Ok(())
                 }
             }
-            Ok(tls) if !(spec.transport.is_empty() || unresolved || credentialed) => {
-                self.record(owner, need, &spec.transport, spec.egress_class, target, tls)
-            }
+            Ok(tls) if !(spec.transport.is_empty() || unresolved || credentialed) => self
+                .record(owner, need, &spec.transport, spec.egress_class, target, tls)
+                .and_then(|()| match target {
+                    Some(pinned) => self
+                        .admits_pinned(owner, need, pinned, spec.egress_class)
+                        .inspect_err(|_| self.set_need(owner, need, None)),
+                    None => Ok(()),
+                }),
             _ => {
                 self.set_need(owner, need, None);
                 Err(ConnError::Refused)
@@ -1557,7 +1630,7 @@ impl Conns for Connector {
         // SCHEME BY EGRESS CLASS: open-web is secure-only, decided by the target before any
         // judgement; loopback-allowed's plaintext-to-loopback rule is held against the pinned
         // address below.
-        if egress_class == EGRESS_OPEN_WEB && !planned.secure() {
+        if !scheme_admits(egress_class, planned.secure()) {
             return Err(ConnError::Refused);
         }
         // THE POOL: on this worker's shard, a live h2 line to the same place carries this
