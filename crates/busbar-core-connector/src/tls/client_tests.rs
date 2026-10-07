@@ -283,12 +283,12 @@ fn cert_over(kp: &rcgen::KeyPair, names: &[&str]) -> Vec<u8> {
 
 /// WHY THE PIN IS ON THE KEY AND NOT ON THE CERTIFICATE: a renewal re-issues the certificate and
 /// keeps the key, so it must keep the pin; a different key must be a different pin.
-/// Ported from busbar-a2a a2a/tests/key_info_tests.rs::two_certificates_over_the_same_key_pin_identically_and_a_new_key_does_not.
+/// Ported from the retired agent engine's `key_info_tests.rs::two_certificates_over_the_same_key_pin_identically_and_a_new_key_does_not` (predev).
 #[test]
 fn two_certificates_over_the_same_key_pin_identically_and_a_new_key_does_not() {
     let kp = rcgen::KeyPair::generate().expect("key");
-    let first = cert_over(&kp, &["a2a.vendor.test"]);
-    let second = cert_over(&kp, &["a2a.vendor.test", "other.test"]);
+    let first = cert_over(&kp, &["agent.vendor.test"]);
+    let second = cert_over(&kp, &["agent.vendor.test", "other.test"]);
     assert_ne!(first, second, "the two certificates must genuinely differ");
     let pin = peer_key_pin(&first).expect("a pin");
     assert_eq!(
@@ -298,7 +298,7 @@ fn two_certificates_over_the_same_key_pin_identically_and_a_new_key_does_not() {
     );
     let other = cert_over(
         &rcgen::KeyPair::generate().expect("key"),
-        &["a2a.vendor.test"],
+        &["agent.vendor.test"],
     );
     assert_ne!(
         peer_key_pin(&other).expect("a pin"),
@@ -309,12 +309,12 @@ fn two_certificates_over_the_same_key_pin_identically_and_a_new_key_does_not() {
 
 /// A truncated certificate refuses rather than hashing whatever the walk reached: every proper
 /// prefix of a real certificate yields no pin.
-/// Ported from busbar-a2a a2a/tests/key_info_tests.rs::a_truncated_certificate_refuses_rather_than_hashing_whatever_it_reached.
+/// Ported from the retired agent engine's `key_info_tests.rs::a_truncated_certificate_refuses_rather_than_hashing_whatever_it_reached` (predev).
 #[test]
 fn a_truncated_certificate_refuses_rather_than_hashing_whatever_it_reached() {
     let cert = cert_over(
         &rcgen::KeyPair::generate().expect("key"),
-        &["a2a.vendor.test"],
+        &["agent.vendor.test"],
     );
     assert!(peer_key_pin(&cert).is_some(), "the whole certificate pins");
     for cut in 0..cert.len() {
@@ -329,7 +329,7 @@ fn a_truncated_certificate_refuses_rather_than_hashing_whatever_it_reached() {
 /// BER admits several spellings of one length. A parser that accepted them would let an upstream
 /// re-encode its certificate and give one key more than one pin, and a pin with more than one value
 /// for one key is not a pin: every such spelling is refused.
-/// Ported from busbar-a2a a2a/tests/key_info_tests.rs::every_ber_length_form_that_gives_one_certificate_a_second_encoding_is_refused.
+/// Ported from the retired agent engine's `key_info_tests.rs::every_ber_length_form_that_gives_one_certificate_a_second_encoding_is_refused` (predev).
 #[test]
 fn every_ber_length_form_that_gives_one_certificate_a_second_encoding_is_refused() {
     for (bytes, why) in [
