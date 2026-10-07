@@ -671,6 +671,8 @@ const DEFAULT_BUDGET_UNITS: f64 = 9000.0;
 /// and I/O, so the proxy drifts a little with the machine; and the failure being caught is a rule
 /// that grew a whole-tree scan per plant, which is a factor of ten. A budget tight enough to flap
 /// is a budget somebody raises without reading it.
+/// WHAT A UNIT IS: units = this case's wall clock ÷ one single-thread ruler pass, same worker.
+/// (ARCHITECT 2026-10-07: wall clock, not work, because runner wall-minutes are what is paid for.)
 /// WHEN AND ON WHAT EVERY MEASUREMENT BELOW WAS TAKEN. One constant, because they were taken in one
 /// sitting on one tree — and because a re-baseline that moves the numbers and not the date is the
 /// failure this whole shape exists to make impossible.
