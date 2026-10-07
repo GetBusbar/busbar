@@ -697,6 +697,7 @@ pub(crate) fn plugin_manifest(
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     }
 }
 
@@ -1017,6 +1018,57 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// ARCHITECT Q-P4-13: the pre-flight resolves a hook reference against the SAME claim table boot
+/// opens hooks through — the LINKED hook rows (the hook axis: Statement name, aliases, former names,
+/// hook words) beside the plugins directory's — not the registry alone, which holds no linked hook.
+/// GREEN: a config naming this build's linked hook (the stand-in hook door) passes, with the plugin
+/// subsystem off and on (RED before: "the hooks registry names plugin module(s) [<its name>],
+/// which require the plugin subsystem" / "no plugin matching the hook reference"). RED ARM: an
+/// unknown name is still refused in 1.5.5's BUSBAR-6009 words (golden BOOT-138c).
+#[cfg(feature = "hooks-ranking")]
+#[test]
+fn a_linked_hook_named_in_config_passes_preflight_and_an_unknown_one_is_refused() {
+    let hook = |module: &str| {
+        let cfg: crate::config::HookCfg =
+            serde_yaml::from_str(&format!("kind: gate\nmodule: {module}\n")).expect("a hook");
+        std::collections::HashMap::from([("h".to_string(), cfg)])
+    };
+    let dir = tmp_plugin_dir("linked-hook");
+    let run = |module: &str, enabled: bool| {
+        crate::plugins_preflight(
+            None,
+            None,
+            &Default::default(),
+            &hook(module),
+            &plugins_cfg(&dir, enabled),
+            &Default::default(),
+        )
+    };
+    let linked = linked_hook_name();
+    for enabled in [false, true] {
+        run(linked, enabled).unwrap_or_else(|e| {
+            panic!("the linked hook '{linked}' passes (plugins.enabled: {enabled}): {e}")
+        });
+    }
+    let err = run("oracle-hook", true).expect_err("an unknown hook is refused");
+    assert!(
+        err.starts_with(&format!(
+            "no plugin matching the hook reference 'oracle-hook' is installed in '{}' (plugins ARE \
+             enabled; loadable: []). Two things to check: is the plugin subsystem enabled? (it is) \
+             — and is the signed `kind: hook` tarball actually IN the folder?",
+            dir.display()
+        )),
+        "{err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The linked hook's Statement name, as this test build links it (the stand-in hook door).
+#[cfg(feature = "hooks-ranking")]
+fn linked_hook_name() -> &'static str {
+    fixture_hook::NAME
+}
+
 /// K5b (3c) exit test, on the hook door: the built-in ranking strategies are the HOOK WORDS of ONE
 /// linked `hooks-ranking` door on the hook axis — each strategy word names that row, and opens (with
 /// `{"policy": "<word>"}`) as the strategy it spells. `weighted` stays the inline floor (no row).
@@ -1089,6 +1141,7 @@ async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reache
         prompt: None,
         identity: None,
         signals: Default::default(),
+        session: None,
     };
     let ctx = RoutingContext {
         pool: "p",

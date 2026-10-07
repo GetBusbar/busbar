@@ -734,6 +734,10 @@ pub struct GovState {
     /// is recovered with `into_inner()`. (The deterministic id already makes two concurrent *issues*
     /// idempotent by id; this closes the issue/refresh interleaving and non-idempotent stores.)
     self_mint_lock: std::sync::Mutex<()>,
+    /// The configured store's store v3 slots (its typed records among them), when it was opened
+    /// through a door ([`busbar_contract::store_calls::OpenedStore::calls`]): what the kernel's host
+    /// services serve plane records over ([`Self::attach_store_calls`]).
+    store_calls: std::sync::OnceLock<Arc<dyn busbar_contract::store_calls::StoreCalls>>,
 }
 
 /// The busbar signing key as ONE unit: the mint-side signer and the verify-side keyset derived
@@ -760,7 +764,7 @@ impl SigningMaterial {
 /// path itself.)
 pub struct RotatedCredential {
     pub key: VirtualKey,
-    pub token: String,
+    pub token: busbar_contract::redacted::Redacted<String>,
     pub exp: u64,
 }
 

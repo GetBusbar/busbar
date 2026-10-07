@@ -8,8 +8,8 @@ use std::mem::zeroed;
 use std::ptr::{null, NonNull};
 
 use super::*;
-use crate::abi::mechanism::call::AbiStr;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
+use crate::abi::mechanism::call::{AbiStr, Span};
 use crate::abi::mechanism::check::fault;
 use crate::abi::transport::*;
 
@@ -853,5 +853,81 @@ fn a_route_content_is_checked() {
             vec![(FIELD_VALUE_PREFIX, "authorization", b"")]
         )),
         f(Rule::Contradiction, "route.field.value")
+    );
+}
+
+/// A stream's final status (ARCHITECT 4l): a number its claim's rows cover, ranges inside the
+/// bytes lent. RED arms: a status past the claim's numbering, a status on a claim with none, a
+/// message or details range past the bytes, a count with no bytes.
+#[test]
+fn a_streams_final_status_is_judged_against_its_claims_numbering() {
+    let rows = [
+        StatusRow {
+            claim: 1,
+            lo: 0,
+            hi: 0,
+            class: u32::from(STATUS_SUCCESS),
+        },
+        StatusRow {
+            claim: 1,
+            lo: 1,
+            hi: 16,
+            class: u32::from(STATUS_OTHER),
+        },
+    ];
+    let bytes = b"not foundDETAILS";
+    let mut i: FinishIn = z();
+    i.final_bytes = bytes.as_ptr();
+    i.final_bytes_len = bytes.len();
+    i.final_status = 5;
+    i.final_message = Span { offset: 0, len: 9 };
+    i.final_details = Span { offset: 9, len: 7 };
+    assert_eq!(check_final_status(&i, &rows, 1), Ok(()));
+    i.final_status = 0;
+    assert_eq!(check_final_status(&i, &rows, 1), Ok(()));
+
+    // RED: past the claim's numbering.
+    i.final_status = 17;
+    assert_eq!(
+        check_final_status(&i, &rows, 1),
+        f(Rule::UnknownCode, "finish.final_status")
+    );
+    // RED: a claim stating no numbering takes no status but zero.
+    i.final_status = 5;
+    assert_eq!(
+        check_final_status(&i, &rows, 0),
+        f(Rule::UnknownCode, "finish.final_status")
+    );
+    i.final_status = 0;
+    assert_eq!(check_final_status(&i, &rows, 0), Ok(()));
+
+    // RED: a range past the bytes lent.
+    i.final_status = 5;
+    i.final_details = Span { offset: 9, len: 8 };
+    assert_eq!(
+        check_final_status(&i, &rows, 1),
+        f(Rule::SpanOutOfBounds, "finish.final_details")
+    );
+    i.final_details = Span { offset: 0, len: 0 };
+    i.final_message = Span {
+        offset: u32::MAX,
+        len: 2,
+    };
+    assert_eq!(
+        check_final_status(&i, &rows, 1),
+        f(Rule::SpanOutOfBounds, "finish.final_message")
+    );
+    // An empty range is no range, wherever it says it starts.
+    i.final_message = Span {
+        offset: u32::MAX,
+        len: 0,
+    };
+    assert_eq!(check_final_status(&i, &rows, 1), Ok(()));
+
+    // RED: a count with no bytes behind it.
+    i.final_bytes = null();
+    assert_eq!(
+        check_final_status(&i, &rows, 1),
+        f(Rule::NullWithCount, "finish.final_bytes")
     );
 }

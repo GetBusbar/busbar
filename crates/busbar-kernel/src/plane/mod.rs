@@ -92,6 +92,7 @@
 
 pub mod approvals;
 pub mod config;
+pub mod door;
 pub mod observe;
 pub(crate) mod quarantine;
 /// The durable demotion record, which the root attaches to the kernel's host services.
@@ -170,6 +171,16 @@ pub(crate) fn is_fallback(key: &str) -> bool {
     registry::plane_decls()
         .iter()
         .any(|d| d.key == key && d.fallback)
+}
+
+/// The plane that DECLARES itself the fallback, resolved from ONE read of the plane list, or `None`
+/// when no registered plane flags itself fallback. Unlike [`fallback_key`] it never degrades to a
+/// sibling's key, so App composition derives the fallback runtime's slot key AND the `build_runtime`
+/// that fills it from the same decl: the runtime under `runtime_slot_key(K)` is always plane `K`'s
+/// own state (BUSBAR-1.6.0.md §6). Reading the list once is what makes that hold where the list can
+/// grow between reads (a test binary's `register_test_plane`); production's list is frozen at boot.
+pub(crate) fn fallback_decl() -> Option<&'static registry::PlaneDecl> {
+    registry::plane_decls().iter().copied().find(|d| d.fallback)
 }
 
 /// Every built-in plane's registry key, in layering order. Iterated by dispatch, the config
@@ -821,6 +832,7 @@ const fn neutral_sibling_decl(
             required_config_sections: &[],
             trust_keys: &[],
             served_op_classes: &[],
+            caller_credential_refusal: None,
         },
         wire_format_names: || &[],
         claims: |_| Vec::new(),

@@ -191,6 +191,14 @@ pub struct ConnFacts {
     /// The claim the host resolved this connection to — the dialled target's scheme, or the claim
     /// the accepting binding resolved; `None` is the entry's first claim.
     pub claim: Option<String>,
+    /// THE FAR END'S KEY, as the connector observed it on a secured dial: the pin of its leaf
+    /// certificate's SubjectPublicKeyInfo ([`crate::transport::trust::key_pin`]); `None` = the
+    /// connection carried no certificate (it is not secured). A dial whose trust anchors pin a key
+    /// is refused when this is not that key, and this still names what the far end served.
+    pub peer_key_pin: Option<String>,
+    /// Whether busbar presented its client identity in the handshake (a mutual handshake the far end
+    /// asked for, under trust anchors that carry one).
+    pub client_identity: bool,
 }
 
 /// Which end of a connection a framing state is for.

@@ -88,7 +88,8 @@ USAGE:
                             [--description <text>] [--homepage <url>] [--license <spdx>]
                             [--needs-prompt <no|ro|rw>] [--needs-user <no|ro>]
                             [--settings-schema-file <path.json>] [--schema-derived]
-                            [--declares-file <path.json>] [--allow-unsigned]
+                            [--declares-file <path.json>] [--former-name <name>]...
+                            [--allow-unsigned]
     busbar-plugin-pack keygen
 
     pack     builds manifest.json over the cdylib (sha256 binding), signs it with the ed25519 seed
@@ -117,6 +118,10 @@ USAGE:
              raises and the settings keys naming its destinations. SIGNED like every field; the host
              grants the series and registers the codes only for a first-party plugin. Rejected at
              pack time unless it parses as exactly that section (an unknown key is an error).
+             --former-name (repeatable) names a manifest name an EARLIER release of the plugin
+             carried (plugins.yaml `former_names:`): busbar resolves a config naming it to this
+             plugin, as it resolves the alias. SIGNED; lowercase [a-z0-9-]+, never the plugin's own
+             name or alias.
     keygen   generates a fresh ed25519 keypair and prints both halves as hex. Keep the private half
              secret (it becomes $BUSBAR_SIGN_KEY); publish/allowlist/embed the public half."
 }
@@ -156,11 +161,25 @@ fn keygen() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Parse `--flag value` pairs plus the bare `--allow-unsigned` / `--schema-derived` flags.
-fn parse_flags(args: &[String]) -> Result<(HashMap<String, String>, bool, bool), String> {
+/// The flags `pack` takes: the `--flag value` pairs, the bare `--allow-unsigned` /
+/// `--schema-derived`, and every value of the repeatable `--former-name`, in order.
+struct Flags {
+    map: HashMap<String, String>,
+    allow_unsigned: bool,
+    schema_derived: bool,
+    former_names: Vec<String>,
+}
+
+/// The repeatable flag naming a manifest name an earlier release of the plugin carried.
+const FORMER_NAME: &str = "former-name";
+
+/// Parse `--flag value` pairs plus the bare `--allow-unsigned` / `--schema-derived` flags. The
+/// repeatable `--former-name` keeps every value, in order.
+fn parse_flags(args: &[String]) -> Result<Flags, String> {
     let mut map = HashMap::new();
     let mut allow_unsigned = false;
     let mut schema_derived = false;
+    let mut former_names = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         if a == "--allow-unsigned" {
@@ -177,9 +196,18 @@ fn parse_flags(args: &[String]) -> Result<(HashMap<String, String>, bool, bool),
         let Some(v) = it.next() else {
             return Err(format!("--{name} requires a value"));
         };
+        if name == FORMER_NAME {
+            former_names.push(v.clone());
+            continue;
+        }
         map.insert(name.to_string(), v.clone());
     }
-    Ok((map, allow_unsigned, schema_derived))
+    Ok(Flags {
+        map,
+        allow_unsigned,
+        schema_derived,
+        former_names,
+    })
 }
 
 /// Read `--settings-schema-file`'s contents and reject them at PACK time if they're not a
@@ -487,7 +515,12 @@ fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
 }
 
 fn pack(args: &[String]) -> ExitCode {
-    let (flags, allow_unsigned, schema_derived) = match parse_flags(args) {
+    let Flags {
+        map: flags,
+        allow_unsigned,
+        schema_derived,
+        former_names,
+    } = match parse_flags(args) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("error: {e}\n\n{}", usage());
@@ -571,6 +604,10 @@ fn pack(args: &[String]) -> ExitCode {
                 .transpose()?
                 .unwrap_or_default(),
             statement: None,
+            // The manifest names the plugin's EARLIER RELEASES carried (`--former-name`, repeatable;
+            // plugins.yaml's `former_names:`): config written for those releases resolves to this
+            // one. Each is held to the alias's rules by the structural self-check below.
+            former_names,
         };
         let lib_bytes =
             std::fs::read(&lib_path).map_err(|e| format!("cannot read --lib '{lib_path}': {e}"))?;
@@ -601,8 +638,20 @@ fn pack(args: &[String]) -> ExitCode {
         // Sign with $BUSBAR_SIGN_KEY, or package unsigned only under the explicit dev flag.
         let manifest = match std::env::var(SIGN_KEY_ENV) {
             Ok(hex_seed) => {
-                let seed = hex::decode(hex_seed.trim())
-                    .map_err(|e| format!("{SIGN_KEY_ENV} is not valid hex: {e}"))?;
+                // The CLASS of the failure, never `FromHexError`'s own `Display`: that names the
+                // offending character of the SIGNING SEED and its position. Matched exhaustively
+                // with no `_` arm, so a new variant in a `hex` upgrade fails the build and is
+                // classified by hand rather than falling through to a printing catch-all.
+                let seed = hex::decode(hex_seed.trim()).map_err(|e| {
+                    let why = match e {
+                        hex::FromHexError::InvalidHexCharacter { .. } => {
+                            "it contains a character outside 0-9, a-f and A-F"
+                        }
+                        hex::FromHexError::OddLength => "it has an odd number of hex digits",
+                        hex::FromHexError::InvalidStringLength => "its length is not a key's",
+                    };
+                    format!("{SIGN_KEY_ENV} is not valid hex: {why} (the seed itself is withheld)")
+                })?;
                 let seed: [u8; 32] = seed
                     .as_slice()
                     .try_into()

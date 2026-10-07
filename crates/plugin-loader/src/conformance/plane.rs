@@ -47,9 +47,7 @@
 
 use busbar_contract::abi::hook::SignalEntry;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, OutHead, Span, BLOB_OCTETS};
-use busbar_contract::abi::mechanism::lifecycle::{
-    slot as life, CancelIn, CancelOut, GenIn, RefreshIn,
-};
+use busbar_contract::abi::mechanism::lifecycle::{slot as life, GenIn, RefreshIn};
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn, PlaneDriveOut,
     PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, ProjectIn, ProjectOut, RecordWrite, RefusalIn,
@@ -60,8 +58,8 @@ use busbar_contract::abi::plane::{
 use serde_json::Value;
 
 use super::{
-    bind, called, close, crossings, dispatcher, input, json, load, output, ready_step, release,
-    tick, validate, Fold, Leg, Recorder, Subject,
+    called, close, crossings, dispatcher, input, json, load, output, ready_step, release, tick,
+    validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::plane::{OwnedSnapshot, Plane};
 use crate::dispatch::{Called, Frame, Plugin};
@@ -346,7 +344,7 @@ fn generation(p: &Plugin<Plane>, s: u32, generation: u64) -> String {
 
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = Inputs::of(s.kind_inputs("plane"));
-    let settings = s.settings();
+    let settings = leg.settings(s);
     let head: Vec<Field> = k
         .head
         .iter()
@@ -357,7 +355,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         .collect();
 
     let d = dispatcher();
-    let p = load::<Plane>(s, leg, bind(&d, "plane")).expect("the plane door loads");
+    let p = load::<Plane>(s, leg, s.bind(&d, "plane")).expect("the plane door loads");
     let mut r = Recorder::new(crossings(&p));
     r.line("facts", 0, || {
         format!(
@@ -537,9 +535,12 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         format!("{} next={next}", called(&c))
     });
     r.line("cancel", 1, || {
-        let mut f: Frame<CancelIn, CancelOut> = Frame::new(input(), output());
+        let mut f: Frame<
+            busbar_contract::abi::plane::PlaneCancelIn,
+            busbar_contract::abi::plane::PlaneCancelOut,
+        > = Frame::new(input(), output());
         let c = p.call(life::CANCEL, &mut f);
-        format!("{} disposition={}", called(&c), f.out.disposition)
+        format!("{} disposition={}", called(&c), f.out.cancel.disposition)
     });
     let refresh = |what: &[u8]| {
         let mut f: Frame<RefreshIn, PlaneRefreshOut> = Frame::new(input(), output());

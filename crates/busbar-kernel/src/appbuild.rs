@@ -1267,10 +1267,11 @@ pub fn build_app_from_config(
         let axis = crate::preflight::root_rows()
             .store_axis
             .ok_or_else(|| load_failed("no store axis is installed".to_string()))?;
-        let store: Arc<dyn governance::RecordStore> = axis()
+        let opened = axis()
             .open(door, &g.module, cfg_json.as_bytes())
-            .map_err(load_failed)?
-            .records;
+            .map_err(load_failed)?;
+        let store: Arc<dyn governance::RecordStore> = opened.records;
+        let store_calls = opened.calls;
         // The operator ADMIN credential: the operator-credential entry's `token:` secret ref.
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
@@ -1288,6 +1289,11 @@ pub fn build_app_from_config(
         ) {
             Ok(gs) => {
                 let gs = Arc::new(gs);
+                // The store's typed records, kept for the kernel's host services (plane records
+                // persist in the configured store: ARCHITECT Q-L3B-RECORDS).
+                if let Some(calls) = store_calls {
+                    gs.attach_store_calls(calls);
+                }
                 // BOOT-ONLY crash-recovery: hydrate the in-memory token-ledger cells (key buckets +
                 // budget-group buckets) from the durable store so a restart resumes enforcement from
                 // the persisted ledger. A no-op for the empty RAM store.
@@ -1558,6 +1564,7 @@ pub fn build_app_from_config(
                     // `BuildCtx` names no plane-owned config type; the `agents:` container plane's
                     // `build` closure downcasts it back to its own typed config.
                     agent_defs: cfg.agent_defs.as_any(),
+                    tool_defs: cfg.tool_defs.as_any(),
                     public_url: cfg.public_url.as_deref(),
                     // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated
                     // coordination off its own prior runtime object across this apply — the same
@@ -1661,27 +1668,24 @@ pub fn build_app_from_config(
         }),
     };
 
-    let fallback_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());
     // Compose the fallback plane's runtime slot through that plane's OWN `build_runtime` fn-pointer,
     // exactly as a container plane's runtime is composed above — passing the neutral carrier erased to
     // `&dyn Any` and the prior generation's snapshot through the neutral `PlaneSlots` seam (for the
-    // warm-client / probe-schedule carry-over the plane now owns). GATED on a genuine fallback plane
-    // existing — NOT merely on `fallback_key()` resolving — because `fallback_key()` degrades to the
-    // FIRST registered plane's key when no plane flags itself fallback (the plane suites'
-    // dependency-copy of core, which registers only container planes); writing the slot then would
-    // clobber that sibling's runtime. With the fallback plane's `build_runtime` still `None` no slot is
-    // inserted and `App::llm_runtime` reads the empty default — byte-identical to the featureless
-    // zero-plane boot.
-    if crate::plane::is_fallback(crate::plane::fallback_key()) {
-        if let Some(f) = crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
-            .and_then(|d| d.build_runtime)
-        {
-            let slot = f(
-                &fallback_build_input as &dyn std::any::Any,
-                prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
-            );
-            plane_slots.insert(fallback_runtime_key, slot);
-        }
+    // warm-client / probe-schedule carry-over the plane now owns). The slot KEY and the `build_runtime`
+    // come from ONE resolved decl ([`crate::plane::fallback_decl`]): keying off `fallback_key()` would
+    // degrade to the FIRST registered plane's key when no plane flags itself fallback, and the key and
+    // the runtime read from two registry snapshots could name two different planes — the runtime then
+    // lands under a sibling's key and clobbers that sibling's own runtime. With no fallback plane the
+    // key names no plane (no slot is inserted under it) and `App::llm_runtime` reads the empty
+    // default — byte-identical to the featureless zero-plane boot.
+    let fallback = crate::plane::fallback_decl();
+    let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
+    if let Some(f) = fallback.and_then(|d| d.build_runtime) {
+        let slot = f(
+            &fallback_build_input as &dyn std::any::Any,
+            prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
+        );
+        plane_slots.insert(fallback_runtime_key, slot);
     }
 
     // THE AUTHORIZATION SERVER, built ONCE, and only when the operator asked for one. Everything

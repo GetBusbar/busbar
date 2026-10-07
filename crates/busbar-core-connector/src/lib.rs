@@ -43,6 +43,7 @@
 pub mod compose;
 pub mod dtls;
 pub mod endpoint;
+pub mod framed_stream;
 pub mod framer;
 pub mod guard;
 pub mod io;
@@ -50,12 +51,14 @@ mod line;
 pub mod listen;
 pub mod pool;
 pub mod process;
+mod program;
 pub mod registry;
 pub mod socket;
 pub mod stream;
-/// The TLS test kit (far ends, the recording TLS fixture server) for this crate's tests that need a
-/// real handshake: TLS stays in the connector, even in a test.
-#[cfg(test)]
+/// The TLS test kit (far ends, the recording TLS fixture server, a private test CA) for this crate's
+/// tests that need a real handshake, and (feature `test-support`) a plugin repo's conformance test:
+/// TLS stays in the connector, even in a test.
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod tls;
 pub mod udp;
@@ -71,11 +74,11 @@ use std::time::Duration;
 use busbar_contract::abi::host::conn::connector::{
     DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
-use busbar_contract::abi::host::service::DEST_PLAINTEXT;
+use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_PLAINTEXT, DEST_UNRESOLVABLE};
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::conn::{
-    ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece,
-    PieceKind, PollConns, Ticket, NO_TICKET,
+    ConnCause, ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
+    Piece, PieceKind, PollConns, Ticket, NO_TICKET,
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::WireStatusClass;
@@ -117,6 +120,19 @@ pub trait DialJudge: Send + Sync {
         class: u32,
         done: Judged,
     ) -> Option<Result<SocketAddr, Verdict>>;
+
+    /// [`DialJudge::judge_dial`] for a destination the dialling need holds a PRIVATE REACH to (the
+    /// registration's `abi::plane::TRUST_PRIVATE_REACH`, sealed by [`PollConns::anchor`]): a
+    /// private address is admitted as an allowlist entry naming the host would; cloud metadata
+    /// never is; the class is unchanged. The default honours no reach (fail-closed).
+    fn judge_dial_reaching(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Judged,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        self.judge_dial(dest, class, done)
+    }
 }
 
 /// Any function of the judge's shape is a judge: [`process::judge`] joins the deployment's one
@@ -152,6 +168,23 @@ impl DialJudge for LiteralsOnly {
                 .map_err(|r| r.verdict),
         )
     }
+
+    fn judge_dial_reaching(
+        &self,
+        dest: &str,
+        class: u32,
+        _: Judged,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        let Some(at) = socket::address_of(dest) else {
+            return Some(Err(busbar_contract::abi::host::service::DEST_UNRESOLVABLE));
+        };
+        Some(
+            self.0
+                .judge_answer_with(&at.ip().to_string(), &[at.ip()], class, false, true)
+                .map(|()| at)
+                .map_err(|r| r.verdict),
+        )
+    }
 }
 
 /// THE SCHEME RULE OF A NEED'S EGRESS CLASS (`abi::host::conn::connector`, `EGRESS_*`), held
@@ -166,9 +199,46 @@ fn class_admits(egress_class: u32, secure: bool, within: &[IpAddr], addr: Socket
     (within.is_empty() || within.contains(&addr.ip()))
         && match egress_class {
             EGRESS_OPEN_WEB => secure,
-            EGRESS_LOOPBACK_ALLOWED => secure || addr.ip().is_loopback(),
+            EGRESS_LOOPBACK_ALLOWED => secure || guard::is_loopback(addr.ip()),
             _ => true,
         }
+}
+
+/// WHAT A JUDGEMENT THAT PENDED ON A RESOLUTION ANSWERS THE CONNECTION'S CALLER (ARCHITECT parity
+/// ruling A1). A name that did not resolve ([`DEST_UNRESOLVABLE`]), or resolved to no address
+/// ([`DEST_NO_ADDRESSES`]), is a FAILED connection, the same failure a dial that found no far end
+/// is ([`ConnError::Fault`], a FAILED outcome to a plugin): 1.5.5 held "a resolution FAILURE is not
+/// a rejection. A collector whose DNS is briefly down is an availability event, not a security one"
+/// (v1.5.5 `crates/busbar/src/observability.rs:588-590`, `otlp_resolves_to_internal`; its test
+/// `otlp_resolve_check_allows_a_name_that_does_not_resolve`, `:1482-1490`), and its exporter
+/// failed that batch and sent the next. Every other verdict is the guard's refusal
+/// ([`ConnError::Refused`], a REFUSED outcome, which a sink reads as the run's answer). A verdict
+/// decided at once is never a resolution's ([`DialJudge::judge_dial`]), so only a pended one is
+/// read here.
+fn pended_verdict(v: Verdict) -> ConnError {
+    match v {
+        DEST_UNRESOLVABLE | DEST_NO_ADDRESSES => ConnError::Fault,
+        _ => ConnError::Refused,
+    }
+}
+
+/// THE HEAD A PLUGIN WROTE, held to 1.5.5's rule for a plugin-described request (ARCHITECT parity
+/// ruling A5; v1.5.5 `crates/busbar/src/auth/token.rs:805` `FORBIDDEN_HOP_HEADERS`, `:893-907`
+/// `sanitize_hop_header`): a CR, LF or NUL in the target, a head word, a field name or a field
+/// value, or a field that states the message's own framing (`content-length`,
+/// `transfer-encoding`, any case), refuses the whole open before anything is dialled or sent. The
+/// framer writes the framing for the bytes it sends; a plugin's own would describe another wire.
+fn head_is_refused(desc: &OpenDesc<'_>) -> bool {
+    const FRAMING: [&str; 2] = ["content-length", "transfer-encoding"];
+    let breaks = |b: &[u8]| b.iter().any(|c| matches!(c, b'\r' | b'\n' | b'\0'));
+    breaks(desc.target.as_bytes())
+        || breaks(desc.method)
+        || breaks(desc.head_target)
+        || desc.fields.iter().any(|(name, value)| {
+            breaks(name.as_bytes())
+                || breaks(value)
+                || FRAMING.iter().any(|f| name.trim().eq_ignore_ascii_case(f))
+        })
 }
 
 /// What the connector holds for one declared need: the entry serving its transport, resolved once
@@ -187,10 +257,17 @@ struct DeclaredNeed {
     tls: Option<Arc<rustls::ClientConfig>>,
     /// The program the need's `target_from` resolved to: every open spawns it.
     program: Option<busbar_contract::conn::Program>,
+    /// A member-program need's members (`busbar_contract::section::MEMBER_PROGRAM`): every open
+    /// names one and leases its one long-lived program connection.
+    members: Option<Arc<program::Members>>,
 }
 
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
 type Answer = Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>;
+
+/// The trust anchors sealed per destination (the transport pin, ARCHITECT 2026-10-03), by the need's owner, the need and
+/// the destination's authority (lower-case, `host:port`).
+type Anchored = Mutex<HashMap<(InstanceId, NeedId, String), Arc<tls::client::Sealed>>>;
 
 /// The listeners, one per inbound need, by the need's owner and need.
 type Listeners = Mutex<HashMap<(InstanceId, NeedId), Arc<Mutex<Listening>>>>;
@@ -217,6 +294,8 @@ struct Redial {
     dial: Dial,
     egress_class: u32,
     judged_class: u32,
+    /// The need's private reach to the destination ([`DialJudge::judge_dial_reaching`]).
+    reach: bool,
     /// The bytes the line's socket had taken when the exchange was lent it.
     mark: u64,
 }
@@ -238,6 +317,8 @@ struct Held {
     whole: AtomicBool,
     /// The one redial an exchange lent a pooled line keeps.
     redial: Mutex<Option<Redial>>,
+    /// A LEASE on a member's long-lived program connection, in place of a connection of its own.
+    lease: Option<(Arc<program::Member>, u64)>,
 }
 
 impl Held {
@@ -254,11 +335,22 @@ impl Held {
             pooled,
             whole: AtomicBool::new(false),
             redial: Mutex::new(None),
+            lease: None,
         }
     }
 
     fn line(&self) -> Option<(Arc<Line>, u64)> {
         self.line.lock().expect("line").clone()
+    }
+}
+
+impl Drop for Held {
+    /// A lease no one closed (its owner dropped it) is closed as it goes: the member's program does
+    /// not keep frames for a reader that is gone.
+    fn drop(&mut self) {
+        if let Some((member, lease)) = self.lease.take() {
+            member.close(lease);
+        }
     }
 }
 
@@ -288,6 +380,15 @@ pub struct Connector {
     listeners: Listeners,
     /// The per-worker pools of dialled connections.
     pools: Pools,
+    /// The trust anchors each sealed destination's connections are held to.
+    anchored: Anchored,
+    /// The REGISTRATIONS holding a PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`), by the need's
+    /// owner, the need and the registration's name, each with the authority (lower-case,
+    /// `host:port`) of its own target ([`PollConns::seal_reach`]).
+    reaching: Mutex<HashMap<(InstanceId, NeedId, String), String>>,
+    /// Each member's auth binding, by (instance, need, target origin): what a plugin's own request
+    /// to that member is authenticated with ([`DeclaredConns::bind_auth`]).
+    auths: Mutex<HashMap<(InstanceId, NeedId, String), busbar_contract::conn::ConnAuth>>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -308,6 +409,9 @@ impl Default for Connector {
             judge: Arc::new(LiteralsOnly(guard::Guard::default())),
             listeners: Mutex::new(HashMap::new()),
             pools: Pools::new(PoolPosture::NONE),
+            anchored: Mutex::new(HashMap::new()),
+            reaching: Mutex::new(HashMap::new()),
+            auths: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -404,6 +508,17 @@ impl Connector {
             .is_some()
     }
 
+    /// The framer entry that answers `scheme`, where a loaded one does: what frames a stream that
+    /// arrived on that claim (ARCHITECT 4l, [`framed_stream`]).
+    #[must_use]
+    pub fn framer_for(&self, scheme: &str) -> Option<Arc<dyn framer::FramerDoor>> {
+        self.transports
+            .read()
+            .expect("transports")
+            .serving(scheme)
+            .map(|s| Arc::clone(&s.entry.door))
+    }
+
     /// Record that `owner` declared `need` over `transport` (a scheme the registry view serves), in
     /// the default egress class ([`DEFAULT_CLASS`]).
     ///
@@ -481,20 +596,119 @@ impl Connector {
         };
         let Some((door, alpn)) = served else {
             // Any earlier record of the need is dropped with it.
-            self.over.lock().expect("needs").remove(&(owner, need));
+            self.set_need(owner, need, None);
             return Err(ConnError::Refused);
         };
         self.slab.declare(owner, need);
-        self.over.lock().expect("needs").insert(
-            (owner, need),
-            DeclaredNeed {
+        self.set_need(
+            owner,
+            need,
+            Some(DeclaredNeed {
                 door,
                 alpn,
                 egress_class,
                 declared_target: declared_target.map(str::to_owned),
                 tls,
                 program: None,
-            },
+                members: None,
+            }),
+        );
+        Ok(())
+    }
+
+    /// Record (or, with `None`, drop) what the connector holds for `owner`'s `need`: a member of an
+    /// earlier record that the new one does not keep is RETIRED (no open reaches it again; its
+    /// program is killed once its last open closes).
+    fn set_need(&self, owner: InstanceId, need: NeedId, record: Option<DeclaredNeed>) {
+        let kept = record.as_ref().and_then(|r| r.members.clone());
+        let before = {
+            let mut over = self.over.lock().expect("needs");
+            match record {
+                Some(r) => over.insert((owner, need), r),
+                None => over.remove(&(owner, need)),
+            }
+        };
+        for (name, member) in before.and_then(|b| b.members).iter().flat_map(|m| m.iter()) {
+            if !kept
+                .as_ref()
+                .and_then(|k| k.get(name))
+                .is_some_and(|k| Arc::ptr_eq(k, member))
+            {
+                member.retire();
+            }
+        }
+    }
+
+    /// THE MEMBER-PROGRAM NEED (`busbar_contract::section::MEMBER_PROGRAM`): `owner`'s outbound
+    /// `need` reaches each member's own program (its pipes framed by the entry serving
+    /// `transport`), ONE long-lived connection per member, carried as a program need is
+    /// ([`Connector::record_program`]: operator-infrastructure only, no auth style, an entry that
+    /// frames a byte stream directly). A member whose program is unchanged keeps its running
+    /// program across the re-declaration; one that is gone or changed is retired.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Refused`] for anything else; any earlier record of the need is dropped (its
+    /// members retired).
+    fn record_members(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        programs: &[(String, busbar_contract::conn::Program)],
+    ) -> Result<(), ConnError> {
+        let served = {
+            let view = self.transports.read().expect("transports");
+            view.serving(&spec.transport)
+                .filter(|served| served.entry.door.facts().composes_over.is_empty())
+                .map(|served| (Arc::clone(&served.entry.door), served.entry.alpn.clone()))
+        };
+        let carried = spec.direction == DIRECTION_OUTBOUND
+            && spec.egress_class == EGRESS_OPERATOR_INFRASTRUCTURE
+            && spec.auth.is_empty()
+            && busbar_contract::section::member_program(&spec.target_from)
+            && programs.iter().all(|(_, p)| p.command.starts_with('/'));
+        let Some((door, alpn)) = served.filter(|_| carried) else {
+            self.set_need(owner, need, None);
+            return Err(ConnError::Refused);
+        };
+        let before = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .and_then(|d| d.members.clone());
+        let members: program::Members = programs
+            .iter()
+            .map(|(name, p)| {
+                let kept = before
+                    .as_ref()
+                    .and_then(|b| b.get(name))
+                    .filter(|m| m.program() == p)
+                    .cloned();
+                let member = kept.unwrap_or_else(|| {
+                    Arc::new(program::Member::new(
+                        p.clone(),
+                        Arc::clone(&door),
+                        alpn.clone(),
+                    ))
+                });
+                (name.clone(), member)
+            })
+            .collect();
+        self.slab.declare(owner, need);
+        self.set_need(
+            owner,
+            need,
+            Some(DeclaredNeed {
+                door,
+                alpn,
+                egress_class: spec.egress_class,
+                declared_target: None,
+                tls: None,
+                program: None,
+                members: Some(Arc::new(members)),
+            }),
         );
         Ok(())
     }
@@ -526,20 +740,22 @@ impl Connector {
             && spec.auth.is_empty()
             && program.command.starts_with('/');
         let Some((door, alpn)) = served.filter(|_| carried) else {
-            self.over.lock().expect("needs").remove(&(owner, need));
+            self.set_need(owner, need, None);
             return Err(ConnError::Refused);
         };
         self.slab.declare(owner, need);
-        self.over.lock().expect("needs").insert(
-            (owner, need),
-            DeclaredNeed {
+        self.set_need(
+            owner,
+            need,
+            Some(DeclaredNeed {
                 door,
                 alpn,
                 egress_class: spec.egress_class,
                 declared_target: None,
                 tls: None,
                 program: Some(program.clone()),
-            },
+                members: None,
+            }),
         );
         Ok(())
     }
@@ -662,7 +878,7 @@ impl Connector {
                 Some(got) => got,
             }
         };
-        let addr = got.map_err(|_| ConnError::Refused)?;
+        let addr = got.map_err(pended_verdict)?;
         let secure = j.planned.as_ref().is_some_and(Planned::secure);
         if !class_admits(j.egress_class, secure, &j.within, addr) {
             // The refusal stays the connection's answer.
@@ -706,20 +922,26 @@ impl Connector {
         egress_class: u32,
         judged_class: u32,
         within: &[IpAddr],
+        reach: bool,
     ) -> Result<(Option<Connection>, Option<Judging>), ConnError> {
         let answer: Answer = Arc::new(Mutex::new((None, None)));
         let answering = Arc::clone(&answer);
-        let judged = self.judge.judge_dial(
-            planned.authority(),
-            judged_class,
-            Box::new(move |v| {
-                let mut a = answering.lock().expect("judgement");
-                a.0 = Some(v);
-                if let Some(w) = a.1.take() {
-                    w.wake();
-                }
-            }),
-        );
+        let done: Judged = Box::new(move |v| {
+            let mut a = answering.lock().expect("judgement");
+            a.0 = Some(v);
+            if let Some(w) = a.1.take() {
+                w.wake();
+            }
+        });
+        // A destination the need holds a private reach to is judged with it (the one guard, as an
+        // allowlist entry naming it; the class unchanged).
+        let judged = if reach {
+            self.judge
+                .judge_dial_reaching(planned.authority(), judged_class, done)
+        } else {
+            self.judge
+                .judge_dial(planned.authority(), judged_class, done)
+        };
         Ok(match judged {
             // Decided at once: a refusal answers the open, as 1.5.5 answered it.
             Some(Err(_)) => return Err(ConnError::Refused),
@@ -760,7 +982,7 @@ impl Connector {
         *held.line.lock().expect("line") = None;
         self.let_go(held, &line, stream, false);
         let planned = Planned::locate(r.door, r.dial).map_err(|f| map(&f))?;
-        match self.dial_judged(planned, r.egress_class, r.judged_class, &[])? {
+        match self.dial_judged(planned, r.egress_class, r.judged_class, &[], r.reach)? {
             (Some(conn), _) => {
                 self.ride(held, conn);
             }
@@ -793,6 +1015,9 @@ impl Connector {
         buf: &mut [u8],
     ) -> Result<Piece, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
+        if let Some((member, lease)) = &held.lease {
+            return member.read(*lease, waker, buf);
+        }
         let mut rest = held.rest.lock().expect("rest");
         let (piece, bytes) = match rest.0.take() {
             Some(p) => (p, std::mem::take(&mut rest.1)),
@@ -960,8 +1185,13 @@ impl DeclaredConns for Connector {
         // into a trust anchor, refuses the need here, at declaration. An inbound need is recorded
         // (the listener binds it), and refused on an unserved scheme alike.
         let outbound = spec.direction == DIRECTION_OUTBOUND;
-        let unresolved = (!spec.target_from.is_empty() && target.is_none())
-            || (!spec.trust_from.is_empty() && trust.is_none());
+        // A member-target need (`settings.*.<key>`) is pinned by no one target: each member's route
+        // is sealed at its own, and dials it like any need the plugin names per open.
+        let per_member = |path: &str| busbar_contract::section::member_target(path).is_some();
+        let unresolved = (!spec.target_from.is_empty()
+            && !per_member(&spec.target_from)
+            && target.is_none())
+            || (!spec.trust_from.is_empty() && !per_member(&spec.trust_from) && trust.is_none());
         let credentialed = target.is_some_and(carries_userinfo);
         let anchored = match trust.filter(|_| outbound) {
             None => Ok(None),
@@ -981,7 +1211,7 @@ impl DeclaredConns for Connector {
                 self.record(owner, need, &spec.transport, spec.egress_class, target, tls)
             }
             _ => {
-                self.over.lock().expect("needs").remove(&(owner, need));
+                self.set_need(owner, need, None);
                 Err(ConnError::Refused)
             }
         };
@@ -1092,6 +1322,54 @@ impl DeclaredConns for Connector {
             .insert((owner, need), (spec.clone(), answer));
         answer
     }
+
+    fn cause(&self, owner: InstanceId, conn: ConnId) -> Option<ConnCause> {
+        let (_, held) = self.slab.get(owner, conn).ok()?;
+        let (line, _) = held.line()?;
+        line.cause()
+    }
+
+    fn bind_auth(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        origin: &str,
+        binding: busbar_contract::conn::ConnAuth,
+    ) {
+        self.auths
+            .lock()
+            .expect("auth bindings")
+            .insert((owner, need, origin.to_string()), binding);
+    }
+
+    fn auth_of(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        target: &str,
+    ) -> Option<busbar_contract::conn::ConnAuth> {
+        let origin = busbar_contract::conn::origin_of(target);
+        self.auths
+            .lock()
+            .expect("auth bindings")
+            .get(&(owner, need, origin.to_string()))
+            .cloned()
+    }
+
+    fn declare_member_programs(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        programs: &[(String, busbar_contract::conn::Program)],
+    ) -> Result<(), ConnError> {
+        let answer = self.record_members(owner, need, spec, programs);
+        self.declared
+            .lock()
+            .expect("declared needs")
+            .insert((owner, need), (spec.clone(), answer));
+        answer
+    }
 }
 
 impl Conns for Connector {
@@ -1102,6 +1380,9 @@ impl Conns for Connector {
         desc: &OpenDesc<'_>,
     ) -> Result<ConnId, ConnError> {
         self.slab.check_need(caller, need)?;
+        if head_is_refused(desc) {
+            return Err(ConnError::Refused);
+        }
         // A need declared without a transport (an inbound need) dials nothing.
         let DeclaredNeed {
             door,
@@ -1110,6 +1391,7 @@ impl Conns for Connector {
             declared_target,
             tls,
             program,
+            members,
         } = self
             .over
             .lock()
@@ -1117,6 +1399,23 @@ impl Conns for Connector {
             .get(&(caller, need))
             .cloned()
             .ok_or(ConnError::Refused)?;
+        // A MEMBER-PROGRAM NEED leases the long-lived program of the member the target names (a
+        // member its config does not name is refused); the open's body is the lease's first
+        // message. No address is judged: no network is dialled.
+        if let Some(members) = members {
+            if !desc.fields.is_empty() {
+                return Err(ConnError::Refused);
+            }
+            let member = members
+                .get(program::member_of(desc.target))
+                .cloned()
+                .ok_or(ConnError::Refused)?;
+            let lease = member.lease(desc.body)?;
+            let mut held = Held::over(None, None, None);
+            held.lease = Some((member, lease));
+            // A refused insert drops the held lease, which closes it.
+            return self.slab.insert(caller, need, held);
+        }
         // A PROGRAM NEED spawns the program its config names, and nothing else: an open naming a
         // target of its own is refused. No address is judged: no network is dialled.
         if let Some(program) = program {
@@ -1124,6 +1423,7 @@ impl Conns for Connector {
                 return Err(ConnError::Refused);
             }
             let dial = Dial {
+                anchors: None,
                 target: program.command.clone(),
                 tls: None,
                 alpn,
@@ -1171,6 +1471,7 @@ impl Conns for Connector {
                 return Err(ConnError::Refused);
             }
             let dial = Dial {
+                anchors: None,
                 target: target.to_owned(),
                 tls: None,
                 alpn,
@@ -1208,8 +1509,35 @@ impl Conns for Connector {
                 desc.body.to_vec(),
             )),
             head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
+            anchors: None,
         };
         let planned = Planned::locate(Arc::clone(&door), dial).map_err(|f| map(&f))?;
+        // THE DESTINATION'S TRUST ANCHORS (the transport pin, ARCHITECT 2026-10-03): every connection to a sealed
+        // destination is held to them; one that pins the far end's key and is not secured has no
+        // key to hold, and is refused before any judgement or dial.
+        let anchors = self
+            .anchored
+            .lock()
+            .expect("anchors")
+            .get(&(caller, need, planned.authority().to_ascii_lowercase()))
+            .cloned();
+        if anchors
+            .as_ref()
+            .is_some_and(|a| a.key_pin.is_some() && !planned.secure())
+        {
+            return Err(ConnError::Refused);
+        }
+        let planned = planned.anchored(anchors);
+        // THE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, sealed per
+        // registration): an open that names a registration holding one, to that registration's own
+        // authority, is judged with it; no other open is.
+        let reach = !desc.member.is_empty()
+            && self
+                .reaching
+                .lock()
+                .expect("reach")
+                .get(&(caller, need, desc.member.to_owned()))
+                .is_some_and(|at| at.eq_ignore_ascii_case(planned.authority()));
         // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (THE DESIGN §5 egress-class
         // table, owner-signed 2026-09-27): in a request-data class its address is judged as
         // operator infrastructure. A provider need keeps its class: it is refused a private
@@ -1245,6 +1573,7 @@ impl Conns for Connector {
                     secure: planned.secure(),
                     name: planned.name().map(str::to_owned),
                     class: (judged_class, egress_class),
+                    reach,
                 },
             )
         });
@@ -1256,6 +1585,7 @@ impl Conns for Connector {
                     dial: planned.dial().clone(),
                     egress_class,
                     judged_class,
+                    reach,
                     mark: line.flushed(),
                 };
                 let (opening, words) = planned.into_opening();
@@ -1285,7 +1615,8 @@ impl Conns for Connector {
                 }
             }
         }
-        let (conn, judging) = self.dial_judged(planned, egress_class, judged_class, desc.within)?;
+        let (conn, judging) =
+            self.dial_judged(planned, egress_class, judged_class, desc.within, reach)?;
         let held = Held::over(None, judging, pooled);
         if let Some(conn) = conn {
             self.ride(&held, conn);
@@ -1307,6 +1638,9 @@ impl Conns for Connector {
         text: bool,
     ) -> Result<usize, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
+        if let Some((member, lease)) = &held.lease {
+            return member.write(*lease, bytes);
+        }
         if !self.settle(&held, None)? {
             if let Some(j) = held.judging.lock().expect("judging").as_mut() {
                 // Held until the judgement answers, under the same cap a connection's buffer has.
@@ -1344,6 +1678,12 @@ impl Conns for Connector {
         let mut cx = Context::from_waker(&waker);
         for (at, conn) in set.iter().enumerate() {
             let (_, held) = self.slab.get(caller, *conn)?;
+            if let Some((member, lease)) = &held.lease {
+                match member.ready(*lease, &waker) {
+                    Ok(false) => continue,
+                    _ => return Ok(at),
+                }
+            }
             if held.rest.lock().expect("rest").0.is_some() {
                 return Ok(at);
             }
@@ -1364,6 +1704,9 @@ impl Conns for Connector {
 
     fn facts(&self, caller: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
+        if let Some((member, lease)) = &held.lease {
+            return member.facts(*lease);
+        }
         if !self.settle(&held, None)? {
             return Err(ConnError::Pending);
         }
@@ -1383,11 +1726,17 @@ impl Conns for Connector {
                 }
             }),
             claim: e.claim.clone(),
+            peer_key_pin: e.peer_key_pin.clone(),
+            client_identity: e.client_identity,
         })
     }
 
     fn close(&self, caller: InstanceId, conn: ConnId) -> Result<(), ConnError> {
         let held = self.slab.remove(caller, conn)?;
+        if let Some((member, lease)) = &held.lease {
+            // The lease ends here; the member's program runs on for the next open.
+            member.close(*lease);
+        }
         let line = held.line.lock().expect("line").take();
         if let Some((line, stream)) = line {
             // An exchange that finished whole hands its line back to the pool it came from once
@@ -1410,6 +1759,78 @@ impl PollConns for Connector {
             Err(ConnError::Pending) => Poll::Pending,
             done => Poll::Ready(done),
         }
+    }
+
+    /// The anchors are sealed against the authority the need's own entry locates `target` at, the
+    /// identity parsed once under the connector's client config; every open on the need to that
+    /// authority is then held to them ([`Conns::open`]: a pinned key over no connection security is
+    /// refused there, and [`compose`] refuses a far end serving another key after its handshake).
+    fn anchor(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        target: &str,
+        anchors: &busbar_contract::transport::trust::Anchors,
+    ) -> Result<(), ConnError> {
+        let door = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .map(|d| Arc::clone(&d.door));
+        let located = door
+            .as_ref()
+            .and_then(|door| framer::locate(door.as_ref(), target).ok());
+        let at = located.map(|l| (owner, need, l.authority.to_ascii_lowercase()));
+        if anchors.is_empty() {
+            // Nothing to hold: any earlier seal for the destination is dropped.
+            if let Some(at) = at {
+                self.anchored.lock().expect("anchors").remove(&at);
+            }
+            return Ok(());
+        }
+        let at = at.ok_or(ConnError::Refused)?;
+        let sealed =
+            tls::client::seal(self.tls.as_deref(), anchors).map_err(|_| ConnError::Refused)?;
+        self.anchored
+            .lock()
+            .expect("anchors")
+            .insert(at, Arc::new(sealed));
+        Ok(())
+    }
+
+    /// The registration's own target's authority is read by the need's entry, as a dial reads it;
+    /// the reach is kept under the registration's name, so two registrations at one authority hold
+    /// their own answers.
+    fn seal_reach(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        member: &str,
+        target: &str,
+        reach: bool,
+    ) -> Result<(), ConnError> {
+        let key = (owner, need, member.to_owned());
+        if !reach {
+            self.reaching.lock().expect("reach").remove(&key);
+            return Ok(());
+        }
+        let door = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .map(|d| Arc::clone(&d.door))
+            .ok_or(ConnError::Refused)?;
+        let located = framer::locate(door.as_ref(), target).map_err(|_| ConnError::Refused)?;
+        if member.is_empty() {
+            return Err(ConnError::Refused);
+        }
+        self.reaching
+            .lock()
+            .expect("reach")
+            .insert(key, located.authority.to_ascii_lowercase());
+        Ok(())
     }
 }
 

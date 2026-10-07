@@ -472,12 +472,12 @@ use crate::abi::hook::{
 use crate::abi::mechanism::lifecycle::{OpenIn, ReadyIn, RefreshIn, ValidateIn};
 use crate::abi::mechanism::ticket::HostTables;
 use crate::abi::plane::{
-    ArriveIn, OnPieceIn, OutField, PlaneDriveIn, ProjectIn, RecordWrite, RefusalIn, ServeIn,
-    UnitCount,
+    ArriveIn, OnPieceIn, OutField, PlaneCancelIn, PlaneDriveIn, ProjectIn, RecordWrite, RefusalIn,
+    ServeIn, UnitCount,
 };
 use crate::abi::transport::{
-    AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FramePiece, FramerSink,
-    HeadSlots, IngestIn, ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
+    AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece,
+    FramerSink, HeadSlots, IngestIn, ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
 };
 
 lend! {
@@ -519,14 +519,20 @@ lend! {
         buf(reply_buf, reply_cap) -> u8;
         buf(fields_buf, fields_cap) -> OutField;
         buf(arena_buf, arena_cap) -> u8;
+        buf(records_buf, records_cap) -> RecordWrite;
     }
     ServeIn {
         list(fields, fields_len) -> Field;
         buf(reply_buf, reply_cap) -> u8;
         buf(fields_buf, fields_cap) -> OutField;
         buf(arena_buf, arena_cap) -> u8;
+        buf(records_buf, records_cap) -> RecordWrite;
     }
     PlaneDriveIn { buf(sessions_buf, sessions_cap) -> u64; }
+    PlaneCancelIn {
+        buf(records_buf, records_cap) -> RecordWrite;
+        buf(arena_buf, arena_cap) -> u8;
+    }
     ProjectIn {
         list(fields, fields_len) -> Field;
         buf(signals_buf, signals_cap) -> crate::abi::hook::SignalEntry;
@@ -550,7 +556,10 @@ lend! {
         buf(name_buf, name_cap) -> u8;
         buf(alpn_buf, alpn_cap) -> u8;
     }
-    BeginIn { one(facts) -> ConnFacts; }
+    BeginIn {
+        one(facts) -> ConnFacts;
+        list(fields, fields_len) -> Field;
+    }
     IngestIn { bytes(bytes, len); }
     EmitIn { bytes(bytes, len); }
     EncodeIn {
@@ -558,6 +567,7 @@ lend! {
         bytes(body, body_len);
     }
     RefuseIn { bytes(bytes, len); }
+    FinishIn { bytes(final_bytes, final_bytes_len); }
     AdoptIn {
         one(facts) -> ConnFacts;
         bytes(leftover, leftover_len);

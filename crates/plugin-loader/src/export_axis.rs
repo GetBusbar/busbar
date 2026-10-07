@@ -27,8 +27,8 @@ use busbar_contract::export_calls::{ExportCalls, Probed, DEFAULT_INFLIGHT, INFLI
 
 use crate::dispatch::kinds::export::{Export, ExportFacts};
 use crate::dispatch::{
-    load_dropped_bytes, load_linked, Bind, Dispatcher, EnvelopeSink, LinkedRow, NoSink, Plugin,
-    PluginLogConfig,
+    load_dropped_bytes, load_linked, Bind, ConnTable, Dispatcher, EnvelopeSink, LinkedRow, NoSink,
+    Plugin, PluginLogConfig,
 };
 use crate::export_door::{self, ExportInstance};
 use crate::registry::LoadablePlugin;
@@ -153,7 +153,13 @@ impl<'r> ExportRows<'r> {
             max_inflight_cap,
             sink,
             dispatcher: self.dispatcher.adopter(),
-            conns: opening.and(self.conns.clone()),
+            // Opened to deliver: the host's table (an axis handed none serves only doors that
+            // declare no need). Probed or checked: a probe, bound with no table.
+            conns: if opening.is_some() {
+                ConnTable::serving(self.conns.clone())
+            } else {
+                ConnTable::Probe
+            },
         };
         let loaded = match &image {
             Image::Linked(r) => load_linked::<Export>(r, bind),
@@ -261,7 +267,7 @@ impl<'r> ExportRows<'r> {
         self.registry
             .linked()
             .iter()
-            .any(|p| p.manifest.alias == module)
+            .any(|p| p.manifest.config_names().any(|n| n == module))
     }
 
     /// Whether `module` names a FIRST-PARTY row: linked, or dropped in signed by the release key.

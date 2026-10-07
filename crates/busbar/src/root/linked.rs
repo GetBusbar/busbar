@@ -73,6 +73,9 @@ pub struct Linked {
     /// The secret axis: each linked secret plugin's door, loaded through the one loader when a
     /// reference first names it (see [`secret_rows`]).
     pub secrets: &'static [busbar_contract::abi::mechanism::door::DoorFn],
+    /// Each plane door row's place among [`Linked::planes`] (how many plane rows precede it in
+    /// manifest order), parallel to [`Linked::plane_doors`]: where its folded registry row goes.
+    pub plane_door_slots: &'static [usize],
     /// Each linked plane door's DECLARED METADATA, `(row, door, declares)`: its manifest `declares`
     /// section as JSON (the crate's `declares.json`, named by `[package.metadata.busbar.linked-declares]`),
     /// read as every default-linked plugin's is, beside the door it belongs to. A linked door is
@@ -248,6 +251,7 @@ pub fn linked_exports(
             host: None,
             declares,
             statement: None,
+            former_names: Vec::new(),
         })
     };
     doors
@@ -255,6 +259,7 @@ pub fn linked_exports(
         .map(|d| {
             manifest(d.name, d.alias, d.declares)
                 .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
+                .map(busbar_kernel::preflight::answering_former_names)
         })
         .collect()
 }
@@ -342,6 +347,11 @@ pub fn register_stores(linked: &Linked) {
             std::process::exit(2);
         }
     }
+    // A member program's `env` secret references resolve through the same linked secret plugins
+    // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A): as the previous release resolved them).
+    crate::root::loader::dispatch::install_member_secrets(
+        busbar_kernel::config::secret::resolve_linked_string,
+    );
 }
 
 /// THE STORE AXIS the kernel opens its governance store through (WIRE-STORE Q8/Q9): the loader's
@@ -355,7 +365,7 @@ fn store_axis() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis> {
     std::sync::Arc::new(crate::root::loader::store_v3::DoorStoreAxis {
         dispatcher: crate::root::dispatch::dispatcher(),
         logs: crate::root::boot::plugin_logs().clone(),
-        conns: Some(conns),
+        conns: crate::root::loader::dispatch::ConnTable::Host(conns),
         mint: busbar_kernel::door::op_id,
     })
 }
@@ -385,6 +395,7 @@ pub fn link_secrets(
         rows.link(*door)
             .map_err(|e| format!("a linked secret plugin does not state itself: {e}"))?;
     }
+    rows.with_former_names(busbar_kernel::config::legacy::former_names)?;
     Ok(SECRETS.get_or_init(|| rows))
 }
 
@@ -437,11 +448,205 @@ pub fn plane_rows(
         .map(hot_plane_row)
         .collect::<Result<Vec<PlaneDecl>, String>>()?
         .leak();
-    let rows: Vec<&'static PlaneDecl> = linked.planes.iter().chain(hot_rows).collect();
+    let mut rows: Vec<&'static PlaneDecl> = linked.planes.iter().collect();
+    // A linked door's folded row goes at its manifest row's place among the linked plane rows (the
+    // layering order is the manifest's whichever axis a plane registers on); a dropped one follows.
+    let doors = door_rows()?;
+    let (linked_doors, dropped_doors) =
+        doors.split_at(linked.plane_door_slots.len().min(doors.len()));
+    for (row, slot) in linked_doors.iter().zip(linked.plane_door_slots).rev() {
+        rows.insert((*slot).min(rows.len()), row);
+    }
+    rows.extend(hot_rows);
+    rows.extend(dropped_doors.iter().copied());
+    // PER-AXIS (SEAM-L(s)): a door row owns the plane axis for its key; a legacy row of the same
+    // key yields that axis alone and keeps every other axis it registers (its tables are its own).
+    let rows = doors_own_their_plane_keys(rows, &doors)?;
     let declared: Vec<&PlaneDeclaration> = rows.iter().map(|d| &d.declaration).collect();
     busbar_contract::plane::check_metric_families(&declared, PLANE_CARRIED_SERIES)?;
     busbar_contract::plane::check_served_op_classes(&declared)?;
     Ok(rows)
+}
+
+/// THE PLANE AXIS, PER AXIS (SEAM-L(s)): every row of `rows` that is one of `doors` stays, and a
+/// row that is not (a linked legacy or HOT-lane row) stays unless a door registers its key, in which
+/// case the door serves the plane and the legacy row keeps only the axes the door does not register
+/// (its other tables: the stdio serve, the CLI help, the one-shot runner, the protocols, the
+/// diagnostics), which this fold never touches. Order is kept.
+///
+/// The ENGINE is not the plane axis: a legacy row that is the fallback plane carries the routing
+/// tables the core's own readers walk (the `/metrics` lane gauges, `/v1/models`, the provider
+/// merge), so a door taking its key takes them over ([`with_the_engine_of`]) rather than leaving the
+/// node with none.
+///
+/// # Errors
+///
+/// A door taking an engine past the [`CARRIED`] table's last slot, named (see [`carry_into`]).
+pub fn doors_own_their_plane_keys(
+    rows: Vec<&'static PlaneDecl>,
+    doors: &[&'static PlaneDecl],
+) -> Result<Vec<&'static PlaneDecl>, String> {
+    doors_own_their_plane_keys_into(&CARRIED, rows, doors)
+}
+
+/// [`doors_own_their_plane_keys`], carrying engines into `table`.
+pub(crate) fn doors_own_their_plane_keys_into(
+    table: &'static [std::sync::OnceLock<PlaneDecl>],
+    rows: Vec<&'static PlaneDecl>,
+    doors: &[&'static PlaneDecl],
+) -> Result<Vec<&'static PlaneDecl>, String> {
+    let is_door = |row: &PlaneDecl| doors.iter().any(|d| std::ptr::eq(*d, row));
+    let legacy_of = |key: &str| rows.iter().copied().find(|r| r.key == key && !is_door(r));
+    let mut kept: Vec<&'static PlaneDecl> = rows
+        .iter()
+        .copied()
+        .filter(|row| is_door(row) || !doors.iter().any(|d| d.key == row.key))
+        .collect();
+    for row in &mut kept {
+        if let Some(legacy) = legacy_of(row.key).filter(|_| is_door(row)) {
+            if let Some(carried) = carry_into(table, row, legacy)? {
+                *row = carried;
+            }
+        }
+    }
+    Ok(kept)
+}
+
+/// The door rows a carried engine rides: one slot per door plane a process folds, the shape of table
+/// the kernel keeps its own folded rows in (`busbar_kernel::plane::door`), so a row lives as long as
+/// the process with no allocation leaked for it.
+static CARRIED: [std::sync::OnceLock<PlaneDecl>; busbar_kernel::plane::door::MAX_DOOR_PLANES] =
+    [const { std::sync::OnceLock::new() }; busbar_kernel::plane::door::MAX_DOOR_PLANES];
+
+/// THE DOOR ROW, CARRYING THE ENGINE ITS KEY'S LEGACY ROW HELD, kept in `table`: the fallback flag
+/// and the hooks the kernel builds and reads the fallback plane's routing tables through
+/// (`build_runtime`, `viewer`, `resolve_provider`, `on_swap`), each the legacy row's; every other
+/// word stays the door's. `None` when the legacy row holds none of them: the door's row stands as it
+/// is. Carrying the same key again answers the row the first carry built, as the kernel's fold
+/// answers a key it already folded.
+///
+/// # Errors
+///
+/// Every slot of `table` already holds another key's row: the engine has nowhere to ride, and the
+/// boot refuses rather than serve the door's key without the fallback plane's tables.
+fn carry_into(
+    table: &'static [std::sync::OnceLock<PlaneDecl>],
+    door: &PlaneDecl,
+    legacy: &PlaneDecl,
+) -> Result<Option<&'static PlaneDecl>, String> {
+    let holds_an_engine = legacy.fallback
+        || legacy.build_runtime.is_some()
+        || legacy.viewer.is_some()
+        || legacy.resolve_provider.is_some()
+        || legacy.on_swap.is_some();
+    if !holds_an_engine {
+        return Ok(None);
+    }
+    let carried = || PlaneDecl {
+        declaration: PlaneDeclaration {
+            fallback: legacy.fallback,
+            ..door.declaration
+        },
+        build_runtime: legacy.build_runtime,
+        viewer: legacy.viewer,
+        resolve_provider: legacy.resolve_provider,
+        on_swap: legacy.on_swap,
+        ..*door
+    };
+    table
+        .iter()
+        .find_map(|slot| match slot.get() {
+            Some(row) => (row.key == door.key).then_some(row),
+            None => Some(slot.get_or_init(carried)).filter(|row| row.key == door.key),
+        })
+        .map(Some)
+        .ok_or_else(|| {
+            format!(
+                "the plane door `{}` takes the engine its legacy row holds, and {} door planes \
+                 already carry one, the most one process carries",
+                door.key,
+                table.len()
+            )
+        })
+}
+
+/// TWO DOORS ON ONE AXIS: a plane key registered by two door rows (each `(row name, key)`) is a
+/// boot refusal naming both; the per-axis fold cannot pick between two owners of the same axis.
+///
+/// # Errors
+///
+/// The first key two rows both register, with both rows' names.
+pub fn refuse_a_key_two_doors_register(named: &[(String, &str)]) -> Result<(), String> {
+    for (i, (name, key)) in named.iter().enumerate() {
+        if let Some((first, _)) = named[..i].iter().find(|(_, k)| k == key) {
+            return Err(format!(
+                "the plane door rows `{first}` and `{name}` both register the plane `{key}` on \
+                 the same axis; one row owns an axis's key"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The dispatcher a door row's probe binds on: the process's one ([`crate::root::dispatch`]).
+pub(crate) fn door_probe_dispatcher() -> Arc<crate::root::loader::dispatch::Dispatcher> {
+    crate::root::dispatch::dispatcher()
+}
+
+/// THE DOOR PLANES' REGISTRY ROWS (DECL-FOLD; ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL; spec #49
+/// and R2-C): every plane [`dropped_planes_of`] discovered through a door, linked or dropped, bound
+/// once through the loader's one load on a dispatcher of its own (the process's is built after the
+/// configuration is read, and the rows must be in before the config prepass), and its Statement
+/// folded into a registry row by the kernel (`busbar_kernel::plane::door::fold`). The row's every
+/// word is the door's; a door owns the plane axis for its key, a linked legacy row of the same key
+/// keeping only its other axes ([`doors_own_their_plane_keys`]), and two doors registering one key
+/// refuse the boot naming both. A door that will not bind refuses the boot, as its load would.
+fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
+    let doors = crate::root::boot::DOOR_CANDIDATES
+        .get()
+        .map_or(&[][..], Vec::as_slice);
+    if doors.is_empty() {
+        return Ok(Vec::new());
+    }
+    // The probe binds on the PROCESS'S ONE DISPATCHER (booted first, in `main`), never one of
+    // their own: a second dispatcher is a second set of `busbar-dispatch` threads. A probe plugin
+    // it adopted is refreshed through it at every generation.
+    let probe = door_probe_dispatcher();
+    let registrations = doors
+        .iter()
+        .map(|candidate| {
+            let name = candidate.name.clone();
+            let candidate = candidate.clone();
+            let probe = Arc::clone(&probe);
+            let bind: crate::root::loader::dispatch::kinds::plane::ProbeBind =
+                Arc::new(move || {
+                    crate::root::loader::boot::load_planes(
+                        std::slice::from_ref(&candidate),
+                        crate::root::boot::plugin_logs(),
+                        Arc::new(crate::root::loader::dispatch::NoSink),
+                        probe.adopter(),
+                        u32::MAX,
+                        crate::root::loader::dispatch::ConnTable::Probe,
+                    )?
+                    .into_iter()
+                    .next()
+                    .map(|(_, plane)| plane)
+                    .ok_or_else(|| format!("{}: the door bound nothing", candidate.name))
+                });
+            Ok((
+                name,
+                crate::root::loader::dispatch::kinds::plane::registration(bind)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let named: Vec<(String, &str)> = (registrations.iter())
+        .map(|(name, reg)| (name.clone(), reg.key))
+        .collect();
+    refuse_a_key_two_doors_register(&named)?;
+    registrations
+        .into_iter()
+        .map(|(_, reg)| busbar_kernel::plane::door::fold(reg))
+        .collect()
 }
 
 /// THE FIRST-PARTY SERIES A PLANE MAY CARRY — the host-owned list a plane's `busbar_`-named metric
@@ -543,6 +748,7 @@ pub fn hot_plane_row(plane: &'static DynPlane) -> Result<PlaneDecl, String> {
             })
             .collect::<Vec<_>>()
             .leak(),
+        caller_credential_refusal: None,
     };
     HOT_PLANES
         .lock()
@@ -957,8 +1163,8 @@ pub const HOT_PLANE_HOOKS: PlaneHooks = PlaneHooks {
 /// every `kind: export` row the plugin registry's one registration admitted, linked and dropped in
 /// ([`crate::root::boot::dropped_from_config`]) — kept for the root's export axis
 /// ([`crate::root::exports`], installed with the root rows by [`register_stores`]). The kernel serves
-/// no export module of its own, so every module is a row here, and a linked row answers its module
-/// ahead of any dropped-in row spelling it.
+/// no export module of its own, so every module is a row here; a linked row and a different
+/// dropped-in plugin spelling one module refuse the boot (ARCHITECT Q-P4-12).
 pub fn register_exports(dropped: Option<&'static crate::root::loader::PluginRegistry>) {
     crate::root::loader::observe::install_host_series(host_series);
     if let Some(registry) = dropped {

@@ -607,8 +607,8 @@ deregister}` on the per-worker reactor.
 |---|---|---|
 | `provider` | plane upstreams | allow-list + `allow_metadata_hosts` |
 | `operator-infrastructure` | databases, vault, ldap | private, loopback and plaintext allowed; pinned; cloud metadata hosts refused (accepted difference, owner 2026-09-27) |
-| `open-web` | webhook; auth mint endpoints (`token_url`, `token_uri`) | public https only |
-| `loopback-allowed` | otlp, webrequest | https, or loopback plaintext; the node's own ports refused |
+| `open-web` | webhook | public https only |
+| `loopback-allowed` | otlp, webrequest; auth mint endpoints (`token_url`, `token_uri`: ARCHITECT 2026-10-04 parity ruling, https or loopback plaintext exactly as 1.5.5 validated them, the destination guard still applying) | https, or loopback plaintext; the node's own ports refused |
 
 **Destination guard — ONE check for every outbound connection (OWNER ruling, DESTINATION GUARD,
 2026-10-02; supersedes the Q130/Q131 detail).** Every outbound connection of any kind (providers,
@@ -1584,7 +1584,7 @@ the host never runs a service twice. `HostTables.conns` is swapped to the connec
 | verify | `verify.lookup`, `verify.store` | the host-side verify cache with single-flight leadership: hit, lead (the plane fetches and stores) or follow |
 | entitlement | `entitlement.check` | caller→target entitlement (the catalogue visibility filter) |
 | content | `content.scan` | in-session content governance: a piece of content passes the gate that governs it |
-| hook | `hook.call` | a hook stage run for an in-session sub-operation, over the hook kind's own `RequestView` |
+| hook | `hook.call` | a hook stage run for an in-session sub-operation, over the hook kind's own ~~`RequestView`~~ `PromptView`, a rewrite chain resuming at `from` (SUPERSEDED 2026-10-05 by the H2 ruling at :1616: op 17 is a gate or a rewrite over `PromptView`, resumed with `from: u32`) |
 | auth | `auth.call(point, …)` | a transport's call to the auth bound to its line or binding, owner-scoped; may pend; completion-handle and short-buffer rules apply |
 
 **The short-buffer rule for services.** The caller is the plugin, so a service writes its result
@@ -3203,6 +3203,9 @@ once and `plane-rigs`, `perf-build-gate` and `shadow-oracle` download that artif
 never got the same treatment. The other ~15 compiling jobs each prove a genuinely distinct
 feature/profile closure — collapsing those would silently drop coverage, so they are **not** waste.
 
+### Verification runs once per input (OWNER-LOCKED 2026-10-06)
+A verification step runs at most once per input key: hash(step id, toolchain, engine RELEASE_REF, the source of exactly the packages and fixtures the step reads). A passed key is reused by every later run — pull request, merge group, base — and the report names the reused key. A pull request into predev runs one runner: build, clippy, and the tests of the crates it changes plus their reverse dependencies; the merge group runs the rung's full plan. The oracle is never reused across a changed binary. Every CI run and Latchkey job is audited for waste the hour it ends. (Measured basis: 2026-10-06, $131/day CI, PR runs 59%, predev enter_pr == enter.)
+
 ## Promotion — measured 2026-09-21, and mostly NOT blocked
 
 The four defects previously listed here were audited against the live repo. **Two were real and are
@@ -3297,9 +3300,12 @@ branches live on GitHub so CI runs the pipeline).
    record: the full plan (every gate, every build/test step, the money oracle forced, conformance
    produced at judge time and judged absolutely per #68) on the queue's merge commit, judged "no worse
    than base" against the base the queue built it on; its report becomes the base of the commit it
-   lands. The PULL-REQUEST run is the fast pre-check a PR must pass to enter the queue: the gates and
-   `build:check`, `build:clippy`, `build:dlopen-cdylibs`, `test:workspace`, with no oracle and no
-   conformance (ARCHITECT ruling 2026-10-02, the hop split). Neither may add a red. A local Latchkey
+   lands. The PULL-REQUEST run is the pre-check a PR must pass to enter the queue: the merge group's
+   gates and build/test steps, each test and build step over the crates the PR changes plus their
+   reverse dependencies (a row the diff does not reach is reported skipped, "not affected"), on the
+   PR merged onto the base tip, with no oracle and no conformance; on ONE runner when that is
+   estimated within 20 minutes, else as the merge group's shard matrix ("Verification runs once per
+   input", OWNER-LOCKED 2026-10-06). Neither may add a red. A local Latchkey
    run is for iteration only.
 4. A `$` (money-touching) change is its own PR, never bundled with anything else.
 5. On merge the branch is deleted (OWNER 2026-10-01, BRANCH LIFETIME: "as soon as merged into
@@ -4982,6 +4988,9 @@ Other rulings:
   walk's counters. The write-ahead dispatch record (`Journal`) writes onto the money book's journal
   (the node's `journal_dispatch`: a recovery reads it to tell a unit that sent something from one
   that never did), so it is `$` and is composed with the money steps.
+
+### 2026-10-04 — OWNER RULING Q137: the TLS listener offers ALPN `h2, http/1.1`
+- OWNER (Q137, "offers h2 on the TLS listener. yes why not?"): a `tls:` listener offers ALPN `h2, http/1.1` (1.5.5: `http/1.1` alone), a signed customer-visible change; a client offering only `http/1.1`, or no ALPN, is served byte-identically to 1.5.5, and an ALPN-`h2` connection that does not open with the connection preface is closed with no bytes (RFC 9113 §3.4), in the connector. Parity binding PB-69 cites it.
 
 # APPENDIX C — THE PLANE DRIVER AND HOST SERVICES (design, owner-ruled 2026-09-28)
 

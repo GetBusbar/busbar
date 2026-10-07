@@ -33,6 +33,12 @@
 //!   demotion record.
 //! * `trust.verify` — a document's detached signatures judged against the root key the caller's
 //!   declared pin names ([`signed`]); the verdict and the refused name, never a fallback.
+//! * `verify.lookup` / `verify.store` — the caller's own verify cache with single-flight
+//!   leadership ([`crate::host_verify`]): hit, lead or follow; a lapsed lead passes on at the tick.
+//! * `content.scan` / `hook.call` — the hook stage the unit the crossing serves bound
+//!   ([`crate::host_units::UnitHookStage`]): its plane's and pool's gates and rewrite chain, at the
+//!   generation it was bound under; never anything the caller names. They run only when the plane
+//!   calls them: nothing here acts on carried content on its own (Law 11).
 //!
 //! EVERY CALLER-SCOPED SERVICE ANSWERS FROM WHAT [`KernelServices::admit`] REGISTERED for the
 //! caller's instance: its record kinds, its signing declaration and its trust entries. Every
@@ -58,7 +64,8 @@ use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::RecordStore;
 use busbar_contract::services::{
-    merge_list, Caller, DiskDest, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Stored,
+    merge_list, Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList,
+    Stored,
 };
 
 /// The refusal of a record write past the write queue's bound.
@@ -67,6 +74,7 @@ pub const QUEUE_FULL: &str = "the record write queue is full";
 use crate::host_records::{
     record_key, Acked, Owed as WriteOwed, PendingRecords, RecordRows, Write, WriteBehind,
 };
+use crate::host_units::StageAnswer;
 use crate::host_work::{
     owner_of, parse_reference, reference_text, refusal as work_refusal, work_key, Owner, Work,
     WorkBook, WorkBounds, WORK_SCHEMA,
@@ -81,20 +89,38 @@ use crate::trust::signed;
 /// trait, so the edge stays connector -> kernel.
 pub trait DestJudge: Send + Sync {
     /// `dest` (a URL or `host[:port]`) under egress class `class`, without resolving: the scheme
-    /// and name arms, an IP literal judged as its own answer. `Err` is the `DEST_*` verdict.
+    /// and name arms, an IP literal judged as its own answer. `refuse_private`: every private
+    /// address and loopback name refused whatever the deployment's private-address setting and
+    /// the class (`DEST_REFUSE_PRIVATE`). `Err` is the `DEST_*` verdict.
     ///
     /// # Errors
     ///
     /// The verdict refusing it.
-    fn judge_name(&self, dest: &str, class: u32) -> Result<(), u64>;
-    /// `dest` judged and pinned: at once (`Some`) for a literal or a refusal the name decides; a
-    /// name is resolved off the caller's thread and `done` gets the answer (`None`).
+    fn judge_name(&self, dest: &str, class: u32, refuse_private: bool) -> Result<(), u64>;
+    /// `dest` judged and pinned, on [`Self::judge_name`]'s terms: at once (`Some`) for a literal
+    /// or a refusal the name decides; a name is resolved off the caller's thread and `done` gets
+    /// the answer (`None`). A refusal an address or the resolution decided names it
+    /// ([`Refused::detail`]).
     fn judge(
         &self,
         dest: &str,
         class: u32,
+        refuse_private: bool,
         done: Box<dyn FnOnce(Admitted) + Send>,
     ) -> Option<Admitted>;
+    /// [`Self::judge`] for a dial to a destination its need holds a PRIVATE REACH to (the
+    /// registration's `abi::plane::TRUST_PRIVATE_REACH`, sealed per need and destination by the
+    /// host): a private address it stands for is admitted as an allowlist entry naming its host
+    /// would; a cloud-metadata address never is, and the class is unchanged. The default honours
+    /// no reach (the class judges alone: fail-closed).
+    fn judge_reaching(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Box<dyn FnOnce(Admitted) + Send>,
+    ) -> Option<Admitted> {
+        self.judge(dest, class, false, done)
+    }
     /// An answer the kernel's own client resolved for `host`, judged whole under `class`.
     ///
     /// # Errors
@@ -185,6 +211,25 @@ pub const NEST_FULL: &str = "the node runs as many nested units as it holds";
 pub const NO_NEST_ROUTE: &str = "no nested dispatch is installed";
 /// The FAILED answer of a nested unit whose reply was dropped unanswered.
 pub const NEST_DROPPED: &str = "the nested unit ended with no reply";
+/// THE ONE JUDGEMENT'S REFUSAL: the `DEST_*` verdict, and what decided it when an address or the
+/// resolution did (the refused address as text; the resolver's own reason), which `dest.judge`
+/// writes for a caller that asks (`DEST_EXPLAIN`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refused {
+    /// The `DEST_*` verdict.
+    pub verdict: u64,
+    /// The refused address, or the resolver's reason; `None` when the name alone decided it.
+    pub detail: Option<String>,
+}
+
+impl From<u64> for Refused {
+    fn from(verdict: u64) -> Self {
+        Refused {
+            verdict,
+            detail: None,
+        }
+    }
+}
 
 /// What `dest.judge` answers on services built without a destination judge.
 pub const NO_DEST_JUDGE: &str = "no destination judge is installed";
@@ -463,6 +508,20 @@ struct Records {
 /// The wall clock, in milliseconds since the Unix epoch.
 pub type WallMs = Arc<dyn Fn() -> u64 + Send + Sync>;
 
+/// The monotonic clock `clock.now` reads, in nanoseconds from the services' origin.
+pub type MonoNs = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// THE LIVE RE-RESOLUTION of an admitted principal at `now` (Unix seconds): the principal as it
+/// stands, or `None` when it no longer does.
+pub type Standing = Arc<
+    dyn Fn(
+            &Arc<busbar_contract::records::VirtualKey>,
+            u64,
+        ) -> Option<Arc<busbar_contract::records::VirtualKey>>
+        + Send
+        + Sync,
+>;
+
 fn system_wall_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -473,8 +532,10 @@ fn system_wall_ms() -> u64 {
 pub struct KernelServices {
     origin: Instant,
     wall_ms: WallMs,
+    /// The monotonic clock, where one was given; else the time since [`Self::origin`].
+    mono_ns: Option<MonoNs>,
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
-    records: Option<Records>,
+    records: OnceLock<Records>,
     pool: OnceLock<Arc<dyn Offload>>,
     pending: Arc<PendingRecords>,
     units: Arc<crate::host_units::UnitRecords>,
@@ -492,9 +553,15 @@ pub struct KernelServices {
     bounds_of: Mutex<HashMap<Arc<str>, WorkBounds>>,
     /// The root's nested-dispatch seam, attached once, and the permits nested units run under.
     nest: OnceLock<Arc<dyn NestRoute>>,
+    /// The live re-resolution of a unit's principal (a registry key by id, a role-bound one through
+    /// the current bindings): `None` when it no longer stands. Attached by the composition root
+    /// over its live snapshot; unattached, the principal admitted is the one judged.
+    standing: OnceLock<Standing>,
     nested: Arc<crate::pump::NestedPool>,
     /// The bounded disk lane `disk.append` runs on (THE DESIGN §11.11 R4).
     disk: crate::host_disk::DiskLane,
+    /// The verify cache behind `verify.*`.
+    verify: crate::host_verify::VerifyBook,
 }
 
 /// The durable demotion record, and the instance its unprefixed rows belong to.
@@ -525,8 +592,9 @@ impl KernelServices {
         Self {
             origin: Instant::now(),
             wall_ms: Arc::new(system_wall_ms),
+            mono_ns: None,
             instances: Mutex::default(),
-            records: None,
+            records: OnceLock::new(),
             pool: OnceLock::new(),
             pending: Arc::default(),
             units: Arc::default(),
@@ -539,11 +607,13 @@ impl KernelServices {
             work_bounds: WorkBounds::default(),
             bounds_of: Mutex::default(),
             nest: OnceLock::new(),
+            standing: OnceLock::new(),
             nested: Arc::new(crate::pump::NestedPool::new(
                 NEST_CONCURRENCY,
                 NEST_DEPTH_MAX as usize + 1,
             )),
             disk: crate::host_disk::DiskLane::default(),
+            verify: crate::host_verify::VerifyBook::default(),
         }
     }
 
@@ -551,6 +621,12 @@ impl KernelServices {
     /// [`Self::attach_pool`]): once; a second attach is refused (`false`) and changes nothing.
     pub fn attach_nest(&self, route: Arc<dyn NestRoute>) -> bool {
         self.nest.set(route).is_ok()
+    }
+
+    /// Re-resolve every unit's principal through `standing` from now on (once; a second attach is
+    /// refused): entitlement is judged against the principal as it stands, frame by frame.
+    pub fn attach_standing(&self, standing: Standing) -> bool {
+        self.standing.set(standing).is_ok()
     }
 
     /// The permits nested units run under (how many are out is `size - available`).
@@ -608,13 +684,16 @@ impl KernelServices {
     /// Serve the records services over `reads` (the store's typed record reads) and `claims` (its
     /// single-use redemption). Without them they are REFUSED.
     #[must_use]
-    pub fn with_records(
-        mut self,
-        reads: Arc<dyn RecordRows>,
-        claims: Arc<dyn RecordStore>,
-    ) -> Self {
-        self.records = Some(Records { reads, claims });
+    pub fn with_records(self, reads: Arc<dyn RecordRows>, claims: Arc<dyn RecordStore>) -> Self {
+        self.attach_records(reads, claims);
         self
+    }
+
+    /// Serve the records services over `reads` and `claims` (see [`Self::with_records`]), attached
+    /// late, once: the configured store is opened after the services are installed (the composition
+    /// root's late attach). `false` when a record store was already bound.
+    pub fn attach_records(&self, reads: Arc<dyn RecordRows>, claims: Arc<dyn RecordStore>) -> bool {
+        self.records.set(Records { reads, claims }).is_ok()
     }
 
     /// Run every store call on `pool`, never on the calling thread. Without it the services that
@@ -683,6 +762,13 @@ impl KernelServices {
     #[must_use]
     pub fn with_wall_clock(mut self, wall_ms: WallMs) -> Self {
         self.wall_ms = wall_ms;
+        self
+    }
+
+    /// Read `clock.now`'s monotonic time through `mono_ns`.
+    #[must_use]
+    pub fn with_mono_clock(mut self, mono_ns: MonoNs) -> Self {
+        self.mono_ns = Some(mono_ns);
         self
     }
 
@@ -756,6 +842,9 @@ impl KernelServices {
         let Some(facts) = self.facts(caller) else {
             return false;
         };
+        if target == busbar_contract::abi::host::service::ENTITLEMENT_STANDING {
+            return self.stands(unit);
+        }
         let Some((kind, name)) = target.split_once(':') else {
             return false;
         };
@@ -772,12 +861,30 @@ impl KernelServices {
             return false;
         };
         let now = (self.wall_ms)() / 1000;
-        validate_visibility(
-            record.principal.as_deref(),
-            now,
-            &[Grant::Scope { kind, name }],
-        )
-        .is_ok()
+        // THE PRINCIPAL AS IT STANDS NOW, re-resolved per ask where the root attached the live
+        // resolution: one that no longer stands is entitled to nothing.
+        let principal = match (record.principal.as_ref(), self.standing.get()) {
+            (Some(admitted), Some(standing)) => match standing(admitted, now) {
+                Some(live) => Some(live),
+                None => return false,
+            },
+            (admitted, _) => admitted.cloned(),
+        };
+        validate_visibility(principal.as_deref(), now, &[Grant::Scope { kind, name }]).is_ok()
+    }
+
+    /// Whether `unit`'s principal still stands (an ungoverned unit, or one with no live
+    /// resolution attached, stands as admitted).
+    fn stands(&self, unit: Option<u64>) -> bool {
+        let Some(record) = unit.and_then(|u| self.units.get(u)) else {
+            return false;
+        };
+        match (record.principal.as_ref(), self.standing.get()) {
+            (Some(admitted), Some(standing)) => {
+                standing(admitted, (self.wall_ms)() / 1000).is_some()
+            }
+            _ => true,
+        }
     }
 
     /// The overlay of every instance's record writes the store has not yet taken.
@@ -857,7 +964,7 @@ impl KernelServices {
         if ttl_ms == 0 || key.is_empty() || !self.lock_instances().contains_key(instance) {
             return refused;
         }
-        let (Some(records), Some(pool)) = (self.records.as_ref(), self.pool()) else {
+        let (Some(records), Some(pool)) = (self.records.get(), self.pool()) else {
             return refused;
         };
         let rows = Arc::clone(&records.reads);
@@ -908,7 +1015,7 @@ impl KernelServices {
     /// start a flush of the queued record writes when none runs, so writes a refused flush left
     /// queued still reach the store.
     pub fn flush_tick(&self) {
-        if let (Some(records), Some(pool)) = (self.records.as_ref(), self.pool()) {
+        if let (Some(records), Some(pool)) = (self.records.get(), self.pool()) {
             if self.batcher.start() {
                 self.start_flush(records, pool);
             }
@@ -927,7 +1034,14 @@ impl KernelServices {
         loop {
             at.tick().await;
             self.flush_tick();
+            self.verify_tick();
         }
+    }
+
+    /// The verify cache's tick, run beside [`Self::flush_tick`]: every lead that lapsed passes to
+    /// its first follower, so a leader that never stores wedges nobody past one interval.
+    pub fn verify_tick(&self) {
+        self.verify.expire((self.wall_ms)());
     }
 
     /// GRACEFUL SHUTDOWN: flush every queued record write before the store closes, waiting up to
@@ -971,7 +1085,7 @@ impl KernelServices {
             .ok_or_else(|| Stored::refused(NOT_A_KIND))?;
         let records = self
             .records
-            .as_ref()
+            .get()
             .ok_or_else(|| Stored::refused(NO_STORE))?;
         let pool = self.pool().ok_or_else(|| Stored::refused(NO_POOL))?;
         Ok((schema, records, pool))
@@ -995,7 +1109,7 @@ impl KernelServices {
             .ok_or_else(|| Stored::refused(NOT_ADMITTED))?;
         let records = self
             .records
-            .as_ref()
+            .get()
             .ok_or_else(|| Stored::refused(NO_STORE))?;
         let pool = self.pool().ok_or_else(|| Stored::refused(NO_POOL))?;
         Ok((facts, records, pool))
@@ -1113,16 +1227,22 @@ impl HostServices for KernelServices {
             .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
         Reading {
             wall_ns: wall,
-            mono_ns: u64::try_from(self.origin.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            mono_ns: self.mono_ns.as_ref().map_or_else(
+                || u64::try_from(self.origin.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                |mono| mono(),
+            ),
         }
     }
 
-    fn dest_judge(&self, dest: &str, class: u32, resolve: bool, later: Option<Later>) -> Ran {
+    fn dest_judge(&self, dest: &str, class: u32, flags: u32, later: Option<Later>) -> Ran {
+        let resolve = flags & svc::DEST_RESOLVE != 0;
+        let refuse_private = flags & svc::DEST_REFUSE_PRIVATE != 0;
+        let explain = flags & svc::DEST_EXPLAIN != 0;
         // The name and scheme arms first, at once: a refusal never waits on a resolution.
         let Some(j) = &self.judge else {
             return Ran::Now(Stored::refused(NO_DEST_JUDGE));
         };
-        let named = j.judge_name(dest, class);
+        let named = j.judge_name(dest, class, refuse_private);
         match named {
             Err(v) => return Ran::Now(Stored::ready(v)),
             Ok(()) if resolve => {}
@@ -1134,8 +1254,14 @@ impl HostServices for KernelServices {
             ));
         };
         // The one judge; the verdict is its answer, and admitted, every address it judged.
-        match self.judge(dest, class, Box::new(move |v| later(judged(v)))) {
-            Some(v) => Ran::Now(judged(v)),
+        let judgement = move |v| judged(v, explain);
+        match j.judge(
+            dest,
+            class,
+            refuse_private,
+            Box::new(move |v| later(judgement(v))),
+        ) {
+            Some(v) => Ran::Now(judged(v, explain)),
             None => Ran::Later,
         }
     }
@@ -1592,6 +1718,107 @@ impl HostServices for KernelServices {
             },
         )
     }
+
+    fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran {
+        if self.facts(caller).is_none() {
+            return Ran::Now(Stored::refused(NOT_ADMITTED));
+        }
+        self.verify
+            .lookup(&caller.instance, key, (self.wall_ms)(), later)
+    }
+
+    fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
+        if self.facts(caller).is_none() {
+            return Stored::refused(NOT_ADMITTED);
+        }
+        self.verify
+            .store(&caller.instance, key, entry, ttl_ms, (self.wall_ms)())
+    }
+
+    fn content_scan(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        content: &[u8],
+        later: Later,
+    ) -> Ran {
+        let stage = match self.stage_of(caller, unit) {
+            Ok(stage) => stage,
+            Err(refused) => return Ran::Now(refused),
+        };
+        stage.scan(
+            content.to_vec(),
+            Box::new(move |answer| {
+                later(match answer {
+                    StageAnswer::Pass => Stored::ready(svc::CONTENT_PASS),
+                    StageAnswer::Stop { .. } => Stored::ready(svc::CONTENT_BLOCK),
+                    // A gate never rewrites; a stage that could not run blocks nothing silently.
+                    StageAnswer::Rewrote { .. } => failed(STAGE_ANSWERED_AMISS),
+                    StageAnswer::Failed(why) => failed(why),
+                });
+            }),
+        );
+        Ran::Later
+    }
+
+    fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
+        let stage = match self.stage_of(caller, unit) {
+            Ok(stage) => stage,
+            Err(refused) => return Ran::Now(refused),
+        };
+        stage.call(
+            ask,
+            Box::new(move |answer| {
+                later(match answer {
+                    StageAnswer::Pass => Stored::ready(0),
+                    StageAnswer::Rewrote { index, rewrite } => Stored {
+                        bytes: rewrite,
+                        ..Stored::ready(1 + u64::from(index))
+                    },
+                    StageAnswer::Stop { status, words } => Stored {
+                        bytes: words.into_bytes(),
+                        ..Stored::ready(u64::from(status))
+                    },
+                    StageAnswer::Failed(why) => failed(why),
+                });
+            }),
+        );
+        Ran::Later
+    }
+}
+
+/// The refusal of `content.scan` / `hook.call` from a crossing that serves no unit in flight.
+pub const STAGE_NO_UNIT: &str = "the crossing serves no unit in flight";
+/// The refusal of `content.scan` / `hook.call` before the unit's route leg stated its hook stage.
+pub const STAGE_NOT_BOUND: &str = "the unit's hook stage is not bound yet";
+/// The refusal of `content.scan` / `hook.call` for a unit another instance runs.
+pub const STAGE_NOT_YOURS: &str = "the unit runs on another instance";
+/// The FAILED answer of a stage that answered outside its service's shape.
+pub const STAGE_ANSWERED_AMISS: &str = "the hook stage answered outside the service's shape";
+
+impl KernelServices {
+    /// The hook stage of `unit` for `caller`: the unit in flight, its route leg's stage stated, and
+    /// run on the caller's own instance; or the refusal.
+    fn stage_of(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+    ) -> Result<Arc<dyn crate::host_units::UnitHookStage>, Stored> {
+        if self.facts(caller).is_none() {
+            return Err(Stored::refused(NOT_ADMITTED));
+        }
+        let Some(unit) = unit.filter(|u| self.units.get(*u).is_some()) else {
+            return Err(Stored::refused(STAGE_NO_UNIT));
+        };
+        let stage = self
+            .units
+            .stage(unit)
+            .ok_or_else(|| Stored::refused(STAGE_NOT_BOUND))?;
+        if stage.instance() != &*caller.instance {
+            return Err(Stored::refused(STAGE_NOT_YOURS));
+        }
+        Ok(stage)
+    }
 }
 
 /// Where a dial's judgement goes when it pended: the pinned address, or the `DEST_*` verdict that
@@ -1599,20 +1826,26 @@ impl HostServices for KernelServices {
 pub type Judged = Box<dyn FnOnce(Result<SocketAddr, u64>) + Send>;
 
 /// THE ONE JUDGEMENT'S ANSWER: the pinned address and every address judged with it (the pin
-/// first), or the `DEST_*` verdict refusing them.
-pub type Admitted = Result<(SocketAddr, Vec<IpAddr>), u64>;
+/// first), or the [`Refused`] verdict refusing them.
+pub type Admitted = Result<(SocketAddr, Vec<IpAddr>), Refused>;
 
 /// `dest.judge`'s stored answer for a judgement: the verdict, and admitted, one span per judged
-/// address (key = the address as text, value absent).
-fn judged(v: Admitted) -> Stored {
-    let addrs = match v {
-        Ok((_, addrs)) => addrs,
-        Err(verdict) => return Stored::ready(verdict),
+/// address (key = the address as text, value absent); refused and asked to `explain`, one span
+/// naming what decided it, when an address or the resolution did.
+fn judged(v: Admitted, explain: bool) -> Stored {
+    let (mut s, keys) = match v {
+        Ok((_, addrs)) => (
+            Stored::ready(svc::DEST_ALLOWED),
+            addrs.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        ),
+        Err(r) => (
+            Stored::ready(r.verdict),
+            r.detail.filter(|_| explain).into_iter().collect(),
+        ),
     };
-    let mut s = Stored::ready(svc::DEST_ALLOWED);
-    for a in addrs {
+    for key in keys {
         let at = s.bytes.len();
-        s.bytes.extend_from_slice(a.to_string().as_bytes());
+        s.bytes.extend_from_slice(key.as_bytes());
         s.spans.push(ItemSpan {
             value: absent_span(),
             ..span(at, s.bytes.len() - at, 0, 0)
@@ -1634,21 +1867,11 @@ impl KernelServices {
         class: u32,
         done: Judged,
     ) -> Option<Result<SocketAddr, u64>> {
-        let pin = |v: Admitted| v.map(|(addr, _)| addr);
-        self.judge(dest, class, Box::new(move |v| done(pin(v))))
-            .map(pin)
-    }
-
-    /// The one judgement both [`Self::judge_dial`] and `dest.judge` read: [`Admitted`], at once
-    /// (`Some`) or through `done` (`None`), on the terms `judge_dial` states.
-    fn judge(
-        &self,
-        dest: &str,
-        class: u32,
-        done: Box<dyn FnOnce(Admitted) + Send>,
-    ) -> Option<Admitted> {
+        let pin = |v: Admitted| v.map(|(addr, _)| addr).map_err(|r| r.verdict);
         match &self.judge {
-            Some(j) => j.judge(dest, class, done),
+            Some(j) => j
+                .judge(dest, class, false, Box::new(move |v| done(pin(v))))
+                .map(pin),
             None => Some(Err(svc::DEST_NO_HOST)),
         }
     }
@@ -1673,3 +1896,7 @@ mod trust_verify_tests;
 #[cfg(test)]
 #[path = "tests/host_nest_tests.rs"]
 mod host_nest_tests;
+
+#[cfg(test)]
+#[path = "tests/host_stage_tests.rs"]
+mod host_stage_tests;

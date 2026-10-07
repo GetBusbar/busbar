@@ -193,7 +193,9 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+            conns: crate::root::loader::dispatch::ConnTable::Host(
+                Arc::clone(&connector) as Arc<dyn DeclaredConns>
+            ),
         },
     )
     .expect("the linked door binds");
@@ -250,14 +252,17 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         Arc::clone(&dispatcher),
         crate::LINKED.auths,
         None,
-        Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+        crate::root::loader::dispatch::ConnTable::Host(
+            Arc::clone(&connector) as Arc<dyn DeclaredConns>
+        ),
     );
     let reach = DoorReach {
         providers: &providers,
         secrets: &secrets,
-        auths: &auths,
+        auths: Arc::new(auths),
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
         stream_ceiling_secs: 600,
+        upgrades: Vec::new(),
     };
 
     // THE COMPOSITION, AS PRODUCTION SEALS IT: the door opened with its section (one model),
@@ -274,17 +279,19 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         &dispatcher,
         &composed_services(),
         &sections,
+        None,
         &plane_money,
         Some(&DoorEgress {
             reach: &reach,
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         }),
+        None,
     )
     .expect("the door plane composes, its egress sealed");
     let _ = std::fs::remove_file(&key_file);
     let composed = &mut served.planes[0];
     assert!(
-        composed.egress.is_some(),
+        composed.live.current().egress.is_some(),
         "the composition sealed its egress"
     );
     let money_steps = Arc::clone(&composed.money);
@@ -380,7 +387,9 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: None,
+            // This row only routes (no request reaches the provider): the plane's need is not
+            // declared, bound as a probe.
+            conns: crate::root::loader::dispatch::ConnTable::Probe,
         },
     )
     .expect("the linked door binds");
@@ -395,7 +404,9 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
         &dispatcher,
         &composed_services(),
         &sections,
+        None,
         &money,
+        None,
         None,
     )
     .expect("the door plane composes");
@@ -469,7 +480,9 @@ async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: 
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+            conns: crate::root::loader::dispatch::ConnTable::Host(
+                Arc::clone(&connector) as Arc<dyn DeclaredConns>
+            ),
         },
     )
     .expect("the linked door binds");
@@ -525,14 +538,17 @@ async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: 
         Arc::clone(&dispatcher),
         crate::LINKED.auths,
         None,
-        Some(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
+        crate::root::loader::dispatch::ConnTable::Host(
+            Arc::clone(&connector) as Arc<dyn DeclaredConns>
+        ),
     );
     let reach = DoorReach {
         providers: &providers,
         secrets: &secrets,
-        auths: &auths,
+        auths: Arc::new(auths),
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
         stream_ceiling_secs: 600,
+        upgrades: Vec::new(),
     };
     let mut sections = BTreeMap::new();
     sections.insert(
@@ -545,11 +561,13 @@ async fn serve_over(linked: &crate::root::linked::Linked, instance: &str, port: 
         &dispatcher,
         &composed_services(),
         &sections,
+        None,
         &plane_money,
         Some(&DoorEgress {
             reach: &reach,
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         }),
+        None,
     )
     .expect("the door plane composes, its egress sealed");
     let _ = std::fs::remove_file(&key_file);
@@ -684,5 +702,76 @@ async fn a_plane_stating_no_breaker_fact_keeps_the_default_bench() {
     assert_eq!(
         reached, None,
         "under the default one 503 benches the sole member: the next call never reaches the far end"
+    );
+}
+
+/// ONE MOUNT PER (PATH, METHOD) (SEAM-L(l), ported from 5ad225bc89): a door claiming one verb and
+/// path over two carriers (an endpoint answered as a document or as an event stream) is one route
+/// on the data listener, the first in its claim order; the data router builds with it. RED: each
+/// claim mounted its own route, and the router refused the second as an overlapping method route.
+#[tokio::test]
+async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-door-carriers";
+    let _published = Published(instance);
+    let app = busbar_kernel::test_support::TestApp::new().build();
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
+    let plane = load_linked::<Plane>(
+        &row,
+        Bind {
+            instance: Arc::from(instance),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            // This row only routes (no request reaches the provider): the plane's need is not
+            // declared, bound as a probe.
+            conns: crate::root::loader::dispatch::ConnTable::Probe,
+        },
+    )
+    .expect("the linked door binds");
+    let section = plane.served().section;
+    let mut sections = BTreeMap::new();
+    sections.insert(
+        section,
+        serde_yaml::from_str("models: {m: {provider: typesafe}}").expect("a section"),
+    );
+    let mut served = compose_planes(
+        &[(instance.to_string(), plane)],
+        &dispatcher,
+        &composed_services(),
+        &sections,
+        None,
+        &money,
+        None,
+        None,
+    )
+    .expect("the door plane composes");
+    // The same verb and path again, over a second carrier.
+    let claims = &mut served.planes[0].snapshot.claims;
+    let mut twin = claims[0].clone();
+    twin.carrier = format!("{}-stream", twin.carrier);
+    claims.push(twin);
+    let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
+    let mut seen = std::collections::BTreeSet::new();
+    for door in &doors {
+        assert!(
+            seen.insert((door.path.clone(), door.method.as_str())),
+            "{} {} is mounted once",
+            door.method.as_str(),
+            door.path
+        );
+    }
+    assert!(
+        seen.contains(&(CLAIMED.to_string(), "POST")),
+        "the claim is a route: {seen:?}"
+    );
+    // The data router builds with them (an overlapping method route would panic here).
+    let (router, _admin, _handle) =
+        busbar_kernel::build_split_routers_serving(app, doors, 1 << 20, 0, false);
+    let refused = u16::try_from(refusal_status(ReasonCode::Unauthenticated)).expect("a status");
+    assert_eq!(
+        send(&router, CLAIMED, None).await.status().as_u16(),
+        refused
     );
 }

@@ -27,23 +27,26 @@ use super::{
     PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut,
     RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL,
     CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
-    EMIT_DONE, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP,
-    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    INGRESS_SUBSCRIPTION, MAX_REFUSAL_TEXT, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT,
-    PRINCIPAL_OPTIONAL, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_POOL, ROUTE_PUBLIC,
-    SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_PROBES, TRUST_PIN, TRUST_RECOVERY_BACKOFF,
+    CLAIM_PATTERN, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
+    EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
+    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_REFUSAL_TEXT,
+    MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
+    RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE,
+    ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE,
+    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TRUST_PIN, TRUST_PRIVATE_REACH,
     UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
     SIGNAL_TAG_BOOL, SIGNAL_TAG_STR, SIGNAL_TAG_U64,
 };
-use crate::abi::mechanism::call::{AbiStr, Outcome, MAX_TEXT};
+use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, BLOB_ABSENT, BLOB_OCTETS, MAX_TEXT};
 use crate::abi::mechanism::check::{
     bits, code, fault, first, index, listed, range, result, results, span, text, weight, Dim,
     Filled, MAX_BYTES,
 };
 use crate::abi::mechanism::door::{Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED};
+use crate::grammar::{PathSeg, Selector};
 
 /// The most unit counts one answer may carry.
 pub const MAX_UNITS: u64 = 64;
@@ -141,13 +144,22 @@ fn fields(buf: &[OutField], n: u64, arena: u64) -> Result<(), Fault> {
 
 fn records(buf: &[RecordWrite], n: u64, arena: u64, b: &Bounds) -> Result<(), Fault> {
     for r in first(buf, n, "record")? {
-        index(r.kind, b.record_kinds, "record.kind")?;
-        code(
-            u64::from(r.op),
-            u64::from(RECORD_PUT),
-            u64::from(RECORD_PUT),
-            "record.op",
-        )?;
+        match r.op {
+            RECORD_PUT => index(r.kind, b.record_kinds, "record.kind")?,
+            // The unit's audit row: its outcome where a put names its kind, and an action.
+            RECORD_AUDIT => {
+                code(
+                    u64::from(r.kind),
+                    u64::from(super::AUDIT_APPLIED),
+                    u64::from(super::AUDIT_REJECTED),
+                    "record.audit_outcome",
+                )?;
+                if r.key.len == 0 {
+                    return Err(fault(Rule::Contradiction, "record.audit_without_action"));
+                }
+            }
+            _ => return Err(fault(Rule::UnknownCode, "record.op")),
+        }
         span(r.key.offset, r.key.len, arena, "record.key")?;
         span(r.value.offset, r.value.len, arena, "record.value")?;
     }
@@ -177,6 +189,8 @@ pub fn check_arrive(
         "arrive.units",
     )?;
     units(units_buf, written, b)?;
+    // A refusal about an entry (abi/plane "A refused arrival", rule 6) names it, with its class.
+    let about_entry = outcome == Outcome::Refused && (out.pool.len != 0 || !out.pool.ptr.is_null());
     if outcome == Outcome::Refused {
         if out.refusal == 0 {
             return Err(fault(Rule::Missing, "arrive.refusal"));
@@ -184,7 +198,7 @@ pub fn check_arrive(
         code(
             u64::from(out.refusal_status),
             400,
-            499,
+            if about_entry { 599 } else { 499 },
             "arrive.refusal_status",
         )?;
     } else if out.refusal != 0 || out.refusal_status != 0 {
@@ -206,12 +220,45 @@ pub fn check_arrive(
         if out.pool.len > MAX_TEXT {
             return Err(fault(Rule::OverMax, "arrive.pool"));
         }
+        if ![ROUTE_POOL, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_SCOPE].contains(&out.route) {
+            return Err(fault(Rule::UnknownCode, "arrive.route"));
+        }
+        if out.route_flags & !(ROUTE_ONCE | ROUTE_SESSION | ROUTE_STREAM) != 0 {
+            return Err(fault(Rule::UnknownCode, "arrive.route_flags"));
+        }
+        text(out.affinity, "arrive.affinity")?;
+        if out.affinity.len > MAX_TEXT {
+            return Err(fault(Rule::OverMax, "arrive.affinity"));
+        }
+        // A unit the plane answers itself names no entry (one routed by scope may name its
+        // candidates).
+        if out.route == ROUTE_LOCAL && (out.pool.len != 0 || !out.pool.ptr.is_null()) {
+            return Err(fault(Rule::Contradiction, "arrive.pool"));
+        }
+    } else if about_entry {
+        index(out.op_class, b.op_classes, "arrive.op_class")?;
+        index(out.dialect, b.dialects, "arrive.dialect")?;
+        text(out.pool, "arrive.pool")?;
+        if out.pool.len > MAX_TEXT {
+            return Err(fault(Rule::OverMax, "arrive.pool"));
+        }
         if out.route != ROUTE_POOL && out.route != ROUTE_DIRECT {
             return Err(fault(Rule::UnknownCode, "arrive.route"));
         }
-    } else if out.pool.len != 0 || !out.pool.ptr.is_null() || out.route != ROUTE_POOL {
+        if out.route_flags != 0 {
+            return Err(fault(Rule::Contradiction, "arrive.route_flags"));
+        }
+    } else if out.pool.len != 0
+        || !out.pool.ptr.is_null()
+        || out.route != ROUTE_POOL
+        || out.route_flags != 0
+    {
         // The pool names where an admitted unit routes: an answer that admits nothing names none.
         return Err(fault(Rule::Contradiction, "arrive.pool"));
+    }
+    // The sticky key names how an admitted unit routes: an answer that admits nothing states none.
+    if outcome != Outcome::Ready && (out.affinity.len != 0 || !out.affinity.ptr.is_null()) {
+        return Err(fault(Rule::Contradiction, "arrive.affinity"));
     }
     if outcome == Outcome::Refused {
         text(out.head.error, "arrive.refusal_text")?;
@@ -249,10 +296,13 @@ pub fn check_on_piece(
                 | EMIT_DONE
                 | EMIT_WATCH_CATALOGUE
                 | EMIT_UNWATCH_CATALOGUE
-                | PIECE_OUT_TEXT,
+                | PIECE_OUT_TEXT
+                | EMIT_MESSAGE_END
+                | EMIT_FINAL_STATUS,
         ),
         "on_piece.flags",
     )?;
+    final_status(out)?;
     // A text message is a whole message of at least one byte.
     if out.flags & PIECE_OUT_TEXT != 0 && (out.emitted == 0 || out.more != 0) {
         return Err(fault(Rule::Contradiction, "on_piece.text"));
@@ -300,10 +350,57 @@ pub fn check_on_piece(
         return Err(fault(Rule::WrittenOnShort, "on_piece"));
     }
     verdict(outcome, out.verdict)?;
+    fault_reading(outcome, out)?;
     request(out)?;
+    // The unit's ledger lane, where the answer names one: inside the arena written.
+    span(
+        out.lane.offset,
+        out.lane.len,
+        out.arena_written,
+        "on_piece.lane",
+    )?;
     units(bufs.0, u64::from(out.units_written), b)?;
     records(bufs.1, u64::from(out.records_written), out.arena_written, b)?;
     fields(bufs.2, u64::from(out.fields_written), out.arena_written)
+}
+
+/// `on_piece`'s message boundary and final status: a boundary ends a message toward the caller,
+/// never a request bound for the far end; a final status closes the reply ([`EMIT_DONE`]), its
+/// message and details inside the arena written; without it the three fields are zero.
+fn final_status(out: &OnPieceOut) -> Result<(), Fault> {
+    if out.flags & EMIT_MESSAGE_END != 0 && out.flags & EMIT_TO_FAR_END != 0 {
+        return Err(fault(
+            Rule::Contradiction,
+            "on_piece.message_end_to_far_end",
+        ));
+    }
+    if out.flags & EMIT_FINAL_STATUS == 0 {
+        if out.final_status != 0 || out.final_message.len != 0 || out.final_details.len != 0 {
+            return Err(fault(
+                Rule::Contradiction,
+                "on_piece.final_status_unflagged",
+            ));
+        }
+        return Ok(());
+    }
+    if out.flags & EMIT_DONE == 0 || out.flags & EMIT_TO_FAR_END != 0 {
+        return Err(fault(
+            Rule::Contradiction,
+            "on_piece.final_status_not_closing",
+        ));
+    }
+    span(
+        out.final_message.offset,
+        out.final_message.len,
+        out.arena_written,
+        "on_piece.final_message",
+    )?;
+    span(
+        out.final_details.offset,
+        out.final_details.len,
+        out.arena_written,
+        "on_piece.final_details",
+    )
 }
 
 /// `on_piece`'s verdict: a known `VERDICT_*`, and none on an answer that is not READY.
@@ -311,6 +408,25 @@ fn verdict(outcome: Outcome, v: u32) -> Result<(), Fault> {
     code(u64::from(v), 0, u64::from(VERDICT_HARD), "on_piece.verdict")?;
     if v != 0 && outcome != Outcome::Ready {
         return Err(fault(Rule::Contradiction, "on_piece.verdict_not_ready"));
+    }
+    Ok(())
+}
+
+/// `on_piece`'s breaker fault reading: a known `FAULT_*` (the transport kind's one vocabulary), none
+/// on an answer that is not READY, and its padding zero.
+fn fault_reading(outcome: Outcome, out: &OnPieceOut) -> Result<(), Fault> {
+    use crate::abi::transport::{FAULT_HARD, FAULT_NONE};
+    code(
+        u64::from(out.fault),
+        0,
+        u64::from(FAULT_HARD),
+        "on_piece.fault",
+    )?;
+    if out.fault != FAULT_NONE && outcome != Outcome::Ready {
+        return Err(fault(Rule::Contradiction, "on_piece.fault_not_ready"));
+    }
+    if out._fault_reserved != [0; 3] {
+        return Err(fault(Rule::Contradiction, "on_piece.fault_reserved"));
     }
     Ok(())
 }
@@ -340,6 +456,10 @@ fn request(out: &OnPieceOut) -> Result<(), Fault> {
             "on_piece.request_not_to_far_end",
         ));
     }
+    // The need a far request rides names a request bound for the far end, nothing else.
+    if out.need != 0 && out.flags & EMIT_TO_FAR_END == 0 {
+        return Err(fault(Rule::Contradiction, "on_piece.need_not_to_far_end"));
+    }
     Ok(())
 }
 
@@ -355,6 +475,31 @@ fn in_arena(s: AbiStr, arena: *const u8, written: u64, field: &'static str) -> R
         .checked_sub(arena.addr())
         .ok_or(fault(Rule::SpanOutOfBounds, field))?;
     range(offset as u64, s.len as u64, written, field)
+}
+
+/// `project`'s session ([`RequestView::session`](crate::abi::hook::RequestView::session)): absent
+/// (a NULL, empty [`BLOB_ABSENT`] blob), or [`BLOB_OCTETS`] with no flag, inside the arena written.
+fn session(b: Blob, arena: *const u8, written: u64) -> Result<(), Fault> {
+    const FIELD: &str = "project.view.session";
+    if b.fmt == BLOB_ABSENT {
+        return if b.ptr.is_null() && b.len == 0 && b.flags == 0 {
+            Ok(())
+        } else {
+            Err(fault(Rule::Contradiction, FIELD))
+        };
+    }
+    if b.fmt != BLOB_OCTETS || b.flags != 0 {
+        return Err(fault(Rule::UnknownCode, FIELD));
+    }
+    if b.ptr.is_null() {
+        return Err(fault(Rule::NullWithCount, FIELD));
+    }
+    let offset = b
+        .ptr
+        .addr()
+        .checked_sub(arena.addr())
+        .ok_or(fault(Rule::SpanOutOfBounds, FIELD))?;
+    range(offset as u64, b.len as u64, written, FIELD)
 }
 
 /// The host buffers one `project` call lent, as its validator reads them.
@@ -448,6 +593,7 @@ pub fn check_project(
         "project.prompt.system",
     )?;
     in_arena(out.end_user, arena.0, out.arena_written, "project.end_user")?;
+    session(v.session, arena.0, out.arena_written)?;
     span(
         out.body.offset,
         out.body.len,
@@ -580,6 +726,61 @@ pub fn check_refusal(
     )
 }
 
+/// `refusal`'s record writes (SEAM-L(o)): under the short-buffer rule over `records_buf`, each
+/// write judged as an `on_piece` answer's, its bytes inside the arena written.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_refusal_records(
+    outcome: Outcome,
+    out: &RefusalOut,
+    records_buf: &[RecordWrite],
+    records_cap: u64,
+    b: &Bounds,
+) -> Result<(), Fault> {
+    let n = (out.records_written, out.records_needed, out.arena_written);
+    answer_records(outcome, n, records_buf, records_cap, b, "refusal.records")
+}
+
+/// `serve`'s record writes (SEAM-L(t)): as a refusal's ([`check_refusal_records`]).
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_serve_records(
+    outcome: Outcome,
+    out: &ServeOut,
+    records_buf: &[RecordWrite],
+    records_cap: u64,
+    b: &Bounds,
+) -> Result<(), Fault> {
+    let n = (out.records_written, out.records_needed, out.arena_written);
+    answer_records(outcome, n, records_buf, records_cap, b, "serve.records")
+}
+
+/// An answer's record writes, `(written, needed, arena written)`: the short-buffer rule over the
+/// host's buffer, then each write judged as an `on_piece` answer's.
+fn answer_records(
+    outcome: Outcome,
+    (written, needed, arena): (u32, u32, u64),
+    records_buf: &[RecordWrite],
+    records_cap: u64,
+    b: &Bounds,
+    field: &'static str,
+) -> Result<(), Fault> {
+    let written = u64::from(written);
+    result(
+        outcome,
+        written,
+        u64::from(needed),
+        records_cap,
+        MAX_RECORDS,
+        field,
+    )?;
+    records(records_buf, written, arena, b)
+}
+
 /// `serve`: a known `AUDIT_*`, and the reply is valid.
 ///
 /// # Errors
@@ -630,6 +831,33 @@ pub const fn check_cancel(outcome: Outcome, disposition: u32) -> Result<(), Faul
     )
 }
 
+/// `cancel`'s record writes (SEAM-L(r)): `cancel` is never re-called, so the writes and the arena
+/// they name fit the host's buffers or the answer is FAULT; each write is judged as an `on_piece`
+/// answer's. A `cancel` that is not READY writes nothing.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_cancel_records(
+    outcome: Outcome,
+    out: &super::PlaneCancelOut,
+    records_buf: &[RecordWrite],
+    (records_cap, arena_cap): (u64, u64),
+    b: &Bounds,
+) -> Result<(), Fault> {
+    let written = u64::from(out.records_written);
+    if written > records_cap || written > MAX_RECORDS {
+        return Err(fault(Rule::OverCap, "cancel.records"));
+    }
+    if out.arena_written > arena_cap {
+        return Err(fault(Rule::OverCap, "cancel.arena"));
+    }
+    if outcome != Outcome::Ready && (written != 0 || out.arena_written != 0) {
+        return Err(fault(Rule::Contradiction, "cancel.records_not_ready"));
+    }
+    records(records_buf, written, out.arena_written, b)
+}
+
 /// A generation snapshot (`open`/`refresh`): its own size, the generation asked for, lists within
 /// [`MAX_ROUTES`] and never counted with a NULL pointer. Its elements: [`check_claims`],
 /// [`check_admin_routes`].
@@ -654,12 +882,18 @@ pub fn check_snapshot(s: &PlaneSnapshot, generation: u64) -> Result<(), Fault> {
     listed(s.admin_routes, s.admin_routes_len, "snapshot.admin_routes")?;
     listed(s.openapi.ptr, s.openapi.len, "snapshot.openapi")?;
     text(s.audience, "snapshot.audience")?;
-    text(s.resource_metadata, "snapshot.resource_metadata")
+    text(s.resource_metadata, "snapshot.resource_metadata")?;
+    listed(
+        s.resource_facts.ptr,
+        s.resource_facts.len,
+        "snapshot.resource_facts",
+    )
 }
 
-/// Every snapshot claim: a verb, a target, a carrier, known flags, and a refusal dialect the tail
-/// declares (`0` when the tail declares none). Two claims of one route are not judged here:
-/// overlapping claims resolve by precedence in the kernel's registry.
+/// Every snapshot claim: a verb, a target, a carrier, known flags, never EXACT with PATTERN, and a
+/// refusal dialect the tail declares (`0` when the tail declares none). The target's TEXT is judged
+/// at bind by [`check_claim_target`], once the host has read it. Two claims of one route are not
+/// judged here: overlapping claims resolve by precedence in the kernel's registry.
 ///
 /// # Errors
 ///
@@ -671,7 +905,7 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
         named(c.carrier, "claim.carrier")?;
         bits(
             u64::from(c.flags),
-            u64::from(CLAIM_OPEN | CLAIM_EXACT),
+            u64::from(CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN),
             "claim.flags",
         )?;
         if dialects_len > 0 || c.refusal_dialect != 0 {
@@ -681,8 +915,94 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
                 "claim.refusal_dialect",
             )?;
         }
+        if c.flags & CLAIM_EXACT != 0 && c.flags & CLAIM_PATTERN != 0 {
+            return Err(fault(Rule::Contradiction, "claim.flags"));
+        }
     }
     Ok(())
+}
+
+/// THE PATTERN GRAMMAR, once: the target starts with `/`, and each `/`-separated segment is a
+/// brace-free literal or a whole placeholder `{name}` with a non-empty, brace-free name. A pattern
+/// names at least one placeholder; one that names none is an exact target.
+fn pattern_shape(target: &str) -> Result<(), Fault> {
+    let bad = || fault(Rule::Contradiction, "claim.pattern");
+    let rest = target.strip_prefix('/').ok_or_else(bad)?;
+    let mut placeholders = 0;
+    for seg in rest.split('/') {
+        match seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+            Some(n) if !n.is_empty() && !n.contains(['{', '}']) => placeholders += 1,
+            None if !seg.is_empty() && !seg.contains(['{', '}']) => {}
+            _ => return Err(bad()),
+        }
+    }
+    if placeholders == 0 {
+        return Err(fault(Rule::Missing, "claim.pattern"));
+    }
+    Ok(())
+}
+
+/// ONE CLAIM'S TARGET, judged at bind once the host has read it out of the snapshot: the flag pair
+/// ([`CLAIM_EXACT`] never with [`CLAIM_PATTERN`]) and, for a pattern, its grammar
+/// ([`claim_selector`] reads the same one). [`check_claims`] judges the claims' shape without
+/// reading their text; the host runs this on every target it copies into the generation.
+///
+/// # Errors
+///
+/// [`Rule::Contradiction`] for both flags or a malformed pattern, [`Rule::Missing`] for a pattern
+/// with no placeholder.
+pub fn check_claim_target(target: &str, flags: u32) -> Result<(), Fault> {
+    if flags & CLAIM_EXACT != 0 && flags & CLAIM_PATTERN != 0 {
+        return Err(fault(Rule::Contradiction, "claim.flags"));
+    }
+    if flags & CLAIM_PATTERN != 0 {
+        pattern_shape(target)?;
+    }
+    Ok(())
+}
+
+/// A [`CLAIM_PATTERN`] target read as its segment pattern, by the one grammar
+/// ([`check_claim_target`]): each literal segment is a [`PathSeg::Lit`], each placeholder one
+/// [`PathSeg::Var`].
+///
+/// # Errors
+///
+/// The grammar's fault: [`Rule::Contradiction`] for an empty or half-braced segment,
+/// [`Rule::Missing`] for no placeholder.
+pub fn claim_pattern(target: &'static str) -> Result<Vec<PathSeg>, Fault> {
+    pattern_shape(target)?;
+    Ok(target[1..]
+        .split('/')
+        .map(|seg| {
+            if seg.starts_with('{') {
+                PathSeg::Var
+            } else {
+                PathSeg::Lit(seg)
+            }
+        })
+        .collect())
+}
+
+/// THE HOST'S READING OF ONE PLANE CLAIM as the claim grammar's selector: [`CLAIM_EXACT`] is
+/// [`Selector::ExactPath`], [`CLAIM_PATTERN`] is [`Selector::PathPattern`], and neither is
+/// [`Selector::PrefixOneLevel`]. The registry orders and seals the result as it does every claim.
+/// A pattern's segments are handed to `keep`, which decides how long they live: the host keeps
+/// them with the generation that stated them. The contract holds nothing.
+///
+/// # Errors
+///
+/// [`Rule::Contradiction`] for both flags, or the pattern's own fault ([`claim_pattern`]).
+pub fn claim_selector(
+    target: &'static str,
+    flags: u32,
+    keep: impl FnOnce(Vec<PathSeg>) -> &'static [PathSeg],
+) -> Result<Selector, Fault> {
+    match (flags & CLAIM_EXACT != 0, flags & CLAIM_PATTERN != 0) {
+        (true, true) => Err(fault(Rule::Contradiction, "claim.flags")),
+        (true, false) => Ok(Selector::ExactPath(target)),
+        (false, true) => Ok(Selector::PathPattern(keep(claim_pattern(target)?))),
+        (false, false) => Ok(Selector::PrefixOneLevel(target)),
+    }
 }
 
 /// Every snapshot admin route: a verb, a target and known flags.
@@ -717,7 +1037,7 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
 pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
     bits(
         u64::from(t.flags),
-        u64::from(TAIL_FALLBACK | TAIL_PROBES),
+        u64::from(TAIL_FALLBACK | TAIL_PROBES | TAIL_HOOKS_GATED),
         "tail.flags",
     )?;
     let ingress = INGRESS_REQUEST_RESPONSE
@@ -770,7 +1090,28 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
         t.refusal_statuses,
         t.refusal_statuses_len,
         "tail.refusal_statuses",
-    )
+    )?;
+    listed(t.admin_routes, t.admin_routes_len, "tail.admin_routes")?;
+    listed(
+        t.admin_openapi.ptr,
+        t.admin_openapi.len,
+        "tail.admin_openapi",
+    )?;
+    if t.admin_routes_len as u64 > MAX_ROUTES {
+        return Err(fault(Rule::OverMax, "tail.admin_routes"));
+    }
+    // Absent is NULL; present is a sentence, never an empty one.
+    if t.caller_credential_refusal.ptr.is_null() {
+        text(
+            t.caller_credential_refusal,
+            "tail.caller_credential_refusal",
+        )
+    } else {
+        named(
+            t.caller_credential_refusal,
+            "tail.caller_credential_refusal",
+        )
+    }
 }
 
 /// A plane's Statement sections: each named, known flags, and EXACTLY ONE is the declaring
@@ -804,6 +1145,14 @@ pub fn check_dialect_auth(entries: &[DialectAuth], dialects_len: u64) -> Result<
     for d in entries {
         index(d.dialect, dialects_len, "dialect_auth.dialect")?;
         named(d.style, "dialect_auth.style")?;
+        crate::abi::mechanism::check::blob(
+            &d.params,
+            "dialect_auth.params",
+            "dialect_auth.params",
+        )?;
+        if d.params.len > 0 && d.params.fmt != crate::abi::mechanism::call::BLOB_JSON {
+            return Err(fault(Rule::Contradiction, "dialect_auth.params.fmt"));
+        }
     }
     Ok(())
 }
@@ -900,7 +1249,7 @@ pub fn check_trust_keys(keys: &[TrustKey]) -> Result<(), Fault> {
         code(
             u64::from(k.role),
             u64::from(TRUST_PIN),
-            u64::from(TRUST_RECOVERY_BACKOFF),
+            u64::from(TRUST_PRIVATE_REACH),
             "trust_key.role",
         )?;
         text(k.default, "trust_key.default")?;
@@ -921,6 +1270,9 @@ pub fn check_trust_keys(keys: &[TrustKey]) -> Result<(), Fault> {
             bits(u64::from(k.flags), 0, "trust_key.duration_flags")?;
             if k.mechanisms_len != 0 {
                 return Err(fault(Rule::Contradiction, "trust_key.duration_mechanisms"));
+            }
+            if k.role == TRUST_PRIVATE_REACH && !k.default.ptr.is_null() {
+                return Err(fault(Rule::Contradiction, "trust_key.reach_default"));
             }
         }
         if keys[..i].iter().any(|p| p.role == k.role) {
@@ -965,9 +1317,13 @@ pub fn check_pin_mechanisms(mechanisms: &[PinMechanism]) -> Result<(), Fault> {
         named(m.token, "pin_mechanism.token")?;
         bits(
             u64::from(m.flags),
-            u64::from(MECHANISM_ROOT),
+            u64::from(MECHANISM_ROOT | MECHANISM_PEER_KEY),
             "pin_mechanism.flags",
         )?;
+        // A far-end key pin is an authenticity root: the no-root spelling carries no material.
+        if m.flags & MECHANISM_PEER_KEY != 0 && m.flags & MECHANISM_ROOT == 0 {
+            return Err(fault(Rule::Contradiction, "pin_mechanism.flags"));
+        }
     }
     Ok(())
 }
