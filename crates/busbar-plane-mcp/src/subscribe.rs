@@ -18,6 +18,8 @@
 //!   `SubscriptionsListenResult`, correlated to the request that opened it.
 //! - QUIET IS NOT NOTHING: an idle stream says it is alive every [`KEEPALIVE_NS`].
 
+use std::collections::BTreeSet;
+
 use serde_json::{json, Map, Value};
 
 use crate::catalogue::{Catalogue, Lookup};
@@ -97,13 +99,19 @@ impl Filter {
         let resources = match n.get("resourceSubscriptions") {
             None => None,
             Some(Value::Array(a)) => {
-                let mut uris = Vec::with_capacity(a.len());
+                // Deduplicated through a set, and read no further than the first uri past the
+                // ceiling: the request is refused for it, so the rest of a long array costs nothing.
+                let mut seen = BTreeSet::new();
+                let mut uris = Vec::new();
                 for u in a {
                     let Some(u) = u.as_str() else {
                         return Filter::default();
                     };
-                    if !uris.iter().any(|seen: &String| seen == u) {
+                    if seen.insert(u) {
                         uris.push(u.to_string());
+                        if uris.len() > MAX_SUBSCRIBED_URIS {
+                            break;
+                        }
                     }
                 }
                 Some(uris)

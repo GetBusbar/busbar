@@ -53,6 +53,7 @@ use busbar_contract::abi::plane::{
     VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::statement;
+use busbar_contract::abi::sdk::exchange::{REPLY_MAX, REPLY_OVER_BOUND};
 use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::{Generations, Keyed};
 use busbar_contract::abi::sdk::services::ServiceError;
@@ -2566,18 +2567,28 @@ slot!(
                                     .as_deref()
                                     .is_some_and(|t| t.starts_with(EVENT_STREAM));
                             }
-                            relay.far.extend_from_slice(bytes);
-                            if piece.flags & PIECE_LAST == 0 {
-                                return Some(Step::Taken);
+                            // AN UPSTREAM'S ANSWER IS BOUNDED as the SDK bounds a reply: one past
+                            // the ceiling fails the call as any bad upstream answer does, and
+                            // nothing more of it is kept.
+                            if relay.far.len().saturating_add(bytes.len()) > REPLY_MAX {
+                                relay.far = Vec::new();
+                                relay.status = 0;
+                                relay.sse = false;
+                                crate::call::upstream_failed(&relay.admitted, REPLY_OVER_BOUND)
+                            } else {
+                                relay.far.extend_from_slice(bytes);
+                                if piece.flags & PIECE_LAST == 0 {
+                                    return Some(Step::Taken);
+                                }
+                                crate::call::settle_call(
+                                    &relay.admitted,
+                                    def,
+                                    relay.status,
+                                    &relay.far,
+                                    relay.sse,
+                                    relay.round,
+                                )
                             }
-                            crate::call::settle_call(
-                                &relay.admitted,
-                                def,
-                                relay.status,
-                                &relay.far,
-                                relay.sse,
-                                relay.round,
-                            )
                         }
                     };
                     let mut frames = std::mem::take(&mut relay.frames);
@@ -2679,7 +2690,11 @@ slot!(
             }
         });
         match step {
-            None | Some(Step::Declined) => Outcome::Refused,
+            // A piece the plane refuses ends the unit: its state is dropped with it.
+            None | Some(Step::Declined) => {
+                plane.units.remove(&key);
+                Outcome::Refused
+            }
             Some(Step::Taken) => Outcome::Ready,
             Some(Step::Pending) => Outcome::Pending,
             Some(Step::Decline) => {
@@ -3072,6 +3087,11 @@ slot!(
             return Outcome::Failed;
         }
         out.set(|o| &o.status, status);
+        // THE REFUSED UNIT IS OVER: the kernel ends a unit it refuses, and nothing else would ever
+        // name it again, so its state (its request's params among it) goes with the refusal.
+        if let Some(plane) = instance.get() {
+            plane.units.remove(&given.unit);
+        }
         Outcome::Ready
     }
 );
