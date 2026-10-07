@@ -56,6 +56,7 @@ enum Ask {
         timeout_ms: u32,
     },
     Reconnect,
+    Close,
     Write,
     Read,
     Upgrade {
@@ -147,6 +148,14 @@ impl Wire {
     /// The connector's failure.
     pub async fn reconnect(&self) -> Result<(), ConnFailure> {
         self.ask(Ask::Reconnect).await.map(|_| ())
+    }
+
+    /// CLOSE the op's connection now: it is never kept, and its unread input and unsent output go.
+    /// The op keeps its claim on the kept set, so its next [`Wire::connect`] establishes a new
+    /// connection, to any target: a store tries its endpoint list in order, "open; on reject close
+    /// and try the next" (THE DESIGN §5). No connection: nothing to close.
+    pub async fn close(&self) {
+        let _ = self.ask(Ask::Close).await;
     }
 
     /// BOUND every wire call from the next one on by `ms` milliseconds in all (`0` = unbound): once
@@ -725,6 +734,19 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                 Poll::Pending => Served::Pending { wake_at_ns: 0 },
             };
         }
+        Ask::Close => {
+            if wire.state().conn.take().is_some() {
+                cx.close_checkout();
+            }
+            let mut w = wire.state();
+            w.input.clear();
+            w.out.clear();
+            w.session = None;
+            w.reused = false;
+            w.unfit = false;
+            w.last = None;
+            return Served::Answer(Ok(0));
+        }
         _ => {}
     }
     let Some(stream) = wire.state().conn.as_ref().map(|c| c.stream) else {
@@ -737,7 +759,7 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
         Err(e) => return Served::Answer(Err(e)),
     };
     match ask {
-        Ask::Connect { .. } | Ask::Reconnect => unreachable!("answered above"),
+        Ask::Connect { .. } | Ask::Reconnect | Ask::Close => unreachable!("answered above"),
         Ask::Write => loop {
             let out = std::mem::take(&mut wire.state().out);
             let answer = services.write(stream, &out);
