@@ -25,6 +25,8 @@ members = [
     "crates/plugin-loader",
     "crates/store-memory",
     "crates/busbar-transport-stdio",
+    "crates/busbar-transport-webrtc",
+    "crates/busbar-transport-webrtc-plugin",
     "testing/ws-conformance/subject",
     "xtask",
 ]
@@ -158,6 +160,15 @@ crc32fast = "1"
 # DTLS for the connector's dtls engine (WebRTC), on ring through the connector's own provider:
 # no default features, so neither aws-lc-rs nor the RustCrypto suite enters.
 dimpl = { version = "=0.7.4", default-features = false }
+# THE WEBRTC FRAMER's media stack (busbar-transport-webrtc; ARCHITECT WEBRTC spike GO and D2 approval,
+# THE DESIGN l.756-765): ICE, SRTP and SCTP, sans-IO. No default features: no aws-lc-rs, no OpenSSL,
+# no example server; the framer installs its own crypto provider on ring and a host shim in place of
+# str0m's DTLS (the framer holds no DTLS state).
+str0m = { version = "=0.24.1", default-features = false }
+# THE ONE EXCEPTION TO ring-ONLY (THE DESIGN l.759-761, QUESTIONS Q101): ring has no raw AES block, and
+# the SRTP key derivation (RFC 3711 §4.3, RFC 7714 §11) is AES in counter mode over 16-byte blocks.
+# aes/cipher/inout enter for that derivation alone; a dependency-closure test confines them to it.
+aes = { version = "0.8", default-features = false }
 # THE MICROBENCHMARK HARNESS. Dev-only, and deliberately stripped: `default-features = false` drops
 # criterion's plotting stack (plotters, its font/image chain) and its rayon thread pool, keeping
 # `cargo_bench_support` — the part `cargo bench` actually needs to run a `harness = false` target.
