@@ -234,6 +234,7 @@ pub mod failover;
 pub mod governance;
 pub mod handlers;
 pub mod hooks;
+pub(crate) mod host_chains;
 pub mod host_claims;
 pub mod host_disk;
 pub mod host_records;

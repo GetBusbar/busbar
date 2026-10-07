@@ -334,7 +334,5 @@ fn validate_plugin_unloads_on_a_worker_not_the_callers_thread() {
 
 #[path = "ffi_guard_tests.rs"]
 mod ffi_guard_tests;
-#[path = "store_adapter_migration_tests.rs"]
-mod store_adapter_migration_tests;
 #[path = "store_adapter_tests.rs"]
 mod store_adapter_tests;

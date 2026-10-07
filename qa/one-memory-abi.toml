@@ -121,11 +121,6 @@ item = "extern 'C-unwind'"
 
 [[finding]]
 rule = "one-memory-abi:c-unwind"
-file = "crates/plane-example/src/lib.rs"
-item = "extern 'C-unwind'"
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
 file = "crates/plugin-loader/src/carrier.rs"
 item = "extern 'C-unwind'"
 

@@ -325,7 +325,7 @@ dependencies = [
  "busbar-export-prometheus",
  "busbar-export-prometheus-plugin",
  "busbar-export-webhook",
- "busbar-hooks-ranking",
+ "busbar-hook-ranking",
  "busbar-kernel",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
@@ -335,11 +335,10 @@ dependencies = [
  "busbar-kernel-scope",
  "busbar-kernel-wal",
  "busbar-llm",
- "busbar-mcp",
  "busbar-plane-decisions",
  "busbar-plane-llm",
+ "busbar-plane-mcp",
  "busbar-plane-streaming",
- "busbar-plugin-example-plane",
  "busbar-plugin-loader",
  "busbar-secret-env",
  "busbar-secret-file",
@@ -355,6 +354,7 @@ dependencies = [
  "core_affinity",
  "criterion",
  "ed25519-dalek",
+ "flate2",
  "futures",
  "getrandom 0.3.4",
  "hex",
@@ -382,6 +382,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -444,9 +445,9 @@ dependencies = [
 [[package]]
 name = "busbar-auth-header"
 version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=6ede2a5b1a27e6a265e3a76db7e5749cb5abce8a#6ede2a5b1a27e6a265e3a76db7e5749cb5abce8a"
 dependencies = [
  "busbar-contract",
- "busbar-plugin-loader",
  "serde",
  "serde_json",
 ]
@@ -454,17 +455,16 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=b7d15c7137e890072a4968abc544b0bbfc107f67#b7d15c7137e890072a4968abc544b0bbfc107f67"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
- "busbar-plugin-loader",
  "http",
  "ring",
  "serde",
  "serde_json",
  "serde_urlencoded",
  "sha2",
- "tokio",
 ]
 
 [[package]]
@@ -490,31 +490,6 @@ source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=0a7b7a5c59593e4e
 dependencies = [
  "busbar-auth-oidc",
  "busbar-contract",
-]
-
-[[package]]
-name = "busbar-auth-sigv4"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "busbar-plugin-loader",
- "hex",
- "ring",
- "serde",
- "serde_json",
- "zeroize",
-]
-
-[[package]]
-name = "busbar-auth-webhook-signature"
-version = "1.6.0"
-dependencies = [
- "base64 0.22.1",
- "busbar-contract",
- "busbar-plugin-loader",
- "ring",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -554,7 +529,6 @@ dependencies = [
  "busbar-export-prometheus",
  "busbar-kernel",
  "busbar-llm",
- "busbar-mcp",
  "flate2",
  "hex",
  "http-body-util",
@@ -702,11 +676,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-hooks-ranking"
+name = "busbar-hook-ranking"
 version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-hook-ranking?rev=7e1285e2e3293627723ab2754b9ddbfddeba9c46#7e1285e2e3293627723ab2754b9ddbfddeba9c46"
 dependencies = [
  "busbar-contract",
- "busbar-plugin-loader",
  "serde_json",
 ]
 
@@ -724,7 +698,7 @@ dependencies = [
  "busbar-auth-oidc-plugin",
  "busbar-contract",
  "busbar-export-prometheus",
- "busbar-hooks-ranking",
+ "busbar-hook-ranking",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
  "busbar-kernel-egress",
@@ -733,7 +707,6 @@ dependencies = [
  "busbar-kernel-scope",
  "busbar-kernel-wal",
  "busbar-llm",
- "busbar-mcp",
  "busbar-plugin-loader",
  "busbar-secret-env",
  "busbar-secret-file",
@@ -878,41 +851,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-mcp"
-version = "1.6.0"
-dependencies = [
- "async-trait",
- "axum",
- "base64 0.22.1",
- "busbar-auth-admin-tokens-plugin",
- "busbar-contract",
- "busbar-core-admin",
- "busbar-kernel",
- "busbar-llm",
- "busbar-plane-mcp",
- "bytes",
- "futures",
- "getrandom 0.3.4",
- "hex",
- "http",
- "http-body-util",
- "indexmap",
- "rcgen",
- "reqwest",
- "ring",
- "rmcp",
- "schemars",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "serde_yaml_ng",
- "sha2",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
 dependencies = [
@@ -951,7 +889,9 @@ version = "1.6.0"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-plugin-loader",
  "bytes",
+ "indexmap",
  "serde",
  "serde_json",
 ]
@@ -965,13 +905,6 @@ dependencies = [
  "bytes",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "busbar-plugin-example-plane"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
 ]
 
 [[package]]
@@ -991,9 +924,7 @@ dependencies = [
  "busbar-export-prometheus-plugin",
  "busbar-export-webhook",
  "busbar-export-webhook-plugin",
- "busbar-kernel-ledger",
  "busbar-kernel-wal",
- "busbar-plugin-example-plane",
  "busbar-secret-env",
  "busbar-store-memory",
  "busbar-transport-tcp",
@@ -1089,7 +1020,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-tcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=89d08ebcb91e5b2d4001b667fba151d9bc09d22d#89d08ebcb91e5b2d4001b667fba151d9bc09d22d"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=86987e4030e6ed3ccae51f547964e4e94ff902c2#86987e4030e6ed3ccae51f547964e4e94ff902c2"
 dependencies = [
  "busbar-contract",
 ]
@@ -1097,7 +1028,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-tcp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=89d08ebcb91e5b2d4001b667fba151d9bc09d22d#89d08ebcb91e5b2d4001b667fba151d9bc09d22d"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=86987e4030e6ed3ccae51f547964e4e94ff902c2#86987e4030e6ed3ccae51f547964e4e94ff902c2"
 dependencies = [
  "busbar-contract",
  "busbar-transport-tcp",
@@ -3307,23 +3238,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
-]
-
-[[package]]
-name = "rmcp"
-version = "3.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8dddc5b1924b9a59fba420166160ca2c4663a4e01803e52eda33070f56d63c8"
-dependencies = [
- "chrono",
- "futures",
- "pin-project-lite",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
 ]
 
 [[package]]

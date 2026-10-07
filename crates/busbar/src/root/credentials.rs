@@ -171,6 +171,10 @@ impl HostServices for CredentialServices {
         self.inner.trust_decide(caller, key, expected, approve)
     }
 
+    fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
+        self.inner.trust_state(caller, counterparty)
+    }
+
     fn trust_sight_item(
         &self,
         caller: &Caller,
@@ -209,6 +213,10 @@ impl HostServices for CredentialServices {
 
     fn random_fill(&self, len: u64) -> Stored {
         self.inner.random_fill(len)
+    }
+
+    fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
+        self.inner.session_emit(caller, session, bytes)
     }
 
     fn records_secret(&self, kind: &str, id: &str, _later: Later) -> Ran {

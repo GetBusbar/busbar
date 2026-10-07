@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 65,
    "oracle-family": 5,
-   "test": 448
+   "test": 443
   }
  },
  "dropped_since_last_write": [],
@@ -4517,41 +4517,6 @@
     },
     {
      "kind": "test",
-     "ref": "least_busy_prefers_most_headroom",
-     "proves": "least_busy native",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "least_busy_all_saturated_ranks_by_idx",
-     "proves": "least_busy never abstains",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "cheapest_all_unknown_abstains",
-     "proves": "cheapest abstains when every signal is missing",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "usage_all_unknown_abstains",
-     "proves": "usage abstains when every signal is missing",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "fastest_orders_by_latency",
-     "proves": "fastest native",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
      "ref": "from_ranked_never_produces_reject",
      "proves": "reply precedence: an order never becomes a reject",
      "source": "curated",
@@ -4573,7 +4538,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_normalize_raw_error_with_provider_override, test:restored_halfopen_state_normalizes_to_open, test:restore_does_not_clobber_new_limit_with_unlimited_sentinel, test:test_hard_down_follows_identity_across_rebuild, test:least_busy_prefers_most_headroom, test:least_busy_all_saturated_ranks_by_idx, test:cheapest_all_unknown_abstains, test:usage_all_unknown_abstains, test:fastest_orders_by_latency, test:from_ranked_never_produces_reject, test:from_ranked_empty_is_abstain, test:dlopen_notify_is_fire_and_forget"
+   "verdict_detail": "test:test_normalize_raw_error_with_provider_override, test:restored_halfopen_state_normalizes_to_open, test:restore_does_not_clobber_new_limit_with_unlimited_sentinel, test:test_hard_down_follows_identity_across_rebuild, test:from_ranked_never_produces_reject, test:from_ranked_empty_is_abstain, test:dlopen_notify_is_fire_and_forget"
   },
   {
    "id": "PB-99",

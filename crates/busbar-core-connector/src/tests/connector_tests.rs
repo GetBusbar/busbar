@@ -810,6 +810,155 @@ fn a_host_side_reader_is_woken_through_its_own_waker() {
     });
 }
 
+/// A far end that takes the opening and then holds the connection open, answering nothing, until
+/// `release` fires (or `answer` is written first, after `after`, then held again).
+fn stalled_far_end(
+    l: tokio::net::TcpListener,
+    answer: Option<(
+        std::time::Duration,
+        &'static [u8],
+        std::time::Duration,
+        &'static [u8],
+    )>,
+) {
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut s, _) = l.accept().await.unwrap();
+        let mut buf = [0_u8; 5];
+        s.read_exact(&mut buf).await.unwrap();
+        if let Some((after, first, then, second)) = answer {
+            tokio::time::sleep(after).await;
+            s.write_all(first).await.unwrap();
+            tokio::time::sleep(then).await;
+            s.write_all(second).await.unwrap();
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        drop(s);
+    });
+}
+
+/// RED (ARCHITECT timeout ruling, step 2; BUSBAR-1.6.0.md:4890): `timeout_ms` bounds the WHOLE
+/// request until its answer, not only the dial. A far end that connects, takes the request and
+/// never answers is a timeout once the bound passes: a host-side reader is woken with it, within
+/// the bound and not at the far end's leisure.
+#[test]
+fn a_request_bound_times_out_a_far_end_that_never_answers() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        stalled_far_end(l, None);
+        let c = serving(Arc::new(AtomicU64::new(0)));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"first",
+            timeout_ms: 300,
+            ..OpenDesc::default()
+        };
+        let started = std::time::Instant::now();
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            std::future::poll_fn(|cx| c.poll_read(OWNER, id, cx, &mut buf)),
+        )
+        .await
+        .expect("the bound woke the reader before the far end ever answered");
+        assert_eq!(read, Err(ConnError::Timeout));
+        let took = started.elapsed();
+        assert!(
+            took >= std::time::Duration::from_millis(300)
+                && took < std::time::Duration::from_secs(2),
+            "timed out at the bound, not before it and not long after: {took:?}"
+        );
+        assert_eq!(
+            c.read(OWNER, id, 7, &mut buf),
+            Err(ConnError::Timeout),
+            "a read after the bound stays a timeout"
+        );
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// RED: a plugin reader (a ticket, as WRITE_REQUEST's exchange reads) waiting on a request past
+/// its bound has its ticket woken, and its next read is the timeout.
+#[test]
+fn a_request_bound_wakes_a_plugin_ticket_with_the_timeout() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        stalled_far_end(l, None);
+        let wakes = Arc::new(AtomicU64::new(0));
+        let c = serving(wakes.clone());
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"first",
+            timeout_ms: 200,
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let started = std::time::Instant::now();
+        let read = loop {
+            match c.read(OWNER, id, 7, &mut buf) {
+                Err(ConnError::Pending) => {
+                    assert!(
+                        started.elapsed() < std::time::Duration::from_secs(5),
+                        "never timed out"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                other => break other,
+            }
+        };
+        assert_eq!(read, Err(ConnError::Timeout));
+        assert!(
+            wakes.load(Ordering::SeqCst) >= 1,
+            "the ticket was woken by the bound"
+        );
+        assert_eq!(
+            c.wait(OWNER, &[id], 7),
+            Ok(0),
+            "a request past its bound is ready to read"
+        );
+    });
+}
+
+/// The bound ends where the answer begins: an answer whose first piece arrived inside the bound is
+/// read to its end even when its later pieces arrive after it.
+#[test]
+fn a_request_bound_is_spent_once_the_answer_begins() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        let ms = std::time::Duration::from_millis;
+        stalled_far_end(l, Some((ms(20), b"head", ms(400), b"tail")));
+        let c = serving(Arc::new(AtomicU64::new(0)));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"first",
+            timeout_ms: 200,
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut got = Vec::new();
+        while got.len() < 8 {
+            let mut buf = [0_u8; 64];
+            let piece = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                std::future::poll_fn(|cx| c.poll_read(OWNER, id, cx, &mut buf)),
+            )
+            .await
+            .expect("the answer arrives")
+            .expect("an answer begun inside the bound is not cut by it");
+            got.extend_from_slice(&buf[..piece.len]);
+        }
+        assert_eq!(got, b"headtail");
+    });
+}
+
 // ── EGRESS: the scheme each egress class allows ──
 
 use busbar_contract::abi::host::conn::connector::{
@@ -909,6 +1058,8 @@ fn loopback_allowed_refuses_plaintext_off_loopback() {
 /// validated `token_url`/`token_uri`): a mint endpoint's need, its target the binding's own setting,
 /// in the `loopback-allowed` class, dials a plaintext loopback endpoint and refuses a plaintext
 /// private one; the `open-web` class it was declared in refused the loopback endpoint outright.
+/// Each refusal is the need's ADMISSION at declare (the target is pinned, so its static facts are
+/// judged there, G1(a)), and every open on the refused need is refused with it.
 #[test]
 fn a_configured_mint_endpoint_takes_loopback_plaintext_and_nothing_else_in_plaintext() {
     worker().block_on(async {
@@ -925,13 +1076,21 @@ fn a_configured_mint_endpoint_takes_loopback_plaintext_and_nothing_else_in_plain
         assert_eq!(declare(0, EGRESS_LOOPBACK_ALLOWED, &far), Ok(()));
         let id = open_in(&c, 0, &far).expect("a loopback plaintext mint endpoint opens");
         c.close(OWNER, id).unwrap();
-        assert_eq!(declare(1, EGRESS_LOOPBACK_ALLOWED, "10.1.2.3:80"), Ok(()));
+        assert_eq!(
+            declare(1, EGRESS_LOOPBACK_ALLOWED, "10.1.2.3:80"),
+            Err(ConnError::Refused),
+            "plaintext off loopback, refused at its admission"
+        );
         assert_eq!(
             open_in(&c, 1, "10.1.2.3:80"),
             Err(ConnError::Refused),
             "plaintext off loopback"
         );
-        assert_eq!(declare(2, EGRESS_OPEN_WEB, &far), Ok(()));
+        assert_eq!(
+            declare(2, EGRESS_OPEN_WEB, &far),
+            Err(ConnError::Refused),
+            "open-web refuses every plaintext endpoint, at its admission"
+        );
         assert_eq!(
             open_in(&c, 2, &far),
             Err(ConnError::Refused),
@@ -1627,4 +1786,125 @@ fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
             "an undeclared need holds no reach"
         );
     });
+}
+
+// ── THE ADMISSION OF A PINNED TARGET: the verdict `need_admit` reports is the one every dial meets ──
+
+/// A connector serving `plain` (an entry that locates a target in plaintext) and `sec` (one that
+/// locates it over connection security), admitting literals as [`literal_connector`] does.
+fn plain_and_secure_connector() -> Connector {
+    let view = Transports::new(vec![
+        Entry {
+            door: Arc::new(TestDoor::identity("plain")),
+            alpn: Vec::new(),
+        },
+        Entry {
+            door: Arc::new(TestDoor::new(
+                "sec",
+                &["sec"],
+                &[],
+                crate::support::Knobs {
+                    secure_name: Some("localhost"),
+                    ..crate::support::Knobs::default()
+                },
+            )),
+            alpn: Vec::new(),
+        },
+    ])
+    .unwrap();
+    Connector::serving(view, loopback_literals(), None, Arc::new(|_| {}))
+}
+
+/// A config-targeted outbound need over `transport` in `class`.
+fn pinned_need(transport: &str, class: u32) -> ReadNeed {
+    let mut need = config_targeted_need("settings.url");
+    need.transport = transport.to_owned();
+    need.egress_class = class;
+    need
+}
+
+/// RED (1.5.5: a request-log webhook target that is not `https://` was refused when the sink was
+/// configured): an open-web need pinned to a plaintext target is REFUSED at declare, so the host's
+/// admission (`need_admit`) answers what every dial of it already met, and the need opens nothing.
+/// It holds for a literal and for a name alike: the scheme rule needs no resolution.
+#[test]
+fn an_open_web_need_pinned_to_a_plaintext_target_is_refused_at_declare() {
+    let c = plain_and_secure_connector();
+    let need = pinned_need("plain", EGRESS_OPEN_WEB);
+    for (id, target) in [(0, "127.0.0.1:4318"), (1, "localhost:4318")] {
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(id), &need, Some(target), None),
+            Err(ConnError::Refused),
+            "{target}"
+        );
+        assert_eq!(
+            DeclaredConns::declared(&c, OWNER, NeedId(id)),
+            Some(Err(ConnError::Refused)),
+            "{target}: the admission the plugin reads"
+        );
+        assert!(c
+            .open(
+                OWNER,
+                NeedId(id),
+                &OpenDesc {
+                    target,
+                    ..OpenDesc::default()
+                },
+            )
+            .is_err());
+    }
+}
+
+/// GREEN: the admission judges only what the dial would. An open-web need pinned to a secure target
+/// on an allowlisted literal is admitted, as is a name (no resolution happens at declare; its
+/// addresses stay the dial's), and a default-class need pinned to a plaintext loopback literal
+/// (operator infrastructure, the class a configured target is judged in) is admitted too.
+#[test]
+fn a_pinned_target_every_dial_would_admit_is_admitted_at_declare() {
+    let c = plain_and_secure_connector();
+    let secure = pinned_need("sec", EGRESS_OPEN_WEB);
+    assert_eq!(
+        DeclaredConns::declare(&c, OWNER, NeedId(0), &secure, Some("10.1.2.3:443"), None),
+        Ok(())
+    );
+    assert_eq!(
+        DeclaredConns::declare(
+            &c,
+            OWNER,
+            NeedId(1),
+            &secure,
+            Some("collector.example:443"),
+            None
+        ),
+        Ok(())
+    );
+    let plain = pinned_need("plain", crate::DEFAULT_CLASS);
+    assert_eq!(
+        DeclaredConns::declare(&c, OWNER, NeedId(2), &plain, Some("127.0.0.1:4318"), None),
+        Ok(())
+    );
+    assert_eq!(DeclaredConns::declared(&c, OWNER, NeedId(2)), Some(Ok(())));
+}
+
+/// RED: a pinned literal the guard refuses (a cloud metadata address, which no class and no
+/// configured target lifts) is refused at declare, over connection security too.
+#[test]
+fn a_pinned_metadata_literal_is_refused_at_declare() {
+    let c = plain_and_secure_connector();
+    let need = pinned_need("sec", EGRESS_OPEN_WEB);
+    assert_eq!(
+        DeclaredConns::declare(
+            &c,
+            OWNER,
+            NeedId(0),
+            &need,
+            Some("169.254.169.254:443"),
+            None
+        ),
+        Err(ConnError::Refused)
+    );
+    assert_eq!(
+        DeclaredConns::declared(&c, OWNER, NeedId(0)),
+        Some(Err(ConnError::Refused))
+    );
 }
