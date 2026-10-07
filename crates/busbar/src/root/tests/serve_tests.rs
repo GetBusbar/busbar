@@ -6991,6 +6991,78 @@ mod agent_door {
         );
     }
 
+    /// **A DELIVERY REACHES THE WEBHOOK EXACTLY ONCE** (R-PUSH, coordinator round 2): the queued
+    /// notification's attempt is carried by `tick` and `drive`, and only one of them sends it; the
+    /// caller's webhook counts one hit, and none follows within 800 ms.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_pushed_state_reaches_the_callers_own_webhook_exactly_once() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-agent-door-push-once";
+        let _published = Published(instance);
+        let tls = AgentTls::new();
+        tls.rekey();
+        let mut hook = Agent::start_over(200, "{}", Some(tls.acceptor())).await;
+        let mut agent =
+            Agent::start_answering(200, Arc::new(|r: &str| far_answer(r, "working", "working")))
+                .await;
+        let s = served_pushing(
+            instance,
+            &agent.entry("planner", "1h"),
+            vec!["127.0.0.1".to_string()],
+            tls.root.clone(),
+        );
+        approve(&s, "planner").await;
+        let task = open_task(&s).await;
+        let config = serde_json::json!({
+            "taskId": task, "id": "caller-config",
+            "url": format!("https://127.0.0.1:{}/hook", hook.port),
+            "authentication": { "scheme": "Bearer", "credentials": "caller-secret" },
+        })
+        .to_string();
+        let (status, body) = answered(
+            &s.router,
+            rpc(
+                "planner",
+                "CreateTaskPushNotificationConfig",
+                &config,
+                Some(&s.token),
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the operator-listed callback: {body}"
+        );
+        assert!(
+            !body.contains("error"),
+            "the allow-listed loopback callback is registered: {body}"
+        );
+        let token = token_sent(&heard(&mut agent));
+        let (status, body) = answered(&s.router, push(&token, "completed")).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "the push is taken: {body}");
+        let delivered = tokio::time::timeout(std::time::Duration::from_secs(1), hook.heard.recv())
+            .await
+            .expect("busbar made no delivery for a pushed state within a second of the push")
+            .expect("the webhook heard");
+        assert!(
+            delivered.starts_with("POST /hook"),
+            "the delivery goes to the caller's own webhook path: {delivered}"
+        );
+        let head = delivered.to_ascii_lowercase();
+        assert!(
+            head.contains("authorization: bearer caller-secret"),
+            "the caller's own webhook credential is presented at the caller's own webhook: {delivered}"
+        );
+        // R-PUSH: the tick and the drive both carry the attempt, and the receiver is reached once.
+        let again =
+            tokio::time::timeout(std::time::Duration::from_millis(800), hook.heard.recv()).await;
+        assert!(
+            again.is_err(),
+            "the delivery reached the webhook a second time: {again:?}"
+        );
+    }
+
     /// **A TRANSITION BUSBAR LEARNS ON A REFRESH REACHES THE CALLER'S WEBHOOK AT ONCE.** The agent
     /// moved the task on out of band; the caller's next list asks the agent, the row moves, and the
     /// notification the move owes is delivered to the caller's registered webhook with its own

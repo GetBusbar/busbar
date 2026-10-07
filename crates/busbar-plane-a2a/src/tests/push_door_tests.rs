@@ -172,6 +172,8 @@ struct TestHost {
     status: u16,
     judged: Vec<String>,
     sent: Vec<String>,
+    /// How many sends answer PENDING before one reaches the receiver.
+    pends: u32,
 }
 
 impl TestHost {
@@ -186,6 +188,7 @@ impl TestHost {
             status,
             judged: Vec::new(),
             sent: Vec::new(),
+            pends: 0,
         }
     }
 }
@@ -205,8 +208,16 @@ impl Line for TestHost {
     }
 
     fn send(&mut self, _ex: &mut Exchange, url: &str) -> Poll<Option<u16>> {
+        if self.pends > 0 {
+            self.pends -= 1;
+            return Poll::Pending;
+        }
         self.sent.push(url.to_string());
         Poll::Ready(Some(self.status))
+    }
+
+    fn jitter(&mut self) -> u8 {
+        128
     }
 }
 
@@ -418,4 +429,36 @@ fn queue_moved_wakes_the_driver_ticket() {
     });
     assert!(queue_moved(&d, &mut book, ALICE, &row).unwrap());
     assert_eq!(woken.try_iter().count(), 1);
+}
+
+/// A delivery is never sent twice (R-PUSH): a `tick` whose exchange pends holds the attempt, and a
+/// second `tick` while it is held starts nothing and calls nothing; `drive` alone carries it on, and
+/// the receiver is reached EXACTLY once. RED against a variant where the tick and drive both
+/// deliver (two receiver hits).
+#[test]
+fn a_pending_attempt_is_delivered_once_whether_tick_or_drive_runs_first() {
+    let callback = "https://hook.caller.test/notify";
+    let d = queued(callback);
+    let attempting = Attempting::default();
+    let mut host = TestHost::answering(vec![Some((DEST_ALLOWED, &[AT_REGISTRATION][..]))], 200);
+    host.pends = 1;
+    assert_eq!(tick_over(&mut host, &d, &attempting, 0), Outcome::Pending);
+    assert!(host.sent.is_empty(), "the exchange is still in flight");
+    let judged = host.judged.len();
+    // The kernel's next tick (a timer, or another queued item's wake) while the attempt is held.
+    assert_eq!(tick_over(&mut host, &d, &attempting, 1), Outcome::Ready);
+    assert_eq!(
+        host.judged.len(),
+        judged,
+        "a held attempt makes no host call"
+    );
+    assert!(host.sent.is_empty(), "the tick did not deliver");
+    // The wake the pending service raised: `drive` finishes the one request.
+    assert_eq!(drive_over(&mut host, &d, &attempting), Outcome::Ready);
+    assert_eq!(host.sent, vec![callback.to_string()], "exactly one request");
+    // Neither path delivers it again.
+    assert_eq!(drive_over(&mut host, &d, &attempting), Outcome::Ready);
+    assert_eq!(tick_over(&mut host, &d, &attempting, 2), Outcome::Ready);
+    assert_eq!(host.sent.len(), 1, "never sent twice");
+    assert_eq!(d.take_owed(ALICE, None).len(), 1, "one outcome owed");
 }
