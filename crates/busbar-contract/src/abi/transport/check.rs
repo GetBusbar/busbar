@@ -17,9 +17,9 @@ use super::{
     IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail, CANCEL_COMPLETED,
     CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH, FRAMING_DATAGRAM,
     FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
-    PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, ROLE_CARRIER, ROLE_FRAMER,
-    SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS, UNIT0_HANDSHAKE,
-    YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_CARRIER,
+    ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS,
+    UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
@@ -204,7 +204,7 @@ pub fn check_framer(
     within(n, pieces_cap.min(MAX_PIECES), "framer.pieces_len")?;
     bits(
         u64::from(y.flags),
-        u64::from(YIELD_ENDED | YIELD_MORE | YIELD_HAS_DEADLINE),
+        u64::from(YIELD_ENDED | YIELD_MORE | YIELD_HAS_DEADLINE | YIELD_STREAM_FULL),
         "framer.flags",
     )?;
     if (y.flags & YIELD_HAS_DEADLINE != 0) != (y.next_deadline_ns != 0) {
@@ -224,10 +224,18 @@ pub fn check_framer(
                     | PIECE_STREAM_FAILED
                     | PIECE_FIELDS
                     | PIECE_CONTINUED
-                    | PIECE_TEXT,
+                    | PIECE_TEXT
+                    | PIECE_WRITABLE,
             ),
             "framer.piece.flags",
         )?;
+        // A writable piece is a signal about the stream, never part of a frame: empty, alone.
+        if p.flags & PIECE_WRITABLE != 0 && (p.len != 0 || p.flags != PIECE_WRITABLE) {
+            return Err(fault(
+                Rule::Contradiction,
+                "framer.piece.writable_not_alone",
+            ));
+        }
         // Text is a fact about a message's bytes: an empty piece, a field block and a failed
         // stream's reason carry none.
         if p.flags & PIECE_TEXT != 0
@@ -245,9 +253,10 @@ pub fn check_framer(
         if p.flags & PIECE_FIELDS != 0 && p.flags & PIECE_STREAM_FAILED != 0 {
             return Err(fault(Rule::Contradiction, "framer.piece.fields_failed"));
         }
-        // An empty piece is a stream's end, so it completes its frame; a failed stream's piece is
-        // its last, so it does too.
-        if (p.len == 0 || p.flags & PIECE_STREAM_FAILED != 0) && p.flags & PIECE_END_OF_FRAME == 0 {
+        // An empty piece is a stream's end (a writable piece aside), so it completes its frame; a
+        // failed stream's piece is its last, so it does too.
+        let ends = p.len == 0 && p.flags != PIECE_WRITABLE;
+        if (ends || p.flags & PIECE_STREAM_FAILED != 0) && p.flags & PIECE_END_OF_FRAME == 0 {
             return Err(fault(
                 Rule::Contradiction,
                 "framer.piece.end_without_end_of_frame",
